@@ -182,6 +182,7 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 		std::string filename = std::to_string(sequenceNumber) + ".txnlog";
 		auto logFilePath = this->path / filename;
 		logFile = std::make_shared<TransactionLogFile>(logFilePath, sequenceNumber, true);
+		logFile->readOnly = this->readOnly;
 		this->sequenceFiles[sequenceNumber] = logFile;
 		this->nextLogPosition = { 0, sequenceNumber };
 	}
@@ -815,6 +816,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	uint32_t retiredBoundary = readTransactionLogAppendBoundaryMarker(path);
 	auto logFile = std::make_shared<TransactionLogFile>(
 		path, sequenceNumber, retiredBoundary > 0);
+	logFile->readOnly = this->readOnly;
 	if (retiredBoundary > 0) {
 		logFile->retiredAppendBoundary.store(retiredBoundary, std::memory_order_relaxed);
 		logFile->appendBoundaryLost.store(true, std::memory_order_relaxed);
@@ -1173,6 +1175,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	}
 
 	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs, maxAgeThreshold);
+	store->readOnly = readOnly;
 
 	// find `.txnlog` files in the directory
 	try {

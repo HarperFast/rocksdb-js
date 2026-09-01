@@ -272,6 +272,17 @@ struct TransactionLogFile final {
 	bool appendBoundaryMarkerEnabled = false;
 
 	/**
+	 * When true, open() touches nothing on disk: the fd/handle is opened
+	 * read-only without creating the file or its parent directory, an existing
+	 * append-boundary marker is read but never created, repaired, or removed,
+	 * an empty file is rejected instead of header-initialized, and (Windows)
+	 * the mapping path neither pre-extends nor SetEndOfFile()s. Set for files
+	 * owned by a read-only/secondary open, whose log directory may belong to a
+	 * live writer in another process (see TransactionLogStoreConfig::readOnly).
+	 */
+	bool readOnly = false;
+
+	/**
 	 * Suppresses repeated backup warnings for the same malformed segment. The extent remains
 	 * unresolved so each backup still verifies whether the segment has since become readable.
 	 */

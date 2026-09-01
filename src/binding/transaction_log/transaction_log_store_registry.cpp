@@ -184,6 +184,15 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 
 	for (const auto& dirEntry : std::filesystem::directory_iterator(config.transactionLogsPath)) {
 		if (dirEntry.is_directory()) {
+			// A store already live in this process must not be re-loaded: load()
+			// runs tail recovery, which would truncate the live store's active
+			// file while its append-owned `size` keeps appending past the new
+			// EOF (invariant 5). The emplace below never replaced duplicates,
+			// but load()'s side effects ran before it could decide that.
+			auto storeName = dirEntry.path().filename().string();
+			if (entry->stores.count(storeName)) {
+				continue;
+			}
 			auto store = TransactionLogStore::load(
 				dirEntry.path(),
 				config.transactionLogMaxSize,

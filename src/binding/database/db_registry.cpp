@@ -180,11 +180,22 @@ void DBRegistry::DestroyDB(const std::string& path) {
 
 	if (!claimed.empty()) {
 		// Close all closables (iterators, transactions, handles) attached to
-		// each descriptor; this should release all DBHandle references
+		// each descriptor; this should release all DBHandle references. A throw
+		// from one close must not strand the remaining claimed descriptors —
+		// they hold isClosing() and their entries would sit in the map with
+		// conditions never notified, wedging every later OpenDB on those keys —
+		// so close them all and rethrow the first failure afterward.
+		std::exception_ptr closeError;
 		for (auto& [descriptor, condition] : claimed) {
 			DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor and all attached resources (ref count = %zu)\n",
 				instance.get(), descriptor.use_count());
-			descriptor->finishClose();
+			try {
+				descriptor->finishClose();
+			} catch (...) {
+				if (!closeError) {
+					closeError = std::current_exception();
+				}
+			}
 		}
 
 		// Now that the closes are complete, remove the path's entries and wake
@@ -203,6 +214,9 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			if (condition) {
 				condition->notify_all();
 			}
+		}
+		if (closeError) {
+			std::rethrow_exception(closeError);
 		}
 
 		// After closing, check for lingering references — each descriptor
@@ -291,11 +305,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
-	// A secondary workspace belongs to exactly one secondary instance: RocksDB
-	// writes the instance's own state there, so two instances sharing it would
-	// corrupt each other. Same primary + same workspace shares the descriptor
-	// (the registry key below); a different primary on the same workspace is
-	// rejected here while the registry lock is held.
+	// A secondary workspace belongs to exactly one secondary instance (RocksDB
+	// does not enforce this itself — see db_descriptor.h::secondaryLockToken).
+	// Same primary + same workspace shares the descriptor via the registry key;
+	// a different primary on the same workspace is rejected.
 	if (!options.secondaryPath.empty()) {
 		for (const auto& [existingKey, existingEntry] : instance->databases) {
 			if (existingKey.secondaryPath == options.secondaryPath && existingKey.path != path) {

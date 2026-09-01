@@ -168,6 +168,11 @@ void TransactionLogFile::openLocked(const double latestTimestamp) {
 
 	// read the file header
 	char buffer[TRANSACTION_LOG_FILE_HEADER_SIZE];
+	if (this->size == 0 && this->readOnly) {
+		// nothing readable, and initializing the header is the writer's job
+		throw rocksdb_js::TransactionLogFormatException(
+			"File is too small to be a valid transaction log file: " + this->path.string());
+	}
 	if (this->size == 0) {
 		// file is empty, initialize it
 		DEBUG_LOG("%p TransactionLogFile::open Initializing empty file: %s (timestamp=%f)\n", this, this->path.string().c_str(), latestTimestamp);

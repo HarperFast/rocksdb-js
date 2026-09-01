@@ -312,8 +312,10 @@ export interface StoreOptions extends Omit<
 	 * keeps the secondary's private state there; it is created if missing).
 	 * It must be distinct from the database `path` (enforced at open) and
 	 * exclusive to one secondary instance — two secondaries sharing a
-	 * workspace corrupt each other's state. In-process reuse is rejected at
-	 * open, and a kernel advisory lock on `<secondaryPath>/.secondary.lock`
+	 * workspace corrupt each other's state. Reusing a workspace in-process for
+	 * a DIFFERENT database is rejected at open (the same database and
+	 * workspace share the one follower instance), and a kernel advisory lock
+	 * on `<secondaryPath>/.secondary.lock`
 	 * excludes other processes — but on filesystems without advisory locking
 	 * (e.g. FUSE/9p mounts behind Docker Desktop bind mounts) the lock
 	 * degrades to a no-op, and on network filesystems it does not exclude

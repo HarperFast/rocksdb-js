@@ -466,16 +466,6 @@ static bool throwIfNotSecondary(napi_env env, const std::shared_ptr<DBHandle>& d
 }
 
 /**
- * Advances a secondary instance to the primary's current state asynchronously
- * by tailing and replaying the primary's MANIFEST and WAL.
- *
- * @example
- * ```typescript
- * const db = new NativeDatabase();
- * await db.catchUpWithPrimary();
- * ```
- */
-/**
  * RAII release for a descriptor `operationsInFlight` claim made on the JS
  * thread, mirroring CheckpointInFlightClaim: decrements (and wakes a waiting
  * `finishClose()`) on any early return, unless the claim was handed off to the
@@ -492,6 +482,16 @@ struct CatchUpInFlightClaim {
 	}
 };
 
+/**
+ * Advances a secondary instance to the primary's current state asynchronously
+ * by tailing and replaying the primary's MANIFEST and WAL.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * await db.catchUpWithPrimary();
+ * ```
+ */
 napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();

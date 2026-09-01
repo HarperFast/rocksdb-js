@@ -1348,12 +1348,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		cfDescriptors = { rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, cfo) };
 	}
 
-	std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
-	std::shared_ptr<rocksdb::DB> db;
-	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
-
 	// Releases the secondary workspace lock on any throw between acquisition
-	// and its ownership transfer to the descriptor below.
+	// and its ownership transfer to the descriptor below. Declared BEFORE the
+	// db shared_ptr so reverse destruction destroys the RocksDB instance first
+	// — the lock must never be released while the secondary still touches its
+	// workspace.
 	struct SecondaryLockGuard {
 		uint32_t token = 0;
 		~SecondaryLockGuard() {
@@ -1362,6 +1361,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			}
 		}
 	} secondaryLock;
+
+	std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
+	std::shared_ptr<rocksdb::DB> db;
+	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
 	if (!options.secondaryPath.empty()) {
 		// RocksDB requires every table (and blob) file opened and held for the
@@ -1381,18 +1384,33 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			);
 		}
 
-		// The workspace must not BE the primary's data directory: the lock file
-		// and the secondary's info-LOG rotation would land among the primary's
-		// files. Canonical comparison (after creation, so both paths resolve)
-		// catches differently-spelled aliases and symlinks.
+		// The workspace must be neither the primary's data directory nor nested
+		// inside it: the lock file and the secondary's info-LOG rotation would
+		// land among the primary's files, and destroy()'s remove_all(path)
+		// would delete a live secondary's workspace under it. Canonical
+		// comparison (after creation, so both paths resolve) catches
+		// differently-spelled aliases and symlinks; if canonicalization fails,
+		// fall back to lexically-normalized absolute paths rather than skipping
+		// the check.
 		std::error_code canonicalError;
 		auto canonicalSecondary = std::filesystem::weakly_canonical(options.secondaryPath, canonicalError);
-		auto canonicalPrimary = canonicalError
-			? std::filesystem::path()
-			: std::filesystem::weakly_canonical(path, canonicalError);
-		if (!canonicalError && canonicalSecondary == canonicalPrimary) {
+		if (canonicalError) {
+			canonicalSecondary = std::filesystem::absolute(options.secondaryPath).lexically_normal();
+		}
+		canonicalError.clear();
+		auto canonicalPrimary = std::filesystem::weakly_canonical(path, canonicalError);
+		if (canonicalError) {
+			canonicalPrimary = std::filesystem::absolute(path).lexically_normal();
+		}
+		const std::string secondaryStr = canonicalSecondary.generic_string();
+		const std::string primaryStr = canonicalPrimary.generic_string();
+		if (secondaryStr == primaryStr ||
+			(secondaryStr.size() > primaryStr.size() &&
+				secondaryStr.compare(0, primaryStr.size(), primaryStr) == 0 &&
+				secondaryStr[primaryStr.size()] == '/')
+		) {
 			throw rocksdb_js::DBException(
-				"secondaryPath must be a separate directory from the database path \"" + path + "\""
+				"secondaryPath must be a separate directory outside the database path \"" + path + "\""
 			);
 		}
 

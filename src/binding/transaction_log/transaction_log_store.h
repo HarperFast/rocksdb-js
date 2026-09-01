@@ -236,6 +236,16 @@ struct TransactionLogStore final {
 	float maxAgeThreshold;
 
 	/**
+	 * Set when this store was loaded by a read-only/secondary open: every file
+	 * it registers opens read-only and mutates nothing (see
+	 * TransactionLogFile::readOnly), and load() skipped retention and tail
+	 * recovery. The append path is unreachable for such a store (guarded at
+	 * the N-API layer), and a writable open refuses to adopt it
+	 * (EnsureWritableRegistrationSafe).
+	 */
+	bool readOnly = false;
+
+	/**
 	 * The current sequence number of the transaction log file. Atomic because it
 	 * is written on the write path (under writeMutex) but read on the read path
 	 * (getMemoryMap/findPositionByTimestamp under dataSetsMutex) — different

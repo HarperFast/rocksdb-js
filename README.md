@@ -128,8 +128,9 @@ Creates a new database instance.
     [`catchUpWithPrimary()`](#dbcatchupwithprimary-promisevoid) call. This is the supported way to
     read a database another process is actively writing. The value is the secondary instance's own
     workspace directory (created if missing) where RocksDB keeps the secondary's private state — it
-    must be distinct from `path` (enforced) and exclusive to one secondary instance. Exclusivity is
-    enforced: reusing a workspace in-process is rejected at open, and a kernel advisory lock on
+    must be outside `path` (enforced) and exclusive to one secondary instance. Exclusivity is
+    enforced: reusing a workspace in-process for a different database is rejected at open (the same
+    database + workspace share the one follower instance), and a kernel advisory lock on
     `<secondaryPath>/.secondary.lock` (same discipline and caveats as the
     [backup directory lock](#backups)) excludes other processes — with the same limits: on
     filesystems without advisory locking (`flock` unsupported — e.g. the FUSE/9p mounts behind
@@ -326,7 +327,11 @@ catch-up runs; catch-ups on the same database are serialized internally.
 
 Throws with code `ERR_NOT_SECONDARY` on a database that was not opened with `secondaryPath`.
 Column families the primary created after the secondary opened stay invisible until the secondary
-reopens; ones the primary dropped remain readable until then.
+reopens; ones the primary dropped remain readable until then. Catch-up advances the **database**
+view only: transaction-log reads through a secondary serve the log state as of the open, and log
+entries appended (or segments rotated to) afterward become visible only on reopen. Serialize
+catch-up calls per database — concurrent calls queue on libuv workers behind an internal
+per-database mutex.
 
 ```typescript
 const primary = RocksDatabase.open('/path/to/database');

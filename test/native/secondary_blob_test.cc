@@ -1,10 +1,11 @@
-// Secondary instances against a blob-enabled database (rocksdb-js#812).
-// Upstream's BlobDB wiki still lists secondary instances under "future work",
-// but the pinned build handles them: blob files are opened and fd-held at
-// version install exactly like SSTs under max_open_files = -1, which is what
-// makes the primary's blob-GC deletions safe. This codebase enables blob files
-// unconditionally (values >= 2KB), so that behavior is load-bearing — these
-// tests are the regression net for it on every RocksDB upgrade.
+// Secondary instances against a blob-enabled database. Upstream documents the
+// combination as unsupported (facebook/rocksdb#13296), but this codebase
+// enables blob files unconditionally (values >= 2KB) and depends on the pinned
+// build's actual behavior: blob files are opened and fd-held at version
+// install exactly like SSTs under max_open_files = -1, which is what makes the
+// primary's blob-GC deletions safe. These tests must stay green on every
+// RocksDB upgrade — a regression here breaks secondary mode for every real
+// database.
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <memory>

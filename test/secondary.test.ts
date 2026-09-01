@@ -35,8 +35,7 @@ describe('Secondary Instances', () => {
 			expect(secondary.secondaryPath).toBe(secondaryPath);
 			expect(secondary.getSync('before-open')).toBe('a');
 
-			// Writes after the secondary opened are invisible until catch-up —
-			// both directions of acceptance criterion 4.
+			// writes after the secondary opened are invisible until catch-up
 			const blob = 'x'.repeat(8 * 1024); // above the 2KB blob threshold
 			primary.putSync('after-open', 'b');
 			primary.putSync('large', blob);
@@ -243,7 +242,13 @@ describe('Secondary Instances', () => {
 			primary.open();
 			const aliased = new RocksDatabase(dbPath, { secondaryPath: `${dbPath}/` });
 			expect(() => aliased.open()).toThrow(
-				'secondaryPath must be a separate directory from the database path'
+				'secondaryPath must be a separate directory outside the database path'
+			);
+			// nested inside the primary is just as bad: destroy()'s recursive
+			// delete would take the live workspace with it
+			const nested = new RocksDatabase(dbPath, { secondaryPath: join(dbPath, 'follower') });
+			expect(() => nested.open()).toThrow(
+				'secondaryPath must be a separate directory outside the database path'
 			);
 		} finally {
 			primary.close();

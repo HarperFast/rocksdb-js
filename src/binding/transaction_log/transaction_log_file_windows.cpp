@@ -25,6 +25,23 @@ TransactionLogFile::TransactionLogFile(
 
 void TransactionLogFile::ensureAppendBoundaryMarker() {
 	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
+	if (this->readOnly) {
+		// Read an existing marker (its boundary caps what this reader may
+		// expose) but never create, repair, or remove one — the marker tree
+		// belongs to the writer, which may be live in another process.
+		std::error_code readOnlyExistsError;
+		if (std::filesystem::exists(markerPath, readOnlyExistsError)) {
+			try {
+				this->retiredAppendBoundary.store(
+					readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
+			} catch (const TransactionLogAppendBoundaryException&) {
+				if (std::filesystem::exists(this->path)) {
+					throw;
+				}
+			}
+		}
+		return;
+	}
 	std::error_code existsError;
 	if (std::filesystem::exists(markerPath, existsError)) {
 		try {
@@ -201,23 +218,44 @@ void TransactionLogFile::openFile() {
 	// Check if file already exists before creating/opening
 	bool fileExisted = std::filesystem::exists(this->path);
 
-	// open file for both reading and writing
-	this->fileHandle = ::CreateFileW(
-		this->path.wstring().c_str(),
-		GENERIC_READ | GENERIC_WRITE,
-		FILE_SHARE_READ | FILE_SHARE_WRITE,
-		nullptr,
-		OPEN_ALWAYS,
-		FILE_ATTRIBUTE_NORMAL,
-		nullptr
-	);
+	if (this->readOnly) {
+		// A reader never creates the file and can open logs on a read-only or
+		// otherwise write-protected volume.
+		this->fileHandle = ::CreateFileW(
+			this->path.wstring().c_str(),
+			GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			nullptr,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr
+		);
+		if (this->fileHandle == INVALID_HANDLE_VALUE) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str());
+			throw rocksdb_js::DBException("Failed to open sequence file for read: " + this->path.string());
+		}
+	} else {
+		// open file for both reading and writing
+		this->fileHandle = ::CreateFileW(
+			this->path.wstring().c_str(),
+			GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE,
+			nullptr,
+			OPEN_ALWAYS,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr
+		);
 
-	if (this->fileHandle == INVALID_HANDLE_VALUE) {
-		DWORD error = ::GetLastError();
-		std::string errorMessage = getWindowsErrorMessage(error);
-		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str());
-		throw rocksdb_js::DBException("Failed to open sequence file for read/write: " + this->path.string());
+		if (this->fileHandle == INVALID_HANDLE_VALUE) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str());
+			throw rocksdb_js::DBException("Failed to open sequence file for read/write: " + this->path.string());
+		}
 	}
 
 	// Set file permissions equivalent to Unix 640 (owner: read+write, group: read, others: none)
@@ -367,7 +405,20 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
 	// in NT.DLL). So we must expand the file to the full size before we can map it.
 	// Check the actual file size on disk to avoid repeated expansions
-	if (fileSize > this->size.load(std::memory_order_relaxed)) {
+	if (this->readOnly) {
+		// A reader cannot (and must not) extend the file; clamp the mapping to
+		// the physical size instead — for a live writer's active segment that is
+		// already the writer's pre-extended maxFileSize.
+		LARGE_INTEGER physicalSize;
+		if (::GetFileSizeEx(this->fileHandle, &physicalSize) &&
+			physicalSize.QuadPart < static_cast<LONGLONG>(fileSize)
+		) {
+			fileSize = static_cast<uint32_t>(physicalSize.QuadPart);
+		}
+		if (fileSize == 0) {
+			return nullptr;
+		}
+	} else if (fileSize > this->size.load(std::memory_order_relaxed)) {
 		LARGE_INTEGER currentPos;
 		LARGE_INTEGER distanceToMove;
 		// First, we have to get the current position, so we can restore it (if we get to a point where no other code relies on position, could remove this)

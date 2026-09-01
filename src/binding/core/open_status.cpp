@@ -5,12 +5,10 @@
 
 namespace rocksdb_js {
 
-// True when `extension` appears in `message` at the END of a filename token —
-// followed by a separator (space, quote, colon, paren, comma) or the end of
-// the string. A directory merely named like "archive.log/" or "exports.sst/"
-// is followed by a path separator and does not match, so a genuine corruption
-// inside such a path cannot ride the directory name into the race
-// classification.
+// The extension must END a filename token (followed by a separator or the end
+// of the string): a directory merely named "archive.log/" is followed by a
+// path separator, so a genuine corruption inside such a path cannot ride the
+// directory name into the race classification.
 static bool namesFileWithExtension(const std::string& message, const char* extension) {
 	const size_t extensionLength = std::char_traits<char>::length(extension);
 	size_t offset = 0;
