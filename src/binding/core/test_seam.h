@@ -3,6 +3,8 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
+#include <string>
 
 // Deterministic test seams that widen a race window are gated on a millisecond
 // delay read from an environment variable (0 = disabled). They are inert in
@@ -56,10 +58,26 @@ inline std::atomic<uint32_t>& dropColumnFamilyLatchObservedOpen() {
 }
 
 // Incremented by DBRegistry::OpenDB immediately before it acquires databasesMutex, but only while
-// the latch is armed — production pays one relaxed load per open.
+// the latch is armed and only for the database a drop is currently parked on — production pays one
+// relaxed load per open. Keyed by path because this is a process-global singleton and Vitest's
+// thread pool shares it: an unrelated test opening some other database must not be credited as the
+// opener the parked drop is waiting for.
 inline std::atomic<uint32_t>& openDbMutexAttempts() {
 	static std::atomic<uint32_t> count{0};
 	return count;
+}
+
+// Lock order: DBRegistry::databasesMutex BEFORE this one (the parked drop already holds it);
+// OpenDB releases this before acquiring databasesMutex, so there is no inversion.
+inline std::mutex& dropColumnFamilyLatchPathMutex() {
+	static std::mutex mutex;
+	return mutex;
+}
+
+// Path of the drop currently parked in the latch; empty when none is. Guarded by the mutex above.
+inline std::string& dropColumnFamilyLatchPath() {
+	static std::string path;
+	return path;
 }
 
 // Consumes one forced failure if any remain. Returns true when the caller should treat this
