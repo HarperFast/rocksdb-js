@@ -665,15 +665,20 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     The layout must survive the descriptor: `destroy()` accepts a closed handle, and closing the last
     one purges the registry entry, so `DBDescriptor::recordColumnFamilyLayout` mirrors a
     `DBFileLayout` into the path-keyed `DBRegistry::knownLayouts`; `DestroyDB` merges the live
-    descriptor snapshot with that registry record rather than picking one. `blob_dir` can be
-    recovered from OPTIONS; `db_paths` cannot — so the retained `db_paths` accumulates rather
-    than being last-writer-wins: `RecordLayout` unions each open's list into the record instead
-    of replacing it (`mergeDbPaths`), which is enough because the record feeds only `destroy()`,
-    where `rocksdb::DestroyDB` collects the paths into a set and the order carries no meaning.
-    Read-only and read-write opens of one path are separate registry entries, and a read-only
-    handle that omits `paths` — or passes a shorter list — succeeds while the files it needs still
-    sit at path index 0, so without those two rules its shorter layout erased the only record of
-    the other volumes and a later `destroy()` reported success while orphaning every SST on them.
+    descriptor snapshot with that registry record rather than picking one, and the record's
+    `blob_dir` wins there because OPTIONS re-derives it on every open while a live descriptor's
+    is frozen at the open that created it. `blob_dir` can be recovered from OPTIONS; `db_paths`
+    cannot — so the retained `db_paths` grows only along its append-only chain rather than being
+    last-writer-wins: `RecordLayout` takes a new list only when it EXTENDS the retained one
+    (`extendsDbPaths`) and keeps the retained one otherwise. Both halves of that rule are
+    load-bearing, in opposite directions: a shorter list must not shorten the record, since it is
+    the only trace of the volumes it leaves out; a divergent list must not extend it, since
+    `destroy()` deletes every SST it finds in each recorded directory and one mistyped `paths`
+    would then take another database's files down with this one. Read-only and read-write opens
+    of one path are separate registry entries, and a read-only handle that omits `paths` — or
+    passes a shorter list — succeeds while the files it needs still sit at path index 0, so
+    without the first half its shorter layout erased the only record of the other volumes and a
+    later `destroy()` reported success while orphaning every SST on them.
     A successful column-family drop removes that family
     from every live descriptor layout for the path and from `knownLayouts` before its by-name handle
     is unregistered, so a concurrent same-name recreation cannot be removed from the destroy layout.

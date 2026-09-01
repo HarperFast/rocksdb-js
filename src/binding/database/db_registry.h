@@ -81,8 +81,8 @@ private:
 
 	/**
 	 * Where every database this process has opened keeps its files: the latest
-	 * blob directory per column family, and the accumulated `db_paths` of all
-	 * its opens (`DBRegistry::RecordLayout`).
+	 * blob directory per column family, and the longest `db_paths` its opens have
+	 * agreed on (`DBRegistry::RecordLayout`).
 	 *
 	 * `destroy()` accepts a CLOSED handle, and closing the last handle to a
 	 * path takes the descriptor — and the registry entry the layout would be
