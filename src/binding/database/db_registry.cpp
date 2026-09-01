@@ -332,7 +332,8 @@ void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 }
 
 /**
- * Removes a dropped column family from every layout for the database path.
+ * Erases by family name because several families may share one blob directory;
+ * a layout that becomes the default no longer needs a retained registry entry.
  */
 void DBRegistry::RemoveColumnFamilyLayout(const std::string& path, const std::string& name) {
 	if (!instance) {
