@@ -145,12 +145,10 @@ void DBRegistry::DebugLogDescriptorRefs() {
 #endif
 
 /**
- * Whether `candidate` is the retained list plus zero or more appended entries —
- * the only shape `db_paths` may legally take (invariant 18). Refusing a
- * DIVERGENT list is the half the name does not give away: `destroy()` deletes
- * every SST it finds in each recorded directory, so one `paths` typo naming
- * another database's volume must never enter the record. Compared by directory;
- * `target_size` is a sizing knob `destroy()` ignores.
+ * Whether `candidate` is the retained list plus zero or more appended entries.
+ * That this is the only legal shape for `db_paths`, and why neither a shorter
+ * nor a divergent list may replace the record, is AGENTS invariant 18. Compared
+ * by directory: `target_size` is a sizing knob `destroy()` ignores.
  */
 static bool extendsDbPaths(
 	const std::vector<rocksdb::DbPath>& retained,
@@ -185,11 +183,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
 	bool capturedLayout = false;
 
-	// Retained record first: only it grew along the append-only chain, while the
-	// entry the loop below happens to pick may be a read-only descriptor opened
-	// with a shorter or divergent `paths`. The live layout then adds only what
-	// extends it, and blob directories only for families the record does not
-	// name — OPTIONS re-derives those per open, so a descriptor's are frozen.
+	// Retained record first, then the live layout: paths only where they extend
+	// the record, blob directories only for families it does not already name.
 	std::unordered_map<std::string, std::string> destroyBlobDirs;
 	auto applyLayout = [&](const DBFileLayout& layout) {
 		if (extendsDbPaths(destroyOptions.db_paths, layout.dbPaths)) {
@@ -357,10 +352,9 @@ void DBRegistry::DestroyDB(const std::string& path) {
  * Records where a database's files live, so `destroy()` can still find them
  * after the descriptor is gone. See `DBRegistry::knownLayouts`.
  *
- * `db_paths` only ever extends (`extendsDbPaths`), so an open naming fewer or
- * different volumes than an earlier one leaves the record alone. Blob
- * directories are per column family and re-derived from OPTIONS on every open,
- * so they are replaced as given.
+ * `db_paths` only ever extends (`extendsDbPaths`); blob directories are per
+ * column family and re-derived from OPTIONS on every open, so they are replaced
+ * as given.
  */
 void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 	if (!instance) {
