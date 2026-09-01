@@ -1335,12 +1335,35 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 			const replacementBlobFiles = filesWithExt(reusedBlobDir, '.blob');
 			expect(replacementBlobFiles.length).toBeGreaterThan(0);
 
-			// Closing first forces destroy() through the path-keyed fallback.
+			// Closing first tests the retained/fallback layout rather than the live snapshot.
 			dropped.destroy();
 			expect(filesWithExt(reusedBlobDir, '.blob')).toEqual(replacementBlobFiles);
 			expect(replacement.getSync('live')).toBe(largeValue(2));
 		}
 	);
+
+	it('should remove a dropped family from the live destroy layout', () => {
+		const oldDbPath = tempPath();
+		const replacementDbPath = tempPath();
+		const reusedBlobDir = tempDir();
+		const plain = openDb(oldDbPath);
+		const dropped = openDb(oldDbPath, {
+			name: 'dropped',
+			blobs: { dir: reusedBlobDir },
+		});
+
+		dropped.dropSync();
+		dropped.close();
+		const replacement = openDb(replacementDbPath, { blobs: { dir: reusedBlobDir } });
+		replacement.putSync('live', largeValue(3));
+		replacement.flushSync();
+		const replacementBlobFiles = filesWithExt(reusedBlobDir, '.blob');
+		expect(replacementBlobFiles.length).toBeGreaterThan(0);
+
+		plain.destroy();
+		expect(filesWithExt(reusedBlobDir, '.blob')).toEqual(replacementBlobFiles);
+		expect(replacement.getSync('live')).toBe(largeValue(3));
+	});
 
 	it('should retain a recreated same-name family layout after a stale drop', () => {
 		const dbPath = tempPath();
@@ -1356,10 +1379,10 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		expect(filesWithExt(recreatedBlobDir, '.blob').length).toBeGreaterThan(0);
 
 		stale.dropSync();
-		recreated.close();
-		stale.close();
-		first.close();
-		first.destroy();
+		expect(recreated.columns).toContain('table1');
+		recreated.putSync('after-stale-drop', largeValue(4));
+		recreated.flushSync();
+		recreated.destroy();
 		expect(filesWithExt(recreatedBlobDir, '.blob')).toHaveLength(0);
 	});
 
@@ -1370,13 +1393,11 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		const retained = openDb(dbPath, { name: 'retained', blobs: { dir: blobDir } });
 
 		dropped.dropSync();
-		retained.putSync('live', largeValue(4));
+		retained.putSync('live', largeValue(5));
 		retained.flushSync();
 		expect(filesWithExt(blobDir, '.blob').length).toBeGreaterThan(0);
 
-		retained.close();
-		dropped.close();
-		dropped.destroy();
+		retained.destroy();
 		expect(filesWithExt(blobDir, '.blob')).toHaveLength(0);
 	});
 });
