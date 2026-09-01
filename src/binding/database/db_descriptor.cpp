@@ -1402,8 +1402,19 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		if (canonicalError) {
 			canonicalPrimary = std::filesystem::absolute(path).lexically_normal();
 		}
-		const std::string secondaryStr = canonicalSecondary.generic_string();
-		const std::string primaryStr = canonicalPrimary.generic_string();
+		std::string secondaryStr = canonicalSecondary.generic_string();
+		std::string primaryStr = canonicalPrimary.generic_string();
+#if defined(_WIN32) || defined(__APPLE__)
+		// The default filesystems are case-insensitive, so a differently-cased
+		// spelling of the primary is the same directory.
+		auto asciiLower = [](std::string& value) {
+			for (char& c : value) {
+				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+			}
+		};
+		asciiLower(secondaryStr);
+		asciiLower(primaryStr);
+#endif
 		if (secondaryStr == primaryStr ||
 			(secondaryStr.size() > primaryStr.size() &&
 				secondaryStr.compare(0, primaryStr.size(), primaryStr) == 0 &&
@@ -1541,7 +1552,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
-	// The descriptor now owns the workspace lock; finishClose() releases it.
 	descriptor->secondaryLockToken = secondaryLock.token;
 	secondaryLock.token = 0;
 

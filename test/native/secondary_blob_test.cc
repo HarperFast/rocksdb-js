@@ -51,57 +51,50 @@ TEST(SecondarySpike, BlobEnabledDatabase) {
 	ASSERT_TRUE(primary->Put({}, "large", large).ok());
 	ASSERT_TRUE(primary->Flush({}).ok());
 
-	// 1. Does OpenAsSecondary succeed against a blob-enabled DB?
 	rocksdb::Options secondaryOptions = blobOptions();
 	secondaryOptions.create_if_missing = false;
 	secondaryOptions.max_open_files = -1;
 	std::unique_ptr<rocksdb::DB> secondary;
 	s = rocksdb::DB::OpenAsSecondary(secondaryOptions, primaryPath, secondaryPath, &secondary);
-	std::printf("OpenAsSecondary: %s\n", s.ToString().c_str());
 	ASSERT_TRUE(s.ok()) << s.ToString();
 
-	// 2. Can the secondary read a blob-resident (>= min_blob_size) value?
+	// Blob-resident (>= min_blob_size) values must read through a secondary.
 	std::string value;
 	s = secondary->Get({}, "small", &value);
-	std::printf("secondary get small: %s\n", s.ToString().c_str());
 	EXPECT_TRUE(s.ok() && value == "small-v1") << s.ToString();
 	s = secondary->Get({}, "large", &value);
-	std::printf("secondary get large(blob): %s (len=%zu)\n", s.ToString().c_str(), value.size());
 	EXPECT_TRUE(s.ok() && value == large) << s.ToString();
 
-	// 3. Catch-up visibility: primary writes are invisible until
+	// Catch-up visibility: primary writes are invisible until
 	// TryCatchUpWithPrimary, visible after.
 	std::string large2(20 * 1024, 'y');
 	ASSERT_TRUE(primary->Put({}, "large2", large2).ok());
 	ASSERT_TRUE(primary->Flush({}).ok());
 	s = secondary->Get({}, "large2", &value);
-	std::printf("secondary get large2 before catch-up: %s\n", s.ToString().c_str());
-	EXPECT_TRUE(s.IsNotFound());
+	EXPECT_TRUE(s.IsNotFound()) << s.ToString();
 	s = secondary->TryCatchUpWithPrimary();
-	std::printf("TryCatchUpWithPrimary: %s\n", s.ToString().c_str());
 	EXPECT_TRUE(s.ok()) << s.ToString();
 	s = secondary->Get({}, "large2", &value);
-	std::printf("secondary get large2 after catch-up: %s (len=%zu)\n", s.ToString().c_str(), value.size());
 	EXPECT_TRUE(s.ok() && value == large2) << s.ToString();
 
-	// 4. Blob-GC hazard: overwrite the blob value, force compaction + blob GC
-	// on the primary (rewrites blob files and deletes the originals), and see
-	// whether the un-caught-up secondary can still read the OLD blob.
+	// The blob-GC hazard: overwrite the blob value and force compaction + blob
+	// GC on the primary (rewrites blob files and deletes the originals). The
+	// un-caught-up secondary must still serve the OLD blob — its version holds
+	// the deleted file open — and see the new one after catch-up.
 	std::string large3(16 * 1024, 'z');
 	ASSERT_TRUE(primary->Put({}, "large", large3).ok());
 	ASSERT_TRUE(primary->Flush({}).ok());
 	rocksdb::CompactRangeOptions compactOptions;
 	compactOptions.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
-	s = primary->CompactRange(compactOptions, nullptr, nullptr);
-	std::printf("primary CompactRange (blob GC): %s\n", s.ToString().c_str());
+	ASSERT_TRUE(primary->CompactRange(compactOptions, nullptr, nullptr).ok());
 
 	s = secondary->Get({}, "large", &value);
-	std::printf("secondary get old blob after primary GC: %s (len=%zu)\n", s.ToString().c_str(), value.size());
+	EXPECT_TRUE(s.ok() && value == large) << s.ToString();
 
 	s = secondary->TryCatchUpWithPrimary();
-	std::printf("TryCatchUpWithPrimary after GC: %s\n", s.ToString().c_str());
+	EXPECT_TRUE(s.ok()) << s.ToString();
 	s = secondary->Get({}, "large", &value);
-	std::printf("secondary get blob after catch-up: %s (matches new=%d)\n", s.ToString().c_str(), value == large3);
+	EXPECT_TRUE(s.ok() && value == large3) << s.ToString();
 
 	secondary.reset();
 	primary.reset();
@@ -119,7 +112,6 @@ static size_t countDeletedFdsUnder(const std::string& dir) {
 		if (ec) continue;
 		const std::string t = target.string();
 		if (t.rfind(dir, 0) == 0 && t.find("(deleted)") != std::string::npos) {
-			std::printf("deleted-but-held fd: %s\n", t.c_str());
 			count++;
 		}
 	}
@@ -167,18 +159,18 @@ TEST(SecondarySpike, CatchUpInstalledBlobSurvivesPrimaryGC) {
 	ASSERT_TRUE(primary->CompactRange(compactOptions, nullptr, nullptr).ok());
 
 #ifdef __linux__
-	std::printf("deleted-but-held fds under primary: %zu\n", countDeletedFdsUnder(primaryPath));
+	// Direct evidence of the mechanism: the secondary holds fds on files the
+	// primary already deleted (SSTs, the WAL, and — decisive for BlobDB — the
+	// GC'd blob file).
+	EXPECT_GT(countDeletedFdsUnder(primaryPath), 0u);
 #endif
 
 	std::string value;
 	s = secondary->Get({}, "coldblob", &value);
-	std::printf("secondary cold read of catch-up blob after GC: %s (len=%zu)\n", s.ToString().c_str(), value.size());
 	EXPECT_TRUE(s.ok() && value == large) << s.ToString();
 
-	s = secondary->TryCatchUpWithPrimary();
-	std::printf("TryCatchUpWithPrimary: %s\n", s.ToString().c_str());
+	ASSERT_TRUE(secondary->TryCatchUpWithPrimary().ok());
 	s = secondary->Get({}, "coldblob", &value);
-	std::printf("secondary read after catch-up: %s (new=%d)\n", s.ToString().c_str(), value == replacement);
 	EXPECT_TRUE(s.ok() && value == replacement) << s.ToString();
 
 	secondary.reset();
@@ -225,23 +217,13 @@ TEST(SecondarySpike, NeverReadBlobSurvivesPrimaryGC) {
 	compactOptions.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
 	ASSERT_TRUE(primary->CompactRange(compactOptions, nullptr, nullptr).ok());
 
-	size_t blobCount = 0;
-	for (auto& entry : std::filesystem::directory_iterator(primaryPath)) {
-		if (entry.path().extension() == ".blob") blobCount++;
-		std::printf("primary file: %s\n", entry.path().filename().string().c_str());
-	}
-	std::printf("blob files in primary after GC: %zu\n", blobCount);
-
 	// First-ever read of the old blob on the un-caught-up secondary.
 	std::string value;
 	s = secondary->Get({}, "coldblob", &value);
-	std::printf("secondary cold read of GC'd blob: %s (len=%zu)\n", s.ToString().c_str(), value.size());
 	EXPECT_TRUE(s.ok() && value == large) << s.ToString();
 
-	s = secondary->TryCatchUpWithPrimary();
-	std::printf("TryCatchUpWithPrimary: %s\n", s.ToString().c_str());
+	ASSERT_TRUE(secondary->TryCatchUpWithPrimary().ok());
 	s = secondary->Get({}, "coldblob", &value);
-	std::printf("secondary read after catch-up: %s (new=%d)\n", s.ToString().c_str(), value == replacement);
 	EXPECT_TRUE(s.ok() && value == replacement) << s.ToString();
 
 	secondary.reset();
@@ -277,7 +259,6 @@ TEST(SecondarySpike, SameWorkspaceSecondPairInstance) {
 
 	std::unique_ptr<rocksdb::DB> second;
 	rocksdb::Status s = rocksdb::DB::OpenAsSecondary(secondaryOptions, primaryPath, secondaryPath, &second);
-	std::printf("second OpenAsSecondary on same workspace: %s\n", s.ToString().c_str());
 	EXPECT_TRUE(s.ok()) << s.ToString();
 	second.reset();
 

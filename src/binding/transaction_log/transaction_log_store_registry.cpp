@@ -222,7 +222,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	}
 
 	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
-	const TransactionLogStoreConfig* config = nullptr;
+	TransactionLogStoreConfig config;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
@@ -234,9 +234,11 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			return nullptr;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the lock
+		// Take a shared_ptr copy to keep the entry alive after releasing the
+		// lock, and a config copy so Register's writer-upgrade flip cannot race
+		// this read.
 		entry = it->second;
-		config = &entry->config;
+		config = entry->config;
 	}
 
 	std::lock_guard<std::mutex> storeLock(entry->storesMutex);
@@ -253,8 +255,34 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			instance.get(), name.c_str(), dbPath.c_str());
 	}
 
+	auto logDirectory = std::filesystem::path(config.transactionLogsPath) / name;
+
+	// A read-only registration must not conjure a store in the writer's tree
+	// (mkdir + writable files + a phantom entry that would later fail
+	// EnsureWritableRegistrationSafe). Load one that exists on disk — created
+	// by the primary after this handle opened — read-only; report the rest as
+	// not found.
+	if (config.readOnly) {
+		std::error_code existsError;
+		if (!std::filesystem::is_directory(logDirectory, existsError) || existsError) {
+			DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Store \"%s\" not found for read-only \"%s\"\n",
+				instance.get(), name.c_str(), dbPath.c_str());
+			return nullptr;
+		}
+		auto loaded = TransactionLogStore::load(
+			logDirectory,
+			config.transactionLogMaxSize,
+			config.transactionLogRetentionMs,
+			config.transactionLogMaxAgeThreshold,
+			true
+		);
+		if (loaded) {
+			entry->stores.insert_or_assign(loaded->name, loaded);
+		}
+		return loaded;
+	}
+
 	// Create new store
-	auto logDirectory = std::filesystem::path(config->transactionLogsPath) / name;
 	DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Creating new store \"%s\" for \"%s\"\n",
 		instance.get(), name.c_str(), dbPath.c_str());
 
@@ -264,9 +292,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	auto txnLogStore = std::make_shared<TransactionLogStore>(
 		name,
 		logDirectory,
-		config->transactionLogMaxSize,
-		config->transactionLogRetentionMs,
-		config->transactionLogMaxAgeThreshold
+		config.transactionLogMaxSize,
+		config.transactionLogRetentionMs,
+		config.transactionLogMaxAgeThreshold
 	);
 
 	// Use insert_or_assign to replace any closing store with the same name

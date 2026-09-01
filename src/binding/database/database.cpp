@@ -538,8 +538,12 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncCatchUpState*>(data);
-			// check if database is still open before proceeding
-			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+			// Only the atomic isCancelled() may be inspected here — opened()
+			// reads the handle's non-atomic descriptor while a concurrent
+			// close() resets it on the JS thread (AGENTS invariant 9; same
+			// discipline as CreateCheckpoint). state->descriptor is this
+			// worker's own strong pin and stays valid regardless.
+			if (!state->handle || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during catch-up operation");
 			} else {
 				state->status = state->descriptor->catchUpWithPrimary();

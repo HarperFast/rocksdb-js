@@ -670,13 +670,18 @@ export class Store {
 		this.parallelismThreads = options?.parallelismThreads;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
-		if (options?.secondaryPath !== undefined && options?.readOnly === false) {
+		// null (the natural absent value from JSON/env-derived config) must mean
+		// absent exactly like the native layer treats napi_null — a null that
+		// implied readOnly would silently hand the caller the point-in-time open
+		// this option exists to replace.
+		const secondaryPath = options?.secondaryPath ?? undefined;
+		if (secondaryPath !== undefined && options?.readOnly === false) {
 			throw new Error(
 				'A secondary open is read-only; secondaryPath cannot be combined with readOnly: false'
 			);
 		}
-		this.readOnly = options?.readOnly ?? options?.secondaryPath !== undefined;
-		this.secondaryPath = options?.secondaryPath;
+		this.readOnly = options?.readOnly ?? secondaryPath !== undefined;
+		this.secondaryPath = secondaryPath;
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
