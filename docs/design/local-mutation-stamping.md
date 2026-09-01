@@ -44,7 +44,8 @@ consumer audit recorded as an activation gate (§3.2); the measurement harness s
 (i) refined — on an enabled store the local stamp IS the batch key (first word of entry and
 record alike); the clock that diverges is the record *version*, owned by the harper layer.
 Consequently there is **no log-format change at all**: rev 3/4's flagged-entry extension,
-payload CRC, v2 header gate, and forced activation rotation are withdrawn; enabled stores gain
+payload CRC, and v2 header gate are withdrawn (rotation returns in rev 6 — at the key-domain
+flip, for ordering hygiene rather than format gating); enabled stores gain
 strict per-log key monotonicity (the claim moves under the store append lock for logged
 transactions); seek-by-local-stamp becomes the existing binary-index seek; and the issue's
 "per-node log key domain stays origin clock" acceptance line is amended per the ruling —
@@ -201,7 +202,8 @@ too); the harper-side durable data-format floor (harper#2412 stage 2) remains th
 reader/writer pairing authority. Known limitation, owned by #2412's peer/floor gates: a
 **pre-stage-1 binary** knows neither the option nor the marker and would write unstamped first
 words into a marked CF — package-floor enforcement before enable is #2412's deliverable
-(rocksdb-js's v2 log segments do fail such binaries closed on the log side, §3.4).
+(with no log-format byte change there is no log-side fail-closed gate either — the marker
+protects only binaries that know it, which is precisely why #2412's floor must land first).
 
 ### 3.2 Stamp assignment: keep-if-greater on a bounded, durable receiver clock
 
@@ -227,9 +229,13 @@ claimLocalStamp(watermark, reserve, candidate, now) -> double
 ```
 
 - **Keep path** (the overwhelmingly common case: `candidate` = the txn's `startTimestamp`,
-  taken from the same monotonic clock at txn creation, and nothing committed past it): one
-  vDSO clock read, two atomic loads, one CAS. **Zero allocations, no mutex, no blocking**
-  (the reserve is extended asynchronously ahead of need, §3.7).
+  taken from the same monotonic clock at txn creation, and nothing committed past it): two
+  atomic loads and one CAS — **and no clock read at all for internally generated candidates**:
+  the handle records candidate *provenance*, and a candidate that came from
+  `getMonotonicTimestamp()` (txn construction, direct puts) is already receiver time, so the
+  skew check — the only consumer of `now` on this path — is skipped; only a caller-supplied
+  (`setTimestamp`) candidate pays the vDSO read to validate skew. **Zero allocations, no
+  mutex, no blocking** (the reserve is extended asynchronously ahead of need, §3.7).
 - **Re-stamp path** (contention; a caller-set timestamp at/below the watermark — every
   replicated apply whose origin time is behind local commits; a candidate beyond the skew
   bound): `max(now, nextafter(wm))`. This value is **receiver-derived and accepted without a
@@ -290,14 +296,19 @@ pass-through on every async lane — two-lane, single-lane, legacy) and at the e
 in `CommitSync`; only uniqueness matters there. In both shapes the candidate is the snapshot
 taken at the commit entry point on the JS thread, and everything precedes `txn->Commit` on the
 thread that owns the txn at that moment. **No-unwind is enforced at
-the lane boundary, not inside one operation**: the entire dispatched stage is wrapped in a
-`catch (...)` whose failure path is non-allocating — it sets a pre-existing failure marker on
-the state (an enum + a static status, never a message-constructing `Status` that could itself
-throw under allocation failure) — so reserve-extension I/O errors, allocation failure, and
-batch-rebuild failure all reject the commit instead of unwinding into `CommitWorker::run`
-(which has no catch and would `std::terminate`); the sync and direct-put paths translate the
-same failures to thrown JS errors. Fault tests inject a throw *inside* the wrapper (not merely
-an error return from rebuild) and prove process survival in all three async modes.
+the lane boundary, not inside one operation — and the boundary includes the queue handoffs**:
+the no-throw trampoline wraps lambda construction, `enqueue` (including the two-lane
+log→commit forwarding step and the stopped-worker inline-run fallback), stage execution, and
+completion dispatch, with a `catch (...)` whose failure path is non-allocating — it sets a
+pre-existing failure marker on the state (an enum + a static status, never a
+message-constructing `Status` that could itself throw under allocation failure) — so
+reserve-extension I/O errors, allocation failure, queue-growth or thread-creation failure
+during forwarding, and batch-rebuild failure all reject (or safely abandon, with the
+transaction intact per #668 semantics) instead of unwinding into `CommitWorker::run` (which
+has no catch and would `std::terminate`); the sync and direct-put paths translate the same
+failures to thrown JS errors. Fault tests inject failures at each boundary — before
+scheduling, inside execution, during forwarding, during completion — in all three async modes
+plus direct writes, and prove process survival.
 
 Non-transactional `Database::PutSync` claims with `candidate = getMonotonicTimestamp()`
 (always the keep path in practice) and stamps the value buffer before `db->Put`.
@@ -392,10 +403,17 @@ activation is only the *value domain* of the key for divergent commits (a replic
 batch is keyed by the receiver's stamp instead of the origin's timestamp). A pre-stage-1
 binary parses enabled logs perfectly; the *semantic* migration of cursors is exactly what
 harper#2412 stages 0b/2 gate atomically with the record decoder (and the wire/peer floor).
-Consequently rev 3's log-level artifacts are withdrawn: the v2 downgrade gate (nothing to
-gate — bytes are unchanged), the flagged-entry CRC (no new bytes to protect; the documented
-Windows torn-payload gap remains exactly today's, out of scope), and the forced
-activation rotation (no per-file format bit exists to make sticky).
+Consequently rev 3's log-format artifacts are withdrawn: the v2 downgrade gate (nothing to
+gate — bytes are unchanged) and the flagged-entry CRC (no new bytes to protect; the documented
+Windows torn-payload gap remains exactly today's, out of scope). Rotation survives in a
+different role: not a format boundary but an ordering boundary at the key-domain flip (§3.1),
+with a **durable lazy-log protocol** for stores not instantiated during activation — the
+key-domain marker carries a monotonic domain generation, each log store persists the
+generation it last rotated for, and a store whose recorded generation predates the marker's
+rotates its active segment before its first stamp-keyed append (idempotent across a crash
+between rotate and append: the check re-runs on next load, and open fails before writes if
+the rotation itself cannot complete). Post-flip segments are therefore purely
+receiver-domain on every store, whether or not it was open at activation.
 
 **Seek-by-local-stamp comes free.** Because the stamp is the key, the existing per-file
 running-maxima binary index *is* the local-stamp index: measured 60µs cold / 6µs warm to seek,
@@ -530,13 +548,18 @@ created lazily on first enable:
   ceiling in the DB snapshot. The transaction-log snapshot section therefore carries a **floor
   capture** (the live ceiling, read after the log capture completes — ceiling monotonicity
   makes "after" sufficient), written as a small validated record in the log-snapshot
-  directory. **Restore's reconciliation protocol is crash-safe by construction**: restore
-  copies the artifact with the logs into the restored transaction-log directory; the artifact
-  is idempotent and persists until consumed, and **open reconciles it before any claim** —
-  folding `max(ceiling row, artifact)` into the metadata CF in the same synchronous open-time
-  batch as the clean-close invalidation above, then leaving the artifact in place (a re-run
-  after a crashed restore or a crashed first open simply re-applies the same maximum). Crash
-  tests cover restore before/after log publication, before/after reconciliation, and re-run.
+  directory. **Restore's reconciliation protocol is crash-safe by construction, and its
+  ordering is load-bearing**: restore durably publishes the selected backup's pending-floor
+  artifact **into the destination before the destructive RocksDB restore begins** (today's
+  restore purges and installs the DB first, then copies logs — an artifact copied "with the
+  logs" would leave a crash window where an older restored ceiling is live while the
+  higher-stamped logs arrive later). The artifact survives the restore-mode purge, is
+  idempotent, persists until superseded, and **open reconciles it before any claim** — folding
+  `max(ceiling row, artifact)` into the metadata CF in the same synchronous open-time batch as
+  the clean-close invalidation above, then leaving the artifact in place (a re-run after a
+  crashed restore or a crashed first open re-applies the same maximum). Crash tests cover:
+  after pending-floor publication, after the DB restore, during destination-log replacement,
+  after reconciliation, and full re-run.
   Checkpoints need nothing: a checkpoint is a single RocksDB point-in-time snapshot, so data
   and ceiling are already mutually consistent. Concurrent-backup tests crash at both capture
   boundaries (plus the stream variant) and assert the restored store never re-mints a stamp
@@ -548,7 +571,12 @@ created lazily on first enable:
   a recovered ceiling far ahead of wall clock (beyond `MAX_KEPT_SKEW_MS` + one reserve window)
   additionally emits a loud global warning event naming the skew and the recovery option, so
   an operator restoring a clock-poisoned artifact is told rather than left with silently
-  future-dated local time.
+  future-dated local time. Reserve arithmetic is **checked**: extension and `nextafter` never
+  produce a value at or beyond the 8.64e15 domain bound, and a database whose recovered
+  ceiling leaves no claimable headroom below the bound **fails open with an explicit
+  clock-exhaustion error** naming the operator recovery path (rewrite the ceiling after
+  fixing the source) — a warning alone is not a control, and unchecked extension from a
+  near-bound ceiling would otherwise persist an invalid value or wedge every write.
 - The metadata CF is excluded from user-visible CF listings, is not user-openable by name, and
   `LoadLatestOptions`-based per-CF option preservation treats it like any other CF (its
   options are fixed internally: tiny write buffer, no compression concerns). Read-only opens
@@ -635,8 +663,8 @@ stress-gated:
 | B6 | Contended: 4 worker envs committing concurrently (mixed keep/re-stamp) across all three commit modes (legacy/single-lane/two-lane) **plus concurrent direct `PutSync` writers** (the unserialized path — real cache-line contention on watermark/reserve) | p95 and p99 ratios ≤ **1.25**; uniqueness asserted across the full interleaving |
 | B7 | Lock-freedom | `static_assert(std::atomic<uint64_t>::is_always_lock_free)` compiled on all platforms; claim function exercised from N threads in GTest for progress + uniqueness |
 | B8 | Enabled, logged single-entry commit (claim under the store append lock) | p50 ratio enabled/disabled ≤ **1.05**; strict per-log key monotonicity asserted across the B6 interleavings; entry bytes asserted format-identical to dormant output for the same inputs |
-| B9 | Dormant numeric backstop (same process, interleaved dormant-vs-baseline `git` build not required — dormant run of this build vs the structural-counter run) | p50 ratio ≤ **1.03**, p99 ratio ≤ **1.10** over ≥ 5 interleaved repetitions (generous margins — the structural B0 counters remain the primary dormant proof; this bounds branch/layout effects counters cannot see) |
-| B10 | Overlapping transactions: long (10k-write) transactions begun before concurrent short commits, plus a replicated-apply-shaped workload | re-stamp *rate* reported; p95 commit ratio ≤ **1.5×** the non-overlapping B4 figure; forced reserve rollover (tiny `RESERVE_WINDOW_MS`) under this load shows no commit queued behind a metadata fsync holding a log `writeMutex` (asserted via lock-hold instrumentation in the test build) |
+| B9 | Dormant numeric backstop against a **genuine pre-change baseline**: the base-commit build of the binding, run interleaved with this build in one session on pinned workload/hardware | p50 ratio ≤ **1.03**, p99 ratio ≤ **1.10**, reported in the PR with both absolute numbers (B0's structural counters remain the asserted dormant proof; this bounds the branch/layout effects counters cannot see — a same-build comparison would share any regression and always read 1.00) |
+| B10 | Overlapping transactions: long (10k-write) transactions begun before concurrent short commits, plus a replicated-apply-shaped workload | re-stamp *rate* reported; p95 of the overlapping-workload commit ≤ **1.5×** the p95 of the same workload with stamping disabled (like-for-like baseline); forced reserve rollover (tiny `RESERVE_WINDOW_MS`) under this load shows no commit queued behind a metadata fsync holding a log `writeMutex` (asserted via lock-hold instrumentation in the test build) |
 
 ## 7. Dormancy / adoption contract
 
