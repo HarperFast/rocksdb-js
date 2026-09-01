@@ -20,6 +20,7 @@
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/utilities/options_util.h"
 #include "options/db_options.h"
+#include "database/local_stamp_state.h"
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
@@ -439,6 +440,15 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * a weak reference to it without referencing the descriptor (see
 	 * `ParkTimeoutRegistry`). Drained and joined by `finishClose()`.
 	 */
+	/**
+	 * Commit-time local-stamp state (watermark, durable reserve, stamped-CF
+	 * markers). Null on a database that never enabled stamping — every stamping
+	 * code path is behind that null check (the dormant contract). Owned through
+	 * a shared_ptr so log stores and the reserve extender never touch the
+	 * descriptor's use_count (HarperFast/rocksdb-js#672).
+	 */
+	std::shared_ptr<LocalStampState> stampState;
+
 	const std::shared_ptr<ParkTimeoutRegistry> parkTimeouts =
 		std::make_shared<ParkTimeoutRegistry>();
 
@@ -758,6 +768,14 @@ struct ColumnFamilyDescriptor final {
 	 * The column family handle.
 	 */
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
+
+	/**
+	 * Whether commit-time local mutation stamping owns the first 8 bytes of
+	 * every value written to this column family. Set once at open/creation from
+	 * the durable marker (docs/design/local-mutation-stamping.md §3.1) and
+	 * immutable afterwards, so write paths read it lock-free.
+	 */
+	bool commitStamping = false;
 
 	/**
 	 * Map of user shared buffers by key.

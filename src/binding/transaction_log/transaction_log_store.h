@@ -19,6 +19,8 @@
 
 namespace rocksdb_js {
 
+struct LocalStampState;
+
 // forward declarations
 struct TransactionLogEntryBatch;
 struct TransactionLogFile;
@@ -372,6 +374,21 @@ struct TransactionLogStore final {
 	std::atomic<uint64_t> writeFailures = 0;
 	std::atomic<double> lastPurgeMs = 0;
 
+	/**
+	 * Commit-stamping state of the owning database (null = dormant). When
+	 * activated, writeBatch keys every batch with a claimed receiver-local
+	 * stamp instead of the caller's snapshot, rotating the active segment once
+	 * per domain generation so post-activation segments are purely
+	 * receiver-domain (docs/design/local-mutation-stamping.md §3.4).
+	 */
+	std::shared_ptr<LocalStampState> stampState;
+
+	/**
+	 * The key-domain generation this store has already rotated for (consulted
+	 * and updated only under writeMutex).
+	 */
+	uint64_t rotatedForGeneration = 0;
+
 	TransactionLogStore(
 		const std::string& name,
 		const std::filesystem::path& path,
@@ -442,6 +459,13 @@ struct TransactionLogStore final {
 	 * write path (under writeMutex).
 	 */
 	void rotateToNextSequence(const std::shared_ptr<TransactionLogFile>& oldFile);
+
+	/**
+	 * Rotates the active segment once per log key-domain generation so a
+	 * pre-activation file never receives receiver-domain keys. Caller holds
+	 * writeMutex.
+	 */
+	void rotateForDomainGenerationLocked(LocalStampState& stamp);
 
 	/**
 	* Get the log file size.

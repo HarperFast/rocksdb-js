@@ -56,9 +56,18 @@ struct TransactionLogEntry final {
  */
 struct TransactionLogEntryBatch final {
 	/**
-	 * The timestamp for this batch.
+	 * The timestamp for this batch: the transaction's clock snapshot at
+	 * addLogEntry time. On a stamping-activated store, writeBatch replaces it
+	 * with the claimed receiver-local stamp (the batch key).
 	 */
 	double timestamp;
+
+	/**
+	 * Whether `timestamp` came from a caller-supplied setTimestamp() rather
+	 * than the receiver's monotonic clock — claim provenance for the skew
+	 * check (core/local_stamp.h).
+	 */
+	bool timestampFromCaller = false;
 
 	/**
 	 * The vector of entries to write.

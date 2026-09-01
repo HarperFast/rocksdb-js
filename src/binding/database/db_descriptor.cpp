@@ -1,4 +1,5 @@
 #include "core/background_error.h"
+#include "core/encoding.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
@@ -450,6 +451,14 @@ void DBDescriptor::finishClose() {
 		// from another env) from re-creating a tsfn that would never be
 		// released; such commits fall back to the legacy libuv path.
 		this->commitCompletionsClosed = true;
+	}
+
+	// Persist the exact watermark as the clean-close floor (the commit lanes are
+	// drained, so no further claims can happen), then drain the reserve extender
+	// before RocksDB teardown below.
+	if (this->stampState) {
+		this->stampState->persistCleanCloseFloor();
+		this->stampState->shutdown();
 	}
 
 	// We want to ensure that all in-memory data is written to disk. Keeps the waiting default on
@@ -1214,6 +1223,181 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 /**
  * Creates a new DBDescriptor.
  */
+
+/**
+ * Commit-stamping setup at descriptor construction (the only site where first
+ * activation is permitted — a reused live descriptor rejects enabling in
+ * DBRegistry::OpenDB). Returns null for a database with no stamping state
+ * (the dormant contract: no metadata CF, nothing enabled, no new work).
+ * See docs/design/local-mutation-stamping.md §3.1/§3.7.
+ */
+static std::shared_ptr<LocalStampState> setupLocalStamping(
+	const std::shared_ptr<rocksdb::DB>& db,
+	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>& columns,
+	const DBOptions& options,
+	const std::string& targetName,
+	const std::string& path
+) {
+	const bool wantsEnable = options.commitStamping.has_value() && *options.commitStamping;
+	const bool explicitOff = options.commitStamping.has_value() && !*options.commitStamping;
+
+	auto metaIt = columns.find(STAMP_META_CF_NAME);
+	const bool metaExists = metaIt != columns.end();
+	if (!metaExists && !wantsEnable) {
+		return nullptr;
+	}
+	if (wantsEnable && options.readOnly) {
+		throw rocksdb_js::DBException(
+			"Cannot enable commitStamping on a read-only open of \"" + path + "\"");
+	}
+
+	rocksdb::WriteOptions syncWrite;
+	syncWrite.sync = true;
+
+	std::shared_ptr<rocksdb::ColumnFamilyHandle> metaCf;
+	StampMetaContents contents;
+	if (metaExists) {
+		metaCf = metaIt->second->column;
+		contents = loadStampMeta(db.get(), metaCf.get());
+		if (!contents.schemaValid) {
+			if (contents.empty && !options.readOnly) {
+				// Interrupted initialization (CF created, schema row not yet
+				// durable): complete it rather than misclassify as a collision.
+				rocksdb::Status status = db->Put(
+					syncWrite, metaCf.get(),
+					rocksdb::Slice(STAMP_META_KEY_SCHEMA),
+					rocksdb::Slice(STAMP_META_SCHEMA_VALUE));
+				if (!status.ok()) {
+					throw rocksdb_js::DBException(
+						"Failed to initialize commit-stamping metadata for \"" + path +
+						"\": " + status.ToString());
+				}
+				contents.schemaPresent = true;
+				contents.schemaValid = true;
+			} else {
+				throw rocksdb_js::DBException(
+					"Column family \"" + std::string(STAMP_META_CF_NAME) + "\" in \"" + path +
+					"\" does not carry rocksdb-js stamp metadata (schema row missing or "
+					"invalid); it must be migrated or removed before commit stamping can "
+					"be used");
+			}
+		}
+	} else {
+		// First activation on a database with no metadata CF: create it and
+		// write the schema row. A crash between the two leaves the empty-CF
+		// state the branch above completes.
+		rocksdb::ColumnFamilyOptions metaOptions;
+		metaOptions.write_buffer_size = 64 * 1024;
+		metaCf = rocksdb_js::createRocksDBColumnFamily(db, STAMP_META_CF_NAME, metaOptions);
+		columns[STAMP_META_CF_NAME] = std::make_shared<ColumnFamilyDescriptor>(metaCf);
+		rocksdb::Status status = db->Put(
+			syncWrite, metaCf.get(),
+			rocksdb::Slice(STAMP_META_KEY_SCHEMA),
+			rocksdb::Slice(STAMP_META_SCHEMA_VALUE));
+		if (!status.ok()) {
+			throw rocksdb_js::DBException(
+				"Failed to initialize commit-stamping metadata for \"" + path +
+				"\": " + status.ToString());
+		}
+	}
+
+	auto targetIt = columns.find(targetName);
+	if (targetIt == columns.end()) {
+		throw rocksdb_js::DBException(
+			"Internal error: target column family \"" + targetName + "\" missing during "
+			"commit-stamping setup");
+	}
+	const uint32_t targetId = targetIt->second->column->GetID();
+	const bool targetMarked = contents.stampedCfIds.find(targetId) != contents.stampedCfIds.end();
+
+	if (explicitOff && targetMarked) {
+		throw rocksdb_js::DBException(
+			"Column family \"" + targetName + "\" in \"" + path + "\" is durably marked "
+			"for commit stamping; opening it with commitStamping: false would bypass the "
+			"stamped-value contract. Open without the option to inherit, or migrate the "
+			"data before unmarking");
+	}
+
+	if (wantsEnable && !targetMarked) {
+		// Enable the target CF; the database-wide log key domain flips with the
+		// first enabled CF, in the same durable batch as the marker.
+		rocksdb::WriteBatch batch;
+		const std::string markerKey =
+			std::string(STAMP_META_KEY_CF_PREFIX) + std::to_string(targetId);
+		batch.Put(metaCf.get(), rocksdb::Slice(markerKey), rocksdb::Slice(targetName));
+		if (contents.logDomainGeneration == 0) {
+			char generation[8];
+			writeUint64BE(generation, 1);
+			batch.Put(metaCf.get(), rocksdb::Slice(STAMP_META_KEY_LOG_DOMAIN),
+				rocksdb::Slice(generation, sizeof generation));
+			contents.logDomainGeneration = 1;
+		}
+		rocksdb::Status status = db->Write(syncWrite, &batch);
+		if (!status.ok()) {
+			throw rocksdb_js::DBException(
+				"Failed to persist the commit-stamping marker for column family \"" +
+				targetName + "\": " + status.ToString());
+		}
+		contents.stampedCfIds.emplace(targetId, targetName);
+	}
+
+	if (contents.stampedCfIds.empty() && contents.logDomainGeneration == 0) {
+		// A valid metadata CF with nothing enabled (e.g. crash after schema row,
+		// before the first marker): still dormant.
+		return nullptr;
+	}
+
+	auto state = std::make_shared<LocalStampState>();
+	state->db = db;
+	state->metaCf = metaCf;
+	state->stampedCfIds = contents.stampedCfIds;
+	state->logDomainGeneration.store(contents.logDomainGeneration, std::memory_order_release);
+	state->logGenerations = contents.logGenerations;
+
+	// Seed: the clean-close floor when the last shutdown was orderly (no skew),
+	// else the reserve ceiling (a crash consumes at most one reserve window of
+	// logical skew).
+	const double seed = contents.cleanFloor.value_or(contents.reserve);
+	state->watermark.store(localStampToBits(seed), std::memory_order_release);
+	state->reserve.store(localStampToBits(contents.reserve), std::memory_order_release);
+
+	if (!options.readOnly) {
+		// Open-time reconciliation, one synchronous batch: invalidate the
+		// clean-close floor (deleting it lazily at first claim would let
+		// close(F) -> reopen -> claim+log S -> crash resurrect F and re-mint S)
+		// and extend the reserve so the first commit never stalls.
+		const double now = getMonotonicTimestamp();
+		const double base = seed > now ? seed : now;
+		const double target = localStampReserveTarget(base, now, STAMP_RESERVE_WINDOW_MS);
+		if (target < base) {
+			throw rocksdb_js::DBException(
+				"Local mutation stamp domain exhausted for \"" + path + "\"; repair the "
+				"database's clock metadata before opening it for writes");
+		}
+		char ceiling[8];
+		writeDoubleBE(ceiling, target);
+		rocksdb::WriteBatch batch;
+		batch.Put(metaCf.get(), rocksdb::Slice(STAMP_META_KEY_RESERVE),
+			rocksdb::Slice(ceiling, sizeof ceiling));
+		batch.Delete(metaCf.get(), rocksdb::Slice(STAMP_META_KEY_CLEAN_FLOOR));
+		rocksdb::Status status = db->Write(syncWrite, &batch);
+		if (!status.ok()) {
+			throw rocksdb_js::DBException(
+				"Failed to persist the local-stamp reserve at open for \"" + path +
+				"\": " + status.ToString());
+		}
+		state->reserve.store(localStampToBits(target), std::memory_order_release);
+	}
+
+	// Stamp the per-CF flags (hot write paths read this bool, never the map).
+	for (auto& [columnName, columnDescriptor] : columns) {
+		columnDescriptor->commitStamping =
+			state->isStampedCf(columnDescriptor->column->GetID());
+	}
+
+	return state;
+}
+
 std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const DBOptions& options) {
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
@@ -1395,8 +1579,13 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		columns[options.name] = columnDescriptor;
 	}
 
+	// Commit-stamping setup must complete (durable markers, floor reconciliation)
+	// before the descriptor or any log store becomes reachable.
+	auto stampState = setupLocalStamping(db, columns, options, name, path);
+
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	descriptor->stampState = stampState;
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is
@@ -1405,6 +1594,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	// Register with the transaction log store registry
 	TransactionLogStoreConfig logConfig;
+	logConfig.stampState = stampState;
 	logConfig.transactionLogsPath = options.transactionLogsPath;
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;

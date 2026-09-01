@@ -164,6 +164,7 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 				config->transactionLogMaxAgeThreshold
 			);
 			if (store) {
+				store->stampState = entry->config.stampState;
 				DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores Found store \"%s\" for \"%s\"\n",
 					instance.get(), store->name.c_str(), dbPath.c_str());
 				entry->stores.emplace(store->name, store);
@@ -231,6 +232,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		config->transactionLogRetentionMs,
 		config->transactionLogMaxAgeThreshold
 	);
+
+	txnLogStore->stampState = config->stampState;
 
 	// Use insert_or_assign to replace any closing store with the same name
 	entry->stores.insert_or_assign(txnLogStore->name, txnLogStore);

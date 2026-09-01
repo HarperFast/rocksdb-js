@@ -90,6 +90,33 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	double startTimestamp;
 
 	/**
+	 * Whether startTimestamp was supplied via setTimestamp() rather than the
+	 * receiver's monotonic clock — claim provenance for the commit-stamping
+	 * skew check. Survives resetTransaction (a property of the caller, not of
+	 * one attempt).
+	 */
+	bool timestampSetByCaller = false;
+
+	/**
+	 * The finalized commit-time local mutation stamp. Like committedPosition it
+	 * survives resetTransaction while the durable WAL batch exists (#668
+	 * pinning: a retry must re-apply the stamp the durable batch is keyed by);
+	 * it resets with the attempt otherwise. 0 = not finalized.
+	 */
+	double localStamp = 0;
+
+	/**
+	 * Commit-stamping pre-stamp bookkeeping for the current attempt: the
+	 * candidate written into stamped-CF record first words at putSync time,
+	 * whether any stamped-CF put happened, and whether puts spanned more than
+	 * one candidate (setTimestamp between puts). The commit path patches the
+	 * write batch when the finalized stamp differs from the pre-stamp.
+	 */
+	double preStampValue = 0;
+	bool hasStampedPuts = false;
+	bool mixedPreStamp = false;
+
+	/**
 	 * Construction time. Separate from startTimestamp, which JS can overwrite via setTimestamp();
 	 * this is the clock registryStatus() ages a handle against.
 	 */
@@ -188,6 +215,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void releaseIntent();
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
+
+	void recordPreStamp(double candidate) {
+		if (!this->hasStampedPuts) {
+			this->hasStampedPuts = true;
+			this->preStampValue = candidate;
+		} else if (this->preStampValue != candidate) {
+			this->mixedPreStamp = true;
+		}
+	}
 
 	void close() override;
 

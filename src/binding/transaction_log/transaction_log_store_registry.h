@@ -14,6 +14,8 @@ namespace rocksdb_js {
 /**
  * Configuration for transaction log stores associated with a database path.
  */
+struct LocalStampState;
+
 struct TransactionLogStoreConfig final {
 	/**
 	 * The path to the transaction logs directory.
@@ -37,6 +39,13 @@ struct TransactionLogStoreConfig final {
 	 * The retention period of transaction logs in milliseconds.
 	 */
 	std::chrono::milliseconds transactionLogRetentionMs;
+
+	/**
+	 * Commit-stamping state of the owning database; null when stamping was never
+	 * enabled (dormant). Stores use it to key batches in the receiver domain
+	 * (docs/design/local-mutation-stamping.md §3.4).
+	 */
+	std::shared_ptr<LocalStampState> stampState;
 };
 
 /**

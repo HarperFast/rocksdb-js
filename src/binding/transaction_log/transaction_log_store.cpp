@@ -3,6 +3,7 @@
 #include <sstream>
 #include <vector>
 #include "transaction_log_store.h"
+#include "database/local_stamp_state.h"
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/platform.h"
@@ -836,11 +837,70 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 		this, path.string().c_str(), sequenceNumber);
 }
 
+void TransactionLogStore::rotateForDomainGenerationLocked(LocalStampState& stamp) {
+	const uint64_t generation = stamp.logDomainGeneration.load(std::memory_order_acquire);
+	if (this->rotatedForGeneration >= generation) {
+		return;
+	}
+	// The persisted per-store generation (loaded at open) short-circuits the
+	// rotation for stores that already rotated in an earlier process.
+	auto persisted = stamp.logGenerations.find(this->name);
+	if (persisted != stamp.logGenerations.end() && persisted->second >= generation) {
+		this->rotatedForGeneration = generation;
+		return;
+	}
+	// Rotate a pre-activation active segment so no file mixes key domains; a
+	// fresh or empty segment needs nothing. Crash between the rotation and the
+	// generation row landing durably only causes one spurious re-rotation.
+	auto logFile = this->getLogFile(this->currentSequenceNumber.load(std::memory_order_relaxed));
+	if (logFile && logFile->size > TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		this->rotateToNextSequence(logFile);
+	}
+	stamp.persistLogGeneration(this->name, generation);
+	this->rotatedForGeneration = generation;
+}
+
 void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
-	std::lock_guard<std::mutex> lock(this->writeMutex);
+	auto stamp = this->stampState;
+	const bool stampKeys = stamp && stamp->activated();
+	if (stampKeys) {
+		// Reserve headroom is secured BEFORE the append mutex: a durable ceiling
+		// extension (sync metadata write) must never stall every later log
+		// commit behind one holder of this lock.
+		stamp->ensureHeadroom(batch.timestamp);
+	}
+
+	std::unique_lock<std::mutex> lock(this->writeMutex);
 
 	if (this->isClosing.load(std::memory_order_relaxed)) {
 		throw rocksdb_js::DBException("Transaction log store is closed");
+	}
+
+	if (stampKeys) {
+		this->rotateForDomainGenerationLocked(*stamp);
+		// Claim under the append mutex so per-store append order equals claim
+		// order (strict per-segment key monotonicity). The claim itself never
+		// does I/O; if a concurrent claimer consumed the pre-secured headroom,
+		// extend outside the lock and retry.
+		for (;;) {
+			StampClaim claim = stamp->tryClaimNoExtend(
+				batch.timestamp, !batch.timestampFromCaller);
+			if (claim.status == StampClaimStatus::Claimed) {
+				batch.timestamp = claim.value;
+				break;
+			}
+			if (claim.status == StampClaimStatus::Exhausted) {
+				throw rocksdb_js::DBException(
+					"Local mutation stamp domain exhausted; repair the database's clock "
+					"metadata before writing");
+			}
+			lock.unlock();
+			stamp->extendReserve(claim.value);
+			lock.lock();
+			if (this->isClosing.load(std::memory_order_relaxed)) {
+				throw rocksdb_js::DBException("Transaction log store is closed");
+			}
+		}
 	}
 
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Adding batch with %zu entries to store \"%s\" (current=%u, next=%u, timestamp=%llu)\n",

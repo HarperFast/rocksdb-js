@@ -99,6 +99,14 @@ struct DBOptions final {
 	// Opt-in per-CF flag enabling Verification Table slot locking/tracking for
 	// this column family's writes (see core/verification_table.h).
 	bool verificationTable = false;
+	// Commit-time local mutation stamping (dual-clock stage 1), tri-state:
+	// unset = inherit (the live in-process value, else the durable marker in the
+	// metadata CF, else off); true = enable (first activation requires the
+	// enabling open to construct the descriptor — see DBRegistry::OpenDB);
+	// explicit false = assert-off, conflicting with a durable marker or a
+	// live-enabled column family instead of silently bypassing the stamped-CF
+	// contract. See docs/design/local-mutation-stamping.md §3.1.
+	std::optional<bool> commitStamping;
 	// Block/blob compression algorithm for this column family. `Database::Open`
 	// fills this in: the caller's explicit choice, or the LZ4 default when the
 	// build supports it (else `std::nullopt` = RocksDB's own default, Snappy when

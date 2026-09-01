@@ -7,6 +7,7 @@
 #include "database/db_settings.h"
 #include "iterator/db_iterator_handle.h"
 #include "transaction/transaction_handle.h"
+#include "core/encoding.h"
 #include "core/test_seam.h"
 #include "napi/macros.h"
 
@@ -103,6 +104,14 @@ void TransactionHandle::resetTransaction(){
 
 	this->logEntryBatch.reset();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
+	// Per-attempt stamp bookkeeping; the finalized stamp itself is pinned while
+	// the durable WAL batch exists (#668) and resets with the attempt otherwise.
+	this->hasStampedPuts = false;
+	this->mixedPreStamp = false;
+	this->preStampValue = 0;
+	if (this->committedPosition.logSequenceNumber == 0) {
+		this->localStamp = 0;
+	}
 
 	auto dbHandle = this->dbHandle;
 	rocksdb::WriteOptions writeOptions;
@@ -186,6 +195,7 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 
 	if (!this->logEntryBatch) {
 		this->logEntryBatch = std::make_unique<TransactionLogEntryBatch>(this->startTimestamp);
+		this->logEntryBatch->timestampFromCaller = this->timestampSetByCaller;
 	}
 
 	this->logEntryBatch->addEntry(std::move(entry));
@@ -669,7 +679,33 @@ rocksdb::Status TransactionHandle::putSync(
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->getColumnFamilyHandle();
-	rocksdb::Status status = this->txn->Put(column, key, value);
+	rocksdb::Status status;
+	if (dbHandle->columnDescriptor && dbHandle->columnDescriptor->commitStamping) {
+		// This CF's first word belongs to commit stamping. Stage the candidate
+		// through SliceParts: an owned stack prefix plus the caller's bytes 8..,
+		// so the caller's buffer is never mutated (shared/SAB-backed memory can
+		// never observe a transient stamp).
+		if (value.size() < 8) {
+			return rocksdb::Status::InvalidArgument(
+				"Values on a commitStamping column family must be at least 8 bytes");
+		}
+		char stampPrefix[8];
+		writeDoubleBE(stampPrefix, this->startTimestamp);
+		rocksdb::Slice keyPart = key;
+		rocksdb::Slice valueParts[2] = {
+			rocksdb::Slice(stampPrefix, sizeof stampPrefix),
+			rocksdb::Slice(value.data() + 8, value.size() - 8),
+		};
+		status = this->txn->Put(
+			column,
+			rocksdb::SliceParts(&keyPart, 1),
+			rocksdb::SliceParts(valueParts, 2));
+		if (status.ok()) {
+			this->recordPreStamp(this->startTimestamp);
+		}
+	} else {
+		status = this->txn->Put(column, key, value);
+	}
 
 	// Lock the VT slot for this key immediately on write. This ensures that
 	// any cached version of the key is invalidated as soon as it enters the
