@@ -1307,4 +1307,76 @@ describe.skipIf(!blobDirSupported)('blobs.dir', () => {
 		db.destroy();
 		expect(filesWithExt(blobDir, '.blob')).toHaveLength(0);
 	});
+
+	it.each(['dropSync', 'drop'] as const)(
+		'should not destroy a dropped family blob directory after %s()',
+		async (dropMethod) => {
+			const oldDbPath = tempPath();
+			const replacementDbPath = tempPath();
+			const reusedBlobDir = tempDir();
+			const dropped = openDb(oldDbPath, {
+				name: 'dropped',
+				blobs: { dir: reusedBlobDir },
+			});
+			dropped.putSync('old', largeValue(1));
+			dropped.flushSync();
+
+			if (dropMethod === 'drop') {
+				await dropped.drop();
+			} else {
+				dropped.dropSync();
+			}
+			dropped.close();
+			expect(filesWithExt(reusedBlobDir, '.blob')).toHaveLength(0);
+
+			const replacement = openDb(replacementDbPath, { blobs: { dir: reusedBlobDir } });
+			replacement.putSync('live', largeValue(2));
+			replacement.flushSync();
+			const replacementBlobFiles = filesWithExt(reusedBlobDir, '.blob');
+			expect(replacementBlobFiles.length).toBeGreaterThan(0);
+
+			// Closing first forces destroy() through the path-keyed fallback.
+			dropped.destroy();
+			expect(filesWithExt(reusedBlobDir, '.blob')).toEqual(replacementBlobFiles);
+			expect(replacement.getSync('live')).toBe(largeValue(2));
+		}
+	);
+
+	it('should retain a recreated same-name family layout after a stale drop', () => {
+		const dbPath = tempPath();
+		const firstBlobDir = tempDir();
+		const recreatedBlobDir = tempDir();
+		const first = openDb(dbPath, { name: 'table1', blobs: { dir: firstBlobDir } });
+		const stale = openDb(dbPath, { name: 'table1', blobs: { dir: firstBlobDir } });
+
+		first.dropSync();
+		const recreated = openDb(dbPath, { name: 'table1', blobs: { dir: recreatedBlobDir } });
+		recreated.putSync('live', largeValue(3));
+		recreated.flushSync();
+		expect(filesWithExt(recreatedBlobDir, '.blob').length).toBeGreaterThan(0);
+
+		stale.dropSync();
+		recreated.close();
+		stale.close();
+		first.close();
+		first.destroy();
+		expect(filesWithExt(recreatedBlobDir, '.blob')).toHaveLength(0);
+	});
+
+	it('should retain a shared blob directory while another family uses it', () => {
+		const dbPath = tempPath();
+		const blobDir = tempDir();
+		const dropped = openDb(dbPath, { name: 'dropped', blobs: { dir: blobDir } });
+		const retained = openDb(dbPath, { name: 'retained', blobs: { dir: blobDir } });
+
+		dropped.dropSync();
+		retained.putSync('live', largeValue(4));
+		retained.flushSync();
+		expect(filesWithExt(blobDir, '.blob').length).toBeGreaterThan(0);
+
+		retained.close();
+		dropped.close();
+		dropped.destroy();
+		expect(filesWithExt(blobDir, '.blob')).toHaveLength(0);
+	});
 });

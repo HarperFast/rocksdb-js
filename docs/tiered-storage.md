@@ -129,6 +129,11 @@ That holds for `close()` followed by `destroy()` too, which is the call order mo
 the layout: closing the last handle takes the descriptor with it, and `db_paths` is not written to
 the OPTIONS file, so the process registry keeps a path-keyed copy for exactly this.
 
+After a non-default column family is successfully dropped, its former `blobs.dir` is removed from
+that destroy layout. RocksDB owns cleanup of the dropped family's files; wait for any remaining
+handles to close and verify that no blob files remain before reusing the directory. Once reassigned,
+`destroy()` will not revisit it and delete the new owner's blobs.
+
 ## Backups and checkpoints
 
 **`paths` disables both.** RocksDB's `GetLiveFilesStorageInfo` — which `BackupEngine` and
