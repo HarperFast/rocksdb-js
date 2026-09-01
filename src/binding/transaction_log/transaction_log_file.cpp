@@ -756,12 +756,9 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		uint32_t entryLength = readUint32BE(mappedFile + this->lastIndexedPosition + 8);
 		if (entryLength == 0 ||
 			static_cast<uint64_t>(this->lastIndexedPosition) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength > writtenExtent) {
-			// A framing break. It cannot be an in-flight append: size is bumped only after the
-			// bytes are written, so a non-zero header inside the written extent is a complete
-			// entry. Striding through the declared length would carry the walk past every
-			// later entry and freeze the index there, so resume where framing does (the same
-			// rule readers use for CorruptFrameError.resyncPosition) or, for a torn tail, at
-			// the written extent so later appends still get indexed.
+			// A framing break, not an in-flight append: size is bumped only after the bytes
+			// land, so a nonzero header below the written extent is a complete entry. Resume
+			// where framing does, or at the written extent so later appends are still indexed.
 			uint32_t searchable = std::min(writtenExtent, static_cast<uint32_t>(memoryMap->mapSize));
 			uint32_t resume = findFramingResumeOffset(mappedFile, searchable, this->lastIndexedPosition + 1);
 			this->lastIndexedPosition = resume != 0 ? resume : writtenExtent;

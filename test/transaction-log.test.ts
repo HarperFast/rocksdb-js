@@ -2188,8 +2188,7 @@ describe('Transaction Log', () => {
 					}
 				}));
 
-			// A pre-extended segment (Windows; here, a file padded on disk) ends in zeros rather
-			// than at EOF, and a run shorter than the resync minimum must still count as resumed.
+			// A pre-extended (Windows) segment ends in zero padding rather than at EOF.
 			it('keeps a short run before the zero padding instead of truncating it', () =>
 				dbRunner(async ({ db, dbPath }) => {
 					let database = db;
@@ -2197,7 +2196,6 @@ describe('Transaction Log', () => {
 						const timestamps = await writeEntries(database, 60);
 						database.close();
 						const logPath = logPathFor(dbPath, 'foo');
-						const writtenSize = statSync(logPath).size;
 						await tearFrames(logPath, 57);
 						await writeFile(logPath, Buffer.concat([readFileSync(logPath), Buffer.alloc(1 << 20)]));
 
@@ -2210,8 +2208,7 @@ describe('Transaction Log', () => {
 							expect(entries.map(dataOf).slice(56)).toEqual(['r56', 'r58', 'r59']);
 							expect(errors.map((error) => error.position)).toEqual([frameOffset(57)]);
 						}
-						// the index walk found the end of data behind the padding
-						expect(reopened.getLogFileSize(1)).toBe(writtenSize);
+						expect(reopened.getLogFileSize(1)).toBe(frameOffset(60));
 						expect(Array.from(reopened.query({ start: timestamps[58] })).map(dataOf)).toEqual([
 							'r58',
 							'r59',

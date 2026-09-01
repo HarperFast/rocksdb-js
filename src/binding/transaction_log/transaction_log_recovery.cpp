@@ -186,7 +186,6 @@ RecoveryScan scanTransactionLogForRecovery(
 	uint32_t tailEntries = 0;
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
-	// The classification pins to the first break while the walk continues past it.
 	uint32_t firstBreak = 0;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		if (firstBreak != 0) {

@@ -212,8 +212,7 @@ TEST(TransactionLogRecovery, WatermarkAdvancesPastAShortRunReachingEof) {
 }
 
 // A pre-extended (Windows) segment ends in zero padding, so a short run after a
-// break never lands on EOF; landing on the end of the nonzero bytes must count
-// the same, or recovery truncates the run's committed entries.
+// break never lands on EOF.
 TEST(TransactionLogRecovery, ShortRunReachingThePaddingIsNotTruncated) {
 	LogImage img;
 	img.entry(10).entry(20);
@@ -258,10 +257,8 @@ TEST(TransactionLogRecovery, WatermarkAdvancesPastMultipleBreaks) {
 }
 
 TEST(TransactionLogRecovery, FlaggedEntryAfterABreakClosesTheTornGroup) {
-	// The break tore a multi-entry transaction. Its later entries are still on
-	// disk, and the first flagged entry after the break advances the watermark
-	// over all of them: readers see the tear through CorruptFrameError, not
-	// through a watermark that hides everything behind it.
+	// Readers see the tear through CorruptFrameError, not through a watermark
+	// that hides everything behind it.
 	LogImage img;
 	img.entry(10, /*flags=*/1, /*timestamp=*/2.0);
 	img.entry(20, /*flags=*/0, /*timestamp=*/3.0);
