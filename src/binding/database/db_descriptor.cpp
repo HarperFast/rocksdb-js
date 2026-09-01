@@ -1,4 +1,5 @@
 #include "core/background_error.h"
+#include "core/file_lock.h"
 #include "core/open_status.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
@@ -14,6 +15,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <system_error>
 #include <unordered_map>
@@ -376,6 +378,7 @@ DBDescriptor::DBDescriptor(
 	vtEpoch(nextVtEpoch()),
 	mode(options.mode),
 	readOnly(options.readOnly),
+	secondaryPath(options.secondaryPath),
 	cfOptions(cfOptions),
 	db(db),
 	columns(std::move(columns)),
@@ -533,6 +536,14 @@ void DBDescriptor::finishClose() {
 	this->events.releaseAll();
 
 	this->db.reset();
+
+	// The workspace lock outlives the RocksDB instance (released just above) so
+	// no moment exists where a second secondary can open the workspace while
+	// this instance still touches it.
+	if (this->secondaryLockToken) {
+		rocksdb_js::releaseFileLock(this->secondaryLockToken);
+		this->secondaryLockToken = 0;
+	}
 }
 
 napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed) {
@@ -1336,7 +1347,64 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	std::shared_ptr<rocksdb::DB> db;
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
-	if (options.readOnly) {
+	// Releases the secondary workspace lock on any throw between acquisition
+	// and its ownership transfer to the descriptor below.
+	struct SecondaryLockGuard {
+		uint32_t token = 0;
+		~SecondaryLockGuard() {
+			if (token) {
+				rocksdb_js::releaseFileLock(token);
+			}
+		}
+	} secondaryLock;
+
+	if (!options.secondaryPath.empty()) {
+		// RocksDB requires every table (and blob) file opened and held for the
+		// life of each version — the held fds are what make the primary's file
+		// deletions safe — so the bounded default is overridden unconditionally
+		// (Database::Open already rejected an explicit conflicting request).
+		dbOptions.max_open_files = -1;
+
+		// The secondary's workspace is created here (missing parents included);
+		// RocksDB itself creates its files inside it but a clearer error belongs
+		// to the path the caller actually passed.
+		std::error_code createError;
+		std::filesystem::create_directories(options.secondaryPath, createError);
+		if (createError) {
+			throw rocksdb_js::DBException(
+				"Failed to create secondary path \"" + options.secondaryPath + "\": " + createError.message()
+			);
+		}
+
+		// A workspace is exclusive to ONE secondary instance, and RocksDB does
+		// not enforce that itself (a second OpenAsSecondary on the same
+		// workspace succeeds — see test/native/secondary_blob_test.cc), so a
+		// kernel advisory lock does, across processes and containers sharing a
+		// volume. The registry key already covers in-process sharing: the same
+		// primary + workspace reuses this descriptor and never re-acquires.
+		secondaryLock.token = rocksdb_js::tryAcquireFileLock(
+			(std::filesystem::path(options.secondaryPath) / ".secondary.lock").string()
+		);
+		if (secondaryLock.token == 0) {
+			throw rocksdb_js::DBException(
+				"secondaryPath \"" + options.secondaryPath + "\" is locked by another secondary "
+				"instance; each secondary requires its own workspace directory"
+			);
+		}
+
+		std::unique_ptr<rocksdb::DB> rdb;
+		DEBUG_LOG("DBDescriptor::open Opening secondary db for \"%s\" (secondary path \"%s\")\n", path.c_str(), options.secondaryPath.c_str());
+		rocksdb::Status status = rocksdb::DB::OpenAsSecondary(dbOptions, path, options.secondaryPath, cfDescriptors, &cfHandles, &rdb);
+		if (!status.ok()) {
+			DEBUG_LOG("DBDescriptor::open Failed to open secondary db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
+			throw rocksdb_js::DBException(
+				"Failed to open database \"" + path + "\" as secondary (secondary path \"" +
+				options.secondaryPath + "\"): " + status.ToString()
+			);
+		}
+		DEBUG_LOG("DBDescriptor::open Opened secondary db for \"%s\"\n", path.c_str());
+		db = std::shared_ptr<rocksdb::DB>(rdb.release(), DBDeleter{});
+	} else if (options.readOnly) {
 		std::unique_ptr<rocksdb::DB> rdb;
 		DEBUG_LOG("DBDescriptor::open Opening readonly db for \"%s\"\n", path.c_str());
 		rocksdb::Status status = rocksdb::DB::OpenForReadOnly(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
@@ -1351,11 +1419,12 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			if (rocksdb_js::isMissingSstOpenRace(status)) {
 				throw rocksdb_js::DBException(
 					"ERR_CONCURRENT_COMPACTION",
-					"Read-only open failed: an SST file named in the MANIFEST was already gone when this "
-					"open tried to read it. If another process is actively writing this database, a "
-					"concurrent compaction removed the file and the database is not corrupt — retry the "
-					"open, or open as a secondary to follow a live database. If nothing is writing this "
-					"database, the file is genuinely missing. (" + status.ToString() + ")"
+					"Read-only open failed: a file this open needed was already gone when it tried to "
+					"read it. If another process is actively writing this database, a concurrent "
+					"compaction, blob GC, or flush removed the file and the database is not corrupt — "
+					"retry the open, or open as a secondary (secondaryPath) to follow a live database. "
+					"If nothing is writing this database, the file is genuinely missing. (" +
+					status.ToString() + ")"
 				);
 			}
 			if (status.IsIOError()) {
@@ -1403,6 +1472,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		}
 	}
 	if (!columnExists) {
+		// Same message as DBRegistry::OpenDB's already-open path — a read-only
+		// or secondary instance cannot create the missing family, and RocksDB's
+		// own NotSupported wording would bury which family was asked for.
+		if (options.readOnly) {
+			throw rocksdb_js::DBException(
+				"Column family \"" + options.name + "\" not found: cannot create column family in read-only mode"
+			);
+		}
 		auto cfo = cfOptions;
 		if (options.compression) {
 			applyCompression(cfo, *options.compression, options.compressionLevel);
@@ -1414,6 +1491,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	// The descriptor now owns the workspace lock; finishClose() releases it.
+	descriptor->secondaryLockToken = secondaryLock.token;
+	secondaryLock.token = 0;
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is
@@ -2225,6 +2305,12 @@ rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
 		flushOptions,
 		columnHandles
 	);
+}
+
+rocksdb::Status DBDescriptor::catchUpWithPrimary() {
+	std::lock_guard<std::mutex> lock(this->catchUpMutex);
+	DEBUG_LOG("%p DBDescriptor::catchUpWithPrimary Catching up with primary for \"%s\"\n", this, this->path.c_str());
+	return this->db->TryCatchUpWithPrimary();
 }
 
 rocksdb::Status DBDescriptor::compactRange(

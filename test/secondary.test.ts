@@ -1,0 +1,380 @@
+import { RocksDatabase } from '../src/index.ts';
+import { generateDBPath } from './lib/util.ts';
+import { spawn } from 'node:child_process';
+import { rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { Worker } from 'node:worker_threads';
+import { describe, expect, it } from 'vitest';
+
+function cleanup(...paths: string[]): void {
+	if (process.env.KEEP_FILES) {
+		return;
+	}
+	for (const path of paths) {
+		try {
+			rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+		} catch (err) {
+			console.error(`Error removing: ${path}: ${err}`);
+		}
+	}
+}
+
+describe('Secondary Instances', () => {
+	it('should follow a live primary through catchUpWithPrimary', async () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		const primary = new RocksDatabase(dbPath);
+		const secondary = new RocksDatabase(dbPath, { secondaryPath });
+		try {
+			primary.open();
+			primary.putSync('before-open', 'a');
+
+			secondary.open();
+			expect(secondary.readOnly).toBe(true);
+			expect(secondary.secondaryPath).toBe(secondaryPath);
+			expect(secondary.getSync('before-open')).toBe('a');
+
+			// Writes after the secondary opened are invisible until catch-up —
+			// both directions of acceptance criterion 4.
+			const blob = 'x'.repeat(8 * 1024); // above the 2KB blob threshold
+			primary.putSync('after-open', 'b');
+			primary.putSync('large', blob);
+			expect(secondary.getSync('after-open')).toBeUndefined();
+			expect(secondary.getSync('large')).toBeUndefined();
+
+			await secondary.catchUpWithPrimary();
+			expect(secondary.getSync('after-open')).toBe('b');
+			expect(secondary.getSync('large')).toBe(blob);
+
+			// Sync variant, and catch-up of flushed (SST/blob-resident) state.
+			primary.putSync('flushed', 'c');
+			primary.flushSync();
+			expect(secondary.getSync('flushed')).toBeUndefined();
+			secondary.catchUpWithPrimarySync();
+			expect(secondary.getSync('flushed')).toBe('c');
+		} finally {
+			secondary.close();
+			primary.close();
+			cleanup(dbPath, secondaryPath);
+		}
+	});
+
+	it('should enforce read-only behavior on a secondary', async () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		const primary = new RocksDatabase(dbPath);
+		const secondary = new RocksDatabase(dbPath, { secondaryPath });
+		try {
+			primary.open();
+			primary.putSync('foo', 'bar');
+			secondary.open();
+
+			expect(() => secondary.putSync('foo', 'baz')).toThrow(
+				'Not supported operation in secondary mode'
+			);
+			await expect(secondary.put('foo', 'baz')).rejects.toThrow(
+				'Not supported operation in secondary mode'
+			);
+			// flush/compact are no-ops on read-only handles, secondaries included
+			await secondary.flush();
+			secondary.flushSync();
+
+			// read-only transactions work
+			await secondary.transaction(async (txn) => {
+				expect(await txn.get('foo')).toBe('bar');
+			});
+		} finally {
+			secondary.close();
+			primary.close();
+			cleanup(dbPath, secondaryPath);
+		}
+	});
+
+	it('should reject catchUpWithPrimary on non-secondary handles', async () => {
+		const dbPath = generateDBPath();
+		const primary = new RocksDatabase(dbPath);
+		const readOnly = new RocksDatabase(dbPath, { readOnly: true });
+		try {
+			primary.open();
+			readOnly.open();
+
+			for (const db of [primary, readOnly]) {
+				await expect(db.catchUpWithPrimary()).rejects.toMatchObject({
+					code: 'ERR_NOT_SECONDARY',
+				});
+				expect(() => db.catchUpWithPrimarySync()).toThrow('Database is not a secondary instance');
+			}
+		} finally {
+			readOnly.close();
+			primary.close();
+			cleanup(dbPath);
+		}
+	});
+
+	it('should validate secondaryPath option combinations', async () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		const primary = new RocksDatabase(dbPath);
+		try {
+			primary.open();
+
+			// contradiction with explicit readOnly: false
+			expect(() => new RocksDatabase(dbPath, { secondaryPath, readOnly: false })).toThrow(
+				'secondaryPath cannot be combined with readOnly: false'
+			);
+
+			// redundant readOnly: true is fine
+			const redundant = new RocksDatabase(dbPath, { secondaryPath, readOnly: true });
+			redundant.open();
+			expect(redundant.readOnly).toBe(true);
+			redundant.close();
+
+			// empty string is not "no secondary"
+			const empty = new RocksDatabase(dbPath, { secondaryPath: '' });
+			expect(() => empty.open()).toThrow('secondaryPath must not be empty');
+
+			// a bounded table cache would reintroduce the missing-file race
+			const bounded = new RocksDatabase(dbPath, { secondaryPath, maxOpenFiles: 500 });
+			expect(() => bounded.open()).toThrow('A secondary open requires maxOpenFiles: -1');
+			const unbounded = new RocksDatabase(dbPath, { secondaryPath, maxOpenFiles: -1 });
+			unbounded.open();
+			unbounded.close();
+		} finally {
+			primary.close();
+			cleanup(dbPath, secondaryPath);
+		}
+	});
+
+	it('should reject reusing a secondary workspace for a different database', async () => {
+		const dbPathA = generateDBPath();
+		const dbPathB = generateDBPath();
+		const secondaryPath = `${dbPathA}.secondary`;
+		const primaryA = new RocksDatabase(dbPathA);
+		const primaryB = new RocksDatabase(dbPathB);
+		const secondaryA = new RocksDatabase(dbPathA, { secondaryPath });
+		const secondaryB = new RocksDatabase(dbPathB, { secondaryPath });
+		try {
+			primaryA.open();
+			primaryB.open();
+			secondaryA.open();
+			expect(() => secondaryB.open()).toThrow(
+				`secondaryPath "${secondaryPath}" is already in use by database "${dbPathA}"`
+			);
+		} finally {
+			secondaryB.close();
+			secondaryA.close();
+			primaryB.close();
+			primaryA.close();
+			cleanup(dbPathA, dbPathB, secondaryPath);
+		}
+	});
+
+	it('should exclude a second process from a held secondary workspace', async () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		const childSecondaryPath = `${dbPath}.secondary-child`;
+		const primary = new RocksDatabase(dbPath);
+		const secondary = new RocksDatabase(dbPath, { secondaryPath });
+		try {
+			primary.open();
+			primary.putSync('foo', 'bar');
+			secondary.open();
+
+			await new Promise<void>((resolve, reject) => {
+				const child = spawn(process.execPath, [
+					join(__dirname, 'fixtures', 'fork-open-secondary.mts'),
+					dbPath,
+					secondaryPath,
+					childSecondaryPath,
+				]);
+				let output = '';
+				child.stdout.on('data', (chunk) => (output += chunk));
+				child.stderr.on('data', (chunk) => (output += chunk));
+				child.on('close', (code) => {
+					try {
+						expect(code, output).toBe(0);
+						resolve();
+					} catch (error) {
+						reject(error);
+					}
+				});
+				child.on('error', reject);
+			});
+		} finally {
+			secondary.close();
+			primary.close();
+			cleanup(dbPath, secondaryPath, childSecondaryPath);
+		}
+	});
+
+	it('should surface secondary workspace creation failures', async () => {
+		const dbPath = generateDBPath();
+		const primary = new RocksDatabase(dbPath);
+		try {
+			primary.open();
+			// a path under a regular file cannot be created as a directory
+			const blocker = `${dbPath}.blocker`;
+			writeFileSync(blocker, 'not a directory');
+			const secondary = new RocksDatabase(dbPath, {
+				secondaryPath: join(blocker, 'nested'),
+			});
+			expect(() => secondary.open()).toThrow('Failed to create secondary path');
+			cleanup(blocker);
+		} finally {
+			primary.close();
+			cleanup(dbPath);
+		}
+	});
+
+	it('should error opening a secondary of a database that does not exist', () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		const secondary = new RocksDatabase(dbPath, { secondaryPath });
+		try {
+			expect(() => secondary.open()).toThrow('as secondary');
+		} finally {
+			secondary.close();
+			cleanup(dbPath, secondaryPath);
+		}
+	});
+
+	it('should open existing column families and reject missing ones', async () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		const primary = new RocksDatabase(dbPath);
+		const primaryBaz = new RocksDatabase(dbPath, { name: 'baz' });
+		try {
+			primary.open();
+			primaryBaz.open();
+			primaryBaz.putSync('foo', 'bar');
+
+			const secondaryBaz = new RocksDatabase(dbPath, { secondaryPath, name: 'baz' });
+			secondaryBaz.open();
+			expect(secondaryBaz.getSync('foo')).toBe('bar');
+			secondaryBaz.close();
+
+			// A CF the secondary's snapshot does not have cannot be created
+			const missing = new RocksDatabase(dbPath, {
+				secondaryPath: `${dbPath}.secondary2`,
+				name: 'missing',
+			});
+			expect(() => missing.open()).toThrow(
+				'Column family "missing" not found: cannot create column family in read-only mode'
+			);
+			cleanup(`${dbPath}.secondary2`);
+		} finally {
+			primaryBaz.close();
+			primary.close();
+			cleanup(dbPath, secondaryPath);
+		}
+	});
+
+	// Acceptance 3 of rocksdb-js#812: prove the race, not just assert it. A
+	// worker thread drives continuous write + flush traffic on the primary so
+	// compactions delete input SSTs and blob GC deletes rewritten blob files; a
+	// read-only open replays the MANIFEST and then opens files it holds no
+	// reference on, so it loses that race (and even a successful open can lose
+	// later reads to it) — while a secondary open (RocksDB's supported follower
+	// mode) must never fail for it. Measured on this recipe: ~6% of read-only
+	// attempts race per iteration, so 200 iterations leave P(no race) < 1e-5;
+	// the loop stops early once the race has been demonstrated a few times.
+	it(
+		'should survive a live writer as a secondary where readOnly races',
+		{ timeout: 120_000 },
+		async () => {
+			const dbPath = generateDBPath();
+			const secondaryPath = `${dbPath}.secondary`;
+			const setup = new RocksDatabase(dbPath);
+			const KEYS = 200;
+			let raceErrors = 0;
+			let readFailures = 0;
+			let readOnlyOpens = 0;
+
+			setup.open();
+			for (let i = 0; i < KEYS; i++) {
+				setup.putSync(`key${i}`, 'x'.repeat(3 * 1024));
+			}
+			setup.flushSync();
+			setup.close();
+
+			const worker = new Worker(new URL('./workers/secondary-race-writer.mts', import.meta.url), {
+				workerData: {
+					dbPath,
+					keys: KEYS,
+					valueSize: 3 * 1024, // blob-resident, above the 2KB threshold
+					writeBufferSize: 1024 * 1024,
+				},
+			});
+			await new Promise((resolve) => worker.once('message', resolve)); // ready
+
+			try {
+				// The read-only side: open, dwell so the writer obsoletes files the
+				// snapshot references, read, close. Every open failure must be the
+				// classified race — never a corruption report, never "Database does
+				// not exist" — and read failures are the same hazard's other face.
+				for (let i = 0; i < 200 && raceErrors < 5; i++) {
+					const readOnly = new RocksDatabase(dbPath, { readOnly: true });
+					try {
+						readOnly.open();
+						readOnlyOpens++;
+						try {
+							await delay(75);
+							readOnly.getSync('key0');
+							readOnly.getSync(`key${KEYS - 1}`);
+						} catch {
+							// A read on the stale snapshot hit a file the live writer
+							// already deleted — the post-open face of the same hazard.
+							readFailures++;
+						}
+					} catch (err) {
+						expect((err as Error & { code?: string }).code).toBe('ERR_CONCURRENT_COMPACTION');
+						expect((err as Error).message).not.toMatch(/may be corrupted/);
+						expect((err as Error).message).not.toMatch(/Database does not exist/);
+						raceErrors++;
+					} finally {
+						readOnly.close();
+					}
+				}
+
+				// The same churn through a secondary: open once, then catch up,
+				// dwell, and read continuously — zero failures allowed.
+				const secondary = new RocksDatabase(dbPath, { secondaryPath });
+				secondary.open();
+				for (let i = 0; i < 50; i++) {
+					await secondary.catchUpWithPrimary();
+					await delay(25);
+					// the writer worker overwrites the setup values, so only assert
+					// a blob-sized value came back intact
+					expect(secondary.getSync('key0')).toMatch(/^[vx]{3072}/);
+					expect(secondary.getSync(`key${KEYS - 1}`)).toMatch(/^[vx]{3072}/);
+				}
+				secondary.close();
+
+				// Full open/read/close cycles race the same open-time window the
+				// read-only side loses; the secondary open must never lose it.
+				const cyclePath = `${dbPath}.secondary-cycle`;
+				for (let i = 0; i < 20; i++) {
+					const cycled = new RocksDatabase(dbPath, { secondaryPath: cyclePath });
+					cycled.open();
+					expect(cycled.getSync('key0')).toMatch(/^[vx]{3072}/);
+					cycled.close();
+					await delay(25);
+				}
+				cleanup(cyclePath);
+
+				// The readOnly side must have actually raced for this test to prove
+				// anything; the traffic above makes that overwhelmingly likely.
+				console.log(
+					`readOnly: ${readOnlyOpens} clean opens, ${raceErrors} classified races, ${readFailures} stale-snapshot read failures`
+				);
+				expect(raceErrors + readFailures).toBeGreaterThan(0);
+			} finally {
+				worker.postMessage('stop');
+				await new Promise((resolve) => worker.once('message', resolve));
+				await worker.terminate();
+				cleanup(dbPath, secondaryPath);
+			}
+		}
+	);
+});

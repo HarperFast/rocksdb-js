@@ -60,6 +60,24 @@ TEST(OpenStatus, MissingCurrentFileIsNotTheRace) {
 	EXPECT_FALSE(isMissingSstOpenRace(status));
 }
 
+// Blob files race at least as readily as SSTs: values >= 2KB live in blob
+// files and blob GC deletes rewritten ones continuously under write traffic.
+TEST(OpenStatus, IOErrorNamingMissingBlobIsTheRace) {
+	rocksdb::Status status = rocksdb::Status::IOError(
+		"While open a file for random read: /data/db/000926.blob",
+		"No such file or directory");
+	EXPECT_TRUE(isMissingSstOpenRace(status));
+}
+
+// A WAL segment deleted by the writer's concurrent flush trips the open's WAL
+// replay the same way ("while stat a file for size: 000053.log").
+TEST(OpenStatus, IOErrorNamingMissingWalIsTheRace) {
+	rocksdb::Status status = rocksdb::Status::IOError(
+		"While stat a file for size: /data/db/000053.log",
+		"No such file or directory");
+	EXPECT_TRUE(isMissingSstOpenRace(status));
+}
+
 // A missing column family is InvalidArgument, not an IO shape at all.
 TEST(OpenStatus, MissingColumnFamilyIsNotTheRace) {
 	rocksdb::Status status =

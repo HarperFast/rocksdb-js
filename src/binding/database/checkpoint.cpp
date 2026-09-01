@@ -49,10 +49,9 @@ struct AsyncCheckpointState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 
 	~AsyncCheckpointState() override {
 		if (this->descriptor) {
-			std::string path = this->descriptor->path;
-			bool readOnly = this->descriptor->readOnly;
+			DBKey key = descriptorKey(*this->descriptor);
 			this->descriptor.reset();
-			DBRegistry::PurgeIfUnreferenced(path, readOnly);
+			DBRegistry::PurgeIfUnreferenced(key);
 		}
 	}
 };

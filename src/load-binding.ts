@@ -314,6 +314,15 @@ export type NativeDatabaseOptions = {
 	noBlockCache?: boolean;
 	parallelismThreads?: number;
 	readOnly?: boolean;
+	/**
+	 * A present, non-empty string opens the database via `DB::OpenAsSecondary`:
+	 * a read-only follower of a live primary that advances with
+	 * `catchUpWithPrimary()`. The value is the secondary instance's own
+	 * workspace directory (created if missing), distinct from `path` (the
+	 * primary's data directory) and exclusive to one secondary instance.
+	 * Implies `readOnly: true` and forces `maxOpenFiles: -1`.
+	 */
+	secondaryPath?: string;
 	statsLevel?: (typeof stats.StatsLevel)[keyof typeof stats.StatsLevel];
 	transactionLogMaxAgeThreshold?: number;
 	transactionLogMaxSize?: number;
@@ -411,6 +420,8 @@ export type NativeDatabase = {
 		emit: (kind: number, data: string | Uint8Array, size: number, mtime: number) => Promise<void>,
 		options?: { flushBeforeBackup?: boolean; transactionLogs?: boolean }
 	): void;
+	catchUpWithPrimary(resolve: ResolveCallback<void>, reject: RejectCallback): void;
+	catchUpWithPrimarySync(): void;
 	clear(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	clearSync(): void;
 	close(): void;

@@ -211,9 +211,30 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	/**
 	 * Whether the database was opened in readonly mode via
-	 * `DB::OpenForReadOnly`. When true, write operations are not supported.
+	 * `DB::OpenForReadOnly` or as a secondary via `DB::OpenAsSecondary`. When
+	 * true, write operations are not supported.
 	 */
 	bool readOnly;
+
+	/**
+	 * The secondary instance's workspace directory when the database was opened
+	 * via `DB::OpenAsSecondary`; empty otherwise. Part of the registry identity
+	 * (see `descriptorKey()` in db_registry.h) — every purge path must carry it
+	 * or the secondary's registry entry is silently missed and leaks.
+	 */
+	std::string secondaryPath;
+
+	/**
+	 * Kernel advisory lock (see core/file_lock.h) held on the secondary
+	 * workspace's `.secondary.lock` for the descriptor's whole open lifecycle;
+	 * 0 when not secondary. RocksDB itself does NOT reject two secondary
+	 * instances sharing a workspace (verified against the pinned build —
+	 * test/native/secondary_blob_test.cc), and they would corrupt each other's
+	 * state, so exclusivity is enforced here: in-process by the registry key,
+	 * cross-process by this lock. Released in finishClose() after the RocksDB
+	 * instance is destroyed; the kernel releases it on process death.
+	 */
+	uint32_t secondaryLockToken = 0;
 
 	/**
 	 * Base column family options retained from `DB::Open`. Families created
@@ -298,6 +319,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Mutex to prevent concurrent compaction operations.
 	 */
 	std::mutex compactMutex;
+
+	/**
+	 * Serializes TryCatchUpWithPrimary calls on this (shared, process-global)
+	 * secondary instance: RocksDB does not document catch-up as safe to run
+	 * reentrantly, and handles across envs share one descriptor.
+	 */
+	std::mutex catchUpMutex;
 
 	/**
 	 * Per-database event emitter. Listeners attached here only fire for events
@@ -591,6 +619,15 @@ public:
 	 * `src/load-binding.ts` and AGENTS invariant 15.
 	 */
 	rocksdb::Status flush(bool allowWriteStall = false);
+
+	/**
+	 * Advances a secondary instance to the primary's current state by tailing
+	 * and replaying its MANIFEST and WAL. Serialized on `catchUpMutex`; returns
+	 * NotSupported (RocksDB's own status) on a non-secondary database. Reads
+	 * through existing handles remain safe concurrently — RocksDB installs the
+	 * new version under its own superversion machinery.
+	 */
+	rocksdb::Status catchUpWithPrimary();
 
 	/**
 	 * Compacts a range of keys in the specified column family. This method is

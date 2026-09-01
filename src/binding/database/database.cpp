@@ -427,6 +427,150 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * State for the `CatchUpWithPrimary` async work. Pins the descriptor for the
+ * duration of the replay so a concurrent close cannot destroy the RocksDB
+ * instance under the worker; like backup/checkpoint, that pin can be the
+ * reason a racing close skipped its registry purge, so the destructor retries
+ * it (HarperFast/rocksdb-js#672 discipline).
+ */
+struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
+	std::shared_ptr<DBDescriptor> descriptor;
+
+	AsyncCatchUpState(
+		napi_env env,
+		std::shared_ptr<DBHandle> handle,
+		std::shared_ptr<DBDescriptor> descriptor
+	) :
+		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
+		descriptor(std::move(descriptor)) {}
+
+	~AsyncCatchUpState() override {
+		if (this->descriptor) {
+			DBKey key = descriptorKey(*this->descriptor);
+			this->descriptor.reset();
+			DBRegistry::PurgeIfUnreferenced(key);
+		}
+	}
+};
+
+// Shared guard for both catch-up entry points: only a database opened with
+// `secondaryPath` can catch up. Throws (returns false) otherwise.
+static bool throwIfNotSecondary(napi_env env, const std::shared_ptr<DBHandle>& dbHandle) {
+	if (dbHandle->descriptor->secondaryPath.empty()) {
+		::napi_throw_error(
+			env,
+			"ERR_NOT_SECONDARY",
+			"Database is not a secondary instance; catchUpWithPrimary requires opening with the secondaryPath option"
+		);
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Advances a secondary instance to the primary's current state asynchronously
+ * by tailing and replaying the primary's MANIFEST and WAL.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * await db.catchUpWithPrimary();
+ * ```
+ */
+napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	napi_value resolve = argv[0];
+	napi_value reject = argv[1];
+
+	if (!throwIfNotSecondary(env, *dbHandle)) {
+		return nullptr;
+	}
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"database.catchUpWithPrimary",
+		NAPI_AUTO_LENGTH,
+		&name
+	));
+
+	auto state = new AsyncCatchUpState(env, *dbHandle, (*dbHandle)->descriptor);
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env doNotUse, void* data) { // execute
+			auto state = reinterpret_cast<AsyncCatchUpState*>(data);
+			// check if database is still open before proceeding
+			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during catch-up operation");
+			} else {
+				state->status = state->descriptor->catchUpWithPrimary();
+			}
+			// signal that execute handler is complete
+			state->signalExecuteCompleted();
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			auto state = reinterpret_cast<AsyncCatchUpState*>(data);
+
+			state->deleteAsyncWork();
+
+			if (status != napi_cancelled) {
+				if (state->status.ok()) {
+					napi_value undefined;
+					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+					state->callResolve(undefined);
+				} else {
+					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Catch up with primary failed");
+					state->callReject(error);
+				}
+			}
+
+			delete state;
+		},
+		state,
+		&state->asyncWork
+	));
+
+	(*dbHandle)->registerAsyncWork();
+
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Advances a secondary instance to the primary's current state synchronously.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.catchUpWithPrimarySync();
+ * ```
+ */
+napi_value Database::CatchUpWithPrimarySync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	if (!throwIfNotSecondary(env, *dbHandle)) {
+		return nullptr;
+	}
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(
+		(*dbHandle)->descriptor->catchUpWithPrimary(),
+		"Catch up with primary failed"
+	);
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Destroys the RocksDB database.
  *
  * @example
@@ -1937,6 +2081,50 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", dbHandleOptions.name));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", dbHandleOptions.noBlockCache));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "readOnly", dbHandleOptions.readOnly));
+
+	// secondaryPath: a present, non-empty string switches the open to
+	// DB::OpenAsSecondary (see DBOptions::secondaryPath). A present empty
+	// string is rejected rather than silently treated as "not secondary".
+	bool hasSecondaryPath = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "secondaryPath", &hasSecondaryPath));
+	if (hasSecondaryPath) {
+		napi_value secondaryPathValue;
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "secondaryPath", &secondaryPathValue));
+		napi_valuetype secondaryPathType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, secondaryPathValue, &secondaryPathType));
+		if (secondaryPathType != napi_undefined && secondaryPathType != napi_null) {
+			if (secondaryPathType != napi_string) {
+				::napi_throw_error(env, nullptr, "secondaryPath must be a string");
+				return nullptr;
+			}
+			NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "secondaryPath", dbHandleOptions.secondaryPath));
+			if (dbHandleOptions.secondaryPath.empty()) {
+				::napi_throw_error(env, nullptr, "secondaryPath must not be empty");
+				return nullptr;
+			}
+		}
+	}
+	if (!dbHandleOptions.secondaryPath.empty()) {
+		// A secondary is read-only by construction. An explicit readOnly: false
+		// is a contradiction to reject, not to silently override; absent or
+		// true both normalize to true.
+		if (!dbHandleOptions.readOnly) {
+			bool hasReadOnly = false;
+			NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "readOnly", &hasReadOnly));
+			if (hasReadOnly) {
+				napi_value readOnlyValue;
+				NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "readOnly", &readOnlyValue));
+				napi_valuetype readOnlyType;
+				NAPI_STATUS_THROWS(::napi_typeof(env, readOnlyValue, &readOnlyType));
+				if (readOnlyType == napi_boolean) {
+					::napi_throw_error(env, nullptr, "A secondary open is read-only; secondaryPath cannot be combined with readOnly: false");
+					return nullptr;
+				}
+			}
+			dbHandleOptions.readOnly = true;
+		}
+	}
+
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", dbHandleOptions.parallelismThreads));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "writeBufferSize", dbHandleOptions.writeBufferSize));
 	// Parse as double and validate BEFORE narrowing: napi_get_value_int32
@@ -1951,6 +2139,28 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 	dbHandleOptions.maxOpenFiles = static_cast<int32_t>(maxOpenFilesValue);
+	if (!dbHandleOptions.secondaryPath.empty()) {
+		// A secondary must hold every table/blob file open (max_open_files = -1)
+		// — the held fds are what make the primary's deletions safe, so a
+		// bounded table cache would reintroduce the missing-file race this mode
+		// exists to avoid. Reject an explicit conflicting request rather than
+		// silently ignore it; absent (or an explicit -1) opens unbounded.
+		if (dbHandleOptions.maxOpenFiles != -1) {
+			bool hasMaxOpenFiles = false;
+			NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "maxOpenFiles", &hasMaxOpenFiles));
+			if (hasMaxOpenFiles) {
+				napi_value maxOpenFilesProp;
+				NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "maxOpenFiles", &maxOpenFilesProp));
+				napi_valuetype maxOpenFilesType;
+				NAPI_STATUS_THROWS(::napi_typeof(env, maxOpenFilesProp, &maxOpenFilesType));
+				if (maxOpenFilesType == napi_number) {
+					::napi_throw_error(env, nullptr, "A secondary open requires maxOpenFiles: -1 (every table file is held open so the primary can safely delete files); omit the option or pass -1");
+					return nullptr;
+				}
+			}
+			dbHandleOptions.maxOpenFiles = -1;
+		}
+	}
 
 	// Parse maxLogFileSize as a double and validate BEFORE narrowing to
 	// uint64_t: getValue(uint64_t&) casts a negative int64 to a huge unsigned
@@ -2354,6 +2564,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "addListener", nullptr, AddListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "backup", nullptr, Backup, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "backupStream", nullptr, BackupStream, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "catchUpWithPrimary", nullptr, CatchUpWithPrimary, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "catchUpWithPrimarySync", nullptr, CatchUpWithPrimarySync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },

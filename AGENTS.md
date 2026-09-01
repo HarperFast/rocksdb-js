@@ -646,6 +646,30 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
 
+18. **A secondary open's identity is `{path, readOnly, secondaryPath}` and its workspace is
+    exclusive**: `secondaryPath` opens via `DB::OpenAsSecondary` (a read-only follower of a live
+    primary, advanced by `catchUpWithPrimary()`), and the registry `DBKey` carries all three fields
+    — every purge/close path must reconstruct the FULL key via `descriptorKey()` (db_registry.h);
+    a hand-built partial key silently misses the secondary's entry and leaks the descriptor plus
+    the open RocksDB (the backup/backup-stream/checkpoint purge-retry destructors are the
+    historical trap). A secondary forces `max_open_files = -1` because the eagerly-opened,
+    fd-held table AND blob files are what make the primary's deletions safe — a bounded table
+    cache reintroduces the exact missing-file race the mode exists to avoid (the same reason a
+    plain `readOnly` open loses that race: it opens files it holds no reference on, and even a
+    successful open reads lazily afterward). RocksDB does NOT stop two secondary instances from
+    sharing one workspace and they corrupt each other's state
+    (`test/native/secondary_blob_test.cc` proves the second open succeeds), so exclusivity is
+    enforced by us: in-process by the registry key + a cross-primary scan in `OpenDB`,
+    cross-process by a kernel advisory lock on `<secondaryPath>/.secondary.lock` (invariant 7's
+    lock utility; released in `finishClose()` after `db.reset()`). Upstream documents
+    secondary+BlobDB as unsupported (facebook/rocksdb#13296) while this codebase enables blob
+    files unconditionally — the pinned build fd-holds blob files like SSTs (verified empirically),
+    so `secondary_blob_test.cc` is the regression net that must stay green on every RocksDB
+    upgrade. The missing-file open race classifier (`core/open_status.cpp`,
+    `ERR_CONCURRENT_COMPACTION`) matches `.sst`, `.blob`, AND `.log` — a live writer reclaims all
+    three (compaction inputs, blob GC, flushed WAL segments) and each was observed as the file the
+    read-only open tripped on.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

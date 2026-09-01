@@ -15,8 +15,14 @@ bool isMissingSstOpenRace(const rocksdb::Status& status) {
 	if (!status.IsIOError() && !status.IsCorruption()) {
 		return false;
 	}
+	// The race can trip on any file class a live writer reclaims: SSTs
+	// (compaction inputs), blob files (blob GC), or WAL segments (deleted by
+	// flush — `.log` here is the numbered WAL, not the extensionless info LOG).
 	const std::string message = status.ToString();
-	if (message.find(".sst") == std::string::npos) {
+	if (message.find(".sst") == std::string::npos &&
+		message.find(".blob") == std::string::npos &&
+		message.find(".log") == std::string::npos
+	) {
 		return false;
 	}
 	if (status.IsPathNotFound()) {

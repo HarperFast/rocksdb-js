@@ -37,14 +37,14 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 		return;
 	}
 
-	DBKey key{handle->descriptor->path, handle->descriptor->readOnly};
+	DBKey key = descriptorKey(*handle->descriptor);
 
 	handle->descriptor->detach(handle);
 
 	// close the handle, decrements the descriptor ref count
 	handle->close();
 
-	DBRegistry::PurgeIfUnreferenced(key.path, key.readOnly);
+	DBRegistry::PurgeIfUnreferenced(key);
 }
 
 /**
@@ -79,12 +79,11 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
  *     the duration of finishClose(), so a concurrent OpenDB keeps waiting on
  *     the condition rather than re-opening the path mid-close.
  */
-void DBRegistry::PurgeIfUnreferenced(const std::string& path, bool readOnly) {
+void DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 	if (!instance) {
 		return;
 	}
 
-	DBKey key{path, readOnly};
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
 	{
@@ -272,13 +271,36 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Opening database \"%s\" (mode=%s read-only=%s column family=\"%s\")\n", instance.get(), path.c_str(), options.mode == DBMode::Optimistic ? "optimistic" : "pessimistic", options.readOnly ? "true" : "false", options.name.empty() ? "default" : options.name.c_str());
 
+	// A secondary open is read-only by construction; Database::Open normalizes
+	// the flag, and everything downstream (write guards, registry identity,
+	// create_if_missing) relies on it.
+	if (!options.secondaryPath.empty() && !options.readOnly) {
+		throw rocksdb_js::DBException("Internal error: a secondary open must set readOnly");
+	}
+
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
-	// get or create entry for this path + mode + readOnly combination
-	DBKey key{path, options.readOnly};
+	// A secondary workspace belongs to exactly one secondary instance: RocksDB
+	// writes the instance's own state there, so two instances sharing it would
+	// corrupt each other. Same primary + same workspace shares the descriptor
+	// (the registry key below); a different primary on the same workspace is
+	// rejected here while the registry lock is held.
+	if (!options.secondaryPath.empty()) {
+		for (const auto& [existingKey, existingEntry] : instance->databases) {
+			if (existingKey.secondaryPath == options.secondaryPath && existingKey.path != path) {
+				throw rocksdb_js::DBException(
+					"secondaryPath \"" + options.secondaryPath + "\" is already in use by database \"" +
+					existingKey.path + "\"; each secondary instance requires its own workspace directory"
+				);
+			}
+		}
+	}
+
+	// get or create entry for this path + mode + readOnly + secondaryPath combination
+	DBKey key{path, options.readOnly, options.secondaryPath};
 	auto entryIterator = instance->databases.find(key);
 	if (entryIterator == instance->databases.end()) {
 		// create entry with empty descriptor and new condition variable

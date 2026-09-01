@@ -404,6 +404,28 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	// committed
 
+	/**
+	 * Advances a secondary instance to the primary's current state by tailing
+	 * and replaying the primary's MANIFEST and WAL. A secondary does not see
+	 * the primary's writes until this (or {@link catchUpWithPrimarySync}) is
+	 * called. Concurrent reads through this handle remain safe while the
+	 * catch-up runs.
+	 *
+	 * Only valid on a database opened with the `secondaryPath` option; throws
+	 * with code `ERR_NOT_SECONDARY` otherwise.
+	 */
+	catchUpWithPrimary(): Promise<void> {
+		return new Promise((resolve, reject) => this.store.db.catchUpWithPrimary(resolve, reject));
+	}
+
+	/**
+	 * Synchronous version of {@link catchUpWithPrimary}. The replay runs on the
+	 * JS thread, so prefer the async form unless the caller is already blocking.
+	 */
+	catchUpWithPrimarySync(): void {
+		this.store.db.catchUpWithPrimarySync();
+	}
+
 	destroy(): void {
 		this.store.db.destroy();
 	}
@@ -823,10 +845,22 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Whether the database is open in readonly mode.
+	 * Whether the database is open in readonly mode. Also `true` for a
+	 * secondary instance (see {@link secondaryPath}), which is read-only by
+	 * construction.
 	 */
 	get readOnly(): boolean {
 		return this.store.readOnly;
+	}
+
+	/**
+	 * The secondary instance's workspace directory when the database was opened
+	 * as a secondary (a read-only follower of a live primary — see the
+	 * `secondaryPath` open option), or `undefined` for a regular or plain
+	 * read-only open.
+	 */
+	get secondaryPath(): string | undefined {
+		return this.store.secondaryPath;
 	}
 
 	/**
