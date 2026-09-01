@@ -2072,13 +2072,8 @@ describe('Transaction Log', () => {
 			}));
 
 		// A mid-file break (a frame whose declared length overruns the file, with intact entries
-		// behind it) is left in place by recovery. Two engine walks stride through framing and
-		// used to stop dead at that break: the open-time scan, whose lastCompleteTransactionEnd
-		// seeds the committed watermark on an unflushed reopen (so committed reads ended at the
-		// break with no error at all), and the timestamp index, which followed the broken
-		// frame's declared length past the written extent and froze there (so every seek at or
-		// after the break, and every entry appended after reopen, reported as past the file).
-		// Both now resume where framing does, the same rule query() uses for resyncPosition.
+		// behind it) is left in place by recovery; the committed watermark and the timestamp
+		// index must resume past it by the same rule query() uses for resyncPosition.
 		describe('mid-file break on reopen', () => {
 			const ENTRY_DATA = 24;
 			const FRAME = TRANSACTION_LOG_ENTRY_HEADER_SIZE + ENTRY_DATA;
@@ -2148,7 +2143,6 @@ describe('Transaction Log', () => {
 						expect(afterBreak.errors).toEqual([]);
 						expect(Array.from(reopened.query({ start: timestamps[59] })).length).toBe(1);
 
-						// an append after reopen is indexed and readable
 						await database.transaction(async (txn) => {
 							reopened.addEntry(Buffer.from('r60'.padEnd(ENTRY_DATA, 'x')), txn.id);
 						});
@@ -2189,6 +2183,39 @@ describe('Transaction Log', () => {
 						const tail = drainPastCorruption(reopened.query({ start: timestamps[50] }));
 						expect(tail.entries.length).toBe(10);
 						expect(tail.errors).toEqual([]);
+					} finally {
+						database.close();
+					}
+				}));
+
+			// A pre-extended segment (Windows; here, a file padded on disk) ends in zeros rather
+			// than at EOF, and a run shorter than the resync minimum must still count as resumed.
+			it('keeps a short run before the zero padding instead of truncating it', () =>
+				dbRunner(async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const timestamps = await writeEntries(database, 60);
+						database.close();
+						const logPath = logPathFor(dbPath, 'foo');
+						const writtenSize = statSync(logPath).size;
+						await tearFrames(logPath, 57);
+						await writeFile(logPath, Buffer.concat([readFileSync(logPath), Buffer.alloc(1 << 20)]));
+
+						database = RocksDatabase.open(dbPath);
+						const reopened = database.useLog('foo');
+						for (const readUncommitted of [false, true]) {
+							const { entries, errors } = drainPastCorruption(
+								reopened.query({ start: 0, readUncommitted })
+							);
+							expect(entries.map(dataOf).slice(56)).toEqual(['r56', 'r58', 'r59']);
+							expect(errors.map((error) => error.position)).toEqual([frameOffset(57)]);
+						}
+						// the index walk found the end of data behind the padding
+						expect(reopened.getLogFileSize(1)).toBe(writtenSize);
+						expect(Array.from(reopened.query({ start: timestamps[58] })).map(dataOf)).toEqual([
+							'r58',
+							'r59',
+						]);
 					} finally {
 						database.close();
 					}

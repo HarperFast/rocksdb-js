@@ -184,10 +184,6 @@ TEST(TransactionLogRecovery, BrokenFrameThenFewEntriesReachingEofIsNotTruncated)
 	EXPECT_EQ(scan.validEnd, breakOffset);
 }
 
-// A mid-file break must not amputate the committed watermark: the scan resumes
-// where framing does and keeps advancing lastCompleteTransactionEnd, while the
-// classification stays pinned to the FIRST break.
-
 TEST(TransactionLogRecovery, WatermarkAdvancesPastAMidFileBreak) {
 	LogImage img;
 	img.entry(10).entry(20);
@@ -213,6 +209,34 @@ TEST(TransactionLogRecovery, WatermarkAdvancesPastAShortRunReachingEof) {
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
 	EXPECT_EQ(scan.validEnd, breakOffset);
 	EXPECT_EQ(scan.lastCompleteTransactionEnd, img.size());
+}
+
+// A pre-extended (Windows) segment ends in zero padding, so a short run after a
+// break never lands on EOF; landing on the end of the nonzero bytes must count
+// the same, or recovery truncates the run's committed entries.
+TEST(TransactionLogRecovery, ShortRunReachingThePaddingIsNotTruncated) {
+	LogImage img;
+	img.entry(10).entry(20);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	img.entry(16).entry(16).entry(16);
+	uint32_t runEnd = img.size();
+	img.zeros(4096);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, breakOffset);
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, runEnd);
+}
+
+TEST(TransactionLogRecovery, TornTailBeforeThePaddingIsStillTruncated) {
+	LogImage img;
+	img.entry(10).entry(20);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	img.zeros(4096);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
+	EXPECT_EQ(scan.validEnd, breakOffset);
 }
 
 TEST(TransactionLogRecovery, WatermarkAdvancesPastMultipleBreaks) {
@@ -663,9 +687,7 @@ TEST(TransactionLogResumeOffset, IoFailureThrows) {
 	EXPECT_THROW(findFramingResumeOffset(img.size(), failingRead, &failing, breakOffset + 1), DBException);
 }
 
-// The timestamp index walks the same framing. Striding through a broken frame's
-// declared length used to carry it past the written extent, freezing the index
-// so every seek at or after the break reported "past this file".
+// The timestamp index walks the same framing and must resume past a break too.
 
 TEST(TransactionLogTimestampIndex, SeeksPastAMidFileBreak) {
 	LogImage img;
@@ -687,6 +709,22 @@ TEST(TransactionLogTimestampIndex, SeeksPastAMidFileBreak) {
 	EXPECT_EQ(file.findPositionByTimestamp(31.0, img.size(), /*isCurrent=*/true), offsets[11]);
 	EXPECT_EQ(file.findPositionByTimestamp(32.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
 	EXPECT_EQ(breakOffset + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 8u, resumeOffset);
+}
+
+TEST(TransactionLogTimestampIndex, ShortRunBeforeThePaddingIsIndexedAndEndsTheFile) {
+	LogImage img;
+	img.entry(16, /*flags=*/1, /*timestamp=*/10.0);
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, /*flags=*/1, /*timestamp=*/11.0);
+	uint32_t resumeOffset = img.size();
+	img.entry(16, /*flags=*/1, /*timestamp=*/20.0).entry(16, /*flags=*/1, /*timestamp=*/21.0);
+	uint32_t runEnd = img.size();
+	img.zeros(4096);
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	EXPECT_EQ(file.findPositionByTimestamp(11.0, img.size(), /*isCurrent=*/true), resumeOffset);
+	EXPECT_EQ(file.findPositionByTimestamp(21.0, img.size(), /*isCurrent=*/true), resumeOffset + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 16u);
+	EXPECT_EQ(file.findPositionByTimestamp(22.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
+	EXPECT_EQ(file.size.load(), runEnd);
 }
 
 TEST(TransactionLogTimestampIndex, SeeksPastMultipleBreaks) {
@@ -718,9 +756,8 @@ TEST(TransactionLogTimestampIndex, TornTailLeavesEarlierEntriesSeekable) {
 	EXPECT_EQ(file.findPositionByTimestamp(12.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
 }
 
-// A header-only file has no entry to bound-check against the map: the header's
-// own timestamp slot must still be indexed rather than reported as a tail the
-// map could not reach (which would hand a reader offset 5, mid-header).
+// A header-only file has no entry to bound-check against the map; its own
+// timestamp slot must still be indexed (an unindexed tail would read as offset 5).
 TEST(TransactionLogTimestampIndex, HeaderOnlyFileIsNotAnUnindexedTail) {
 	LogImage img;
 	OpenedLogFile opened(img);

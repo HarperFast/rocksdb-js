@@ -36,6 +36,35 @@ struct ScanReader {
 		}
 	}
 
+	// End of the nonzero bytes: where a pre-extended file's zero padding starts. A
+	// frame chain landing exactly here is as conclusive as one landing on EOF,
+	// which padding never lets it reach. Computed on first use, reading backwards.
+	uint32_t nonzeroEnd() {
+		if (nonzeroEndKnown) {
+			return nonzeroEndValue;
+		}
+		std::vector<char> tail(RESYNC_WINDOW);
+		uint32_t end = fileSize;
+		while (end > 0) {
+			uint32_t len = std::min(RESYNC_WINDOW, end);
+			readExact(end - len, tail.data(), len);
+			for (uint32_t i = len; i > 0; --i) {
+				if (tail[i - 1] != 0) {
+					nonzeroEndValue = end - len + i;
+					nonzeroEndKnown = true;
+					return nonzeroEndValue;
+				}
+			}
+			end -= len;
+		}
+		nonzeroEndValue = 0;
+		nonzeroEndKnown = true;
+		return 0;
+	}
+
+	bool nonzeroEndKnown = false;
+	uint32_t nonzeroEndValue = 0;
+
 	// Sequential headers within 64 KiB of the current window refill from the
 	// next header. A larger gap is a payload skip: read exactly 13 bytes so
 	// that payload is not pulled in.
@@ -80,7 +109,8 @@ bool headerLooksLikeFrame(const char* header, uint32_t pos, uint32_t fileSize) {
 
 // Returns the first offset in [from, fileSize) where valid log data resumes:
 // either a run of at least RESYNC_MIN_FRAMES well-formed frames, or any run that
-// lands exactly on EOF. Returns 0 when nothing resumes. Sequential candidate
+// lands exactly on the written extent (EOF, or the start of a pre-extended
+// file's zero padding). Returns 0 when nothing resumes. Sequential candidate
 // offsets are served from a 64 KiB window; chain hops (HEADER+length) read a
 // 13-byte header so a large payload is not pulled in. A failed read throws — it
 // must not look like "no resume".
@@ -89,6 +119,10 @@ uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from) {
 	uint32_t windowStart = 0;
 	uint32_t windowLen = 0;
 	char headerBuf[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+
+	auto reachesWrittenExtent = [&](uint32_t pos) -> bool {
+		return pos == source.fileSize || pos == source.nonzeroEnd();
+	};
 
 	auto loadHeader = [&](uint32_t pos, const char*& out) -> bool {
 		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > source.fileSize) {
@@ -120,12 +154,12 @@ uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from) {
 
 		uint32_t pos = start + TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(header + 8);
 		int frames = 1;
-		if (frames >= RESYNC_MIN_FRAMES || pos == source.fileSize) {
+		if (frames >= RESYNC_MIN_FRAMES || reachesWrittenExtent(pos)) {
 			return start;
 		}
 		while (loadHeader(pos, header) && headerLooksLikeFrame(header, pos, source.fileSize)) {
 			pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(header + 8);
-			if (++frames >= RESYNC_MIN_FRAMES || pos == source.fileSize) {
+			if (++frames >= RESYNC_MIN_FRAMES || reachesWrittenExtent(pos)) {
 				return start;
 			}
 		}
@@ -152,8 +186,7 @@ RecoveryScan scanTransactionLogForRecovery(
 	uint32_t tailEntries = 0;
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
-	// Offset of the first framing break that intact frames follow; 0 until one is
-	// found. Fixes the classification while the walk continues past it.
+	// The classification pins to the first break while the walk continues past it.
 	uint32_t firstBreak = 0;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		if (firstBreak != 0) {

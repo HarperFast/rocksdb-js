@@ -454,7 +454,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
-    a per-frame call would tax every healthy read.
+    a per-frame call would tax every healthy read. The native walks run before `size` has been
+    corrected on a pre-extended (Windows) segment, so `findFramingResumeOffset()` also accepts a
+    chain landing exactly on the **end of the nonzero bytes** — a single offset, as conclusive as
+    EOF — otherwise a run shorter than `RESYNC_MIN_FRAMES` in front of the padding classifies as a
+    torn tail and recovery truncates its committed entries.
 
 12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
     commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —

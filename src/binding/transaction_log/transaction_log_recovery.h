@@ -116,7 +116,8 @@ RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file);
 /**
  * Finds where valid framing resumes at or after `from`, using the same rule as
  * the recovery scan: the first offset that starts a run of well-formed frames
- * which is either RESYNC_MIN_FRAMES long or lands exactly on `fileSize`. Returns
+ * which is either RESYNC_MIN_FRAMES long or lands exactly on the written extent
+ * (`fileSize`, or the start of a pre-extended file's zero padding). Returns
  * 0 when nothing resumes (0 is never a valid entry offset). Throws DBException on
  * a failed read.
  */
