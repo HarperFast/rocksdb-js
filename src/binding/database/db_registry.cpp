@@ -165,9 +165,26 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
 	bool capturedLayout = false;
 
+	// Applied more than once — the live descriptor first, then the retained
+	// record when that descriptor described no volumes — so it merges rather than
+	// overwrites: the longest `db_paths` wins for the same reason RecordLayout
+	// keeps it (append-only, persisted nowhere), and each column family is named
+	// once rather than repeated across the calls.
+	std::unordered_map<std::string, std::string> destroyBlobDirs;
 	auto applyLayout = [&](const DBFileLayout& layout) {
-		destroyOptions.db_paths = layout.dbPaths;
+		if (layout.dbPaths.size() > destroyOptions.db_paths.size()) {
+			destroyOptions.db_paths = layout.dbPaths;
+		}
 		for (const auto& [cfName, blobDir] : layout.blobDirs) {
+			auto [it, inserted] = destroyBlobDirs.emplace(cfName, blobDir);
+			if (!inserted && it->second.empty()) {
+				it->second = blobDir;
+			}
+		}
+		capturedLayout = true;
+	};
+	auto materializeBlobDirs = [&]() {
+		for (const auto& [cfName, blobDir] : destroyBlobDirs) {
 			rocksdb::ColumnFamilyOptions cfOptions;
 #ifdef ROCKSDB_HAS_CF_BLOB_DIR
 			cfOptions.blob_dir = blobDir;
@@ -176,7 +193,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 #endif
 			destroyColumnFamilies.emplace_back(cfName, cfOptions);
 		}
-		capturedLayout = true;
 	};
 
 	// Claim the descriptor under the lock but leave the entry in the map until
@@ -211,13 +227,19 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	}
 
 	// No descriptor left in the registry — `destroy()` on a closed handle that
-	// was the last one open. See DBRegistry::knownLayouts.
-	if (!capturedLayout) {
+	// was the last one open. See DBRegistry::knownLayouts. Also consulted when
+	// the live descriptors between them captured no `db_paths`: a read-only
+	// handle opened without `paths` is a live descriptor carrying an empty
+	// layout, and once the writer has closed, the retained record is the only
+	// place the tiered volumes still exist.
+	if (!capturedLayout || destroyOptions.db_paths.empty()) {
 		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
 		if (auto it = instance->knownLayouts.find(path); it != instance->knownLayouts.end()) {
 			applyLayout(it->second);
 		}
 	}
+
+	materializeBlobDirs();
 
 	// Nothing live and nothing remembered — a path this process never opened.
 	// `blob_dir` is per-column-family and persisted, so it can still be
@@ -316,12 +338,29 @@ void DBRegistry::DestroyDB(const std::string& path) {
 /**
  * Records where a database's files live, so `destroy()` can still find them
  * after the descriptor is gone. See `DBRegistry::knownLayouts`.
+ *
+ * `db_paths` is retained canonically rather than last-writer-wins: it is
+ * append-only (AGENTS invariant 18) and written nowhere on disk, so the longest
+ * list this process has seen for the path is the only complete record of the
+ * volumes in use. A secondary cold open that describes fewer of them — a
+ * read-only handle opened without `paths`, which succeeds whenever the SST files
+ * it needs still sit at path index 0 — must not shorten it. Accepting the
+ * shorter list would let a later `destroy()` run with default options and leave
+ * every SST the writer had compacted onto the other volumes behind, reporting
+ * success. Blob directories are per column family and re-derived from the
+ * persisted OPTIONS on every open, so they are replaced as given.
  */
 void DBRegistry::RecordLayout(const std::string& path, DBFileLayout layout) {
 	if (!instance) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+	if (auto known = instance->knownLayouts.find(path);
+		known != instance->knownLayouts.end() &&
+		layout.dbPaths.size() < known->second.dbPaths.size()
+	) {
+		layout.dbPaths = known->second.dbPaths;
+	}
 	const bool defaultLayout = layout.dbPaths.empty() &&
 		std::all_of(layout.blobDirs.begin(), layout.blobDirs.end(), [](const auto& entry) {
 			return entry.second.empty();
