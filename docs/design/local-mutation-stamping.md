@@ -1,6 +1,7 @@
 # Design: commit-time local mutation stamping (dual-clock stage 1)
 
-Status: revision 3 for planning review (issue #811). Stage 1 of the three-clock model per the
+Status: revision 4 — planning gate cleared (`Framing-Verdict: chosen-approach-sound`, round 3;
+graded codex leg each round). Issue #811. Stage 1 of the three-clock model per the
 reviewed dual-timestamp plan behind HarperFast/harper#2409 (rulings D1–D4); companion adoption
 issue HarperFast/harper#2412 (stages 0b/2), apply-side HarperFast/harper-pro#790, replay
 fidelity HarperFast/harper#2411.
@@ -22,7 +23,23 @@ three-state (§3.1); v2 CRC applies to flagged entries only, so unflagged v2 ent
 byte-identical to v1 entries (§3.4); `getEntry`/log-decode bounds and finite-domain validation
 (§3.6, §3.4); B0 becomes a structural counter assertion and B6 gains direct-put contention
 (§6); lifecycle tests (backup/restore/checkpoint/stream/read-only/drop-CF/reserve concurrency)
-added (§8).
+added (§8). Rev 4 folds in round 3's post-clearance corrections: value staging via `SliceParts`
+(the caller's buffer is never touched at all — no mutate-and-restore race on shared memory,
+§3.3); the re-put fallback is **deleted** (it reorders `Put→Delete` sequences) — re-stamping is
+order-preserving full reconstruction through `RebuildFromWriteBatch` with conflict-tracking
+acceptance gates (§3.3); markers are keyed by column-family ID, not name, with dropped-ID rows
+retained, making drop/recreate races structurally impossible (§3.7); the metadata CF is created
+exclusively and self-identifies with a schema-magic row — a pre-existing user CF of that name
+fails closed with a migration error (§3.7); mixed DB+log backups get a floor capture in the
+log-snapshot section reconciled at restore (§3.7); a clean-close floor row plus open-time
+reserve extension bound restart skew and cold-open latency (§3.7); CRC coverage is defined as
+stamp + payload, excluding only the CRC field (§3.4); no-unwind is enforced at the commit-lane
+boundary with a non-allocating failure path (§3.2); the §3.1 marker-inheritance contradiction
+is resolved (marker + unspecified ⇒ enabled, §3.1); `setTimestamp`'s non-finite rejection and
+state-gating are documented as deliberate, dormant-mode-visible bug fixes (§3.2); claim-order
+(not per-key commit-order) monotonicity is a documented public contract with the cross-repo
+consumer audit recorded as an activation gate (§3.2); the measurement harness ships in-repo
+(§3.4).
 
 ## 1. Problem and goal
 
@@ -110,17 +127,20 @@ compression option's explicit-vs-inherit discipline):
 - `true` — enable; on first enable, durably record the CF in the metadata CF (§3.7) before any
   stamped commit.
 - **unspecified** — inherit: the live in-process value if the CF is already open, else the
-  durable marker's value, else off.
+  durable marker's value (a marked CF opened without the option **is enabled** — the data
+  format demands stamping, so the binary that can stamp must stamp; requiring every opener to
+  repeat the option would make an option-less reopen an integrity hazard), else off.
 - explicit `false` — assert-off: conflicts (throws at open) with a live-enabled handle or a
   durable marker, rather than silently bypassing the stamped-CF contract. Un-marking a CF is
   not provided in stage 1 (a verified rewrite migration would be required first; until then the
   marker is one-way).
 
 Default (absent) on a never-marked CF ⇒ off, and every code path below is inert: no record
-bytes change, no log format change, no VT change; the only added default-path work is the
-branch that checks the flag — no claim, no clock read, no batch walk, no allocation, no
-metadata I/O (asserted structurally, §6 B0). A second in-process open of an already-open CF
-with an explicitly different value is rejected in `DBRegistry::OpenDB`.
+bytes change, no log format change, no VT change; the dormant claim is precisely **one flag
+branch and zero new calls, allocations, or I/O** (asserted structurally, §6 B0 — a numeric
+dormant regression gate would be noise-bound, so benchmarks are reported, not asserted). A
+second in-process open of an already-open CF with an explicitly different value is rejected in
+`DBRegistry::OpenDB`.
 
 The durable marker is the storage layer's own fail-closed backstop (covering non-harper users
 too); the harper-side durable data-format floor (harper#2412 stage 2) remains the
@@ -175,7 +195,11 @@ claimLocalStamp(watermark, reserve, candidate, now) -> double
   and values ≥ 8.64e15 (harper's MAX_DATE_TIMESTAMP domain), and reject calls when the
   transaction is not `Pending` — which also removes the JS-thread-vs-commit-lane race on
   `startTimestamp`, since the commit entry point snapshots the candidate on the JS thread
-  before any lane work runs.
+  before any lane work runs. These two rejections are visible in dormant mode too and are
+  **deliberate bug fixes, called out in the PR**: a NaN/Infinity timestamp already corrupts
+  transaction-log key ordering today, and a post-dispatch `setTimestamp` is already meaningless
+  (the batch key was snapshotted at `addLogEntry`) while racing a plain double across threads.
+  Dormant-mode tests pin the new rejections explicitly.
 
 **Ordering contract — deliberately uniqueness, not durable-write order.** Stamps are claimed
 before `txn->Commit()`, and sync commits/direct puts are not serialized with the async lanes,
@@ -189,7 +213,10 @@ later writer claims after the earlier writer's claim); (c) a kept caller candida
 by receiver time + `MAX_KEPT_SKEW_MS`; (d) never reused across restart (§3.7). The single
 per-key exception: a pinned retry (below) can commit a key at a stamp claimed before a
 conflicting winner's — an equality-safe, position-consistent skew that per-key-order consumers
-must not rely on (documented; harper's post-#2409 staleness checks are equality-based).
+must not rely on (documented **prominently in the public API docs**, not only here; harper's
+post-#2409 staleness checks are equality-based, and the cross-repo audit that every consumer
+uses equality/position rather than `>` ordering is an **activation gate recorded in
+harper#2412**).
 
 **Pinning across retries.** The stamp is finalized **once per durable WAL batch**: a new
 `TransactionHandle::localStamp` field survives `resetTransaction()` exactly like
@@ -205,11 +232,15 @@ lane — two-lane, single-lane, legacy — and is a deliberate pass-through even
 log batch) and at the equivalent point in `CommitSync` before its inline log stage; the
 candidate is the snapshot taken at the commit entry point on the JS thread. That places it
 before the batch header write (which needs the stamp) and before `txn->Commit` (which needs the
-records patched), on the thread that owns the txn at that moment. **Every failure inside
-finalization — reserve-extension I/O error, allocation failure, batch-rebuild failure — is
-caught there and converted to `state->status`** (rejecting the commit), never allowed to unwind
-into `CommitWorker::run`, which has no catch and would `std::terminate` the process; the sync
-and direct-put paths translate the same failures to thrown JS errors.
+records patched), on the thread that owns the txn at that moment. **No-unwind is enforced at
+the lane boundary, not inside one operation**: the entire dispatched stage is wrapped in a
+`catch (...)` whose failure path is non-allocating — it sets a pre-existing failure marker on
+the state (an enum + a static status, never a message-constructing `Status` that could itself
+throw under allocation failure) — so reserve-extension I/O errors, allocation failure, and
+batch-rebuild failure all reject the commit instead of unwinding into `CommitWorker::run`
+(which has no catch and would `std::terminate`); the sync and direct-put paths translate the
+same failures to thrown JS errors. Fault tests inject a throw *inside* the wrapper (not merely
+an error return from rebuild) and prove process survival in all three async modes.
 
 Non-transactional `Database::PutSync` claims with `candidate = getMonotonicTimestamp()`
 (always the keep path in practice) and stamps the value buffer before `db->Put`.
@@ -221,38 +252,39 @@ On a stamped CF, rocksdb-js **owns the first 8 bytes of every value**. A put wit
 word; silent skip would leave holes in the enabled-CF contract). Harper's records are always
 ≥ 12 bytes. Two-phase stamping:
 
-1. **Pre-stamp at `putSync`**: write the candidate (`startTimestamp`) as a big-endian float64
-   over bytes 0..8 of the caller's value buffer immediately before `txn->Put` copies it into
-   the WriteBatch, then **restore the saved 8 bytes unconditionally after `Put` returns**
-   (success or failure). The caller's buffer is never left holding a candidate that may not be
-   what commits — the authoritative stamp is only observable via `committedLocalTime` or a
-   read-back — and reused/shared backing memory sees no side effect. Cost: an 8-byte
-   stack save, an 8-byte write into a hot buffer RocksDB is about to memcpy anyway, an 8-byte
-   restore. The candidate value used is recorded on the handle (`preStampValue`, plus a flag
-   when puts spanned more than one candidate — only possible via `setTimestamp` between puts,
-   which state-gating still permits while `Pending`).
+1. **Segmented staging at `putSync` — the caller's buffer is never touched.** The value is
+   staged through the `SliceParts` overloads (`Transaction::Put(cf, SliceParts, SliceParts)`,
+   `transaction.h:503-509`, and the matching `DB::Put` overload for direct puts): an owned
+   8-byte stack prefix holding the candidate (`startTimestamp`, BE float64) plus a second
+   slice over the caller's bytes 8.. — RocksDB concatenates the parts while serializing into
+   the batch. No mutate-and-restore, so shared/`SharedArrayBuffer`-backed buffers can never
+   observe a transient stamp and a concurrent writer's bytes are never overwritten (pinned by
+   an SAB observer/writer test). Cost: one stack write; the memcpy into the batch happens
+   either way. The candidate value used is recorded on the handle (`preStampValue`, plus a
+   flag when puts spanned more than one candidate — only possible via `setTimestamp` between
+   puts, which state-gating still permits while `Pending`).
 2. **Re-stamp at commit, only when needed**: after finalization, if
    `localStamp != preStampValue` (re-stamp path, pinned-retry path, or mixed pre-stamp
-   values), the batch's put values for stamped CFs are rewritten **through supported RocksDB
-   APIs only** — no `const_cast` into the batch representation (the public headers say callers
-   must not modify the returned batch; Iterate is const; a future integrity/index change would
-   make an in-place write memory-unsafe). Two supported shapes, chosen at implementation by
-   verified semantics and measurement:
-   - **Preferred — rebuild**: walk `GetWriteBatch()->GetWriteBatch()` with a handler that
-     copies each entry into a fresh `WriteBatch` (patching stamped-CF put values as fixed-width
-     substitutions in the copy), then `Transaction::RebuildFromWriteBatch(&copy)`
-     (`transaction.h:707`). O(batch) one-time copy on the re-stamp path only. **Gate to
-     verify before adopting** (GoogleTest + Vitest, both txn modes): rebuild preserves
-     conflict-detection key tracking (original read/track sequence numbers, not re-tracked at
-     rebuild time), savepoint-free semantics, repeated keys, deletes, cross-CF entries, and
-     retry behavior. If tracking is re-established at rebuild-time sequence numbers, conflict
-     windows would silently shrink — an unacceptable correctness change — and the fallback is
-     used instead.
-   - **Fallback — re-put**: for each stamped-CF put entry (enumerated via `Iterate`), call
-     `txn->Put(cf, key, patchedValue)` again; WriteBatchWithIndex last-write-wins shadows the
-     original entry, and key tracking is unconditionally preserved (tracking a key twice is
-     benign). Cost: the batch and its WAL image roughly double **on the re-stamp path only**
-     (budgeted, §6 B4).
+   values), the batch is rewritten **through supported RocksDB APIs only** — no `const_cast`
+   into the batch representation (the public headers say callers must not modify the returned
+   batch; Iterate is const; a future integrity/index change would make an in-place write
+   memory-unsafe) — as an **order-preserving full reconstruction**: walk
+   `GetWriteBatch()->GetWriteBatch()` with a handler that copies *every* operation, in order,
+   into a fresh `WriteBatch` (patching stamped-CF put values as fixed-width substitutions in
+   the copy — deletes, unstamped-CF ops, and repeated keys pass through verbatim in their
+   original positions), then `Transaction::RebuildFromWriteBatch(&copy)` (`transaction.h:707`).
+   O(batch) one-time copy on the re-stamp path only. A per-entry re-put shortcut was
+   considered and **rejected**: WriteBatch applies operations in insertion order, so appending
+   a patched `Put(k)` after an original `Put(k); Delete(k)` sequence would resurrect a deleted
+   key. **Acceptance gates before this path ships** (GoogleTest + Vitest, both txn modes):
+   `Put→Delete` and `Delete→Put` orderings, repeated keys, cross-CF batches, and — critically —
+   conflict-detection key tracking preserved at the *original* read/track sequence numbers
+   (`RebuildFromWriteBatch` re-drives `txn->Put`/`Delete`, and tracked keys must merge at the
+   earliest tracked sequence, not re-track at rebuild time; a red-first test stages a conflict
+   between the original put and the rebuild and asserts the commit still reports `IsBusy`).
+   If the gate fails, the pinned-RocksDB escape hatch is a fenced in-place fixed-width
+   substitution behind layout/protection assertions — a build-time switch, never a silent
+   runtime fallback.
    The keep path walks nothing. The handler stamps only CFs with stamping enabled (cf_id →
    descriptor lookup), so a txn spanning stamped and unstamped CFs stays correct.
 
@@ -276,9 +308,12 @@ What stage 1 adds is the batch's **local stamp**:
 
 **Variant (i) — in-band only.** Entries whose batch stamp ≠ key carry the stamp in-band:
 new entry flag `TRANSACTION_LOG_ENTRY_LOCAL_STAMP_FLAG (0x02)`; a 12-byte extension —
-8-byte BE-float64 stamp + 4-byte CRC32C of the payload extent — is prepended to the payload
-extent, so the header's length field covers it and every length-driven scanner (recovery,
-resync, validation) is untouched: only entry *decode* and the writer learn the flag.
+8-byte BE-float64 stamp + 4-byte CRC32C computed over **the stamp bytes plus the user payload
+(everything in the payload extent except the CRC field itself)**, so a bit flip in the stamp
+cannot pass as another valid finite double — is prepended to the payload extent, so the
+header's length field covers it and every length-driven scanner (recovery, resync, validation)
+is untouched: only entry *decode* and the writer learn the flag. Corruption tests flip each
+extension byte individually.
 **Unflagged entries are byte-identical to v1 entries** — the keep path pays nothing, in v2
 files too. Every entry of a flagged batch carries the extension, so mid-batch seeks see it.
 Decode-side validation fails closed: a flagged entry whose payload extent is shorter than the
@@ -305,8 +340,9 @@ journal. Costs a second append path per commit and a full second file-lifecycle 
 (rotation, recovery, retirement markers, purge, backup snapshot, validation — each an
 invariant-bearing subsystem in this repo).
 
-**Measurements** (this machine, release build, sync commits, 128B payloads; harness in the
-issue's dispatch log):
+**Measurements** (this machine, release build, sync commits, 128B payloads; the harness ships
+in-repo as `benchmark/log-architecture-measure.mjs` so the numbers are reproducible before any
+v2 format byte is committed):
 
 | Measure | Result | Bearing |
 |---|---|---|
@@ -389,25 +425,56 @@ stamps on a store full of stamped records.
 Both therefore live in a **hidden internal RocksDB column family** (`__rocksdbjs.meta`),
 created lazily on first enable:
 
-- Rows: one reserve-ceiling row (`stamp.reserve` → float64), one marker row per stamped CF
-  (`stamp.cf.<name>` → enabled). RocksDB's WAL owns write atomicity/durability (ceiling writes
-  use `WriteOptions.sync = true`); there is no bespoke file format, torn-write protocol,
-  fixed-extent encoding, or name-length bound to design — and every copy lifecycle (backup,
-  stream, checkpoint, restore) inherits the state automatically because it is ordinary CF data.
+- **Exclusive creation + schema magic.** The name is inside the user-controllable CF
+  namespace, so it is never silently adopted: first enable *creates* the CF and writes a
+  schema row (magic token + schema version) in the same batch; if a CF of that name already
+  exists without a valid schema row, open fails closed with an explicit migration error rather
+  than interpreting user/attacker bytes as clock state. Every row read is validated (bounded
+  lengths, finite positive doubles below 8.64e15) — a crafted or restored database cannot
+  inject an extreme reserve or make open misbehave.
+- Rows: the schema row; one reserve-ceiling row (float64); one **clean-close floor** row
+  (the exact watermark, written on orderly `close()`); one marker row per stamped CF, **keyed
+  by the CF's persistent RocksDB ID** (name recorded as a diagnostic value only). RocksDB's
+  WAL owns write atomicity/durability (ceiling writes use `WriteOptions.sync = true`); there
+  is no bespoke file format, torn-write protocol, or name-length bound to design — and every
+  copy lifecycle (backup, stream, checkpoint, restore) inherits the state automatically
+  because it is ordinary CF data.
+- **ID-keyed markers make drop/recreate structurally safe.** `DropColumnFamily` cannot be
+  atomic with any marker write, and same-name recreation is deliberately legal — so markers
+  are never deleted at all: a dropped CF's row is retained (harmless garbage, bytes per drop)
+  and simply never matches again, because a recreated CF has a new ID and starts unmarked —
+  which is also correct, since the drop destroyed the stamped data the marker guarded. No
+  cleanup ordering exists to race.
 - **Reserve invariant**: no stamp above the persisted ceiling is ever returned by
   `claimLocalStamp`. The ceiling is extended ahead of need (`RESERVE_WINDOW_MS`, 5 minutes
   above `max(now, watermark)`) by a **single-flight** off-thread task triggered when the
   watermark crosses `ceiling − margin`; the claim path blocks on extension only if claims
   outrun the asynchronous extension (pathological — bounded, surfaced as a commit failure if
   the sync write itself fails, never silent, never a spin).
-- **On open**: the descriptor's watermark seeds from the ceiling row (0 when absent); a CF
-  marker row present without `commitStamping: true` on that CF's open fails closed (§3.1). A
-  database that never enabled stamping has no metadata CF and no new open-time work.
+- **On open**: the watermark seeds from the clean-close floor when present (orderly shutdown —
+  no skew, no reserve consumption), else from the ceiling row (crash — consuming at most one
+  `RESERVE_WINDOW_MS` of logical skew per crash, so even a crash loop advances the clock
+  boundedly: N crashes ≤ N × 5 minutes, and only relative to a wall clock that failed to catch
+  up). The clean-close row is deleted at first claim so a later crash cannot resurrect a stale
+  low floor. When stamping is enabled, open extends the reserve synchronously (one small sync
+  write, part of open's existing I/O budget) so the first commit never stalls; cold-open
+  latency and restart-skew bounds are tested. A CF marker row present is honored per §3.1
+  (unspecified ⇒ enabled; explicit `false` ⇒ fail closed). A database that never enabled
+  stamping has no metadata CF and no new open-time work.
+- **Mixed DB+log backup coherence.** Directory backup and the backup stream capture RocksDB
+  first and transaction logs afterward (`backup.cpp:253-279`, `backup_stream.cpp:435-499`), so
+  a commit landing between the captures can put a stamp in the log snapshot that exceeds the
+  ceiling in the DB snapshot. The transaction-log snapshot section therefore carries a **floor
+  capture** (the live ceiling, read after the log capture completes — ceiling monotonicity
+  makes "after" sufficient), and `backups.restore` reconciles it into the metadata CF before
+  the restored database accepts writes. Checkpoints need nothing: a checkpoint is a single
+  RocksDB point-in-time snapshot, so data and ceiling are already mutually consistent.
+  Concurrent-backup tests crash at both capture boundaries (plus the stream variant) and
+  assert the restored store never re-mints a stamp its logs carry.
 - The metadata CF is excluded from user-visible CF listings, is not user-openable by name, and
   `LoadLatestOptions`-based per-CF option preservation treats it like any other CF (its
-  options are fixed internally: tiny write buffer, no compression concerns). Dropping a
-  stamped CF removes its marker row in the same operation; read-only opens read the floor but
-  never extend it (no writes can claim stamps there).
+  options are fixed internally: tiny write buffer, no compression concerns). Read-only opens
+  read the floor but never extend it (no writes can claim stamps there).
 
 This removes rev-1's no-log residual and rev-2's copy-lifecycle hole: the floor holds with
 logs, without logs, across purges, and across backup/restore/checkpoint, because it lives in
@@ -485,7 +552,7 @@ stress-gated:
 | B1 | Enabled, uncontended single-put commit, keep path | p50 ratio enabled/disabled ≤ **1.05**; p99 ratio ≤ **1.10** |
 | B2 | Enabled, forced re-stamp every commit (`setTimestamp(1)`), single put | p50 ratio ≤ **1.25** |
 | B3 | Enabled, 10k-put batch, keep path | ratio ≤ **1.05** |
-| B4 | Enabled, 10k-put batch, forced re-stamp (rebuild or re-put path, as adopted) | added cost ≤ **1.5×** the original batch-build cost for the same batch, measured in the same process (absolute number recorded in the PR) |
+| B4 | Enabled, 10k-put batch, forced re-stamp (order-preserving reconstruction + rebuild) | added cost ≤ **1.5×** the original batch-build cost for the same batch, measured in the same process (absolute number recorded in the PR) |
 | B5 | Keep-path claim allocation count | **0** heap allocations — GoogleTest with an operator-new counter around the Node-free `claimLocalStamp` + pre-stamp helpers |
 | B6 | Contended: 4 worker envs committing concurrently (mixed keep/re-stamp) across all three commit modes (legacy/single-lane/two-lane) **plus concurrent direct `PutSync` writers** (the unserialized path — real cache-line contention on watermark/reserve) | p95 and p99 ratios ≤ **1.25**; uniqueness asserted across the full interleaving |
 | B7 | Lock-freedom | `static_assert(std::atomic<uint64_t>::is_always_lock_free)` compiled on all platforms; claim function exercised from N threads in GTest for progress + uniqueness |
@@ -526,8 +593,16 @@ stress-gated:
   reopen, explicit-false conflict, hidden from listings, drop-CF marker cleanup, read-only
   open; **lifecycle**: backup + restore, backup stream, and checkpoint each carry the metadata
   CF (floor + markers) and stamped data coherently — restore then reopen enforces the marker
-  and never re-mints a stamp; reserve-extension concurrency (single-flight, forced-small
-  window); dormant-mode byte-identical write assertions.
+  and never re-mints a stamp, including **concurrent** backups with commits landing between
+  the DB and log captures (floor-capture reconciliation) and crashes at both capture
+  boundaries; drop-then-recreate-same-name (ID-keyed markers: recreated CF starts unmarked);
+  crash between marker publication and the forced v1→v2 rotation; metadata-CF namespace
+  collision (pre-existing user CF named `__rocksdbjs.meta` fails closed) and crafted/malformed
+  rows; SharedArrayBuffer-backed value buffers observed by a second worker during puts (no
+  transient stamp visible, no lost concurrent write); cold-open latency and restart-skew
+  bounds (clean close vs crash loop); reserve-extension concurrency (single-flight,
+  forced-small window); dormant-mode byte-identical write assertions **plus the two documented
+  dormant-visible `setTimestamp` rejections**.
 - **GoogleTest (Node-free)**: `claimLocalStamp` keep/re-stamp/skew-cap/reserve semantics with
   an injected clock (rollback > `MAX_KEPT_SKEW_MS` terminates — the rev-2 spin case; no-log;
   post-purge), uniqueness under threads, B5/B7; the batch rebuild-or-reput substitution
