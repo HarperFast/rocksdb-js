@@ -307,9 +307,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 *     under one lock and then close them sequentially, so arming at claim
 	 *     time cancels compactions on descriptors whose own `finishClose()` has
 	 *     not started yet.
-	 *  2. It is never cleared. Close-initiated compaction opts out with
-	 *     `cancellable = false` instead, since nothing external is waiting on
-	 *     it, and a descriptor never leaves the closing state.
+	 *  2. It is never cleared. Close-initiated compaction passes a null cancel
+	 *     token instead, since nothing external is waiting on it, and a
+	 *     descriptor never leaves the closing state.
 	 *  3. It covers synchronous compaction only. Async `compact()`/`clear()`
 	 *     released their OperationGuard at setup handoff, so this drain does not
 	 *     await them; they are awaited by `DBHandle::close()`'s async-work drain

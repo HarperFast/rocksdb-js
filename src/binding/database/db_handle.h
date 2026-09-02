@@ -78,8 +78,8 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 * callers. Armed by `close()` (self-close) and, for a foreign close, by
 	 * `finishClose()` before its first blocking step, via
 	 * `cancelBlockingWork()`. Safe to arm from a thread that does not own this
-	 * handle because this token is cleared by `open()`; the descriptor's is
-	 * never cleared.
+	 * handle because this token is cleared by `DBRegistry::OpenDB()`; the
+	 * descriptor's is never cleared.
 	 *
 	 * Why there are two tokens, why each is armed where it is, and what each of
 	 * `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts` does

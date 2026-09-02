@@ -405,7 +405,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    descriptor token from `CloseDB` is not the alternative: it is never cleared, so one handle
    closing would permanently kill manual compaction for every other handle sharing the
    process-global descriptor. That is also what makes it safe for `finishClose()` to arm handles
-   this thread does not own: the per-handle token _is_ cleared, by `DBHandle::open()`, and only
+   this thread does not own: the per-handle token _is_ cleared, by `DBRegistry::OpenDB()`, and only
    after the new descriptor is adopted (see invariant 20). Neither token is ever aliased onto
    `closing` itself: RocksDB writes through the pointer it is given
    (`DisableManualCompaction()` sets the caller's atomic), and `closing` means the registry has an
