@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../src/index.ts';
+import { RocksDatabase, registryStatus } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
@@ -164,7 +164,7 @@ describe('Streaming backups', () => {
 		}));
 
 	it('settles without hanging when the database is closed mid-stream', () =>
-		dbRunner({ skipOpen: true }, async ({ db }) => {
+		dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 			db.open();
 			await writeAll(db, 200);
 
@@ -186,9 +186,10 @@ describe('Streaming backups', () => {
 
 			// If the worker deadlocked against close(), this would time out.
 			await expect(settled).resolves.toBe('settled');
+			expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 		}));
 
-	it('throws on destroy() during a stream and the stream still settles', () =>
+	it('waits for an in-flight stream before destroying', () =>
 		dbRunner(async ({ db }) => {
 			await writeAll(db, 200);
 
@@ -203,9 +204,9 @@ describe('Streaming backups', () => {
 			);
 
 			await new Promise((r) => setTimeout(r, 50));
-			// The in-flight stream pins the descriptor, so destroy() refuses to tear
-			// the database down mid-stream and throws instead.
-			expect(() => db.destroy()).toThrow();
+			// The stream pins the descriptor and registers an in-flight operation, so
+			// destroy waits for it before closing the native DB and removing the path.
+			expect(() => db.destroy()).not.toThrow();
 
 			await expect(settled).resolves.toBe('settled');
 		}));

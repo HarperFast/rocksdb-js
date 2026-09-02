@@ -1,6 +1,7 @@
 #ifndef __DB_ITERATOR_HANDLE_H__
 #define __DB_ITERATOR_HANDLE_H__
 
+#include <mutex>
 #include "database/db_handle.h"
 #include "iterator/db_iterator.h"
 #include "transaction/transaction_handle.h"
@@ -45,12 +46,23 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 * Closes the iterator handle.
 	 */
 	void close() override;
+	bool closeIfOpen();
 
 	/**
 	 * Initializes the iterator start and end key, then registers this handle
 	 * to be closed when the DBDescriptor is closed.
 	 */
 	void init(DBIteratorOptions& options);
+
+	/**
+	 * Counts the entries from the current position to the end of the range.
+	 *
+	 * Returns false when the descriptor began closing mid-scan. The scan is
+	 * unbounded and its caller holds an `OperationGuard`, which `finishClose()`
+	 * drains with an untimed wait, so it must abort rather than block teardown
+	 * for the length of the range. The partial count is never reported.
+	 */
+	[[nodiscard]] bool countRemaining(uint64_t& count);
 
 	std::shared_ptr<DBHandle> dbHandle;
 	std::shared_ptr<TransactionHandle> txnHandle;
@@ -64,6 +76,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	std::string endKeyStr;
 	rocksdb::Slice startKey;
 	rocksdb::Slice endKey;
+	std::mutex iteratorMutex;
 
 private:
 	/**

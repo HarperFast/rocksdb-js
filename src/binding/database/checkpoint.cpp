@@ -47,13 +47,17 @@ struct AsyncCheckpointState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		descriptor(std::move(descriptor)),
 		targetPath(std::move(targetPath)) {}
 
-	~AsyncCheckpointState() override {
+	void releaseDescriptor() {
 		if (this->descriptor) {
 			std::string path = this->descriptor->path;
 			bool readOnly = this->descriptor->readOnly;
 			this->descriptor.reset();
 			DBRegistry::PurgeIfUnreferenced(path, readOnly);
 		}
+	}
+
+	~AsyncCheckpointState() override {
+		this->releaseDescriptor();
 	}
 };
 
@@ -167,6 +171,12 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncCheckpointState*>(data);
 			state->deleteAsyncWork();
+			if (status == napi_cancelled &&
+				--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()
+			) {
+				state->descriptor->operationsInFlight.notify_all();
+			}
+			state->releaseDescriptor();
 			if (status != napi_cancelled) {
 				if (state->status.ok()) {
 					napi_value undefined;
@@ -184,12 +194,13 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
-	// On a queue failure the claim above rolls the counter back (execute never
-	// runs); the state leak on this rare N-API failure path matches the existing
-	// async methods (e.g. Database::Backup).
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue checkpoint work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	// The worker now owns the in-flight decrement (end of execute); stop the
 	// claim from releasing it here.

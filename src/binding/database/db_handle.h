@@ -1,11 +1,14 @@
 #ifndef __DB_HANDLE_H__
 #define __DB_HANDLE_H__
 
+#include <atomic>
 #include <memory>
 #include <vector>
 #include <utility>
 #include <string>
 #include <unordered_map>
+#include <thread>
+#include <mutex>
 #include <node_api.h>
 #include "rocksdb/db.h"
 #include "database/db_descriptor.h"
@@ -61,15 +64,43 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	bool enableVerificationTable = false;
 
 	/**
+	 * Immutable VerificationTable address components for this open lifecycle.
+	 * These let VT-only fast paths avoid dereferencing teardown-owned native
+	 * descriptors or registering as in-flight database operations.
+	 */
+	uint64_t verificationTableDbId = 0;
+	uint32_t verificationTableColumnFamilyId = 0;
+
+	/**
+	 * Cancellation token handed to `rocksdb::CompactRangeOptions::canceled` by
+	 * an async `compact()`/`clear()` issued through this handle -- the twin of
+	 * `DBDescriptor::compactCancelRequested`, which serves the synchronous
+	 * callers. Armed by `close()` (self-close) and, for a foreign close, by
+	 * `finishClose()` before its first blocking step, via
+	 * `cancelBlockingWork()`. Safe to arm from a thread that does not own this
+	 * handle because this token is cleared by `DBRegistry::OpenDB()`; the
+	 * descriptor's is never cleared.
+	 *
+	 * Why there are two tokens, why each is armed where it is, and what each of
+	 * `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts` does
+	 * and does not pin down: AGENTS.md invariant 6.
+	 */
+	std::atomic<bool> compactCancelRequested{false};
+
+	void cancelBlockingWork() override { this->compactCancelRequested.store(true); }
+
+	/**
 	 * The node environment.
 	 */
 	napi_env env;
+	std::thread::id ownerThreadId;
 
 	/**
 	 * A reference to the main `rocksdb_js` exports object. This is needed to
 	 * get the `TransactionLog` class.
 	 */
 	napi_ref exportsRef;
+	std::mutex closeMutex;
 
 	/**
 	 * The default transaction log store.
@@ -105,7 +136,13 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	DBHandle(napi_env env, napi_ref exportsRef);
 	~DBHandle();
 
-	rocksdb::Status clear();
+	/**
+	 * Clears the handle's column family, compacting afterwards to reclaim space.
+	 * `compactCanceled` is the token that compaction hands RocksDB; pass the
+	 * descriptor's for a synchronous caller and this handle's for an async one
+	 * (see `compactCancelRequested`).
+	 */
+	rocksdb::Status clear(std::atomic<bool>* compactCanceled);
 	void close() override;
 	napi_value get(
 		napi_env env,

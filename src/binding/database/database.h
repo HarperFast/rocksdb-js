@@ -42,11 +42,11 @@ inline std::atomic<uint64_t>* vtSlotFor(
 	const rocksdb::Slice& key
 ) {
 	if (!vt) return nullptr;
-	// Per-open epoch, not the descriptor pointer: the pointer is reused across a
-	// close/reopen of the same path while cfId stays stable (HarperFast/harper#1864).
-	uint64_t dbId = dbHandle->descriptor->vtEpoch;
-	uint32_t cfId = dbHandle->getColumnFamilyHandle()->GetID();
-	return vt->slotFor(dbId, cfId, key);
+	return vt->slotFor(
+		dbHandle->verificationTableDbId,
+		dbHandle->verificationTableColumnFamilyId,
+		key
+	);
 }
 
 /**
@@ -227,39 +227,13 @@ inline void vtPopulateIfSettled(
 	UNWRAP_DB_HANDLE(); \
 	do { \
 		if (dbHandle == nullptr || !(*dbHandle)->opened()) { \
-			::napi_throw_error(env, nullptr, "Database not open"); \
+			const char* message = dbHandle != nullptr && *dbHandle && (*dbHandle)->descriptor && (*dbHandle)->descriptor->isClosing() \
+				? "Database is closing" \
+				: "Database not open"; \
+			::napi_throw_error(env, nullptr, message); \
 			NAPI_RETURN_UNDEFINED(); \
 		} \
 	} while (0)
-
-/**
- * RAII guard that tracks in-flight operations on a DBDescriptor.
- * Increments counter on construction, decrements on destruction.
- * Notifies waiters via atomic::notify_all() when count reaches zero.
- */
-struct OperationGuard {
-	std::shared_ptr<DBDescriptor> descriptor;
-
-	explicit OperationGuard(std::shared_ptr<DBDescriptor> desc) : descriptor(std::move(desc)) {
-		if (descriptor) {
-			++descriptor->operationsInFlight;
-		}
-	}
-
-	~OperationGuard() {
-		if (descriptor) {
-			if (--descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
-				descriptor->operationsInFlight.notify_all();
-			}
-		}
-	}
-
-	// Non-copyable, non-movable
-	OperationGuard(const OperationGuard&) = delete;
-	OperationGuard& operator=(const OperationGuard&) = delete;
-	OperationGuard(OperationGuard&&) = delete;
-	OperationGuard& operator=(OperationGuard&&) = delete;
-};
 
 /**
  * Registers an in-flight operation to prevent use-after-free during shutdown.
@@ -327,6 +301,7 @@ struct Database final {
 	static napi_value GetSync(napi_env env, napi_callback_info info);
 	static napi_value GetUserSharedBuffer(napi_env env, napi_callback_info info);
 	static napi_value HasLock(napi_env env, napi_callback_info info);
+	static napi_value IsClosing(napi_env env, napi_callback_info info);
 	static napi_value IsOpen(napi_env env, napi_callback_info info);
 	static napi_value Listeners(napi_env env, napi_callback_info info);
 	static napi_value ListLogs(napi_env env, napi_callback_info info);

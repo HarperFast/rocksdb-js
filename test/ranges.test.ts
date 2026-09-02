@@ -165,6 +165,29 @@ describe('Ranges', () => {
 				}
 			}));
 
+		it('is idempotent when return()/throw() are called on an already-closed iterator', () =>
+			dbRunner(async ({ db }) => {
+				for (const key of ['a', 'b']) {
+					await db.put(key, `value ${key}`);
+				}
+
+				const iter = db.getRange()[Symbol.iterator]();
+				iter.next();
+				iter.return!();
+				// A second return() (e.g. a `finally` block after an earlier
+				// `break`) must stay a no-op, not throw over the already-closed
+				// native iterator.
+				expect(() => iter.return!()).not.toThrow();
+
+				const limited = db.getRange({ limit: 1 })[Symbol.iterator]();
+				limited.next(); // yields the one row within the limit
+				limited.next(); // over the limit: auto-closes the native iterator
+				// The native iterator is already closed at this point; the
+				// caller's own thrown error must survive, not get replaced by a
+				// native "Iterator not initialized" error.
+				expect(() => limited.throw!(new Error('caller error'))).toThrow('caller error');
+			}));
+
 		it('should get iterate in reverse', () =>
 			dbRunner(async ({ db }) => {
 				for (const key of ['a', 'b', 'c', 'd', 'e']) {

@@ -1,5 +1,6 @@
 #include "core/background_error.h"
 #include "core/platform.h"
+#include "core/test_seam.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
 #include "napi/helpers.h"
@@ -15,6 +16,7 @@
 #include <cstdlib>
 #include <memory>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 
 namespace rocksdb_js {
@@ -391,9 +393,13 @@ DBDescriptor::DBDescriptor(
  */
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
-	this->close();
-	// Idempotent safety net, matching commitWorker/logWorker's own
-	// destructor shutdown.
+	try {
+		this->close();
+	} catch (const std::exception& error) {
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Close failed for \"%s\": %s\n", this, this->path.c_str(), error.what());
+	} catch (...) {
+		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Close failed for \"%s\"\n", this, this->path.c_str());
+	}
 	this->parkTimeouts->shutdown();
 }
 
@@ -411,50 +417,94 @@ void DBDescriptor::close() {
 	this->finishClose();
 }
 
-void DBDescriptor::finishClose() {
+void DBDescriptor::finishClose(bool destroying) {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
 
-	// Wait for all in-flight operations to complete before cleanup.
-	// The closing flag is already set, so new operations will fail with "Database is closing".
-	// Existing operations will decrement operationsInFlight and notify us when done.
-	DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
-	uint32_t current;
-	while ((current = this->operationsInFlight.load()) != 0) {
-		this->operationsInFlight.wait(current);
-	}
-	DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
-
-	// Drain the commit pipeline before flushing so its data is included in
-	// the flush. The log lane feeds the commit lane, so it must drain first;
-	// its final tasks enqueue onto the still-running commit lane (or run
-	// inline once that lane stops).
-	this->logWorker.shutdown();
-	this->commitWorker.shutdown();
-
-	// Release any remaining per-env commit-completion tsfns. An in-flight
-	// commit pins this descriptor (state -> txnHandle -> dbHandle -> descriptor),
-	// so reaching here means no commit is in flight; only idle (unref'd) tsfns
-	// for still-living envs can remain, and those envs will issue no further
-	// commits to this descriptor. Queued completions already handed to a tsfn
-	// are still delivered (napi_tsfn_release, not abort).
+	// Publish cancellation for work that later steps here will block on but
+	// that cannot poll `closing` from where it runs. A manual compaction
+	// admitted through one of these handles blocks the optional close-time
+	// compaction (compactMutex), then WaitForCompact(), then the closables
+	// sweep's own async drain -- and RocksDB abandons it only through the token
+	// that handle gave it. Arming at the sweep would be three blocking steps too
+	// late, which is why this runs first. Safe to do to handles this thread does
+	// not own: the per-handle token is cleared by DBHandle::open(), unlike the
+	// descriptor-wide one.
 	{
-		std::lock_guard<std::mutex> lock(this->commitMutex);
-		for (auto& [env, completion] : this->commitCompletions) {
-			if (completion.tsfn) {
-				::napi_release_threadsafe_function(completion.tsfn, napi_tsfn_release);
+		std::lock_guard<std::mutex> closablesLock(this->txnsMutex);
+		for (auto& [key, weakClosable] : this->closables) {
+			if (auto closable = weakClosable.lock()) {
+				closable->cancelBlockingWork();
 			}
 		}
-		this->commitCompletions.clear();
-		// Block any later registerCommitCompletion (a commit racing this close
-		// from another env) from re-creating a tsfn that would never be
-		// released; such commits fall back to the legacy libuv path.
-		this->commitCompletionsClosed = true;
 	}
 
-	// We want to ensure that all in-memory data is written to disk. Keeps the waiting default on
-	// purpose: flushing immediately here races transaction-log-store teardown (AGENTS invariant 15).
-	this->flush();
+	const bool retryingClose = this->closeWorkersStopped;
+	if (!this->closeWorkersStopped) {
+		// Wait for all in-flight operations to complete before cleanup.
+		// The closing flag is already set, so new operations will fail with "Database is closing".
+		// Existing operations will decrement operationsInFlight and notify us when done.
+		// Unbounded in-flight operations must abort once `closing` is published
+		// rather than block this untimed wait for their full duration. A count
+		// scan polls isClosing() itself; a synchronous manual compactRange()
+		// uses the cancel token armed by beginClose(). An async one is not
+		// counted here at all -- it is awaited by the closables sweep below,
+		// and by then the per-handle token armed above has already cancelled it.
+		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
+		uint32_t current;
+		while ((current = this->operationsInFlight.load()) != 0) {
+			this->operationsInFlight.wait(current);
+		}
+		DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
+
+		// Drain the commit pipeline before flushing so its data is included in
+		// the flush. The log lane feeds the commit lane, so it must drain first.
+		this->logWorker.shutdown();
+		this->commitWorker.shutdown();
+
+		// An in-flight commit pins this descriptor through its transaction and DB
+		// handles, so reaching this release pass means only idle per-env TSFNs remain.
+		// Release rather than abort: queued completions are still delivered before
+		// finalization, while a later registration observes commitCompletionsClosed
+		// and falls back to the legacy libuv path.
+		{
+			std::lock_guard<std::mutex> lock(this->commitMutex);
+			for (auto& [env, completion] : this->commitCompletions) {
+				if (completion.tsfn) {
+					::napi_release_threadsafe_function(completion.tsfn, napi_tsfn_release);
+				}
+			}
+			this->commitCompletions.clear();
+			this->commitCompletionsClosed = true;
+		}
+		this->closeWorkersStopped = true;
+	}
+	if (retryingClose) {
+		const int retryDelayMs = testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS");
+		if (retryDelayMs > 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(retryDelayMs));
+		}
+	}
+
+	if (testConsumeCloseFailure()) {
+		throw rocksdb_js::DBException("Injected database close failure");
+	}
+	if (!this->db) {
+		return;
+	}
+
+	// We want to ensure that all in-memory data is written to disk. Keep the waiting default: an
+	// immediate flush races transaction-log-store teardown (AGENTS invariant 16).
+	std::string closeError;
+	rocksdb::Status status = testConsumeCloseFlushFailure()
+		? rocksdb::Status::IOError("Injected database close flush failure")
+		: this->flush();
+	if (!status.ok()) {
+		closeError = "Failed to flush database during close: " + status.ToString();
+		if (!destroying) {
+			throw rocksdb_js::DBException(closeError);
+		}
+	}
 
 	// Trigger manual compaction on all column families to reclaim space from
 	// tombstones before closing
@@ -471,7 +521,11 @@ void DBDescriptor::finishClose() {
 		}
 		for (const auto& columnDesc : pinnedColumns) {
 			if (columnDesc && columnDesc->column) {
-				this->compactRange(columnDesc->column.get(), nullptr, nullptr);
+				// Best-effort: a skipped compaction loses no data, so its status
+				// deliberately does not become a close failure (which would
+				// quarantine the path). Only the WaitForCompact below is
+				// reported -- see README "db.close()".
+				this->compactRange(columnDesc->column.get(), nullptr, nullptr, false, nullptr);
 			}
 		}
 	}
@@ -482,7 +536,10 @@ void DBDescriptor::finishClose() {
 	// suggestions of the documentation, this method alone does not seem to
 	// trigger a flush
 	rocksdb::WaitForCompactOptions options;
-	this->db->WaitForCompact(options);
+	status = this->db->WaitForCompact(options);
+	if (!status.ok() && closeError.empty()) {
+		closeError = "Failed waiting for database compaction during close: " + status.ToString();
+	}
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 
@@ -521,7 +578,10 @@ void DBDescriptor::finishClose() {
 
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
-	TransactionLogStoreRegistry::Unregister(this->path);
+	if (!this->transactionLogsUnregistered) {
+		TransactionLogStoreRegistry::Unregister(this->path);
+		this->transactionLogsUnregistered = true;
+	}
 
 	this->transactions.clear();
 	{
@@ -532,6 +592,9 @@ void DBDescriptor::finishClose() {
 	this->events.releaseAll();
 
 	this->db.reset();
+	if (!closeError.empty()) {
+		throw rocksdb_js::DBException(closeError);
+	}
 }
 
 napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed) {
@@ -2214,11 +2277,32 @@ rocksdb::Status DBDescriptor::compactRange(
 	rocksdb::ColumnFamilyHandle* column,
 	const rocksdb::Slice* start,
 	const rocksdb::Slice* end,
-	bool bottommost
+	bool bottommost,
+	std::atomic<bool>* canceled
 ) {
 	std::lock_guard<std::mutex> lock(this->compactMutex);
 	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range (bottommost=%d)\n", this, bottommost);
 	rocksdb::CompactRangeOptions options;
+	// Let a concurrent close interrupt this compaction rather than wait out its
+	// full, unbounded duration; see compactCancelRequested.
+	if (canceled) {
+		options.canceled = canceled;
+		// Test seam (inert unless ROCKSDB_JS_COMPACT_DELAY_MS is set): park here,
+		// still inside the caller's OperationGuard / async-work registration,
+		// until a close arms the token. That makes the ordering observable from
+		// JS without depending on how long a real compaction happens to run.
+		// Bounded so a fixture that never closes still finishes.
+		const int cancelWaitMs = compactCancelDelayMsFlag().load(std::memory_order_relaxed);
+		if (cancelWaitMs > 0) {
+			const auto deadline =
+				std::chrono::steady_clock::now() + std::chrono::milliseconds(cancelWaitMs);
+			while (!canceled->load() &&
+				std::chrono::steady_clock::now() < deadline
+			) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		}
+	}
 	if (bottommost) {
 		// RocksDB defaults this to kIfHaveCompactionFilter, so with no compaction filter installed
 		// the bottommost level is skipped — and that is where the bulk of the data sits. Rewriting

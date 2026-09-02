@@ -287,6 +287,50 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * descriptor.
 	 */
 	std::atomic<bool> closing{false};
+	// finishClose() can be retried after a quarantined failure. These guards
+	// prevent its one-shot stages from running twice while later idempotent
+	// cleanup resumes from the failed point.
+	bool closeWorkersStopped = false;
+	bool transactionLogsUnregistered = false;
+
+	/**
+	 * Cancellation token handed to `rocksdb::CompactRangeOptions::canceled` by
+	 * every cancellable *synchronous* `compactRange()`. Contract, in four parts:
+	 *
+	 *  1. It is armed in exactly one place -- `beginClose()`, under the same
+	 *     transition that publishes `closing` -- so a close claim and manual
+	 *     compaction cancellation are one step. Arming it any later reopens the
+	 *     window this exists to close: `finishClose()` drains
+	 *     `operationsInFlight` with an untimed wait, and a synchronous
+	 *     `compactSync()`/`clearSync()` blocks it for the compaction's whole
+	 *     duration. `DestroyDB`/`Shutdown` also claim every entry for a path
+	 *     under one lock and then close them sequentially, so arming at claim
+	 *     time cancels compactions on descriptors whose own `finishClose()` has
+	 *     not started yet.
+	 *  2. It is never cleared. Close-initiated compaction passes a null cancel
+	 *     token instead, since nothing external is waiting on it, and a
+	 *     descriptor never leaves the closing state.
+	 *  3. It covers synchronous compaction only. Async `compact()`/`clear()`
+	 *     released their OperationGuard at setup handoff, so this drain does not
+	 *     await them; they are awaited by `DBHandle::close()`'s async-work drain
+	 *     and cancelled by the per-handle token, which a self-close arms before
+	 *     it ever reaches `beginClose()` and a foreign close arms from
+	 *     `finishClose()` ahead of its first blocking step. See
+	 *     `DBHandle::compactCancelRequested` and AGENTS.md invariant 6.
+	 *  4. It is private to this descriptor and never aliased onto `closing`.
+	 *     RocksDB writes through this pointer -- `DisableManualCompaction()`
+	 *     sets the caller's atomic -- and `closing == true` means the registry
+	 *     has an owner committed to running `finishClose()`. Letting RocksDB
+	 *     publish that state would leave a half-closed descriptor with no
+	 *     closer, wedging every later open of the path.
+	 *
+	 * Covered by `test/fixtures/fork-compact-cancel-sync.mts`, which fails both
+	 * if the token stops reaching RocksDB and if arming moves past the in-flight
+	 * drain. It does not separate arming here from arming at the top of
+	 * `finishClose()` -- for a single descriptor those are equivalent, and the
+	 * batch-claim case in (1) is what makes this the right home.
+	 */
+	std::atomic<bool> compactCancelRequested{false};
 
 	/**
 	 * Counter tracking in-flight database operations. close() uses
@@ -458,6 +502,7 @@ public:
 
 	void close();
 	bool isClosing() const { return this->closing.load(); }
+	bool isClosed() const { return !this->db; }
 
 	/**
 	 * Atomically transitions the descriptor into the closing state. Returns
@@ -469,14 +514,22 @@ public:
 	 * under the same lock) waits instead of handing the descriptor to a new
 	 * handle that would then be closed out from under it.
 	 */
-	bool beginClose() { return !this->closing.exchange(true); }
+	bool beginClose() {
+		if (this->closing.exchange(true)) {
+			return false;
+		}
+		// The only site that arms compaction cancellation; see the
+		// compactCancelRequested contract above before moving it.
+		this->compactCancelRequested.store(true);
+		return true;
+	}
 
 	/**
 	 * Performs the actual close work (flush, close handles, release resources).
 	 * Only valid after `beginClose()` returned true; `close()` is the all-in-one
 	 * entry point that claims and then runs this.
 	 */
-	void finishClose();
+	void finishClose(bool destroying = false);
 
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
@@ -588,7 +641,7 @@ public:
 	/**
 	 * Flushes every column family's memtable. `allowWriteStall = false` (the RocksDB default)
 	 * makes this WAIT, unbounded, on the calling thread — see the `FlushOptions` JSDoc in
-	 * `src/load-binding.ts` and AGENTS invariant 15.
+	 * `src/load-binding.ts` and AGENTS invariant 16.
 	 */
 	rocksdb::Status flush(bool allowWriteStall = false);
 
@@ -605,8 +658,41 @@ public:
 		rocksdb::ColumnFamilyHandle* column,
 		const rocksdb::Slice* start,
 		const rocksdb::Slice* end,
-		bool bottommost = false
+		bool bottommost = false,
+		// The token RocksDB polls to abandon this compaction. Which one to pass
+		// is decided by the drain that awaits the caller, not by this class:
+		// `&DBDescriptor::compactCancelRequested` for a synchronous caller
+		// holding an OperationGuard, `&DBHandle::compactCancelRequested` for one
+		// running as admitted async work. See DBHandle::compactCancelRequested.
+		// Close-initiated compaction passes nullptr and opts out: nothing
+		// external is waiting on it.
+		std::atomic<bool>* canceled = nullptr
 	);
+};
+
+/**
+ * Pins a descriptor operation across cross-environment teardown. Callers must
+ * check `isClosing()` after construction and before touching native DB state.
+ */
+struct OperationGuard final {
+	std::shared_ptr<DBDescriptor> descriptor;
+
+	explicit OperationGuard(std::shared_ptr<DBDescriptor> desc) : descriptor(std::move(desc)) {
+		if (descriptor) {
+			++descriptor->operationsInFlight;
+		}
+	}
+
+	~OperationGuard() {
+		if (descriptor && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
+			descriptor->operationsInFlight.notify_all();
+		}
+	}
+
+	OperationGuard(const OperationGuard&) = delete;
+	OperationGuard& operator=(const OperationGuard&) = delete;
+	OperationGuard(OperationGuard&&) = delete;
+	OperationGuard& operator=(OperationGuard&&) = delete;
 };
 
 /**

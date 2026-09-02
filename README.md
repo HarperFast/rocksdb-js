@@ -141,7 +141,13 @@ Creates a new database instance.
 ### `db.close()`
 
 Closes a database. This function can be called multiple times and will only close an opened
-database. A database instance can be reopened once its closed.
+database. A database instance can be reopened once it is closed. A flush failure leaves the native
+database quarantined so `shutdown()` can retry without losing unflushed data; an explicit
+`destroy()` can instead delete it. A failure while waiting for compaction to settle is reported
+after native teardown completes; the optional `compactOnClose` pass itself is best-effort and its
+errors do not fail the close, since a skipped compaction loses no data. All native close errors
+emit `database:closeFailed`. The quarantine applies to both writable and read-only opens because
+both modes share the physical path lifecycle.
 
 ```typescript
 const db = RocksDatabase.open('foo');
@@ -183,6 +189,12 @@ Sets global database settings.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
+  - `lifecycleWaitSeconds: number` How long a synchronous open, destroy, or shutdown waits for a
+    _conflicting_ lifecycle operation already in progress on the same path (e.g. another open or
+    close) before throwing a retryable timeout error. It does not bound the separate, intentionally
+    unbounded wait that `destroy()`/`shutdown()` make for in-flight backups, checkpoints, or other
+    async work still using the database — see [`db.destroy()`](#dbdestroy-void). Defaults to `30`
+    seconds and must be a positive integer.
   - `verificationTableEntries: number` The number of slots in the process-global
     [Verification Table](#verification-table). Each slot is 8 bytes, so the default of `131072`
     (128K) slots is 1 MB. Set to `0` to disable the verification table. This must be configured
@@ -349,7 +361,16 @@ db.compactSync({ bottommost: true });
 ### `db.destroy(): void`
 
 Completely removes a database based on the `db` instance's path including all data, column families,
-and files on disk.
+and files on disk. Destruction owns the physical path for the process: it closes every writable and
+read-only handle for that path, waits for registered backups and checkpoints to stop using the
+native database, and prevents another handle from reopening the path until removal finishes. Those
+waits are synchronous and can outlive `lifecycleWaitSeconds` once destruction has claimed the path,
+because releasing the native database beneath an active copy would be unsafe.
+
+A previously opened instance does not need to remain open, which allows an explicit `destroy()`
+retry after failed physical cleanup. A never-opened or read-only instance cannot destroy the
+database. `shutdown()` reports a pending cleanup tombstone but never retries deletion; only an
+explicit `destroy()` can remove the path.
 
 ```typescript
 db.destroy();
@@ -1961,6 +1982,9 @@ console.log(currentThreadId());
 Returns an array containing that status of all active RocksDB instances.
 
 - `path: string` The database path.
+- `closeError?: string` The native lifecycle error retaining this registry entry.
+- `destroyCleanupPending?: boolean` The native database is closed, but physical path cleanup must
+  finish before the next open. Call `destroy()` to retry cleanup.
 - `refCount: number` The number of JavaScript database instances plus the registry's reference.
 - `columnFamiles: object` A map of column family names and their their info.
   - `userSharedBuffers: number` The count of active user shared buffers.
@@ -1978,11 +2002,20 @@ console.log(registryStatus());
 
 The `shutdown()` will flush all in-memory data to disk and wait for any outstanding compactions to
 finish, for all open databases. It is highly recommended to call this in a `process` `exit` event
-listener (on the main thread), to ensure that all data is flushed to disk before the process exits:
+listener (on the main thread), to ensure that all data is flushed to disk before the process exits.
+It throws the first close failure after attempting every claimed database; call it again to retry
+any descriptor whose native teardown did not complete. It reports pending destroy-cleanup
+tombstones without deleting their paths; retry those with an explicit `destroy()`:
 
 ```typescript
 import { shutdown } from '@harperfast/rocksdb-js';
-process.on('exit', shutdown);
+process.on('exit', () => {
+	try {
+		shutdown();
+	} catch (error) {
+		console.error('rocksdb-js shutdown failed', error);
+	}
+});
 ```
 
 ### `versions: { 'rocksdb': string; 'rocksdb-js': string }`

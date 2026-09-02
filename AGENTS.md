@@ -219,6 +219,37 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `::getenv`-vs-`process.env` caveat as `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be
   set in the environment a process is started with. `0` disables the window (every
   rising edge emits); malformed/negative falls back to the default
+- `ROCKSDB_JS_DESTROY_DELAY_MS` - Test-only: delay after descriptor teardown and
+  before physical database destruction (widens same-path reopen races)
+- `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` - Test-only: delay after `DBRegistry::OpenDB()` has atomically
+  adopted and attached a handle, but before the native open returns to JavaScript (proves a forced
+  destroy cannot claim the descriptor during the former return/adopt/attach gap). Snapshotted in
+  `initializeTestSeams()` so every open avoids a `getenv()` call
+- `ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS` / `ROCKSDB_JS_COUNT_DELAY_MS` - Test-only: per-row delays in
+  `DBIterator::Next()` and `DBIteratorHandle::countRemaining()`. Both are read **once** in
+  `initializeTestSeams()` rather than per row: these are the two per-row native loops, and a
+  `getenv()` scan per row is a measurable share of their cost for a seam unset in production. Add
+  new per-row seams the same way.
+- `ROCKSDB_JS_COMPACT_DELAY_MS` - Test-only: upper bound (ms) that a **cancellable** manual
+  `compactRange()` parks before handing the range to RocksDB, returning as soon as the cancel
+  token that caller was given is armed. Lets a fixture hold a compaction across a close claim
+  without depending on how long a real compaction runs; snapshotted in `initializeTestSeams()`
+  like the per-row seams above, so the production path costs one relaxed load per manual
+  compaction. Used by `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts`
+- `ROCKSDB_JS_CLOSE_FLUSH_FAILURE` - Test-only: number of close-time flushes to fail with an
+  injected `IOError` (a **count**, not a flag; `1` is one failure). More than one is what leaves a
+  descriptor still quarantined at process exit, since the exit-time `DBRegistry::Shutdown()`
+  consumes a failure of its own on the retry — see invariant 19
+- `ROCKSDB_JS_CLOSE_FAILURE` / `ROCKSDB_JS_DESTROY_FAILURE` - Test-only: inject a one-shot native
+  close failure, or fail every physical `DestroyDB` for the life of the process. Both are fault
+  **flags**, so both are snapshotted in `initializeTestSeams()` rather than re-read: `::getenv`
+  races a `process.env` write from another thread, and these are read from teardown paths that can
+  run on any thread
+- `ROCKSDB_JS_CLOSE_RETRY_DELAY_MS` - Test-only: delay inside a _resumed_ `finishClose()` (the
+  `shutdown()`/`destroy()` retry of a quarantined descriptor), widening the window in which a
+  concurrent open must wait for the retry rather than reopen the path
+- `ROCKSDB_JS_BACKUP_DELAY_MS` / `ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS` - Test-only: delays inside a
+  native backup copy and iterator construction, holding each across a concurrent destroy claim
 
 ## Test Structure
 
@@ -323,7 +354,80 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    their own `shared_ptr` for the duration of a copy (backup, backup stream, checkpoint) make a
    racing close skip the purge (`use_count > 1`), so their state destructors re-run
    `PurgeIfUnreferenced` after releasing the ref — without that retry the skipped purge is permanent
-   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672).
+   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). Once `beginClose()` wins,
+   `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
+   path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
+   immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
+   from another env after the in-flight count drains. The VT-only `verifyVersion` / `populateVersion`
+   fast paths narrow, but do not remove, that requirement: both still start with
+   `UNWRAP_DB_HANDLE_AND_OPEN()`, so they still gate on `descriptor`/`isClosing()`. What
+   `DBHandle::open()`'s snapshotted `verificationTableDbId` / `verificationTableColumnFamilyId` actually
+   avoids is the `getColumnFamilyHandle()` dereference and the `OperationGuard`'s in-flight
+   registration — the two things that are unsafe to skip everywhere else. `PutSync`/`RemoveSync`/
+   `TransactionHandle` still compute the VT address as `descriptor->vtEpoch` +
+   `getColumnFamilyHandle()->GetID()` rather than reading the cached fields, so there are two
+   spellings of the same address computation that must stay in agreement.
+   Async N-API setup must hold the guard until it hands off to `DBHandle::registerAsyncWork()`. Iterators
+   take the guard through construction/descriptor attachment, then serialize each native iterator call
+   against foreign forced close with their per-iterator mutex. `DBHandle::close()` itself is cross-env and must
+   serialize mutation of its `shared_ptr` members. A close-time flush failure keeps the native DB
+   quarantined so `shutdown()` can retry without losing `disableWAL` writes; an explicit destroy may
+   force teardown because the caller requested deletion. A failed physical destroy leaves a registry
+   tombstone, but `shutdown()` is deliberately non-destructive: it reports the tombstone and only an
+   explicit `destroy()` retries path deletion.
+   Because `finishClose()` drains `operationsInFlight` with an **untimed** wait, any operation that can
+   run unboundedly while holding an `OperationGuard` must abort itself once `closing` is published, or
+   it blocks teardown — and, since the blocked closer holds the path gate, times out every concurrent
+   `OpenDB()` for that path. There are two such operations and they cancel differently: the whole-range
+   count scan (`DBIteratorHandle::countRemaining`, behind `getKeysCount()` on both the database and
+   transaction paths) polls `isClosing()` per row and reports the abort to its caller rather than a
+   partial count; a manual `compactRange()` cannot poll from inside RocksDB, so it gets an explicit
+   cancel token → `CompactRangeOptions::canceled`. There are **two** such tokens, and which one a
+   compaction is handed is decided by the drain that awaits it, not by where the compaction runs.
+   `DBDescriptor::compactCancelRequested` covers a **synchronous** `compactSync()`/`clearSync()`,
+   which holds an `OperationGuard` for its whole duration and so is awaited by `finishClose()`'s
+   untimed `operationsInFlight` wait; it is armed in exactly one place — `beginClose()`, in the same
+   transition that publishes `closing`. `DBHandle::compactCancelRequested` covers an **async**
+   `compact()`/`clear()`, which released its guard at setup handoff and is instead awaited by
+   `DBHandle::close()`'s untimed async-work drain. It has **two** arming sites, one per closer:
+   `DBHandle::close()` arms its own immediately before that drain, and `finishClose()` arms every
+   still-attached handle's through `Closable::cancelBlockingWork()` before its _first_ blocking
+   step. The second is not belt-and-braces. A foreign `destroy()`/`shutdown()` reaches the handle
+   only through the closables sweep, which is the last step of teardown — and three earlier steps
+   can each block on that compaction: the optional `compactOnClose` pass takes `compactMutex`,
+   which the running compaction holds; `WaitForCompact()` does not return while a manual
+   compaction runs; then the sweep's own drain waits it out. The closer holds the path gate
+   throughout, so a late arm times out every concurrent `OpenDB()` for that path.
+   The split between the two tokens is not redundancy either: a self-close (`db.close()` →
+   `DBRegistry::CloseDB`) reaches `DBHandle::close()` **before** `PurgeIfUnreferenced`/`beginClose()`,
+   so the descriptor token is not yet armed when the async drain starts — a `db.close()` racing its
+   own `db.compact()` would park the JS thread for the compaction's full duration. Arming the
+   descriptor token from `CloseDB` is not the alternative: it is never cleared, so one handle
+   closing would permanently kill manual compaction for every other handle sharing the
+   process-global descriptor. That is also what makes it safe for `finishClose()` to arm handles
+   this thread does not own: the per-handle token _is_ cleared, by `DBRegistry::OpenDB()`, and only
+   after the new descriptor is adopted (see invariant 20). Neither token is ever aliased onto
+   `closing` itself: RocksDB writes through the pointer it is given
+   (`DisableManualCompaction()` sets the caller's atomic), and `closing` means the registry has an
+   owner committed to running `finishClose()`, which RocksDB must not be able to publish.
+   `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts` cover the four close paths in
+   the same order as above. What they pin down is **our** half of the contract — that the right
+   token is armed, early enough, and handed to RocksDB: each fails if `options.canceled` stops
+   being passed (the compaction then succeeds instead of returning `Incomplete`), `sync` also fails
+   if the descriptor arm moves past the in-flight drain, and `destroy` also fails if the foreign
+   arm moves back to the closables sweep. They do **not** exercise RocksDB aborting a compaction
+   already in progress: `ROCKSDB_JS_COMPACT_DELAY_MS` parks before `CompactRange`, deliberately, so
+   the fixtures do not depend on how long a real compaction runs. Nor does any of them separate
+   arming in `beginClose()` from arming at the top of `finishClose()` — for a single descriptor
+   those are equivalent, and what makes `beginClose()` the right home is that `DestroyDB`/`Shutdown`
+   claim every entry for a path under one lock and then close them sequentially.
+   Everything the four registry teardown paths do _after_ claiming a descriptor —
+   `finishClose()`, erase-or-quarantine, notify, emit `database:closeFailed` — is one helper,
+   `closeClaimedDescriptors` in `db_registry.cpp`; only the claim predicate differs per caller. Its
+   `failOnCompletedWithError` option is the one deliberate asymmetry: a close that finished native
+   teardown but reported an error (a failed close-time flush) is fatal for `shutdown()`/`PurgeAll()`
+   because dropping it silently would hide possible data loss, and non-fatal for `destroy()`, whose
+   caller asked for the data to be deleted anyway.
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
    own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.
@@ -604,8 +708,29 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     is the descriptor's single `CommitWorker` thread (see "Commit execution" above), which dispatches
     every `Transaction.commit()` in order — so opting a flush into a stall queues up every commit
     behind it, including ones from callers that never touched flush.
+17. **Async-work admission and cancellation share one mutex; the drain that follows must never time
+    out**: `AsyncWorkHandle` (`napi/async.h`) tracks in-flight async work per `DBHandle`/
+    `TransactionHandle`. `registerAsyncWork()` and `cancelAllAsyncWork()` both take `waitMutex`, so a
+    registration that races a close either lands (and is counted) before cancellation publishes, or
+    is refused — there is no window where it is admitted after `waitForAsyncWorkCompletion()` has
+    already observed the count at zero. Refusal returns `false`; every call site (the shared
+    `admitAsyncWorkOrReject()` helper, or `ScopedAsyncWorkRegistration::ok()` for the RAII
+    cross-handle case in `transaction_handle.cpp`) must fail the operation — reject the
+    already-constructed promise and touch no native state — rather than proceed with work nothing is
+    tracking anymore. `waitForAsyncWorkCompletion()` itself has no timeout: `DBHandle::close()` /
+    `TransactionHandle::close()` call it immediately before releasing the `rocksdb::DB`, column
+    family, or transaction that admitted work may still be using, and a flush legitimately waiting
+    out a write stall (invariant 16) can run far longer than any fixed bound. A bounded wait that
+    gives up anyway — the previous 5-second default — let `finishClose()` reach `this->db.reset()`
+    while a flush was still executing against it, a genuine use-after-free. `database.cpp`'s
+    `Flush`/`Compact`/`Clear`/async `Get` rely entirely on this drain for safety: their
+    `OperationGuard` from `ACQUIRE_OPERATIONS_LOCK()` covers only the synchronous setup, not the
+    queued execute callback. Backup/checkpoint/backup-stream additionally hold the descriptor's
+    `operationsInFlight` claim through their whole async execution (the pinning pattern from
+    invariant 9), so for those this drain is defense in depth rather than the only thing preventing
+    a use-after-free.
 
-17. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
+18. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
     `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer drops
     the JS-side ref and, per invariant 13, `onWrapperCollected()` reaps a transaction whose
@@ -645,6 +770,55 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     leaker repro still faults in Node's second-pass napi finalizer drain even with the fix; it
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
+
+19. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
+    namespace-scope `static`, so anything still in `instance->databases` when the hook returns is
+    destroyed from an `atexit` handler. Closing a RocksDB database there runs
+    `DBImpl::CancelAllBackgroundWork()` → `PeriodicTaskScheduler::Unregister()` **after** RocksDB's
+    own function-local statics have been destroyed, and RocksDB's `PthreadCall` wrapper reacts to
+    the resulting `EINVAL` by printing `pthread lock: Invalid argument` and calling `std::abort()` —
+    a process that ran every test successfully then dies with SIGABRT (or, on the injected-flush
+    path, hangs forever in `WaitForFlushMemTables` with no background thread left to service it).
+    `DBRegistry::Shutdown()` normally empties the map, but a descriptor whose close-time flush
+    failed is deliberately **quarantined** (invariant 6) so `shutdown()`/`destroy()` can retry —
+    and at process exit there is no later retry. `DBRegistry::Teardown()`, called from the hook
+    right after `Shutdown()`, releases whatever is left while RocksDB is still usable. The general
+    trap: anything the registry retains for a caller to retry needs a defined terminal owner,
+    because "the static destructor" is not one. Covered by
+    `test/fixtures/fork-quarantined-exit.mts`; the same shape reproduces from JS by leaving a
+    database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
+    which is why its fixtures now tear down with `destroy()` rather than `close()`).
+
+20. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
+    lifecycle waits**:
+    `DBHandle::close()` publishes `cancelled` (and, per invariant 6, the per-handle compaction
+    token), and every async admission refuses while either stands — so `DBHandle::open()` has to
+    clear them for a documented close/reopen cycle to work. `OpenDB()` blocks while a foreign
+    `destroy()`/`shutdown()` owns the old path, and that teardown's closables sweep force-closes
+    this still-attached handle mid-wait, re-arming both flags. Clearing before those waits therefore
+    leaves the re-arm standing over the _newly_ opened descriptor. The reset now runs after every
+    wait and while `databasesMutex` still excludes a new closer, immediately before the handle is
+    attached to the selected descriptor. Because the reset takes the handle's async-work
+    `waitMutex` and attachment takes the descriptor's `txnsMutex`, the established order is
+    `databasesMutex` → `waitMutex` → `txnsMutex`; code holding `waitMutex` must release it before
+    calling back into the registry. Async-state destructors that retry `PurgeIfUnreferenced()`
+    release their descriptor before the base destructor unregisters async work, preserving that
+    order.
+
+21. **Handle adoption and descriptor attachment are one registry-locked publication**:
+    `DBRegistry::OpenDB()` selects the descriptor and column family, clears stale close cancellation,
+    publishes every descriptor-backed handle field, and inserts the handle into
+    `DBDescriptor::closables` before releasing `databasesMutex`. The owner-thread-only `path` is set
+    before registry work so that a failed open can still follow a quarantine error's `destroy()`
+    recovery, but teardown never reads that field from `closables`. A forced
+    `destroy()`/`shutdown()` claims under the same mutex,
+    so it either precedes the open or sees the fully adopted handle in the closables sweep. Returning
+    `DBHandleParams` and attaching in `Database::Open()` left a gap where teardown could reset
+    `descriptor->db` while the invisible handle retained a `ColumnFamilyHandle`; destroying that
+    column handle after its DB is a native use-after-free. No handle shared-pointer field may be read
+    after the registry lock drops, because a foreign sweep may immediately reset it. Covered by
+    `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` widens the point
+    after atomic publication so the fixture can assert the exact closables count before destroy.
 
 ## Debugging native heap corruption
 

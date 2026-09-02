@@ -1,4 +1,6 @@
 #include "database/db_settings.h"
+#include <cmath>
+#include <limits>
 #include <random>
 #include "napi/macros.h"
 #include "core/platform.h"
@@ -30,6 +32,7 @@ DBSettings::DBSettings():
 	writeBufferManagerAllowStall(false),
 	writeBufferManager(nullptr),
 	compactOnClose(false),
+	lifecycleWaitSeconds(30),
 	verificationTableEntries(128 * 1024), // 128K slots = 1 MB at 8 bytes per slot
 	verificationTableSeed(generateSeed()),
 	verificationTable(nullptr)
@@ -212,6 +215,37 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	}
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
+
+	double lifecycleWaitSeconds = 0;
+	bool lifecycleWaitProvided = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitProvided));
+	if (lifecycleWaitProvided) {
+		napi_value lifecycleWaitValue;
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitValue));
+		napi_valuetype lifecycleWaitType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, lifecycleWaitValue, &lifecycleWaitType));
+		if (lifecycleWaitType == napi_undefined || lifecycleWaitType == napi_null) {
+			lifecycleWaitProvided = false;
+		}
+	}
+	if (lifecycleWaitProvided) {
+		status = rocksdb_js::getProperty(env, params, "lifecycleWaitSeconds", lifecycleWaitSeconds, true);
+		if (status != napi_ok) {
+			::napi_throw_type_error(env, nullptr, "Lifecycle wait seconds must be a number");
+			return nullptr;
+		}
+		if (!std::isfinite(lifecycleWaitSeconds) || lifecycleWaitSeconds <= 0 ||
+			std::trunc(lifecycleWaitSeconds) != lifecycleWaitSeconds ||
+			lifecycleWaitSeconds > std::numeric_limits<uint32_t>::max()
+		) {
+			::napi_throw_range_error(env, nullptr, "Lifecycle wait seconds must be a positive integer");
+			return nullptr;
+		}
+		settings.lifecycleWaitSeconds.store(
+			static_cast<uint32_t>(lifecycleWaitSeconds),
+			std::memory_order_relaxed
+		);
+	}
 
 	int64_t verificationTableEntries = 0;
 	status = rocksdb_js::getProperty(env, params, "verificationTableEntries", verificationTableEntries, true);

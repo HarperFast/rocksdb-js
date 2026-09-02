@@ -1,4 +1,4 @@
-import { RocksDatabase, shutdown } from '../src/index.ts';
+import { RocksDatabase, registryStatus } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -26,13 +26,10 @@ async function writeAll(db: RocksDatabase, count: number, prefix = 'value'): Pro
 
 describe('Checkpoints', () => {
 	afterEach(() => {
-		// The close()/destroy()-during-checkpoint tests can leave a descriptor
-		// pending registry purge (closing before an in-flight, descriptor-pinned
-		// checkpoint settles defers the purge — see #672), which keeps the source
-		// database open and its temp dir locked. That fails cleanup on Windows and
-		// crashes the Bun worker on exit. Purge the registry first so the locks are
-		// released before we remove the directories.
-		shutdown();
+		// The checkpoint completion path purges a descriptor that became
+		// unreferenced while the copy was in flight. Avoid process-global shutdown
+		// here: test files share a process, so it can close another suite's active
+		// database while that suite is dropping a column family.
 		for (const dir of tempDirs) {
 			rmSync(dir, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
 		}
@@ -190,7 +187,7 @@ describe('Checkpoints', () => {
 		}));
 
 	it('should not crash when closing during a checkpoint', () =>
-		dbRunner(async ({ db }) => {
+		dbRunner(async ({ db, dbPath }) => {
 			await writeAll(db, 200);
 
 			const checkpointDir = tempDir();
@@ -207,6 +204,7 @@ describe('Checkpoints', () => {
 					() => 'settled'
 				)
 			).resolves.toBe('settled');
+			expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 		}));
 
 	it('should not free the database under an in-flight checkpoint when destroy() races it', () =>
@@ -223,9 +221,9 @@ describe('Checkpoints', () => {
 			// close()) bypasses the async-work tracker. The checkpoint registers in
 			// operationsInFlight, so finishClose() waits for the copy to finish
 			// before resetting descriptor->db — the worker never touches a freed DB.
-			// The in-flight op still holds a descriptor reference, so destroy() throws
-			// rather than tearing the database down mid-copy.
-			expect(() => db.destroy()).toThrow();
+			// The operation reference can outlive registry removal safely because
+			// finishClose waits for it and resets the native DB before physical destroy.
+			expect(() => db.destroy()).not.toThrow();
 
 			// The checkpoint itself completed (finishClose waited for it), so the
 			// promise settles cleanly and nothing crashes.

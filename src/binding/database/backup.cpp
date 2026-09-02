@@ -5,15 +5,18 @@
 #include "database/db_handle.h"
 #include "database/db_registry.h"
 #include "core/file_lock.h"
+#include "core/test_seam.h"
 #include "napi/async.h"
 #include "napi/helpers.h"
 #include "napi/macros.h"
 #include "rocksdb/env.h"
 #include "rocksdb/status.h"
 #include "rocksdb/utilities/backup_engine.h"
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace rocksdb_js {
@@ -57,12 +60,27 @@ struct AsyncBackupState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	// Our descriptor ref can be the reason a concurrent close skipped its
 	// registry purge (use_count() > 1), so on release we must retry the purge or
 	// the registry entry — and the open RocksDB — would linger forever.
-	~AsyncBackupState() override {
+	void releaseDescriptor() {
 		if (this->descriptor) {
 			std::string path = this->descriptor->path;
 			bool readOnly = this->descriptor->readOnly;
 			this->descriptor.reset();
 			DBRegistry::PurgeIfUnreferenced(path, readOnly);
+		}
+	}
+
+	~AsyncBackupState() override {
+		this->releaseDescriptor();
+	}
+};
+
+struct BackupInFlightClaim final {
+	DBDescriptor* descriptor;
+	const bool& handedOff;
+
+	~BackupInFlightClaim() {
+		if (!handedOff && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
+			descriptor->operationsInFlight.notify_all();
 		}
 	}
 };
@@ -135,7 +153,8 @@ static napi_value queueBackupWork(
 	State* state,
 	napi_async_execute_callback execute,
 	napi_async_complete_callback complete,
-	bool registerWork
+	bool registerWork,
+	bool* queued = nullptr
 ) {
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
@@ -145,11 +164,18 @@ static napi_value queueBackupWork(
 
 	NAPI_STATUS_THROWS(::napi_create_async_work(env, nullptr, name, execute, complete, state, &state->asyncWork));
 
+	bool admitted = false;
 	if (registerWork && state->handle) {
-		state->handle->registerAsyncWork();
+		if (!admitAsyncWorkOrReject(env, state->handle.get(), state, "Database is closing")) {
+			NAPI_RETURN_UNDEFINED();
+		}
+		admitted = true;
 	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue backup work", admitted)) {
+		NAPI_RETURN_UNDEFINED();
+	}
+	if (queued) *queued = true;
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -179,6 +205,10 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 	// starting a backup once close() has been requested.
 	if (!state->descriptor || !state->handle || state->handle->isCancelled()) {
 		return rocksdb::Status::Aborted("Database closed during backup operation");
+	}
+	const int backupDelayMs = testDelayMs("ROCKSDB_JS_BACKUP_DELAY_MS");
+	if (backupDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(backupDelayMs));
 	}
 
 	const std::string& backupDir = state->engineOptions.backup_dir;
@@ -341,10 +371,19 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 	bool checkDiskSpace = true;
 	NAPI_STATUS_THROWS(getProperty(env, options, "checkDiskSpace", checkDiskSpace));
 
+	auto descriptor = (*dbHandle)->descriptor;
+	++descriptor->operationsInFlight;
+	bool handedOff = false;
+	BackupInFlightClaim claim{descriptor.get(), handedOff};
+	if (descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	auto state = new AsyncBackupState(
 		env,
 		*dbHandle,
-		(*dbHandle)->descriptor,
+		descriptor,
 		std::move(engineOptions),
 		std::move(createOptions),
 		std::move(appMetadata)
@@ -361,11 +400,25 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		[](napi_env, void* data) { // execute
 			auto state = reinterpret_cast<AsyncBackupState*>(data);
 			state->status = runCreateBackup(state);
+			if (--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
+				state->descriptor->operationsInFlight.notify_all();
+			}
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncBackupState*>(data);
 			state->deleteAsyncWork();
+			// A cancelled queued work item never ran execute, so complete owns the
+			// in-flight decrement in that case.
+			if (status == napi_cancelled &&
+				--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()
+			) {
+				state->descriptor->operationsInFlight.notify_all();
+			}
+			// Promise settlement is the public completion boundary. Release the
+			// descriptor pin and retry any deferred registry purge first so an
+			// immediate registryStatus() / shutdown() cannot observe stale state.
+			state->releaseDescriptor();
 			if (status != napi_cancelled) {
 				if (state->status.ok()) {
 					napi_value result;
@@ -379,7 +432,8 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 			}
 			delete state;
 		},
-		true // registerWork
+		true, // registerWork
+		&handedOff
 	);
 }
 

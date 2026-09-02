@@ -19,25 +19,38 @@ namespace {
  * handle's column descriptor. This bridges the gap between the caller's open
  * check and the transaction's async-work registration without making the
  * worker access a concurrently closing DBHandle.
+ *
+ * Admission can be refused if `handle`'s cancellation was already published
+ * (a concurrent close); `admitted` tracks that so the destructor only
+ * unregisters a claim it actually holds — unregistering an admission that
+ * never succeeded would underflow the target's active-work count and could
+ * make a later close() stop waiting while real work is still outstanding.
+ * Callers must check `ok()` after construction and treat a false result the
+ * same as the target already being closed.
  */
 struct ScopedAsyncWorkRegistration {
 	AsyncWorkHandle* handle;
+	bool admitted;
 
 	explicit ScopedAsyncWorkRegistration(AsyncWorkHandle* handle)
-		: handle(handle) {
+		: handle(handle), admitted(false) {
 		if (this->handle) {
-			this->handle->registerAsyncWork();
+			this->admitted = this->handle->registerAsyncWork();
 		}
 	}
 
 	~ScopedAsyncWorkRegistration() {
-		if (this->handle) {
+		if (this->handle && this->admitted) {
 			this->handle->unregisterAsyncWork();
 		}
 	}
 
 	ScopedAsyncWorkRegistration(const ScopedAsyncWorkRegistration&) = delete;
 	ScopedAsyncWorkRegistration& operator=(const ScopedAsyncWorkRegistration&) = delete;
+
+	bool ok() const {
+		return !this->handle || this->admitted;
+	}
 
 	void release() {
 		this->handle = nullptr;
@@ -317,8 +330,12 @@ void TransactionHandle::close() {
 	// Drain BEFORE touching anything the in-flight work owns. Nothing below is
 	// safe while a commit is still executing: `state` feeds the commitAborted()
 	// decision, releaseIntent() mutates VT state the commit is using, and
-	// `delete txn` hands RocksDB a dangling transaction.
-	const bool drained = this->waitForAsyncWorkCompletion();
+	// `delete txn` hands RocksDB a dangling transaction. waitForAsyncWorkCompletion()
+	// is unbounded (HarperFast/rocksdb-js#784) and cancelAllAsyncWork() above shares
+	// a mutex with registerAsyncWork(), so this always drains to zero — there is no
+	// timed-out case left to handle here; an earlier version of this close() leaked
+	// the transaction on a 5s drain timeout as a stopgap for exactly this window.
+	this->waitForAsyncWorkCompletion();
 
 	// Test seam: widen the PATH A vs PATH B race window (see txnCloseTestDelayMs).
 	// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
@@ -327,20 +344,6 @@ void TransactionHandle::close() {
 	const int closeDelayMs = testDelayMs("ROCKSDB_JS_TXN_CLOSE_DELAY_MS");
 	if (closeDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
-	}
-
-	if (!drained) {
-		// The drain timed out with work still executing against `txn` (e.g. a
-		// worker env torn down during a slow commit). Destroying now would free
-		// a transaction RocksDB is still using and could mark the log aborted
-		// while the data commit goes on to succeed — so deliberately leak
-		// instead. The in-flight commit owns its own cleanup (it releases VT
-		// intents and resolves the log position on completion); this close must
-		// not steal it. A leaked transaction is recoverable; a use-after-free
-		// and a log/data disagreement are not. The complete admission-and-drain
-		// contract that removes this window is HarperFast/rocksdb-js#784.
-		DEBUG_LOG("%p TransactionHandle::close async work still in flight after drain timeout; leaking txn rather than freeing it\n", this);
-		return;
 	}
 
 	// Only now that no native work can be running: settle the final state.
@@ -418,7 +421,7 @@ napi_value TransactionHandle::get(
 	// the middle of this setup. Async fallback transfers this registration to its
 	// state; synchronous and failed setup paths release it on return.
 	ScopedAsyncWorkRegistration transactionRegistration(this);
-	if (this->isCancelled() || !this->txn) {
+	if (!transactionRegistration.ok() || this->isCancelled() || !this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
 		return nullptr;
 	}
@@ -441,7 +444,7 @@ napi_value TransactionHandle::get(
 	// that handle while copying its descriptor so a concurrent close cannot reset
 	// columnDescriptor in the gap between the caller's open check and this read.
 	ScopedAsyncWorkRegistration targetHandleRegistration(dbHandleOverride.get());
-	if (dbHandleOverride && dbHandle->isCancelled()) {
+	if (dbHandleOverride && (!targetHandleRegistration.ok() || dbHandle->isCancelled())) {
 		::napi_throw_error(env, nullptr, "Database closed during transaction get operation");
 		return nullptr;
 	}
@@ -590,7 +593,7 @@ napi_value TransactionHandle::get(
 	return returnStatus;
 }
 
-void TransactionHandle::getCount(
+bool TransactionHandle::getCount(
 	DBIteratorOptions& itOptions,
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
@@ -602,9 +605,7 @@ void TransactionHandle::getCount(
 
 	std::unique_ptr<DBIteratorHandle> itHandle =
 		std::make_unique<DBIteratorHandle>(this->shared_from_this(), itOptions, dbHandleOverride);
-	for (count = 0; itHandle->iterator->Valid(); ++count) {
-		itHandle->iterator->Next();
-	}
+	return itHandle->countRemaining(count);
 }
 
 /**

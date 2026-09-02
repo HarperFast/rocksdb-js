@@ -4,6 +4,7 @@
 #include "database/db_registry.h"
 #include "database/db_settings.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "core/test_seam.h"
 #include "core/verification_table.h"
 
 namespace rocksdb_js {
@@ -67,7 +68,7 @@ void setTxnlogSummaryStatsOnObject(
  * Creates a new DBHandle.
  */
 DBHandle::DBHandle(napi_env env, napi_ref exportsRef)
-	: descriptor(nullptr), env(env), exportsRef(exportsRef) {}
+	: descriptor(nullptr), env(env), ownerThreadId(std::this_thread::get_id()), exportsRef(exportsRef) {}
 
 /**
  * Close the DBHandle and destroy it.
@@ -80,7 +81,7 @@ DBHandle::~DBHandle() {
 /**
  * Clears all data in the database's column family.
  */
-rocksdb::Status DBHandle::clear() {
+rocksdb::Status DBHandle::clear(std::atomic<bool>* compactCanceled) {
 	if (!this->opened() || this->isCancelled()) {
 		DEBUG_LOG("%p Database closed during clear operation\n", this);
 		return rocksdb::Status::Aborted("Database closed during clear operation");
@@ -90,7 +91,9 @@ rocksdb::Status DBHandle::clear() {
 	rocksdb::Status status = this->descriptor->compactRange(
 		this->columnDescriptor->column.get(),
 		nullptr,
-		nullptr
+		nullptr,
+		false,
+		compactCanceled
 	);
 	if (!status.ok()) {
 		// A dropped column family is effectively already empty — clear is a no-op.
@@ -98,6 +101,12 @@ rocksdb::Status DBHandle::clear() {
 		// RocksDB rather than applied.
 		if (status.IsColumnFamilyDropped()) {
 			return rocksdb::Status::OK();
+		}
+		if (status.IsIncomplete() && (this->isCancelled() || this->descriptor->isClosing())) {
+			// A close cancelled the compaction this clear starts with, so nothing
+			// was deleted. Reporting RocksDB's "Manual compaction paused" would
+			// leave the caller unable to tell whether the clear partially applied.
+			return rocksdb::Status::Aborted("Database closed during clear operation");
 		}
 		return status;
 	}
@@ -126,9 +135,16 @@ rocksdb::Status DBHandle::clear() {
  * Closes the DBHandle.
  */
 void DBHandle::close() {
+	std::lock_guard<std::mutex> closeLock(this->closeMutex);
 	DEBUG_LOG("%p DBHandle::close dbDescriptor=%p (ref count = %ld)\n", this, this->descriptor.get(), this->descriptor.use_count());
 
 	// cancel all active async work before closing
+	//
+	// An async compact() cannot see that flag: its execute callback checks it
+	// once at entry and then blocks inside RocksDB, which only reads
+	// CompactRangeOptions::canceled. Arm that token here too, before the drain
+	// below waits it out -- see DBHandle::compactCancelRequested.
+	this->compactCancelRequested.store(true);
 	this->cancelAllAsyncWork();
 
 	// wait for all async work to complete before closing
@@ -151,16 +167,24 @@ void DBHandle::close() {
 		// DBRegistry::CloseTransactionsByEnv from the env cleanup hook
 		// (HarperFast/rocksdb-js#741).
 
-		// release our reference to the descriptor
-		this->descriptor.reset();
+		// A foreign thread can close a handle while its owner is copying this
+		// shared_ptr for an operation. Keep that member owner-thread-only; the
+		// descriptor itself is already closed before any foreign close returns.
+		if (std::this_thread::get_id() == this->ownerThreadId) {
+			this->descriptor.reset();
+		}
 	}
 
-	// clean up transaction log references
-	for (auto& [name, ref] : this->logRefs) {
-		DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
-		::napi_delete_reference(this->env, ref);
+	// N-API references are environment-thread-affine. Destroying a shared
+	// descriptor can close this handle from another worker; retain the refs and
+	// descriptor until the owning environment's close or finalizer releases them.
+	if (std::this_thread::get_id() == this->ownerThreadId) {
+		for (auto& [name, ref] : this->logRefs) {
+			DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
+			::napi_delete_reference(this->env, ref);
+		}
+		this->logRefs.clear();
 	}
-	this->logRefs.clear();
 
 	DEBUG_LOG("%p DBHandle::close Handle closed\n", this);
 }
@@ -331,33 +355,19 @@ void DBHandle::collectTransactionLogSummary(TransactionLogStoreStats& total, uin
  * @param options - The options for the database.
  */
 void DBHandle::open(const std::string& path, const DBOptions& options) {
-	// Reset the cancelled state in case this handle was previously closed
-	// and is being re-opened
-	this->resetCancelled();
+	DBRegistry::OpenDB(this->shared_from_this(), path, options);
 
-	this->path = path;
-
-	auto handleParams = DBRegistry::OpenDB(path, options);
-	this->columnDescriptor = std::move(handleParams->columnDescriptor);
-	this->descriptor = std::move(handleParams->descriptor);
-	this->disableWAL = options.disableWAL;
-	this->enableVerificationTable = options.verificationTable;
-
-	// Note: We cannot attach this handle to the descriptor because we don't
-	// have the smart pointer to the dbHandle instance, so the caller needs to
-	// do it.
-
-	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
+	const int openAttachDelayMs = openAttachDelayMsFlag().load(std::memory_order_relaxed);
+	if (openAttachDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(openAttachDelayMs));
+	}
 }
 
 /**
  * Checks if the referenced database is opened.
  */
 bool DBHandle::opened() const {
-	if (this->descriptor && this->descriptor->db) {
-		return true;
-	}
-	return false;
+	return this->descriptor && !this->descriptor->isClosing();
 }
 
 /**

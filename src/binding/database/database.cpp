@@ -67,6 +67,7 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 static napi_value doClear(napi_env env, napi_callback_info info, const char* failureMsg) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -93,7 +94,9 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during clear operation");
 			} else {
-				state->status = state->handle->clear();
+				// awaited by DBHandle::close()'s async-work drain, so the token
+				// that drain arms is the one that can cancel it
+				state->status = state->handle->clear(&state->handle->compactCancelRequested);
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -124,9 +127,13 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 	));
 
 	// Register the async work with the database handle
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue clear work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -150,7 +157,9 @@ static napi_value doClearSync(napi_env env, napi_callback_info info, const char*
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
 
-	rocksdb::Status status = (*dbHandle)->clear();
+	// synchronous: counted by operationsInFlight, which beginClose() arms the
+	// descriptor token ahead of
+	rocksdb::Status status = (*dbHandle)->clear(&(*dbHandle)->descriptor->compactCancelRequested);
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, failureMsg);
 		::napi_throw(env, error);
@@ -190,7 +199,15 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 
 	if (*dbHandle) {
 		DEBUG_LOG("%p Database::Close Closing database: \"%s\"\n", dbHandle->get(), (*dbHandle)->path.c_str());
-		DBRegistry::CloseDB(*dbHandle);
+		CloseResult closeResult = DBRegistry::CloseDB(*dbHandle);
+		if (!closeResult.error.empty()) {
+			std::string message = closeResult.error;
+			if (closeResult.quarantined) {
+				message += ". Call shutdown() to retry close, or destroy() to delete the database";
+			}
+			::napi_throw_error(env, nullptr, message.c_str());
+			return nullptr;
+		}
 		DEBUG_LOG("%p Database::Close Closed database\n", dbHandle->get());
 	} else {
 		DEBUG_LOG("%p Database::Close Database not opened\n", dbHandle->get());
@@ -249,6 +266,7 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
 napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(5);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -328,7 +346,11 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 					state->handle->columnDescriptor->column.get(),
 					startPtr,
 					endPtr,
-					state->bottommost
+					state->bottommost,
+					// awaited by DBHandle::close()'s async-work drain; the
+					// descriptor token is not armed until beginClose(), which a
+					// self-close does not reach until after that drain returns
+					&state->handle->compactCancelRequested
 				);
 			}
 			// signal that execute handler is complete
@@ -356,9 +378,13 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue compact work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -381,6 +407,7 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	rocksdb::Slice startSlice;
 	rocksdb::Slice* startPtr = nullptr;
@@ -418,7 +445,10 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 			(*dbHandle)->columnDescriptor->column.get(),
 			startPtr,
 			endPtr,
-			bottommost
+			bottommost,
+			// synchronous: counted by operationsInFlight, which beginClose()
+			// arms the descriptor token ahead of
+			&(*dbHandle)->descriptor->compactCancelRequested
 		),
 		"Compact failed"
 	);
@@ -438,14 +468,38 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE();
-	THROW_IF_READONLY((*dbHandle)->descriptor, "Destroy failed: ");
 
 	if (*dbHandle) {
+		bool readOnly = (*dbHandle)->descriptor && (*dbHandle)->descriptor->readOnly;
+		napi_valuetype readOnlyType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &readOnlyType));
+		if (readOnlyType == napi_boolean) {
+			bool requestedReadOnly = false;
+			NAPI_STATUS_THROWS_ERROR(rocksdb_js::getValue(env, argv[0], requestedReadOnly), "Read-only flag must be a boolean");
+			readOnly = readOnly || requestedReadOnly;
+		} else if (readOnlyType != napi_undefined) {
+			::napi_throw_type_error(env, nullptr, "Read-only flag must be a boolean");
+			return nullptr;
+		}
+		if (readOnly) {
+			::napi_throw_error(env, "ERR_DATABASE_READONLY", "Destroy failed: Unsupported operation in read-only mode");
+			return nullptr;
+		}
+		if ((*dbHandle)->path.empty()) {
+			// `path` is populated by open(), so the only way to reach this is a
+			// handle that was never opened -- say so, rather than sending the
+			// caller (who did pass a path) to look at path configuration.
+			::napi_throw_error(env, nullptr, "Database must be opened before it can be destroyed");
+			return nullptr;
+		}
 		try {
 			DBRegistry::DestroyDB((*dbHandle)->path);
 		} catch (const std::exception& e) {
 			DEBUG_LOG("%p Database::Destroy Error: %s\n", dbHandle->get(), e.what());
 			::napi_throw_error(env, nullptr, e.what());
+			return nullptr;
+		} catch (...) {
+			::napi_throw_error(env, nullptr, "Unknown native database destruction failure");
 			return nullptr;
 		}
 	} else {
@@ -479,6 +533,7 @@ static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
 napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	if ((*dbHandle)->getColumnFamilyName() == "default") {
 		return doClear(env, info, "Drop failed");
@@ -539,12 +594,12 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	if ((*dbHandle)->getColumnFamilyName() == "default") {
 		return doClearSync(env, info, "Drop failed");
 	}
 
-	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
 	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
@@ -624,6 +679,7 @@ napi_value Database::FlushSync(napi_env env, napi_callback_info info) {
 napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -691,9 +747,13 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue flush work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -727,6 +787,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(5);
 
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*dbHandle)->defaultKeyBufferPtr, "Key must be a buffer")) {
 		return nullptr;
@@ -833,9 +894,17 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	// performs at the end of the execute handler. Without it the count goes negative,
 	// so close() does not wait for this read and the worker dereferences a descriptor
 	// that close() has already reset.
-	(*dbHandle)->registerAsyncWork();
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		napi_value returnStatus;
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
+		return returnStatus;
+	}
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue get work")) {
+		napi_value returnStatus;
+		NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
+		return returnStatus;
+	}
 
 	napi_value returnStatus;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
@@ -972,6 +1041,7 @@ napi_value Database::Resume(napi_env env, napi_callback_info info) {
 napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	rocksdb::Options opts = (*dbHandle)->descriptor->db->GetOptions((*dbHandle)->getColumnFamilyHandle());
 	std::string name = compressionNameFromType(opts.compression);
@@ -1046,6 +1116,7 @@ napi_value Database::GetLogOptions(napi_env env, napi_callback_info info) {
 napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	DBIteratorOptions itOptions;
 	itOptions.initFromNapiObject(env, argv[0]);
@@ -1066,12 +1137,15 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
-		txnHandle->getCount(itOptions, count, *dbHandle);
+		if (!txnHandle->getCount(itOptions, count, *dbHandle)) {
+			::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+			NAPI_RETURN_UNDEFINED();
+		}
 	} else {
 		std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
-		while (itHandle->iterator->Valid()) {
-			++count;
-			itHandle->iterator->Next();
+		if (!itHandle->countRemaining(count)) {
+			::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+			NAPI_RETURN_UNDEFINED();
 		}
 	}
 
@@ -1303,6 +1377,7 @@ napi_value Database::GetMonotonicTimestamp(napi_env env, napi_callback_info info
 napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	uint64_t timestamp = 0;
 	bool success = (*dbHandle)->descriptor->db->GetIntProperty(
@@ -1333,6 +1408,7 @@ napi_value Database::GetOldestSnapshotTimestamp(napi_env env, napi_callback_info
 napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	NAPI_GET_STRING(argv[0], propertyName, "Property name is required");
 
@@ -1369,6 +1445,7 @@ napi_value Database::GetDBProperty(napi_env env, napi_callback_info info) {
 napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	NAPI_GET_STRING(argv[0], propertyName, "Property name is required");
 
@@ -1399,6 +1476,7 @@ napi_value Database::GetDBIntProperty(napi_env env, napi_callback_info info) {
 napi_value Database::GetStat(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 	NAPI_GET_STRING(argv[0], statName, "Stat name is required");
 	return (*dbHandle)->getStat(env, statName);
 }
@@ -1415,6 +1493,7 @@ napi_value Database::GetStat(napi_env env, napi_callback_info info) {
 napi_value Database::GetStats(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 
 	bool all = false;
 	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &all));
@@ -1764,6 +1843,7 @@ napi_value Database::GetUserSharedBuffer(napi_env env, napi_callback_info info) 
 	NAPI_METHOD_ARGV(3);
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
 	std::string keyStr(key + keyStart, keyEnd - keyStart);
 
 	// if we have a callback, add it as a listener
@@ -1807,6 +1887,20 @@ napi_value Database::HasLock(napi_env env, napi_callback_info info) {
 		hasLock,
 		&result
 	));
+	return result;
+}
+
+/**
+ * Checks if the RocksDB database is closing or quarantined.
+ */
+napi_value Database::IsClosing(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE();
+
+	const bool closing = dbHandle != nullptr && *dbHandle && (*dbHandle)->descriptor &&
+		(*dbHandle)->descriptor->isClosing();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, closing, &result));
 	return result;
 }
 
@@ -2046,11 +2140,6 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 
 	try {
 		(*dbHandle)->open(path, dbHandleOptions);
-
-		// now that the database is open and the dbHandle has a reference to
-		// the descriptor, we can attach the database instance's smart_ptr to
-		// the descriptor so it gets cleaned up when the descriptor is closed
-		(*dbHandle)->descriptor->attach(*dbHandle);
 	} catch (const std::exception& e) {
 		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what());
 		::napi_throw_error(env, nullptr, e.what());
@@ -2076,10 +2165,10 @@ napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
  */
 napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(3);
-	NAPI_GET_BUFFER(argv[0], key, "Key is required");
-	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
+	NAPI_GET_BUFFER(argv[0], key, "Key is required");
+	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	// THROW_IF_READONLY((*dbHandle)->descriptor, "Put failed: ");
 
 	rocksdb::Status status;
@@ -2162,9 +2251,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
  */
 napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
-	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
+	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	// THROW_IF_READONLY((*dbHandle)->descriptor, "Remove failed: ");
 
 	rocksdb::Status status;
@@ -2378,6 +2467,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "closing", nullptr, nullptr, IsClosing, nullptr, nullptr, napi_default, nullptr },
 		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "listLogs", nullptr, ListLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },

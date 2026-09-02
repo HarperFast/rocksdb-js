@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
 #include "transaction/transaction.h"
@@ -40,6 +41,8 @@ struct DBKeyHash {
 struct DBRegistryEntry final {
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
+	std::string closeError;
+	bool closeRetrying = false;
 
 	// Default constructor
 	DBRegistryEntry() : condition(std::make_shared<std::condition_variable>()) {}
@@ -48,14 +51,11 @@ struct DBRegistryEntry final {
 		: descriptor(std::move(desc)), condition(std::make_shared<std::condition_variable>()) {}
 };
 
-
-struct DBHandleParams final {
-	std::shared_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor;
-
-	DBHandleParams(std::shared_ptr<DBDescriptor> descriptor, std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor)
-		: descriptor(std::move(descriptor)), columnDescriptor(std::move(columnDescriptor)) {}
+struct CloseResult final {
+	std::string error;
+	bool quarantined = false;
 };
+
 
 /**
  * Tracks all RocksDB databases instances using a RocksDBDescriptor that
@@ -78,6 +78,13 @@ private:
 	 * Mutex to protect the databases map.
 	 */
 	std::mutex databasesMutex;
+	std::timed_mutex shutdownMutex;
+	bool shutdownInProgress = false;
+	// Destruction owns a physical path across every (path, readOnly) entry.
+	// Waiters must re-resolve databases after every wake because the closer can
+	// erase the node while the mutex is released.
+	std::condition_variable lifecycleCondition;
+	std::unordered_set<std::string> destroyingPaths;
 
 	/**
 	 * The singleton instance of the registry.
@@ -85,21 +92,41 @@ private:
 	static std::unique_ptr<DBRegistry> instance;
 
 public:
-	static void CloseDB(const std::shared_ptr<DBHandle> handle);
+	static CloseResult CloseDB(const std::shared_ptr<DBHandle> handle);
 #ifdef DEBUG
 	static void DebugLogDescriptorRefs();
 #endif
 	static void DestroyDB(const std::string& path);
 	static void Init(napi_env env, napi_value exports);
-	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
+	static void OpenDB(
+		const std::shared_ptr<DBHandle>& handle,
+		const std::string& path,
+		const DBOptions& options
+	);
 	static void PurgeAll();
-	static void PurgeIfUnreferenced(const std::string& path, bool readOnly);
+	static CloseResult PurgeIfUnreferenced(const std::string& path, bool readOnly);
 	static napi_value RegistryStatus(napi_env env, napi_callback_info info);
 	static void CloseTransactionsByEnv(napi_env env);
 	static void RemoveListenersByEnv(napi_env env);
 	static void ReleaseCommitCompletionsByEnv(napi_env env);
 	static void ReleaseParkTimeoutsByEnv(napi_env env);
 	static void Shutdown();
+	/**
+	 * Releases every remaining registry entry. Called from the module env
+	 * cleanup hook after `Shutdown()`, i.e. while the process is still running
+	 * normally. Nothing may keep a `rocksdb::DB` alive past that point: the
+	 * registry singleton is a namespace-scope static, so anything still in the
+	 * map is destroyed from an `atexit` handler, and closing a RocksDB database
+	 * there runs `DBImpl::CancelAllBackgroundWork()` after RocksDB's own
+	 * function-local statics (the `PeriodicTaskScheduler` timer and its
+	 * `port::Mutex`) have already been destroyed -- which aborts the process in
+	 * `port::Mutex::Lock()` with `pthread lock: Invalid argument`.
+	 *
+	 * `Shutdown()` normally empties the map on its own; a descriptor whose
+	 * close-time flush failed is deliberately quarantined instead, and at
+	 * process exit there is no later `shutdown()`/`destroy()` to retry it.
+	 */
+	static void Teardown();
 	static size_t Size();
 };
 
