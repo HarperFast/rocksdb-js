@@ -158,39 +158,61 @@ TEST(TransactionLogClockFloor, AFarKeyIsNeitherSeededNorAllowedToMaskTheRealMaxi
 	std::filesystem::remove_all(storePath.parent_path());
 }
 
-TEST(TransactionLogClockFloor, TheWritePathBoundFollowsTheProcessClock) {
+TEST(TransactionLogClockFloor, TheWritePathBoundFollowsTheWallClock) {
 	auto storePath = uniqueStorePath();
 	std::filesystem::create_directories(storePath);
 	auto store = loadStore(storePath);
 	ASSERT_NE(store, nullptr);
 	// A boot with the RTC at 1970 froze a bound the corrected wall clock is far
-	// past; a key claimed from the process clock after the correction is still
-	// accepted, so the header chain keeps recording.
+	// past; a key claimed after the correction is still accepted, so the header
+	// chain keeps recording.
 	store->plausibleTimestampBound = 1.0;
 	const double key = rocksdb_js::getMonotonicTimestamp();
 	EXPECT_TRUE(store->raiseLatestTimestamp(key));
 	EXPECT_EQ(store->latestTimestamp, key);
-	EXPECT_FALSE(store->raiseLatestTimestamp(key + rocksdb_js::MAX_CLOCK_FLOOR_SKEW_MS * 2));
+	EXPECT_FALSE(store->raiseLatestTimestamp(
+		rocksdb_js::getWallClockTimestamp() + rocksdb_js::MAX_CLOCK_FLOOR_SKEW_MS * 2));
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());
 }
 
-TEST(TransactionLogClockFloor, AFarHeaderWalksOnlyTheSegmentsAfterTheNewestPlausibleHeader) {
+TEST(TransactionLogClockFloor, AFarHeaderWalksEverySegmentAPlausibleHeaderBeforeItCannotVouchFor) {
 	auto storePath = uniqueStorePath();
 	std::filesystem::create_directories(storePath);
 	const double high = futureKey();
 	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
-	// Segment 2's plausible header vouches for segment 1, so segment 1 is not
-	// read; segment 3's far header vouches for nothing, so segment 2 is.
-	writeSegment(storePath / "1.txnlog", 1, 0.0, { high + 1.0 });
-	writeSegment(storePath / "2.txnlog", 2, high - 2.0, { high });
-	writeSegment(storePath / "3.txnlog", 3, far, { high - 1.0 });
+	// Segment 2's header is plausible but older than the far one, so it is not
+	// trusted to summarize segment 1; the key only segment 1 holds is found.
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high });
+	writeSegment(storePath / "2.txnlog", 2, high - 2.0, { high - 1.0 });
+	writeSegment(storePath / "3.txnlog", 3, far, { high - 3.0 });
 
 	auto store = loadStore(storePath);
 	ASSERT_NE(store, nullptr);
 	EXPECT_EQ(store->latestTimestamp, high);
-	EXPECT_EQ(store->sequenceFiles.at(1)->maxEntryTimestamp.load(std::memory_order_relaxed), 0.0);
-	EXPECT_EQ(store->sequenceFiles.at(2)->maxEntryTimestamp.load(std::memory_order_relaxed), high);
+	EXPECT_EQ(store->sequenceFiles.at(1)->maxEntryTimestamp.load(std::memory_order_relaxed), high);
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, APlausibleHeaderNewerThanTheFarOneEndsTheWalk) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	const double high = futureKey();
+	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
+	// Segments 3 and 4 were created by rotations after a load that walked 1-2,
+	// so 4's header already carries 3's key and nothing older is read.
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high - 5.0 });
+	writeSegment(storePath / "2.txnlog", 2, far, { high - 4.0 });
+	writeSegment(storePath / "3.txnlog", 3, high - 2.0, { high });
+	writeSegment(storePath / "4.txnlog", 4, high, { high - 1.0 });
+
+	auto store = loadStore(storePath);
+	ASSERT_NE(store, nullptr);
+	EXPECT_EQ(store->latestTimestamp, high);
+	for (uint32_t sequence = 1; sequence <= 3; sequence++) {
+		EXPECT_EQ(store->sequenceFiles.at(sequence)->maxEntryTimestamp.load(std::memory_order_relaxed), 0.0);
+	}
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());
 }
