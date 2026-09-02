@@ -35,7 +35,10 @@ double readTransactionLogFileHeaderTimestamp(const std::filesystem::path& logPat
 	}
 	file.read(header, sizeof(header));
 	if (file.gcount() == 0) {
-		return 0.0;
+		if (file.eof()) {
+			return 0.0;
+		}
+		throw rocksdb_js::DBException("Failed to read transaction log file header: " + logPath.string());
 	}
 	if (file.gcount() != static_cast<std::streamsize>(sizeof(header))) {
 		throw rocksdb_js::TransactionLogFormatException(
