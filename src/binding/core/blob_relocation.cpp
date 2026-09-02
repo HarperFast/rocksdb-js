@@ -82,7 +82,7 @@ BlobRelocationDecision decideBlobRelocation(
 	// describe more than one move.
 	//
 	// Only `dir` reaches other families. The rest of `blobs.*` stays per-family
-	// (invariant 19): none of it describes where files already are.
+	// (invariant 18): none of it describes where files already are.
 	const bool sharesTargetBlobDir = input.targetPersistedBlobDir && input.persistedBlobDir &&
 		*input.persistedBlobDir == *input.targetPersistedBlobDir;
 	const bool acknowledged = input.allowDirChange &&

@@ -18,7 +18,7 @@ bool extendsDbPaths(
 	const std::vector<rocksdb::DbPath>& candidate
 );
 
-/** Applies the retained-layout authority rule from AGENTS invariant 18. */
+/** Applies the retained-layout authority rule from AGENTS invariant 17. */
 bool updateRetainedDestroyLayout(
 	DBFileLayout& retained,
 	DBFileLayout observed,
