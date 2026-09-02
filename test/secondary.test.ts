@@ -2,7 +2,7 @@ import { RocksDatabase } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
@@ -210,8 +210,14 @@ describe('Secondary Instances', () => {
 			primaryA.open();
 			primaryB.open();
 			secondaryA.open();
+			// The workspace in the message is the resolved spelling (the native
+			// layer resolves it once so two spellings of one directory cannot
+			// read as two workspaces), which differs from the argument wherever
+			// the temp directory is a symlink (macOS).
 			expect(() => secondaryB.open()).toThrow(
-				`secondaryPath "${secondaryPath}" is already in use by database "${dbPathA}"`
+				new RegExp(
+					`secondaryPath "[^"]*${basename(secondaryPath)}" is already in use by database "${dbPathA}"`
+				)
 			);
 		} finally {
 			secondaryB.close();

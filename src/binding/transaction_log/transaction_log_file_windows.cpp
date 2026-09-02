@@ -707,7 +707,12 @@ bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
 	if (this->fileHandle == INVALID_HANDLE_VALUE || entriesEnd <= newSize) {
 		return false;
 	}
-	return this->truncateFile(newSize);
+	// These are whole entries a recovery decided to discard, so failing to
+	// shrink the file is not an option to accept quietly: the bytes would be
+	// swallowed into the next batch's group by that batch's last-entry flag.
+	// Zeroing them is the equivalent erase when a live mapping blocks
+	// SetEndOfFile (see zeroTailLocked).
+	return this->truncateFile(newSize) || this->zeroTailLocked(newSize);
 }
 
 std::string getWindowsErrorMessage(DWORD errorCode) {

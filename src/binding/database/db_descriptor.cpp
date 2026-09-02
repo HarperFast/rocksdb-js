@@ -1387,14 +1387,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// The workspace must be neither the primary's data directory nor nested
 		// inside it: the lock file and the secondary's info-LOG rotation would
 		// land among the primary's files, and destroy()'s remove_all(path)
-		// would delete a live secondary's workspace under it. Canonical
-		// comparison (after creation, so both paths resolve) catches
-		// differently-spelled aliases and symlinks; if canonicalization fails,
-		// fall back to lexically-normalized absolute paths rather than skipping
-		// the check.
-		// options.secondaryPath is already resolved (Database::Open); the
-		// primary is resolved here so both sides of the nesting test are the
-		// same spelling of the same directory.
+		// would delete a live secondary's workspace under it. Both sides are
+		// resolved so differently-spelled aliases and symlinked parents are
+		// caught — options.secondaryPath by Database::Open, the primary here.
 		if (rocksdb_js::isPathWithin(
 				rocksdb_js::resolveIdentityPath(path), options.secondaryPath)) {
 			throw rocksdb_js::DBException(

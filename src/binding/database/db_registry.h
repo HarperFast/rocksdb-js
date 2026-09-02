@@ -17,9 +17,11 @@ namespace rocksdb_js {
  * secondary workspace path (empty for non-secondary opens — a plain read-only
  * open and a secondary open of the same path are different RocksDB instance
  * kinds and must not share a descriptor, while two secondary opens with
- * different workspaces are distinct secondary instances by design). Using a
- * dedicated key type lets callers look up entries before a `DBDescriptor` has
- * been opened. Every purge/close path must reconstruct the FULL key (use
+ * different workspaces are distinct secondary instances by design; the
+ * workspace is stored resolved — `Database::Open` runs it through
+ * `resolveIdentityPath` — so two spellings of one directory are one key).
+ * Using a dedicated key type lets callers look up entries before a
+ * `DBDescriptor` has been opened. Every purge/close path must reconstruct the FULL key (use
  * `descriptorKey()`) — a partial key silently misses the entry and leaks the
  * descriptor and its open RocksDB.
  */

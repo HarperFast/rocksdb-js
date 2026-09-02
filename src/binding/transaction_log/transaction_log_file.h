@@ -606,8 +606,9 @@ private:
 	 * Platform specific fallback for a torn tail that `truncateFile()` could not
 	 * shrink: overwrite `[newSize, size)` with zeros so the zero-timestamp
 	 * end-of-entries convention marks the boundary instead. Returns `true` when
-	 * the range is neutralized. Caller holds fileMutex and must update `size`
-	 * itself.
+	 * the range is neutralized. Caller holds fileMutex, has `size` still at the
+	 * end of entries (the range zeroed is `[newSize, size)`), and must update
+	 * `size` itself afterwards.
 	 *
 	 * Windows only. Sections there are mandatory, so any live mapping of this
 	 * file — in this process or another — makes `SetEndOfFile` fail, and the
