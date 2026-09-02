@@ -674,8 +674,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     keeps the retained one otherwise. Both halves are load-bearing: a shorter list must not shorten
     the record, since it is the only trace of omitted volumes; a divergent list must not extend it,
     since `destroy()` deletes every SST it finds in each recorded directory and one mistyped
-    `paths` would then take another database's files down with this one. Read-only and read-write
-    opens of one path are separate registry entries, and a reader may successfully pass a shorter,
+    `paths` would then take another database's files down with this one. Keeping the record is only
+    half the answer, though: a writable open the record refuses would leave RocksDB and `destroy()`
+    disagreeing about where the files are — compaction writing SSTs to a volume nothing sweeps, and
+    `destroy()` still sweeping a volume this open disowned. Neither is repairable afterwards, so
+    such an open **fails** (`DBRegistry::AssertDbPathsExtendRetained`), and it fails _before_
+    `DB::Open`, because one compaction under the refused list is already the divergence. The
+    post-open `RecordLayout` refusal throws too, but only as the assertion that the record did not
+    move underneath an open database. That check preempts `explainOpenFailure`'s guidance for the
+    removed/reordered case whenever the same process opened the database earlier; a fresh process
+    still reaches RocksDB's `Corruption` and that guidance, which is why the coverage for it is a
+    spawned child (`test/fixtures/paths-removed-list.mts`). Read-only and read-write opens of one
+    path are separate registry entries, and a reader may successfully pass a shorter,
     longer, or divergent list while every file it needs still sits at path index 0; it may refresh
     OPTIONS-derived blob placement but must never expand the destroy targets. A reader that opens
     before any writer seeds an empty path record. Retaining default markers across `PurgeAll` grows

@@ -46,14 +46,30 @@ same is true of a manual `compact()`/`compactSync()`, whose `target_path_id` is 
 **Entries may only be appended.** A file's _path index_ is what gets recorded in the MANIFEST, not
 its directory. Appending a path to grow onto a new volume is safe — existing files keep their index
 and stay put. Reordering or removing an entry makes RocksDB look for existing files in the wrong
-directory, and nothing on disk records which index a file came from, so that one is not checked for
-you.
+directory, and nothing on disk records which index a file came from — so across a restart that one
+is not checked for you.
 
 That includes **deleting the option entirely**, which is the natural thing to try when tiering turns
 out to be a mistake. `db_paths` is sanitized back to `[{ <database directory> }]`, index 0 stops
-meaning the fast volume, and the open fails. Neither case can be caught before the open the way the
-zero-to-one migration below is — `db_paths` is not persisted, so there is nothing to compare a
-shrinking or reordered list against — but the failure is annotated with what to do about it:
+meaning the fast volume, and the open fails.
+
+Once _this process_ has opened the database, it does check: the list is kept as the destroy layout
+(below), and a writable open that neither matches nor appends to it is rejected before RocksDB is
+handed it.
+
+```
+Cannot open "/var/lib/mydb" with ["/var/lib/mydb", "/mnt/other"]: this process has
+already recorded ["/var/lib/mydb", "/mnt/cold"] as where this database keeps its SST
+files, and destroy() deletes them from that record. The requested list neither matches
+it nor appends to it, so RocksDB would place new files on a volume destroy() never
+sweeps, and look for existing ones on a volume they were never written to. Storage
+paths are append-only: reopen with the recorded list, adding any new volume to the end
+of it.
+```
+
+That record does not survive a restart — `db_paths` is not persisted, so a fresh process has
+nothing to compare a shrinking or reordered list against, and the first sign of it is RocksDB's own
+failure. That one is annotated with what to do about it:
 
 ```
 Corruption: IO error: No such file or directory: /var/lib/mydb/000009.sst ...
@@ -133,6 +149,11 @@ Only a successful writable cold open can establish or append storage paths in th
 read-only open may use a shorter or different list while all files it needs are still at path index
 0, but its list never becomes a destroy target. Default placement is retained explicitly too, so an
 empty path list or `blob_dir` cannot be replaced by a stale reader's external directory.
+
+Because that copy is what `destroy()` acts on, a writable open cannot quietly disagree with it: a
+shorter or divergent list would leave compaction writing SSTs to a volume `destroy()` never visits,
+and `destroy()` sweeping one this open disowned — which some other database may since have been
+given. Such an open fails, before RocksDB sees the list.
 
 After a non-default column family is successfully dropped, its former `blobs.dir` is removed from
 that destroy layout. RocksDB owns cleanup of the dropped family's files; wait for any remaining

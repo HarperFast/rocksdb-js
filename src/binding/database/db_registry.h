@@ -116,7 +116,11 @@ public:
 		const std::string& columnName,
 		rocksdb::ColumnFamilyHandle* column
 	);
-	static bool RecordLayout(const std::string& path, DBFileLayout layout, bool writableOpen);
+	static void AssertDbPathsExtendRetained(
+		const std::string& path,
+		const std::vector<rocksdb::DbPath>& requested
+	);
+	static void RecordLayout(const std::string& path, DBFileLayout layout, bool writableOpen);
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();

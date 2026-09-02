@@ -1,5 +1,6 @@
 import { backups, RocksDatabase } from '../src/index.js';
 import { generateDBPath } from './lib/util.js';
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
 	copyFileSync,
@@ -10,8 +11,11 @@ import {
 	renameSync,
 	rmSync,
 } from 'node:fs';
-import { isAbsolute, join, relative as relativePath } from 'node:path';
+import { dirname, isAbsolute, join, relative as relativePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+
+const fixtureDir = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
 const tempPaths: string[] = [];
 const openDatabases: RocksDatabase[] = [];
@@ -357,7 +361,7 @@ describe('paths', () => {
 		const fast = tempDir();
 		const slow = tempDir();
 
-		let db = openDb(dbPath, {
+		const db = openDb(dbPath, {
 			paths: [
 				{ path: fast, targetSize: 0 },
 				{ path: slow, targetSize: 1 << 30 },
@@ -370,27 +374,24 @@ describe('paths', () => {
 		db.close();
 		expect(filesWithExt(dbPath, '.sst')).toHaveLength(0);
 
-		// Nothing on disk records which list the MANIFEST's path indexes were
-		// written against, so neither of these is detectable up front the way the
-		// zero-to-one transition is. RocksDB reports the MANIFEST as corrupt,
-		// which reads as data loss; both are recoverable by putting the list back.
-		expect(() => RocksDatabase.open(dbPath)).toThrow(/opened with `paths`, that same list/);
-		expect(() =>
-			RocksDatabase.open(dbPath, {
-				paths: [
-					{ path: slow, targetSize: 0 },
-					{ path: fast, targetSize: 1 << 30 },
-				],
-			})
-		).toThrow(/opened with `paths`, that same list/);
-
-		db = openDb(dbPath, {
-			paths: [
-				{ path: fast, targetSize: 0 },
-				{ path: slow, targetSize: 1 << 30 },
-			],
+		// A child process, because this one retains the list and refuses a
+		// non-extending open up front — see the fixture.
+		return new Promise<void>((resolve, reject) => {
+			const child = spawn(
+				process.execPath,
+				[join(fixtureDir, 'paths-removed-list.mts'), dbPath, fast, slow],
+				{ stdio: ['ignore', 'ignore', 'inherit'] }
+			);
+			child.on('close', (code) => {
+				try {
+					expect(code).toBe(0);
+					resolve();
+				} catch (error) {
+					reject(error);
+				}
+			});
+			child.on('error', reject);
 		});
-		expect(db.getSync('key-0')).toBe('value-0');
 	});
 
 	it('should delete tiered SST files when destroy() follows close()', () => {
@@ -604,32 +605,66 @@ describe('paths', () => {
 		expect(filesWithExt(neighborVolume, '.sst')).toEqual(neighborFiles);
 	});
 
-	it('should log a refused writable destroy-layout change', () => {
+	it('should refuse a writable open the recorded storage paths cannot accept', () => {
 		const dbPath = tempPath();
 		const retainedVolume = tempDir();
 		const refusedVolume = tempDir();
+		const appendedVolume = tempDir();
 
+		// Every file still sits at path index 0, so RocksDB opens happily under
+		// any of the refused lists below — that is what makes this worth catching
+		// rather than leaving to the MANIFEST's own complaint. The divergence only
+		// becomes visible later, when compaction spills onto a volume destroy()
+		// never sweeps.
 		const first = openDb(dbPath, {
 			paths: [
 				{ path: dbPath, targetSize: 0 },
 				{ path: retainedVolume, targetSize: 1 << 30 },
 			],
 		});
+		first.putSync('key', 'value');
+		first.flushSync();
 		first.close();
+		expect(filesWithExt(dbPath, '.sst').length).toBeGreaterThan(0);
 
-		const divergent = openDb(dbPath, {
+		const openedFiles = readdirSync(dbPath).filter((name) => name.startsWith('OPTIONS-'));
+
+		expect(() =>
+			RocksDatabase.open(dbPath, {
+				paths: [
+					{ path: dbPath, targetSize: 0 },
+					{ path: refusedVolume, targetSize: 1 << 30 },
+				],
+			})
+		).toThrow(/Storage paths are append-only/);
+		expect(readdirSync(refusedVolume)).toHaveLength(0);
+		// Refused BEFORE the open, not unwound after one: RocksDB writes a fresh
+		// OPTIONS file every time it opens a database, so an unchanged set is what
+		// says it was never handed the refused list. Past that point a single
+		// compaction placing an SST is already the divergence destroy() cannot
+		// repair.
+		expect(readdirSync(dbPath).filter((name) => name.startsWith('OPTIONS-'))).toEqual(openedFiles);
+
+		// Dropping a volume is refused from the other side of the same rule:
+		// destroy() would keep sweeping a volume this open disowned — which
+		// another database may since have been given.
+		expect(() => RocksDatabase.open(dbPath, { paths: [{ path: dbPath, targetSize: 0 }] })).toThrow(
+			/Storage paths are append-only/
+		);
+		expect(() => RocksDatabase.open(dbPath)).toThrow(/Storage paths are append-only/);
+
+		// Appending is the supported change, and still is.
+		const appended = openDb(dbPath, {
 			paths: [
 				{ path: dbPath, targetSize: 0 },
-				{ path: refusedVolume, targetSize: 1 << 30 },
+				{ path: retainedVolume, targetSize: 1 },
+				{ path: appendedVolume, targetSize: 1 << 30 },
 			],
 		});
-		divergent.close();
-
-		const logs = readdirSync(dbPath)
-			.filter((name) => name.startsWith('LOG'))
-			.map((name) => readFileSync(join(dbPath, name), 'utf8'))
-			.join('\n');
-		expect(logs).toContain('refused non-append-only db_paths for the retained destroy layout');
+		expect(appended.getSync('key')).toBe('value');
+		appended.close();
+		appended.destroy();
+		expect(existsSync(dbPath)).toBe(false);
 	});
 
 	it('should refuse to add paths while the database is already open untiered', () => {

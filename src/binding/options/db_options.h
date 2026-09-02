@@ -212,7 +212,11 @@ struct DBOptions final {
 	//
 	//  - A path's index is what gets recorded per SST file in the MANIFEST, so
 	//    paths may only be APPENDED across reopens. Reordering or removing an
-	//    entry makes RocksDB look for existing files in the wrong directory.
+	//    entry makes RocksDB look for existing files in the wrong directory. A
+	//    writable open is refused outright once this process has recorded a list
+	//    for the path (`DBRegistry::AssertDbPathsExtendRetained`); across a
+	//    restart the record is gone and RocksDB reports the MANIFEST as corrupt
+	//    instead (`explainOpenFailure` annotates it).
 	//  - More than one entry disables `level_compaction_dynamic_level_bytes`
 	//    (RocksDB's SanitizeCfOptions logs a warning and turns it off), so level
 	//    sizing becomes static.

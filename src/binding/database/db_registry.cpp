@@ -310,32 +310,102 @@ void DBRegistry::DestroyDB(const std::string& path) {
 }
 
 /**
+ * Renders a `db_paths` list the way the caller spelled it in `paths`.
+ */
+static std::string describeDbPaths(const std::vector<rocksdb::DbPath>& paths) {
+	if (paths.empty()) {
+		return "no paths (the database directory alone)";
+	}
+	std::string text;
+	for (const auto& entry : paths) {
+		text += text.empty() ? "[\"" : "\", \"";
+		text += entry.path;
+	}
+	return text + "\"]";
+}
+
+/**
+ * Explains a writable open the retained destroy layout cannot accept.
+ */
+static std::string refusedDbPathsMessage(
+	const std::string& path,
+	const std::vector<rocksdb::DbPath>& retained,
+	const std::vector<rocksdb::DbPath>& requested
+) {
+	return "Cannot open \"" + path + "\" with " + describeDbPaths(requested) +
+		": this process has already recorded " + describeDbPaths(retained) +
+		" as where this database keeps its SST files, and destroy() deletes them from that "
+		"record. The requested list neither matches it nor appends to it, so RocksDB would "
+		"place new files on a volume destroy() never sweeps, and look for existing ones on a "
+		"volume they were never written to. Storage paths are append-only: reopen with the "
+		"recorded list, adding any new volume to the end of it.";
+}
+
+/**
+ * Rejects a writable open whose `paths` the retained destroy layout cannot
+ * accept, BEFORE RocksDB is handed the list.
+ *
+ * `RecordLayout` below keeps the retained list authoritative, so a shorter or
+ * divergent one leaves the live database and `destroy()` disagreeing about where
+ * the files are: compaction writes SSTs to a volume `destroy()` never sweeps,
+ * and `destroy()` still sweeps a volume this open dropped — which another
+ * database may since have been given. Neither is recoverable after the fact, so
+ * the open fails instead. Checked before `DB::Open` so nothing is written under
+ * the refused list.
+ *
+ * A read-only open is not checked: it may legitimately pass any list while every
+ * file it needs sits at path index 0, and it can neither establish nor extend
+ * the record (AGENTS invariant 18).
+ */
+void DBRegistry::AssertDbPathsExtendRetained(
+	const std::string& path,
+	const std::vector<rocksdb::DbPath>& requested
+) {
+	if (!instance) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+	auto known = instance->knownLayouts.find(path);
+	if (known == instance->knownLayouts.end() ||
+		extendsDbPaths(known->second.dbPaths, requested)
+	) {
+		return;
+	}
+	throw rocksdb_js::DBException(refusedDbPathsMessage(path, known->second.dbPaths, requested));
+}
+
+/**
  * Records where a database's files live, so `destroy()` can still find them
  * after the descriptor is gone. See `DBRegistry::knownLayouts`.
  *
- * Path authority and default-marker retention are AGENTS invariant 18.
+ * Path authority and default-marker retention are AGENTS invariant 18. A
+ * writable open that the retained list refuses throws rather than proceeding
+ * with a live layout `destroy()` does not know — `AssertDbPathsExtendRetained`
+ * has already rejected that case before the open, so reaching it here means the
+ * record moved underneath an open database.
  */
-bool DBRegistry::RecordLayout(
+void DBRegistry::RecordLayout(
 	const std::string& path,
 	DBFileLayout layout,
 	bool writableOpen
 ) {
 	if (!instance) {
-		return true;
+		return;
 	}
 	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
 	auto known = instance->knownLayouts.try_emplace(path).first;
-	const bool pathsAccepted =
-		updateRetainedDestroyLayout(known->second, std::move(layout), writableOpen);
-	if (!pathsAccepted) {
-		DEBUG_LOG(
-			"%p DBRegistry::RecordLayout Refused %s db_paths change for \"%s\"\n",
-			instance.get(),
-			writableOpen ? "non-append-only" : "read-only",
-			path.c_str()
-		);
+	const std::vector<rocksdb::DbPath> requested = layout.dbPaths;
+	if (updateRetainedDestroyLayout(known->second, std::move(layout), writableOpen)) {
+		return;
 	}
-	return pathsAccepted;
+	if (writableOpen) {
+		throw rocksdb_js::DBException(refusedDbPathsMessage(path, known->second.dbPaths, requested));
+	}
+	DEBUG_LOG(
+		"%p DBRegistry::RecordLayout Refused read-only db_paths change for \"%s\"\n",
+		instance.get(),
+		path.c_str()
+	);
 }
 
 /**
