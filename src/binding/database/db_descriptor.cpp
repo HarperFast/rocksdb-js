@@ -1392,34 +1392,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// differently-spelled aliases and symlinks; if canonicalization fails,
 		// fall back to lexically-normalized absolute paths rather than skipping
 		// the check.
-		std::error_code canonicalError;
-		auto canonicalSecondary = std::filesystem::weakly_canonical(options.secondaryPath, canonicalError);
-		if (canonicalError) {
-			canonicalSecondary = std::filesystem::absolute(options.secondaryPath).lexically_normal();
-		}
-		canonicalError.clear();
-		auto canonicalPrimary = std::filesystem::weakly_canonical(path, canonicalError);
-		if (canonicalError) {
-			canonicalPrimary = std::filesystem::absolute(path).lexically_normal();
-		}
-		std::string secondaryStr = canonicalSecondary.generic_string();
-		std::string primaryStr = canonicalPrimary.generic_string();
-#if defined(_WIN32) || defined(__APPLE__)
-		// The default filesystems are case-insensitive, so a differently-cased
-		// spelling of the primary is the same directory.
-		auto asciiLower = [](std::string& value) {
-			for (char& c : value) {
-				c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-			}
-		};
-		asciiLower(secondaryStr);
-		asciiLower(primaryStr);
-#endif
-		if (secondaryStr == primaryStr ||
-			(secondaryStr.size() > primaryStr.size() &&
-				secondaryStr.compare(0, primaryStr.size(), primaryStr) == 0 &&
-				secondaryStr[primaryStr.size()] == '/')
-		) {
+		// options.secondaryPath is already resolved (Database::Open); the
+		// primary is resolved here so both sides of the nesting test are the
+		// same spelling of the same directory.
+		if (rocksdb_js::isPathWithin(
+				rocksdb_js::resolveIdentityPath(path), options.secondaryPath)) {
 			throw rocksdb_js::DBException(
 				"secondaryPath must be a separate directory outside the database path \"" + path + "\""
 			);
@@ -1566,9 +1543,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
-	logConfig.readOnly = options.readOnly;
 	TransactionLogStoreRegistry::Register(path, logConfig);
-	TransactionLogStoreRegistry::DiscoverStores(path);
+	TransactionLogStoreRegistry::DiscoverStores(path, options.readOnly);
 
 	return descriptor;
 }

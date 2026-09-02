@@ -413,6 +413,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 *
 	 * Only valid on a database opened with the `secondaryPath` option; throws
 	 * with code `ERR_NOT_SECONDARY` otherwise.
+	 *
+	 * Advances the **database** view only. Transaction-log reads keep serving
+	 * the stores discovered at open (a store the primary creates later needs a
+	 * reopen), and a log entry can always describe data this handle's database
+	 * view does not have yet — the log write completes before the RocksDB
+	 * commit for every writer, so consumers must tolerate the log leading the
+	 * database.
 	 */
 	catchUpWithPrimary(): Promise<void> {
 		return new Promise((resolve, reject) => this.store.db.catchUpWithPrimary(resolve, reject));

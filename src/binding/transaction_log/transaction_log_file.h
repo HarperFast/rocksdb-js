@@ -603,6 +603,22 @@ private:
 	bool truncateFile(uint32_t newSize);
 
 	/**
+	 * Platform specific fallback for a torn tail that `truncateFile()` could not
+	 * shrink: overwrite `[newSize, size)` with zeros so the zero-timestamp
+	 * end-of-entries convention marks the boundary instead. Returns `true` when
+	 * the range is neutralized. Caller holds fileMutex and must update `size`
+	 * itself.
+	 *
+	 * Windows only. Sections there are mandatory, so any live mapping of this
+	 * file — in this process or another — makes `SetEndOfFile` fail, and the
+	 * garbage would otherwise survive to be read as an entry after the next
+	 * (shorter) append. POSIX returns false: its fd is `O_APPEND`, so an
+	 * in-place rewrite is not available (same reason `eraseTail()` truncates
+	 * there), and `ftruncate` does not care about live mappings anyway.
+	 */
+	bool zeroTailLocked(uint32_t newSize);
+
+	/**
 	 * Platform specific function that makes the entries in `[newSize, entriesEnd)`
 	 * disappear from every reader and frees the range for the next append. Unlike
 	 * truncateFile() this must work on Windows too: the bytes are real entries, not

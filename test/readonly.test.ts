@@ -1,7 +1,8 @@
+import { RocksDatabase } from '../src/index.ts';
 import { TransactionLog } from '../src/load-binding.ts';
 import { dbRunner } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { appendFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { appendFileSync, cpSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -255,9 +256,71 @@ describe('Readonly Operations', () => {
 				readOnly.close();
 				expect(statSync(logPath).size).toBe(tornSize);
 
-				// A writable open owns recovery and truncates the torn tail.
+				// A writable open owns recovery and discards the torn tail.
 				writer.open();
-				expect(statSync(logPath).size).toBeLessThan(tornSize);
+				const recovered = readFileSync(logPath);
+				expect(recovered.length).toBeLessThanOrEqual(tornSize);
+				const tailIsCleared = recovered.subarray(tornSize - 64).every((byte) => byte === 0);
+				if (process.platform === 'win32') {
+					// Windows cannot shrink a file while any mapping covers it
+					// (sections are mandatory), and whether the read-only
+					// handle's mapping above is still live here is a GC-timing
+					// detail — so recovery either truncates or zero-fills the
+					// torn range, and the zero-fill path is asserted
+					// deterministically in test/native/transaction_log_erase_tail_test.cc.
+					expect(recovered.length < tornSize || tailIsCleared).toBe(true);
+				} else {
+					expect(recovered.length).toBeLessThan(tornSize);
+					expect(tailIsCleared).toBe(true);
+				}
+			}
+		));
+
+	// The registry entry for a path is shared by every handle on it and outlives
+	// the handle that created it, so the mode of the OPENING handle — not the
+	// entry's — has to decide how discovery loads a store. A writer that has
+	// since closed used to leave the entry stamped writable, and the next
+	// read-only open then loaded newly-appeared stores with retention purge and
+	// recoverTail() truncation against what may be a live primary's logs.
+	it('should not recover logs discovered after a writer closed but left the entry alive', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
+			async ({ db, dbPath }, { db: readOnly1 }) => {
+				db.open();
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					await txn.put('foo', 'bar');
+					log.addEntry(Buffer.from('hello'), txn.id);
+				});
+
+				// The read-only handle keeps the path's registry entry alive past
+				// the writer's close.
+				readOnly1.open();
+				db.close();
+
+				// A store that appears only now — as a live primary in another
+				// process would create it — is discovered by the next open.
+				const logsDir = join(dbPath, 'transaction_logs');
+				cpSync(join(logsDir, 'foo'), join(logsDir, 'bar'), { recursive: true });
+				const barLog = join(
+					logsDir,
+					'bar',
+					readdirSync(join(logsDir, 'bar')).find((file) => file.endsWith('.txnlog'))!
+				);
+				appendFileSync(barLog, Buffer.alloc(64, 0xff));
+				const tornSize = statSync(barLog).size;
+
+				// A distinct handle kind (a secondary) is a distinct registry
+				// entry, so this open runs its own discovery of the new store.
+				const secondary = new RocksDatabase(dbPath, { secondaryPath: `${dbPath}.secondary` });
+				try {
+					secondary.open();
+					expect(statSync(barLog).size).toBe(tornSize);
+					expect(Array.from(secondary.useLog('bar').query({ start: 0 })).length).toBeGreaterThan(0);
+				} finally {
+					secondary.close();
+					rmSync(`${dbPath}.secondary`, { force: true, recursive: true });
+				}
 			}
 		));
 

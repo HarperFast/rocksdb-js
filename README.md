@@ -328,8 +328,13 @@ catch-up runs; catch-ups on the same database are serialized internally.
 Throws with code `ERR_NOT_SECONDARY` on a database that was not opened with `secondaryPath`.
 Column families the primary created after the secondary opened stay invisible until the secondary
 reopens; ones the primary dropped remain readable until then. Catch-up advances the **database**
-view only: transaction-log reads through a secondary serve the log state as of the open, and log
-entries appended (or segments rotated to) afterward become visible only on reopen. Serialize
+view only: transaction-log reads through a secondary serve the stores discovered at open, and a
+store the primary creates afterward becomes visible only on reopen. Whether entries appended to an
+already-open store are visible depends on where the writer is: a cross-process primary's appends
+are not (the reader's view of the file extent is fixed at open), while a writer in the _same_
+process shares the store object, so its appends are. Either way a log entry can describe data the
+database view does not have yet — the log write completes before the RocksDB commit for every
+writer, so log-leads-database is the normal direction and a consumer has to tolerate it. Serialize
 catch-up calls per database — concurrent calls queue on libuv workers behind an internal
 per-database mutex.
 

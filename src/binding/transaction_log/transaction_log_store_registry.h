@@ -37,18 +37,6 @@ struct TransactionLogStoreConfig final {
 	 * The retention period of transaction logs in milliseconds.
 	 */
 	std::chrono::milliseconds transactionLogRetentionMs;
-
-	/**
-	 * True when the registering database was opened read-only (including as a
-	 * secondary). Store discovery must then MUTATE NOTHING: no tail recovery
-	 * (truncation), no retention purge — the log directory may belong to a live
-	 * writer in another process, and a reader truncating the writer's active
-	 * file loses acknowledged writes (the writer's append-owned `size` keeps
-	 * appending past the new EOF — invariant 5, the harper#2016 class). Readers
-	 * tolerate an unrecovered torn tail through the CorruptFrameError/resync
-	 * protocol instead.
-	 */
-	bool readOnly = false;
 };
 
 /**
@@ -149,7 +137,9 @@ public:
 	/**
 	 * Throws when a writable open would reuse transaction log stores that were
 	 * loaded read-only (no tail recovery ran, so writer appends would land past
-	 * a torn tail — invariant 5). Call BEFORE constructing the descriptor: a
+	 * a torn tail — invariant 5); the decision is made per live store, since the
+	 * path-global entry can outlive the handle that created it. Call BEFORE
+	 * constructing the descriptor: a
 	 * throw from Register itself would run the half-built descriptor's close()
 	 * and its Unregister would decrement the read-only entry's refcount it
 	 * never incremented. Opens are serialized by DBRegistry's databasesMutex,
@@ -171,8 +161,14 @@ public:
 	 * directory for the given database path.
 	 *
 	 * @param dbPath The database path.
+	 * @param callerReadOnly Whether the OPENING handle's database is
+	 * read-only/secondary. Like ResolveStore, the caller's mode decides — the
+	 * path-global entry is shared by every handle on the path and outlives the
+	 * one that created it, so a writer that has since closed must not make this
+	 * discovery load stores writably (retention purge and recoverTail()
+	 * truncation against what may be a live primary's logs — invariant 5).
 	 */
-	static void DiscoverStores(const std::string& dbPath);
+	static void DiscoverStores(const std::string& dbPath, bool callerReadOnly);
 
 	/**
 	 * Resolves (finds or creates) a transaction log store by name for the

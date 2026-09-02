@@ -560,7 +560,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     mapping because mapped ranges prevent `SetEndOfFile` from shrinking the file. Windows uses the same
     physical truncation when the scan detects a torn tail, but its pre-extended zero padding makes an
     entry with a durable header and partially durable payload look complete; detecting that case needs
-    a payload checksum. Recovery runs before mappings can be handed to readers.
+    a payload checksum. When Windows cannot shrink the file at all — sections there are mandatory, so
+    any mapping this code does not own (a reader's handout, another process) blocks `SetEndOfFile` —
+    a torn tail is zero-filled over `[validEnd, size)` instead (`zeroTailLocked`), restoring the
+    zero-timestamp end-of-entries marker. Leaving those bytes is not benign: appends resume at `size`,
+    so a later shorter batch would leave the stale bytes reading as an entry. POSIX has no such
+    fallback and needs none — `ftruncate` ignores mappings, and the `O_APPEND` fd makes an in-place
+    rewrite land at EOF anyway. Recovery runs before mappings can be handed to readers.
 15. **A callback-style native method owes its caller exactly one settled callback on every path**:
     `Flush` and `Compact` take `resolve`/`reject` and used to `return` on a read-only database
     without invoking either, so `await db.flush()` there never resumed (#774). The sync siblings can
@@ -672,15 +678,26 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     point-in-time replay falls back to the last fully-present version instead of failing.)
 
     Two adjacent rules the mode forced into existence. **A read-only or secondary open must not
-    mutate the primary's transaction logs**: `TransactionLogStoreConfig::readOnly` makes discovery
-    load stores with no retention purge and no `recoverTail` truncation — the log directory may
+    mutate the primary's transaction logs**: `DiscoverStores(path, callerReadOnly)` loads stores
+    with no retention purge and no `recoverTail` truncation — the log directory may
     belong to a live writer in another process whose append-owned `size` would keep appending past
     a reader's truncation (invariant 5, the harper#2016 class); readers tolerate the unrecovered
-    torn tail via the CorruptFrameError/resync protocol. The inverse hazard is a WRITER adopting
+    torn tail via the CorruptFrameError/resync protocol. **The OPENING handle's mode decides, not
+    the registry entry's**: the entry is path-global, shared by every handle on the path, and
+    outlives the handle that created it, so a writer that has since closed must not leave the entry
+    stamped writable and make the next secondary's discovery load a newly-appeared store with
+    recovery (the same rule `ResolveStore`'s `callerReadOnly` follows; the entry no longer carries a
+    mode at all). The inverse hazard is a WRITER adopting
     stores a read-only open loaded without recovery (appends would land past a torn tail), so
     `EnsureWritableRegistrationSafe` — called at the top of `DBDescriptor::open`, NOT from
     `Register` (a throw there would run the half-built descriptor's close and decrement a refcount
-    it never incremented) — rejects the writable open while read-only-loaded stores are live.
+    it never incremented) — rejects the writable open while read-only-loaded stores are live,
+    deciding on each live store's own `TransactionLogStore::readOnly` for the same reason.
+    A secondary's log view is therefore "the stores discovered at open", not a frozen extent: a
+    store an in-process writer holds open is the same object, so its appends are visible. That is
+    not a leak of unsafe state — the log write completes before the RocksDB commit for every
+    writer, so the log leads the database view by construction and every log consumer already has
+    to tolerate it.
     And **`DBRegistry::DestroyDB` must claim and close EVERY descriptor for the path** (read-write,
     read-only, each secondary): erasing an entry unclosed leaks its resources for the life of the
     process — for a secondary, the workspace `.secondary.lock` is only released by `finishClose()`,

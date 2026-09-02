@@ -378,7 +378,14 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 			}
 			DEBUG_LOG("%p TransactionLogFile::recoverTail Torn tail in %s: truncating %u -> %u bytes\n",
 				this, this->path.string().c_str(), fileSize, scan.validEnd);
-			if (this->truncateFile(scan.validEnd)) {
+			// Physical truncation is not always available: on Windows a live
+			// mapping of this file (sections there are mandatory) makes
+			// SetEndOfFile fail, and leaving the torn bytes is not benign —
+			// appends resume at `size`, so a later shorter batch would leave
+			// the stale bytes reading as an entry instead of the zero
+			// end-of-entries marker. Zeroing the range is the equivalent
+			// recovery there; POSIX has no such case (see zeroTailLocked).
+			if (this->truncateFile(scan.validEnd) || this->zeroTailLocked(scan.validEnd)) {
 				this->size.store(scan.validEnd, std::memory_order_relaxed);
 				if (this->lastFlushedSize > scan.validEnd) {
 					this->lastFlushedSize = scan.validEnd;

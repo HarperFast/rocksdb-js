@@ -7,7 +7,9 @@
 #include "core/platform.h"
 #include <aclapi.h>
 #include <sddl.h>
+#include <algorithm>
 #include <cstdio>
+#include <vector>
 
 namespace rocksdb_js {
 
@@ -663,6 +665,40 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 			this, this->path.string().c_str(), error);
 		throw rocksdb_js::DBException(
 			"Failed to flush transaction log truncation: " + this->path.string());
+	}
+	return true;
+}
+
+bool TransactionLogFile::zeroTailLocked(uint32_t newSize) {
+	uint32_t entriesEnd = this->size.load(std::memory_order_relaxed);
+	if (this->fileHandle == INVALID_HANDLE_VALUE || entriesEnd <= newSize) {
+		return false;
+	}
+
+	// Only the entries extent is rewritten: everything past `size` is already
+	// the zero padding this file was pre-extended with, so a pre-extended
+	// active segment costs one small write here, not a maxFileSize one.
+	constexpr uint32_t chunkSize = 64 * 1024;
+	std::vector<char> zeros(std::min(chunkSize, entriesEnd - newSize), 0);
+	for (uint32_t offset = newSize; offset < entriesEnd; ) {
+		uint32_t remaining = entriesEnd - offset;
+		uint32_t toWrite = remaining < chunkSize ? remaining : chunkSize;
+		int64_t written = this->writeToFile(zeros.data(), toWrite, static_cast<int64_t>(offset));
+		if (written != static_cast<int64_t>(toWrite)) {
+			DEBUG_LOG("%p TransactionLogFile::zeroTailLocked Failed to zero %s at offset %u (error=%lu)\n",
+				this, this->path.string().c_str(), offset, ::GetLastError());
+			return false;
+		}
+		offset += toWrite;
+	}
+
+	if (!::FlushFileBuffers(this->fileHandle)) {
+		DEBUG_LOG("%p TransactionLogFile::zeroTailLocked FlushFileBuffers failed for %s (error=%lu)\n",
+			this, this->path.string().c_str(), ::GetLastError());
+		// The zeros are not durable yet, so a crash before the next flush could
+		// still resurrect the torn bytes. Report failure rather than let the
+		// caller record a boundary the file does not have.
+		return false;
 	}
 	return true;
 }

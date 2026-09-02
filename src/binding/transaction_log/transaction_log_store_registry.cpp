@@ -66,13 +66,6 @@ void TransactionLogStoreRegistry::Register(const std::string& dbPath, const Tran
 		it->second->refCount++;
 		DEBUG_LOG("%p TransactionLogStoreRegistry::Register Incremented refCount for \"%s\" (refCount=%zu)\n",
 			instance.get(), dbPath.c_str(), it->second->refCount);
-		if (it->second->config.readOnly && !config.readOnly) {
-			// A writer is joining an entry created by a read-only open whose
-			// stores are empty (EnsureWritableRegistrationSafe rejected the
-			// non-empty case before this open began). Adopt writer semantics so
-			// this open's discovery runs recovery and retention normally.
-			it->second->config.readOnly = false;
-		}
 	}
 }
 
@@ -83,16 +76,22 @@ void TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(const std::stri
 
 	std::lock_guard<std::mutex> lock(instance->entriesMutex);
 	auto it = instance->entries.find(dbPath);
-	if (it == instance->entries.end() || !it->second->config.readOnly) {
+	if (it == instance->entries.end()) {
 		return;
 	}
+	// Each store records how it was loaded, so this decides on what is actually
+	// live rather than on how the entry's first opener was configured: an entry
+	// can outlive the writer that created it and go on serving read-only opens
+	// (and vice versa).
 	std::lock_guard<std::mutex> storeLock(it->second->storesMutex);
-	if (!it->second->stores.empty()) {
-		throw rocksdb_js::DBException(
-			"Cannot open \"" + dbPath + "\" for writing: its transaction logs are open read-only in "
-			"this process (loaded without tail recovery, which appends must not skip). Close the "
-			"read-only or secondary handle first, or open the writable handle before it."
-		);
+	for (const auto& [name, store] : it->second->stores) {
+		if (store->readOnly) {
+			throw rocksdb_js::DBException(
+				"Cannot open \"" + dbPath + "\" for writing: its transaction logs are open read-only in "
+				"this process (loaded without tail recovery, which appends must not skip). Close the "
+				"read-only or secondary handle first, or open the writable handle before it."
+			);
+		}
 	}
 }
 
@@ -148,7 +147,7 @@ void TransactionLogStoreRegistry::Unregister(const std::string& dbPath) {
 /**
  * Discovers existing transaction log stores in the transaction logs directory.
  */
-void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
+void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath, bool callerReadOnly) {
 	if (!instance) {
 		DEBUG_LOG("TransactionLogStoreRegistry::DiscoverStores Registry not initialized\n");
 		return;
@@ -193,12 +192,18 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 			if (entry->stores.count(storeName)) {
 				continue;
 			}
+			// The OPENING handle's mode decides, never the entry's: the entry is
+			// path-global and shared by every handle on this path, so a writer
+			// that opened first (and has since closed) must not make a
+			// secondary's discovery load stores writably — that would run
+			// retention purge and recoverTail() truncation against a live
+			// primary's logs (invariant 5, the harper#2016 class).
 			auto store = TransactionLogStore::load(
 				dirEntry.path(),
 				config.transactionLogMaxSize,
 				config.transactionLogRetentionMs,
 				config.transactionLogMaxAgeThreshold,
-				config.readOnly
+				callerReadOnly
 			);
 			if (store) {
 				DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores Found store \"%s\" for \"%s\"\n",

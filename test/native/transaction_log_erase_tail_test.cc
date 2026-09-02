@@ -62,6 +62,35 @@ protected:
 		ASSERT_NE(file->getMemoryMap(size, true), nullptr);
 	}
 
+	// One complete entry followed by an entry header whose declared length runs
+	// past end-of-file: the torn tail shape recoverTail() truncates back to
+	// `completeEnd`.
+	void writeTornImage(uint32_t tornSize, uint32_t completeEnd) {
+		std::vector<char> image(tornSize, 0);
+		rocksdb_js::writeUint32BE(image.data(), TRANSACTION_LOG_TOKEN);
+		rocksdb_js::writeUint8(image.data() + 4, 1);
+		rocksdb_js::writeDoubleBE(image.data() + 5, 1.0);
+		rocksdb_js::writeDoubleBE(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE, 2.0);
+		rocksdb_js::writeUint32BE(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE + 8, 4);
+		rocksdb_js::writeUint8(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE + 12, 1);
+		rocksdb_js::writeDoubleBE(image.data() + completeEnd, 3.0);
+		rocksdb_js::writeUint32BE(image.data() + completeEnd + 8, 100);
+
+		HANDLE handle = ::CreateFileW(
+			path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr
+		);
+		ASSERT_NE(handle, INVALID_HANDLE_VALUE);
+		DWORD written = 0;
+		ASSERT_TRUE(::WriteFile(handle, image.data(), static_cast<DWORD>(image.size()), &written, nullptr));
+		ASSERT_EQ(written, static_cast<DWORD>(image.size()));
+
+		file = std::make_unique<rocksdb_js::TransactionLogFile>(path, 1);
+		file->fileHandle = handle;
+		file->size = tornSize;
+		file->version = 1;
+	}
+
 	void expectPhysicalSize(uint32_t expected) {
 		LARGE_INTEGER physicalSize;
 		ASSERT_TRUE(::GetFileSizeEx(file->fileHandle, &physicalSize));
@@ -87,32 +116,40 @@ TEST_F(TransactionLogEraseTail, PhysicallyTruncatesATornTail) {
 	expectPhysicalSize(boundary);
 }
 
+// A live mapping makes Windows refuse to shrink the file (sections are
+// mandatory), which is routine: a reader in this process — or another — can
+// hold one while a writer opens and recovers. The torn bytes must still be
+// neutralized, because appends resume at `size` and a later shorter batch would
+// leave them reading as an entry rather than the zero end-of-entries marker.
+TEST_F(TransactionLogEraseTail, TornTailRecoveryZeroFillsWhenTheFileCannotShrink) {
+	constexpr uint32_t completeEnd = TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 4;
+	constexpr uint32_t tornSize = completeEnd + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2;
+	writeTornImage(tornSize, completeEnd);
+
+	// A second owner of the mapping is what truncateFile() refuses on.
+	std::shared_ptr<rocksdb_js::MemoryMap> pinnedMap = file->getMemoryMap(tornSize, true);
+	ASSERT_NE(pinnedMap, nullptr);
+
+	file->recoverTail();
+
+	EXPECT_EQ(file->size.load(), completeEnd);
+	expectPhysicalSize(tornSize);
+	std::vector<char> tail(tornSize - completeEnd, '\xff');
+	DWORD read = 0;
+	LARGE_INTEGER offset;
+	offset.QuadPart = completeEnd;
+	ASSERT_TRUE(::SetFilePointerEx(file->fileHandle, offset, nullptr, FILE_BEGIN));
+	ASSERT_TRUE(::ReadFile(file->fileHandle, tail.data(), static_cast<DWORD>(tail.size()), &read, nullptr));
+	ASSERT_EQ(read, static_cast<DWORD>(tail.size()));
+	for (char byte : tail) {
+		EXPECT_EQ(byte, 0) << "torn bytes survived recovery";
+	}
+}
+
 TEST_F(TransactionLogEraseTail, TornTailRecoveryClearsThePreRecoveryIndex) {
 	constexpr uint32_t completeEnd = TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 4;
 	constexpr uint32_t tornSize = completeEnd + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2;
-	std::vector<char> image(tornSize, 0);
-	rocksdb_js::writeUint32BE(image.data(), TRANSACTION_LOG_TOKEN);
-	rocksdb_js::writeUint8(image.data() + 4, 1);
-	rocksdb_js::writeDoubleBE(image.data() + 5, 1.0);
-	rocksdb_js::writeDoubleBE(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE, 2.0);
-	rocksdb_js::writeUint32BE(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE + 8, 4);
-	rocksdb_js::writeUint8(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE + 12, 1);
-	rocksdb_js::writeDoubleBE(image.data() + completeEnd, 3.0);
-	rocksdb_js::writeUint32BE(image.data() + completeEnd + 8, 100);
-
-	HANDLE handle = ::CreateFileW(
-		path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-		nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr
-	);
-	ASSERT_NE(handle, INVALID_HANDLE_VALUE);
-	DWORD written = 0;
-	ASSERT_TRUE(::WriteFile(handle, image.data(), static_cast<DWORD>(image.size()), &written, nullptr));
-	ASSERT_EQ(written, static_cast<DWORD>(image.size()));
-
-	file = std::make_unique<rocksdb_js::TransactionLogFile>(path, 1);
-	file->fileHandle = handle;
-	file->size = tornSize;
-	file->version = 1;
+	writeTornImage(tornSize, completeEnd);
 	EraseTailTestAccessor::seedIndex(*file, 3.0, tornSize + 100);
 
 	file->recoverTail();

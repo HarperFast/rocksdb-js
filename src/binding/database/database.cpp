@@ -1,5 +1,6 @@
 #include <node_api.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -436,6 +437,15 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	std::shared_ptr<DBDescriptor> descriptor;
 
+	/**
+	 * Guards the `operationsInFlight` claim this state inherited when the work
+	 * was queued, so exactly one of the execute callback and the destructor
+	 * releases it. Queued work that is cancelled never runs execute, and a
+	 * claim left standing there makes `finishClose()` — which waits on the
+	 * counter unbounded — wedge close and destroy.
+	 */
+	std::atomic<bool> inFlightReleased{false};
+
 	AsyncCatchUpState(
 		napi_env env,
 		std::shared_ptr<DBHandle> handle,
@@ -444,7 +454,17 @@ struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
 		descriptor(std::move(descriptor)) {}
 
+	void releaseInFlight() {
+		if (this->inFlightReleased.exchange(true)) {
+			return;
+		}
+		if (--this->descriptor->operationsInFlight == 0 && this->descriptor->isClosing()) {
+			this->descriptor->operationsInFlight.notify_all();
+		}
+	}
+
 	~AsyncCatchUpState() override {
+		this->releaseInFlight();
 		if (this->descriptor) {
 			DBKey key = descriptorKey(*this->descriptor);
 			this->descriptor.reset();
@@ -469,7 +489,9 @@ static bool throwIfNotSecondary(napi_env env, const std::shared_ptr<DBHandle>& d
  * RAII release for a descriptor `operationsInFlight` claim made on the JS
  * thread, mirroring CheckpointInFlightClaim: decrements (and wakes a waiting
  * `finishClose()`) on any early return, unless the claim was handed off to the
- * async worker, which then owns the matching decrement at the end of execute.
+ * queued work, after which `AsyncCatchUpState` owns the matching decrement
+ * (released by execute, or by its destructor when the work was cancelled and
+ * execute never ran).
  */
 struct CatchUpInFlightClaim {
 	DBDescriptor* descriptor;
@@ -551,9 +573,7 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 			// Release the in-flight claim made on the JS thread (the worker owns
 			// this decrement once the work was queued); wake any finishClose()
 			// waiting on it before it tears down descriptor->db.
-			if (--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
-				state->descriptor->operationsInFlight.notify_all();
-			}
+			state->releaseInFlight();
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
@@ -2144,6 +2164,14 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 				::napi_throw_error(env, nullptr, "secondaryPath must not be empty");
 				return nullptr;
 			}
+			// Resolve once, here: the workspace is part of the registry key and
+			// is what the in-process exclusivity scan, the nesting check and the
+			// advisory lock file all key on, so two spellings of one directory
+			// (relative vs absolute, a `..` hop, a symlinked parent) must not
+			// read as two workspaces. The JS-side `db.secondaryPath` getter
+			// still reports what the caller passed.
+			dbHandleOptions.secondaryPath =
+				rocksdb_js::resolveIdentityPath(dbHandleOptions.secondaryPath).string();
 		}
 	}
 	if (!dbHandleOptions.secondaryPath.empty()) {

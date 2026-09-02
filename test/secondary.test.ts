@@ -463,8 +463,16 @@ describe('Secondary Instances', () => {
 						}
 					} catch (err) {
 						expect((err as Error & { code?: string }).code).toBe('ERR_CONCURRENT_COMPACTION');
-						expect((err as Error).message).not.toMatch(/may be corrupted/);
-						expect((err as Error).message).not.toMatch(/Database does not exist/);
+						// What the caller reads first is the classification, not a
+						// corruption report or "Database does not exist". RocksDB's
+						// own status is preserved verbatim in the trailing
+						// parenthetical, and that text is itself where the
+						// "MANIFEST-… may be corrupted" wording comes from, so the
+						// claim to assert is the explanation leading the message.
+						expect((err as Error).message).toMatch(
+							/^Read-only open failed: a file this open needed was already gone/
+						);
+						expect((err as Error).message).toMatch(/the database is not corrupt/);
 						raceErrors++;
 					} finally {
 						readOnly.close();

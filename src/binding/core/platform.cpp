@@ -1,3 +1,4 @@
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <atomic>
@@ -152,6 +153,47 @@ double getMonotonicTimestamp() {
 	}
 
 	return result;
+}
+
+std::filesystem::path resolveIdentityPath(const std::string& path) {
+	std::error_code error;
+	auto resolved = std::filesystem::weakly_canonical(path, error);
+	if (!error && !resolved.empty()) {
+		return resolved;
+	}
+	error.clear();
+	auto absolute = std::filesystem::absolute(path, error);
+	if (error) {
+		return std::filesystem::path(path).lexically_normal();
+	}
+	return absolute.lexically_normal();
+}
+
+bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child) {
+	std::string parentStr = parent.generic_string();
+	std::string childStr = child.generic_string();
+#if defined(_WIN32) || defined(__APPLE__)
+	// The default filesystems are case-insensitive, so a differently-cased
+	// spelling names the same directory.
+	auto asciiLower = [](std::string& value) {
+		for (char& c : value) {
+			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		}
+	};
+	asciiLower(parentStr);
+	asciiLower(childStr);
+#endif
+	if (parentStr.empty() || parentStr == childStr) {
+		return parentStr == childStr;
+	}
+	if (childStr.size() <= parentStr.size() ||
+		childStr.compare(0, parentStr.size(), parentStr) != 0
+	) {
+		return false;
+	}
+	// A root ("/", "c:/") already ends in the separator, so requiring another
+	// one there would report every path on the volume as unrelated to it.
+	return parentStr.back() == '/' || childStr[parentStr.size()] == '/';
 }
 
 void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {
