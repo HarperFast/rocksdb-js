@@ -137,7 +137,7 @@ bool validFramingResumes(ScanReader& source, uint32_t from) {
 } // namespace
 
 RecoveryScan scanTransactionLogForRecovery(
-	uint32_t fileSize, TransactionLogReadFn read, void* context
+	uint32_t fileSize, TransactionLogReadFn read, void* context, double plausibleBound
 ) {
 	uint32_t lastCompleteEnd = 0;
 	uint32_t tailEntries = 0;
@@ -145,7 +145,6 @@ RecoveryScan scanTransactionLogForRecovery(
 	bool tailUniformTimestamp = true;
 	double maxTimestamp = 0;
 	double maxImplausibleTimestamp = 0;
-	const double plausibleBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
 			tailEntries > 0 && tailUniformTimestamp, maxTimestamp, maxImplausibleTimestamp };
@@ -212,13 +211,13 @@ bool readFromBuffer(void* context, uint32_t offset, void* dest, uint32_t n) {
 
 } // namespace
 
-RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) {
-	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data));
+RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize, double plausibleBound) {
+	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data), plausibleBound);
 }
 
-RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file) {
+RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file, double plausibleBound) {
 	std::lock_guard<std::mutex> lock(file.fileMutex);
-	return file.scanRecoveryLocked();
+	return file.scanRecoveryLocked(plausibleBound);
 }
 
 uint32_t countTransactionLogEntries(const char* data, uint32_t fileSize) {

@@ -70,6 +70,12 @@ constexpr double MAX_CLOCK_FLOOR_SKEW_MS = 10.0 * 365.25 * 24.0 * 3600.0 * 1000.
  */
 bool raiseMonotonicTimestampFloor(double floor);
 
+/**
+ * Same, against a caller-supplied plausible bound (wall clock + skew sampled
+ * once), so one load classifies every candidate against one clock reading.
+ */
+bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
+
 double getWallClockTimestamp();
 
 void tryCreateDirectory(

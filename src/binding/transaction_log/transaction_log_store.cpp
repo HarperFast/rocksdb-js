@@ -882,7 +882,10 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		this->positionInsert(logPosition);
 	}
 
-	if (this->raiseLatestTimestamp(batch.timestamp)) {
+	// Judged against the previous append's clock sample (or construction's):
+	// at most one batch stale, which the ten-year skew makes irrelevant, and no
+	// clock read on this path.
+	if (this->raiseLatestTimestamp(batch.timestamp, this->lastAppendMs + MAX_CLOCK_FLOOR_SKEW_MS)) {
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Set latest timestamp to batch timestamp: %f\n", this, batch.timestamp);
 	}
 
@@ -975,7 +978,9 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			}
 			throw;
 		}
-		logFile->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
+		const auto appendedAt = std::chrono::system_clock::now();
+		logFile->fileLastWriteTime.store(appendedAt, std::memory_order_relaxed);
+		this->lastAppendMs = std::chrono::duration<double, std::milli>(appendedAt.time_since_epoch()).count();
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed));
@@ -1228,6 +1233,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// in any of its headers, so every segment older than the active file is
 	// walked. The cost recurs at each open until retention purges the segment
 	// carrying that header; the warning below names the key.
+	// One clock sample classifies every candidate of this load, and the final
+	// floor raise uses the same one, so none of them can disagree.
+	const double plausibleBound = TransactionLogStore::plausibleBoundNow();
 	double implausibleKey = 0;
 	bool scanOlderSegments = false;
 	{
@@ -1235,8 +1243,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		for (const auto& [sequence, logFile] : store->sequenceFiles) {
 			try {
 				double header = readTransactionLogFileHeaderTimestamp(logFile->path);
-				store->raiseLatestTimestamp(header);
-				if (!TransactionLogStore::isPlausibleTimestamp(header)) {
+				store->raiseLatestTimestamp(header, plausibleBound);
+				if (header > plausibleBound) {
 					implausibleKey = std::max(implausibleKey, header);
 					scanOlderSegments = true;
 				}
@@ -1256,8 +1264,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					if (openedForScan) {
 						logFile->open(store->latestTimestamp);
 					}
-					logFile->scanForLastCompleteTransactionEnd();
-					store->raiseLatestTimestamp(logFile->maxEntryTimestamp.load(std::memory_order_relaxed));
+					logFile->scanForLastCompleteTransactionEnd(plausibleBound);
+					store->raiseLatestTimestamp(
+						logFile->maxEntryTimestamp.load(std::memory_order_relaxed), plausibleBound);
 					implausibleKey = std::max(implausibleKey,
 						logFile->maxImplausibleEntryTimestamp.load(std::memory_order_relaxed));
 					if (logFile->scanStoppedAtBreak.load(std::memory_order_relaxed)) {
@@ -1306,8 +1315,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
 					? flushedPosition.positionInLogFile
 					: 0;
-				currentFile->recoverTail(protectedPosition);
-				store->raiseLatestTimestamp(currentFile->maxEntryTimestamp.load(std::memory_order_relaxed));
+				currentFile->recoverTail(protectedPosition, plausibleBound);
+				store->raiseLatestTimestamp(
+					currentFile->maxEntryTimestamp.load(std::memory_order_relaxed), plausibleBound);
 				implausibleKey = std::max(implausibleKey,
 					currentFile->maxImplausibleEntryTimestamp.load(std::memory_order_relaxed));
 				if (currentFile->scanStoppedAtBreak.load(std::memory_order_relaxed)) {
@@ -1351,8 +1361,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			}
 			uint32_t completeEnd = isCurrent
 				? logFile->lastCompleteTransactionEnd.load(std::memory_order_relaxed)
-				: logFile->scanForLastCompleteTransactionEnd();
-			store->raiseLatestTimestamp(logFile->maxEntryTimestamp.load(std::memory_order_relaxed));
+				: logFile->scanForLastCompleteTransactionEnd(plausibleBound);
+			store->raiseLatestTimestamp(
+				logFile->maxEntryTimestamp.load(std::memory_order_relaxed), plausibleBound);
 			implausibleKey = std::max(implausibleKey,
 				logFile->maxImplausibleEntryTimestamp.load(std::memory_order_relaxed));
 			if (logFile->scanStoppedAtBreak.load(std::memory_order_relaxed)) {
@@ -1389,7 +1400,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// The floor must be in place before any transaction on this database can
 	// claim a timestamp; DBDescriptor::open discovers stores before the
 	// descriptor reaches a handle, so this runs early enough for every opener.
-	if (raiseMonotonicTimestampFloor(store->latestTimestamp)) {
+	if (raiseMonotonicTimestampFloor(store->latestTimestamp, plausibleBound)) {
 		DEBUG_LOG("%p TransactionLogStore::load Raised monotonic clock floor to %f from store \"%s\"\n",
 			store.get(), store->latestTimestamp, store->name.c_str());
 	}

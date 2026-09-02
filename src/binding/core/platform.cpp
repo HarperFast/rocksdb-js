@@ -161,8 +161,11 @@ double getMonotonicTimestamp() {
 }
 
 bool raiseMonotonicTimestampFloor(double floor) {
-	if (!(floor > 0) || !std::isfinite(floor) || floor >= MAX_TIMESTAMP_MS ||
-		floor > getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS) {
+	return raiseMonotonicTimestampFloor(floor, getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
+}
+
+bool raiseMonotonicTimestampFloor(double floor, double plausibleBound) {
+	if (!(floor > 0) || !std::isfinite(floor) || floor >= MAX_TIMESTAMP_MS || floor > plausibleBound) {
 		return false;
 	}
 	double last = lastTimestamp.load(std::memory_order_acquire);

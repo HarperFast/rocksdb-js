@@ -695,8 +695,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     construction-time bound silently stopped the header chain after a post-boot NTP correction; a
     floor-anchored bound compounded on an already-raised floor; a lazily-ratcheted bound stayed
     high after a backward correction), and every divergence readmits a key the floor refuses,
-    which is the masking bug again. The clock read happens only for a key that would raise
-    `latestTimestamp`, on a path that already reads it after every append. A rotated segment whose
+    which is the masking bug again. `load()` samples that bound once and uses it for every header,
+    every entry scan (`RecoveryScan` takes it as a parameter) and the final floor raise, so no two
+    candidates of one load are judged against different clocks; `writeBatch` judges the batch key
+    against the sample the previous append already took for `fileLastWriteTime` (`lastAppendMs`,
+    seeded at construction), so no commit pays a clock read for this and the header a rotation
+    stamps still carries the rotating batch's key, as it always has. A rotated segment whose
     header is above the bound was stamped by a pre-bound writer that cannot be trusted to have kept
     a running maximum in any of its headers, so every older segment is walked, at every open, until
     retention purges that segment — no "trusted newer header" shortcut, because nothing in the

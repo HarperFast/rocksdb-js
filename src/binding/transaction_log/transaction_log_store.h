@@ -218,14 +218,26 @@ struct TransactionLogStore final {
 
 	/**
 	 * Keys more than MAX_CLOCK_FLOOR_SKEW_MS past the wall clock — the same
-	 * rule raiseMonotonicTimestampFloor() applies, against the same clock, so
-	 * the two can never disagree — are not clock-floor candidates and never
-	 * reach `latestTimestamp` (so they are never stamped into a header either).
-	 * The clock is read only for a key that would raise `latestTimestamp`, on
-	 * a path that already reads it after every append (fileLastWriteTime).
+	 * rule raiseMonotonicTimestampFloor() applies — are not clock-floor
+	 * candidates and never reach `latestTimestamp` (so they are never stamped
+	 * into a header either). `plausibleBound` is one wall-clock sample plus the
+	 * skew: load() takes one for the whole load so every candidate and the
+	 * final floor raise agree, and writeBatch() judges a batch key against the
+	 * sample the previous append already took (`lastAppendMs`), so no commit
+	 * pays a clock read for this.
 	 */
-	static bool isPlausibleTimestamp(double timestamp) {
-		return timestamp <= getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
+	static double plausibleBoundNow() {
+		return getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
+	}
+
+	double lastAppendMs = getWallClockTimestamp();
+
+	bool raiseLatestTimestamp(double timestamp, double plausibleBound) {
+		if (timestamp > this->latestTimestamp && timestamp <= plausibleBound) {
+			this->latestTimestamp = timestamp;
+			return true;
+		}
+		return false;
 	}
 
 	/**
@@ -236,11 +248,7 @@ struct TransactionLogStore final {
 	bool clockFloorComplete = true;
 
 	bool raiseLatestTimestamp(double timestamp) {
-		if (timestamp > this->latestTimestamp && isPlausibleTimestamp(timestamp)) {
-			this->latestTimestamp = timestamp;
-			return true;
-		}
-		return false;
+		return this->raiseLatestTimestamp(timestamp, plausibleBoundNow());
 	}
 
 	/**

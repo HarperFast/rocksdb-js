@@ -303,18 +303,19 @@ bool TransactionLogFile::readBytes(uint32_t offset, void* dest, uint32_t n) {
 	return true;
 }
 
-RecoveryScan TransactionLogFile::scanRecoveryLocked() {
+RecoveryScan TransactionLogFile::scanRecoveryLocked(double plausibleBound) {
 	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
 	return scanTransactionLogForRecovery(
 		fileSize,
 		[](void* context, uint32_t offset, void* dest, uint32_t n) {
 			return static_cast<TransactionLogFile*>(context)->readBytes(offset, dest, n);
 		},
-		this
+		this,
+		plausibleBound
 	);
 }
 
-uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
+uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd(double plausibleBound) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
 	if (this->version != 1) {
@@ -328,7 +329,7 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 
 	RecoveryScan scan;
 	try {
-		scan = this->scanRecoveryLocked();
+		scan = this->scanRecoveryLocked(plausibleBound);
 	} catch (const DBException& error) {
 		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
@@ -339,7 +340,7 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 	return scan.lastCompleteTransactionEnd;
 }
 
-void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
+void TransactionLogFile::recoverTail(uint32_t protectedPosition, double plausibleBound) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
 	if (this->version != 1) {
@@ -353,7 +354,7 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 
 	RecoveryScan scan;
 	try {
-		scan = this->scanRecoveryLocked();
+		scan = this->scanRecoveryLocked(plausibleBound);
 	} catch (const DBException& error) {
 		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}

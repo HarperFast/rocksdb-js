@@ -366,7 +366,9 @@ struct TransactionLogFile final {
 	 * any appends; only meaningful for the active (current) log file. Bytes before
 	 * protectedPosition are retained because txn.state proves RocksDB flushed them.
 	 */
-	void recoverTail(uint32_t protectedPosition = 0);
+	void recoverTail(
+		uint32_t protectedPosition = 0,
+		double plausibleBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
 
 	/**
 	 * Open-time framing scan via positional header reads. Precondition: the caller
@@ -374,7 +376,7 @@ struct TransactionLogFile final {
 	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
 	 * this->size (append-owned written extent), not the mapped/pre-extended size.
 	 */
-	RecoveryScan scanRecoveryLocked();
+	RecoveryScan scanRecoveryLocked(double plausibleBound);
 
 	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file
@@ -404,7 +406,8 @@ struct TransactionLogFile final {
 	 * one ends mid-transaction. Throws DBException on I/O failure; load() catches
 	 * that and falls back toward txn.state.
 	 */
-	uint32_t scanForLastCompleteTransactionEnd();
+	uint32_t scanForLastCompleteTransactionEnd(
+		double plausibleBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
 
 	/**
 	 * Closes the log file and removes it.
