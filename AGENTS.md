@@ -407,12 +407,16 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    (`DisableManualCompaction()` sets the caller's atomic), and `closing` means the registry has an
    owner committed to running `finishClose()`, which RocksDB must not be able to publish.
    `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts` cover the four close paths in
-   the same order as above; each fails if `options.canceled` stops reaching RocksDB, `sync` also
-   fails if the descriptor arm moves past the in-flight drain, and `destroy` also fails if the
-   foreign arm moves back to the closables sweep. None of them separates arming in `beginClose()`
-   from arming at the top of `finishClose()` — for a single descriptor those are equivalent, and
-   what makes `beginClose()` the right home is that `DestroyDB`/`Shutdown` claim every entry for a
-   path under one lock and then close them sequentially.
+   the same order as above. What they pin down is **our** half of the contract — that the right
+   token is armed, early enough, and handed to RocksDB: each fails if `options.canceled` stops
+   being passed (the compaction then succeeds instead of returning `Incomplete`), `sync` also fails
+   if the descriptor arm moves past the in-flight drain, and `destroy` also fails if the foreign
+   arm moves back to the closables sweep. They do **not** exercise RocksDB aborting a compaction
+   already in progress: `ROCKSDB_JS_COMPACT_DELAY_MS` parks before `CompactRange`, deliberately, so
+   the fixtures do not depend on how long a real compaction runs. Nor does any of them separate
+   arming in `beginClose()` from arming at the top of `finishClose()` — for a single descriptor
+   those are equivalent, and what makes `beginClose()` the right home is that `DestroyDB`/`Shutdown`
+   claim every entry for a path under one lock and then close them sequentially.
    Everything the four registry teardown paths do _after_ claiming a descriptor —
    `finishClose()`, erase-or-quarantine, notify, emit `database:closeFailed` — is one helper,
    `closeClaimedDescriptors` in `db_registry.cpp`; only the claim predicate differs per caller. Its
