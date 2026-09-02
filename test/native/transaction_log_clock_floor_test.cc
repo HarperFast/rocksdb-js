@@ -309,7 +309,7 @@ TEST(TransactionLogClockFloor, EntriesPastAMidFileBreakMarkTheSeedIncomplete) {
 	std::filesystem::remove_all(storePath.parent_path());
 }
 
-TEST(TransactionLogClockFloor, ANonFiniteHeaderMarksTheSeedIncompleteAndWalks) {
+TEST(TransactionLogClockFloor, ANonFiniteHeaderWalksTheOlderSegments) {
 	auto storePath = uniqueStorePath();
 	std::filesystem::create_directories(storePath);
 	const double high = futureKey();
@@ -318,7 +318,7 @@ TEST(TransactionLogClockFloor, ANonFiniteHeaderMarksTheSeedIncompleteAndWalks) {
 
 	auto store = loadStore(storePath);
 	ASSERT_NE(store, nullptr);
-	EXPECT_FALSE(store->clockFloorComplete);
+	EXPECT_TRUE(store->clockFloorComplete);
 	EXPECT_EQ(store->latestTimestamp, high);
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());

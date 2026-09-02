@@ -1236,7 +1236,6 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					implausibleKey = std::max(implausibleKey, header);
 					scanOlderSegments = true;
 				} else if (!(header >= 0)) {
-					clockFloorComplete = false;
 					scanOlderSegments = true;
 				}
 			} catch (const std::exception& e) {
