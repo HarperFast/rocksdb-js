@@ -1172,6 +1172,10 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs, maxAgeThreshold);
 
+	// Cleared by any failure below that can leave a segment or its entries out of
+	// the clock-floor seed; open still succeeds, but the store says so.
+	bool clockFloorComplete = true;
+
 	// find `.txnlog` files in the directory
 	try {
 		for (const auto& fileEntry : std::filesystem::directory_iterator(path)) {
@@ -1192,12 +1196,15 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				// logical end. Ignoring it could expose orphaned bytes after restart.
 				throw;
 			} catch (const std::filesystem::filesystem_error& e) {
+				clockFloorComplete = false;
 				DEBUG_LOG("%p TransactionLogStore::load Failed to process file (filesystem error): %s\n",
 					store.get(), e.what());
 			} catch (const std::exception& e) {
+				clockFloorComplete = false;
 				DEBUG_LOG("%p TransactionLogStore::load Failed to load file: %s\n",
 					store.get(), e.what());
 			} catch (...) {
+				clockFloorComplete = false;
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::load Unknown error processing file: %s\n",
@@ -1205,6 +1212,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			}
 		}
 	} catch (const std::filesystem::filesystem_error& e) {
+		clockFloorComplete = false;
 		DEBUG_LOG("%p TransactionLogStore::load Failed to iterate directory: %s\n",
 			store.get(), e.what());
 	}
@@ -1215,9 +1223,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// latestTimestamp when that segment was created, so post-upgrade the newest
 	// header bounds every key in the older segments. Part 2 (below) folds in the
 	// entry keys of the segments the recovery scans walk anyway, which is where
-	// keys above the newest header can still sit. A segment whose header cannot
-	// be read leaves a possibly-low floor; open still succeeds, but say so.
-	bool clockFloorComplete = true;
+	// keys above the newest header can still sit.
 	{
 		std::lock_guard<std::mutex> lock(store->dataSetsMutex);
 		for (const auto& [sequence, logFile] : store->sequenceFiles) {
@@ -1312,12 +1318,14 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				break;
 			}
 		} catch (const std::exception& e) {
+			clockFloorComplete = false;
 			if (openedForScan && logFile->isOpen()) {
 				logFile->close();
 			}
 			DEBUG_LOG("%p TransactionLogStore::load Failed to scan transaction boundary in %s: %s\n",
 				store.get(), logFile->path.string().c_str(), e.what());
 		} catch (...) {
+			clockFloorComplete = false;
 			if (openedForScan && logFile->isOpen()) {
 				logFile->close();
 			}

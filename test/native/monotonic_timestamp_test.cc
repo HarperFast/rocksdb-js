@@ -1,6 +1,3 @@
-// The process-global monotonic clock behind transaction timestamps: its
-// raise-only floor (seeded at transaction-log store load) and the domain cap.
-
 #include <gtest/gtest.h>
 #include <cmath>
 #include <cstdlib>

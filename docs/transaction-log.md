@@ -223,8 +223,11 @@ The CLI exposes the same check as `verify-logs [name]`.
 Log entries are not guaranteed to be in order: each transaction's timestamp is claimed from the
 process-wide monotonic clock when the transaction is created, but transactions commit (and are
 appended) in a different order under concurrency, so a later entry can carry a smaller timestamp.
-Every timestamp is unique within the log's origin, and at open the store raises the clock floor to
-its largest key so a restart cannot reissue one. When reading the transaction log file, each
+Timestamps are unique within the log's origin: within a process the clock is strictly increasing,
+and at open the store raises the clock floor to the largest key it can see (every segment's header
+word plus the active segment's entries) so a restart after a wall-clock rollback does not reissue
+one. That seed is complete for segments rotated by this version; the caveats for older segments,
+unreadable segments and mid-file framing breaks are in the README's "Clock floor at open". When reading the transaction log file, each
 transaction entry header must be read, then sorted and indexed. Using this index, queries can find all entries within a time range using a binary search
 and seek to get the associated entry data.
 

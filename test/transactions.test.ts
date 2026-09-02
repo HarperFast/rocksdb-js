@@ -378,8 +378,6 @@ for (const { name, options, txnOptions } of testOptions) {
 				const txn = new Transaction(db.store, txnOptions);
 				const ts = txn.getTimestamp();
 				await txn.put('foo', 'bar');
-				// The log batch key and the records' first words are already fixed
-				// by the staged write; a later change would split them.
 				expect(() => txn.setTimestamp(ts + 1)).toThrow(
 					'Cannot set timestamp: transaction already has staged writes'
 				);

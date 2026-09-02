@@ -63,17 +63,18 @@ std::filesystem::path transactionLogAppendBoundaryMarkerPath(
  * Reads a persisted append boundary. Returns 0 when no marker exists or the
  * marker records a clean segment; throws when an existing marker is malformed.
  */
+uint32_t readTransactionLogAppendBoundaryMarker(
+	const std::filesystem::path& logPath);
+
 /**
  * Reads the header timestamp of a v1 log file without opening it as a
  * TransactionLogFile: the store's `latestTimestamp` at the moment the file was
  * created, i.e. an upper bound on every batch key the store had written by
- * then. Throws TransactionLogFormatException on a missing/short/invalid header
- * and DBException on an I/O failure.
+ * then. An empty file (a segment created but never written) reads as 0. Throws
+ * TransactionLogFormatException on a short/invalid header and DBException on
+ * an I/O failure.
  */
 double readTransactionLogFileHeaderTimestamp(const std::filesystem::path& logPath);
-
-uint32_t readTransactionLogAppendBoundaryMarker(
-	const std::filesystem::path& logPath);
 
 class TransactionLogFormatException final : public std::exception {
 	std::string message;

@@ -37,7 +37,7 @@ function headerValue(
 	return value;
 }
 
-function runFixture(args: string[]): Promise<Record<string, number>> {
+function runFixture(args: string[]): Promise<Record<string, any>> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(process.execPath, [
 			join(__dirname, 'fixtures', 'fork-clock-floor.mts'),
@@ -202,10 +202,48 @@ describe('Dual clock', () => {
 			const dbPath = generateDBPath();
 			try {
 				const key = Date.now() + 3600 * 1000;
-				expect(await runFixture(['write', dbPath, String(key)])).toEqual({ wrote: key });
+				expect(await runFixture(['write', dbPath, String(key)])).toMatchObject({ wrote: key });
 				const observed = await runFixture(['read', dbPath, String(key)]);
 				expect(observed.clock).toBeGreaterThan(key);
 				expect(observed.txnTimestamp).toBeGreaterThan(observed.clock);
+			} finally {
+				rmSync(dbPath, { force: true, recursive: true });
+			}
+		}, 60000);
+
+		it('seeds the clock from a rotated segment header when the largest key is not in the active segment', async () => {
+			const dbPath = generateDBPath();
+			try {
+				const key = Date.now() + 2 * 3600 * 1000;
+				const written = await runFixture(['write-rotated', dbPath, String(key)]);
+				expect(written.segments).toBeGreaterThanOrEqual(2);
+				const observed = await runFixture(['read', dbPath, String(key)]);
+				expect(observed.clock).toBeGreaterThan(key);
+			} finally {
+				rmSync(dbPath, { force: true, recursive: true });
+			}
+		}, 60000);
+
+		it('warns when a segment header cannot be read and still opens', async () => {
+			const dbPath = generateDBPath();
+			try {
+				const key = Date.now() + 3600 * 1000;
+				await runFixture(['write', dbPath, String(key)]);
+				const observed = await runFixture(['warn', dbPath, String(key)]);
+				expect(observed.warnings).toBeGreaterThanOrEqual(1);
+				expect(observed.clock).toBeGreaterThan(key);
+			} finally {
+				rmSync(dbPath, { force: true, recursive: true });
+			}
+		}, 60000);
+
+		it('surfaces clock exhaustion as a JS error once a key at the cap is durable', async () => {
+			const dbPath = generateDBPath();
+			try {
+				await runFixture(['cap-write', dbPath]);
+				const observed = await runFixture(['cap-read', dbPath]);
+				expect(String(observed.clockError)).toContain('Monotonic timestamp domain exhausted');
+				expect(String(observed.txnError)).toContain('Monotonic timestamp domain exhausted');
 			} finally {
 				rmSync(dbPath, { force: true, recursive: true });
 			}

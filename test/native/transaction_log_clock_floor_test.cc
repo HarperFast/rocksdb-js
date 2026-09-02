@@ -1,7 +1,3 @@
-// TransactionLogStore::load() seeds the store's latestTimestamp — and through
-// it the process-global monotonic clock floor — from the largest durable batch
-// key: every segment's header word plus the entry keys of the active segment.
-
 #include <gtest/gtest.h>
 #include <chrono>
 #include <filesystem>
