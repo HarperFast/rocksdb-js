@@ -57,7 +57,7 @@ struct PersistedCFOptions {
 // Puts the blob settings of a column family being created back to the documented
 // creation defaults. The base options carry the opening handle's request, which
 // belongs to the family it named — the `default` family a fresh database creates
-// on the way to a named one must not persist it (invariant 19).
+// on the way to a named one must not persist it (invariant 18).
 static void applyBlobCreationDefaults(rocksdb::ColumnFamilyOptions& cfOptions) {
 	cfOptions.enable_blob_files = kDefaultBlobEnabled;
 	cfOptions.min_blob_size = kDefaultBlobMinSize;
@@ -1538,10 +1538,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	for (const auto& storagePath : options.paths) {
 		dbOptions.db_paths.emplace_back(storagePath.path, storagePath.targetSize);
 	}
-	// The retained destroy layout is authoritative, so a writable open may only
-	// extend it. Rejected here rather than after the open: past this point
-	// RocksDB owns the list, and a compaction placing one SST under it is
-	// already the divergence `destroy()` cannot repair.
+	// A writable open may only extend the retained destroy layout, and is refused
+	// here rather than after the open — see AssertDbPathsExtendRetained.
 	if (!options.readOnly) {
 		DBRegistry::AssertDbPathsExtendRetained(path, dbOptions.db_paths);
 	}

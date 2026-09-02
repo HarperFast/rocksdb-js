@@ -91,7 +91,7 @@ private:
 	 *
 	 * Keyed by path rather than by handle and retained across `PurgeAll`, which is
 	 * reached from the public `shutdown()`. Authority, default-marker lifetime,
-	 * and column-family drop rules are AGENTS invariant 18.
+	 * and column-family drop rules are AGENTS invariant 17.
 	 *
 	 * Its own mutex, deliberately a leaf: `DropColumnFamily` reaches a descriptor's
 	 * `layoutMutex` while holding `databasesMutex`, so anything recording a

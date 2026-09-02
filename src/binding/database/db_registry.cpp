@@ -342,20 +342,11 @@ static std::string refusedDbPathsMessage(
 }
 
 /**
- * Rejects a writable open whose `paths` the retained destroy layout cannot
- * accept, BEFORE RocksDB is handed the list.
+ * Rejects a writable open the retained list refuses (AGENTS invariant 17), which
+ * the message below explains, BEFORE `DB::Open`: past that point one compaction
+ * placing one SST is already the divergence `destroy()` cannot repair.
  *
- * `RecordLayout` below keeps the retained list authoritative, so a shorter or
- * divergent one leaves the live database and `destroy()` disagreeing about where
- * the files are: compaction writes SSTs to a volume `destroy()` never sweeps,
- * and `destroy()` still sweeps a volume this open dropped — which another
- * database may since have been given. Neither is recoverable after the fact, so
- * the open fails instead. Checked before `DB::Open` so nothing is written under
- * the refused list.
- *
- * A read-only open is not checked: it may legitimately pass any list while every
- * file it needs sits at path index 0, and it can neither establish nor extend
- * the record (AGENTS invariant 18).
+ * Read-only opens are exempt, per the same invariant.
  */
 void DBRegistry::AssertDbPathsExtendRetained(
 	const std::string& path,
@@ -378,11 +369,10 @@ void DBRegistry::AssertDbPathsExtendRetained(
  * Records where a database's files live, so `destroy()` can still find them
  * after the descriptor is gone. See `DBRegistry::knownLayouts`.
  *
- * Path authority and default-marker retention are AGENTS invariant 18. A
- * writable open that the retained list refuses throws rather than proceeding
- * with a live layout `destroy()` does not know — `AssertDbPathsExtendRetained`
- * has already rejected that case before the open, so reaching it here means the
- * record moved underneath an open database.
+ * Path authority and default-marker retention are AGENTS invariant 17. Throwing
+ * on a refused writable open is an assertion rather than the enforcement:
+ * `AssertDbPathsExtendRetained` has already rejected that list before the open,
+ * so reaching it here means the record moved underneath an open database.
  */
 void DBRegistry::RecordLayout(
 	const std::string& path,
