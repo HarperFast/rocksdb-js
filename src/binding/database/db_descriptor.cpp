@@ -421,6 +421,24 @@ void DBDescriptor::finishClose(bool destroying) {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
 
+	// Publish cancellation for work that later steps here will block on but
+	// that cannot poll `closing` from where it runs. A manual compaction
+	// admitted through one of these handles blocks the optional close-time
+	// compaction (compactMutex), then WaitForCompact(), then the closables
+	// sweep's own async drain -- and RocksDB abandons it only through the token
+	// that handle gave it. Arming at the sweep would be three blocking steps too
+	// late, which is why this runs first. Safe to do to handles this thread does
+	// not own: the per-handle token is cleared by DBHandle::open(), unlike the
+	// descriptor-wide one.
+	{
+		std::lock_guard<std::mutex> closablesLock(this->txnsMutex);
+		for (auto& [key, weakClosable] : this->closables) {
+			if (auto closable = weakClosable.lock()) {
+				closable->cancelBlockingWork();
+			}
+		}
+	}
+
 	const bool retryingClose = this->closeWorkersStopped;
 	if (!this->closeWorkersStopped) {
 		// Wait for all in-flight operations to complete before cleanup.
@@ -430,8 +448,8 @@ void DBDescriptor::finishClose(bool destroying) {
 		// rather than block this untimed wait for their full duration. A count
 		// scan polls isClosing() itself; a synchronous manual compactRange()
 		// uses the cancel token armed by beginClose(). An async one is not
-		// counted here at all -- it is awaited by the closables sweep below and
-		// cancelled by the per-handle token DBHandle::close() arms.
+		// counted here at all -- it is awaited by the closables sweep below,
+		// and by then the per-handle token armed above has already cancelled it.
 		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
 		uint32_t current;
 		while ((current = this->operationsInFlight.load()) != 0) {

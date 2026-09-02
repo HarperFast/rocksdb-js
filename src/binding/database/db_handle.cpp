@@ -101,6 +101,12 @@ rocksdb::Status DBHandle::clear(std::atomic<bool>* compactCanceled) {
 		if (status.IsColumnFamilyDropped()) {
 			return rocksdb::Status::OK();
 		}
+		if (status.IsIncomplete() && (this->isCancelled() || this->descriptor->isClosing())) {
+			// A close cancelled the compaction this clear starts with, so nothing
+			// was deleted. Reporting RocksDB's "Manual compaction paused" would
+			// leave the caller unable to tell whether the clear partially applied.
+			return rocksdb::Status::Aborted("Database closed during clear operation");
+		}
 		return status;
 	}
 	// it appears we do not need to call WaitForCompact for this to work

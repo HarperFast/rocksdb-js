@@ -145,8 +145,9 @@ database. A database instance can be reopened once it is closed. A flush failure
 database quarantined so `shutdown()` can retry without losing unflushed data; an explicit
 `destroy()` can instead delete it. A failure while waiting for compaction to settle is reported
 after native teardown completes; the optional `compactOnClose` pass itself is best-effort and its
-errors do not fail the close, since a skipped compaction loses no data. All native close errors emit `database:closeFailed`. The quarantine applies to both
-writable and read-only opens because both modes share the physical path lifecycle.
+errors do not fail the close, since a skipped compaction loses no data. All native close errors
+emit `database:closeFailed`. The quarantine applies to both writable and read-only opens because
+both modes share the physical path lifecycle.
 
 ```typescript
 const db = RocksDatabase.open('foo');

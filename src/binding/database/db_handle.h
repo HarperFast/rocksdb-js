@@ -73,35 +73,33 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 
 	/**
 	 * Cancellation token handed to `rocksdb::CompactRangeOptions::canceled` by
-	 * an async `compact()` issued through this handle. It is the per-handle twin
-	 * of `DBDescriptor::compactCancelRequested`, and the split is load-bearing:
-	 * the two cancellations are armed by different owners at different points of
-	 * teardown.
+	 * an async `compact()`/`clear()` issued through this handle. Its twin,
+	 * `DBDescriptor::compactCancelRequested`, serves the synchronous callers;
+	 * the split exists because the two are awaited by different, differently
+	 * ordered drains:
 	 *
-	 *  - The descriptor token is armed by `beginClose()`, which runs before
-	 *    `finishClose()` drains `operationsInFlight` -- the wait that a
-	 *    `compactSync()` blocks, since it holds an OperationGuard for its whole
-	 *    duration.
-	 *  - This token is armed by `close()`, which runs before
-	 *    `waitForAsyncWorkCompletion()` -- the wait that an async `compact()`
-	 *    blocks, since it released its OperationGuard at setup handoff and is
-	 *    only awaited by this handle's async-work drain.
+	 *  - a sync caller holds an `OperationGuard`, so it is awaited by
+	 *    `finishClose()`'s `operationsInFlight` wait, which `beginClose()`
+	 *    precedes;
+	 *  - an async caller released its guard at setup handoff, so it is awaited
+	 *    by `close()`'s async-work drain -- and `DBRegistry::CloseDB` reaches
+	 *    that drain *before* `beginClose()`, so the descriptor token is still
+	 *    unarmed there.
 	 *
-	 * A self-close (`db.close()` -> `DBRegistry::CloseDB`) reaches that drain
-	 * *before* it reaches `beginClose()`, so the descriptor token cannot cover
-	 * the async case: the JS thread would park for the compaction's full
-	 * duration. Arming the descriptor token from `CloseDB` instead is not an
-	 * option -- it is never cleared, so one handle closing would permanently
-	 * kill manual compaction for every other handle sharing the descriptor.
+	 * Arming the descriptor token earlier is not the alternative: it is never
+	 * cleared, so one handle closing would kill manual compaction for every
+	 * other handle on the shared descriptor. This token is per-handle and IS
+	 * cleared, by `open()`, which is also what makes it safe for
+	 * `finishClose()` to arm it on handles it does not own (see
+	 * `cancelBlockingWork()`).
 	 *
-	 * Unlike the descriptor token this one IS cleared, by `open()`, because a
-	 * handle outlives its close and may be reopened.
-	 *
-	 * Covered by `test/fixtures/fork-compact-cancel-close.mts` (self-close) and
-	 * `test/fixtures/fork-compact-cancel-async.mts` (foreign destroy, which
-	 * reaches it through `finishClose()`'s closables sweep).
+	 * Armed by `close()` (self-close) and by `finishClose()` before its first
+	 * blocking step (foreign close); covered by
+	 * `test/fixtures/fork-compact-cancel-{close,async}.mts`.
 	 */
 	std::atomic<bool> compactCancelRequested{false};
+
+	void cancelBlockingWork() override { this->compactCancelRequested.store(true); }
 
 	/**
 	 * The node environment.

@@ -18,6 +18,7 @@ const countDestroyRaceFixture = join(__dirname, 'fixtures', 'fork-count-destroy-
 const compactCancelSyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-sync.mts');
 const compactCancelAsyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-async.mts');
 const compactCancelCloseFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-close.mts');
+const compactCancelDestroyFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-destroy.mts');
 const quarantinedExitFixture = join(__dirname, 'fixtures', 'fork-quarantined-exit.mts');
 const nodeExecutable =
 	process.env.NODE_BINARY ??
@@ -54,7 +55,14 @@ function runDestroyFixture(
 			// live or quarantined database, so nothing else removes it. Keep it
 			// on failure (and under KEEP_FILES) so the state is inspectable.
 			if (passed && !process.env.KEEP_FILES) {
-				rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+				// This runs after the Promise executor returned, so a throw here
+				// (Windows EBUSY past maxRetries) would be an uncaught exception
+				// that kills the worker rather than a failed test.
+				try {
+					rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+				} catch {
+					// leftover directory only; the fixture itself passed
+				}
 			}
 			if (passed) {
 				resolve();
@@ -296,6 +304,12 @@ describe('Destroy', () => {
 	it('cancels an in-flight asynchronous compaction when the owning handle closes', async () => {
 		await runDestroyFixture(compactCancelCloseFixture, generateDBPath(), {
 			ROCKSDB_JS_COMPACT_DELAY_MS: '10000',
+		});
+	}, 20_000);
+
+	it('cancels an in-flight asynchronous compaction before close-time compaction blocks on it', async () => {
+		await runDestroyFixture(compactCancelDestroyFixture, generateDBPath(), {
+			ROCKSDB_JS_COMPACT_DELAY_MS: '8000',
 		});
 	}, 20_000);
 
