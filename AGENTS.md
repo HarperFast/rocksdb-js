@@ -468,7 +468,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     and only park `lastIndexedPosition` at the written extent when the whole extent was searchable
     and the break is therefore a torn tail. Skipping to the extent is permanent: a later, larger map
     resumes from `lastIndexedPosition` and never looks below it, so those entries stay unindexed and
-    every seek into them reports "past this file".
+    every seek into them reports "past this file". Staying at the break costs nothing per seek: the
+    extent that failed is remembered (`resyncSearchedExtent`), since only a larger map can change
+    the answer and the byte-wise search spans the whole corrupt gap under the store's
+    `dataSetsMutex`.
 
 12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
     commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —

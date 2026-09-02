@@ -239,6 +239,16 @@ struct TransactionLogFile final {
 
 	std::map<double, uint32_t> positionByTimestampIndex;
 	uint32_t lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
+	/**
+	 * How far findPositionByTimestamp() has already searched, without success, for the point
+	 * where framing resumes after the break now sitting at lastIndexedPosition. The byte-wise
+	 * search spans the whole corrupt gap and runs under the store's dataSetsMutex, so repeating
+	 * it on every seek would stall writers and readers alike; a search is only worth redoing once
+	 * the mapped region has grown past what it already covered. Zero whenever lastIndexedPosition
+	 * is not parked at an unresolved break — every other assignment to lastIndexedPosition
+	 * (including resetTimestampIndex()) clears it, so the two can never disagree.
+	 */
+	uint32_t resyncSearchedExtent = 0;
 	std::mutex indexMutex;
 
 	/**

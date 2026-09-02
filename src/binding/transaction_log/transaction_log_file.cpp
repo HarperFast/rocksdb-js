@@ -470,6 +470,7 @@ void TransactionLogFile::resetTimestampIndex() {
 	std::lock_guard<std::mutex> indexLock(this->indexMutex);
 	this->positionByTimestampIndex.clear();
 	this->lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
+	this->resyncSearchedExtent = 0;
 }
 
 uint32_t TransactionLogFile::countEntries() const {
@@ -760,9 +761,17 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			// land, so a nonzero header below the written extent is a complete entry. Resume
 			// where framing does, or at the written extent so later appends are still indexed.
 			uint32_t searchable = std::min(writtenExtent, static_cast<uint32_t>(memoryMap->mapSize));
+			if (searchable <= this->resyncSearchedExtent) {
+				// These bytes already failed to yield a resume for this same break; only a larger
+				// map can change the answer, and the search spans the whole corrupt gap under the
+				// store's dataSetsMutex, so repeating it per seek would stall the store.
+				stoppedAtUnindexedTail = true;
+				break;
+			}
 			uint32_t resume = findFramingResumeOffset(mappedFile, searchable, this->lastIndexedPosition + 1);
 			if (resume != 0) {
 				this->lastIndexedPosition = resume;
+				this->resyncSearchedExtent = 0;
 				continue;
 			}
 			if (searchable < writtenExtent) {
@@ -772,12 +781,14 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 				// never look below it, so entries there stay unindexed and seeks past them report
 				// past-file. Stop at the break instead (the same treatment the header bound-check
 				// above gives a tail the map doesn't cover) and re-search once the map grows.
+				this->resyncSearchedExtent = searchable;
 				stoppedAtUnindexedTail = true;
 				break;
 			}
 			// The whole written extent was searchable and nothing resumes: a torn tail. Park at
 			// the written extent so later appends are still indexed; the torn bytes never are.
 			this->lastIndexedPosition = writtenExtent;
+			this->resyncSearchedExtent = 0;
 			continue;
 		}
 		// check that the timestamp is greater than any previously indexed timestamp,

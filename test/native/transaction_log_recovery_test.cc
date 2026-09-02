@@ -762,6 +762,8 @@ TEST(TransactionLogTimestampIndex, ShortMapDoesNotSkipTheUnsearchedPostBreakTail
 	// Cut the map mid-entry, too few frames past the break to qualify as a resume.
 	uint32_t shortMap = offsets[2] + 5;
 	EXPECT_EQ(file.findPositionByTimestamp(20.0, shortMap, /*isCurrent=*/true), breakOffset);
+	// A repeat seek against the same map answers from the recorded searched extent.
+	EXPECT_EQ(file.findPositionByTimestamp(25.0, shortMap, /*isCurrent=*/true), breakOffset);
 	// Once the map reaches the written extent the run is found, indexed and seekable.
 	EXPECT_EQ(file.findPositionByTimestamp(20.0, img.size(), /*isCurrent=*/true), offsets[0]);
 	EXPECT_EQ(file.findPositionByTimestamp(31.0, img.size(), /*isCurrent=*/true), offsets[11]);
