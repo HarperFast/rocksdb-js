@@ -689,18 +689,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     header and cannot mask a plausible key beside it; `load()` warns), because ulp is 1 at the
     8.64e15 cap, so one durable `setTimestamp(8.64e15 - 1)` would otherwise put the floor one step
     below the cap and wedge every transaction constructor in the process, across restarts, with no
-    reset API. One definition of plausible everywhere — wall clock plus the skew — anchored on the
-    wall clock, never on the process floor (anchoring on an already-raised floor compounds: a store
-    seeded nine years ahead would admit keys nineteen years ahead that the floor then refuses, and
-    the masking returns). `isPlausibleTimestamp` answers from the wall clock read at construction
-    for every key below that bound, which is every key a healthy commit writes, and re-reads the
-    clock only for a key past it, so the commit path has no clock read and a wall clock corrected
-    forward after boot is still followed (a bound frozen at construction would silently stop the
-    header chain for the life of a process that booted on a 1970 RTC). A rotated segment whose
+    reset API. One definition of plausible everywhere — the current wall clock plus the skew,
+    `TransactionLogStore::isPlausibleTimestamp` and `raiseMonotonicTimestampFloor` reading the same
+    clock — because any cached or process-floor-anchored variant diverged from the floor (a
+    construction-time bound silently stopped the header chain after a post-boot NTP correction; a
+    floor-anchored bound compounded on an already-raised floor; a lazily-ratcheted bound stayed
+    high after a backward correction), and every divergence readmits a key the floor refuses,
+    which is the masking bug again. The clock read happens only for a key that would raise
+    `latestTimestamp`, on a path that already reads it after every append. A rotated segment whose
     header is above the bound was stamped by a pre-bound writer that cannot be trusted to have kept
-    a running maximum in its plausible headers either, so every older segment is walked — unless a
-    plausible header newer than the far one exists, which was stamped after such a walk and bounds
-    everything older; the walk therefore ends at the first rotation after it. The freeze in `SetTimestamp` also keys on
+    a running maximum in any of its headers, so every older segment is walked, at every open, until
+    retention purges that segment — no "trusted newer header" shortcut, because nothing in the
+    files proves a newer plausible header was stamped after a complete walk. The freeze in `SetTimestamp` also keys on
     `committedPosition.logSequenceNumber`, which survives `resetTransaction()`: a coordinated-retry
     attempt whose log batch already landed must keep the key that batch was written under. `getMonotonicTimestamp()` still throws `DBException` once the next value would reach
     `MAX_TIMESTAMP_MS` (unreachable through the floor now, defensive); its three callers

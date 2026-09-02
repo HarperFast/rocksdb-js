@@ -218,23 +218,14 @@ struct TransactionLogStore final {
 
 	/**
 	 * Keys more than MAX_CLOCK_FLOOR_SKEW_MS past the wall clock — the same
-	 * rule raiseMonotonicTimestampFloor() applies — are not clock-floor
-	 * candidates and never reach `latestTimestamp` (so they are never stamped
-	 * into a header either). The wall clock read once at construction answers
-	 * for every key below its bound, which is every key a healthy commit path
-	 * writes; only a key past it re-reads the clock, so a wall clock corrected
-	 * forward after boot (NTP on a 1970 RTC) is followed without a clock read
-	 * per commit.
+	 * rule raiseMonotonicTimestampFloor() applies, against the same clock, so
+	 * the two can never disagree — are not clock-floor candidates and never
+	 * reach `latestTimestamp` (so they are never stamped into a header either).
+	 * The clock is read only for a key that would raise `latestTimestamp`, on
+	 * a path that already reads it after every append (fileLastWriteTime).
 	 */
-	double plausibleTimestampBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
-
-	bool isPlausibleTimestamp(double timestamp) {
-		if (timestamp <= this->plausibleTimestampBound) {
-			return true;
-		}
-		this->plausibleTimestampBound =
-			std::max(this->plausibleTimestampBound, getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
-		return timestamp <= this->plausibleTimestampBound;
+	static bool isPlausibleTimestamp(double timestamp) {
+		return timestamp <= getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
 	}
 
 	/**
@@ -245,7 +236,7 @@ struct TransactionLogStore final {
 	bool clockFloorComplete = true;
 
 	bool raiseLatestTimestamp(double timestamp) {
-		if (timestamp > this->latestTimestamp && this->isPlausibleTimestamp(timestamp)) {
+		if (timestamp > this->latestTimestamp && isPlausibleTimestamp(timestamp)) {
 			this->latestTimestamp = timestamp;
 			return true;
 		}

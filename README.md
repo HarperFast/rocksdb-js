@@ -1011,11 +1011,10 @@ timestamps count towards the seed too, so a peer whose clock ran somewhat ahead 
 clock ahead of it after the next restart. A key more than ten years ahead of the wall clock is not
 a rollback to recover from but a corrupt or hostile value: it is never a seed candidate and never
 stamped into a header (a `log.warn` reports it), so it cannot move every timestamp this process
-issues that far ahead, and it cannot hide a plausible key beside it (a wall clock corrected forward
-after boot is honored). A rotated segment whose header carries such a key was stamped by an older
-version, which cannot be trusted to have kept a running maximum in its earlier headers either, so
-every older segment is walked instead; a plausible header newer than the far one was stamped after
-such a walk and bounds everything older, so the walk ends at the first rotation after it.
+issues that far ahead, and it cannot hide a plausible key beside it. A rotated segment whose header
+carries such a key was stamped by an older version, which cannot be trusted to have kept a running
+maximum in any of its headers, so every older segment is walked instead; that cost recurs at each
+open until retention purges the segment carrying the far header, and the warning names the key.
 
 ### Value-header contract
 

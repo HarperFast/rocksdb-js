@@ -1223,30 +1223,22 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// entry keys of the segments the recovery scans walk anyway, which is where
 	// keys above the newest header can still sit.
 	// A header beyond the plausible bound is a far-future key stamped by an
-	// older version and says nothing about the segments it summarizes, and a
+	// older version: it says nothing about the segments it summarizes, and a
 	// writer that stamped one cannot be trusted to have kept a running maximum
-	// in its earlier, plausible headers either. So every segment older than the
-	// active file is walked, unless a plausible header newer than the newest
-	// far one exists: that header was stamped after a load that did this walk,
-	// and bounds everything older than itself. The walk therefore ends at the
-	// first rotation after it.
+	// in any of its headers, so every segment older than the active file is
+	// walked. The cost recurs at each open until retention purges the segment
+	// carrying that header; the warning below names the key.
 	double implausibleKey = 0;
 	bool scanOlderSegments = false;
-	uint32_t newestFarHeader = 0;
-	uint32_t walkFromSequence = 0;
 	{
 		std::lock_guard<std::mutex> lock(store->dataSetsMutex);
 		for (const auto& [sequence, logFile] : store->sequenceFiles) {
 			try {
 				double header = readTransactionLogFileHeaderTimestamp(logFile->path);
 				store->raiseLatestTimestamp(header);
-				if (store->isPlausibleTimestamp(header)) {
-					walkFromSequence = sequence > newestFarHeader ? sequence : 0;
-				} else {
+				if (!TransactionLogStore::isPlausibleTimestamp(header)) {
 					implausibleKey = std::max(implausibleKey, header);
 					scanOlderSegments = true;
-					newestFarHeader = sequence;
-					walkFromSequence = 0;
 				}
 			} catch (const std::exception& e) {
 				clockFloorComplete = false;
@@ -1256,8 +1248,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		}
 		if (scanOlderSegments) {
 			for (const auto& [sequence, logFile] : store->sequenceFiles) {
-				if (sequence < walkFromSequence ||
-					sequence >= store->currentSequenceNumber.load(std::memory_order_relaxed)) {
+				if (sequence >= store->currentSequenceNumber.load(std::memory_order_relaxed)) {
 					continue;
 				}
 				const bool openedForScan = !logFile->isOpen();
