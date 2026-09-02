@@ -73,29 +73,17 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 
 	/**
 	 * Cancellation token handed to `rocksdb::CompactRangeOptions::canceled` by
-	 * an async `compact()`/`clear()` issued through this handle. Its twin,
-	 * `DBDescriptor::compactCancelRequested`, serves the synchronous callers;
-	 * the split exists because the two are awaited by different, differently
-	 * ordered drains:
+	 * an async `compact()`/`clear()` issued through this handle -- the twin of
+	 * `DBDescriptor::compactCancelRequested`, which serves the synchronous
+	 * callers. Armed by `close()` (self-close) and, for a foreign close, by
+	 * `finishClose()` before its first blocking step, via
+	 * `cancelBlockingWork()`. Safe to arm from a thread that does not own this
+	 * handle because this token is cleared by `open()`; the descriptor's is
+	 * never cleared.
 	 *
-	 *  - a sync caller holds an `OperationGuard`, so it is awaited by
-	 *    `finishClose()`'s `operationsInFlight` wait, which `beginClose()`
-	 *    precedes;
-	 *  - an async caller released its guard at setup handoff, so it is awaited
-	 *    by `close()`'s async-work drain -- and `DBRegistry::CloseDB` reaches
-	 *    that drain *before* `beginClose()`, so the descriptor token is still
-	 *    unarmed there.
-	 *
-	 * Arming the descriptor token earlier is not the alternative: it is never
-	 * cleared, so one handle closing would kill manual compaction for every
-	 * other handle on the shared descriptor. This token is per-handle and IS
-	 * cleared, by `open()`, which is also what makes it safe for
-	 * `finishClose()` to arm it on handles it does not own (see
-	 * `cancelBlockingWork()`).
-	 *
-	 * Armed by `close()` (self-close) and by `finishClose()` before its first
-	 * blocking step (foreign close); covered by
-	 * `test/fixtures/fork-compact-cancel-{close,async}.mts`.
+	 * Why there are two tokens, why each is armed where it is, and what each of
+	 * `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts` does
+	 * and does not pin down: AGENTS.md invariant 6.
 	 */
 	std::atomic<bool> compactCancelRequested{false};
 

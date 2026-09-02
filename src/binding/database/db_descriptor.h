@@ -295,7 +295,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	/**
 	 * Cancellation token handed to `rocksdb::CompactRangeOptions::canceled` by
-	 * every cancellable `compactRange()`. Contract, in three parts:
+	 * every cancellable *synchronous* `compactRange()`. Contract, in four parts:
 	 *
 	 *  1. It is armed in exactly one place -- `beginClose()`, under the same
 	 *     transition that publishes `closing` -- so a close claim and manual
@@ -312,9 +312,11 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 *     it, and a descriptor never leaves the closing state.
 	 *  3. It covers synchronous compaction only. Async `compact()`/`clear()`
 	 *     released their OperationGuard at setup handoff, so this drain does not
-	 *     await them; they are awaited by `DBHandle::close()` and cancelled by
-	 *     the per-handle token, which a self-close arms *before* it ever reaches
-	 *     `beginClose()`. See `DBHandle::compactCancelRequested`.
+	 *     await them; they are awaited by `DBHandle::close()`'s async-work drain
+	 *     and cancelled by the per-handle token, which a self-close arms before
+	 *     it ever reaches `beginClose()` and a foreign close arms from
+	 *     `finishClose()` ahead of its first blocking step. See
+	 *     `DBHandle::compactCancelRequested` and AGENTS.md invariant 6.
 	 *  4. It is private to this descriptor and never aliased onto `closing`.
 	 *     RocksDB writes through this pointer -- `DisableManualCompaction()`
 	 *     sets the caller's atomic -- and `closing == true` means the registry

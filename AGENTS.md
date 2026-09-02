@@ -387,7 +387,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    `compact()`/`clear()`, which released its guard at setup handoff and is instead awaited by
    `DBHandle::close()`'s untimed async-work drain. It has **two** arming sites, one per closer:
    `DBHandle::close()` arms its own immediately before that drain, and `finishClose()` arms every
-   still-attached handle's through `Closable::cancelBlockingWork()` before its *first* blocking
+   still-attached handle's through `Closable::cancelBlockingWork()` before its _first_ blocking
    step. The second is not belt-and-braces. A foreign `destroy()`/`shutdown()` reaches the handle
    only through the closables sweep, which is the last step of teardown — and three earlier steps
    can each block on that compaction: the optional `compactOnClose` pass takes `compactMutex`,
@@ -405,9 +405,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    after the new descriptor is adopted (see invariant 20). Neither token is ever aliased onto
    `closing` itself: RocksDB writes through the pointer it is given
    (`DisableManualCompaction()` sets the caller's atomic), and `closing` means the registry has an
-   owner committed to running `finishClose()`, which RocksDB must not be able to publish. The full
-   contract, and what each of `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts`
-   does and does not pin down, is on the two member declarations.
+   owner committed to running `finishClose()`, which RocksDB must not be able to publish.
+   `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts` cover the four close paths in
+   the same order as above; each fails if `options.canceled` stops reaching RocksDB, `sync` also
+   fails if the descriptor arm moves past the in-flight drain, and `destroy` also fails if the
+   foreign arm moves back to the closables sweep. None of them separates arming in `beginClose()`
+   from arming at the top of `finishClose()` — for a single descriptor those are equivalent, and
+   what makes `beginClose()` the right home is that `DestroyDB`/`Shutdown` claim every entry for a
+   path under one lock and then close them sequentially.
    Everything the four registry teardown paths do _after_ claiming a descriptor —
    `finishClose()`, erase-or-quarantine, notify, emit `database:closeFailed` — is one helper,
    `closeClaimedDescriptors` in `db_registry.cpp`; only the claim predicate differs per caller. Its
