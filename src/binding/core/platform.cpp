@@ -133,12 +133,15 @@ std::chrono::system_clock::time_point convertFileTimeToSystemTime(
 
 static std::atomic<double> lastTimestamp{0.0};
 
-double getMonotonicTimestamp() {
+double getWallClockTimestamp() {
 	int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::system_clock::now().time_since_epoch()
 	).count();
+	return static_cast<double>(now) / 1000000.0;
+}
 
-	double result = static_cast<double>(now) / 1000000.0;
+double getMonotonicTimestamp() {
+	double result = getWallClockTimestamp();
 
 	double last = lastTimestamp.load(std::memory_order_acquire);
 	if (result <= last) {
@@ -158,7 +161,8 @@ double getMonotonicTimestamp() {
 }
 
 bool raiseMonotonicTimestampFloor(double floor) {
-	if (!(floor > 0) || !std::isfinite(floor) || floor >= MAX_TIMESTAMP_MS) {
+	if (!(floor > 0) || !std::isfinite(floor) || floor >= MAX_TIMESTAMP_MS ||
+		floor > getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS) {
 		return false;
 	}
 	double last = lastTimestamp.load(std::memory_order_acquire);

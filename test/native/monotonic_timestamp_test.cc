@@ -1,12 +1,11 @@
 #include <gtest/gtest.h>
 #include <cmath>
-#include <cstdlib>
 #include <limits>
 #include "core/exception.h"
 #include "core/platform.h"
 
-using rocksdb_js::DBException;
 using rocksdb_js::getMonotonicTimestamp;
+using rocksdb_js::MAX_CLOCK_FLOOR_SKEW_MS;
 using rocksdb_js::MAX_TIMESTAMP_MS;
 using rocksdb_js::raiseMonotonicTimestampFloor;
 
@@ -36,24 +35,11 @@ TEST(MonotonicTimestamp, FloorIgnoresValuesOutsideTheDomain) {
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(-1.0));
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(MAX_TIMESTAMP_MS));
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(MAX_TIMESTAMP_MS * 2));
+	EXPECT_FALSE(raiseMonotonicTimestampFloor(MAX_TIMESTAMP_MS - 1.0));
+	// Beyond the plausible-rollback window: a corrupt or hostile persisted key,
+	// not something to move every future timestamp past.
+	EXPECT_FALSE(raiseMonotonicTimestampFloor(
+		rocksdb_js::getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS + 60.0 * 1000.0));
 	// None of those moved the clock past where it already was heading.
 	EXPECT_LT(getMonotonicTimestamp(), before + 60.0 * 1000.0);
-}
-
-// A death test: the floor cannot be lowered again, so driving the clock to the
-// cap happens in a child process rather than for the rest of this binary.
-TEST(MonotonicTimestampDeathTest, ClaimsAtTheDomainCapThrow) {
-	EXPECT_EXIT({
-		// The largest accepted floor is one ulp below the cap (ulp == 1 there),
-		// so the very next claim lands on the cap itself.
-		if (!raiseMonotonicTimestampFloor(MAX_TIMESTAMP_MS - 1.0)) {
-			std::_Exit(3);
-		}
-		try {
-			getMonotonicTimestamp();
-			std::_Exit(2);
-		} catch (const DBException&) {
-			std::_Exit(0);
-		}
-	}, ::testing::ExitedWithCode(0), "");
 }

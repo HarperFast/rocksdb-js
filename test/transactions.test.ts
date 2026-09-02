@@ -429,9 +429,7 @@ for (const { name, options, txnOptions } of testOptions) {
 					expect(() => txn.setTimestamp(Infinity)).toThrow(rejected);
 					expect(() => txn.setTimestamp(-Infinity)).toThrow(rejected);
 					expect(() => txn.setTimestamp(8.64e15)).toThrow(rejected);
-					// A rejected value leaves the previous one in place.
 					expect(txn.getTimestamp()).toBe(ts);
-					// A future value below the cap is still accepted.
 					txn.setTimestamp(8.64e15 - 1);
 					expect(txn.getTimestamp()).toBe(8.64e15 - 1);
 					txn.setTimestamp(newTs);
@@ -694,9 +692,7 @@ for (const { name, options, txnOptions } of testOptions) {
 					expect(() => txn.setTimestamp(Infinity)).toThrow(rejected);
 					expect(() => txn.setTimestamp(-Infinity)).toThrow(rejected);
 					expect(() => txn.setTimestamp(8.64e15)).toThrow(rejected);
-					// A rejected value leaves the previous one in place.
 					expect(txn.getTimestamp()).toBe(ts);
-					// A future value below the cap is still accepted.
 					txn.setTimestamp(8.64e15 - 1);
 					expect(txn.getTimestamp()).toBe(8.64e15 - 1);
 					txn.setTimestamp(newTs);

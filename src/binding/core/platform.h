@@ -53,13 +53,29 @@ constexpr double MAX_TIMESTAMP_MS = 8.64e15;
 double getMonotonicTimestamp();
 
 /**
+ * How far ahead of the wall clock a clock-floor seed may sit before it is
+ * treated as implausible (a corrupt or hostile persisted key rather than a
+ * rollback to recover from) and ignored: ten years. A durable key can only be
+ * ahead of the wall clock by the size of the rollback that followed it, and
+ * a seed beyond this would move every timestamp the process issues, for every
+ * database, that far into the future permanently.
+ */
+constexpr double MAX_CLOCK_FLOOR_SKEW_MS = 10.0 * 365.25 * 24.0 * 3600.0 * 1000.0;
+
+/**
  * Raises the floor getMonotonicTimestamp() issues above to `floor`, so no later
  * timestamp is <= it. Raise-only: a floor at or below the current one, a
- * non-finite or non-positive value, or one at/above MAX_TIMESTAMP_MS is
- * ignored. Returns whether the floor moved. Seeded at transaction-log store
- * load from the largest durable batch key (see TransactionLogStore::load).
+ * non-finite or non-positive value, one at/above MAX_TIMESTAMP_MS, or one more
+ * than MAX_CLOCK_FLOOR_SKEW_MS ahead of the wall clock is ignored. Returns
+ * whether the floor moved. Seeded at transaction-log store load from the
+ * largest durable batch key (see TransactionLogStore::load).
  */
 bool raiseMonotonicTimestampFloor(double floor);
+
+/**
+ * The wall clock in milliseconds since the Unix epoch, unadjusted.
+ */
+double getWallClockTimestamp();
 
 void tryCreateDirectory(
 	const std::filesystem::path& path,

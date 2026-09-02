@@ -237,13 +237,13 @@ describe('Dual clock', () => {
 			}
 		}, 60000);
 
-		it('surfaces clock exhaustion as a JS error once a key at the cap is durable', async () => {
+		it('refuses to seed from a key implausibly far ahead of the wall clock', async () => {
 			const dbPath = generateDBPath();
 			try {
-				await runFixture(['cap-write', dbPath]);
-				const observed = await runFixture(['cap-read', dbPath]);
-				expect(String(observed.clockError)).toContain('Monotonic timestamp domain exhausted');
-				expect(String(observed.txnError)).toContain('Monotonic timestamp domain exhausted');
+				await runFixture(['far-write', dbPath]);
+				const observed = await runFixture(['far-read', dbPath]);
+				expect(observed.warnings).toBeGreaterThanOrEqual(1);
+				expect(observed.clock).toBeLessThan(observed.now + 1000);
 			} finally {
 				rmSync(dbPath, { force: true, recursive: true });
 			}

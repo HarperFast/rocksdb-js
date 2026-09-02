@@ -1344,6 +1344,14 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	if (raiseMonotonicTimestampFloor(store->latestTimestamp)) {
 		DEBUG_LOG("%p TransactionLogStore::load Raised monotonic clock floor to %f from store \"%s\"\n",
 			store.get(), store->latestTimestamp, store->name.c_str());
+	} else if (store->latestTimestamp > getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS) {
+		std::ostringstream msg;
+		msg << "Transaction log store " << store->path.string()
+			<< " holds a batch key more than " << static_cast<long long>(MAX_CLOCK_FLOOR_SKEW_MS / 86400000.0)
+			<< " days ahead of the wall clock (" << std::fixed << store->latestTimestamp
+			<< "); not seeding the monotonic clock floor from it.";
+		DEBUG_LOG("%p TransactionLogStore::load WARNING: %s\n", store.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	}
 	if (!clockFloorComplete) {
 		std::ostringstream msg;

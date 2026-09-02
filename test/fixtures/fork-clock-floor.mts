@@ -22,6 +22,9 @@ function segments(): string[] {
 
 const warnings: string[] = [];
 const onWarn = (...args: unknown[]) => warnings.push(JSON.stringify(args));
+if (mode === 'far-read') {
+	RocksDatabase.on('log.warn', onWarn);
+}
 if (mode === 'warn') {
 	// A short, non-empty file at a higher sequence than the real segment: its
 	// header cannot be read, so the seed is incomplete and open must say so.
@@ -78,26 +81,21 @@ try {
 		if (!warnings.some((w) => w.includes('clock floor')) || !(clock > key!)) {
 			process.exit(1);
 		}
-	} else if (mode === 'cap-write') {
+	} else if (mode === 'far-write') {
 		await writeKeyed(db, 8.64e15 - 1, Buffer.from('entry'));
 		console.log(JSON.stringify({ wrote: 8.64e15 - 1 }));
-	} else if (mode === 'cap-read') {
-		// The floor now sits one ulp below the cap: every claim must surface as a
-		// JS error and the process must stay alive.
-		let clockError = '';
-		let txnError = '';
-		try {
-			db.getMonotonicTimestamp();
-		} catch (err) {
-			clockError = (err as Error).message;
+	} else if (mode === 'far-read') {
+		// The durable key is centuries ahead: it must be refused as a seed, with
+		// a warning, rather than move the process clock there.
+		const until = Date.now() + 5000;
+		while (Date.now() < until && !warnings.some((w) => w.includes('ahead of the wall clock'))) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
 		}
-		try {
-			await db.transaction(async () => {});
-		} catch (err) {
-			txnError = (err as Error).message;
-		}
-		console.log(JSON.stringify({ clockError, txnError }));
-		if (!clockError.includes('exhausted') || !txnError.includes('exhausted')) {
+		RocksDatabase.off('log.warn', onWarn);
+		const now = Date.now();
+		const clock = db.getMonotonicTimestamp();
+		console.log(JSON.stringify({ warnings: warnings.length, clock, now }));
+		if (!warnings.some((w) => w.includes('ahead of the wall clock')) || !(clock < now + 1000)) {
 			process.exit(1);
 		}
 	} else {

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <limits>
@@ -138,5 +139,62 @@ TEST(TransactionLogClockFloor, HeaderReaderRejectsShortAndForeignFiles) {
 		rocksdb_js::TransactionLogFormatException);
 	EXPECT_THROW(rocksdb_js::readTransactionLogFileHeaderTimestamp(storePath / "missing.txnlog"),
 		rocksdb_js::DBException);
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, DoesNotSeedFromAnImplausiblyFarKey) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	const double before = rocksdb_js::getMonotonicTimestamp();
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { rocksdb_js::MAX_TIMESTAMP_MS - 1.0 });
+
+	auto store = loadStore(storePath);
+	ASSERT_NE(store, nullptr);
+	EXPECT_EQ(store->latestTimestamp, rocksdb_js::MAX_TIMESTAMP_MS - 1.0);
+	EXPECT_LT(rocksdb_js::getMonotonicTimestamp(), before + 60.0 * 1000.0);
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, ARealRotationStampsTheLatestKeyIntoTheNewHeader) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	const double high = futureKey();
+	std::string payload(2048, 'x');
+	auto entry = [&]() {
+		return std::make_unique<rocksdb_js::TransactionLogEntry>(
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size()));
+	};
+	{
+		auto store = loadStore(storePath);
+		ASSERT_NE(store, nullptr);
+		store->maxFileSize = 1024;
+		rocksdb_js::LogPosition position;
+		rocksdb_js::TransactionLogEntryBatch first(high);
+		first.addEntry(entry());
+		store->writeBatch(first, position);
+		// Does not fit: writeBatch rotates and the new header carries `high`,
+		// which this lower-keyed batch does not.
+		rocksdb_js::TransactionLogEntryBatch second(high - 60000.0);
+		second.addEntry(entry());
+		store->writeBatch(second, position);
+		store->close();
+	}
+	uint32_t segments = 0;
+	uint32_t newest = 0;
+	for (const auto& file : std::filesystem::directory_iterator(storePath)) {
+		if (file.path().extension() == ".txnlog") {
+			segments++;
+			newest = std::max(newest, static_cast<uint32_t>(std::stoul(file.path().stem().string())));
+		}
+	}
+	EXPECT_GE(segments, 2u);
+	EXPECT_EQ(rocksdb_js::readTransactionLogFileHeaderTimestamp(
+		storePath / (std::to_string(newest) + ".txnlog")), high);
+
+	auto reopened = loadStore(storePath);
+	ASSERT_NE(reopened, nullptr);
+	EXPECT_EQ(reopened->latestTimestamp, high);
+	reopened->close();
 	std::filesystem::remove_all(storePath.parent_path());
 }

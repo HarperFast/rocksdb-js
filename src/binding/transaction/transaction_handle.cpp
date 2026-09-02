@@ -87,10 +87,11 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	state(TransactionState::Pending),
 	txn(nullptr),
 	committedPosition(0, 0) {
+	// Claim the clock first: it can throw at the domain cap, and a constructor
+	// that throws after resetTransaction() would leak the RocksDB transaction.
+	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 	this->resetTransaction();
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
-
-	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 	this->createdAt = std::chrono::steady_clock::now();
 }
 

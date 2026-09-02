@@ -1007,8 +1007,10 @@ the seed is complete from then on. A store written entirely by an older version 
 in a rotated segment that no header records (only if that older version already ran through a
 wall-clock rollback); the first rotation after upgrade closes that gap. A segment whose header
 cannot be read does not fail the open; a `log.warn` event is emitted instead. Adopted (origin)
-timestamps count towards the seed too, so a peer whose clock ran far ahead moves this node's clock
-ahead of it after the next restart.
+timestamps count towards the seed too, so a peer whose clock ran somewhat ahead moves this node's
+clock ahead of it after the next restart. A key more than ten years ahead of the wall clock is not
+a rollback to recover from but a corrupt or hostile value, and is refused as a seed (with a
+`log.warn`) rather than allowed to move every timestamp this process issues that far ahead.
 
 ### Value-header contract
 
