@@ -689,9 +689,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     header and cannot mask a plausible key beside it; `load()` warns), because ulp is 1 at the
     8.64e15 cap, so one durable `setTimestamp(8.64e15 - 1)` would otherwise put the floor one step
     below the cap and wedge every transaction constructor in the process, across restarts, with no
-    reset API. A rotated segment whose header is above the bound (stamped by a pre-bound version)
-    cannot vouch for the segments it summarizes, so that case — and only that case — walks the
-    entries of every older segment. The freeze in `SetTimestamp` also keys on
+    reset API. The bound is the later of the wall clock at store construction and the process clock's
+    last issued value, each plus the skew (`isPlausibleTimestamp`): one atomic load on the commit
+    path, and a wall clock corrected forward after boot is followed as soon as a transaction
+    claims from it (a bound frozen at construction would silently stop the header chain for the
+    life of a process that booted on a 1970 RTC). A rotated segment whose header is above the
+    bound (stamped by a pre-bound version) cannot vouch for the segments it summarizes, so the
+    segments from the newest plausible header up to the active one are walked — bounded, and not
+    repeated once the next rotation stamps a complete header. The freeze in `SetTimestamp` also keys on
     `committedPosition.logSequenceNumber`, which survives `resetTransaction()`: a coordinated-retry
     attempt whose log batch already landed must keep the key that batch was written under. `getMonotonicTimestamp()` still throws `DBException` once the next value would reach
     `MAX_TIMESTAMP_MS` (unreachable through the floor now, defensive); its three callers

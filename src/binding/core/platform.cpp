@@ -160,6 +160,10 @@ double getMonotonicTimestamp() {
 	return result;
 }
 
+double getMonotonicTimestampFloor() {
+	return lastTimestamp.load(std::memory_order_acquire);
+}
+
 bool raiseMonotonicTimestampFloor(double floor) {
 	if (!(floor > 0) || !std::isfinite(floor) || floor >= MAX_TIMESTAMP_MS ||
 		floor > getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS) {

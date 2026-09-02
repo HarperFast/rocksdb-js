@@ -172,6 +172,39 @@ describe('Dual clock', () => {
 					expect(entry?.value).toEqual(Buffer.from('abc'));
 				}));
 
+			it('parses the reusable read buffer by its logical end with a copying decoder', () =>
+				dbRunner(
+					{
+						dbOptions: [
+							{
+								encoder: { encode: (value: Buffer) => value },
+								// A decoder without `needsStableBuffer` reads through the shared
+								// read buffer, whose `length` is its capacity, not the value's size.
+								decoder: {
+									decode: (buffer: Buffer, options?: { end: number }) =>
+										Buffer.from(buffer.subarray(0, options?.end)),
+								},
+							},
+						],
+					},
+					async ({ db }) => {
+						await db.put('long', headerValue(1.7e12, { tail: 28 }));
+						await db.put('short', Buffer.from('abcdef'));
+						const long = await getEntry(db, 'long');
+						expect(long?.localTime).toBe(1.7e12);
+						expect(long?.value).toEqual(headerValue(1.7e12, { tail: 28 }));
+						const entry = await getEntry(db, 'short');
+						expect(entry?.localTime).toBeUndefined();
+						expect(entry?.version).toBeUndefined();
+						expect(entry?.value).toEqual(Buffer.from('abcdef'));
+						await db.put(
+							'flagged-short',
+							headerValue(1.7e12, { flags: HAS_DISTINCT_VERSION_FLAG, tail: 0 })
+						);
+						expect((await getEntry(db, 'flagged-short'))?.version).toBeUndefined();
+					}
+				));
+
 			it('returns undefined for a missing key', () =>
 				dbRunner(async ({ db }) => {
 					expect(await getEntry(db, 'missing')).toBeUndefined();

@@ -72,6 +72,12 @@ bool raiseMonotonicTimestampFloor(double floor);
 
 double getWallClockTimestamp();
 
+/**
+ * The last value getMonotonicTimestamp() issued (or the floor it was raised
+ * to): one atomic load, no clock read.
+ */
+double getMonotonicTimestampFloor();
+
 void tryCreateDirectory(
 	const std::filesystem::path& path,
 	std::filesystem::perms permissions =

@@ -423,25 +423,26 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		return this.#buildEntry(raw);
 	}
 
-	// With a copying decoder `raw` is the reusable read buffer (its `length` is
-	// the value's size), valid only until the next read, so the words and the
-	// decode both happen here before returning.
+	// With a copying decoder `raw` is the reusable read buffer: its `length` is
+	// the capacity and `end` the value's size, and it is valid only until the
+	// next read, so the words and the decode both happen here before returning.
 	#buildEntry(raw: Buffer): Entry {
+		const end = (raw as BufferWithDataView).end ?? raw.length;
 		let localTime: number | undefined;
 		let version: number | undefined;
-		if (raw.length >= 8) {
+		if (end >= 8) {
 			const first = raw.readDoubleBE(0);
 			if (Number.isFinite(first) && first > 0) {
 				localTime = first;
 				version = first;
 			}
-			if (raw.length >= 12) {
+			if (end >= 12) {
 				const metadata = raw.readUInt32BE(8);
 				if (
 					metadata >>> 24 === VERSION_HEADER_TAG &&
 					(metadata & HAS_DISTINCT_VERSION_FLAG) !== 0
 				) {
-					const distinct = raw.length >= 20 ? raw.readDoubleBE(12) : NaN;
+					const distinct = end >= 20 ? raw.readDoubleBE(12) : NaN;
 					version = Number.isFinite(distinct) && distinct > 0 ? distinct : undefined;
 				}
 			}

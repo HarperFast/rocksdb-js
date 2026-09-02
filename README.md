@@ -1011,9 +1011,12 @@ timestamps count towards the seed too, so a peer whose clock ran somewhat ahead 
 clock ahead of it after the next restart. A key more than ten years ahead of the wall clock is not
 a rollback to recover from but a corrupt or hostile value: it is never a seed candidate and never
 stamped into a header (a `log.warn` reports it), so it cannot move every timestamp this process
-issues that far ahead, and it cannot hide a plausible key beside it. A rotated segment whose header
-carries such a key (stamped by an older version) says nothing about the segments it summarizes, so
-that one case walks their entries instead.
+issues that far ahead, and it cannot hide a plausible key beside it. The bound follows the process
+clock, so a wall clock corrected forward after boot (NTP on a 1970 RTC) is honored as soon as a
+transaction claims a timestamp from it. A rotated segment whose header carries such a key (stamped
+by an older version) says nothing about the segments it summarizes, so the segments after the
+newest plausible header are walked instead; the next rotation stamps a complete header and the walk
+is not repeated.
 
 ### Value-header contract
 

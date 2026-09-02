@@ -1223,16 +1223,22 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// entry keys of the segments the recovery scans walk anyway, which is where
 	// keys above the newest header can still sit.
 	// A header beyond the plausible bound is a far-future key stamped by an
-	// older version; it says nothing about the real maximum of the segments it
-	// summarizes, so those are walked instead (the only case that reads them).
+	// older version and says nothing about the segments it summarizes. The
+	// newest plausible header still bounds everything older than itself, so
+	// only the segments from that one up to the active file are walked; the
+	// next rotation stamps a complete header and the walk is not repeated.
 	double implausibleKey = 0;
 	bool scanOlderSegments = false;
+	uint32_t walkFromSequence = 0;
 	{
 		std::lock_guard<std::mutex> lock(store->dataSetsMutex);
 		for (const auto& [sequence, logFile] : store->sequenceFiles) {
 			try {
 				double header = readTransactionLogFileHeaderTimestamp(logFile->path);
-				if (!store->raiseLatestTimestamp(header) && header > store->plausibleTimestampBound) {
+				store->raiseLatestTimestamp(header);
+				if (store->isPlausibleTimestamp(header)) {
+					walkFromSequence = sequence;
+				} else {
 					implausibleKey = std::max(implausibleKey, header);
 					scanOlderSegments = true;
 				}
@@ -1244,7 +1250,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		}
 		if (scanOlderSegments) {
 			for (const auto& [sequence, logFile] : store->sequenceFiles) {
-				if (sequence >= store->currentSequenceNumber.load(std::memory_order_relaxed)) {
+				if (sequence < walkFromSequence ||
+					sequence >= store->currentSequenceNumber.load(std::memory_order_relaxed)) {
 					continue;
 				}
 				const bool openedForScan = !logFile->isOpen();

@@ -217,12 +217,20 @@ struct TransactionLogStore final {
 	double latestTimestamp = 0;
 
 	/**
-	 * Keys above this are not clock-floor candidates and never reach
-	 * `latestTimestamp` (so they are never stamped into a header either):
-	 * MAX_CLOCK_FLOOR_SKEW_MS past the wall clock at construction, fixed so the
-	 * commit path needs no clock read.
+	 * Keys above the plausible bound are not clock-floor candidates and never
+	 * reach `latestTimestamp` (so they are never stamped into a header either).
+	 * The bound is MAX_CLOCK_FLOOR_SKEW_MS past the wall clock read once at
+	 * construction, or past the process clock's last issued value, whichever is
+	 * later: the commit path pays one atomic load, not a clock read, and a wall
+	 * clock corrected forward after boot (NTP on a 1970 RTC) is followed as soon
+	 * as a transaction claims a timestamp from it.
 	 */
 	double plausibleTimestampBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
+
+	bool isPlausibleTimestamp(double timestamp) const {
+		return timestamp <= this->plausibleTimestampBound ||
+			timestamp <= getMonotonicTimestampFloor() + MAX_CLOCK_FLOOR_SKEW_MS;
+	}
 
 	/**
 	 * False when load() could not inspect a segment, an entry scan, or the
@@ -232,7 +240,7 @@ struct TransactionLogStore final {
 	bool clockFloorComplete = true;
 
 	bool raiseLatestTimestamp(double timestamp) {
-		if (timestamp > this->latestTimestamp && timestamp <= this->plausibleTimestampBound) {
+		if (timestamp > this->latestTimestamp && this->isPlausibleTimestamp(timestamp)) {
 			this->latestTimestamp = timestamp;
 			return true;
 		}
