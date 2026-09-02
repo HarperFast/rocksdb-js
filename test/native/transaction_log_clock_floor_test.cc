@@ -14,10 +14,8 @@
 
 namespace {
 
-// Keys are placed an hour past wherever the process clock already is, so
-// neither the wall clock nor a floor raised by an earlier test can reach them;
-// the seed alone decides the next claim. (Every load here raises the process
-// floor; no other test in this binary reads the clock against wall time.)
+// An hour past the process clock: unreachable by the wall clock or by a floor
+// an earlier test raised, so the seed alone decides the next claim.
 double futureKey() {
 	return rocksdb_js::getMonotonicTimestamp() + 3600.0 * 1000.0;
 }
@@ -307,6 +305,21 @@ TEST(TransactionLogClockFloor, EntriesPastAMidFileBreakMarkTheSeedIncomplete) {
 	ASSERT_NE(store, nullptr);
 	EXPECT_EQ(store->latestTimestamp, high - 1.0);
 	EXPECT_FALSE(store->clockFloorComplete);
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, ANonFiniteHeaderMarksTheSeedIncompleteAndWalks) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	const double high = futureKey();
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high });
+	writeSegment(storePath / "2.txnlog", 2, std::numeric_limits<double>::quiet_NaN(), { high - 1.0 });
+
+	auto store = loadStore(storePath);
+	ASSERT_NE(store, nullptr);
+	EXPECT_FALSE(store->clockFloorComplete);
+	EXPECT_EQ(store->latestTimestamp, high);
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());
 }

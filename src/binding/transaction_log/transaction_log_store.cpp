@@ -882,9 +882,6 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		this->positionInsert(logPosition);
 	}
 
-	// Judged against the previous append's clock sample (or construction's):
-	// at most one batch stale, which the ten-year skew makes irrelevant, and no
-	// clock read on this path.
 	if (this->raiseLatestTimestamp(batch.timestamp, this->lastAppendMs + MAX_CLOCK_FLOOR_SKEW_MS)) {
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Set latest timestamp to batch timestamp: %f\n", this, batch.timestamp);
 	}
@@ -1222,19 +1219,10 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	LogPosition flushedPosition = store->getLastFlushedPosition();
 
-	// Clock-floor seed, part 1: every segment's header word is the store's
-	// latestTimestamp when that segment was created, so post-upgrade the newest
-	// header bounds every key in the older segments. Part 2 (below) folds in the
-	// entry keys of the segments the recovery scans walk anyway, which is where
-	// keys above the newest header can still sit.
-	// A header beyond the plausible bound is a far-future key stamped by an
-	// older version: it says nothing about the segments it summarizes, and a
-	// writer that stamped one cannot be trusted to have kept a running maximum
-	// in any of its headers, so every segment older than the active file is
-	// walked. The cost recurs at each open until retention purges the segment
-	// carrying that header; the warning below names the key.
-	// One clock sample classifies every candidate of this load, and the final
-	// floor raise uses the same one, so none of them can disagree.
+	// Clock-floor seed (AGENTS.md invariant 18): header words, then the entry
+	// keys the recovery scans walk anyway. One clock sample for the whole load.
+	// A header that is far-future, non-finite or non-positive cannot vouch for
+	// the segments it summarizes, so those are walked instead.
 	const double plausibleBound = TransactionLogStore::plausibleBoundNow();
 	double implausibleKey = 0;
 	bool scanOlderSegments = false;
@@ -1246,6 +1234,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				store->raiseLatestTimestamp(header, plausibleBound);
 				if (header > plausibleBound) {
 					implausibleKey = std::max(implausibleKey, header);
+					scanOlderSegments = true;
+				} else if (!(header >= 0)) {
+					clockFloorComplete = false;
 					scanOlderSegments = true;
 				}
 			} catch (const std::exception& e) {
@@ -1397,9 +1388,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	}
 	*store->lastCommittedPosition = recoveredPosition < flushedPosition ? flushedPosition : recoveredPosition;
 
-	// The floor must be in place before any transaction on this database can
-	// claim a timestamp; DBDescriptor::open discovers stores before the
-	// descriptor reaches a handle, so this runs early enough for every opener.
+	// Runs inside DBDescriptor::open, before any handle (and so any
+	// transaction) on this database can exist.
 	if (raiseMonotonicTimestampFloor(store->latestTimestamp, plausibleBound)) {
 		DEBUG_LOG("%p TransactionLogStore::load Raised monotonic clock floor to %f from store \"%s\"\n",
 			store.get(), store->latestTimestamp, store->name.c_str());

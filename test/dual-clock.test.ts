@@ -205,6 +205,30 @@ describe('Dual clock', () => {
 					}
 				));
 
+			it('decodes through a copying decoder even on a binary-encoded store', () =>
+				dbRunner(
+					{
+						dbOptions: [
+							{
+								encoding: 'binary',
+								decoder: {
+									decode: (buffer: Buffer, options?: { end: number }) =>
+										Buffer.from(buffer.subarray(0, options?.end)),
+								},
+							},
+						],
+					},
+					async ({ db }) => {
+						await db.put('a', headerValue(1.7e12, { tail: 20 }));
+						await db.put('b', Buffer.from('xyz'));
+						const a = await getEntry(db, 'a');
+						const b = await getEntry(db, 'b');
+						expect(a?.value).toEqual(headerValue(1.7e12, { tail: 20 }));
+						expect(b?.value).toEqual(Buffer.from('xyz'));
+						expect(a?.value.length).toBe(32);
+					}
+				));
+
 			it('returns undefined for a missing key', () =>
 				dbRunner(async ({ db }) => {
 					expect(await getEntry(db, 'missing')).toBeUndefined();

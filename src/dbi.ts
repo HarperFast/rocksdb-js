@@ -385,15 +385,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 
 	/**
 	 * Synchronously retrieves the value for the given key together with its two
-	 * clock words. `localTime` is the first 8-byte big-endian float64 word: the
-	 * transaction timestamp that wrote it, which is also its transaction-log
-	 * batch key. `version` is the record version: the 8-byte big-endian float64
-	 * at offset 12 when the metadata word at offset 8 (tag byte `0x0e`) carries
-	 * `HAS_DISTINCT_VERSION_FLAG` and the value is at least 20 bytes, otherwise
-	 * equal to `localTime`. A word that is not a finite positive number is
-	 * `undefined` (a flagged value shorter than 20 bytes has no `version`).
-	 * Only meaningful for stores whose producer writes the value-header
-	 * contract, the same rule as the verification table's flag read.
+	 * clock words, per the README's "Value-header contract".
 	 */
 	getEntrySync(key: Key): Entry | undefined {
 		const raw = this.store.decoderCopies ? this.getBinaryFastSync(key) : this.getBinarySync(key);
@@ -447,8 +439,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				}
 			}
 		}
-		const value =
-			this.store.encoding === 'binary' || !this.store.decoder
+		const value = this.store.decoderCopies
+			? this.store.decodeValue(raw as BufferWithDataView)
+			: this.store.encoding === 'binary' || !this.store.decoder
 				? raw
 				: this.store.decodeValue(raw as BufferWithDataView);
 		return { value, localTime, version };

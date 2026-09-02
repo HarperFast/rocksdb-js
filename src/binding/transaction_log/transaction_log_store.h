@@ -217,14 +217,9 @@ struct TransactionLogStore final {
 	double latestTimestamp = 0;
 
 	/**
-	 * Keys more than MAX_CLOCK_FLOOR_SKEW_MS past the wall clock — the same
-	 * rule raiseMonotonicTimestampFloor() applies — are not clock-floor
-	 * candidates and never reach `latestTimestamp` (so they are never stamped
-	 * into a header either). `plausibleBound` is one wall-clock sample plus the
-	 * skew: load() takes one for the whole load so every candidate and the
-	 * final floor raise agree, and writeBatch() judges a batch key against the
-	 * sample the previous append already took (`lastAppendMs`), so no commit
-	 * pays a clock read for this.
+	 * The floor's own plausibility rule (wall clock + MAX_CLOCK_FLOOR_SKEW_MS),
+	 * sampled once per load; writeBatch() uses the previous append's sample
+	 * (`lastAppendMs`) so no commit reads the clock for it.
 	 */
 	static double plausibleBoundNow() {
 		return getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;

@@ -1296,17 +1296,12 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 
-	// The timestamp is the write identity of everything this transaction
-	// stages: records carry it as their first word and the log batch snapshots
-	// it at the first addLogEntry(). Once either exists, a change would split
-	// the record's first word from its log key, so it is frozen; after dispatch
-	// the commit lane owns the batch and the value is meaningless anyway.
+	// Frozen once anything carries it: records' first words and the log batch
+	// key must stay equal (AGENTS.md invariant 18).
 	if ((*txnHandle)->state != TransactionState::Pending) {
 		::napi_throw_error(env, nullptr, "Cannot set timestamp: transaction is not pending");
 		return nullptr;
 	}
-	// committedPosition survives resetTransaction(): a coordinated-retry attempt
-	// whose log batch already landed must keep the key that batch was written under.
 	auto* txn = (*txnHandle)->txn;
 	if ((*txnHandle)->logEntryBatch || (*txnHandle)->committedPosition.logSequenceNumber > 0 ||
 		(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
