@@ -668,7 +668,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     invariant 9), so for those this drain is defense in depth rather than the only thing preventing
     a use-after-free.
 
-17. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
+18. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
     `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer drops
     the JS-side ref and, per invariant 13, `onWrapperCollected()` reaps a transaction whose
