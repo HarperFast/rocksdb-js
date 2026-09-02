@@ -759,6 +759,11 @@ TEST(TransactionLogTimestampIndex, ShortMapDoesNotSkipTheUnsearchedPostBreakTail
 	}
 	OpenedLogFile opened(img);
 	TransactionLogFile& file = opened.get();
+	// Windows indexes the whole file against a full-extent map during openFile(), so drop
+	// that mapping and index to reach the partial-map case identically on both platforms.
+	file.downgradeMapToFrozen();
+	file.resetTimestampIndex();
+	file.resyncSearchCountForTests = 0;
 	// Cut the map mid-entry, too few frames past the break to qualify as a resume.
 	uint32_t shortMap = offsets[2] + 5;
 	EXPECT_EQ(file.findPositionByTimestamp(20.0, shortMap, /*isCurrent=*/true), breakOffset);
