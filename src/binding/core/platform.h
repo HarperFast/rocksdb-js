@@ -38,7 +38,28 @@ void setThreadName(const char* name);
 
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
 
+/**
+ * Exclusive upper bound of the millisecond-timestamp domain (the largest
+ * JavaScript `Date`, 8.64e15 ms). Transaction timestamps, transaction-log batch
+ * keys and the clock floor all live below it.
+ */
+constexpr double MAX_TIMESTAMP_MS = 8.64e15;
+
+/**
+ * Returns a process-wide strictly increasing wall-clock timestamp in
+ * milliseconds. Ties and clock rollbacks resolve to `nextafter(last, +inf)`.
+ * Throws DBException once the next value would reach MAX_TIMESTAMP_MS.
+ */
 double getMonotonicTimestamp();
+
+/**
+ * Raises the floor getMonotonicTimestamp() issues above to `floor`, so no later
+ * timestamp is <= it. Raise-only: a floor at or below the current one, a
+ * non-finite or non-positive value, or one at/above MAX_TIMESTAMP_MS is
+ * ignored. Returns whether the floor moved. Seeded at transaction-log store
+ * load from the largest durable batch key (see TransactionLogStore::load).
+ */
+bool raiseMonotonicTimestampFloor(double floor);
 
 void tryCreateDirectory(
 	const std::filesystem::path& path,

@@ -1,3 +1,4 @@
+#include <cmath>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -88,9 +89,15 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "coordinatedRetry", coordinatedRetry));
 
 	// create shared_ptr on heap so it persists after function returns
-	std::shared_ptr<TransactionHandle>* txnHandle = new std::shared_ptr<TransactionHandle>(
-		std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot)
-	);
+	std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
+	try {
+		txnHandle = new std::shared_ptr<TransactionHandle>(
+			std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot)
+		);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	(*txnHandle)->coordinatedRetry = coordinatedRetry;
 
 	(*dbHandle)->descriptor->transactionAdd(*txnHandle);
@@ -1289,15 +1296,37 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 
+	// The timestamp is the write identity of everything this transaction
+	// stages: records carry it as their first word and the log batch snapshots
+	// it at the first addLogEntry(). Once either exists, a change would split
+	// the record's first word from its log key, so it is frozen; after dispatch
+	// the commit lane owns the batch and the value is meaningless anyway.
+	if ((*txnHandle)->state != TransactionState::Pending) {
+		::napi_throw_error(env, nullptr, "Cannot set timestamp: transaction is not pending");
+		return nullptr;
+	}
+	if ((*txnHandle)->logEntryBatch || ((*txnHandle)->txn && (*txnHandle)->txn->GetNumKeys() > 0)) {
+		::napi_throw_error(env, nullptr, "Cannot set timestamp: transaction already has staged writes");
+		return nullptr;
+	}
+
 	if (type == napi_undefined) {
-		// use current timestamp
-		(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+		try {
+			(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+		} catch (const std::exception& e) {
+			::napi_throw_error(env, nullptr, e.what());
+			return nullptr;
+		}
 	} else if (type == napi_number) {
 		double timestampMs = 0.0;
 		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),
 			"Invalid timestamp, expected positive number");
-		if (timestampMs <= 0) {
-			::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
+		// NaN poisons the log's timestamp index and Infinity has no successor;
+		// the cap keeps every key (and the clock floor seeded from it) a valid
+		// millisecond date.
+		if (!(timestampMs > 0) || !std::isfinite(timestampMs) || timestampMs >= rocksdb_js::MAX_TIMESTAMP_MS) {
+			::napi_throw_error(env, nullptr,
+				"Invalid timestamp, expected a finite positive number below 8640000000000000");
 			return nullptr;
 		}
 		(*txnHandle)->startTimestamp = timestampMs;

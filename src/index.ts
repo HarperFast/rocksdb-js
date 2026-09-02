@@ -16,7 +16,13 @@ export {
 } from './database.ts';
 export { CountEstimator, type CountEstimatorOptions } from './count-estimator.ts';
 export { DBIterator } from './dbi-iterator.ts';
-export { DBI, type CountEstimate, type CountEstimateOptions, type IteratorOptions } from './dbi.ts';
+export {
+	DBI,
+	type CountEstimate,
+	type CountEstimateOptions,
+	type Entry,
+	type IteratorOptions,
+} from './dbi.ts';
 export type { Key } from './encoding.ts';
 export type * from './stats.ts';
 export {
@@ -24,6 +30,7 @@ export {
 	type BackgroundErrorOptions,
 	constants,
 	coolTransactionLogs,
+	HAS_DISTINCT_VERSION_FLAG,
 	currentThreadId,
 	fileLockRelease,
 	tryFileLock,

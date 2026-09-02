@@ -882,9 +882,8 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		this->positionInsert(logPosition);
 	}
 
-	if (batch.timestamp > this->latestTimestamp) {
-		DEBUG_LOG("%p TransactionLogStore::writeBatch Setting latest timestamp to batch timestamp: %f > %f\n", this, batch.timestamp, this->latestTimestamp);
-		this->latestTimestamp = batch.timestamp;
+	if (this->raiseLatestTimestamp(batch.timestamp)) {
+		DEBUG_LOG("%p TransactionLogStore::writeBatch Set latest timestamp to batch timestamp: %f\n", this, batch.timestamp);
 	}
 
 	// write entries across multiple log files until all are written
@@ -1212,6 +1211,26 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	LogPosition flushedPosition = store->getLastFlushedPosition();
 
+	// Clock-floor seed, part 1: every segment's header word is the store's
+	// latestTimestamp when that segment was created, so post-upgrade the newest
+	// header bounds every key in the older segments. Part 2 (below) folds in the
+	// entry keys of the segments the recovery scans walk anyway, which is where
+	// keys above the newest header can still sit. A segment whose header cannot
+	// be read leaves a possibly-low floor; open still succeeds, but say so.
+	bool clockFloorComplete = true;
+	{
+		std::lock_guard<std::mutex> lock(store->dataSetsMutex);
+		for (const auto& [sequence, logFile] : store->sequenceFiles) {
+			try {
+				store->raiseLatestTimestamp(readTransactionLogFileHeaderTimestamp(logFile->path));
+			} catch (const std::exception& e) {
+				clockFloorComplete = false;
+				DEBUG_LOG("%p TransactionLogStore::load Failed to read header of %s: %s\n",
+					store.get(), logFile->path.string().c_str(), e.what());
+			}
+		}
+	}
+
 	// Only the active file can carry a torn append; recover it after discovery and
 	// refresh the write position if recovery shortened it.
 	uint32_t storeCurrentSeq = store->currentSequenceNumber.load(std::memory_order_relaxed);
@@ -1237,12 +1256,14 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					store.get(), currentFile->path.string().c_str(), e.what());
 				currentFile->appendBoundaryMarkerEnabled = false;
 				activated = false;
+				clockFloorComplete = false;
 			}
 			if (activated) {
 				uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
 					? flushedPosition.positionInLogFile
 					: 0;
 				currentFile->recoverTail(protectedPosition);
+				store->raiseLatestTimestamp(currentFile->maxEntryTimestamp.load(std::memory_order_relaxed));
 				store->nextLogPosition = { currentFile->size, storeCurrentSeq };
 			} else {
 				uint32_t nextWritableSequence = storeCurrentSeq + 1;
@@ -1282,6 +1303,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			uint32_t completeEnd = isCurrent
 				? logFile->lastCompleteTransactionEnd.load(std::memory_order_relaxed)
 				: logFile->scanForLastCompleteTransactionEnd();
+			store->raiseLatestTimestamp(logFile->maxEntryTimestamp.load(std::memory_order_relaxed));
 			if (openedForScan) {
 				logFile->close();
 			}
@@ -1307,6 +1329,22 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		}
 	}
 	*store->lastCommittedPosition = recoveredPosition < flushedPosition ? flushedPosition : recoveredPosition;
+
+	// The floor must be in place before any transaction on this database can
+	// claim a timestamp; DBDescriptor::open discovers stores before the
+	// descriptor reaches a handle, so this runs early enough for every opener.
+	if (raiseMonotonicTimestampFloor(store->latestTimestamp)) {
+		DEBUG_LOG("%p TransactionLogStore::load Raised monotonic clock floor to %f from store \"%s\"\n",
+			store.get(), store->latestTimestamp, store->name.c_str());
+	}
+	if (!clockFloorComplete) {
+		std::ostringstream msg;
+		msg << "Transaction log store " << store->path.string()
+			<< " has a segment that could not be inspected at open; the monotonic clock floor"
+			   " may be below a batch key already in this log.";
+		DEBUG_LOG("%p TransactionLogStore::load WARNING: %s\n", store.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	}
 	if (retentionMs.count() > 0) {
 		try {
 			store->purge(nullptr, false, 0, false);

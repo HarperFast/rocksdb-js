@@ -60,6 +60,13 @@ struct RecoveryScan final {
 	 * assign repeated timestamps to separate transactions.
 	 */
 	bool unclosedTailIsOneTransaction;
+	/**
+	 * Largest finite entry timestamp among the frames the walk accepted (those
+	 * before `validEnd`), or 0 when there are none. Batch keys are not
+	 * monotonic in log order, so this is a maximum over the walk, not the last
+	 * entry's key. Feeds the open-time clock floor (TransactionLogStore::load).
+	 */
+	double maxTimestamp;
 };
 
 /**

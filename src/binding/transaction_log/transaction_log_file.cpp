@@ -27,6 +27,27 @@ std::filesystem::path transactionLogAppendBoundaryMarkerPath(
 	return markerRoot / (logPath.filename().string() + ".boundary");
 }
 
+double readTransactionLogFileHeaderTimestamp(const std::filesystem::path& logPath) {
+	char header[TRANSACTION_LOG_FILE_HEADER_SIZE];
+	std::ifstream file(logPath, std::ios::binary | std::ios::in);
+	if (!file) {
+		throw rocksdb_js::DBException("Failed to open transaction log file header: " + logPath.string());
+	}
+	file.read(header, sizeof(header));
+	if (file.gcount() != static_cast<std::streamsize>(sizeof(header))) {
+		throw rocksdb_js::TransactionLogFormatException(
+			"File is too small to be a valid transaction log file: " + logPath.string());
+	}
+	if (readUint32BE(header) != TRANSACTION_LOG_TOKEN) {
+		throw rocksdb_js::TransactionLogFormatException("Invalid transaction log file: " + logPath.string());
+	}
+	if (readUint8(header + 4) != 1) {
+		throw rocksdb_js::TransactionLogFormatException(
+			"Unsupported transaction log file version: " + std::to_string(readUint8(header + 4)));
+	}
+	return readDoubleBE(header + TRANSACTION_LOG_FILE_TIMESTAMP_POSITION);
+}
+
 uint32_t readTransactionLogAppendBoundaryMarker(const std::filesystem::path& logPath) {
 	auto markerPath = transactionLogAppendBoundaryMarkerPath(logPath);
 	std::error_code existsError;
@@ -309,6 +330,7 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
 	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
+	this->maxEntryTimestamp.store(scan.maxTimestamp, std::memory_order_relaxed);
 	return scan.lastCompleteTransactionEnd;
 }
 
@@ -333,6 +355,7 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 	// Publish the complete-transaction boundary from this same scan so the store can
 	// seed its committed watermark without re-reading the file.
 	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
+	this->maxEntryTimestamp.store(scan.maxTimestamp, std::memory_order_relaxed);
 	switch (scan.kind) {
 		case RecoveryScan::Kind::Clean:
 			this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);

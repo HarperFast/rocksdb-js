@@ -1,0 +1,146 @@
+// TransactionLogStore::load() seeds the store's latestTimestamp — and through
+// it the process-global monotonic clock floor — from the largest durable batch
+// key: every segment's header word plus the entry keys of the active segment.
+
+#include <gtest/gtest.h>
+#include <chrono>
+#include <filesystem>
+#include <limits>
+#include <fstream>
+#include <memory>
+#include <string>
+#include "core/encoding.h"
+#include "core/platform.h"
+#include "transaction_log/transaction_log_entry.h"
+#include "transaction_log/transaction_log_file.h"
+#include "transaction_log/transaction_log_store.h"
+
+namespace {
+
+// Keys are placed an hour past wherever the process clock already is, so
+// neither the wall clock nor a floor raised by an earlier test can reach them;
+// the seed alone decides the next claim. (Every load here raises the process
+// floor; no other test in this binary reads the clock against wall time.)
+double futureKey() {
+	return rocksdb_js::getMonotonicTimestamp() + 3600.0 * 1000.0;
+}
+
+std::filesystem::path uniqueStorePath() {
+	auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+	return std::filesystem::temp_directory_path() /
+		("rocksdb-js-clock-floor-" + std::to_string(nonce)) / "store";
+}
+
+void writeSegment(const std::filesystem::path& logPath, uint32_t sequence,
+	double headerTimestamp, std::initializer_list<double> batchKeys) {
+	rocksdb_js::TransactionLogFile file(logPath, sequence, false);
+	file.open(headerTimestamp);
+	std::string payload = "entry";
+	for (double key : batchKeys) {
+		rocksdb_js::TransactionLogEntryBatch batch(key);
+		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		file.writeEntries(batch);
+	}
+	file.close();
+}
+
+std::shared_ptr<rocksdb_js::TransactionLogStore> loadStore(const std::filesystem::path& storePath) {
+	return rocksdb_js::TransactionLogStore::load(storePath, 0, std::chrono::milliseconds(0), 0);
+}
+
+} // namespace
+
+TEST(TransactionLogClockFloor, SeedsFromTheActiveSegmentsLargestKeyNotItsLast) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	// Batch keys are not monotonic in log order: a transaction that claimed its
+	// timestamp earlier can commit after a later one.
+	const double high = futureKey();
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high - 5000.0, high, high - 1.0 });
+
+	auto store = loadStore(storePath);
+	ASSERT_NE(store, nullptr);
+	EXPECT_EQ(store->latestTimestamp, high);
+	EXPECT_GT(rocksdb_js::getMonotonicTimestamp(), high);
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, SeedsFromARotatedSegmentsHeaderWord) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	// A rotation stamps the new segment's header with the store's latest key,
+	// so a key that only ever lived in segment 1 is still visible from
+	// segment 2's header without scanning segment 1's entries.
+	const double high = futureKey();
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high });
+	writeSegment(storePath / "2.txnlog", 2, high, { high - 60000.0 });
+
+	auto store = loadStore(storePath);
+	ASSERT_NE(store, nullptr);
+	EXPECT_EQ(store->currentSequenceNumber.load(std::memory_order_relaxed), 2u);
+	EXPECT_EQ(store->latestTimestamp, high);
+	EXPECT_GT(rocksdb_js::getMonotonicTimestamp(), high);
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, NewSegmentsInheritTheSeededHeader) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	const double high = futureKey();
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high });
+
+	// Post-upgrade chain: a store loaded with a seeded latestTimestamp stamps it
+	// into every segment it creates, so the newest header keeps bounding the
+	// older segments' keys across restarts.
+	auto store = loadStore(storePath);
+	ASSERT_NE(store, nullptr);
+	auto next = std::make_shared<rocksdb_js::TransactionLogFile>(storePath / "2.txnlog", 2, false);
+	next->open(store->latestTimestamp);
+	next->close();
+	store->close();
+
+	EXPECT_EQ(rocksdb_js::readTransactionLogFileHeaderTimestamp(storePath / "2.txnlog"), high);
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, IgnoresNonFiniteKeysAndStillOpens) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	const double high = futureKey();
+	// A pre-hardening writer could persist a non-finite key; it must neither
+	// wedge the clock at infinity nor hide the real maximum.
+	writeSegment(storePath / "1.txnlog", 1, std::numeric_limits<double>::infinity(),
+		{ high, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN() });
+
+	auto store = loadStore(storePath);
+	ASSERT_NE(store, nullptr);
+	EXPECT_EQ(store->latestTimestamp, high);
+	EXPECT_GT(rocksdb_js::getMonotonicTimestamp(), high);
+	EXPECT_LT(rocksdb_js::getMonotonicTimestamp(), rocksdb_js::MAX_TIMESTAMP_MS);
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, HeaderReaderRejectsShortAndForeignFiles) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	{
+		std::ofstream shortFile(storePath / "short.txnlog", std::ios::binary);
+		shortFile.write("FOOW", 4);
+	}
+	{
+		std::ofstream foreign(storePath / "foreign.txnlog", std::ios::binary);
+		std::string bytes(TRANSACTION_LOG_FILE_HEADER_SIZE, '\0');
+		foreign.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+	}
+	EXPECT_THROW(rocksdb_js::readTransactionLogFileHeaderTimestamp(storePath / "short.txnlog"),
+		rocksdb_js::TransactionLogFormatException);
+	EXPECT_THROW(rocksdb_js::readTransactionLogFileHeaderTimestamp(storePath / "foreign.txnlog"),
+		rocksdb_js::TransactionLogFormatException);
+	EXPECT_THROW(rocksdb_js::readTransactionLogFileHeaderTimestamp(storePath / "missing.txnlog"),
+		rocksdb_js::DBException);
+	std::filesystem::remove_all(storePath.parent_path());
+}

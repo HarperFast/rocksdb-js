@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
+#include <cmath>
 #include <functional>
 #include "rocksdb/db.h"
 #include "transaction_log_entry.h"
@@ -207,10 +208,23 @@ struct TransactionLogStore final {
 	std::string name;
 
 	/**
-	 * The timestamp of the most recent transaction log batch being written.
-	 * This value is used in the transaction log file header timestamp.
+	 * The largest batch key this store is known to hold: seeded at load() from
+	 * the segment headers and the recovery scans, then raised by every
+	 * writeBatch(). Stamped into each new segment's file header, which is what
+	 * makes the newest header an upper bound on every older segment's keys.
 	 */
 	double latestTimestamp = 0;
+
+	/**
+	 * Raise-only update of `latestTimestamp`; non-finite values are ignored.
+	 */
+	bool raiseLatestTimestamp(double timestamp) {
+		if (timestamp > this->latestTimestamp && std::isfinite(timestamp)) {
+			this->latestTimestamp = timestamp;
+			return true;
+		}
+		return false;
+	}
 
 	/**
 	 * The directory containing the transaction store's sequence log files.

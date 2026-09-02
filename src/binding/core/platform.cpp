@@ -151,7 +151,23 @@ double getMonotonicTimestamp() {
 		}
 	}
 
+	if (result >= MAX_TIMESTAMP_MS) {
+		throw DBException("Monotonic timestamp domain exhausted");
+	}
 	return result;
+}
+
+bool raiseMonotonicTimestampFloor(double floor) {
+	if (!(floor > 0) || !std::isfinite(floor) || floor >= MAX_TIMESTAMP_MS) {
+		return false;
+	}
+	double last = lastTimestamp.load(std::memory_order_acquire);
+	while (last < floor) {
+		if (lastTimestamp.compare_exchange_weak(last, floor, std::memory_order_acq_rel)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {

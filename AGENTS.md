@@ -646,6 +646,52 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
 
+18. **A transaction's timestamp is its write identity, and the clock that issues it is floored by
+    the log at open**: `TransactionHandle::startTimestamp` is claimed from the process-global
+    monotonic clock (`getMonotonicTimestamp()`, `core/platform.cpp`) at construction, becomes the
+    first 8-byte word of every record the transaction writes and the key of its transaction-log
+    batch (snapshotted at the first `addLogEntry`), and harper seeks the per-origin log at exactly
+    that key to find a record's own entry. Identity is (origin nodeId, first word), so uniqueness is
+    only required within one origin's log — which is why concurrent commits landing out of claim
+    order (a later log entry with a smaller key) are fine, and why `setTimestamp` exists at all: a
+    replication receiver or crash replay adopts the _origin's_ first word. `Transaction::SetTimestamp`
+    therefore rejects non-finite, non-positive and `>= MAX_TIMESTAMP_MS` (8.64e15) values, any call
+    outside `Pending`, and any call once a write or log entry is staged — a later change would split
+    the records' first word from the batch key. A source/origin-supplied record _version_ is a
+    separate second word (offset 12, under `HAS_DISTINCT_VERSION_FLAG` = 0x20000 in the metadata
+    word) that nothing native interprets; `DBI.getEntry()` is the one decoder of both words and the
+    README's "Value-header contract" is the byte layout harper's encoder must match. rocksdb-js
+    stamps nothing at commit: the put/commit hot path gained no claim, CAS or clock read (the
+    commit-time keep-if-greater design was rejected in #811 because it re-stamped every transaction
+    outlived by a concurrent commit).
+
+    The hole this closes is a restart after a wall-clock rollback reissuing a key already durable in
+    this node's log. `TransactionLogStore::load()` seeds `latestTimestamp` — which used to start at 0
+    on every open and only track batches written by the current process — from every segment's
+    file-header word plus `RecoveryScan::maxTimestamp` of the active segment (and of any older
+    segment the committed-boundary back-walk scans anyway), then calls
+    `raiseMonotonicTimestampFloor()` (raise-only CAS; ignores non-finite / non-positive /
+    out-of-domain values). This runs inside `DBDescriptor::open` → `DiscoverStores`, before the
+    descriptor reaches any `DBHandle`, so no transaction on that database can be constructed first.
+    The header chain is what makes this cheap: a segment's header is the store's `latestTimestamp`
+    when the segment was created, so once a store has been loaded by this code every later rotation
+    stamps a header that bounds all older segments, and the seed is max(headers, active-segment
+    scan) rather than a walk of every retained byte (measured ~4 GB/s warm for 200-byte entries,
+    i.e. bounded by disk throughput per open, under the registry mutex — the reason a full scan was
+    not chosen). Known gap: a store whose rotated segments were all written by a pre-#811 binary
+    that had itself restarted after a rollback can hold a key no header records; the first rotation
+    after upgrade repairs the chain. A segment whose header cannot be read emits a `log.warn` rather
+    than failing the open (load fails open for broken segments by design). The floor is
+    process-wide and also absorbs adopted origin keys, so a peer clock far ahead advances this
+    node's clock after its next restart. `getMonotonicTimestamp()` throws `DBException` once the
+    next value would reach `MAX_TIMESTAMP_MS`; its three callers (`TransactionHandle`
+    construction, `Database::GetMonotonicTimestamp`, `Transaction::SetTimestamp`) all sit behind a
+    try/catch that surfaces it as a JS error. Native tests must never leave the process floor at the
+    cap — `monotonic_timestamp_test.cc` drives it there in a death-test child for that reason — and
+    Vitest must not raise it by more than the tolerances its sibling files assert against wall time
+    (`test/misc.test.ts`), which is why `test/dual-clock.test.ts` runs the floor scenario in forked
+    children.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

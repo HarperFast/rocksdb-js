@@ -667,6 +667,7 @@ export const BackgroundError: new (
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;
+export const HAS_DISTINCT_VERSION_FLAG: number = binding.constants.HAS_DISTINCT_VERSION_FLAG;
 export const addGlobalListener: (event: string, callback: (...args: any[]) => void) => void =
 	binding.addListener;
 export const removeGlobalListener: (event: string, callback: (...args: any[]) => void) => boolean =
@@ -694,6 +695,13 @@ export const constants: {
 	 * cannot enforce this flag.
 	 */
 	VERSION_NOT_UNIQUE_FLAG: number;
+	/**
+	 * Producer flag in the same metadata word: the value carries a distinct record version as an
+	 * 8-byte big-endian float64 at offset 12, immediately after the metadata word, so its first
+	 * word is the transaction timestamp (write identity) and the second is the record version.
+	 * Not interpreted natively; decoded by `getEntry()` / `getEntrySync()`.
+	 */
+	HAS_DISTINCT_VERSION_FLAG: number;
 	/**
 	 * Sentinel value resolved (not rejected) by `commit()` when
 	 * `coordinatedRetry: true` and the transaction encountered an IsBusy

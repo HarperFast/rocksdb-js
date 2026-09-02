@@ -1,9 +1,25 @@
 import type { BufferWithDataView, Key } from './encoding.ts';
-import { FRESH_VERSION_FLAG } from './load-binding.ts';
+import { FRESH_VERSION_FLAG, HAS_DISTINCT_VERSION_FLAG } from './load-binding.ts';
 import type { NativeTransaction, TransactionLog } from './load-binding.ts';
 import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } from './store.ts';
 import type { Transaction } from './transaction.ts';
 import { type MaybePromise, when } from './util.ts';
+
+/**
+ * The metadata word's tag byte in the value-header contract (see `getEntrySync()`).
+ */
+const VERSION_HEADER_TAG = 0x0e;
+
+/**
+ * A value with its two clock words, as returned by `getEntry()` / `getEntrySync()`.
+ */
+export type Entry = {
+	value: any;
+	/** The transaction timestamp that wrote the value: its first word and log batch key. */
+	localTime?: number;
+	/** The record version: the distinct second word when flagged, otherwise `localTime`. */
+	version?: number;
+};
 
 export interface RocksDBOptions {
 	/**
@@ -368,6 +384,73 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		return this.store.decodeValue(this.store.getSync(this._context, key, true, options));
+	}
+
+	/**
+	 * Synchronously retrieves the value for the given key together with its two
+	 * clock words. `localTime` is the first 8-byte big-endian float64 word: the
+	 * transaction timestamp that wrote it, which is also its transaction-log
+	 * batch key. `version` is the record version: the 8-byte big-endian float64
+	 * at offset 12 when the metadata word at offset 8 (tag byte `0x0e`) carries
+	 * `HAS_DISTINCT_VERSION_FLAG` and the value is at least 20 bytes, otherwise
+	 * equal to `localTime`. A word that is not a finite positive number is
+	 * `undefined` (a flagged value shorter than 20 bytes has no `version`).
+	 * Only meaningful for stores whose producer writes the value-header
+	 * contract, the same rule as the verification table's flag read.
+	 */
+	getEntrySync(key: Key): Entry | undefined {
+		const raw = this.getBinarySync(key);
+		if (raw === undefined || typeof raw === 'number') {
+			return undefined;
+		}
+		return this.#buildEntry(raw);
+	}
+
+	/**
+	 * Retrieves the value for the given key together with its two clock words;
+	 * the asynchronous counterpart of `getEntrySync()` (see it for the word
+	 * semantics).
+	 */
+	getEntry(key: Key): MaybePromise<Entry | undefined> {
+		const raw = this.getBinary(key);
+		if (raw instanceof Promise) {
+			return raw.then((resolved) =>
+				resolved === undefined || typeof resolved === 'number'
+					? undefined
+					: this.#buildEntry(resolved)
+			);
+		}
+		if (raw === undefined || typeof raw === 'number') {
+			return undefined;
+		}
+		return this.#buildEntry(raw);
+	}
+
+	#buildEntry(raw: Buffer): Entry {
+		let localTime: number | undefined;
+		let version: number | undefined;
+		if (raw.length >= 8) {
+			const first = raw.readDoubleBE(0);
+			if (Number.isFinite(first) && first > 0) {
+				localTime = first;
+				version = first;
+			}
+			if (raw.length >= 12) {
+				const metadata = raw.readUInt32BE(8);
+				if (
+					metadata >>> 24 === VERSION_HEADER_TAG &&
+					(metadata & HAS_DISTINCT_VERSION_FLAG) !== 0
+				) {
+					const distinct = raw.length >= 20 ? raw.readDoubleBE(12) : NaN;
+					version = Number.isFinite(distinct) && distinct > 0 ? distinct : undefined;
+				}
+			}
+		}
+		const value =
+			this.store.encoding === 'binary' || !this.store.decoder
+				? raw
+				: this.store.decodeValue(raw as BufferWithDataView);
+		return { value, localTime, version };
 	}
 
 	/**

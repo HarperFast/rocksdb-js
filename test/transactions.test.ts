@@ -1,4 +1,4 @@
-import type { Transaction } from '../src/transaction.ts';
+import { Transaction } from '../src/transaction.ts';
 import { withResolvers } from '../src/util.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
@@ -373,6 +373,40 @@ for (const { name, options, txnOptions } of testOptions) {
 				await expect(db.get('foo')).toBeUndefined();
 			}));
 
+		it(`${name} async should reject setTimestamp once the commit is dispatched`, () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				const txn = new Transaction(db.store, txnOptions);
+				const ts = txn.getTimestamp();
+				await txn.put('foo', 'bar');
+				// The log batch key and the records' first words are already fixed
+				// by the staged write; a later change would split them.
+				expect(() => txn.setTimestamp(ts + 1)).toThrow(
+					'Cannot set timestamp: transaction already has staged writes'
+				);
+				expect(() => txn.setTimestamp()).toThrow(
+					'Cannot set timestamp: transaction already has staged writes'
+				);
+				const committing = txn.commit();
+				expect(() => txn.setTimestamp(ts + 1)).toThrow(
+					'Cannot set timestamp: transaction is not pending'
+				);
+				await committing;
+				expect(txn.getTimestamp()).toBe(ts);
+				expect(await db.get('foo')).toBe('bar');
+			}));
+
+		it(`${name} async should reject setTimestamp once a log entry is staged`, () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				const log = db.useLog('stamped');
+				await db.transaction(async (txn: Transaction) => {
+					txn.setTimestamp(Date.now());
+					log.addEntry(Buffer.from('entry'), txn.id);
+					expect(() => txn.setTimestamp(Date.now())).toThrow(
+						'Cannot set timestamp: transaction already has staged writes'
+					);
+				}, txnOptions);
+			}));
+
 		it(`${name} async should get and set timestamp`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				const start = Date.now() - 1000;
@@ -390,7 +424,19 @@ for (const { name, options, txnOptions } of testOptions) {
 					ts = txn.getTimestamp();
 					expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
-					expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
+					const rejected = 'Invalid timestamp, expected a finite positive number';
+					expect(() => txn.setTimestamp(-1)).toThrow(rejected);
+					expect(() => txn.setTimestamp(0)).toThrow(rejected);
+					expect(() => txn.setTimestamp(NaN)).toThrow(rejected);
+					expect(() => txn.setTimestamp(Infinity)).toThrow(rejected);
+					expect(() => txn.setTimestamp(-Infinity)).toThrow(rejected);
+					expect(() => txn.setTimestamp(8.64e15)).toThrow(rejected);
+					// A rejected value leaves the previous one in place.
+					expect(txn.getTimestamp()).toBe(ts);
+					// A future value below the cap is still accepted.
+					txn.setTimestamp(8.64e15 - 1);
+					expect(txn.getTimestamp()).toBe(8.64e15 - 1);
+					txn.setTimestamp(newTs);
 					expect(() => txn.setTimestamp('foo' as any)).toThrow(
 						'Invalid timestamp, expected positive number'
 					);
@@ -611,6 +657,21 @@ for (const { name, options, txnOptions } of testOptions) {
 				expect(db.getSync('foo')).toBeUndefined();
 			}));
 
+		it(`${name} sync should reject setTimestamp after a write or a commit`, () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				const txn = new Transaction(db.store, txnOptions);
+				const ts = txn.getTimestamp();
+				txn.putSync('foo', 'bar');
+				expect(() => txn.setTimestamp(ts + 1)).toThrow(
+					'Cannot set timestamp: transaction already has staged writes'
+				);
+				txn.commitSync();
+				expect(() => txn.setTimestamp(ts + 1)).toThrow(
+					'Cannot set timestamp: transaction is not pending'
+				);
+				expect(db.getSync('foo')).toBe('bar');
+			}));
+
 		it(`${name} sync should get and set timestamp`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				const start = Date.now() - 1000;
@@ -628,7 +689,19 @@ for (const { name, options, txnOptions } of testOptions) {
 					ts = txn.getTimestamp();
 					expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
-					expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
+					const rejected = 'Invalid timestamp, expected a finite positive number';
+					expect(() => txn.setTimestamp(-1)).toThrow(rejected);
+					expect(() => txn.setTimestamp(0)).toThrow(rejected);
+					expect(() => txn.setTimestamp(NaN)).toThrow(rejected);
+					expect(() => txn.setTimestamp(Infinity)).toThrow(rejected);
+					expect(() => txn.setTimestamp(-Infinity)).toThrow(rejected);
+					expect(() => txn.setTimestamp(8.64e15)).toThrow(rejected);
+					// A rejected value leaves the previous one in place.
+					expect(txn.getTimestamp()).toBe(ts);
+					// A future value below the cap is still accepted.
+					txn.setTimestamp(8.64e15 - 1);
+					expect(txn.getTimestamp()).toBe(8.64e15 - 1);
+					txn.setTimestamp(newTs);
 					expect(() => txn.setTimestamp('foo' as any)).toThrow(
 						'Invalid timestamp, expected positive number'
 					);

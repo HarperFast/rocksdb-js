@@ -1285,7 +1285,13 @@ napi_value Database::GetMonotonicTimestamp(napi_env env, napi_callback_info info
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();
 
-	double timestamp = rocksdb_js::getMonotonicTimestamp();
+	double timestamp = 0;
+	try {
+		timestamp = rocksdb_js::getMonotonicTimestamp();
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_double(env, timestamp, &result));
 	return result;
