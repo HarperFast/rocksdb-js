@@ -25,9 +25,12 @@ worker.postMessage({ open: true });
 const opening = await nextMessage();
 if (!opening.opening) throw new Error(`Open worker did not start: ${JSON.stringify(opening)}`);
 
-await delay(100);
-const registryEntry = registryStatus().find((entry) => entry.path === path);
-const closables = registryEntry?.closables;
+const registryDeadline = Date.now() + 5_000;
+let closables: number | undefined;
+while (closables !== 2 && Date.now() < registryDeadline) {
+	closables = registryStatus().find((entry) => entry.path === path)?.closables;
+	if (closables !== 2) await delay(1);
+}
 
 owner.destroy();
 const result = await nextMessage();
