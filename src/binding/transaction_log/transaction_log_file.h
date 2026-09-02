@@ -245,8 +245,9 @@ struct TransactionLogFile final {
 	 * search spans the whole corrupt gap and runs under the store's dataSetsMutex, so repeating
 	 * it on every seek would stall writers and readers alike; a search is only worth redoing once
 	 * the mapped region has grown past what it already covered. Zero whenever lastIndexedPosition
-	 * is not parked at an unresolved break — every other assignment to lastIndexedPosition
-	 * (including resetTimestampIndex()) clears it, so the two can never disagree.
+	 * is not parked at an unresolved break: both paths that leave a break clear it, as does
+	 * resetTimestampIndex(), and the paths that advance through a well-framed entry cannot run
+	 * while parked (the walk re-detects the break before reaching them).
 	 */
 	uint32_t resyncSearchedExtent = 0;
 	std::mutex indexMutex;

@@ -114,14 +114,14 @@ bool headerLooksLikeFrame(const char* header, uint32_t pos, uint32_t fileSize) {
 // offsets are served from a 64 KiB window; chain hops (HEADER+length) read a
 // 13-byte header so a large payload is not pulled in. A failed read throws — it
 // must not look like "no resume".
-uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from) {
+uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from, bool endIsWrittenExtent) {
 	std::vector<char> window(RESYNC_WINDOW);
 	uint32_t windowStart = 0;
 	uint32_t windowLen = 0;
 	char headerBuf[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 
 	auto reachesWrittenExtent = [&](uint32_t pos) -> bool {
-		return pos == source.fileSize || pos == source.nonzeroEnd();
+		return endIsWrittenExtent && (pos == source.fileSize || pos == source.nonzeroEnd());
 	};
 
 	auto loadHeader = [&](uint32_t pos, const char*& out) -> bool {
@@ -170,13 +170,14 @@ uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from) {
 } // namespace
 
 uint32_t findFramingResumeOffset(
-	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from
+	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from,
+	bool endIsWrittenExtent
 ) {
 	if (from == 0 || from >= fileSize) {
 		return 0;
 	}
 	ScanReader source{ read, context, fileSize, {}, 0, 0 };
-	return findFramingResumeOffset(source, from);
+	return findFramingResumeOffset(source, from, endIsWrittenExtent);
 }
 
 RecoveryScan scanTransactionLogForRecovery(
@@ -222,7 +223,7 @@ RecoveryScan scanTransactionLogForRecovery(
 			// Intact frames after the break are mid-file corruption; truncating would
 			// discard them, and the committed watermark must still reach them, so the
 			// walk resumes where framing does. A torn tail has nothing valid behind it.
-			uint32_t resume = findFramingResumeOffset(source, pos + 1);
+			uint32_t resume = findFramingResumeOffset(source, pos + 1, /*endIsWrittenExtent=*/true);
 			if (resume == 0) {
 				return scan(RecoveryScan::Kind::TruncateTail, pos);
 			}
@@ -262,8 +263,11 @@ RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) 
 	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data));
 }
 
-uint32_t findFramingResumeOffset(const char* data, uint32_t fileSize, uint32_t from) {
-	return findFramingResumeOffset(fileSize, readFromBuffer, const_cast<char*>(data), from);
+uint32_t findFramingResumeOffset(
+	const char* data, uint32_t fileSize, uint32_t from, bool endIsWrittenExtent
+) {
+	return findFramingResumeOffset(
+		fileSize, readFromBuffer, const_cast<char*>(data), from, endIsWrittenExtent);
 }
 
 RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file) {

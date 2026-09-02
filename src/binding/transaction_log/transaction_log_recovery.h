@@ -120,12 +120,21 @@ RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file);
  * (`fileSize`, or the start of a pre-extended file's zero padding). Returns
  * 0 when nothing resumes (0 is never a valid entry offset). Throws DBException on
  * a failed read.
+ *
+ * `endIsWrittenExtent` is false when `fileSize` is only as far as the caller can
+ * read (a memory map short of the written extent), where the region's end is an
+ * arbitrary cut rather than the end of the data. The landing rule is then dropped
+ * — a chain ending on a cut proves nothing, and accepting one lets a garbage chain
+ * inside the corrupt gap pass as the resume — leaving RESYNC_MIN_FRAMES as the
+ * only signal.
  */
 uint32_t findFramingResumeOffset(
-	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from);
+	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from,
+	bool endIsWrittenExtent = true);
 
 /** In-memory adapter over findFramingResumeOffset(fileSize, read, context, from). */
-uint32_t findFramingResumeOffset(const char* data, uint32_t fileSize, uint32_t from);
+uint32_t findFramingResumeOffset(
+	const char* data, uint32_t fileSize, uint32_t from, bool endIsWrittenExtent = true);
 
 /**
  * Counts the well-formed v1 entry frames in an in-memory transaction log image.

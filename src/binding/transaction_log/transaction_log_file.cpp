@@ -758,9 +758,9 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		if (entryLength == 0 ||
 			static_cast<uint64_t>(this->lastIndexedPosition) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength > writtenExtent) {
 			// A framing break, not an in-flight append: size is bumped only after the bytes
-			// land, so a nonzero header below the written extent is a complete entry. Resume
-			// where framing does, or at the written extent so later appends are still indexed.
+			// land, so a nonzero header below the written extent is a complete entry.
 			uint32_t searchable = std::min(writtenExtent, static_cast<uint32_t>(memoryMap->mapSize));
+			bool searchedWholeExtent = searchable == writtenExtent;
 			if (searchable <= this->resyncSearchedExtent) {
 				// These bytes already failed to yield a resume for this same break; only a larger
 				// map can change the answer, and the search spans the whole corrupt gap under the
@@ -771,13 +771,16 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 			++this->resyncSearchCountForTests;
 #endif
-			uint32_t resume = findFramingResumeOffset(mappedFile, searchable, this->lastIndexedPosition + 1);
+			// A chain landing on the end of a short map lands on an arbitrary cut, not on the
+			// end of the data, so only the frame-run signal is trustworthy there.
+			uint32_t resume = findFramingResumeOffset(
+				mappedFile, searchable, this->lastIndexedPosition + 1, searchedWholeExtent);
 			if (resume != 0) {
 				this->lastIndexedPosition = resume;
 				this->resyncSearchedExtent = 0;
 				continue;
 			}
-			if (searchable < writtenExtent) {
+			if (!searchedWholeExtent) {
 				// The map stops short of the written extent, so "nothing resumes" only rules out
 				// the bytes we could read. Parking at the written extent would strand the rest
 				// permanently — a later, larger map resumes from lastIndexedPosition and would

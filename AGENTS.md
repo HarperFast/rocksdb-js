@@ -466,7 +466,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     there means "not in this map", not "not in this file". It must then stay at the break and report
     an unindexed tail — the same treatment the walk already gives a header the map does not cover —
     and only park `lastIndexedPosition` at the written extent when the whole extent was searchable
-    and the break is therefore a torn tail. Skipping to the extent is permanent: a later, larger map
+    and the break is therefore a torn tail. A short map also disqualifies the "chain lands on the
+    written extent" signal (`endIsWrittenExtent`): the region ends on an arbitrary cut, so a chain
+    landing there proves nothing, and accepting one lets a garbage chain in the corrupt gap pass as
+    the resume — whose bogus timestamp then caps this running-maxima index and hides every real
+    entry behind it. The frame-run signal is the only one left. Skipping to the extent is permanent: a later, larger map
     resumes from `lastIndexedPosition` and never looks below it, so those entries stay unindexed and
     every seek into them reports "past this file". Staying at the break costs nothing per seek: the
     extent that failed is remembered (`resyncSearchedExtent`), since only a larger map can change

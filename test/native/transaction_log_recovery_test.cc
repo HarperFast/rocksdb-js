@@ -672,6 +672,21 @@ TEST(TransactionLogResumeOffset, ZeroWhenNothingResumes) {
 	EXPECT_EQ(findFramingResumeOffset(img.data(), img.size(), 0), 0u);
 }
 
+// A region that ends where the caller's map ends, not where the data ends, cannot
+// offer the "chain lands on the written extent" signal: the cut is arbitrary.
+TEST(TransactionLogResumeOffset, ACutIsNotTheWrittenExtent) {
+	LogImage img;
+	img.entry(10);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	uint32_t resumeOffset = img.size();
+	img.entry(16).entry(16); // too short for RESYNC_MIN_FRAMES: only the landing rule can accept it
+	EXPECT_EQ(findFramingResumeOffset(img.data(), img.size(), breakOffset + 1), resumeOffset);
+	EXPECT_EQ(
+		findFramingResumeOffset(img.data(), img.size(), breakOffset + 1, /*endIsWrittenExtent=*/false),
+		0u);
+}
+
 TEST(TransactionLogResumeOffset, IoFailureThrows) {
 	LogImage img;
 	img.entry(10);
@@ -768,8 +783,6 @@ TEST(TransactionLogTimestampIndex, ShortMapDoesNotSkipTheUnsearchedPostBreakTail
 	uint32_t shortMap = offsets[2] + 5;
 	EXPECT_EQ(file.findPositionByTimestamp(20.0, shortMap, /*isCurrent=*/true), breakOffset);
 	EXPECT_EQ(file.resyncSearchCountForTests, 1u);
-	// A repeat seek against the same map answers from the recorded searched extent
-	// instead of re-scanning the corrupt gap under the store lock.
 	EXPECT_EQ(file.findPositionByTimestamp(25.0, shortMap, /*isCurrent=*/true), breakOffset);
 	EXPECT_EQ(file.resyncSearchCountForTests, 1u);
 	// Once the map reaches the written extent the run is found, indexed and seekable.
@@ -777,6 +790,29 @@ TEST(TransactionLogTimestampIndex, ShortMapDoesNotSkipTheUnsearchedPostBreakTail
 	EXPECT_EQ(file.resyncSearchCountForTests, 2u);
 	EXPECT_EQ(file.findPositionByTimestamp(31.0, img.size(), /*isCurrent=*/true), offsets[11]);
 	EXPECT_EQ(file.findPositionByTimestamp(32.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
+}
+
+// The index walk searches only the mapped region, so a chain ending on that map's
+// last byte has reached a cut and not the end of the data. Accepting one would let a
+// garbage chain inside the corrupt gap resume the walk, and its bogus timestamp would
+// cap this running-maxima index against every real entry behind it.
+TEST(TransactionLogTimestampIndex, ShortMapCutIsNotTreatedAsTheWrittenExtent) {
+	LogImage img;
+	img.entry(16, /*flags=*/1, /*timestamp=*/10.0);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, /*flags=*/1, /*timestamp=*/11.0);
+	std::vector<uint32_t> offsets;
+	for (int i = 0; i < 12; ++i) {
+		offsets.push_back(img.size());
+		img.entry(16, /*flags=*/1, /*timestamp=*/20.0 + i);
+	}
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	file.downgradeMapToFrozen();
+	file.resetTimestampIndex();
+	// Cut the map exactly on a frame boundary, two frames past the break.
+	EXPECT_EQ(file.findPositionByTimestamp(20.0, offsets[2], /*isCurrent=*/true), breakOffset);
+	EXPECT_EQ(file.findPositionByTimestamp(20.0, img.size(), /*isCurrent=*/true), offsets[0]);
 }
 
 TEST(TransactionLogTimestampIndex, TornTailLeavesEarlierEntriesSeekable) {
