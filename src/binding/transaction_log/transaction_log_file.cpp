@@ -768,6 +768,9 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 				stoppedAtUnindexedTail = true;
 				break;
 			}
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+			++this->resyncSearchCountForTests;
+#endif
 			uint32_t resume = findFramingResumeOffset(mappedFile, searchable, this->lastIndexedPosition + 1);
 			if (resume != 0) {
 				this->lastIndexedPosition = resume;

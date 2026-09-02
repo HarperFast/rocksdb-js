@@ -547,6 +547,13 @@ struct TransactionLogFile final {
 	 * can be exercised on POSIX. INT64_MIN disables the override. Test-only.
 	 */
 	static std::atomic<int64_t> forcedBytesLandedForTests;
+
+	/**
+	 * Counts the byte-wise resync searches the index walk has run, so a test can prove the
+	 * failed-extent memo (resyncSearchedExtent) elides a repeat search rather than only
+	 * returning the same position. Guarded by indexMutex like the memo itself. Test-only.
+	 */
+	uint32_t resyncSearchCountForTests = 0;
 #endif
 
 private:
