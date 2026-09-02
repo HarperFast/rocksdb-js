@@ -467,6 +467,7 @@ void DBRegistry::OpenDB(
 			handle->descriptor->path + "\""
 		);
 	}
+	handle->path = path;
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Opening database \"%s\" (mode=%s read-only=%s column family=\"%s\")\n", instance.get(), path.c_str(), options.mode == DBMode::Optimistic ? "optimistic" : "pessimistic", options.readOnly ? "true" : "false", options.name.empty() ? "default" : options.name.c_str());
 
@@ -703,7 +704,6 @@ void DBRegistry::OpenDB(
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	std::string openedPath(path);
 	const uint64_t verificationTableDbId = entry.descriptor->vtEpoch;
 	const uint32_t verificationTableColumnFamilyId = columnDescriptor->column->GetID();
 
@@ -716,7 +716,6 @@ void DBRegistry::OpenDB(
 
 	previousColumnDescriptor = std::move(handle->columnDescriptor);
 	previousDescriptor = std::move(handle->descriptor);
-	handle->path = std::move(openedPath);
 	handle->columnDescriptor = std::move(columnDescriptor);
 	handle->descriptor = entry.descriptor;
 	handle->verificationTableDbId = verificationTableDbId;

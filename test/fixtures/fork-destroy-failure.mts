@@ -31,15 +31,16 @@ if (closeFailure) {
 		throw new Error(`Unexpected database:closeFailed arguments: ${JSON.stringify(args)}`);
 	}
 	const startedAt = Date.now();
+	const recovery = new RocksDatabase(path);
 	try {
-		RocksDatabase.open(path);
+		recovery.open();
 		throw new Error('Expected the failed descriptor to remain quarantined');
 	} catch (error) {
 		if (!String(error).includes(`previous close failed: ${expectedError}`)) throw error;
 	}
 	if (Date.now() - startedAt >= 1_000)
 		throw new Error('Opening a quarantined descriptor waited instead of failing immediately');
-	db.destroy();
+	recovery.destroy();
 	process.exit(0);
 }
 

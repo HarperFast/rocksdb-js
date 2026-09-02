@@ -807,8 +807,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
 
 21. **Handle adoption and descriptor attachment are one registry-locked publication**:
     `DBRegistry::OpenDB()` selects the descriptor and column family, clears stale close cancellation,
-    publishes every per-open handle field, and inserts the handle into `DBDescriptor::closables`
-    before releasing `databasesMutex`. A forced `destroy()`/`shutdown()` claims under the same mutex,
+    publishes every descriptor-backed handle field, and inserts the handle into
+    `DBDescriptor::closables` before releasing `databasesMutex`. The owner-thread-only `path` is set
+    before registry work so that a failed open can still follow a quarantine error's `destroy()`
+    recovery, but teardown never reads that field from `closables`. A forced
+    `destroy()`/`shutdown()` claims under the same mutex,
     so it either precedes the open or sees the fully adopted handle in the closables sweep. Returning
     `DBHandleParams` and attaching in `Database::Open()` left a gap where teardown could reset
     `descriptor->db` while the invisible handle retained a `ColumnFamilyHandle`; destroying that
