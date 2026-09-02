@@ -460,6 +460,16 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     EOF — otherwise a run shorter than `RESYNC_MIN_FRAMES` in front of the padding classifies as a
     torn tail and recovery truncates its committed entries.
 
+    A resync that finds nothing is only conclusive over the bytes it could actually read. The index
+    walk searches the mapped region (`min(size, mapSize)`), which is short of the written extent
+    whenever one batch exceeded `transactionLogMaxSize` or the limit was lowered, so an empty result
+    there means "not in this map", not "not in this file". It must then stay at the break and report
+    an unindexed tail — the same treatment the walk already gives a header the map does not cover —
+    and only park `lastIndexedPosition` at the written extent when the whole extent was searchable
+    and the break is therefore a torn tail. Skipping to the extent is permanent: a later, larger map
+    resumes from `lastIndexedPosition` and never looks below it, so those entries stay unindexed and
+    every seek into them reports "past this file".
+
 12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
     commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —
     `completeCommitWork` (`src/binding/transaction/transaction.cpp`) registers a wake callback on the

@@ -761,7 +761,23 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			// where framing does, or at the written extent so later appends are still indexed.
 			uint32_t searchable = std::min(writtenExtent, static_cast<uint32_t>(memoryMap->mapSize));
 			uint32_t resume = findFramingResumeOffset(mappedFile, searchable, this->lastIndexedPosition + 1);
-			this->lastIndexedPosition = resume != 0 ? resume : writtenExtent;
+			if (resume != 0) {
+				this->lastIndexedPosition = resume;
+				continue;
+			}
+			if (searchable < writtenExtent) {
+				// The map stops short of the written extent, so "nothing resumes" only rules out
+				// the bytes we could read. Parking at the written extent would strand the rest
+				// permanently — a later, larger map resumes from lastIndexedPosition and would
+				// never look below it, so entries there stay unindexed and seeks past them report
+				// past-file. Stop at the break instead (the same treatment the header bound-check
+				// above gives a tail the map doesn't cover) and re-search once the map grows.
+				stoppedAtUnindexedTail = true;
+				break;
+			}
+			// The whole written extent was searchable and nothing resumes: a torn tail. Park at
+			// the written extent so later appends are still indexed; the torn bytes never are.
+			this->lastIndexedPosition = writtenExtent;
 			continue;
 		}
 		// check that the timestamp is greater than any previously indexed timestamp,

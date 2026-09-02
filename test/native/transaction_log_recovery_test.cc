@@ -741,6 +741,33 @@ TEST(TransactionLogTimestampIndex, SeeksPastMultipleBreaks) {
 	EXPECT_EQ(file.findPositionByTimestamp(52.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
 }
 
+// A map shorter than the written extent (one batch larger than maxFileSize, or a
+// lowered maxFileSize) can cover the break without covering the run behind it.
+// "Nothing resumes" then rules out only the bytes that were searchable, so the
+// walk must stay at the break: parking at the written extent would leave those
+// entries permanently unindexed, since a later, larger map resumes from
+// lastIndexedPosition and never looks below it.
+TEST(TransactionLogTimestampIndex, ShortMapDoesNotSkipTheUnsearchedPostBreakTail) {
+	LogImage img;
+	img.entry(16, /*flags=*/1, /*timestamp=*/10.0);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, /*flags=*/1, /*timestamp=*/11.0);
+	std::vector<uint32_t> offsets;
+	for (int i = 0; i < 12; ++i) {
+		offsets.push_back(img.size());
+		img.entry(16, /*flags=*/1, /*timestamp=*/20.0 + i);
+	}
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	// Cut the map mid-entry, too few frames past the break to qualify as a resume.
+	uint32_t shortMap = offsets[2] + 5;
+	EXPECT_EQ(file.findPositionByTimestamp(20.0, shortMap, /*isCurrent=*/true), breakOffset);
+	// Once the map reaches the written extent the run is found, indexed and seekable.
+	EXPECT_EQ(file.findPositionByTimestamp(20.0, img.size(), /*isCurrent=*/true), offsets[0]);
+	EXPECT_EQ(file.findPositionByTimestamp(31.0, img.size(), /*isCurrent=*/true), offsets[11]);
+	EXPECT_EQ(file.findPositionByTimestamp(32.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
+}
+
 TEST(TransactionLogTimestampIndex, TornTailLeavesEarlierEntriesSeekable) {
 	LogImage img;
 	img.entry(16, /*flags=*/1, /*timestamp=*/10.0);
