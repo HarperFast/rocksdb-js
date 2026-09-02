@@ -66,6 +66,13 @@ inline std::atomic<int>& compactCancelDelayMsFlag() {
 	return delayMs;
 }
 
+// Delays DBHandle::open() after the registry has returned. A handle must
+// already be adopted and attached while this delay is observable.
+inline std::atomic<int>& openAttachDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -81,6 +88,8 @@ inline void initializeTestSeams() {
 			testDelayMs("ROCKSDB_JS_COUNT_DELAY_MS"), std::memory_order_relaxed);
 		compactCancelDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed);
+		openAttachDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_OPEN_ATTACH_DELAY_MS"), std::memory_order_relaxed);
 	});
 }
 

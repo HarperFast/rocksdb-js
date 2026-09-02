@@ -439,25 +439,41 @@ void DBRegistry::Init(napi_env env, napi_value exports) {
 
 /**
  * Open a RocksDB database with column family, caches it in the registry, and
- * return a handle to it.
+ * attach the provided handle to it.
  *
+ * @param handle - The handle that will own the selected database and column family.
  * @param path - The filesystem path to the database.
  * @param options - The options for the database.
- * @return A handle to the RocksDB database including the transaction db and
- * column family handle.
  */
-std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, const DBOptions& options) {
+void DBRegistry::OpenDB(
+	const std::shared_ptr<DBHandle>& handle,
+	const std::string& path,
+	const DBOptions& options
+) {
 	// ensure the registry has already been initialized
 	if (!instance) {
 		DEBUG_LOG("DBRegistry::OpenDB Registry not initialized!\n");
 		throw rocksdb_js::DBException("DBRegistry not initialized!");
+	}
+	if (!handle) {
+		throw rocksdb_js::DBException("Cannot open a database with an invalid handle");
+	}
+	if (handle->descriptor &&
+		(!handle->descriptor->isClosing() || handle->descriptor->path != path ||
+			handle->descriptor->readOnly != options.readOnly)
+	) {
+		throw rocksdb_js::DBException(
+			"Cannot open database \"" + path + "\": handle is still attached to database \"" +
+			handle->descriptor->path + "\""
+		);
 	}
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Opening database \"%s\" (mode=%s read-only=%s column family=\"%s\")\n", instance.get(), path.c_str(), options.mode == DBMode::Optimistic ? "optimistic" : "pessimistic", options.readOnly ? "true" : "false", options.name.empty() ? "default" : options.name.c_str());
 
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
-	std::shared_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<DBDescriptor> previousDescriptor;
+	std::shared_ptr<ColumnFamilyDescriptor> previousColumnDescriptor;
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 	const auto deadline = std::chrono::steady_clock::now() +
 		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
@@ -687,9 +703,29 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	std::unique_ptr<DBHandleParams> handle = std::make_unique<DBHandleParams>(entry.descriptor, columnDescriptor);
-	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandleParams %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), entry.descriptor.use_count());
-	return handle;
+	std::string openedPath(path);
+	const uint64_t verificationTableDbId = entry.descriptor->vtEpoch;
+	const uint32_t verificationTableColumnFamilyId = columnDescriptor->column->GetID();
+
+	// The registry lock is the lifecycle linearization point: reset is ordered
+	// after every wait above, and teardown cannot claim this descriptor between
+	// publishing the handle's native state and making it visible in closables.
+	handle->resetCancelled();
+	handle->compactCancelRequested.store(false);
+	entry.descriptor->attach(handle);
+
+	previousColumnDescriptor = std::move(handle->columnDescriptor);
+	previousDescriptor = std::move(handle->descriptor);
+	handle->path = std::move(openedPath);
+	handle->columnDescriptor = std::move(columnDescriptor);
+	handle->descriptor = entry.descriptor;
+	handle->verificationTableDbId = verificationTableDbId;
+	handle->verificationTableColumnFamilyId = verificationTableColumnFamilyId;
+	handle->disableWAL = options.disableWAL;
+	handle->enableVerificationTable = options.verificationTable;
+
+	DEBUG_LOG("%p DBRegistry::OpenDB Attached DBHandle %p for \"%s\" (ref count = %ld)\n",
+		instance.get(), handle.get(), path.c_str(), entry.descriptor.use_count());
 }
 
 /**

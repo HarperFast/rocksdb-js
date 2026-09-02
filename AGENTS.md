@@ -221,6 +221,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   rising edge emits); malformed/negative falls back to the default
 - `ROCKSDB_JS_DESTROY_DELAY_MS` - Test-only: delay after descriptor teardown and
   before physical database destruction (widens same-path reopen races)
+- `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` - Test-only: delay after `DBRegistry::OpenDB()` has atomically
+  adopted and attached a handle, but before the native open returns to JavaScript (proves a forced
+  destroy cannot claim the descriptor during the former return/adopt/attach gap). Snapshotted in
+  `initializeTestSeams()` so every open avoids a `getenv()` call
 - `ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS` / `ROCKSDB_JS_COUNT_DELAY_MS` - Test-only: per-row delays in
   `DBIterator::Next()` and `DBIteratorHandle::countRemaining()`. Both are read **once** in
   `initializeTestSeams()` rather than per row: these are the two per-row native loops, and a
@@ -785,18 +789,33 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
     which is why its fixtures now tear down with `destroy()` rather than `close()`).
 
-20. **A reopened handle clears its cancellation only after it has adopted the new descriptor**:
+20. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
+    lifecycle waits**:
     `DBHandle::close()` publishes `cancelled` (and, per invariant 6, the per-handle compaction
     token), and every async admission refuses while either stands — so `DBHandle::open()` has to
-    clear them for a documented close/reopen cycle to work. It must do so **after**
-    `DBRegistry::OpenDB()` returns, not before the call. `OpenDB()` blocks while a foreign
+    clear them for a documented close/reopen cycle to work. `OpenDB()` blocks while a foreign
     `destroy()`/`shutdown()` owns the old path, and that teardown's closables sweep force-closes
-    this still-attached handle mid-wait, re-arming both flags. Clearing first therefore leaves the
-    re-arm standing over the _newly_ opened descriptor: `opened()` reports true and the sync
-    methods keep working, while every `get`/`flush`/`compact`/`clear`/`commit` on that instance
-    rejects with "Database is closing" for the rest of its life. The general shape — publish-then-
-    clear across a blocking call another thread can publish into — is the same one invariant 6's
-    cancel token and invariant 17's admission mutex exist to keep out of the teardown paths.
+    this still-attached handle mid-wait, re-arming both flags. Clearing before those waits therefore
+    leaves the re-arm standing over the _newly_ opened descriptor. The reset now runs after every
+    wait and while `databasesMutex` still excludes a new closer, immediately before the handle is
+    attached to the selected descriptor. Because the reset takes the handle's async-work
+    `waitMutex` and attachment takes the descriptor's `txnsMutex`, the established order is
+    `databasesMutex` → `waitMutex` → `txnsMutex`; code holding `waitMutex` must release it before
+    calling back into the registry. Async-state destructors that retry `PurgeIfUnreferenced()`
+    release their descriptor before the base destructor unregisters async work, preserving that
+    order.
+
+21. **Handle adoption and descriptor attachment are one registry-locked publication**:
+    `DBRegistry::OpenDB()` selects the descriptor and column family, clears stale close cancellation,
+    publishes every per-open handle field, and inserts the handle into `DBDescriptor::closables`
+    before releasing `databasesMutex`. A forced `destroy()`/`shutdown()` claims under the same mutex,
+    so it either precedes the open or sees the fully adopted handle in the closables sweep. Returning
+    `DBHandleParams` and attaching in `Database::Open()` left a gap where teardown could reset
+    `descriptor->db` while the invisible handle retained a `ColumnFamilyHandle`; destroying that
+    column handle after its DB is a native use-after-free. No handle shared-pointer field may be read
+    after the registry lock drops, because a foreign sweep may immediately reset it. Covered by
+    `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` widens the point
+    after atomic publication so the fixture can assert the exact closables count before destroy.
 
 ## Debugging native heap corruption
 

@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const destroyOpenFixture = join(__dirname, 'fixtures', 'fork-destroy-open.mts');
+const openAttachDestroyFixture = join(__dirname, 'fixtures', 'fork-open-attach-destroy.mts');
 const destroyFailureFixture = join(__dirname, 'fixtures', 'fork-destroy-failure.mts');
 const closeFailureFixture = join(__dirname, 'fixtures', 'fork-close-failure.mts');
 const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure.mts');
@@ -210,6 +211,12 @@ describe('Destroy', () => {
 	it('waits for physical destruction before reopening the same path', async () => {
 		await runDestroyFixture(destroyOpenFixture, generateDBPath(), {
 			ROCKSDB_JS_DESTROY_DELAY_MS: '2000',
+		});
+	}, 15_000);
+
+	it('attaches a racing open before destroy can claim its descriptor', async () => {
+		await runDestroyFixture(openAttachDestroyFixture, generateDBPath(), {
+			ROCKSDB_JS_OPEN_ATTACH_DELAY_MS: '2000',
 		});
 	}, 15_000);
 

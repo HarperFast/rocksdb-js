@@ -57,14 +57,6 @@ struct CloseResult final {
 };
 
 
-struct DBHandleParams final {
-	std::shared_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor;
-
-	DBHandleParams(std::shared_ptr<DBDescriptor> descriptor, std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor)
-		: descriptor(std::move(descriptor)), columnDescriptor(std::move(columnDescriptor)) {}
-};
-
 /**
  * Tracks all RocksDB databases instances using a RocksDBDescriptor that
  * contains a weak reference to the database and column families.
@@ -106,7 +98,11 @@ public:
 #endif
 	static void DestroyDB(const std::string& path);
 	static void Init(napi_env env, napi_value exports);
-	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
+	static void OpenDB(
+		const std::shared_ptr<DBHandle>& handle,
+		const std::string& path,
+		const DBOptions& options
+	);
 	static void PurgeAll();
 	static CloseResult PurgeIfUnreferenced(const std::string& path, bool readOnly);
 	static napi_value RegistryStatus(napi_env env, napi_callback_info info);

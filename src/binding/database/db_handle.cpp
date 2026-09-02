@@ -4,6 +4,7 @@
 #include "database/db_registry.h"
 #include "database/db_settings.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "core/test_seam.h"
 #include "core/verification_table.h"
 
 namespace rocksdb_js {
@@ -354,32 +355,12 @@ void DBHandle::collectTransactionLogSummary(TransactionLogStoreStats& total, uin
  * @param options - The options for the database.
  */
 void DBHandle::open(const std::string& path, const DBOptions& options) {
-	this->path = path;
+	DBRegistry::OpenDB(this->shared_from_this(), path, options);
 
-	auto handleParams = DBRegistry::OpenDB(path, options);
-	this->columnDescriptor = std::move(handleParams->columnDescriptor);
-	this->descriptor = std::move(handleParams->descriptor);
-	this->verificationTableDbId = this->descriptor->vtEpoch;
-	this->verificationTableColumnFamilyId = this->columnDescriptor->column->GetID();
-	this->disableWAL = options.disableWAL;
-	this->enableVerificationTable = options.verificationTable;
-
-	// Clear the cancellation this handle may carry from a previous close, but
-	// only now that the new descriptor is adopted. OpenDB() blocks while a
-	// foreign destroy owns the old path, and that destroy's closables sweep
-	// closes this still-attached handle -- which re-arms cancellation. Resetting
-	// before the open would leave that re-arm standing over the newly opened
-	// descriptor, and since async admission refuses on it, every later get,
-	// flush, compact and commit through this handle would reject as
-	// "Database is closing" while the sync methods kept working.
-	this->resetCancelled();
-	this->compactCancelRequested.store(false);
-
-	// Note: We cannot attach this handle to the descriptor because we don't
-	// have the smart pointer to the dbHandle instance, so the caller needs to
-	// do it.
-
-	// at this point, the DBDescriptor has at least 2 refs: the registry and this handle
+	const int openAttachDelayMs = openAttachDelayMsFlag().load(std::memory_order_relaxed);
+	if (openAttachDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(openAttachDelayMs));
+	}
 }
 
 /**
