@@ -226,6 +226,16 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `initializeTestSeams()` rather than per row: these are the two per-row native loops, and a
   `getenv()` scan per row is a measurable share of their cost for a seam unset in production. Add
   new per-row seams the same way.
+- `ROCKSDB_JS_COMPACT_DELAY_MS` - Test-only: upper bound (ms) that a **cancellable** manual
+  `compactRange()` parks before handing the range to RocksDB, returning as soon as the
+  descriptor's cancel token is armed. Lets a fixture hold a compaction across a foreign close
+  claim without depending on how long a real compaction runs; snapshotted in
+  `initializeTestSeams()` like the per-row seams above, so the production path costs one relaxed
+  load per manual compaction. Used by `test/fixtures/fork-compact-cancel-{sync,async}.mts`
+- `ROCKSDB_JS_CLOSE_FLUSH_FAILURE` - Test-only: number of close-time flushes to fail with an
+  injected `IOError` (a **count**, not a flag; `1` is one failure). More than one is what leaves a
+  descriptor still quarantined at process exit, since the exit-time `DBRegistry::Shutdown()`
+  consumes a failure of its own on the retry — see invariant 19
 
 ## Test Structure
 
@@ -358,7 +368,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    count scan (`DBIteratorHandle::countRemaining`, behind `getKeysCount()` on both the database and
    transaction paths) polls `isClosing()` per row and reports the abort to its caller rather than a
    partial count; a manual `compactRange()` cannot poll from inside RocksDB, so it gets an explicit
-   cancel token (`DBDescriptor::compactCancelRequested` → `CompactRangeOptions::canceled`).
+   cancel token (`DBDescriptor::compactCancelRequested` → `CompactRangeOptions::canceled`). That
+   token is armed in exactly one place — `beginClose()`, in the same transition that publishes
+   `closing` — and is never cleared and never aliased onto `closing` itself: RocksDB writes through
+   the pointer it is given (`DisableManualCompaction()` sets the caller's atomic), and `closing`
+   means the registry has an owner committed to running `finishClose()`, which RocksDB must not be
+   able to publish. The full contract, and what each of
+   `test/fixtures/fork-compact-cancel-{sync,async}.mts` does and does not pin down, is on the
+   member declaration.
    Everything the four registry teardown paths do _after_ claiming a descriptor —
    `finishClose()`, erase-or-quarantine, notify, emit `database:closeFailed` — is one helper,
    `closeClaimedDescriptors` in `db_registry.cpp`; only the claim predicate differs per caller. Its
@@ -708,6 +725,24 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     leaker repro still faults in Node's second-pass napi finalizer drain even with the fix; it
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
+
+19. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
+    namespace-scope `static`, so anything still in `instance->databases` when the hook returns is
+    destroyed from an `atexit` handler. Closing a RocksDB database there runs
+    `DBImpl::CancelAllBackgroundWork()` → `PeriodicTaskScheduler::Unregister()` **after** RocksDB's
+    own function-local statics have been destroyed, and RocksDB's `PthreadCall` wrapper reacts to
+    the resulting `EINVAL` by printing `pthread lock: Invalid argument` and calling `std::abort()` —
+    a process that ran every test successfully then dies with SIGABRT (or, on the injected-flush
+    path, hangs forever in `WaitForFlushMemTables` with no background thread left to service it).
+    `DBRegistry::Shutdown()` normally empties the map, but a descriptor whose close-time flush
+    failed is deliberately **quarantined** (invariant 6) so `shutdown()`/`destroy()` can retry —
+    and at process exit there is no later retry. `DBRegistry::Teardown()`, called from the hook
+    right after `Shutdown()`, releases whatever is left while RocksDB is still usable. The general
+    trap: anything the registry retains for a caller to retry needs a defined terminal owner,
+    because "the static destructor" is not one. Covered by
+    `test/fixtures/fork-quarantined-exit.mts`; the same shape reproduces from JS by leaving a
+    database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
+    which is why its fixtures now tear down with `destroy()` rather than `close()`).
 
 ## Debugging native heap corruption
 

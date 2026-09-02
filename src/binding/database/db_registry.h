@@ -115,6 +115,22 @@ public:
 	static void ReleaseCommitCompletionsByEnv(napi_env env);
 	static void ReleaseParkTimeoutsByEnv(napi_env env);
 	static void Shutdown();
+	/**
+	 * Releases every remaining registry entry. Called from the module env
+	 * cleanup hook after `Shutdown()`, i.e. while the process is still running
+	 * normally. Nothing may keep a `rocksdb::DB` alive past that point: the
+	 * registry singleton is a namespace-scope static, so anything still in the
+	 * map is destroyed from an `atexit` handler, and closing a RocksDB database
+	 * there runs `DBImpl::CancelAllBackgroundWork()` after RocksDB's own
+	 * function-local statics (the `PeriodicTaskScheduler` timer and its
+	 * `port::Mutex`) have already been destroyed -- which aborts the process in
+	 * `port::Mutex::Lock()` with `pthread lock: Invalid argument`.
+	 *
+	 * `Shutdown()` normally empties the map on its own; a descriptor whose
+	 * close-time flush failed is deliberately quarantined instead, and at
+	 * process exit there is no later `shutdown()`/`destroy()` to retry it.
+	 */
+	static void Teardown();
 	static size_t Size();
 };
 

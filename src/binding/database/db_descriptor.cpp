@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <memory>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 
 namespace rocksdb_js {
@@ -2262,6 +2263,21 @@ rocksdb::Status DBDescriptor::compactRange(
 	// wait out its full, unbounded duration; see compactCancelRequested.
 	if (cancellable) {
 		options.canceled = &this->compactCancelRequested;
+		// Test seam (inert unless ROCKSDB_JS_COMPACT_DELAY_MS is set): park here,
+		// still inside the caller's OperationGuard / async-work registration,
+		// until a foreign close arms the token. That makes the ordering
+		// observable from JS without depending on how long a real compaction
+		// happens to run. Bounded so a fixture that never closes still finishes.
+		const int cancelWaitMs = compactCancelDelayMsFlag().load(std::memory_order_relaxed);
+		if (cancelWaitMs > 0) {
+			const auto deadline =
+				std::chrono::steady_clock::now() + std::chrono::milliseconds(cancelWaitMs);
+			while (!this->compactCancelRequested.load() &&
+				std::chrono::steady_clock::now() < deadline
+			) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		}
 	}
 	if (bottommost) {
 		// RocksDB defaults this to kIfHaveCompactionFilter, so with no compaction filter installed

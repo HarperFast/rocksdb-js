@@ -309,11 +309,17 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	}
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
-	const auto deadline = std::chrono::steady_clock::now() +
+	// `lifecycleWaitSeconds` bounds each wait separately rather than the whole
+	// operation. Sharing one deadline across acquiring the path gate and the
+	// later waits for a foreign closer lets a slow acquisition spend the entire
+	// budget, so destroy() could claim the path and then immediately report a
+	// timeout with the database still on disk.
+	const auto waitBudget =
 		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
 	{
 		std::unique_lock<std::mutex> lock(instance->databasesMutex);
-		if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
+		const auto gateDeadline = std::chrono::steady_clock::now() + waitBudget;
+		if (!instance->lifecycleCondition.wait_until(lock, gateDeadline, [&]() {
 			return !instance->shutdownInProgress &&
 				instance->destroyingPaths.find(path) == instance->destroyingPaths.end();
 		})) {
@@ -367,7 +373,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 		for (const auto& closing : alreadyClosing) {
 			std::unique_lock<std::mutex> lock(instance->databasesMutex);
-			if (!closing.condition->wait_until(lock, deadline, [&]() {
+			const auto drainDeadline = std::chrono::steady_clock::now() + waitBudget;
+			if (!closing.condition->wait_until(lock, drainDeadline, [&]() {
 				auto entry = instance->databases.find(closing.key);
 				return entry == instance->databases.end() ||
 					entry->second.descriptor != closing.descriptor ||
@@ -991,10 +998,11 @@ void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
  */
 void DBRegistry::Shutdown() {
 	if (instance) {
-		const auto deadline = std::chrono::steady_clock::now() +
+		// One budget per wait, not one for the whole shutdown; see DestroyDB.
+		const auto waitBudget =
 			std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
 		std::unique_lock<std::timed_mutex> shutdownLock(instance->shutdownMutex, std::defer_lock);
-		if (!shutdownLock.try_lock_until(deadline)) {
+		if (!shutdownLock.try_lock_until(std::chrono::steady_clock::now() + waitBudget)) {
 			throw rocksdb_js::DBException("Timed out waiting for another database shutdown to finish");
 		}
 		{
@@ -1049,7 +1057,8 @@ void DBRegistry::Shutdown() {
 
 			for (const auto& closing : descriptorsToWaitFor) {
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
-				if (!closing.condition->wait_until(lock, deadline, [&]() {
+				const auto drainDeadline = std::chrono::steady_clock::now() + waitBudget;
+				if (!closing.condition->wait_until(lock, drainDeadline, [&]() {
 					auto entry = instance->databases.find(closing.key);
 					return entry == instance->databases.end() ||
 						entry->second.descriptor != closing.descriptor ||
@@ -1061,7 +1070,8 @@ void DBRegistry::Shutdown() {
 
 			if (destroysInFlight) {
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
-				if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
+				const auto destroyDeadline = std::chrono::steady_clock::now() + waitBudget;
+				if (!instance->lifecycleCondition.wait_until(lock, destroyDeadline, [&]() {
 					return instance->destroyingPaths.empty();
 				})) {
 					throw rocksdb_js::DBException("Timed out waiting for database destruction to finish during shutdown");
@@ -1078,6 +1088,29 @@ void DBRegistry::Shutdown() {
 
 		DEBUG_LOG("%p DBRegistry::Shutdown Shutdown complete\n", instance.get());
 	}
+}
+
+/**
+ * Release every remaining registry entry (see the header for why this cannot be
+ * left to the singleton's static destructor).
+ */
+void DBRegistry::Teardown() {
+	if (!instance) {
+		return;
+	}
+
+	std::unordered_map<DBKey, DBRegistryEntry, DBKeyHash> entries;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		entries.swap(instance->databases);
+	}
+
+	// Destroy outside the lock: ~DBDescriptor closes the RocksDB database and
+	// joins its worker threads. A descriptor already claimed by a failed close
+	// short-circuits its own close() and is simply released here.
+	DEBUG_LOG("%p DBRegistry::Teardown Releasing %zu remaining descriptor(s)\n",
+		instance.get(), entries.size());
+	entries.clear();
 }
 
 /**

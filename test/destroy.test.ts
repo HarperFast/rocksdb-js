@@ -15,6 +15,9 @@ const flushFailureFixture = join(__dirname, 'fixtures', 'fork-flush-failure.mts'
 const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
 const iteratorNextRaceFixture = join(__dirname, 'fixtures', 'fork-iterator-next-race.mts');
 const countDestroyRaceFixture = join(__dirname, 'fixtures', 'fork-count-destroy-race.mts');
+const compactCancelSyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-sync.mts');
+const compactCancelAsyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-async.mts');
+const quarantinedExitFixture = join(__dirname, 'fixtures', 'fork-quarantined-exit.mts');
 const nodeExecutable =
 	process.env.NODE_BINARY ??
 	(process.versions.bun || process.versions.deno
@@ -267,6 +270,24 @@ describe('Destroy', () => {
 		await runDestroyFixture(shutdownRetryFixture, generateDBPath(), {
 			ROCKSDB_JS_CLOSE_FAILURE: '1',
 			ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '1000',
+		});
+	}, 15_000);
+
+	it('cancels an in-flight synchronous compaction when destroy claims the descriptor', async () => {
+		await runDestroyFixture(compactCancelSyncFixture, generateDBPath(), {
+			ROCKSDB_JS_COMPACT_DELAY_MS: '10000',
+		});
+	}, 20_000);
+
+	it('cancels an in-flight asynchronous compaction when destroy claims the descriptor', async () => {
+		await runDestroyFixture(compactCancelAsyncFixture, generateDBPath(), {
+			ROCKSDB_JS_COMPACT_DELAY_MS: '10000',
+		});
+	}, 20_000);
+
+	it('exits cleanly with a descriptor still quarantined at process exit', async () => {
+		await runDestroyFixture(quarantinedExitFixture, generateDBPath(), {
+			ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2',
 		});
 	}, 15_000);
 });

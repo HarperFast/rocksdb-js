@@ -240,6 +240,14 @@ NAPI_MODULE_INIT() {
 				}
 			};
 			cleanup("database registry", []() { rocksdb_js::DBRegistry::Shutdown(); });
+			// Shutdown() leaves a descriptor whose close-time flush failed
+			// quarantined in the registry so shutdown()/destroy() can retry it.
+			// The process is exiting, so there is no later retry -- and a
+			// descriptor that survives to the registry singleton's static
+			// destructor closes its rocksdb::DB from an atexit handler, after
+			// RocksDB's own statics are gone, which aborts. Release whatever is
+			// left here, while that is still safe.
+			cleanup("database registry teardown", []() { rocksdb_js::DBRegistry::Teardown(); });
 			cleanup("transaction logs", []() { rocksdb_js::TransactionLogStoreRegistry::Shutdown(); });
 			cleanup("global events", []() { rocksdb_js::GlobalEvents::Shutdown(); });
 			DEBUG_LOG("Binding::Init env cleanup done\n");

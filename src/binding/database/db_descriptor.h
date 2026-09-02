@@ -294,13 +294,37 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	bool transactionLogsUnregistered = false;
 
 	/**
-	 * Armed when close is claimed so an in-progress manual
-	 * compactRange() on another thread aborts before DBHandle::close() waits for
-	 * its async work to drain. It covers both shapes: compactSync() holds an
-	 * OperationGuard and so blocks the drain, while an async compact() released
-	 * its guard at setup handoff and is not awaited until the closables sweep.
-	 * Close-initiated compaction passes `cancellable = false` rather than
-	 * clearing this, since nothing external is waiting on it.
+	 * Cancellation token handed to `rocksdb::CompactRangeOptions::canceled` by
+	 * every cancellable `compactRange()`. Contract, in three parts:
+	 *
+	 *  1. It is armed in exactly one place -- `beginClose()`, under the same
+	 *     transition that publishes `closing` -- so a close claim and manual
+	 *     compaction cancellation are one step. Arming it any later reopens the
+	 *     window this exists to close: `finishClose()` drains
+	 *     `operationsInFlight` with an untimed wait and its closables sweep
+	 *     drains each handle's async work, and a manual compaction blocks both
+	 *     (compactSync() holds an OperationGuard for its whole duration; an
+	 *     async compact() released its guard at setup handoff and is awaited by
+	 *     `DBHandle::close()` during the sweep). `DestroyDB`/`Shutdown` also
+	 *     claim every entry for a path under one lock and then close them
+	 *     sequentially, so arming at claim time cancels compactions on
+	 *     descriptors whose own `finishClose()` has not started yet.
+	 *  2. It is never cleared. Close-initiated compaction opts out with
+	 *     `cancellable = false` instead, since nothing external is waiting on
+	 *     it, and a descriptor never leaves the closing state.
+	 *  3. It is private to this descriptor and never aliased onto `closing`.
+	 *     RocksDB writes through this pointer -- `DisableManualCompaction()`
+	 *     sets the caller's atomic -- and `closing == true` means the registry
+	 *     has an owner committed to running `finishClose()`. Letting RocksDB
+	 *     publish that state would leave a half-closed descriptor with no
+	 *     closer, wedging every later open of the path.
+	 *
+	 * Covered by `test/fixtures/fork-compact-cancel-{sync,async}.mts`: both fail
+	 * if the token stops reaching RocksDB, and the sync one additionally fails if
+	 * arming moves past the in-flight drain. Neither separates arming here from
+	 * arming at the top of `finishClose()` -- for a single descriptor those are
+	 * equivalent, and the batch-claim case in (1) is what makes this the right
+	 * home.
 	 */
 	std::atomic<bool> compactCancelRequested{false};
 
@@ -490,6 +514,8 @@ public:
 		if (this->closing.exchange(true)) {
 			return false;
 		}
+		// The only site that arms compaction cancellation; see the
+		// compactCancelRequested contract above before moving it.
 		this->compactCancelRequested.store(true);
 		return true;
 	}
