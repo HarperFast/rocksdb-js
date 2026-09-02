@@ -632,10 +632,10 @@ TEST(TransactionLogMaxTimestamp, SkipsNonFiniteKeys) {
 }
 
 TEST(TransactionLogMaxTimestamp, ReportsAFarFutureKeySeparately) {
-	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
+	const double farKey = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
 	LogImage img;
-	img.entry(10, 1, 5.0).entry(10, 1, far).entry(10, 1, 6.0);
+	img.entry(10, 1, 5.0).entry(10, 1, farKey).entry(10, 1, 6.0);
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
 	EXPECT_EQ(scan.maxTimestamp, 6.0);
-	EXPECT_EQ(scan.maxImplausibleTimestamp, far);
+	EXPECT_EQ(scan.maxImplausibleTimestamp, farKey);
 }

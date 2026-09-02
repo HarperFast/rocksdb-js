@@ -144,8 +144,8 @@ TEST(TransactionLogClockFloor, AFarKeyIsNeitherSeededNorAllowedToMaskTheRealMaxi
 	auto storePath = uniqueStorePath();
 	std::filesystem::create_directories(storePath);
 	const double high = futureKey();
-	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
-	writeSegment(storePath / "1.txnlog", 1, 0.0, { high - 1.0, far, high });
+	const double farKey = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high - 1.0, farKey, high });
 
 	auto store = loadStore(storePath);
 	ASSERT_NE(store, nullptr);
@@ -164,9 +164,9 @@ TEST(TransactionLogClockFloor, TheWritePathAppliesTheFloorsOwnRule) {
 	const double key = rocksdb_js::getMonotonicTimestamp();
 	EXPECT_TRUE(store->raiseLatestTimestamp(key));
 	EXPECT_EQ(store->latestTimestamp, key);
-	const double far = rocksdb_js::getWallClockTimestamp() + rocksdb_js::MAX_CLOCK_FLOOR_SKEW_MS * 2;
-	EXPECT_FALSE(store->raiseLatestTimestamp(far));
-	EXPECT_FALSE(rocksdb_js::raiseMonotonicTimestampFloor(far));
+	const double farKey = rocksdb_js::getWallClockTimestamp() + rocksdb_js::MAX_CLOCK_FLOOR_SKEW_MS * 2;
+	EXPECT_FALSE(store->raiseLatestTimestamp(farKey));
+	EXPECT_FALSE(rocksdb_js::raiseMonotonicTimestampFloor(farKey));
 	EXPECT_EQ(store->latestTimestamp, key);
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());
@@ -176,12 +176,12 @@ TEST(TransactionLogClockFloor, AFarHeaderWalksEveryOlderSegment) {
 	auto storePath = uniqueStorePath();
 	std::filesystem::create_directories(storePath);
 	const double high = futureKey();
-	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
+	const double farKey = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
 	// Segment 2's header is plausible but was stamped by the same writer as the
 	// far one, so it is not trusted to summarize segment 1.
 	writeSegment(storePath / "1.txnlog", 1, 0.0, { high });
 	writeSegment(storePath / "2.txnlog", 2, high - 2.0, { high - 1.0 });
-	writeSegment(storePath / "3.txnlog", 3, far, { high - 3.0 });
+	writeSegment(storePath / "3.txnlog", 3, farKey, { high - 3.0 });
 
 	auto store = loadStore(storePath);
 	ASSERT_NE(store, nullptr);
@@ -195,11 +195,11 @@ TEST(TransactionLogClockFloor, APlausibleHeaderNewerThanTheFarOneIsNotTrusted) {
 	auto storePath = uniqueStorePath();
 	std::filesystem::create_directories(storePath);
 	const double high = futureKey();
-	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
+	const double farKey = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
 	// The writer that stamped segment 2's far header may have stamped segment
 	// 3's plausible one after a restart that reset its running maximum.
 	writeSegment(storePath / "1.txnlog", 1, 0.0, { high });
-	writeSegment(storePath / "2.txnlog", 2, far, { high - 4.0 });
+	writeSegment(storePath / "2.txnlog", 2, farKey, { high - 4.0 });
 	writeSegment(storePath / "3.txnlog", 3, high - 2.0, { high - 3.0 });
 	writeSegment(storePath / "4.txnlog", 4, high - 3.0, { high - 1.0 });
 
@@ -215,11 +215,11 @@ TEST(TransactionLogClockFloor, AFarHeaderTriggersAScanOfTheSegmentsItSummarizes)
 	auto storePath = uniqueStorePath();
 	std::filesystem::create_directories(storePath);
 	const double high = futureKey();
-	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
+	const double farKey = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
 	// A pre-bound writer stamped the far key into segment 2's header; the real
 	// maximum lives only in segment 1's entries.
 	writeSegment(storePath / "1.txnlog", 1, 0.0, { high });
-	writeSegment(storePath / "2.txnlog", 2, far, { high - 60000.0 });
+	writeSegment(storePath / "2.txnlog", 2, farKey, { high - 60000.0 });
 
 	auto store = loadStore(storePath);
 	ASSERT_NE(store, nullptr);
