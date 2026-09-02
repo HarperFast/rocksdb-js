@@ -38,30 +38,6 @@ static uint64_t nextVtEpoch() {
 	return vtEpochCounter.fetch_add(1, std::memory_order_relaxed);
 }
 
-static void warnRefusedWritableDestroyPaths(
-	const std::shared_ptr<rocksdb::DB>& db,
-	const std::string& path
-) {
-	auto infoLog = db->GetDBOptions().info_log;
-	if (infoLog) {
-		rocksdb::Log(
-			rocksdb::InfoLogLevel::WARN_LEVEL,
-			infoLog,
-			"rocksdb-js refused non-append-only db_paths for the retained destroy layout of %s; "
-			"destroy will continue using the previously retained path list",
-			path.c_str()
-		);
-	} else {
-		::fprintf(
-			stderr,
-			"rocksdb-js warning: refused non-append-only db_paths for the retained "
-			"destroy layout of %s; destroy will continue using the previously retained "
-			"path list\n",
-			path.c_str()
-		);
-	}
-}
-
 // A column family's persisted per-CF options, recovered from the on-disk OPTIONS
 // file so a cold open of one CF does not clobber the others. Compression and the
 // blob settings are both per-CF, and RocksDB restores neither on open.
@@ -1589,6 +1565,13 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	for (const auto& storagePath : options.paths) {
 		dbOptions.db_paths.emplace_back(storagePath.path, storagePath.targetSize);
 	}
+	// The retained destroy layout is authoritative, so a writable open may only
+	// extend it. Rejected here rather than after the open: past this point
+	// RocksDB owns the list, and a compaction placing one SST under it is
+	// already the divergence `destroy()` cannot repair.
+	if (!options.readOnly) {
+		DBRegistry::AssertDbPathsExtendRetained(path, dbOptions.db_paths);
+	}
 	// Explicit narrowing: RocksDB's field is size_t; the value is validated
 	// <= MAX_SAFE_INTEGER at parse time, and a >4GB info-log cap (only reachable
 	// on a 32-bit build) is nonsensical, so the cast is safe and silences
@@ -2010,11 +1993,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	secondaryLock.token = 0;
 	descriptor->layoutDbPaths = dbOptions.db_paths;
 	descriptor->layoutBlobDirs = std::move(layoutBlobDirs);
-	if (!DBRegistry::RecordLayout(path, descriptor->captureLayout(), !options.readOnly) &&
-		!options.readOnly
-	) {
-		warnRefusedWritableDestroyPaths(descriptor->db, path);
-	}
+	DBRegistry::RecordLayout(path, descriptor->captureLayout(), !options.readOnly);
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is
@@ -2900,11 +2879,7 @@ void DBDescriptor::recordColumnFamilyLayout(const std::string& name, const std::
 		this->layoutBlobDirs[name] = blobDir;
 		layout = DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs };
 	}
-	if (!DBRegistry::RecordLayout(this->path, std::move(layout), !this->readOnly) &&
-		!this->readOnly
-	) {
-		warnRefusedWritableDestroyPaths(this->db, this->path);
-	}
+	DBRegistry::RecordLayout(this->path, std::move(layout), !this->readOnly);
 }
 
 void DBDescriptor::removeColumnFamilyLayout(const std::string& name) {
