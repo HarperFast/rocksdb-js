@@ -319,7 +319,13 @@ describe('Readonly Operations', () => {
 					expect(Array.from(secondary.useLog('bar').query({ start: 0 })).length).toBeGreaterThan(0);
 				} finally {
 					secondary.close();
-					rmSync(`${dbPath}.secondary`, { force: true, recursive: true });
+					// Windows can still hold the workspace briefly after close.
+					rmSync(`${dbPath}.secondary`, {
+						force: true,
+						recursive: true,
+						maxRetries: 5,
+						retryDelay: 50,
+					});
 				}
 			}
 		));

@@ -669,36 +669,55 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	return true;
 }
 
-bool TransactionLogFile::zeroTailLocked(uint32_t newSize) {
-	uint32_t entriesEnd = this->size.load(std::memory_order_relaxed);
+/**
+ * A zero-fill that did not complete (a short write, or zeros that would not
+ * sync) leaves the segment in a state no append may use: the caller keeps the
+ * old logical `size`, so the next batch would land past a zero end-of-entries
+ * marker and be invisible to every reader — acknowledged writes hidden, the
+ * failure mode this whole path exists to prevent. Retire the segment instead
+ * (the ENOSPC discipline of invariant 5): `size` drops to the boundary the
+ * repair was aiming at, appends are refused, and the store persists that
+ * boundary and rotates on the next write rather than appending here.
+ */
+bool TransactionLogFile::retireAfterFailedZeroTail(uint32_t newSize, const char* stage) {
+	DEBUG_LOG("%p TransactionLogFile::zeroTailLocked %s failed for %s (error=%lu); retiring the segment at %u\n",
+		this, stage, this->path.string().c_str(), ::GetLastError(), newSize);
+	this->size.store(newSize, std::memory_order_relaxed);
+	this->appendBoundaryLost.store(true, std::memory_order_relaxed);
+	return false;
+}
+
+bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
 	if (this->fileHandle == INVALID_HANDLE_VALUE || entriesEnd <= newSize) {
 		return false;
 	}
 
-	// Only the entries extent is rewritten: everything past `size` is already
-	// the zero padding this file was pre-extended with, so a pre-extended
-	// active segment costs one small write here, not a maxFileSize one.
+	// Only the entries extent is rewritten: everything past the end of entries
+	// is already the zero padding this file was pre-extended with, so a
+	// pre-extended active segment costs one small write here, not a maxFileSize
+	// one.
+	//
+	// Back to front, so the zero AT `newSize` — the byte that makes readers
+	// stop there — is the last one written. A failure part-way then leaves the
+	// original framing break in place (a torn tail readers resync past), never
+	// a premature end-of-entries marker with live bytes behind it.
 	constexpr uint32_t chunkSize = 64 * 1024;
 	std::vector<char> zeros(std::min(chunkSize, entriesEnd - newSize), 0);
-	for (uint32_t offset = newSize; offset < entriesEnd; ) {
-		uint32_t remaining = entriesEnd - offset;
+	for (uint32_t end = entriesEnd; end > newSize; ) {
+		uint32_t remaining = end - newSize;
 		uint32_t toWrite = remaining < chunkSize ? remaining : chunkSize;
+		uint32_t offset = end - toWrite;
 		int64_t written = this->writeToFile(zeros.data(), toWrite, static_cast<int64_t>(offset));
 		if (written != static_cast<int64_t>(toWrite)) {
-			DEBUG_LOG("%p TransactionLogFile::zeroTailLocked Failed to zero %s at offset %u (error=%lu)\n",
-				this, this->path.string().c_str(), offset, ::GetLastError());
-			return false;
+			return this->retireAfterFailedZeroTail(newSize, "WriteFile");
 		}
-		offset += toWrite;
+		end = offset;
 	}
 
 	if (!::FlushFileBuffers(this->fileHandle)) {
-		DEBUG_LOG("%p TransactionLogFile::zeroTailLocked FlushFileBuffers failed for %s (error=%lu)\n",
-			this, this->path.string().c_str(), ::GetLastError());
-		// The zeros are not durable yet, so a crash before the next flush could
-		// still resurrect the torn bytes. Report failure rather than let the
-		// caller record a boundary the file does not have.
-		return false;
+		// The zeros are not durable, so a crash could still resurrect the torn
+		// bytes; the segment cannot be appended to either way.
+		return this->retireAfterFailedZeroTail(newSize, "FlushFileBuffers");
 	}
 	return true;
 }
@@ -707,12 +726,7 @@ bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
 	if (this->fileHandle == INVALID_HANDLE_VALUE || entriesEnd <= newSize) {
 		return false;
 	}
-	// These are whole entries a recovery decided to discard, so failing to
-	// shrink the file is not an option to accept quietly: the bytes would be
-	// swallowed into the next batch's group by that batch's last-entry flag.
-	// Zeroing them is the equivalent erase when a live mapping blocks
-	// SetEndOfFile (see zeroTailLocked).
-	return this->truncateFile(newSize) || this->zeroTailLocked(newSize);
+	return this->truncateFile(newSize) || this->zeroTailLocked(newSize, entriesEnd);
 }
 
 std::string getWindowsErrorMessage(DWORD errorCode) {

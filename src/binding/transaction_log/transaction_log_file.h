@@ -278,7 +278,7 @@ struct TransactionLogFile final {
 	 * an empty file is rejected instead of header-initialized, and (Windows)
 	 * the mapping path neither pre-extends nor SetEndOfFile()s. Set for files
 	 * owned by a read-only/secondary open, whose log directory may belong to a
-	 * live writer in another process (see TransactionLogStoreConfig::readOnly).
+	 * live writer in another process (see TransactionLogStore::readOnly).
 	 */
 	bool readOnly = false;
 
@@ -603,21 +603,34 @@ private:
 	bool truncateFile(uint32_t newSize);
 
 	/**
-	 * Platform specific fallback for a torn tail that `truncateFile()` could not
-	 * shrink: overwrite `[newSize, size)` with zeros so the zero-timestamp
-	 * end-of-entries convention marks the boundary instead. Returns `true` when
-	 * the range is neutralized. Caller holds fileMutex, has `size` still at the
-	 * end of entries (the range zeroed is `[newSize, size)`), and must update
-	 * `size` itself afterwards.
+	 * Platform specific fallback for bytes that `truncateFile()` could not
+	 * shrink away: overwrite `[newSize, entriesEnd)` with zeros so the
+	 * zero-timestamp end-of-entries convention marks the boundary instead.
+	 * Returns `true` when the range is neutralized; on failure the segment is
+	 * retired (see `retireAfterFailedZeroTail`). Caller holds fileMutex and
+	 * updates `size` itself on success.
 	 *
-	 * Windows only. Sections there are mandatory, so any live mapping of this
-	 * file — in this process or another — makes `SetEndOfFile` fail, and the
-	 * garbage would otherwise survive to be read as an entry after the next
-	 * (shorter) append. POSIX returns false: its fd is `O_APPEND`, so an
-	 * in-place rewrite is not available (same reason `eraseTail()` truncates
-	 * there), and `ftruncate` does not care about live mappings anyway.
+	 * Windows only, and the reason both recovery paths need it: sections there
+	 * are mandatory, so any live mapping of this file — a reader's in this
+	 * process, or another process's — makes `SetEndOfFile` fail. Leaving the
+	 * bytes is not benign, because appends resume at `size`: a later shorter
+	 * batch would leave them past its own end, reading as an entry instead of
+	 * the end-of-entries marker. POSIX returns false: its fd is `O_APPEND`, so
+	 * an in-place rewrite is not available (same reason `eraseTail()`
+	 * truncates there), and `ftruncate` does not care about live mappings.
 	 */
-	bool zeroTailLocked(uint32_t newSize);
+	bool zeroTailLocked(uint32_t newSize, uint32_t entriesEnd);
+
+#ifdef PLATFORM_WINDOWS
+	/**
+	 * Retires the segment after a zero-fill that may have overwritten part of
+	 * `[newSize, size)` without finishing: `size` drops to `newSize`, appends
+	 * are refused, and the store persists the boundary and rotates on the next
+	 * write. Always returns false (the repair did not succeed). Caller holds
+	 * fileMutex.
+	 */
+	bool retireAfterFailedZeroTail(uint32_t newSize, const char* stage);
+#endif
 
 	/**
 	 * Platform specific function that makes the entries in `[newSize, entriesEnd)`

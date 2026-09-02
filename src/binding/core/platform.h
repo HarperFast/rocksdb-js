@@ -54,10 +54,13 @@ std::filesystem::path resolveIdentityPath(const std::string& path);
 
 /**
  * True when `child` is `parent` itself or lives underneath it. Both arguments
- * must already be resolved (see `resolveIdentityPath`). Comparison is
- * case-insensitive on the platforms whose default filesystems are
- * (Windows, macOS). A `parent` that already ends in a separator (a filesystem
- * root such as `/` or `C:/`) is handled: the separator is not required twice.
+ * should already be resolved (see `resolveIdentityPath`). Existing paths are
+ * compared by filesystem identity (`equivalent()` over the child's ancestors),
+ * which is correct on case-sensitive and case-insensitive volumes alike —
+ * case sensitivity is a volume property, not an OS one. A path that does not
+ * exist falls back to a lexical, case-preserving prefix test, where a `parent`
+ * that already ends in a separator (a filesystem root such as `/` or `C:/`) is
+ * handled: the separator is not required twice.
  */
 bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child);
 

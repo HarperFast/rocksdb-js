@@ -177,11 +177,13 @@ public:
 	 * @param dbPath The database path.
 	 * @param name The name of the transaction log store.
 	 * @param callerReadOnly Whether the resolving handle's database is
-	 * read-only/secondary. The CALLER's mode — not the path-global entry
-	 * config, which a since-closed writable handle may have flipped — decides
-	 * whether a missing store may be created: a read-only caller gets only
-	 * stores already live in this process (its log view is frozen at open) and
-	 * never mkdirs into what may by now be a foreign live primary's tree.
+	 * read-only/secondary. The CALLER's mode — never the path-global entry,
+	 * which is shared by every handle on the path — decides whether a missing
+	 * store may be created: a read-only caller gets only stores live in this
+	 * process and never mkdirs into what may by now be a foreign live primary's
+	 * tree. "Live in this process" includes a store an in-process writer
+	 * created after this handle opened; only a cross-process primary's new
+	 * stores are invisible until reopen.
 	 * @returns The transaction log store, or null for a read-only caller whose
 	 * store is not resident.
 	 */

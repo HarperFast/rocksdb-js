@@ -67,8 +67,8 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 	);
 	(*txnLogHandle)->transactionId = transactionId;
 
-	// A read-only registration never creates or lazily loads a store (the log
-	// view is frozen at open), so an unresolved store here means the log does
+	// A read-only registration never creates or lazily loads a store, so an
+	// unresolved store here means the log does
 	// not exist for this handle — fail now with a clear error rather than hand
 	// back a handle whose reads would break on a null store.
 	if ((*dbHandle)->descriptor->readOnly && (*txnLogHandle)->store.expired()) {

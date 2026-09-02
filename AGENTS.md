@@ -693,8 +693,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `Register` (a throw there would run the half-built descriptor's close and decrement a refcount
     it never incremented) — rejects the writable open while read-only-loaded stores are live,
     deciding on each live store's own `TransactionLogStore::readOnly` for the same reason.
-    A secondary's log view is therefore "the stores discovered at open", not a frozen extent: a
-    store an in-process writer holds open is the same object, so its appends are visible. That is
+    A secondary's log view is therefore "what this process has resident", not a frozen extent: a
+    store an in-process writer holds open — or creates later — is the same object, so its appends
+    are visible; only a cross-process primary's new stores and appends need a reopen. That is
     not a leak of unsafe state — the log write completes before the RocksDB commit for every
     writer, so the log leads the database view by construction and every log consumer already has
     to tolerate it.

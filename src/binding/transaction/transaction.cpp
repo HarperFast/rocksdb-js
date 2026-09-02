@@ -1375,9 +1375,9 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 	if (!store) {
-		// Resolvable to null only on a read-only/secondary handle whose open
-		// never discovered the store (a read-only registration never creates
-		// or lazily loads one — the log view is frozen at open).
+		// Resolvable to null only on a read-only/secondary handle for a store
+		// this process has never loaded (a read-only registration never creates
+		// or lazily loads one).
 		std::string errorMsg = "Transaction log \"" + name + "\" not found";
 		::napi_throw_error(env, nullptr, errorMsg.c_str());
 		return nullptr;

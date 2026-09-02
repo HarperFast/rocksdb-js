@@ -533,7 +533,8 @@ struct TransactionLogStore final {
 	 * @param retentionMs The retention period for transaction logs.
 	 * @param readOnly When true the load mutates nothing on disk: no retention
 	 * purge and no tail recovery, because the directory may belong to a live
-	 * writer in another process (see TransactionLogStoreConfig::readOnly).
+	 * writer in another process. Comes from the OPENING handle's mode (see
+	 * TransactionLogStoreRegistry::DiscoverStores).
 	 * @returns The transaction log store.
 	 */
 	static std::shared_ptr<TransactionLogStore> load(

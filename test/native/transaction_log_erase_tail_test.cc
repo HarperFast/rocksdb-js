@@ -146,6 +146,31 @@ TEST_F(TransactionLogEraseTail, TornTailRecoveryZeroFillsWhenTheFileCannotShrink
 	}
 }
 
+// The zero-fill can fail part-way (a full or failing volume). Keeping the old
+// logical `size` there would put the next append past the zero marker the
+// partial fill left behind — invisible to every reader — so recovery retires
+// the segment instead: `size` drops to the boundary and appends are refused,
+// which makes the store rotate on the next write. A read-only handle is the
+// deterministic stand-in for a write that cannot land.
+TEST_F(TransactionLogEraseTail, TornTailRecoveryRetiresTheSegmentWhenZeroingFails) {
+	constexpr uint32_t completeEnd = TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 4;
+	constexpr uint32_t tornSize = completeEnd + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2;
+	writeTornImage(tornSize, completeEnd);
+
+	::CloseHandle(file->fileHandle);
+	file->fileHandle = ::CreateFileW(
+		path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr
+	);
+	ASSERT_NE(file->fileHandle, INVALID_HANDLE_VALUE);
+
+	file->recoverTail();
+
+	EXPECT_EQ(file->size.load(), completeEnd);
+	EXPECT_TRUE(file->appendBoundaryLost.load());
+	expectPhysicalSize(tornSize);
+}
+
 TEST_F(TransactionLogEraseTail, TornTailRecoveryClearsThePreRecoveryIndex) {
 	constexpr uint32_t completeEnd = TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 4;
 	constexpr uint32_t tornSize = completeEnd + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2;

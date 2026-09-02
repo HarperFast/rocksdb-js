@@ -636,12 +636,10 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	return true;
 }
 
-bool TransactionLogFile::zeroTailLocked(uint32_t newSize) {
-	// The fd is O_APPEND, so a positional write lands at end-of-file, not at
-	// `newSize` (the same reason eraseTail() truncates rather than zero-fills).
-	// ftruncate() does not care about live mappings here, so there is nothing
-	// this fallback could rescue that truncateFile() did not already do.
+bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
+	// See the header: nothing for this fallback to rescue on POSIX.
 	(void)newSize;
+	(void)entriesEnd;
 	return false;
 }
 

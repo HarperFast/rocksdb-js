@@ -1,4 +1,3 @@
-#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <atomic>
@@ -170,19 +169,34 @@ std::filesystem::path resolveIdentityPath(const std::string& path) {
 }
 
 bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child) {
+	// Ask the filesystem first: `equivalent()` compares inode/file identity, so
+	// it answers correctly whether the volume is case-sensitive or not, and it
+	// sees through hard links and bind mounts that no string comparison can.
+	// Case sensitivity is a property of the VOLUME, not the OS (APFS can be
+	// case-sensitive, Windows directories can be), so folding by platform would
+	// reject a distinct `/volume/Data` as if it were `/volume/data`.
+	std::error_code error;
+	if (std::filesystem::exists(parent, error) && !error) {
+		for (auto probe = child; !probe.empty(); ) {
+			error.clear();
+			if (std::filesystem::exists(probe, error) && !error) {
+				error.clear();
+				if (std::filesystem::equivalent(parent, probe, error) && !error) {
+					return true;
+				}
+			}
+			auto next = probe.parent_path();
+			if (next == probe) {
+				break; // reached the root
+			}
+			probe = next;
+		}
+	}
+
+	// A path that does not exist (yet) has no identity to compare, so fall back
+	// to a lexical, case-preserving prefix test.
 	std::string parentStr = parent.generic_string();
 	std::string childStr = child.generic_string();
-#if defined(_WIN32) || defined(__APPLE__)
-	// The default filesystems are case-insensitive, so a differently-cased
-	// spelling names the same directory.
-	auto asciiLower = [](std::string& value) {
-		for (char& c : value) {
-			c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-		}
-	};
-	asciiLower(parentStr);
-	asciiLower(childStr);
-#endif
 	if (parentStr.empty() || parentStr == childStr) {
 		return parentStr == childStr;
 	}

@@ -167,8 +167,8 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath, bool
 		}
 
 		// Take a shared_ptr copy to keep the entry alive after releasing the
-		// lock, and a config copy so Register's writer-upgrade flip cannot race
-		// this read.
+		// lock, and a config copy so a concurrent Register/Unregister on another
+		// thread cannot change the fields read below.
 		entry = it->second;
 		config = entry->config;
 	}
@@ -241,8 +241,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		}
 
 		// Take a shared_ptr copy to keep the entry alive after releasing the
-		// lock, and a config copy so Register's writer-upgrade flip cannot race
-		// this read.
+		// lock, and a config copy so a concurrent Register/Unregister on another
+		// thread cannot change the fields read below.
 		entry = it->second;
 		config = entry->config;
 	}
@@ -253,6 +253,18 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	if (storeIt != entry->stores.end()) {
 		// Check if the store is closing - if so, we need to create a new one
 		if (!storeIt->second->isClosing.load(std::memory_order_relaxed)) {
+			// A store loaded read-only skipped recoverTail(), so a writer
+			// adopting it would append past a torn tail (invariant 5, #748).
+			// EnsureWritableRegistrationSafe covers the open, but a store can
+			// also appear AFTER a writer is already open — discovered by a
+			// later read-only/secondary open — and only this path sees that.
+			if (!callerReadOnly && storeIt->second->readOnly) {
+				throw rocksdb_js::DBException(
+					"Transaction log \"" + name + "\" for \"" + dbPath + "\" is open read-only in this "
+					"process (loaded without tail recovery, which appends must not skip). Close the "
+					"read-only or secondary handle and reopen this one to write to it."
+				);
+			}
 			DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Found store \"%s\" for \"%s\"\n",
 				instance.get(), name.c_str(), dbPath.c_str());
 			return storeIt->second;
@@ -261,9 +273,11 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			instance.get(), name.c_str(), dbPath.c_str());
 	}
 
-	// A read-only caller's log view is frozen at open: an unresolved store is
+	// A read-only caller never creates or loads a store: an unresolved store is
 	// not found — never created (mkdir in what may be a foreign live primary's
-	// tree) and never lazily loaded/published (see the header comment).
+	// tree) and never lazily loaded/published (see the header comment). Its log
+	// view is therefore what this process has resident, which a cross-process
+	// primary cannot add to without a reopen.
 	if (callerReadOnly) {
 		DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Store \"%s\" not found for read-only \"%s\"\n",
 			instance.get(), name.c_str(), dbPath.c_str());
