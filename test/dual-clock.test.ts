@@ -184,6 +184,34 @@ describe('Dual clock', () => {
 					expect(entry?.value).toEqual({ hello: 'world' });
 				}));
 
+			it('reads a cold value through the async path', () =>
+				dbRunner({ dbOptions: [{ encoding: 'binary' }] }, async ({ db, dbPath }) => {
+					const localTime = 1.7e12;
+					const version = 1.6e12;
+					await db.put(
+						'cold',
+						headerValue(localTime, { flags: HAS_DISTINCT_VERSION_FLAG, distinctVersion: version })
+					);
+					await db.flush();
+					db.close();
+					const reopened = RocksDatabase.open(dbPath, { encoding: 'binary' });
+					try {
+						const pending = reopened.getEntry('cold');
+						if (!sync) {
+							expect(pending).toBeInstanceOf(Promise);
+						}
+						const entry = await pending;
+						expect(entry?.localTime).toBe(localTime);
+						expect(entry?.version).toBe(version);
+						expect(entry?.value).toEqual(
+							headerValue(localTime, { flags: HAS_DISTINCT_VERSION_FLAG, distinctVersion: version })
+						);
+					} finally {
+						reopened.close();
+					}
+					db.open();
+				}));
+
 			it('works inside a transaction', () =>
 				dbRunner({ dbOptions: [{ encoding: 'binary' }] }, async ({ db }) => {
 					const localTime = 1.7e12;
@@ -237,13 +265,15 @@ describe('Dual clock', () => {
 			}
 		}, 60000);
 
-		it('refuses to seed from a key implausibly far ahead of the wall clock', async () => {
+		it('refuses a key implausibly far ahead of the wall clock without masking a plausible one', async () => {
 			const dbPath = generateDBPath();
 			try {
-				await runFixture(['far-write', dbPath]);
-				const observed = await runFixture(['far-read', dbPath]);
+				const key = Date.now() + 3600 * 1000;
+				await runFixture(['far-write', dbPath, String(key)]);
+				const observed = await runFixture(['far-read', dbPath, String(key)]);
 				expect(observed.warnings).toBeGreaterThanOrEqual(1);
-				expect(observed.clock).toBeLessThan(observed.now + 1000);
+				expect(observed.clock).toBeGreaterThan(key);
+				expect(observed.clock).toBeLessThan(key + 60000);
 			} finally {
 				rmSync(dbPath, { force: true, recursive: true });
 			}

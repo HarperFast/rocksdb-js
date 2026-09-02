@@ -334,6 +334,8 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 	}
 	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
 	this->maxEntryTimestamp.store(scan.maxTimestamp, std::memory_order_relaxed);
+	this->maxImplausibleEntryTimestamp.store(scan.maxImplausibleTimestamp, std::memory_order_relaxed);
+	this->scanStoppedAtBreak.store(scan.kind == RecoveryScan::Kind::MidFileCorruption, std::memory_order_relaxed);
 	return scan.lastCompleteTransactionEnd;
 }
 
@@ -359,6 +361,8 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 	// seed its committed watermark without re-reading the file.
 	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
 	this->maxEntryTimestamp.store(scan.maxTimestamp, std::memory_order_relaxed);
+	this->maxImplausibleEntryTimestamp.store(scan.maxImplausibleTimestamp, std::memory_order_relaxed);
+	this->scanStoppedAtBreak.store(scan.kind == RecoveryScan::Kind::MidFileCorruption, std::memory_order_relaxed);
 	switch (scan.kind) {
 		case RecoveryScan::Kind::Clean:
 			this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);

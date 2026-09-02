@@ -5,9 +5,6 @@ import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } fro
 import type { Transaction } from './transaction.ts';
 import { type MaybePromise, when } from './util.ts';
 
-/**
- * The metadata word's tag byte in the value-header contract (see `getEntrySync()`).
- */
 const VERSION_HEADER_TAG = 0x0e;
 
 /**
@@ -399,7 +396,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * contract, the same rule as the verification table's flag read.
 	 */
 	getEntrySync(key: Key): Entry | undefined {
-		const raw = this.getBinarySync(key);
+		const raw = this.store.decoderCopies ? this.getBinaryFastSync(key) : this.getBinarySync(key);
 		if (raw === undefined || typeof raw === 'number') {
 			return undefined;
 		}
@@ -412,7 +409,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * semantics).
 	 */
 	getEntry(key: Key): MaybePromise<Entry | undefined> {
-		const raw = this.getBinary(key);
+		const raw = this.store.decoderCopies ? this.getBinaryFast(key) : this.getBinary(key);
 		if (raw instanceof Promise) {
 			return raw.then((resolved) =>
 				resolved === undefined || typeof resolved === 'number'
@@ -426,6 +423,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		return this.#buildEntry(raw);
 	}
 
+	// With a copying decoder `raw` is the reusable read buffer (its `length` is
+	// the value's size), valid only until the next read, so the words and the
+	// decode both happen here before returning.
 	#buildEntry(raw: Buffer): Entry {
 		let localTime: number | undefined;
 		let version: number | undefined;

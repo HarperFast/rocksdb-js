@@ -1172,9 +1172,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs, maxAgeThreshold);
 
-	// Cleared by any failure below that can leave a segment or its entries out of
-	// the clock-floor seed; open still succeeds, but the store says so.
-	bool clockFloorComplete = true;
+	bool& clockFloorComplete = store->clockFloorComplete;
 
 	// find `.txnlog` files in the directory
 	try {
@@ -1224,15 +1222,51 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	// header bounds every key in the older segments. Part 2 (below) folds in the
 	// entry keys of the segments the recovery scans walk anyway, which is where
 	// keys above the newest header can still sit.
+	// A header beyond the plausible bound is a far-future key stamped by an
+	// older version; it says nothing about the real maximum of the segments it
+	// summarizes, so those are walked instead (the only case that reads them).
+	double implausibleKey = 0;
+	bool scanOlderSegments = false;
 	{
 		std::lock_guard<std::mutex> lock(store->dataSetsMutex);
 		for (const auto& [sequence, logFile] : store->sequenceFiles) {
 			try {
-				store->raiseLatestTimestamp(readTransactionLogFileHeaderTimestamp(logFile->path));
+				double header = readTransactionLogFileHeaderTimestamp(logFile->path);
+				if (!store->raiseLatestTimestamp(header) && header > store->plausibleTimestampBound) {
+					implausibleKey = std::max(implausibleKey, header);
+					scanOlderSegments = true;
+				}
 			} catch (const std::exception& e) {
 				clockFloorComplete = false;
 				DEBUG_LOG("%p TransactionLogStore::load Failed to read header of %s: %s\n",
 					store.get(), logFile->path.string().c_str(), e.what());
+			}
+		}
+		if (scanOlderSegments) {
+			for (const auto& [sequence, logFile] : store->sequenceFiles) {
+				if (sequence >= store->currentSequenceNumber.load(std::memory_order_relaxed)) {
+					continue;
+				}
+				const bool openedForScan = !logFile->isOpen();
+				try {
+					if (openedForScan) {
+						logFile->open(store->latestTimestamp);
+					}
+					logFile->scanForLastCompleteTransactionEnd();
+					store->raiseLatestTimestamp(logFile->maxEntryTimestamp.load(std::memory_order_relaxed));
+					implausibleKey = std::max(implausibleKey,
+						logFile->maxImplausibleEntryTimestamp.load(std::memory_order_relaxed));
+					if (logFile->scanStoppedAtBreak.load(std::memory_order_relaxed)) {
+						clockFloorComplete = false;
+					}
+				} catch (const std::exception& e) {
+					clockFloorComplete = false;
+					DEBUG_LOG("%p TransactionLogStore::load Failed to scan %s: %s\n",
+						store.get(), logFile->path.string().c_str(), e.what());
+				}
+				if (openedForScan && logFile->isOpen()) {
+					logFile->close();
+				}
 			}
 		}
 	}
@@ -1270,6 +1304,11 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					: 0;
 				currentFile->recoverTail(protectedPosition);
 				store->raiseLatestTimestamp(currentFile->maxEntryTimestamp.load(std::memory_order_relaxed));
+				implausibleKey = std::max(implausibleKey,
+					currentFile->maxImplausibleEntryTimestamp.load(std::memory_order_relaxed));
+				if (currentFile->scanStoppedAtBreak.load(std::memory_order_relaxed)) {
+					clockFloorComplete = false;
+				}
 				store->nextLogPosition = { currentFile->size, storeCurrentSeq };
 			} else {
 				uint32_t nextWritableSequence = storeCurrentSeq + 1;
@@ -1310,6 +1349,11 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				? logFile->lastCompleteTransactionEnd.load(std::memory_order_relaxed)
 				: logFile->scanForLastCompleteTransactionEnd();
 			store->raiseLatestTimestamp(logFile->maxEntryTimestamp.load(std::memory_order_relaxed));
+			implausibleKey = std::max(implausibleKey,
+				logFile->maxImplausibleEntryTimestamp.load(std::memory_order_relaxed));
+			if (logFile->scanStoppedAtBreak.load(std::memory_order_relaxed)) {
+				clockFloorComplete = false;
+			}
 			if (openedForScan) {
 				logFile->close();
 			}
@@ -1344,11 +1388,12 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	if (raiseMonotonicTimestampFloor(store->latestTimestamp)) {
 		DEBUG_LOG("%p TransactionLogStore::load Raised monotonic clock floor to %f from store \"%s\"\n",
 			store.get(), store->latestTimestamp, store->name.c_str());
-	} else if (store->latestTimestamp > getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS) {
+	}
+	if (implausibleKey > 0) {
 		std::ostringstream msg;
 		msg << "Transaction log store " << store->path.string()
 			<< " holds a batch key more than " << static_cast<long long>(MAX_CLOCK_FLOOR_SKEW_MS / 86400000.0)
-			<< " days ahead of the wall clock (" << std::fixed << store->latestTimestamp
+			<< " days ahead of the wall clock (" << std::fixed << implausibleKey
 			<< "); not seeding the monotonic clock floor from it.";
 		DEBUG_LOG("%p TransactionLogStore::load WARNING: %s\n", store.get(), msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
@@ -1356,8 +1401,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	if (!clockFloorComplete) {
 		std::ostringstream msg;
 		msg << "Transaction log store " << store->path.string()
-			<< " has a segment that could not be inspected at open; the monotonic clock floor"
-			   " may be below a batch key already in this log.";
+			<< " has a segment, or entries past a framing break, that could not be inspected at"
+			   " open; the monotonic clock floor may be below a batch key already in this log.";
 		DEBUG_LOG("%p TransactionLogStore::load WARNING: %s\n", store.get(), msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	}

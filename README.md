@@ -1009,8 +1009,11 @@ wall-clock rollback); the first rotation after upgrade closes that gap. A segmen
 cannot be read does not fail the open; a `log.warn` event is emitted instead. Adopted (origin)
 timestamps count towards the seed too, so a peer whose clock ran somewhat ahead moves this node's
 clock ahead of it after the next restart. A key more than ten years ahead of the wall clock is not
-a rollback to recover from but a corrupt or hostile value, and is refused as a seed (with a
-`log.warn`) rather than allowed to move every timestamp this process issues that far ahead.
+a rollback to recover from but a corrupt or hostile value: it is never a seed candidate and never
+stamped into a header (a `log.warn` reports it), so it cannot move every timestamp this process
+issues that far ahead, and it cannot hide a plausible key beside it. A rotated segment whose header
+carries such a key (stamped by an older version) says nothing about the segments it summarizes, so
+that one case walks their entries instead.
 
 ### Value-header contract
 

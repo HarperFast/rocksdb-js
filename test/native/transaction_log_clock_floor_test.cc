@@ -142,17 +142,44 @@ TEST(TransactionLogClockFloor, HeaderReaderRejectsShortAndForeignFiles) {
 	std::filesystem::remove_all(storePath.parent_path());
 }
 
-TEST(TransactionLogClockFloor, DoesNotSeedFromAnImplausiblyFarKey) {
+TEST(TransactionLogClockFloor, AFarKeyIsNeitherSeededNorAllowedToMaskTheRealMaximum) {
 	auto storePath = uniqueStorePath();
 	std::filesystem::create_directories(storePath);
-	const double before = rocksdb_js::getMonotonicTimestamp();
-	writeSegment(storePath / "1.txnlog", 1, 0.0, { rocksdb_js::MAX_TIMESTAMP_MS - 1.0 });
+	const double high = futureKey();
+	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high - 1.0, far, high });
 
 	auto store = loadStore(storePath);
 	ASSERT_NE(store, nullptr);
-	EXPECT_EQ(store->latestTimestamp, rocksdb_js::MAX_TIMESTAMP_MS - 1.0);
-	EXPECT_LT(rocksdb_js::getMonotonicTimestamp(), before + 60.0 * 1000.0);
+	EXPECT_EQ(store->latestTimestamp, high);
+	EXPECT_GT(rocksdb_js::getMonotonicTimestamp(), high);
+	EXPECT_LT(rocksdb_js::getMonotonicTimestamp(), high + 60.0 * 1000.0);
 	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, AFarHeaderTriggersAScanOfTheSegmentsItSummarizes) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	const double high = futureKey();
+	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
+	// A pre-bound writer stamped the far key into segment 2's header; the real
+	// maximum lives only in segment 1's entries.
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high });
+	writeSegment(storePath / "2.txnlog", 2, far, { high - 60000.0 });
+
+	auto store = loadStore(storePath);
+	ASSERT_NE(store, nullptr);
+	EXPECT_EQ(store->latestTimestamp, high);
+	EXPECT_GT(rocksdb_js::getMonotonicTimestamp(), high);
+	EXPECT_LT(rocksdb_js::getMonotonicTimestamp(), high + 60.0 * 1000.0);
+
+	// Heals: the next segment this store creates carries the plausible maximum.
+	auto next = std::make_shared<rocksdb_js::TransactionLogFile>(storePath / "3.txnlog", 3, false);
+	next->open(store->latestTimestamp);
+	next->close();
+	store->close();
+	EXPECT_EQ(rocksdb_js::readTransactionLogFileHeaderTimestamp(storePath / "3.txnlog"), high);
 	std::filesystem::remove_all(storePath.parent_path());
 }
 
@@ -173,8 +200,6 @@ TEST(TransactionLogClockFloor, ARealRotationStampsTheLatestKeyIntoTheNewHeader) 
 		rocksdb_js::TransactionLogEntryBatch first(high);
 		first.addEntry(entry());
 		store->writeBatch(first, position);
-		// Does not fit: writeBatch rotates and the new header carries `high`,
-		// which this lower-keyed batch does not.
 		rocksdb_js::TransactionLogEntryBatch second(high - 60000.0);
 		second.addEntry(entry());
 		store->writeBatch(second, position);
@@ -196,5 +221,37 @@ TEST(TransactionLogClockFloor, ARealRotationStampsTheLatestKeyIntoTheNewHeader) 
 	ASSERT_NE(reopened, nullptr);
 	EXPECT_EQ(reopened->latestTimestamp, high);
 	reopened->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogClockFloor, EntriesPastAMidFileBreakMarkTheSeedIncomplete) {
+	auto storePath = uniqueStorePath();
+	std::filesystem::create_directories(storePath);
+	const double high = futureKey();
+	writeSegment(storePath / "1.txnlog", 1, 0.0, { high - 1.0 });
+	{
+		// A frame whose declared length overruns the file, then a long run of
+		// intact entries keyed above everything before the break.
+		std::ofstream tail(storePath / "1.txnlog", std::ios::binary | std::ios::app);
+		char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+		rocksdb_js::writeDoubleBE(header, high - 2.0);
+		rocksdb_js::writeUint32BE(header + 8, 100000);
+		rocksdb_js::writeUint8(header + 12, 1);
+		tail.write(header, sizeof(header));
+		tail.write("garbage!", 8);
+		for (int i = 0; i < 12; ++i) {
+			rocksdb_js::writeDoubleBE(header, high);
+			rocksdb_js::writeUint32BE(header + 8, 4);
+			rocksdb_js::writeUint8(header + 12, 1);
+			tail.write(header, sizeof(header));
+			tail.write("data", 4);
+		}
+	}
+
+	auto store = loadStore(storePath);
+	ASSERT_NE(store, nullptr);
+	EXPECT_EQ(store->latestTimestamp, high - 1.0);
+	EXPECT_FALSE(store->clockFloorComplete);
+	store->close();
 	std::filesystem::remove_all(storePath.parent_path());
 }

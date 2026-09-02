@@ -192,6 +192,13 @@ struct TransactionLogFile final {
 	 * key in this file, or 0 if it holds none or was never scanned.
 	 */
 	std::atomic<double> maxEntryTimestamp = 0;
+	std::atomic<double> maxImplausibleEntryTimestamp = 0;
+
+	/**
+	 * The open-time scan stopped at a mid-file framing break, so the entries
+	 * after it (kept readable, see recoverTail()) are not in `maxEntryTimestamp`.
+	 */
+	std::atomic<bool> scanStoppedAtBreak = false;
 
 	/**
 	 * The time of the last write to this file, kept in-memory to avoid a

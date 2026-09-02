@@ -393,6 +393,44 @@ for (const { name, options, txnOptions } of testOptions) {
 				expect(await db.get('foo')).toBe('bar');
 			}));
 
+		// A conflict surfaces as IsBusy at commit only with optimistic snapshot validation.
+		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
+			`${name} async should keep the timestamp frozen across a coordinated retry`,
+			() =>
+				dbRunner({ dbOptions: [options] }, async ({ db }) => {
+					const log = db.useLog('retry');
+					await db.put('k', 'initial');
+					let attempts = 0;
+					let firstTimestamp = 0;
+					await db.transaction(
+						async (txn: Transaction, attempt) => {
+							attempts = attempt;
+							if (attempt === 1) {
+								firstTimestamp = txn.getTimestamp();
+							} else {
+								// The log batch of attempt 1 is already durable under the first
+								// timestamp; the retried handle must not be re-keyed.
+								expect(() => txn.setTimestamp(firstTimestamp + 1)).toThrow(
+									'Cannot set timestamp: transaction already has staged writes'
+								);
+								expect(txn.getTimestamp()).toBe(firstTimestamp);
+							}
+							await txn.get('k');
+							if (attempt === 1) {
+								await db.put('k', 'conflict');
+							}
+							await txn.put('k', 'committed');
+							log.addEntry(Buffer.from('entry'), txn.id);
+						},
+						{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
+					);
+					expect(attempts).toBeGreaterThanOrEqual(2);
+					const entries = [...log.query({ start: 0 })];
+					expect(entries.length).toBe(1);
+					expect(entries[0].timestamp).toBe(firstTimestamp);
+				})
+		);
+
 		it(`${name} async should reject setTimestamp once a log entry is staged`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				const log = db.useLog('stamped');

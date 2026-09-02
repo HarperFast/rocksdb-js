@@ -17,6 +17,7 @@
 #endif
 #include "core/encoding.h"
 #include "core/exception.h"
+#include "core/platform.h"
 #include "transaction_log/transaction_log_file.h"
 #include "transaction_log/transaction_log_recovery.h"
 
@@ -628,4 +629,13 @@ TEST(TransactionLogMaxTimestamp, SkipsNonFiniteKeys) {
 		.entry(10, 1, std::numeric_limits<double>::quiet_NaN())
 		.entry(10, 1, 6.0);
 	EXPECT_EQ(scanTransactionLogForRecovery(img.data(), img.size()).maxTimestamp, 6.0);
+}
+
+TEST(TransactionLogMaxTimestamp, ReportsAFarFutureKeySeparately) {
+	const double far = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
+	LogImage img;
+	img.entry(10, 1, 5.0).entry(10, 1, far).entry(10, 1, 6.0);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.maxTimestamp, 6.0);
+	EXPECT_EQ(scan.maxImplausibleTimestamp, far);
 }

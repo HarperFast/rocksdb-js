@@ -82,20 +82,24 @@ try {
 			process.exit(1);
 		}
 	} else if (mode === 'far-write') {
+		await writeKeyed(db, key!, Buffer.from('entry'));
 		await writeKeyed(db, 8.64e15 - 1, Buffer.from('entry'));
-		console.log(JSON.stringify({ wrote: 8.64e15 - 1 }));
+		console.log(JSON.stringify({ wrote: key, far: 8.64e15 - 1 }));
 	} else if (mode === 'far-read') {
-		// The durable key is centuries ahead: it must be refused as a seed, with
-		// a warning, rather than move the process clock there.
+		// The far key is refused as a seed (with a warning) and must not mask
+		// the plausible key written beside it.
 		const until = Date.now() + 5000;
 		while (Date.now() < until && !warnings.some((w) => w.includes('ahead of the wall clock'))) {
 			await new Promise((resolve) => setTimeout(resolve, 20));
 		}
 		RocksDatabase.off('log.warn', onWarn);
-		const now = Date.now();
 		const clock = db.getMonotonicTimestamp();
-		console.log(JSON.stringify({ warnings: warnings.length, clock, now }));
-		if (!warnings.some((w) => w.includes('ahead of the wall clock')) || !(clock < now + 1000)) {
+		console.log(JSON.stringify({ warnings: warnings.length, clock, key }));
+		if (
+			!warnings.some((w) => w.includes('ahead of the wall clock')) ||
+			!(clock > key!) ||
+			!(clock < key! + 60000)
+		) {
 			process.exit(1);
 		}
 	} else {

@@ -683,11 +683,17 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     after upgrade repairs the chain. A segment whose header cannot be read emits a `log.warn` rather
     than failing the open (load fails open for broken segments by design). The floor is
     process-wide and also absorbs adopted origin keys, so a peer clock far ahead advances this
-    node's clock after its next restart — bounded by `MAX_CLOCK_FLOOR_SKEW_MS` (ten years): a seed
-    further ahead of the wall clock than that is refused with a `log.warn`, because ulp is 1 at the
+    node's clock after its next restart — bounded by `MAX_CLOCK_FLOOR_SKEW_MS` (ten years): a key
+    further ahead of the wall clock than that never becomes a candidate (`RecoveryScan::maxTimestamp`
+    and `raiseLatestTimestamp` both apply the bound, so it is neither seeded nor stamped into a
+    header and cannot mask a plausible key beside it; `load()` warns), because ulp is 1 at the
     8.64e15 cap, so one durable `setTimestamp(8.64e15 - 1)` would otherwise put the floor one step
     below the cap and wedge every transaction constructor in the process, across restarts, with no
-    reset API. `getMonotonicTimestamp()` still throws `DBException` once the next value would reach
+    reset API. A rotated segment whose header is above the bound (stamped by a pre-bound version)
+    cannot vouch for the segments it summarizes, so that case — and only that case — walks the
+    entries of every older segment. The freeze in `SetTimestamp` also keys on
+    `committedPosition.logSequenceNumber`, which survives `resetTransaction()`: a coordinated-retry
+    attempt whose log batch already landed must keep the key that batch was written under. `getMonotonicTimestamp()` still throws `DBException` once the next value would reach
     `MAX_TIMESTAMP_MS` (unreachable through the floor now, defensive); its three callers
     (`TransactionHandle` construction — which claims the clock _before_ `resetTransaction()` so a
     throw cannot leak the RocksDB transaction — `Database::GetMonotonicTimestamp`,

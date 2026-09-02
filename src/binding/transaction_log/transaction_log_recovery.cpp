@@ -2,6 +2,7 @@
 #include "transaction_log/transaction_log_file.h" // header-size constants, TransactionLogFile
 #include "core/encoding.h"                         // readDoubleBE / readUint32BE
 #include "core/exception.h"
+#include "core/platform.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -143,9 +144,11 @@ RecoveryScan scanTransactionLogForRecovery(
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
 	double maxTimestamp = 0;
+	double maxImplausibleTimestamp = 0;
+	const double plausibleBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
-			tailEntries > 0 && tailUniformTimestamp, maxTimestamp };
+			tailEntries > 0 && tailUniformTimestamp, maxTimestamp, maxImplausibleTimestamp };
 	};
 
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
@@ -179,7 +182,11 @@ RecoveryScan scanTransactionLogForRecovery(
 			return scan(RecoveryScan::Kind::TruncateTail, pos);
 		}
 		bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
-		if (timestamp > maxTimestamp && std::isfinite(timestamp)) {
+		if (timestamp > plausibleBound) {
+			if (timestamp > maxImplausibleTimestamp && std::isfinite(timestamp)) {
+				maxImplausibleTimestamp = timestamp;
+			}
+		} else if (timestamp > maxTimestamp) {
 			maxTimestamp = timestamp;
 		}
 		if (tailEntries++ == 0) {

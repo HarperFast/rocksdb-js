@@ -63,18 +63,13 @@ double getMonotonicTimestamp();
 constexpr double MAX_CLOCK_FLOOR_SKEW_MS = 10.0 * 365.25 * 24.0 * 3600.0 * 1000.0;
 
 /**
- * Raises the floor getMonotonicTimestamp() issues above to `floor`, so no later
- * timestamp is <= it. Raise-only: a floor at or below the current one, a
- * non-finite or non-positive value, one at/above MAX_TIMESTAMP_MS, or one more
- * than MAX_CLOCK_FLOOR_SKEW_MS ahead of the wall clock is ignored. Returns
- * whether the floor moved. Seeded at transaction-log store load from the
- * largest durable batch key (see TransactionLogStore::load).
+ * Raises the floor getMonotonicTimestamp() issues above to `floor`, raise-only
+ * and only for a value inside the domain and the skew window; returns whether
+ * it moved. Seeded at transaction-log store load from the largest durable
+ * batch key (see TransactionLogStore::load).
  */
 bool raiseMonotonicTimestampFloor(double floor);
 
-/**
- * The wall clock in milliseconds since the Unix epoch, unadjusted.
- */
 double getWallClockTimestamp();
 
 void tryCreateDirectory(

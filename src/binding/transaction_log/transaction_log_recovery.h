@@ -61,12 +61,20 @@ struct RecoveryScan final {
 	 */
 	bool unclosedTailIsOneTransaction;
 	/**
-	 * Largest finite entry timestamp among the frames the walk accepted (those
-	 * before `validEnd`), or 0 when there are none. Batch keys are not
-	 * monotonic in log order, so this is a maximum over the walk, not the last
-	 * entry's key. Feeds the open-time clock floor (TransactionLogStore::load).
+	 * Largest entry timestamp among the frames the walk accepted (those before
+	 * `validEnd`) that is finite and no more than MAX_CLOCK_FLOOR_SKEW_MS ahead
+	 * of the wall clock, or 0 when there are none. Batch keys are not monotonic
+	 * in log order, so this is a maximum over the walk, not the last entry's
+	 * key. Feeds the open-time clock floor (TransactionLogStore::load); the
+	 * bound keeps one corrupt far-future key from masking the real maximum.
 	 */
 	double maxTimestamp;
+	/**
+	 * Largest finite entry timestamp the walk saw above that bound, or 0 —
+	 * reported so the store can warn about a far-future key it will not seed
+	 * from.
+	 */
+	double maxImplausibleTimestamp;
 };
 
 /**

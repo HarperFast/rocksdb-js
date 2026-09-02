@@ -11,6 +11,7 @@
 #include <mutex>
 #include <atomic>
 #include <cmath>
+#include "core/platform.h"
 #include <functional>
 #include "rocksdb/db.h"
 #include "transaction_log_entry.h"
@@ -216,10 +217,22 @@ struct TransactionLogStore final {
 	double latestTimestamp = 0;
 
 	/**
-	 * Raise-only update of `latestTimestamp`; non-finite values are ignored.
+	 * Keys above this are not clock-floor candidates and never reach
+	 * `latestTimestamp` (so they are never stamped into a header either):
+	 * MAX_CLOCK_FLOOR_SKEW_MS past the wall clock at construction, fixed so the
+	 * commit path needs no clock read.
 	 */
+	double plausibleTimestampBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
+
+	/**
+	 * False when load() could not inspect a segment, an entry scan, or the
+	 * entries past a mid-file framing break, so `latestTimestamp` may be below a
+	 * batch key already in this log; load() emits a `log.warn` for it.
+	 */
+	bool clockFloorComplete = true;
+
 	bool raiseLatestTimestamp(double timestamp) {
-		if (timestamp > this->latestTimestamp && std::isfinite(timestamp)) {
+		if (timestamp > this->latestTimestamp && timestamp <= this->plausibleTimestampBound) {
 			this->latestTimestamp = timestamp;
 			return true;
 		}

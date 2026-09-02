@@ -1305,8 +1305,10 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 		::napi_throw_error(env, nullptr, "Cannot set timestamp: transaction is not pending");
 		return nullptr;
 	}
+	// committedPosition survives resetTransaction(): a coordinated-retry attempt
+	// whose log batch already landed must keep the key that batch was written under.
 	auto* txn = (*txnHandle)->txn;
-	if ((*txnHandle)->logEntryBatch ||
+	if ((*txnHandle)->logEntryBatch || (*txnHandle)->committedPosition.logSequenceNumber > 0 ||
 		(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
 		::napi_throw_error(env, nullptr, "Cannot set timestamp: transaction already has staged writes");
 		return nullptr;

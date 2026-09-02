@@ -36,8 +36,6 @@ TEST(MonotonicTimestamp, FloorIgnoresValuesOutsideTheDomain) {
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(MAX_TIMESTAMP_MS));
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(MAX_TIMESTAMP_MS * 2));
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(MAX_TIMESTAMP_MS - 1.0));
-	// Beyond the plausible-rollback window: a corrupt or hostile persisted key,
-	// not something to move every future timestamp past.
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(
 		rocksdb_js::getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS + 60.0 * 1000.0));
 	// None of those moved the clock past where it already was heading.
