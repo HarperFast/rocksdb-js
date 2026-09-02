@@ -143,8 +143,9 @@ Creates a new database instance.
 Closes a database. This function can be called multiple times and will only close an opened
 database. A database instance can be reopened once it is closed. A flush failure leaves the native
 database quarantined so `shutdown()` can retry without losing unflushed data; an explicit
-`destroy()` can instead delete it. A compaction failure is reported after native teardown
-completes. All native close errors emit `database:closeFailed`. The quarantine applies to both
+`destroy()` can instead delete it. A failure while waiting for compaction to settle is reported
+after native teardown completes; the optional `compactOnClose` pass itself is best-effort and its
+errors do not fail the close, since a skipped compaction loses no data. All native close errors emit `database:closeFailed`. The quarantine applies to both
 writable and read-only opens because both modes share the physical path lifecycle.
 
 ```typescript

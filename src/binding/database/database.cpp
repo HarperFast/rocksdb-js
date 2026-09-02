@@ -94,7 +94,9 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during clear operation");
 			} else {
-				state->status = state->handle->clear();
+				// awaited by DBHandle::close()'s async-work drain, so the token
+				// that drain arms is the one that can cancel it
+				state->status = state->handle->clear(&state->handle->compactCancelRequested);
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -155,7 +157,9 @@ static napi_value doClearSync(napi_env env, napi_callback_info info, const char*
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
 
-	rocksdb::Status status = (*dbHandle)->clear();
+	// synchronous: counted by operationsInFlight, which beginClose() arms the
+	// descriptor token ahead of
+	rocksdb::Status status = (*dbHandle)->clear(&(*dbHandle)->descriptor->compactCancelRequested);
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, failureMsg);
 		::napi_throw(env, error);
@@ -342,7 +346,11 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 					state->handle->columnDescriptor->column.get(),
 					startPtr,
 					endPtr,
-					state->bottommost
+					state->bottommost,
+					// awaited by DBHandle::close()'s async-work drain; the
+					// descriptor token is not armed until beginClose(), which a
+					// self-close does not reach until after that drain returns
+					&state->handle->compactCancelRequested
 				);
 			}
 			// signal that execute handler is complete
@@ -437,7 +445,10 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 			(*dbHandle)->columnDescriptor->column.get(),
 			startPtr,
 			endPtr,
-			bottommost
+			bottommost,
+			// synchronous: counted by operationsInFlight, which beginClose()
+			// arms the descriptor token ahead of
+			&(*dbHandle)->descriptor->compactCancelRequested
 		),
 		"Compact failed"
 	);
@@ -475,7 +486,10 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		if ((*dbHandle)->path.empty()) {
-			::napi_throw_error(env, nullptr, "Database path is required for destroy");
+			// `path` is populated by open(), so the only way to reach this is a
+			// handle that was never opened -- say so, rather than sending the
+			// caller (who did pass a path) to look at path configuration.
+			::napi_throw_error(env, nullptr, "Database must be opened before it can be destroyed");
 			return nullptr;
 		}
 		try {

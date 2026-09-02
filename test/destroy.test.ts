@@ -1,7 +1,7 @@
 import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -17,6 +17,7 @@ const iteratorNextRaceFixture = join(__dirname, 'fixtures', 'fork-iterator-next-
 const countDestroyRaceFixture = join(__dirname, 'fixtures', 'fork-count-destroy-race.mts');
 const compactCancelSyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-sync.mts');
 const compactCancelAsyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-async.mts');
+const compactCancelCloseFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-close.mts');
 const quarantinedExitFixture = join(__dirname, 'fixtures', 'fork-quarantined-exit.mts');
 const nodeExecutable =
 	process.env.NODE_BINARY ??
@@ -48,7 +49,14 @@ function runDestroyFixture(
 		});
 		child.on('close', (code, signal) => {
 			clearTimeout(timeout);
-			if (code === 0 && signal === null) {
+			const passed = code === 0 && signal === null;
+			// The child owns dbPath, and several fixtures deliberately end with a
+			// live or quarantined database, so nothing else removes it. Keep it
+			// on failure (and under KEEP_FILES) so the state is inspectable.
+			if (passed && !process.env.KEEP_FILES) {
+				rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+			}
+			if (passed) {
 				resolve();
 			} else {
 				reject(new Error(`Destroy fixture failed (code=${code}, signal=${signal})\n${stderr}`));
@@ -90,7 +98,7 @@ describe('Destroy', () => {
 				'Unsupported operation in read-only mode'
 			);
 			expect(() => new RocksDatabase(dbPath).destroy()).toThrow(
-				'Database path is required for destroy'
+				'Database must be opened before it can be destroyed'
 			);
 			expect(existsSync(dbPath)).toBe(true);
 			db.destroy();
@@ -281,6 +289,12 @@ describe('Destroy', () => {
 
 	it('cancels an in-flight asynchronous compaction when destroy claims the descriptor', async () => {
 		await runDestroyFixture(compactCancelAsyncFixture, generateDBPath(), {
+			ROCKSDB_JS_COMPACT_DELAY_MS: '10000',
+		});
+	}, 20_000);
+
+	it('cancels an in-flight asynchronous compaction when the owning handle closes', async () => {
+		await runDestroyFixture(compactCancelCloseFixture, generateDBPath(), {
 			ROCKSDB_JS_COMPACT_DELAY_MS: '10000',
 		});
 	}, 20_000);

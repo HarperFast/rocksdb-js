@@ -24,6 +24,13 @@ inline std::atomic<bool>& closeFailureFlag() {
 	return pending;
 }
 
+// Snapshotted for the same reason as closeFailureFlag(): a fault flag must not
+// be re-read from the environment on a native thread.
+inline std::atomic<bool>& destroyFailureFlag() {
+	static std::atomic<bool> pending{false};
+	return pending;
+}
+
 // A count, not a flag: a quarantined descriptor is only reached at process exit
 // when the shutdown() retry fails too, so reproducing that state needs the
 // close-time flush to fail more than once. `=1` behaves exactly as the previous
@@ -64,6 +71,8 @@ inline void initializeTestSeams() {
 	std::call_once(initialized, []() {
 		const char* value = ::getenv("ROCKSDB_JS_CLOSE_FAILURE");
 		closeFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
+		value = ::getenv("ROCKSDB_JS_DESTROY_FAILURE");
+		destroyFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
 		closeFlushFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		iteratorNextDelayMsFlag().store(

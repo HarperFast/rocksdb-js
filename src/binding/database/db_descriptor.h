@@ -301,30 +301,32 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 *     transition that publishes `closing` -- so a close claim and manual
 	 *     compaction cancellation are one step. Arming it any later reopens the
 	 *     window this exists to close: `finishClose()` drains
-	 *     `operationsInFlight` with an untimed wait and its closables sweep
-	 *     drains each handle's async work, and a manual compaction blocks both
-	 *     (compactSync() holds an OperationGuard for its whole duration; an
-	 *     async compact() released its guard at setup handoff and is awaited by
-	 *     `DBHandle::close()` during the sweep). `DestroyDB`/`Shutdown` also
-	 *     claim every entry for a path under one lock and then close them
-	 *     sequentially, so arming at claim time cancels compactions on
-	 *     descriptors whose own `finishClose()` has not started yet.
+	 *     `operationsInFlight` with an untimed wait, and a synchronous
+	 *     `compactSync()`/`clearSync()` blocks it for the compaction's whole
+	 *     duration. `DestroyDB`/`Shutdown` also claim every entry for a path
+	 *     under one lock and then close them sequentially, so arming at claim
+	 *     time cancels compactions on descriptors whose own `finishClose()` has
+	 *     not started yet.
 	 *  2. It is never cleared. Close-initiated compaction opts out with
 	 *     `cancellable = false` instead, since nothing external is waiting on
 	 *     it, and a descriptor never leaves the closing state.
-	 *  3. It is private to this descriptor and never aliased onto `closing`.
+	 *  3. It covers synchronous compaction only. Async `compact()`/`clear()`
+	 *     released their OperationGuard at setup handoff, so this drain does not
+	 *     await them; they are awaited by `DBHandle::close()` and cancelled by
+	 *     the per-handle token, which a self-close arms *before* it ever reaches
+	 *     `beginClose()`. See `DBHandle::compactCancelRequested`.
+	 *  4. It is private to this descriptor and never aliased onto `closing`.
 	 *     RocksDB writes through this pointer -- `DisableManualCompaction()`
 	 *     sets the caller's atomic -- and `closing == true` means the registry
 	 *     has an owner committed to running `finishClose()`. Letting RocksDB
 	 *     publish that state would leave a half-closed descriptor with no
 	 *     closer, wedging every later open of the path.
 	 *
-	 * Covered by `test/fixtures/fork-compact-cancel-{sync,async}.mts`: both fail
-	 * if the token stops reaching RocksDB, and the sync one additionally fails if
-	 * arming moves past the in-flight drain. Neither separates arming here from
-	 * arming at the top of `finishClose()` -- for a single descriptor those are
-	 * equivalent, and the batch-claim case in (1) is what makes this the right
-	 * home.
+	 * Covered by `test/fixtures/fork-compact-cancel-sync.mts`, which fails both
+	 * if the token stops reaching RocksDB and if arming moves past the in-flight
+	 * drain. It does not separate arming here from arming at the top of
+	 * `finishClose()` -- for a single descriptor those are equivalent, and the
+	 * batch-claim case in (1) is what makes this the right home.
 	 */
 	std::atomic<bool> compactCancelRequested{false};
 
@@ -637,7 +639,7 @@ public:
 	/**
 	 * Flushes every column family's memtable. `allowWriteStall = false` (the RocksDB default)
 	 * makes this WAIT, unbounded, on the calling thread — see the `FlushOptions` JSDoc in
-	 * `src/load-binding.ts` and AGENTS invariant 15.
+	 * `src/load-binding.ts` and AGENTS invariant 16.
 	 */
 	rocksdb::Status flush(bool allowWriteStall = false);
 
@@ -655,9 +657,14 @@ public:
 		const rocksdb::Slice* start,
 		const rocksdb::Slice* end,
 		bool bottommost = false,
-		// Close-initiated compaction opts out: nothing external is waiting on it,
-		// and `compactCancelRequested` stays armed for the whole of finishClose().
-		bool cancellable = true
+		// The token RocksDB polls to abandon this compaction. Which one to pass
+		// is decided by the drain that awaits the caller, not by this class:
+		// `&DBDescriptor::compactCancelRequested` for a synchronous caller
+		// holding an OperationGuard, `&DBHandle::compactCancelRequested` for one
+		// running as admitted async work. See DBHandle::compactCancelRequested.
+		// Close-initiated compaction passes nullptr and opts out: nothing
+		// external is waiting on it.
+		std::atomic<bool>* canceled = nullptr
 	);
 };
 

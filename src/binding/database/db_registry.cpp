@@ -406,7 +406,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	if (destroyDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(destroyDelayMs));
 	}
-	if (testDelayMs("ROCKSDB_JS_DESTROY_FAILURE") > 0) {
+	if (destroyFailureFlag().load(std::memory_order_relaxed)) {
 		throw rocksdb_js::DBException("Injected database destruction failure");
 	}
 	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());

@@ -227,15 +227,25 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `getenv()` scan per row is a measurable share of their cost for a seam unset in production. Add
   new per-row seams the same way.
 - `ROCKSDB_JS_COMPACT_DELAY_MS` - Test-only: upper bound (ms) that a **cancellable** manual
-  `compactRange()` parks before handing the range to RocksDB, returning as soon as the
-  descriptor's cancel token is armed. Lets a fixture hold a compaction across a foreign close
-  claim without depending on how long a real compaction runs; snapshotted in
-  `initializeTestSeams()` like the per-row seams above, so the production path costs one relaxed
-  load per manual compaction. Used by `test/fixtures/fork-compact-cancel-{sync,async}.mts`
+  `compactRange()` parks before handing the range to RocksDB, returning as soon as the cancel
+  token that caller was given is armed. Lets a fixture hold a compaction across a close claim
+  without depending on how long a real compaction runs; snapshotted in `initializeTestSeams()`
+  like the per-row seams above, so the production path costs one relaxed load per manual
+  compaction. Used by `test/fixtures/fork-compact-cancel-{sync,async,close}.mts`
 - `ROCKSDB_JS_CLOSE_FLUSH_FAILURE` - Test-only: number of close-time flushes to fail with an
   injected `IOError` (a **count**, not a flag; `1` is one failure). More than one is what leaves a
   descriptor still quarantined at process exit, since the exit-time `DBRegistry::Shutdown()`
   consumes a failure of its own on the retry — see invariant 19
+- `ROCKSDB_JS_CLOSE_FAILURE` / `ROCKSDB_JS_DESTROY_FAILURE` - Test-only: inject a one-shot native
+  close failure, or fail every physical `DestroyDB` for the life of the process. Both are fault
+  **flags**, so both are snapshotted in `initializeTestSeams()` rather than re-read: `::getenv`
+  races a `process.env` write from another thread, and these are read from teardown paths that can
+  run on any thread
+- `ROCKSDB_JS_CLOSE_RETRY_DELAY_MS` - Test-only: delay inside a _resumed_ `finishClose()` (the
+  `shutdown()`/`destroy()` retry of a quarantined descriptor), widening the window in which a
+  concurrent open must wait for the retry rather than reopen the path
+- `ROCKSDB_JS_BACKUP_DELAY_MS` / `ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS` - Test-only: delays inside a
+  native backup copy and iterator construction, holding each across a concurrent destroy claim
 
 ## Test Structure
 
@@ -368,14 +378,27 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    count scan (`DBIteratorHandle::countRemaining`, behind `getKeysCount()` on both the database and
    transaction paths) polls `isClosing()` per row and reports the abort to its caller rather than a
    partial count; a manual `compactRange()` cannot poll from inside RocksDB, so it gets an explicit
-   cancel token (`DBDescriptor::compactCancelRequested` → `CompactRangeOptions::canceled`). That
-   token is armed in exactly one place — `beginClose()`, in the same transition that publishes
-   `closing` — and is never cleared and never aliased onto `closing` itself: RocksDB writes through
-   the pointer it is given (`DisableManualCompaction()` sets the caller's atomic), and `closing`
-   means the registry has an owner committed to running `finishClose()`, which RocksDB must not be
-   able to publish. The full contract, and what each of
-   `test/fixtures/fork-compact-cancel-{sync,async}.mts` does and does not pin down, is on the
-   member declaration.
+   cancel token → `CompactRangeOptions::canceled`. There are **two** such tokens, and which one a
+   compaction is handed is decided by the drain that awaits it, not by where the compaction runs.
+   `DBDescriptor::compactCancelRequested` covers a **synchronous** `compactSync()`/`clearSync()`,
+   which holds an `OperationGuard` for its whole duration and so is awaited by `finishClose()`'s
+   untimed `operationsInFlight` wait; it is armed in exactly one place — `beginClose()`, in the same
+   transition that publishes `closing`. `DBHandle::compactCancelRequested` covers an **async**
+   `compact()`/`clear()`, which released its guard at setup handoff and is instead awaited by
+   `DBHandle::close()`'s untimed async-work drain; it is armed by that same `close()`, immediately
+   before the drain. The split is not redundancy: a self-close (`db.close()` →
+   `DBRegistry::CloseDB`) reaches `DBHandle::close()` **before** `PurgeIfUnreferenced`/`beginClose()`,
+   so the descriptor token is not yet armed when the async drain starts — a `db.close()` racing its
+   own `db.compact()` would park the JS thread for the compaction's full duration. Arming the
+   descriptor token from `CloseDB` is not the alternative: it is never cleared, so one handle
+   closing would permanently kill manual compaction for every other handle sharing the
+   process-global descriptor. The per-handle token _is_ cleared, by `DBHandle::open()`, and only
+   after the new descriptor is adopted (see invariant 20). Neither token is ever aliased onto
+   `closing` itself: RocksDB writes through the pointer it is given
+   (`DisableManualCompaction()` sets the caller's atomic), and `closing` means the registry has an
+   owner committed to running `finishClose()`, which RocksDB must not be able to publish. The full
+   contract, and what each of `test/fixtures/fork-compact-cancel-{sync,async,close}.mts` does and
+   does not pin down, is on the two member declarations.
    Everything the four registry teardown paths do _after_ claiming a descriptor —
    `finishClose()`, erase-or-quarantine, notify, emit `database:closeFailed` — is one helper,
    `closeClaimedDescriptors` in `db_registry.cpp`; only the claim predicate differs per caller. Its
@@ -743,6 +766,19 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `test/fixtures/fork-quarantined-exit.mts`; the same shape reproduces from JS by leaving a
     database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
     which is why its fixtures now tear down with `destroy()` rather than `close()`).
+
+20. **A reopened handle clears its cancellation only after it has adopted the new descriptor**:
+    `DBHandle::close()` publishes `cancelled` (and, per invariant 6, the per-handle compaction
+    token), and every async admission refuses while either stands — so `DBHandle::open()` has to
+    clear them for a documented close/reopen cycle to work. It must do so **after**
+    `DBRegistry::OpenDB()` returns, not before the call. `OpenDB()` blocks while a foreign
+    `destroy()`/`shutdown()` owns the old path, and that teardown's closables sweep force-closes
+    this still-attached handle mid-wait, re-arming both flags. Clearing first therefore leaves the
+    re-arm standing over the _newly_ opened descriptor: `opened()` reports true and the sync
+    methods keep working, while every `get`/`flush`/`compact`/`clear`/`commit` on that instance
+    rejects with "Database is closing" for the rest of its life. The general shape — publish-then-
+    clear across a blocking call another thread can publish into — is the same one invariant 6's
+    cancel token and invariant 17's admission mutex exist to keep out of the teardown paths.
 
 ## Debugging native heap corruption
 

@@ -80,7 +80,7 @@ DBHandle::~DBHandle() {
 /**
  * Clears all data in the database's column family.
  */
-rocksdb::Status DBHandle::clear() {
+rocksdb::Status DBHandle::clear(std::atomic<bool>* compactCanceled) {
 	if (!this->opened() || this->isCancelled()) {
 		DEBUG_LOG("%p Database closed during clear operation\n", this);
 		return rocksdb::Status::Aborted("Database closed during clear operation");
@@ -90,7 +90,9 @@ rocksdb::Status DBHandle::clear() {
 	rocksdb::Status status = this->descriptor->compactRange(
 		this->columnDescriptor->column.get(),
 		nullptr,
-		nullptr
+		nullptr,
+		false,
+		compactCanceled
 	);
 	if (!status.ok()) {
 		// A dropped column family is effectively already empty — clear is a no-op.
@@ -130,6 +132,12 @@ void DBHandle::close() {
 	DEBUG_LOG("%p DBHandle::close dbDescriptor=%p (ref count = %ld)\n", this, this->descriptor.get(), this->descriptor.use_count());
 
 	// cancel all active async work before closing
+	//
+	// An async compact() cannot see that flag: its execute callback checks it
+	// once at entry and then blocks inside RocksDB, which only reads
+	// CompactRangeOptions::canceled. Arm that token here too, before the drain
+	// below waits it out -- see DBHandle::compactCancelRequested.
+	this->compactCancelRequested.store(true);
 	this->cancelAllAsyncWork();
 
 	// wait for all async work to complete before closing
@@ -340,10 +348,6 @@ void DBHandle::collectTransactionLogSummary(TransactionLogStoreStats& total, uin
  * @param options - The options for the database.
  */
 void DBHandle::open(const std::string& path, const DBOptions& options) {
-	// Reset the cancelled state in case this handle was previously closed
-	// and is being re-opened
-	this->resetCancelled();
-
 	this->path = path;
 
 	auto handleParams = DBRegistry::OpenDB(path, options);
@@ -353,6 +357,17 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->verificationTableColumnFamilyId = this->columnDescriptor->column->GetID();
 	this->disableWAL = options.disableWAL;
 	this->enableVerificationTable = options.verificationTable;
+
+	// Clear the cancellation this handle may carry from a previous close, but
+	// only now that the new descriptor is adopted. OpenDB() blocks while a
+	// foreign destroy owns the old path, and that destroy's closables sweep
+	// closes this still-attached handle -- which re-arms cancellation. Resetting
+	// before the open would leave that re-arm standing over the newly opened
+	// descriptor, and since async admission refuses on it, every later get,
+	// flush, compact and commit through this handle would reject as
+	// "Database is closing" while the sync methods kept working.
+	this->resetCancelled();
+	this->compactCancelRequested.store(false);
 
 	// Note: We cannot attach this handle to the descriptor because we don't
 	// have the smart pointer to the dbHandle instance, so the caller needs to

@@ -428,8 +428,10 @@ void DBDescriptor::finishClose(bool destroying) {
 		// Existing operations will decrement operationsInFlight and notify us when done.
 		// Unbounded in-flight operations must abort once `closing` is published
 		// rather than block this untimed wait for their full duration. A count
-		// scan polls isClosing() itself; a manual compactRange() uses the cancel
-		// token armed by beginClose(), before DBHandle::close() starts its drain.
+		// scan polls isClosing() itself; a synchronous manual compactRange()
+		// uses the cancel token armed by beginClose(). An async one is not
+		// counted here at all -- it is awaited by the closables sweep below and
+		// cancelled by the per-handle token DBHandle::close() arms.
 		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
 		uint32_t current;
 		while ((current = this->operationsInFlight.load()) != 0) {
@@ -474,7 +476,7 @@ void DBDescriptor::finishClose(bool destroying) {
 	}
 
 	// We want to ensure that all in-memory data is written to disk. Keep the waiting default: an
-	// immediate flush races transaction-log-store teardown (AGENTS invariant 15).
+	// immediate flush races transaction-log-store teardown (AGENTS invariant 16).
 	std::string closeError;
 	rocksdb::Status status = testConsumeCloseFlushFailure()
 		? rocksdb::Status::IOError("Injected database close flush failure")
@@ -501,7 +503,11 @@ void DBDescriptor::finishClose(bool destroying) {
 		}
 		for (const auto& columnDesc : pinnedColumns) {
 			if (columnDesc && columnDesc->column) {
-				this->compactRange(columnDesc->column.get(), nullptr, nullptr, false, false);
+				// Best-effort: a skipped compaction loses no data, so its status
+				// deliberately does not become a close failure (which would
+				// quarantine the path). Only the WaitForCompact below is
+				// reported -- see README "db.close()".
+				this->compactRange(columnDesc->column.get(), nullptr, nullptr, false, nullptr);
 			}
 		}
 	}
@@ -2254,25 +2260,25 @@ rocksdb::Status DBDescriptor::compactRange(
 	const rocksdb::Slice* start,
 	const rocksdb::Slice* end,
 	bool bottommost,
-	bool cancellable
+	std::atomic<bool>* canceled
 ) {
 	std::lock_guard<std::mutex> lock(this->compactMutex);
 	DEBUG_LOG("%p DBDescriptor::compactRange Compacting range (bottommost=%d)\n", this, bottommost);
 	rocksdb::CompactRangeOptions options;
-	// Let a concurrent finishClose() interrupt this compaction rather than
-	// wait out its full, unbounded duration; see compactCancelRequested.
-	if (cancellable) {
-		options.canceled = &this->compactCancelRequested;
+	// Let a concurrent close interrupt this compaction rather than wait out its
+	// full, unbounded duration; see compactCancelRequested.
+	if (canceled) {
+		options.canceled = canceled;
 		// Test seam (inert unless ROCKSDB_JS_COMPACT_DELAY_MS is set): park here,
 		// still inside the caller's OperationGuard / async-work registration,
-		// until a foreign close arms the token. That makes the ordering
-		// observable from JS without depending on how long a real compaction
-		// happens to run. Bounded so a fixture that never closes still finishes.
+		// until a close arms the token. That makes the ordering observable from
+		// JS without depending on how long a real compaction happens to run.
+		// Bounded so a fixture that never closes still finishes.
 		const int cancelWaitMs = compactCancelDelayMsFlag().load(std::memory_order_relaxed);
 		if (cancelWaitMs > 0) {
 			const auto deadline =
 				std::chrono::steady_clock::now() + std::chrono::milliseconds(cancelWaitMs);
-			while (!this->compactCancelRequested.load() &&
+			while (!canceled->load() &&
 				std::chrono::steady_clock::now() < deadline
 			) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
