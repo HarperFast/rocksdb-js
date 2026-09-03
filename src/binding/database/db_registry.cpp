@@ -592,7 +592,11 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			napi_value database;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &database));
 			napi_value pathValue;
-			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, key.path.c_str(), key.path.size(), &pathValue));
+			// The descriptor's path, not the key's: the key is resolved identity,
+			// and a caller matching this against the path it opened would miss
+			// wherever the two spell the same directory differently.
+			const std::string& reportedPath = entry.descriptor->path;
+			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, reportedPath.c_str(), reportedPath.size(), &pathValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "path", pathValue));
 			napi_value modeValue;
 			std::string mode = entry.descriptor->mode == DBMode::Optimistic ? "optimistic" : "pessimistic";
