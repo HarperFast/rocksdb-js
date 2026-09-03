@@ -2047,8 +2047,18 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	NAPI_GET_STRING(argv[0], path, "Database path is required");
+	NAPI_GET_STRING(argv[0], rawPath, "Database path is required");
 	const napi_value options = argv[1];
+
+	// Resolve the database path to filesystem identity ONCE, here, and use that
+	// everywhere below: the registry keys (both of them), the RocksDB target,
+	// the default transaction-logs directory and every later filesystem call.
+	// Resolving later — or twice — lets identity and target disagree if the
+	// mapping changes in between (a relative path plus a `process.chdir()`, a
+	// symlinked data directory repointed between calls), which would key a
+	// descriptor as one database while it opens another. Same treatment
+	// `secondaryPath` already gets below.
+	const std::string path = rocksdb_js::resolveIdentityPath(rawPath).string();
 
 	DBOptions dbHandleOptions;
 

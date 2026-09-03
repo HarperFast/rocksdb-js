@@ -252,16 +252,22 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	}
 
 	// Now the database lock should be released, safe to destroy
-	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());
-	rocksdb::Status status = rocksdb::DestroyDB(path, rocksdb::Options());
+	// The resolved identity is what was claimed and closed above, so it is also
+	// what gets deleted: deleting the caller's spelling instead would target
+	// whatever it points at NOW, which a symlink repoint during those closes
+	// (they flush, wait on compactions and join threads) can make a different
+	// directory. A database reached through a symlink therefore has its real
+	// directory removed and the link left dangling.
+	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), identityPath.c_str());
+	rocksdb::Status status = rocksdb::DestroyDB(identityPath, rocksdb::Options());
 	if (!status.ok()) {
 		throw rocksdb_js::DBException(status.ToString());
 	}
 
 	// remove the database directory including transaction logs
-	std::filesystem::remove_all(path);
+	std::filesystem::remove_all(identityPath);
 
-	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), path.c_str());
+	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), identityPath.c_str());
 }
 
 /**

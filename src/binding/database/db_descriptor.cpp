@@ -1380,10 +1380,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		// inside it: the lock file and the secondary's info-LOG rotation would
 		// land among the primary's files, and destroy()'s remove_all(path)
 		// would delete a live secondary's workspace under it. Both sides are
-		// resolved so differently-spelled aliases and symlinked parents are
-		// caught — options.secondaryPath by Database::Open, the primary here.
-		if (rocksdb_js::isPathWithin(
-				rocksdb_js::resolveIdentityPath(path), options.secondaryPath)) {
+		// already resolved by Database::Open, so differently-spelled aliases and
+		// symlinked parents are caught.
+		if (rocksdb_js::isPathWithin(identityPath, options.secondaryPath)) {
 			throw rocksdb_js::DBException(
 				"secondaryPath must be a separate directory outside the database path \"" + path + "\""
 			);
