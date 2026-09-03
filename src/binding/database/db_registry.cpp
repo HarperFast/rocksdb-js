@@ -150,9 +150,10 @@ void DBRegistry::DestroyDB(const std::string& path) {
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
 
-	// Entries are keyed by resolved identity, so a caller's spelling has to be
+	// Entries are keyed by resolved identity, so a raw spelling has to be
 	// resolved the same way or destroy would walk past this path's descriptors
-	// and delete their files out from under them.
+	// and delete their files out from under them. An open handle passes its
+	// descriptor's identity, for which this is a no-op.
 	const std::string identityPath = rocksdb_js::resolveIdentityPath(path).string();
 
 	// One path can hold several descriptors — read-write, read-only, and any

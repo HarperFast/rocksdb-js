@@ -1297,7 +1297,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 
 	// try to list existing column families
 	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str());
-	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
+	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), identityPath, &columnFamilyNames);
 	if (listStatus.ok() && !columnFamilyNames.empty()) {
 		// Database exists. Compression is per-CF: opening one column family must
 		// not change another's algorithm, and RocksDB requires opening every CF
