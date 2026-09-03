@@ -36,10 +36,8 @@ bool isMissingSstOpenRace(const rocksdb::Status& status) {
 	if (status.ok()) {
 		return false;
 	}
-	// The race surfaces as an IOError (sometimes with the kPathNotFound
-	// subcode) or as a Corruption status wrapping the IO error's text. The
-	// Corruption wrap is constructed fresh inside RocksDB, so the subcode is
-	// lost there and only the message carries the not-found signal.
+	// The Corruption wrap is constructed fresh inside RocksDB, so its subcode is
+	// lost and only the message carries the not-found signal.
 	if (!status.IsIOError() && !status.IsCorruption()) {
 		return false;
 	}

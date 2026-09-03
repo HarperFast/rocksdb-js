@@ -86,16 +86,8 @@ struct DBOptions final {
 	std::string name;
 	bool noBlockCache = false;
 	bool readOnly = false;
-	// Non-empty switches the open to `DB::OpenAsSecondary`: a read-only
-	// follower of a live primary that tolerates the primary deleting files and
-	// advances via TryCatchUpWithPrimary. The value is the secondary instance's
-	// OWN workspace directory (its info log/state — RocksDB requires it to be
-	// distinct from the primary's directory and exclusive to one secondary
-	// instance); `path` remains the primary's data directory. Implies
-	// `readOnly = true` (enforced at parse) and forces `max_open_files = -1`
-	// (every SST/blob file opened and fd-held at version install is what makes
-	// the primary's deletions safe — a bounded table cache would reintroduce
-	// the missing-file race on cache misses).
+	// Non-empty switches the open to `DB::OpenAsSecondary`; the value is the
+	// follower's own workspace, not the database (see AGENTS invariant 18).
 	std::string secondaryPath;
 	uint32_t parallelismThreads = std::max<uint32_t>(1, std::thread::hardware_concurrency() / 2);
 	uint8_t statsLevel = rocksdb::StatsLevel::kExceptDetailedTimers;

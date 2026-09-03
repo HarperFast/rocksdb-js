@@ -488,10 +488,11 @@ static bool throwIfNotSecondary(napi_env env, const std::shared_ptr<DBHandle>& d
 /**
  * RAII release for a descriptor `operationsInFlight` claim made on the JS
  * thread, mirroring CheckpointInFlightClaim: decrements (and wakes a waiting
- * `finishClose()`) on any early return, unless the claim was handed off to the
- * queued work, after which `AsyncCatchUpState` owns the matching decrement
- * (released by execute, or by its destructor when the work was cancelled and
- * execute never ran).
+ * `finishClose()`) on any early return before the claim is handed off. Handoff
+ * happens the moment `AsyncCatchUpState` is allocated, because that object
+ * releases the claim itself — from the worker when it runs, from its destructor
+ * when setup fails and it unwinds. Two owners would decrement twice and
+ * underflow the counter, and `finishClose()` waits on it unbounded.
  */
 struct CatchUpInFlightClaim {
 	DBDescriptor* descriptor;
@@ -549,7 +550,21 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 		&name
 	));
 
-	auto state = new AsyncCatchUpState(env, *dbHandle, descriptor);
+	// Owned here until the work is queued. An N-API failure on any step below
+	// returns through NAPI_STATUS_THROWS, and a leaked state would keep its
+	// strong descriptor pin forever: PurgeIfUnreferenced would never see the
+	// count drop, so the follower's RocksDB and its <secondaryPath>/.secondary
+	// .lock would stay held for the life of the process, leaving that workspace
+	// unopenable by any process on the host until restart.
+	//
+	// The state takes the in-flight claim with it: from here the claim is
+	// released exactly once, by the state (its destructor when this unwinds,
+	// the worker otherwise). Leaving `handedOff` false would release it twice
+	// on a failure path and underflow the counter, wedging finishClose()'s
+	// unbounded wait forever.
+	auto owned = std::make_unique<AsyncCatchUpState>(env, *dbHandle, descriptor);
+	handedOff = true;
+	AsyncCatchUpState* state = owned.get();
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -594,10 +609,21 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
+	// Registered BEFORE the queue: the worker can start the moment the queue
+	// accepts it, and close()'s drain must already be counting it. A failed
+	// queue therefore has to unregister, or that count never returns to zero
+	// and every later close times out on its drain.
 	(*dbHandle)->registerAsyncWork();
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
-	handedOff = true;
+	napi_status queued = ::napi_queue_async_work(env, state->asyncWork);
+	if (queued != napi_ok) {
+		(*dbHandle)->unregisterAsyncWork();
+		// The work was created but will never run, and ~BaseAsyncState asserts
+		// it was deleted first.
+		owned->deleteAsyncWork();
+		NAPI_STATUS_THROWS(queued);
+	}
+	owned.release();
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -2048,14 +2074,12 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], rawPath, "Database path is required");
 	const napi_value options = argv[1];
 
-	// Resolve the database path to filesystem identity ONCE, here, and use that
-	// everywhere below: the registry keys (both of them), the RocksDB target,
-	// the default transaction-logs directory and every later filesystem call.
-	// Resolving later — or twice — lets identity and target disagree if the
-	// mapping changes in between (a relative path plus a `process.chdir()`, a
-	// symlinked data directory repointed between calls), which would key a
-	// descriptor as one database while it opens another. Same treatment
-	// `secondaryPath` already gets below.
+	// Resolved ONCE, here, so identity and target cannot disagree: everything
+	// below — both registry keys, the RocksDB target, the default
+	// transaction-logs directory, destroy's deletions — uses this string. A
+	// second resolution elsewhere would key a descriptor as one database while
+	// it opens another if the mapping moved in between (a relative path plus a
+	// `process.chdir()`, a repointed symlink).
 	const std::string path = rocksdb_js::resolveIdentityPath(rawPath).string();
 
 	DBOptions dbHandleOptions;
