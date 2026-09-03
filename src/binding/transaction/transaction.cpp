@@ -1295,12 +1295,32 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->state != TransactionState::Pending) {
 		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction is not pending");
 	}
+
+	double timestampMs = 0.0;
+	if (type == napi_number) {
+		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),
+			"Invalid timestamp, expected positive number");
+		if (!(timestampMs > 0) || !std::isfinite(timestampMs) || timestampMs >= 8.64e15) {
+			NAPI_THROW_JS_ERROR("ERR_INVALID_TIMESTAMP",
+				"Invalid timestamp, expected a finite positive number below 8640000000000000");
+		}
+	} else if (type != napi_undefined) {
+		NAPI_THROW_JS_ERROR("ERR_INVALID_TIMESTAMP", "Invalid timestamp, expected positive number");
+	}
+
+	const bool isIdempotent = type == napi_number && timestampMs == (*txnHandle)->startTimestamp;
 	auto* txn = (*txnHandle)->txn;
 	if ((*txnHandle)->committedPosition.logSequenceNumber > 0) {
+		if (isIdempotent) {
+			NAPI_RETURN_UNDEFINED();
+		}
 		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction log batch is already durable");
 	}
 	if ((*txnHandle)->logEntryBatch ||
 		(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
+		if (isIdempotent) {
+			NAPI_RETURN_UNDEFINED();
+		}
 		NAPI_THROW_JS_ERROR(
 			"ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction already has staged writes or log entries");
 	}
@@ -1308,17 +1328,8 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	if (type == napi_undefined) {
 		// use current timestamp
 		(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
-	} else if (type == napi_number) {
-		double timestampMs = 0.0;
-		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),
-			"Invalid timestamp, expected positive number");
-		if (!(timestampMs > 0) || !std::isfinite(timestampMs) || timestampMs >= 8.64e15) {
-			NAPI_THROW_JS_ERROR("ERR_INVALID_TIMESTAMP",
-				"Invalid timestamp, expected a finite positive number below 8640000000000000");
-		}
-		(*txnHandle)->startTimestamp = timestampMs;
 	} else {
-		NAPI_THROW_JS_ERROR("ERR_INVALID_TIMESTAMP", "Invalid timestamp, expected positive number");
+		(*txnHandle)->startTimestamp = timestampMs;
 	}
 
 	NAPI_RETURN_UNDEFINED();

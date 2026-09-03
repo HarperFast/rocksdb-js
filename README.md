@@ -929,7 +929,8 @@ it claims a fresh monotonic value.
 
 The override must happen while the transaction is pending and before any database write or
 transaction-log entry is staged. A log batch that has already been written keeps its timestamp
-across a coordinated retry. A supplied value must be finite, positive, and below `8.64e15`.
+across a coordinated retry; reapplying that same timestamp remains idempotent while pending. A
+supplied value must be finite, positive, and below `8.64e15`.
 
 rocksdb-js does not define a record's value layout or version metadata. A producer that copies the
 transaction timestamp into record bytes is responsible for calling `setTimestamp()` before reading

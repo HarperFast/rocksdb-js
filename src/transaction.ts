@@ -197,8 +197,9 @@ export class Transaction extends DBI {
 	 * Overrides the transaction timestamp in milliseconds since the Unix epoch.
 	 * Call this before reading the timestamp or staging writes when adopting an
 	 * origin timestamp for replication or replay. Once a write or log entry is
-	 * staged, the timestamp is frozen. The value must be finite, positive, and
-	 * below 8640000000000000.
+	 * staged, the timestamp is frozen, but reapplying the same timestamp remains
+	 * idempotent while the transaction is pending. The value must be finite,
+	 * positive, and below 8640000000000000.
 	 *
 	 * @param timestamp - The timestamp to set in milliseconds.
 	 */

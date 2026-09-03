@@ -400,9 +400,10 @@ for (const { name, options, txnOptions } of testOptions) {
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				const log = db.useLog('stamped');
 				await db.transaction(async (txn: Transaction) => {
-					txn.setTimestamp(Date.now());
+					const timestamp = Date.now();
+					txn.setTimestamp(timestamp);
 					log.addEntry(Buffer.from('entry'), txn.id);
-					expect(() => txn.setTimestamp(Date.now())).toThrow(
+					expect(() => txn.setTimestamp(timestamp + 1)).toThrow(
 						'transaction already has staged writes'
 					);
 				}, txnOptions);
@@ -415,17 +416,16 @@ for (const { name, options, txnOptions } of testOptions) {
 					const log = db.useLog('retry');
 					await db.put('k', 'initial');
 					let attempts = 0;
-					let firstTimestamp = 0;
+					const originTimestamp = Date.now() - 1000;
 					await db.transaction(
 						async (txn: Transaction, attempt) => {
 							attempts = attempt;
-							if (attempt === 1) {
-								firstTimestamp = txn.getTimestamp();
-							} else {
-								expect(() => txn.setTimestamp(firstTimestamp + 1)).toThrow(
+							txn.setTimestamp(originTimestamp);
+							expect(txn.getTimestamp()).toBe(originTimestamp);
+							if (attempt > 1) {
+								expect(() => txn.setTimestamp(originTimestamp + 1)).toThrow(
 									'transaction log batch is already durable'
 								);
-								expect(txn.getTimestamp()).toBe(firstTimestamp);
 							}
 							await txn.get('k');
 							if (attempt === 1) await db.put('k', 'conflict');
@@ -437,7 +437,7 @@ for (const { name, options, txnOptions } of testOptions) {
 					expect(attempts).toBeGreaterThanOrEqual(2);
 					const entries = [...log.query({ start: 0 })];
 					expect(entries).toHaveLength(1);
-					expect(entries[0].timestamp).toBe(firstTimestamp);
+					expect(entries[0].timestamp).toBe(originTimestamp);
 				})
 		);
 
