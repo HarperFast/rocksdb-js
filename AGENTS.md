@@ -698,6 +698,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `Register` (a throw there would run the half-built descriptor's close and decrement a refcount
     it never incremented) — rejects the writable open while read-only-loaded stores are live,
     deciding on each live store's own `TransactionLogStore::readOnly` for the same reason.
+    A cross-process log reader also inherits a mapping hazard the same-process case does not
+    have: a read-only file's `MAP_SHARED` overlay covers `[0, size)` including an unrecovered
+    torn tail, so if the primary process restarts and its `recoverTail()` truncates below a
+    mapped page, a follower scanning that region takes SIGBUS — an uncatchable process kill.
+    Invariant 14's "POSIX needs none" reasoning covers a same-process writer only. Reading a
+    read-only store through positional reads instead of a shared mapping is the fix; until then
+    a follower against a crash-restarting primary carries that risk.
     A secondary's log view is therefore "what this process has resident", not a frozen extent: a
     store an in-process writer holds open — or creates later — is the same object, so its appends
     are visible; only a cross-process primary's new stores and appends need a reopen. That is

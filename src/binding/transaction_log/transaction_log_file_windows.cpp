@@ -191,21 +191,29 @@ void TransactionLogFile::openFile() {
 
 	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str());
 
-	// ensure parent directory exists (may have been deleted by purge())
-	auto parentPath = this->path.parent_path();
-	if (!parentPath.empty()) {
-		try {
-			DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
-			rocksdb_js::tryCreateDirectory(parentPath);
-		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
-				this, parentPath.string().c_str(), e.what());
-			throw rocksdb_js::DBException("Failed to create parent directory: " + parentPath.string());
+	// A reader creates neither the file nor its parent directory (invariant 18:
+	// the tree belongs to the writer, which may be live in another process), and
+	// never restamps permissions — the `exists()` check below races a segment
+	// the primary is creating right now, and the follower would rewrite its DACL.
+	// Mirrors the POSIX sibling.
+	bool fileExisted = true;
+	if (!this->readOnly) {
+		// ensure parent directory exists (may have been deleted by purge())
+		auto parentPath = this->path.parent_path();
+		if (!parentPath.empty()) {
+			try {
+				DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
+				rocksdb_js::tryCreateDirectory(parentPath);
+			} catch (const std::filesystem::filesystem_error& e) {
+				DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
+					this, parentPath.string().c_str(), e.what());
+				throw rocksdb_js::DBException("Failed to create parent directory: " + parentPath.string());
+			}
 		}
-	}
 
-	// Check if file already exists before creating/opening
-	bool fileExisted = std::filesystem::exists(this->path);
+		// Check if file already exists before creating/opening
+		fileExisted = std::filesystem::exists(this->path);
+	}
 
 	if (this->readOnly) {
 		// A reader never creates the file and can open logs on a read-only or

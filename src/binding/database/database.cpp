@@ -562,9 +562,36 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	// the worker otherwise). Leaving `handedOff` false would release it twice
 	// on a failure path and underflow the counter, wedging finishClose()'s
 	// unbounded wait forever.
+	//
+	// The async-work registration has to precede the allocation for the same
+	// reason: ~BaseAsyncState unregisters unconditionally, so a state destroyed
+	// during setup would decrement a count that was never incremented and
+	// close()'s drain would then report "nothing in flight" while a worker is
+	// still running.
+	(*dbHandle)->registerAsyncWork();
 	auto owned = std::make_unique<AsyncCatchUpState>(env, *dbHandle, descriptor);
 	handedOff = true;
 	AsyncCatchUpState* state = owned.get();
+
+	// ~BaseAsyncState drops the resolve/reject refs without deleting them (the
+	// completion path deletes them as it calls them), so setup has to.
+	struct SetupRefs {
+		AsyncCatchUpState* state;
+		bool released = false;
+		~SetupRefs() {
+			if (released) {
+				return;
+			}
+			if (state->resolveRef != nullptr) {
+				::napi_delete_reference(state->env, state->resolveRef);
+				state->resolveRef = nullptr;
+			}
+			if (state->rejectRef != nullptr) {
+				::napi_delete_reference(state->env, state->rejectRef);
+				state->rejectRef = nullptr;
+			}
+		}
+	} setupRefs{state};
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -609,20 +636,15 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	// Registered BEFORE the queue: the worker can start the moment the queue
-	// accepts it, and close()'s drain must already be counting it. A failed
-	// queue therefore has to unregister, or that count never returns to zero
-	// and every later close times out on its drain.
-	(*dbHandle)->registerAsyncWork();
-
 	napi_status queued = ::napi_queue_async_work(env, state->asyncWork);
 	if (queued != napi_ok) {
-		(*dbHandle)->unregisterAsyncWork();
 		// The work was created but will never run, and ~BaseAsyncState asserts
-		// it was deleted first.
+		// it was deleted first. The destructor unregisters the async work and
+		// releases the in-flight claim; setupRefs deletes the references.
 		owned->deleteAsyncWork();
 		NAPI_STATUS_THROWS(queued);
 	}
+	setupRefs.released = true;
 	owned.release();
 
 	NAPI_RETURN_UNDEFINED();
