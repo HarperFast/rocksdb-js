@@ -1,6 +1,6 @@
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { closeSync, openSync, readdirSync, rmSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -134,6 +134,33 @@ describe('monotonic clock floor', () => {
 		expect(warnings.join(' ')).toContain('ahead of the wall clock');
 		expect(clock).toBeLessThan(far);
 	}, 60000);
+
+	it('still opens, and says so, when a segment cannot be read', async () => {
+		const dbPath = newDBPath();
+		const highest = aheadOfNow();
+
+		expect((await runFixture('write-rotate', dbPath, highest)).code).toBe(0);
+		expect((await runFixture('write-rotate', dbPath, highest - 60 * 1000)).code).toBe(0);
+
+		// Break the token of a segment that is not the current one: the scan cannot
+		// read its keys, and the floor it reports may sit below one of them.
+		const logDir = join(dbPath, 'transaction_logs', LOG);
+		const segments = readdirSync(logDir)
+			.filter((name) => name.endsWith('.txnlog'))
+			.sort();
+		expect(segments.length).toBeGreaterThan(1);
+		const fd = openSync(join(logDir, segments[0]), 'r+');
+		try {
+			writeSync(fd, Buffer.from([0xde, 0xad, 0xbe, 0xef]), 0, 4, 0);
+		} finally {
+			closeSync(fd);
+		}
+
+		const warned = await runFixture('warn', dbPath, highest);
+		expect(warned.stderr).toBe('');
+		expect(warned.code).toBe(0);
+		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('could not be read');
+	}, 90000);
 
 	it('leaves the clock alone when no log is named', async () => {
 		const dbPath = newDBPath();
