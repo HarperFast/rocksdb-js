@@ -18,11 +18,13 @@ if (!dbPath || (phase !== 'create' && phase !== 'reopen')) {
 	process.exit(1);
 }
 
-const COLUMN_FAMILIES = 4;
-const WRITE_BUFFER_SIZE = 1024 * 1024;
-// Comfortably above the post-fix retention (one flushed memtable per family) and far below the
-// pre-fix one (`maxWriteBufferNumber` 16 * `writeBufferSize` = 16MB per family).
-const BUDGET = 32 * 1024 * 1024;
+// `writeBufferSize` is left at the shipped 16MB default, so this exercises the configuration that
+// actually wedged rather than a scaled-down one: the pre-fix target is then the real 16 * 16MB =
+// 256MB per family. The budget holds ~2 memtables per family, which is comfortably above the
+// post-fix retention (one flushed memtable per family) and far below 4 * 256MB.
+const COLUMN_FAMILIES = 3; // plus `default`, which is the one the wrappers rewrite at open
+const BUDGET = 128 * 1024 * 1024;
+const TOTAL_WRITE = 160 * 1024 * 1024;
 const value = Buffer.alloc(8 * 1024, 1);
 
 RocksDatabase.config({
@@ -31,10 +33,7 @@ RocksDatabase.config({
 	writeBufferManagerCostToCache: true,
 });
 
-const options: Record<string, unknown> = {
-	writeBufferSize: WRITE_BUFFER_SIZE,
-	pessimistic: mode === 'pessimistic',
-};
+const options: Record<string, unknown> = { pessimistic: mode === 'pessimistic' };
 if (maintainArg !== undefined) {
 	options.maxWriteBufferSizeToMaintain = Number(maintainArg);
 }
@@ -62,10 +61,10 @@ try {
 		}
 	} else {
 		console.log(`MAINTAIN ${JSON.stringify(maintainPerColumnFamily())}`);
-		// 48MB across the families: more than the budget several times over, so retained history
-		// the budget cannot release wedges every writer here and this loop never returns.
+		// More than the budget several times over, so retained history the budget cannot release
+		// wedges every writer here and this loop never returns.
 		let written = 0;
-		for (let i = 0; written < 48 * 1024 * 1024; i++) {
+		for (let i = 0; written < TOTAL_WRITE; i++) {
 			databases[i % COLUMN_FAMILIES].putSync(Buffer.from(`reopen-${i}`), value);
 			written += value.length;
 		}
