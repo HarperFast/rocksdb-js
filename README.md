@@ -1566,6 +1566,12 @@ holds the last-known version for that key. Because slots are addressed by a hash
 share a slot; a collision only ever causes a conservative miss (a real read), never a stale value to
 be treated as fresh.
 
+This first word is the only version the table knows about. A producer whose record format also
+carries a separately assigned version elsewhere in the value must still pass the first word as
+`expectedVersion`: the other value is never published to a slot, so comparing against it would miss
+the fast path and — if it ever coincided with the key's real first word — could report a stale
+cached copy as fresh.
+
 The freshness check works as follows:
 
 1. Pass `{ expectedVersion }` to `get()` / `getSync()`. If the slot currently records that version,

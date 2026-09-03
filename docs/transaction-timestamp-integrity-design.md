@@ -27,6 +27,20 @@ obligation because native code cannot observe when a producer reads and copies t
 - HarperFast/harper#2412 owns the optional second version word in `RecordEncoder`, including its
   encoding, decoding, compatibility gates, and call-site audit.
 
+Checked against Harper's source rather than the issue text: `resources/RecordEncoder.ts` decodes the
+value header itself (producing `localTime`, `version` and the metadata flags) and owns every flag bit
+in that word, and `resources/PrimaryRocksDatabase.ts#getEntry()` overrides the base read entirely —
+it calls `super.getSync()`/`super.get()` and reads the encoder's output. So nothing in Harper would
+call a rocksdb-js decoder for the second word. Harper's three `setTimestamp()` call sites
+(`resources/DatabaseTransaction.ts` at the read-transaction, save and retry-replay paths) each set it
+on a freshly constructed transaction before any write, which is what this change makes enforceable.
+
+One consequence for #2412 that is not in its call-site audit: `PrimaryRocksDatabase#getEntry()` passes
+the cached entry's `version` as `expectedVersion` to the verification table, and the table keys on the
+value's **first** word. Once `version` becomes the record version, that argument has to become
+`localTime`, or cached reads stop hitting the fast path — and a record version that happened to equal
+the key's current first word would report a stale copy as fresh.
+
 ## Approaches considered
 
 ### Different layer
@@ -58,12 +72,18 @@ Make no rocksdb-js change and rely on Harper always calling `setTimestamp()` bef
 Rejected because the current public API permits a later call, after the producer has encoded the old
 timestamp or the log batch has captured it, which can split one transaction across two identities.
 
-For the separate clock-rollback concern, reading segment headers only to warn was considered.
-Rejected because a generic transaction-log store cannot tell locally issued keys from timestamps
-adopted from another origin; warning on the largest key would report normal peer skew as a local
-clock rollback. Persisting local-issuer provenance would solve that ambiguity, but requires a new
-durable format and backup/downgrade policy and is not a prerequisite for Harper's dual-version
-record work.
+For the separate clock-rollback concern, seeding the process clock from the largest durable key
+across the database's transaction logs was considered and rejected on Harper's own log layout.
+`resources/RocksTransactionLogStore.ts` opens one log per origin node — `useLog('local')` for locally
+originated writes and `logById(nodeId)` for each peer — and a receiver deliberately keeps the origin's
+clock as the key in the peer's log (HarperFast/harper-pro#790). A "largest key in the database" seed
+therefore reads adopted peer keys as if they were locally issued: one peer running ahead ratchets this
+node's clock on its next restart, and the node then originates those keys to its own peers. Reading
+the headers only to warn has the same ambiguity — normal peer skew would be reported as a local clock
+rollback. A correct floor has to be told which log is locally originated (a per-log opt-in, or an
+explicit "raise the floor to this value" call Harper makes from its own `local` log), which is a
+different API than the one the issue sketched and is not a prerequisite for the dual-version record
+work.
 
 ### Chosen
 
@@ -72,9 +92,14 @@ the transaction is no longer pending or has staged a write or log entry. Preserv
 retry behavior: a reset with no durable batch clears staged writes and may adopt again, while
 `committedPosition` freezes a timestamp whose batch already landed. Remove the second-word read API,
 flag, and clock-floor-at-open implementation from this PR. The first two belong to Harper's record
-codec; the clock-floor policy addresses a pre-existing restart/clock-rollback concern and cannot
-distinguish locally issued keys from adopted origin keys in generic transaction logs. The existing
+codec; the clock floor addresses a pre-existing restart/clock-rollback concern and, as specified,
+would seed from adopted origin keys as readily as from locally issued ones. The existing
 `latestTimestamp` behavior used to populate new transaction-log segment headers remains unchanged.
+
+Document what is true about log keys today, which the issue also asked for: entries are appended in
+commit order rather than timestamp order, an adopted key carries another node's clock, keys are
+unique only within a process, and `findPositionByTimestamp` is a running-maxima seek rather than a
+sorted binary search.
 
 ## Verification route
 
