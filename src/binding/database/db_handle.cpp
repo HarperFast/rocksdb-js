@@ -310,7 +310,7 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 }
 
 void DBHandle::collectTransactionLogSummary(TransactionLogStoreStats& total, uint64_t& logCount) {
-	auto stores = TransactionLogStoreRegistry::GetStores(this->descriptor->path);
+	auto stores = TransactionLogStoreRegistry::GetStores(this->descriptor->logRegistryKey);
 	logCount = 0;
 	for (const auto& store : stores) {
 		if (!store) {

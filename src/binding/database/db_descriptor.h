@@ -188,6 +188,22 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::string path;
 
 	/**
+	 * `path` resolved to filesystem identity ONCE, at construction, and the only
+	 * key any TransactionLogStoreRegistry call may use.
+	 *
+	 * Two spellings of one directory (relative vs absolute, a trailing slash,
+	 * macOS `/tmp` -> `/private/tmp`) would otherwise open two registry entries
+	 * over one `transaction_logs` tree, and the guards that keep a writer off a
+	 * read-only-loaded store would look past each other while a writer truncated
+	 * a segment a reader had mapped. Resolving is not safe to repeat per call:
+	 * `weakly_canonical`/`absolute` consult the process CWD, so a `process.chdir()`
+	 * after open would remap this handle's key — a later `useLog()` would miss the
+	 * entry and, for a writer, create a second store outside the database, while
+	 * `Unregister()` would miss the original and never close its stores.
+	 */
+	std::string logRegistryKey;
+
+	/**
 	 * Process-unique identity for this descriptor's *open lifecycle*, used as the
 	 * database component of every VerificationTable slot address (with cfId + key).
 	 *

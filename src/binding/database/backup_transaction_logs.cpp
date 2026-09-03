@@ -24,7 +24,7 @@ rocksdb::Status collectTransactionLogBackupEntries(
 	}
 
 	try {
-		auto stores = TransactionLogStoreRegistry::GetStores(descriptor->path);
+		auto stores = TransactionLogStoreRegistry::GetStores(descriptor->logRegistryKey);
 		for (const auto& store : stores) {
 			if (!store) {
 				continue;

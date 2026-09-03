@@ -255,7 +255,7 @@ public:
 				desc.get(), (unsigned long long)flushedSequence);
 
 			// Get stores from the registry
-			auto stores = TransactionLogStoreRegistry::GetStores(desc->path);
+			auto stores = TransactionLogStoreRegistry::GetStores(desc->logRegistryKey);
 			for (auto& store : stores) {
 				store->databaseFlushBegin(flushedSequence);
 			}
@@ -295,7 +295,7 @@ public:
 					desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)it->second.flushedSequence);
 
 				// Get stores from the registry
-				auto stores = TransactionLogStoreRegistry::GetStores(desc->path);
+				auto stores = TransactionLogStoreRegistry::GetStores(desc->logRegistryKey);
 				for (auto& store : stores) {
 					store->databaseFlushed(it->second.flushedSequence);
 				}
@@ -375,6 +375,7 @@ DBDescriptor::DBDescriptor(
 	std::shared_ptr<rocksdb::Statistics> statistics
 ):
 	path(path),
+	logRegistryKey(rocksdb_js::resolveIdentityPath(path).string()),
 	vtEpoch(nextVtEpoch()),
 	mode(options.mode),
 	readOnly(options.readOnly),
@@ -525,7 +526,7 @@ void DBDescriptor::finishClose() {
 
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
-	TransactionLogStoreRegistry::Unregister(this->path);
+	TransactionLogStoreRegistry::Unregister(this->logRegistryKey);
 
 	this->transactions.clear();
 	{
@@ -1230,10 +1231,15 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
 
+	// Resolved once here and again on the descriptor, so this guard and every
+	// later registry call for this database agree on one entry (see
+	// DBDescriptor::logRegistryKey for why re-resolving per call is unsafe).
+	const std::string logRegistryKey = rocksdb_js::resolveIdentityPath(path).string();
+
 	// Before any real work: a writable open must not adopt transaction log
 	// stores a read-only open loaded without tail recovery (see the method's
 	// header comment for why this cannot live inside Register).
-	TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(path, options.readOnly);
+	TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(logRegistryKey, options.readOnly);
 
 	DBSettings& settings = DBSettings::getInstance();
 
@@ -1539,8 +1545,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
-	TransactionLogStoreRegistry::Register(path, logConfig);
-	TransactionLogStoreRegistry::DiscoverStores(path, options.readOnly);
+	TransactionLogStoreRegistry::Register(logRegistryKey, logConfig);
+	TransactionLogStoreRegistry::DiscoverStores(logRegistryKey, options.readOnly);
 
 	return descriptor;
 }
@@ -2193,14 +2199,14 @@ void DBDescriptor::removeListenersByEnv(napi_env env) {
  * @param env The environment of the current callback.
  */
 napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
-	return TransactionLogStoreRegistry::ListStores(env, this->path);
+	return TransactionLogStoreRegistry::ListStores(env, this->logRegistryKey);
 }
 
 /**
  * Purges transaction logs.
  */
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
-	return TransactionLogStoreRegistry::PurgeStores(env, this->path, options);
+	return TransactionLogStoreRegistry::PurgeStores(env, this->logRegistryKey, options);
 }
 
 /**
@@ -2210,7 +2216,7 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
  * @returns The transaction log store.
  */
 std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
-	return TransactionLogStoreRegistry::ResolveStore(this->path, name, this->readOnly);
+	return TransactionLogStoreRegistry::ResolveStore(this->logRegistryKey, name, this->readOnly);
 }
 
 void DBDescriptor::setLastError(std::string json) {

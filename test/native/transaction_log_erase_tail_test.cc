@@ -108,8 +108,10 @@ protected:
 		rocksdb_js::writeUint32BE(image.data() + entryAEnd + 8, 4);
 		rocksdb_js::writeUint8(image.data() + entryAEnd + 12, 0);
 
-		rocksdb_js::writeDoubleBE(image.data() + entryBEnd, 3.0);
-		rocksdb_js::writeUint32BE(image.data() + entryBEnd + 8, 100);
+		if (tornSize > entryBEnd) {
+			rocksdb_js::writeDoubleBE(image.data() + entryBEnd, 3.0);
+			rocksdb_js::writeUint32BE(image.data() + entryBEnd + 8, 100);
+		}
 
 		HANDLE handle = ::CreateFileW(
 			path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -124,6 +126,12 @@ protected:
 		file->fileHandle = handle;
 		file->size = tornSize;
 		file->version = 1;
+	}
+
+	// Entry A closes a transaction, entry B does not, and the file ends cleanly
+	// there — the crash-mid-batch shape discardUnclosedTransaction erases.
+	void writeUnclosedCleanImage(uint32_t entryAEnd, uint32_t entryBEnd) {
+		writeUnclosedTornImage(entryAEnd, entryBEnd, entryBEnd);
 	}
 
 	void reopenReadOnly() {
@@ -240,6 +248,28 @@ TEST_F(TransactionLogEraseTail, TornTailRecoveryClearsThePreRecoveryIndex) {
 
 	expectPhysicalSize(completeEnd);
 	EXPECT_TRUE(EraseTailTestAccessor::hasResetIndex(*file));
+}
+
+// discardUnclosedTransaction can retire too: the erase is the same Windows
+// zero-fill, and when it fails part-way it drops `size` to the boundary and
+// refuses appends rather than reporting success. Treating that as "nothing
+// happened" left the pre-recovery timestamp index pointing at or past the new
+// end, so a query would start past end-of-entries and return nothing for
+// entries that still exist.
+TEST_F(TransactionLogEraseTail, UnclosedTransactionDiscardRetiresAndClearsTheIndex) {
+	constexpr uint32_t entrySize = TRANSACTION_LOG_ENTRY_HEADER_SIZE + 4;
+	constexpr uint32_t entryAEnd = TRANSACTION_LOG_FILE_HEADER_SIZE + entrySize;
+	constexpr uint32_t entryBEnd = entryAEnd + entrySize;
+	writeUnclosedCleanImage(entryAEnd, entryBEnd);
+	EraseTailTestAccessor::seedIndex(*file, 3.0, entryBEnd);
+	reopenReadOnly();
+
+	file->recoverTail();
+
+	EXPECT_TRUE(file->appendBoundaryLost.load());
+	EXPECT_EQ(file->size.load(), entryAEnd);
+	EXPECT_TRUE(EraseTailTestAccessor::hasResetIndex(*file));
+	expectPhysicalSize(entryBEnd);
 }
 
 #endif

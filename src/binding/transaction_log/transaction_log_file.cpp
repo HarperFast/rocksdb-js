@@ -494,7 +494,17 @@ void TransactionLogFile::discardUnclosedTransaction(
 	// keeps the "a log never holds an unclosed transaction" invariant enforceable
 	// rather than merely observed by the watermark: the bytes cannot later be
 	// swallowed into the next batch's group by that batch's flag.
-	if (!this->eraseTail(boundary, entriesEnd)) {
+	// An erase that fails can still have retired the segment (the Windows
+	// zero-fill drops `size` to the boundary and refuses further appends rather
+	// than leaving a premature end-of-entries marker above live bytes). That is
+	// the same boundary move and owes the same bookkeeping — the pre-recovery
+	// index in particular still maps timestamps into the discarded range, and a
+	// query through it would start past the end and return nothing.
+	bool wasRetired = this->appendBoundaryLost.load(std::memory_order_relaxed);
+	bool erased = this->eraseTail(boundary, entriesEnd);
+	bool retired = !erased && !wasRetired &&
+		this->appendBoundaryLost.load(std::memory_order_relaxed);
+	if (!erased && !retired) {
 		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction Erase failed (or unsupported on this platform) for %s\n",
 			this, this->path.string().c_str());
 		return;
@@ -510,7 +520,12 @@ void TransactionLogFile::discardUnclosedTransaction(
 	msg << "Transaction log " << this->path.string() << " ended mid-transaction; dropped "
 		<< scan.unclosedTailEntries << " entry(s) (" << (entriesEnd - boundary)
 		<< " bytes) of a transaction that never closed, back to the last complete transaction (new size="
-		<< boundary << ").";
+		<< boundary << ")";
+	if (retired) {
+		msg << ", and could not be made appendable again: the segment is retired and the store "
+			   "will rotate to a new one";
+	}
+	msg << ".";
 	DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n", this, msg.str().c_str());
 	emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 }
