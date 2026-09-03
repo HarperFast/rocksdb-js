@@ -1,0 +1,148 @@
+import { generateDBPath } from './lib/util.ts';
+import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
+
+const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fork-clock-floor.mts');
+const LOG = 'clock';
+
+const paths: string[] = [];
+
+afterEach(() => {
+	if (!process.env.KEEP_FILES) {
+		for (const path of paths.splice(0)) {
+			rmSync(path, { recursive: true, force: true });
+		}
+	}
+});
+
+function newDBPath(): string {
+	const path = generateDBPath();
+	paths.push(path);
+	return path;
+}
+
+/** Runs one fixture mode in its own process, so it starts from a fresh process clock. */
+function runFixture(
+	mode: string,
+	dbPath: string,
+	key: number,
+	log = LOG
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [fixture, mode, dbPath, String(key), log]);
+		let stdout = '';
+		let stderr = '';
+		child.stdout.on('data', (chunk) => (stdout += chunk));
+		child.stderr.on('data', (chunk) => (stderr += chunk));
+		child.on('error', reject);
+		child.on('close', (code) => resolve({ code, stdout, stderr }));
+	});
+}
+
+describe('monotonic clock floor', () => {
+	// The durable keys sit an hour ahead of the wall clock, which is what a
+	// backward clock step across a restart leaves behind.
+	const aheadOfNow = () => Date.now() + 60 * 60 * 1000;
+
+	it('resumes above the largest durable key in the named log', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		const write = await runFixture('write', dbPath, key);
+		expect(write.stderr).toBe('');
+		expect(write.code).toBe(0);
+
+		const read = await runFixture('read', dbPath, key);
+		expect(read.stderr).toBe('');
+		expect(read.code).toBe(0);
+
+		const { clock, txnTimestamp, now } = JSON.parse(read.stdout);
+		expect(clock).toBeGreaterThan(key);
+		expect(txnTimestamp).toBeGreaterThan(key);
+		// The seed is the key itself, not an unbounded jump past it.
+		expect(clock).toBeLessThan(key + 60 * 1000);
+		expect(now).toBeLessThan(key);
+	}, 60000);
+
+	it('takes the largest key, not the last written one', async () => {
+		const dbPath = newDBPath();
+		const highest = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, highest)).code).toBe(0);
+		// Batch keys are not ordered within a log: a later batch can carry a
+		// smaller key, and the floor must still clear the larger one.
+		expect((await runFixture('write', dbPath, highest - 30 * 60 * 1000)).code).toBe(0);
+
+		const read = await runFixture('read', dbPath, highest);
+		expect(read.stderr).toBe('');
+		expect(read.code).toBe(0);
+	}, 60000);
+
+	it('finds the largest key in an older segment', async () => {
+		const dbPath = newDBPath();
+		const highest = aheadOfNow();
+
+		// The largest key lands in the first segment; the lower-keyed batches do not
+		// fit beside it and rotate. Nothing in the newest segment names the largest
+		// key — its header word is the store's `latestTimestamp` at creation, which
+		// starts at 0 in each new process — so only a walk of the older segments
+		// finds it.
+		expect((await runFixture('write-rotate', dbPath, highest)).code).toBe(0);
+		let segments = 1;
+		for (let i = 1; i <= 2; i++) {
+			const write = await runFixture('write-rotate', dbPath, highest - i * 60 * 1000);
+			expect(write.code).toBe(0);
+			segments = JSON.parse(write.stdout).segments;
+		}
+		expect(segments).toBeGreaterThan(1);
+
+		const read = await runFixture('read', dbPath, highest);
+		expect(read.stderr).toBe('');
+		expect(read.code).toBe(0);
+	}, 90000);
+
+	it('does not seed from a log the caller did not name', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		// A log keyed by another node's clock is exactly this shape: durable keys
+		// ahead of this node's wall clock, in a log it does not originate.
+		const other = await runFixture('read-unseeded', dbPath, key, 'some-other-log');
+		expect(other.stderr).toBe('');
+		expect(other.code).toBe(0);
+		expect(JSON.parse(other.stdout).clock).toBeLessThan(key);
+	}, 60000);
+
+	it('refuses a key implausibly far ahead of the wall clock, and says so', async () => {
+		const dbPath = newDBPath();
+		// Twenty years ahead: inside the timestamp domain, so a caller can assign
+		// it, but far past any rollback this is meant to recover from.
+		const far = Date.now() + 20 * 365 * 24 * 60 * 60 * 1000;
+
+		expect((await runFixture('write', dbPath, far)).code).toBe(0);
+
+		const warned = await runFixture('warn', dbPath, far);
+		expect(warned.stderr).toBe('');
+		expect(warned.code).toBe(0);
+
+		const { warnings, clock } = JSON.parse(warned.stdout);
+		expect(warnings.join(' ')).toContain('ahead of the wall clock');
+		expect(clock).toBeLessThan(far);
+	}, 60000);
+
+	it('leaves the clock alone when no log is named', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write-unseeded', dbPath, key)).code).toBe(0);
+
+		const read = await runFixture('read-unseeded', dbPath, key, '');
+		expect(read.stderr).toBe('');
+		expect(read.code).toBe(0);
+	}, 60000);
+});

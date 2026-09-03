@@ -225,7 +225,8 @@ monotonic clock when it is constructed but is appended when it commits, so under
 entry can carry a smaller timestamp; an entry that adopted an origin timestamp with
 `txn.setTimestamp()` carries that origin's clock instead. Timestamps are not unique: the monotonic
 clock never issues the same value twice within a process, but a restart after the wall clock moved
-backwards can reissue one, and `txn.setTimestamp()` can assign any value — including one already
+backwards can reissue one unless the floor below is seeded, and `txn.setTimestamp()` can assign any
+value — including one already
 in the log — to as many transactions as the caller likes. Deduplicating on the timestamp alone is
 therefore never safe; a consumer that needs identity has to supply it (Harper pairs the timestamp
 with the originating node).
@@ -235,6 +236,30 @@ index records only the entries whose timestamp is greater than every earlier one
 running maxima — and a query seeks to the lower bound of that index, which is guaranteed to sit at
 or before every entry in the requested range. Reading forward from there and filtering is what makes
 range queries correct on an unordered file.
+
+## The Timestamp Floor At Open
+
+A transaction's timestamp is the key of the batch it is written under, so it has to stay unique
+within the log it is written to. The process clock (`db.getMonotonicTimestamp()`) guarantees that
+only within one process: a new process reads the wall clock again, so a backward step between runs
+can reissue a key that is already durable in the log.
+
+Opening with the `timestampFloorLog` option names the log whose keys this process originates. Every
+segment of that store is then walked once, after open-time recovery has decided which bytes are
+still durable, and the process clock is raised above the largest key found — before the database
+handle is returned, so no transaction can be constructed below it. Keys are not ordered within or
+across segments, and a segment header records the store's latest timestamp only as of that
+segment's creation, so there is no shortcut: every segment is read.
+
+Name only a log this process originates. A log a replication receiver writes under an adopted origin
+timestamp is keyed by another node's clock, and seeding from it would ratchet this process's clock
+to the fastest of those nodes at each restart. Native code cannot tell the two kinds of log apart,
+which is why the caller names it and why an unset option leaves the clock alone.
+
+The seed is best effort, and says so when it falls short: a segment that cannot be opened or scanned
+emits a `log.warn` global event, as does a segment holding a key more than ten years ahead of the
+wall clock, whose keys are left out of the floor as corruption rather than a rollback to recover
+from.
 
 ### Sequential Read
 
