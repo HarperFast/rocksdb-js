@@ -1,4 +1,10 @@
-/** Database-level RocksDB statistics types for `db.getStats()` / `db.getStat()`. */
+/**
+ * Database-level RocksDB statistics types for `db.getStats()` / `db.getStat()`.
+ *
+ * The `writeBufferManager.*` keys are the exception to "database-level": the
+ * WriteBufferManager is a process-wide singleton, so those values describe every
+ * database in the process. See `RocksDatabase.getWriteBufferManagerStats()`.
+ */
 
 export type StatsHistogramData = {
 	average: number;
@@ -52,6 +58,11 @@ export type StatsBasics = {
 	'txnlog.replayGapBytes': number;
 	'commitPipeline.logQueueDepth': number;
 	'commitPipeline.commitQueueDepth': number;
+	'writeBufferManager.bufferSize': number;
+	'writeBufferManager.memoryUsage': number;
+	'writeBufferManager.mutableMemoryUsage': number;
+	'writeBufferManager.stallActive': number;
+	'writeBufferManager.stallActiveMs': number;
 };
 
 export type StatsCuratedExtras = {

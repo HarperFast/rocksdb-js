@@ -26,6 +26,7 @@ export {
 	coolTransactionLogs,
 	currentThreadId,
 	fileLockRelease,
+	getWriteBufferManagerStats,
 	tryFileLock,
 	registryStatus,
 	stats,
@@ -36,6 +37,7 @@ export {
 	type TransactionEntry,
 	type TransactionLogPosition,
 	type TransactionLogStats,
+	type WriteBufferManagerStats,
 } from './load-binding.ts';
 export * from './parse-transaction-log.ts';
 export {
