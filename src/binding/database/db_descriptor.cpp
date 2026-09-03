@@ -85,8 +85,8 @@ constexpr int64_t kMinRetainedHistoryTarget = 1;
  * it (`OptimisticTransactionDB::Open`, `TransactionDB::PrepareWrap`); `SanitizeOptions` then
  * expands -1 to `max_write_buffer_number * write_buffer_size` — 256MB with this codebase's
  * defaults. So 0 does not request "no history", it requests the largest history there is, for every
- * column family passed to open. Only families created afterwards kept the 0, which is why this
- * safeguard held on a fresh database and never survived a restart (HarperFast/rocksdb-js#821).
+ * column family passed to open. `DB::CreateColumnFamily` has no such rewrite, so only families
+ * created after an open ever received the 0 (HarperFast/rocksdb-js#821).
  *
  * `kMinRetainedHistoryTarget` is the smallest target that survives that rewrite. It is not "no
  * history": `MemTableListVersion::TrimHistory` compares against
@@ -171,8 +171,8 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 		<< "safe.";
 	const std::string text = msg.str();
 	DEBUG_LOG("DBDescriptor::open WARNING: %s\n", text.c_str());
-	// The database's own LOG is where this was ultimately diagnosed in production, so record it
-	// there as well as on the JS warning channel.
+	// Also to the database's own LOG: a deployment that registers no JS listener still needs a
+	// durable record of the configuration alongside the options block it applies to.
 	if (infoLog) {
 		rocksdb::Warn(infoLog, "%s", text.c_str());
 	}

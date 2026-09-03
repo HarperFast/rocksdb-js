@@ -211,11 +211,10 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		// the RocksDB-supported runtime knob.
 		if (wbmAlreadyCreated && allowStallProvided) {
 			settings.writeBufferManager->SetAllowStall(newAllowStall);
-			// `max_write_buffer_size_to_maintain` is an immutable ColumnFamilyOptions field, fixed
-			// when a family is created, so the stall safeguard in
-			// resolveMaxWriteBufferSizeToMaintain can only ever be applied at that moment. Turning
-			// the stall on afterwards therefore leaves every already-open family at the target it
-			// was opened with, which is exactly the permanent-stall shape #821 describes.
+			// `max_write_buffer_size_to_maintain` is an immutable ColumnFamilyOptions field fixed
+			// when a family is created, so resolveMaxWriteBufferSizeToMaintain's stall safeguard can
+			// only ever be applied at that moment. Families created before this call keep the target
+			// they were created with, and no later configuration can lower it.
 			warnStallEnabledLate = newAllowStall && !oldAllowStall;
 		}
 	}
@@ -225,8 +224,8 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			"log.warn",
 			ListenerData::fromStrings({
 				"writeBufferManagerAllowStall was enabled after the WriteBufferManager was created. "
-				"Column families already open keep the retained memtable history target resolved "
-				"when they were created, so the stall safeguard cannot be applied to them and their "
+				"Any column family created before this call keeps the retained memtable history "
+				"target it was created with, so the stall safeguard cannot be applied to it and its "
 				"history can exhaust the manager's budget. Enable it on the first config() call, "
 				"before any database is opened."
 			})

@@ -7,6 +7,16 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const reopenFixturePath = join(__dirname, 'fixtures', 'fork-wbm-reopen-stall.mts');
+const lateAllowStallFixturePath = join(__dirname, 'fixtures', 'fork-wbm-late-allow-stall.mts');
+
+// The manager is a native process-global and Vitest's `threads` pool runs every file in one
+// process, so a stalling manager left behind here follows later files into their own databases —
+// and under one, `resolveMaxWriteBufferSizeToMaintain` clamps their retained-history window.
+// `allowStall` is resettable (`config()` propagates it through `SetAllowStall`), so reset it here
+// rather than leaving the next file's behavior to depend on which file ran first.
+afterAll(() => {
+	RocksDatabase.config({ writeBufferManagerSize: 0, writeBufferManagerAllowStall: false });
+});
 
 /**
  * The WriteBufferManager is a process-wide singleton built on first use, and its size and
@@ -35,7 +45,7 @@ describe('WriteBufferManager stall', () => {
 	});
 
 	// Leave no manager attached to databases opened by later files (same reason
-	// write-buffer-manager.test.ts resets); `allowStall` itself is not resettable.
+	// write-buffer-manager.test.ts resets); the file-level `afterAll` above clears `allowStall`.
 	afterAll(() => {
 		RocksDatabase.config({
 			blockCacheSize: 32 * 1024 * 1024,
@@ -124,16 +134,12 @@ describe('WriteBufferManager stall', () => {
  * its promise, so a stalled write blocks the JS thread and neither an in-test timer nor Vitest's own
  * timeout can fire (#781).
  */
-function runReopenFixture(
-	dbPath: string,
-	phase: 'create' | 'reopen',
-	mode: 'optimistic' | 'pessimistic',
-	maintain?: number
+function runFixture(
+	fixturePath: string,
+	fixtureArgs: string[]
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
-	const args = [reopenFixturePath, dbPath, phase, mode];
-	if (maintain !== undefined) args.push(String(maintain));
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, args);
+		const child = spawn(process.execPath, [fixturePath, ...fixtureArgs]);
 		let stdout = '';
 		let stderr = '';
 		child.stdout?.on('data', (chunk) => {
@@ -152,6 +158,17 @@ function runReopenFixture(
 			reject(error);
 		});
 	});
+}
+
+function runReopenFixture(
+	dbPath: string,
+	phase: 'create' | 'reopen',
+	mode: 'optimistic' | 'pessimistic',
+	maintain?: number
+) {
+	const args = [dbPath, phase, mode];
+	if (maintain !== undefined) args.push(String(maintain));
+	return runFixture(reopenFixturePath, args);
 }
 
 function maintainValues(stdout: string): number[] {
@@ -198,7 +215,7 @@ describe('WriteBufferManager stall — reopen (#821)', () => {
 			expect(reopened.signal, reopened.stderr).toBeNull();
 			expect(reopened.stdout, reopened.stderr).toContain('WROTE');
 			expect(reopened.code, reopened.stderr).toBe(0);
-			expect(maintainValues(reopened.stdout)).toEqual([1, 1, 1, 1, 1]);
+			expect(maintainValues(reopened.stdout)).toEqual([1, 1, 1, 1]);
 		}, 90_000);
 	}
 
@@ -213,7 +230,7 @@ describe('WriteBufferManager stall — reopen (#821)', () => {
 		expect(reopened.signal, reopened.stderr).toBeNull();
 		expect(reopened.stdout, reopened.stderr).toContain('WROTE');
 		expect(reopened.code, reopened.stderr).toBe(0);
-		expect(maintainValues(reopened.stdout)).toEqual([1, 1, 1, 1, 1]);
+		expect(maintainValues(reopened.stdout)).toEqual([1, 1, 1, 1]);
 	}, 90_000);
 });
 
@@ -274,7 +291,41 @@ describe('WriteBufferManager stall — over-budget warning (#821)', () => {
 		expect(await warningsFromOpen(BUDGET / 2)).toHaveLength(0);
 	});
 
-	it('stays quiet for the resolved safeguard target', async () => {
+	// The resolved safeguard target is 1 byte, so this arm can never trip the comparison. That is the
+	// guard's limit, not a proof: what a family actually retains at that target is one flushed
+	// memtable, and this check does not see it — see the residual note on AGENTS.md invariant 10.
+	it("stays quiet for the resolved safeguard target, which is the guard's blind spot", async () => {
 		expect(await warningsFromOpen(-1)).toHaveLength(0);
 	});
+});
+
+/**
+ * The safeguard is applied when a column family is created, so enabling the stall afterwards cannot
+ * reach families that already exist. Each arm runs in its own process because the manager is a
+ * native process-global and only a live false -> true transition warns.
+ */
+describe('WriteBufferManager stall — allowStall enabled after open (#821)', () => {
+	async function warningCount(arm: 'late' | 'upfront'): Promise<number> {
+		const dbPath = generateDBPath();
+		mkdirSync(dbPath, { recursive: true });
+		try {
+			const { code, stdout, stderr } = await runFixture(lateAllowStallFixturePath, [dbPath, arm]);
+			expect(code, stderr).toBe(0);
+			const match = /^WARNINGS (\d+)$/m.exec(stdout);
+			if (!match) throw new Error(`fixture printed no WARNINGS line; stdout was:\n${stdout}`);
+			return Number(match[1]);
+		} finally {
+			if (!process.env.KEEP_FILES) {
+				rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+			}
+		}
+	}
+
+	it('warns when the stall is turned on after a database is already open', async () => {
+		expect(await warningCount('late')).toBe(1);
+	}, 60_000);
+
+	it('stays quiet when the stall was configured before the first open', async () => {
+		expect(await warningCount('upfront')).toBe(0);
+	}, 60_000);
 });
