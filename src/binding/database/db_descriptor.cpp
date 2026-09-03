@@ -2,10 +2,12 @@
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
+#include "napi/global_events.h"
 #include "napi/helpers.h"
 #include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "rocksdb/convenience.h"
+#include "rocksdb/env.h"
 #include "rocksdb/listener.h"
 #include "rocksdb/utilities/options_util.h"
 #include <algorithm>
@@ -14,6 +16,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <sstream>
 #include <system_error>
 #include <unordered_map>
 
@@ -63,6 +66,12 @@ static void applyCompression(
 }
 
 /**
+ * The smallest retained-history target a transaction database can actually be given; see
+ * `resolveMaxWriteBufferSizeToMaintain` for why the safeguard cannot be 0.
+ */
+constexpr int64_t kMinRetainedHistoryTarget = 1;
+
+/**
  * Resolves `max_write_buffer_size_to_maintain` for a column family.
  *
  * Retained memtable history is a floor, not a cap — RocksDB trims down to this target and never
@@ -71,31 +80,105 @@ static void applyCompression(
  * is never released, and a manager built with `allowStall` stalls every write to the database
  * permanently.
  *
- * The derived default (`-1` → `maxWriteBufferNumber * writeBufferSize`) is dropped to 0 under any
- * stalling manager. Deliberately coarse: the safe per-family bound is the budget divided by the
- * live column-family count, which is not knowable here, so a comfortably-sized budget loses its
- * history window too. The cost is that conflict checking reports "cannot determine"
- * (`kTryAgain`) more often, which callers retry; the cost of the alternative is a hang.
+ * **The safeguard cannot be 0, and 0 is the worst value to pass.** Every writable open here goes
+ * through a transaction wrapper, and both of them rewrite a 0 target to -1 before `DB::Open` sees
+ * it (`OptimisticTransactionDB::Open`, `TransactionDB::PrepareWrap`); `SanitizeOptions` then
+ * expands -1 to `max_write_buffer_number * write_buffer_size` — 256MB with this codebase's
+ * defaults. So 0 does not request "no history", it requests the largest history there is, for every
+ * column family passed to open. Only families created afterwards kept the 0, which is why this
+ * safeguard held on a fresh database and never survived a restart (HarperFast/rocksdb-js#821).
  *
- * That cost was measured rather than assumed, which is why the coarse form is kept instead of a
- * budget-aware clamp: it is ~zero whenever flushing is organic (driven by memtables filling), and
- * only appears once flushes are frequent relative to transaction lifetime — at a forced 20ms
- * cadence against 20ms+ transactions it roughly doubles attempts per commit, as history is what
- * would otherwise resolve a non-conflicting transaction whose snapshot has already been flushed
- * away. A clamp would only recover that regime.
+ * `kMinRetainedHistoryTarget` is the smallest target that survives that rewrite. It is not "no
+ * history": `MemTableListVersion::TrimHistory` compares against
+ * `MemoryAllocatedBytesExcludingLast()`, which excludes the entry it is about to drop, so the
+ * newest flushed memtable stays until that family's next write schedules a trim. The retained bound
+ * is therefore one flushed memtable per family instead of 256MB per family, and no positive target
+ * does better — that residual is independent of the target's magnitude.
  *
- * An explicit caller value is honored untouched — sizing it against the budget and the
- * column-family count is then the caller's job.
+ * It is deliberately not derived from the column-family count. Families are created lazily as
+ * tables are created at runtime, so a count read here is only a lower bound, and
+ * `ColumnFamilyOptions` are fixed when a family is created, so a count-derived value is already
+ * wrong for every family created after it. The arithmetic does not close either: any positive
+ * per-family floor times an unbounded family count exceeds any fixed budget. That is what the
+ * over-budget warning in `open()` reports rather than prevents.
+ *
+ * The cost of the near-zero window is conflict checking reporting "cannot determine" (`kTryAgain`)
+ * more often, which callers retry. #755 measured it at ~zero while flushing is organic (driven by
+ * memtables filling), rising to ~1.4x attempts per commit only once flushes are forced at a cadence
+ * comparable to transaction lifetime.
+ *
+ * An explicit positive caller value is honored untouched — sizing it against the budget and the
+ * column-family count is then the caller's job. An explicit 0 is normalized for the same reason the
+ * safeguard is: passing it through would hand the caller who asked for the least history the most.
  */
 static int64_t resolveMaxWriteBufferSizeToMaintain(const DBOptions& options) {
-	if (options.maxWriteBufferSizeToMaintain >= 0) {
+	if (options.maxWriteBufferSizeToMaintain > 0) {
 		return options.maxWriteBufferSizeToMaintain;
+	}
+	if (options.maxWriteBufferSizeToMaintain == 0) {
+		return kMinRetainedHistoryTarget;
 	}
 	DBSettings& settings = DBSettings::getInstance();
 	if (settings.getWriteBufferManagerSize() > 0 && settings.getWriteBufferManagerAllowStall()) {
-		return 0;
+		return kMinRetainedHistoryTarget;
 	}
 	return options.maxWriteBufferSizeToMaintain;
+}
+
+/**
+ * Reports a database whose retained-history floors already reach the stalling WriteBufferManager's
+ * budget, which is a permanent write stall rather than backpressure (see
+ * `resolveMaxWriteBufferSizeToMaintain`).
+ *
+ * This is a report, never a guarantee, and it must not be read as one: only the families known at
+ * this open are counted, and families created later add to the same budget. Read-only opens are
+ * excluded because they create no memtables and so cannot contribute to it.
+ */
+static void warnIfHistoryExceedsWriteBufferBudget(
+	const std::string& path,
+	int64_t historyTarget,
+	size_t familyCount,
+	bool readOnly,
+	const std::shared_ptr<rocksdb::Logger>& infoLog
+) {
+	if (readOnly || historyTarget <= 0 || familyCount == 0) {
+		return;
+	}
+	DBSettings& settings = DBSettings::getInstance();
+	const uint64_t budget = static_cast<uint64_t>(settings.getWriteBufferManagerSize());
+	if (budget == 0 || !settings.getWriteBufferManagerAllowStall()) {
+		return;
+	}
+
+	// `familyCount * historyTarget >= budget`, by division: the caller's target is an unvalidated
+	// int64 (see database.cpp), so the product can overflow. RocksDB stalls at
+	// `memory_usage() >= buffer_size()`, so equality already wedges.
+	const uint64_t target = static_cast<uint64_t>(historyTarget);
+	const uint64_t affordableFamilies = budget / target;
+	if (familyCount < affordableFamilies ||
+		(familyCount == affordableFamilies && budget % target != 0)) {
+		return;
+	}
+
+	std::ostringstream msg;
+	msg << "Database \"" << path << "\" was opened with " << familyCount
+		<< " column families retaining up to " << target
+		<< " bytes of memtable history each, which already reaches the " << budget
+		<< "-byte WriteBufferManager budget, and the manager is configured to stall writers. "
+		<< "Retained history is only trimmed down to that target, so writes to this database can "
+		<< "stall permanently. Only the column families known at this open are counted; families "
+		<< "created later add to the same budget, so a database that does not warn is not proven "
+		<< "safe.";
+	const std::string text = msg.str();
+	DEBUG_LOG("DBDescriptor::open WARNING: %s\n", text.c_str());
+	// The database's own LOG is where this was ultimately diagnosed in production, so record it
+	// there as well as on the JS warning channel.
+	if (infoLog) {
+		rocksdb::Warn(infoLog, "%s", text.c_str());
+	}
+	if (GlobalEvents::hasListeners()) {
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ text }));
+	}
 }
 
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
@@ -1394,6 +1477,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 		columns[options.name] = columnDescriptor;
 	}
+
+	warnIfHistoryExceedsWriteBufferBudget(
+		path,
+		cfOptions.max_write_buffer_size_to_maintain,
+		columns.size(),
+		options.readOnly,
+		db->GetDBOptions().info_log
+	);
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));

@@ -97,8 +97,14 @@ Creates a new database instance.
     `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default for optimistic
     transactions) — except when a stalling [`writeBufferManager`](#dbconfigoptions) is configured
     (`writeBufferManagerSize > 0` with `writeBufferManagerAllowStall`), in which case it resolves to
-    `0` to avoid retaining memtable history the manager will never release. An explicit non-negative
-    value is always honored as-is.
+    `1` so the manager is not filled with history it will never release. That is the smallest target
+    a transactional database can be given: RocksDB's transaction wrappers rewrite a `0` target to
+    the derived value, so `0` requests the _largest_ history rather than none, and an explicitly
+    requested `0` is normalized to `1` for the same reason. A positive target still retains the most
+    recent flushed memtable per column family until that family's next write. An explicit positive
+    value is honored as-is; sizing it against the budget and the column-family count is then yours,
+    and a configuration whose known families already reach the budget is reported on the
+    [`'log.warn'`](#event-api) channel.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.

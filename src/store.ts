@@ -447,9 +447,12 @@ export class Store {
 	 * The bytes of recent memtable history to retain in memory for transaction
 	 * conflict checking. `-1` derives the value from
 	 * `maxWriteBufferNumber * writeBufferSize`, except under a stalling
-	 * `writeBufferManager`, where it derives `0`: retained history is charged to
+	 * `writeBufferManager`, where it derives `1`: retained history is charged to
 	 * that manager and is only trimmable down to this target, so a target the
-	 * budget cannot hold stalls writes permanently. Set a number to size it
+	 * budget cannot hold stalls writes permanently. `1`, not `0`, because
+	 * RocksDB's transaction wrappers rewrite a `0` target to the derived value —
+	 * so `0` asks for the largest history rather than none, and an explicit `0`
+	 * is normalized to `1` for that reason. Set a positive number to size it
 	 * yourself against the budget and the column-family count.
 	 */
 	maxWriteBufferSizeToMaintain?: number;

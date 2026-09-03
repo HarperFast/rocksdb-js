@@ -418,12 +418,40 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     charged to the process-wide WriteBufferManager. A target above the manager's budget therefore fills
     the budget with memory that is never released, and a manager built with `allowStall` stalls every
     write to that database permanently rather than until a flush catches up. `buildColumnFamilyOptions`
-    resolves the derived (`-1`) default to 0 whenever a stalling manager is configured for exactly this
-    reason (`resolveMaxWriteBufferSizeToMaintain`); an explicit caller value is honored as given, and
-    sizing it against the budget and the column-family count is then the caller's job. The general trap:
-    `DBOptions` defaults that derive a large value were sized when they reached one column family, so
-    widening where an option applies means re-checking its default against every shared budget it
-    competes for.
+    resolves the derived (`-1`) default to **1** whenever a stalling manager is configured for exactly
+    this reason (`resolveMaxWriteBufferSizeToMaintain`).
+
+    **It must never be 0, which is the value that reads as safe and behaves as the worst case.** Every
+    writable open here goes through a transaction wrapper, and both of them rewrite a 0 target to `-1`
+    before `DB::Open` sees it (`OptimisticTransactionDB::Open`, `TransactionDB::PrepareWrap` in RocksDB
+    v11.8.1); `SanitizeOptions` then expands `-1` to `max_write_buffer_number * write_buffer_size`, i.e.
+    256MB per column family with this codebase's defaults. Only families created _after_ an open — via
+    `DB::CreateColumnFamily`, which has no such rewrite — kept the 0, which is why the fresh-database
+    stall test passed while the safeguard never survived a restart in production (rocksdb-js#821,
+    harper#2490). An explicit caller 0 is normalized for the same reason; an explicit **positive** value
+    is honored as given, and sizing it against the budget and the column-family count is then the
+    caller's job.
+
+    1 is not "no history". `MemTableListVersion::TrimHistory` compares against
+    `MemoryAllocatedBytesExcludingLast()`, which excludes the entry it is about to drop, so the newest
+    flushed memtable is retained until that family's next write schedules a trim (`CheckMemtableFull` →
+    `trim_history_scheduler_`, drained by `DBImpl::PreprocessWrite` **before** its `ShouldStall` check).
+    The bound is one flushed memtable per family instead of 256MB per family, and no positive target
+    does better — the residual is independent of the target's magnitude, so a budget smaller than
+    `familyCount * writeBufferSize` can still wedge. `DBDescriptor::open` reports a configuration whose
+    known families' targets already reach the budget on the `log.warn` channel; that is a report, not a
+    guarantee, because families are created lazily and only the ones present at that open are counted.
+
+    The safeguard is applied when a family is created and `max_write_buffer_size_to_maintain` is an
+    immutable `ColumnFamilyOptions` field, so turning `writeBufferManagerAllowStall` on at runtime
+    (`DBSettings::Config` propagates it through `SetAllowStall`) cannot retro-fit already-open families;
+    that transition warns and nothing more.
+
+    The general trap: `DBOptions` defaults that derive a large value were sized when they reached one
+    column family, so widening where an option applies means re-checking its default against every
+    shared budget it competes for. The second trap is this one — a sentinel that means "unset" to the
+    layer below turns your safe value into its default.
+
 11. **A corrupt transaction-log frame ends an entry, not the log**: framing breaks come in two
     shapes and the reader must not conflate them. A **torn tail** has nothing valid behind it, so
     the break is genuinely end-of-log — that is what `recoverTail()` truncates at open. A **mid-log
