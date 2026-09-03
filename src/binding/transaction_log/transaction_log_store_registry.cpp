@@ -4,7 +4,11 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "napi/global_events.h"
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
+#include <sstream>
 #include <vector>
 
 namespace rocksdb_js {
@@ -169,6 +173,66 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 				entry->stores.emplace(store->name, store);
 			}
 		}
+	}
+}
+
+void TransactionLogStoreRegistry::SeedTimestampFloor(
+	const std::string& dbPath,
+	const std::string& logName
+) {
+	if (!instance || logName.empty()) {
+		return;
+	}
+
+	std::shared_ptr<TransactionLogStore> store;
+	{
+		std::lock_guard<std::mutex> lock(instance->entriesMutex);
+		auto it = instance->entries.find(dbPath);
+		if (it == instance->entries.end()) {
+			return;
+		}
+		std::lock_guard<std::mutex> storeLock(it->second->storesMutex);
+		auto storeIt = it->second->stores.find(logName);
+		if (storeIt == it->second->stores.end()) {
+			// Nothing durable to resume above; a log created later this session
+			// only ever receives keys this process has already issued.
+			return;
+		}
+		store = storeIt->second;
+	}
+
+	bool complete = true;
+	double refusedKey = 0;
+	// Below MAX_TIMESTAMP_MS, which raiseMonotonicTimestampFloor() refuses outright:
+	// a key at the domain edge is reported as refused rather than dropped in silence.
+	const double plausibleBound = std::min(
+		getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS,
+		std::nextafter(MAX_TIMESTAMP_MS, 0.0));
+	double largestKey = store->scanLargestDurableKey(plausibleBound, refusedKey, complete);
+
+	if (raiseMonotonicTimestampFloor(largestKey, plausibleBound)) {
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor Raised clock floor to %f from log \"%s\" of \"%s\"\n",
+			instance.get(), largestKey, logName.c_str(), dbPath.c_str());
+	}
+
+	if (refusedKey > 0) {
+		std::ostringstream msg;
+		msg << "Transaction log \"" << logName << "\" of database " << dbPath
+			<< " holds a batch key more than "
+			<< static_cast<long long>(MAX_CLOCK_FLOOR_SKEW_MS / 86400000.0)
+			<< " days ahead of the wall clock (" << std::fixed << refusedKey
+			<< "); the monotonic timestamp floor was not seeded from that segment.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	}
+
+	if (!complete) {
+		std::ostringstream msg;
+		msg << "Transaction log \"" << logName << "\" of database " << dbPath
+			<< " has a segment that could not be read at open; the monotonic timestamp"
+			   " floor may sit below a batch key already durable in it.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	}
 }
 

@@ -384,6 +384,15 @@ struct TransactionLogFile final {
 	uint32_t scanForLastCompleteTransactionEnd();
 
 	/**
+	 * The largest batch key still durable in this file, or 0 if it holds no
+	 * entries. Walks the same framing as scanForLastCompleteTransactionEnd()
+	 * over the file's current extent, so it must run *after* open-time recovery:
+	 * a key that recoverTail() truncated away is no longer durable and must not
+	 * reach the clock floor. Throws DBException on I/O failure.
+	 */
+	double scanMaxEntryTimestamp();
+
+	/**
 	 * Closes the log file and removes it.
 	 *
 	 * @returns `true` if the file was removed, `false` if it did not exist.

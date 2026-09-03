@@ -465,6 +465,26 @@ struct TransactionLogStore final {
 	LogPosition getLastFlushedPosition();
 
 	/**
+	 * The largest batch key still durable across this store's segments, or 0 when
+	 * it holds none. Keys are not ordered within or across segments, so every
+	 * segment is walked; there is no header word or last entry that bounds the
+	 * rest (`latestTimestamp` is process-local and starts at 0, so a segment
+	 * created after a backward clock step carries a header below keys already
+	 * durable in an older one).
+	 *
+	 * Must run after open-time recovery: a key in bytes `recoverTail()` truncated
+	 * is no longer durable. Best effort — `complete` comes back false when a
+	 * segment could not be opened or scanned, and the caller reports that rather
+	 * than trusting the maximum.
+	 *
+	 * A segment whose largest key is beyond `plausibleBound` is corrupt or was
+	 * written by a caller that assigned an arbitrary timestamp; its keys are left
+	 * out of the maximum and its largest is reported in `refusedKey`, so one such
+	 * segment cannot mask the real keys in the others.
+	 */
+	double scanLargestDurableKey(double plausibleBound, double& refusedKey, bool& complete);
+
+	/**
 	 * Returns a point-in-time snapshot of the files that make up this store, for
 	 * backup. Enumerates the sequence files under `dataSetsMutex` (holding
 	 * shared_ptrs so they outlive the lock), capturing each file's current `size`

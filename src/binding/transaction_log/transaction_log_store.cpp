@@ -346,6 +346,62 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	return { TRANSACTION_LOG_FILE_HEADER_SIZE, sequenceNumber + 1 };
 }
 
+double TransactionLogStore::scanLargestDurableKey(
+	double plausibleBound,
+	double& refusedKey,
+	bool& complete
+) {
+	std::vector<std::shared_ptr<TransactionLogFile>> files;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		files.reserve(this->sequenceFiles.size());
+		for (const auto& [sequence, logFile] : this->sequenceFiles) {
+			files.push_back(logFile);
+		}
+	}
+
+	double largest = 0;
+	for (const auto& logFile : files) {
+		const bool openedForScan = !logFile->isOpen();
+		try {
+			if (openedForScan) {
+				// open() initializes a zero-length file by writing a header; a
+				// read-only pass must not do that, and such a file holds no keys.
+				std::error_code sizeError;
+				auto fileSize = std::filesystem::file_size(logFile->path, sizeError);
+				if (sizeError || fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+					if (sizeError) {
+						complete = false;
+					}
+					continue;
+				}
+				logFile->open(this->latestTimestamp);
+			}
+			double fileMax = logFile->scanMaxEntryTimestamp();
+			if (fileMax > plausibleBound) {
+				if (fileMax > refusedKey) {
+					refusedKey = fileMax;
+				}
+			} else if (fileMax > largest) {
+				largest = fileMax;
+			}
+		} catch (const std::exception& e) {
+			complete = false;
+			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s: %s\n",
+				this, logFile->path.string().c_str(), e.what());
+		} catch (...) {
+			complete = false;
+			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s\n",
+				this, logFile->path.string().c_str());
+		}
+		if (openedForScan && logFile->isOpen()) {
+			logFile->close();
+		}
+	}
+
+	return largest;
+}
+
 LogPosition TransactionLogStore::getLastFlushedPosition() {
 	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 	auto stateFilePath = this->path / "txn.state";

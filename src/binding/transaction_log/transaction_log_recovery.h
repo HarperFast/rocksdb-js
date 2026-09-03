@@ -60,6 +60,13 @@ struct RecoveryScan final {
 	 * assign repeated timestamps to separate transactions.
 	 */
 	bool unclosedTailIsOneTransaction;
+	/**
+	 * The largest entry timestamp the walk saw, or 0 for a file with no entries.
+	 * Entry timestamps are batch keys, and they are not ordered within a file
+	 * (see `findPositionByTimestamp`), so this is a running maximum over every
+	 * frame the walk accepted — never the last one it read.
+	 */
+	double maxTimestamp;
 };
 
 /**

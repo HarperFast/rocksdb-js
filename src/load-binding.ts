@@ -320,6 +320,26 @@ export type NativeDatabaseOptions = {
 	transactionLogRetentionMs?: number;
 	transactionLogsPath?: string;
 	/**
+	 * The name of the transaction log whose batch keys this process originates
+	 * (the log it passes to `useLog()` for its own writes).
+	 *
+	 * At open, the process-wide monotonic timestamp floor is raised above every
+	 * batch key still durable in that log, so a backward wall-clock step between
+	 * runs cannot reissue a transaction timestamp that is already a key in it.
+	 *
+	 * Name only a log this process originates. A log written under timestamps
+	 * adopted from another node (a replication receiver calling
+	 * `transaction.setTimestamp()`) is keyed by that node's clock, and seeding
+	 * from it would ratchet this process's clock to the fastest of those nodes
+	 * on every restart. Unset (the default), the floor is left alone; native
+	 * code cannot tell the two kinds of log apart.
+	 *
+	 * Best effort: a segment that cannot be read at open leaves the floor lower
+	 * than it should be and emits a `log.warn` global event. The floor is
+	 * process-wide, so it is shared by every database open in the process.
+	 */
+	timestampFloorLog?: string;
+	/**
 	 * When true, transaction writes to this column family invalidate the
 	 * VerificationTable slot for each written key at write time (not at
 	 * commit time). Enable only for column families whose records are
@@ -667,6 +687,8 @@ export const BackgroundError: new (
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;
+export const HAS_DISTINCT_VERSION_FLAG: number = binding.constants.HAS_DISTINCT_VERSION_FLAG;
+export const VERSION_HEADER_TAG: number = binding.constants.VERSION_HEADER_TAG;
 export const addGlobalListener: (event: string, callback: (...args: any[]) => void) => void =
 	binding.addListener;
 export const removeGlobalListener: (event: string, callback: (...args: any[]) => void) => boolean =
@@ -694,6 +716,23 @@ export const constants: {
 	 * cannot enforce this flag.
 	 */
 	VERSION_NOT_UNIQUE_FLAG: number;
+	/**
+	 * Producer flag in the same metadata word: the value carries a record version distinct from its
+	 * first word, as an 8-byte big-endian float64 at offset 12, immediately after that word.
+	 *
+	 * The first word stays the transaction timestamp — the write identity the VerificationTable
+	 * keys on and the transaction-log batch key it was written under — while the second is the
+	 * version a source or origin supplied. When the flag is absent the two are equal, which is how
+	 * a value written before this flag existed decodes. Not interpreted natively; read it through
+	 * `getEntry()` / `getEntrySync()`, which return both words.
+	 */
+	HAS_DISTINCT_VERSION_FLAG: number;
+	/**
+	 * Top byte of a value's metadata word (offset 8), marking the remaining 24 bits as producer
+	 * flags. A word whose top byte is anything else is not a metadata word and its flag bits are
+	 * not read.
+	 */
+	VERSION_HEADER_TAG: number;
 	/**
 	 * Sentinel value resolved (not rejected) by `commit()` when
 	 * `coordinatedRetry: true` and the transaction encountered an IsBusy

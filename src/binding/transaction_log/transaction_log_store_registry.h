@@ -152,6 +152,28 @@ public:
 	static void DiscoverStores(const std::string& dbPath);
 
 	/**
+	 * Raises the process-wide monotonic timestamp floor above every batch key
+	 * still durable in one already-discovered transaction log store, so a
+	 * backward wall-clock step across a restart cannot reissue one.
+	 *
+	 * `logName` must be a log this process *originates* keys into. A log a
+	 * replication receiver writes under an adopted origin timestamp is keyed by
+	 * another node's clock, and seeding from it would ratchet this node's clock
+	 * to the fastest peer on every restart; native code cannot tell the two apart,
+	 * which is why the log is named by the caller (the `timestampFloorLog` open
+	 * option) instead of inferred.
+	 *
+	 * Best effort: a store that does not exist, holds no entries, or cannot be
+	 * fully scanned leaves the floor lower than it should be, and the last of
+	 * those emits a `log.warn`. Call after DiscoverStores(), which completes the
+	 * open-time recovery that decides which bytes are still durable.
+	 *
+	 * @param dbPath The database path.
+	 * @param logName The name of the locally originated transaction log store.
+	 */
+	static void SeedTimestampFloor(const std::string& dbPath, const std::string& logName);
+
+	/**
 	 * Resolves (finds or creates) a transaction log store by name for the
 	 * given database path.
 	 *

@@ -312,6 +312,24 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 	return scan.lastCompleteTransactionEnd;
 }
 
+double TransactionLogFile::scanMaxEntryTimestamp() {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+
+	if (this->version != 1) {
+		return 0;
+	}
+
+	if (this->size.load(std::memory_order_relaxed) <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		return 0;
+	}
+
+	try {
+		return this->scanRecoveryLocked().maxTimestamp;
+	} catch (const DBException& error) {
+		throw DBException(std::string(error.what()) + ": " + this->path.string());
+	}
+}
+
 void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 

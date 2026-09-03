@@ -141,9 +141,10 @@ RecoveryScan scanTransactionLogForRecovery(
 	uint32_t tailEntries = 0;
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
+	double maxTimestamp = 0;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
-			tailEntries > 0 && tailUniformTimestamp };
+			tailEntries > 0 && tailUniformTimestamp, maxTimestamp };
 	};
 
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
@@ -177,6 +178,9 @@ RecoveryScan scanTransactionLogForRecovery(
 			return scan(RecoveryScan::Kind::TruncateTail, pos);
 		}
 		bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
+		if (timestamp > maxTimestamp) {
+			maxTimestamp = timestamp;
+		}
 		if (tailEntries++ == 0) {
 			tailTimestamp = timestamp;
 		} else if (timestamp != tailTimestamp) {

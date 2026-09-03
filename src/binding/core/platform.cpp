@@ -133,12 +133,15 @@ std::chrono::system_clock::time_point convertFileTimeToSystemTime(
 
 static std::atomic<double> lastTimestamp{0.0};
 
-double getMonotonicTimestamp() {
+double getWallClockTimestamp() {
 	int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::system_clock::now().time_since_epoch()
 	).count();
+	return static_cast<double>(now) / 1000000.0;
+}
 
-	double result = static_cast<double>(now) / 1000000.0;
+double getMonotonicTimestamp() {
+	double result = getWallClockTimestamp();
 
 	double last = lastTimestamp.load(std::memory_order_acquire);
 	if (result <= last) {
@@ -152,6 +155,24 @@ double getMonotonicTimestamp() {
 	}
 
 	return result;
+}
+
+bool raiseMonotonicTimestampFloor(double floor) {
+	return raiseMonotonicTimestampFloor(floor, getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
+}
+
+bool raiseMonotonicTimestampFloor(double floor, double plausibleBound) {
+	if (!std::isfinite(floor) || floor <= 0 || floor >= MAX_TIMESTAMP_MS || floor > plausibleBound) {
+		return false;
+	}
+
+	double last = lastTimestamp.load(std::memory_order_acquire);
+	while (last < floor) {
+		if (lastTimestamp.compare_exchange_weak(last, floor, std::memory_order_acq_rel)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {
