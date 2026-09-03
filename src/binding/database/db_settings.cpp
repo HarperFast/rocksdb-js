@@ -1,7 +1,10 @@
 #include "database/db_settings.h"
+#include <cstdio>
 #include <random>
 #include "napi/macros.h"
 #include "core/platform.h"
+#include "database/db_registry.h"
+#include "napi/global_events.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "rocksdb/advanced_cache.h"
@@ -15,6 +18,32 @@ uint64_t generateSeed() {
 	uint64_t hi = static_cast<uint64_t>(rd());
 	uint64_t lo = static_cast<uint64_t>(rd());
 	return (hi << 32) | lo;
+}
+
+// Resolved once per process: the watchdog runs on its own thread, and ::getenv
+// there is not safe against a concurrent process.env write on any JS thread
+// (same reasoning as ROCKSDB_JS_PARK_TIMEOUT_MS).
+uint64_t writeBufferManagerStallWarnMs() {
+	static const uint64_t value = resolveWbmStallWarnMs(::getenv("ROCKSDB_JS_WBM_STALL_WARN_MS"));
+	return value;
+}
+
+napi_status setNumberProperty(napi_env env, napi_value target, const char* key, uint64_t value) {
+	napi_value jsValue;
+	napi_status status = ::napi_create_double(env, static_cast<double>(value), &jsValue);
+	if (status != napi_ok) {
+		return status;
+	}
+	return ::napi_set_named_property(env, target, key, jsValue);
+}
+
+napi_status setBoolProperty(napi_env env, napi_value target, const char* key, bool value) {
+	napi_value jsValue;
+	napi_status status = ::napi_get_boolean(env, value, &jsValue);
+	if (status != napi_ok) {
+		return status;
+	}
+	return ::napi_set_named_property(env, target, key, jsValue);
 }
 
 } // namespace
@@ -92,8 +121,151 @@ std::shared_ptr<rocksdb::WriteBufferManager> DBSettings::getWriteBufferManager()
 			cache,
 			writeBufferManagerAllowStall.load(std::memory_order_relaxed)
 		);
+		writeBufferManagerPtr.store(writeBufferManager.get(), std::memory_order_release);
+	}
+	if (writeBufferManagerAllowStall.load(std::memory_order_relaxed)) {
+		this->ensureWriteBufferManagerWatchdog();
 	}
 	return writeBufferManager;
+}
+
+/**
+ * Starts the stall watchdog if it is not already running. Only a stalling manager
+ * can stall (`WriteBufferManager::ShouldStall` short-circuits on `allow_stall`),
+ * so nothing is started otherwise.
+ *
+ * Thread creation is allowed to fail without taking the caller down with it: this
+ * is an observability feature, and turning thread exhaustion into a failed
+ * `config()` or database open would be strictly worse than losing the warn line.
+ * The failure is visible as `watchdogRunning: false`.
+ */
+void DBSettings::ensureWriteBufferManagerWatchdog() {
+	if (writeBufferManagerStallWarnMs() == 0) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(this->watchdogMutex);
+	// A stop that has been requested but not yet joined is left to its joiner:
+	// this path runs under databasesMutex (DBRegistry::OpenDB holds it across
+	// DBDescriptor::open), and the watchdog takes databasesMutex to collect its
+	// inventory, so joining here could deadlock against a sample in flight.
+	if (this->watchdogStarted) {
+		return;
+	}
+	this->watchdogStopRequested = false;
+	try {
+		this->watchdogThread = std::thread([this]() { this->runWriteBufferManagerWatchdog(); });
+		this->watchdogStarted = true;
+	} catch (...) {
+		this->watchdogStarted = false;
+		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+	}
+}
+
+void DBSettings::requestWriteBufferManagerWatchdogStop() {
+	{
+		std::lock_guard<std::mutex> lock(this->watchdogMutex);
+		this->watchdogStopRequested = true;
+	}
+	this->watchdogCv.notify_all();
+}
+
+void DBSettings::joinWriteBufferManagerWatchdog() {
+	std::thread toJoin;
+	{
+		std::lock_guard<std::mutex> lock(this->watchdogMutex);
+		this->watchdogStopRequested = true;
+		if (this->watchdogStarted) {
+			toJoin = std::move(this->watchdogThread);
+			this->watchdogStarted = false;
+		}
+	}
+	this->watchdogCv.notify_all();
+	if (toJoin.joinable()) {
+		toJoin.join();
+	}
+}
+
+void DBSettings::runWriteBufferManagerWatchdog() {
+	setThreadName("rocksdb-wbm-watchdog");
+	this->writeBufferManagerWatchdogRunning.store(true, std::memory_order_relaxed);
+	const uint64_t thresholdMs = writeBufferManagerStallWarnMs();
+	WbmStallWatchdogState state;
+	std::unique_lock<std::mutex> lock(this->watchdogMutex);
+	while (!this->watchdogStopRequested) {
+		this->watchdogCv.wait_for(lock, std::chrono::milliseconds(WBM_STALL_SAMPLE_INTERVAL_MS));
+		if (this->watchdogStopRequested) {
+			break;
+		}
+		lock.unlock();
+		try {
+			this->sampleWriteBufferManagerStall(state, thresholdMs);
+		} catch (...) {
+			// A report that could not be built (allocation, formatting) must not
+			// take the thread down: the next sample retries.
+		}
+		lock.lock();
+	}
+	this->writeBufferManagerStallActiveMs.store(0, std::memory_order_relaxed);
+	this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+}
+
+void DBSettings::sampleWriteBufferManagerStall(WbmStallWatchdogState& state, uint64_t thresholdMs) {
+	rocksdb::WriteBufferManager* wbm = this->getWriteBufferManagerRaw();
+	if (wbm == nullptr) {
+		return;
+	}
+	WbmStallWatchdogState::Sample sample = state.onSample(
+		wbm->IsStallActive(), WbmStallWatchdogState::Clock::now(), thresholdMs
+	);
+	this->writeBufferManagerStallActiveMs.store(sample.stallActiveMs, std::memory_order_relaxed);
+	if (!sample.reportNow) {
+		return;
+	}
+
+	WriteBufferManagerStallReport report;
+	report.stallActiveMs = sample.stallActiveMs;
+	report.bufferSize = wbm->buffer_size();
+	report.memoryUsage = wbm->memory_usage();
+	report.mutableMemoryUsage = wbm->mutable_memtable_memory_usage();
+	report.allowStall = this->writeBufferManagerAllowStall.load(std::memory_order_relaxed);
+	report.costToCache = this->writeBufferManagerCostToCache.load(std::memory_order_relaxed);
+	DBRegistry::CollectWriteBufferManagerInventory(
+		wbm, report.columnFamilies, report.maxWriteBufferSizeToMaintain
+	);
+
+	// Formatting and delivery happen after every registry lock is released.
+	std::string line = formatWriteBufferManagerStallReport(report);
+	// stderr is the channel that does not depend on an application having
+	// registered a listener; the event below is the one an application can route.
+	if (::fprintf(stderr, "%s\n", line.c_str()) >= 0) {
+		::fflush(stderr);
+		state.markReported();
+	}
+	emitGlobalEvent("log.warn", ListenerData::fromStrings({ line }));
+}
+
+WriteBufferManagerStats DBSettings::getWriteBufferManagerStats(bool includeColumnFamilies) {
+	WriteBufferManagerStats stats;
+	stats.allowStall = this->writeBufferManagerAllowStall.load(std::memory_order_relaxed);
+	stats.costToCache = this->writeBufferManagerCostToCache.load(std::memory_order_relaxed);
+	stats.watchdogRunning = this->writeBufferManagerWatchdogRunning.load(std::memory_order_relaxed);
+
+	rocksdb::WriteBufferManager* wbm = this->getWriteBufferManagerRaw();
+	if (wbm == nullptr) {
+		return stats;
+	}
+	stats.enabled = true;
+	stats.bufferSize = wbm->buffer_size();
+	stats.memoryUsage = wbm->memory_usage();
+	stats.mutableMemoryUsage = wbm->mutable_memtable_memory_usage();
+	stats.stallActive = wbm->IsStallActive();
+	stats.stallActiveMs = this->writeBufferManagerStallActiveMs.load(std::memory_order_relaxed);
+	if (includeColumnFamilies) {
+		DBRegistry::CollectWriteBufferManagerInventory(
+			wbm, stats.columnFamilies, stats.maxWriteBufferSizeToMaintain
+		);
+	}
+	return stats;
 }
 
 /**
@@ -208,6 +380,12 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		// the RocksDB-supported runtime knob.
 		if (wbmAlreadyCreated && allowStallProvided) {
 			settings.writeBufferManager->SetAllowStall(newAllowStall);
+			if (newAllowStall) {
+				// Stalling was just enabled on a live manager, so the databases
+				// already attached to it can now stall without any further open
+				// to start the watchdog.
+				settings.ensureWriteBufferManagerWatchdog();
+			}
 		}
 	}
 
@@ -233,7 +411,43 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Exports the `config()` function to JavaScript.
+ * The `getWriteBufferManagerStats()` JavaScript function. Process-wide: the
+ * WriteBufferManager is a singleton shared by every database opened in this
+ * process, including from worker threads.
+ */
+napi_value DBSettings::GetWriteBufferManagerStats(napi_env env, napi_callback_info info) {
+	WriteBufferManagerStats stats = DBSettings::getInstance().getWriteBufferManagerStats(true);
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "bufferSize", stats.bufferSize));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "memoryUsage", stats.memoryUsage));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "mutableMemoryUsage", stats.mutableMemoryUsage));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "stallActiveMs", stats.stallActiveMs));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "columnFamilies", stats.columnFamilies));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "enabled", stats.enabled));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "allowStall", stats.allowStall));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "costToCache", stats.costToCache));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "stallActive", stats.stallActive));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "watchdogRunning", stats.watchdogRunning));
+
+	napi_value targets;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &targets));
+	for (const auto& [target, count] : stats.maxWriteBufferSizeToMaintain) {
+		napi_value countValue;
+		NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(count), &countValue));
+		NAPI_STATUS_THROWS(::napi_set_named_property(
+			env, targets, std::to_string(target).c_str(), countValue
+		));
+	}
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "maxWriteBufferSizeToMaintain", targets));
+
+	return result;
+}
+
+/**
+ * Exports the `config()` and `getWriteBufferManagerStats()` functions to
+ * JavaScript.
  *
  * @param env The Node.js environment.
  * @param exports The exports object.
@@ -250,6 +464,19 @@ void DBSettings::Init(napi_env env, napi_value exports) {
 	));
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "config", configFn));
+
+	napi_value wbmStatsFn;
+	NAPI_STATUS_THROWS_VOID(::napi_create_function(
+		env,
+		"getWriteBufferManagerStats",
+		NAPI_AUTO_LENGTH,
+		DBSettings::GetWriteBufferManagerStats,
+		nullptr,
+		&wbmStatsFn
+	));
+	NAPI_STATUS_THROWS_VOID(
+		::napi_set_named_property(env, exports, "getWriteBufferManagerStats", wbmStatsFn)
+	);
 }
 
 }

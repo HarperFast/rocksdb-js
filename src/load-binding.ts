@@ -665,7 +665,48 @@ export const BackgroundError: new (
 	> & { type?: string }
 ) => BackgroundError = binding.BackgroundError;
 
+/**
+ * Live state of the process-wide `WriteBufferManager` singleton — see
+ * {@link RocksDatabase.getWriteBufferManagerStats}.
+ */
+export type WriteBufferManagerStats = {
+	/** Whether a manager has been created in this process. All other values are 0/false when not. */
+	enabled: boolean;
+	/** The manager's budget in bytes (`writeBufferManagerSize`, live). */
+	bufferSize: number;
+	/** Total memtable memory charged to the manager, in bytes. */
+	memoryUsage: number;
+	/** The share of `memoryUsage` held by active (mutable) memtables, in bytes. */
+	mutableMemoryUsage: number;
+	allowStall: boolean;
+	costToCache: boolean;
+	/** Whether the manager is currently stalling writes. */
+	stallActive: boolean;
+	/**
+	 * How long the current stall has been active, in milliseconds; 0 when not
+	 * stalled. Sampled once a second by the stall watchdog, so it is 0 for the
+	 * first second of a stall and whenever `watchdogRunning` is false.
+	 */
+	stallActiveMs: number;
+	/**
+	 * Whether the stall watchdog is running. It runs only while a manager exists
+	 * with `writeBufferManagerAllowStall`, and only when
+	 * `ROCKSDB_JS_WBM_STALL_WARN_MS` is not `0`.
+	 */
+	watchdogRunning: boolean;
+	/** Live column families across every writable database attached to this manager. */
+	columnFamilies: number;
+	/**
+	 * Effective per-column-family `max_write_buffer_size_to_maintain` (as a decimal
+	 * string) to the number of those column families holding it. Effective, not
+	 * requested: RocksDB rewrites a requested `0` for a transaction database.
+	 */
+	maxWriteBufferSizeToMaintain: Record<string, number>;
+};
+
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
+export const getWriteBufferManagerStats: () => WriteBufferManagerStats =
+	binding.getWriteBufferManagerStats;
 export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;
 export const addGlobalListener: (event: string, callback: (...args: any[]) => void) => void =
 	binding.addListener;

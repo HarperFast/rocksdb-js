@@ -240,6 +240,31 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), path.c_str());
 }
 
+void DBRegistry::CollectWriteBufferManagerInventory(
+	const rocksdb::WriteBufferManager* wbm,
+	uint64_t& columnFamilies,
+	std::map<int64_t, uint64_t>& maxWriteBufferSizeToMaintain
+) {
+	if (!instance || wbm == nullptr) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(instance->databasesMutex);
+	for (const auto& [key, entry] : instance->databases) {
+		const auto& descriptor = entry.descriptor;
+		if (!descriptor || descriptor->readOnly || descriptor->attachedWriteBufferManager != wbm) {
+			continue;
+		}
+		std::lock_guard<std::mutex> columnsLock(descriptor->columnsMutex);
+		for (const auto& [name, columnDescriptor] : descriptor->columns) {
+			if (!columnDescriptor) {
+				continue;
+			}
+			columnFamilies++;
+			maxWriteBufferSizeToMaintain[columnDescriptor->maxWriteBufferSizeToMaintain]++;
+		}
+	}
+}
+
 /**
  * Initialize the singleton instance of the registry.
  */
@@ -382,7 +407,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			auto column = rocksdb_js::createRocksDBColumnFamily(
 				entry.descriptor->db, name, cfOptions
 			);
-			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
+			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
+				column,
+				entry.descriptor->db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+			);
 			columns[name] = columnDescriptor;
 			entry.descriptor->columns[name] = columnDescriptor;
 		} else if (options.compressionExplicit && options.compression) {

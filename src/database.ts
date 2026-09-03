@@ -11,6 +11,7 @@ import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encodi
 import {
 	addGlobalListener,
 	config,
+	getWriteBufferManagerStats,
 	globalListenerCount,
 	globalNotify,
 	removeGlobalListener,
@@ -21,6 +22,7 @@ import {
 	type PurgeLogsOptions,
 	type RocksDatabaseConfig,
 	type NativeTransactionOptions,
+	type WriteBufferManagerStats,
 } from './load-binding.ts';
 import type { StatsAll, StatsDefault, StatsValue } from './stats.ts';
 import {
@@ -340,6 +342,35 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	static config(options: RocksDatabaseConfig): void {
 		config(options);
+	}
+
+	/**
+	 * Reads the live state of the `WriteBufferManager`: its budget, how much
+	 * memtable memory is charged against it, how much of that is still mutable,
+	 * and whether it is currently stalling writes.
+	 *
+	 * **Process-wide, not per-database.** The manager is a singleton shared by
+	 * every database opened in this process, `worker_threads` included, so these
+	 * values describe the whole process no matter which database prompted the
+	 * call. The same values (minus the column-family inventory, which walks the
+	 * database registry) are also in `db.getStats()` under the same
+	 * `writeBufferManager.` prefix, for scraping.
+	 *
+	 * A stall here is invisible to RocksDB's own counters — `rocksdb.stall.micros`
+	 * and the `'writeStall'` event both track the WriteController, which a
+	 * WriteBufferManager stall never goes through — so `stallActive` is the signal
+	 * that distinguishes a stalled process from an idle one.
+	 *
+	 * @example
+	 * ```typescript
+	 * const wbm = RocksDatabase.getWriteBufferManagerStats();
+	 * if (wbm.stallActive) {
+	 * 	log.warn(`writes stalled for ${wbm.stallActiveMs}ms: ${wbm.memoryUsage}/${wbm.bufferSize}`);
+	 * }
+	 * ```
+	 */
+	static getWriteBufferManagerStats(): WriteBufferManagerStats {
+		return getWriteBufferManagerStats();
 	}
 
 	/**
