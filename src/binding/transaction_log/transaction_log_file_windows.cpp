@@ -702,9 +702,18 @@ bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
 	// stale bytes reading as an entry (invariant 5). A crash before that final
 	// chunk instead leaves the original framing break, which the next open's
 	// recovery re-detects and re-attempts.
+	// The boundary write is its own sector so the barrier below actually
+	// separates it: making it a whole 64 KiB chunk would put the boundary and
+	// the stale bytes behind it in one buffered write for any tail smaller than
+	// that — the common case, a single partial entry — and the cache could
+	// still persist the boundary page first. A sector is the smallest unit a
+	// drive writes atomically, so a crash either lands these zeros or leaves the
+	// torn tail; there is no third state.
 	constexpr uint32_t chunkSize = 64 * 1024;
-	std::vector<char> zeros(std::min(chunkSize, entriesEnd - newSize), 0);
-	uint32_t finalChunkEnd = newSize + std::min(chunkSize, entriesEnd - newSize);
+	constexpr uint32_t sectorSize = 512;
+	uint32_t tailLength = entriesEnd - newSize;
+	std::vector<char> zeros(std::min(chunkSize, tailLength), 0);
+	uint32_t finalChunkEnd = newSize + std::min(sectorSize, tailLength);
 	for (uint32_t end = entriesEnd; end > finalChunkEnd; ) {
 		uint32_t remaining = end - finalChunkEnd;
 		uint32_t toWrite = remaining < chunkSize ? remaining : chunkSize;
@@ -716,7 +725,9 @@ bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
 		end = offset;
 	}
 
-	// Make everything above the boundary durable before the boundary itself.
+	// Make everything above the boundary durable before the boundary is written
+	// at all, so no crash can leave a clean-looking end-of-entries marker with
+	// live bytes behind it.
 	if (entriesEnd > finalChunkEnd && !::FlushFileBuffers(this->fileHandle)) {
 		return this->retireAfterFailedZeroTail(newSize, "FlushFileBuffers");
 	}

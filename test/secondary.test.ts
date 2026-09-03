@@ -410,10 +410,14 @@ describe('Secondary Instances', () => {
 				() => 'settled',
 				() => 'settled'
 			);
-			// destroy() tears down through finishClose(), which waits on the
-			// in-flight claim rather than the async-work tracker, and throws while
-			// the operation still holds a descriptor reference.
-			expect(() => secondary.destroy()).toThrow();
+			// Torn down through the WRITABLE handle: destroy() on the secondary
+			// itself would stop at the read-only guard and never reach the
+			// registry, so it would prove nothing about teardown. destroy() on the
+			// primary claims and closes every descriptor for the path, including
+			// this follower, so finishClose() waits on the catch-up's in-flight
+			// claim and then throws because that operation still holds a
+			// descriptor reference.
+			expect(() => primary.destroy()).toThrow();
 			await expect(settled).resolves.toBe('settled');
 
 			// The claim was released exactly once, so this close returns instead
