@@ -465,6 +465,18 @@ struct TransactionLogStore final {
 	LogPosition getLastFlushedPosition();
 
 	/**
+	 * Result of scanLargestDurableKey(). `complete` false means the floor derived
+	 * from `largestKey` may sit below a key that is still durable.
+	 */
+	struct DurableKeyScan final {
+		double largestKey = 0;
+		/** The largest key beyond the plausible bound, left out of `largestKey`. */
+		double refusedKey = 0;
+		bool complete = true;
+		bool budgetExhausted = false;
+	};
+
+	/**
 	 * The largest batch key still durable across this store's segments, or 0 when
 	 * it holds none. Keys are not ordered within or across segments, so every
 	 * segment is walked; there is no header word or last entry that bounds the
@@ -472,17 +484,26 @@ struct TransactionLogStore final {
 	 * created after a backward clock step carries a header below keys already
 	 * durable in an older one).
 	 *
-	 * Must run after open-time recovery: a key in bytes `recoverTail()` truncated
-	 * is no longer durable. Best effort — `complete` comes back false when a
-	 * segment could not be opened or scanned, and the caller reports that rather
-	 * than trusting the maximum.
+	 * Runs after open-time recovery: a key in bytes `recoverTail()` truncated is
+	 * no longer durable.
 	 *
-	 * A segment whose largest key is beyond `plausibleBound` is corrupt or was
+	 * Newest segment first, and bounded by `budget`, which is honored literally:
+	 * a budget of zero scans nothing. There is no unbounded setting — a caller
+	 * that would rather wait than lose coverage raises the number. The
+	 * walk is O(entries) on the calling thread during open, and a log's retention
+	 * window bounds its age rather than its entry count, so an unbounded walk is
+	 * an unbounded stall. Stopping early costs coverage, which the caller reports,
+	 * rather than correctness; the newest segment is scanned first because a
+	 * rollback leaves the highest keys in the run that was interrupted.
+	 *
+	 * A segment whose largest key is beyond `plausibleBound` was corrupted or
 	 * written by a caller that assigned an arbitrary timestamp; its keys are left
-	 * out of the maximum and its largest is reported in `refusedKey`, so one such
-	 * segment cannot mask the real keys in the others.
+	 * out of the maximum, so one such segment cannot mask the real keys in the
+	 * others.
 	 */
-	double scanLargestDurableKey(double plausibleBound, double& refusedKey, bool& complete);
+	DurableKeyScan scanLargestDurableKey(
+		double plausibleBound,
+		std::chrono::milliseconds budget);
 
 	/**
 	 * Returns a point-in-time snapshot of the files that make up this store, for

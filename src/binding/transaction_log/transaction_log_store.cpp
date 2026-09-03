@@ -346,22 +346,31 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	return { TRANSACTION_LOG_FILE_HEADER_SIZE, sequenceNumber + 1 };
 }
 
-double TransactionLogStore::scanLargestDurableKey(
+TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 	double plausibleBound,
-	double& refusedKey,
-	bool& complete
+	std::chrono::milliseconds budget
 ) {
 	std::vector<std::shared_ptr<TransactionLogFile>> files;
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 		files.reserve(this->sequenceFiles.size());
-		for (const auto& [sequence, logFile] : this->sequenceFiles) {
-			files.push_back(logFile);
+		// Newest first: a partial walk keeps the segments a rollback left the
+		// highest keys in.
+		for (auto it = this->sequenceFiles.rbegin(); it != this->sequenceFiles.rend(); ++it) {
+			files.push_back(it->second);
 		}
 	}
 
-	double largest = 0;
+	const auto deadline = std::chrono::steady_clock::now() + budget;
+	DurableKeyScan result;
+
 	for (const auto& logFile : files) {
+		if (std::chrono::steady_clock::now() >= deadline) {
+			result.budgetExhausted = true;
+			result.complete = false;
+			break;
+		}
+
 		const bool openedForScan = !logFile->isOpen();
 		try {
 			if (openedForScan) {
@@ -370,7 +379,7 @@ double TransactionLogStore::scanLargestDurableKey(
 				auto fileSize = std::filesystem::file_size(logFile->path, sizeError);
 				if (sizeError || fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
 					if (sizeError) {
-						complete = false;
+						result.complete = false;
 					}
 					continue;
 				}
@@ -378,18 +387,18 @@ double TransactionLogStore::scanLargestDurableKey(
 			}
 			double fileMax = logFile->scanMaxEntryTimestamp();
 			if (fileMax > plausibleBound) {
-				if (fileMax > refusedKey) {
-					refusedKey = fileMax;
+				if (fileMax > result.refusedKey) {
+					result.refusedKey = fileMax;
 				}
-			} else if (fileMax > largest) {
-				largest = fileMax;
+			} else if (fileMax > result.largestKey) {
+				result.largestKey = fileMax;
 			}
 		} catch (const std::exception& e) {
-			complete = false;
+			result.complete = false;
 			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s: %s\n",
 				this, logFile->path.string().c_str(), e.what());
 		} catch (...) {
-			complete = false;
+			result.complete = false;
 			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s\n",
 				this, logFile->path.string().c_str());
 		}
@@ -398,7 +407,7 @@ double TransactionLogStore::scanLargestDurableKey(
 		}
 	}
 
-	return largest;
+	return result;
 }
 
 LogPosition TransactionLogStore::getLastFlushedPosition() {

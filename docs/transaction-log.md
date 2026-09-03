@@ -266,8 +266,12 @@ against the same database opened without the option:
 | 25,000 entries, 99 MB, 7 segments | ~31 ms                   |
 | 250,000 entries, 19 MB            | ~273 ms                  |
 
-Roughly a millisecond per thousand entries, so the retention window that bounds the log also bounds
-the seed. A database opened without `timestampFloorLog` pays none of it.
+Roughly a millisecond per thousand entries. Retention bounds a log's age, not its entry count, so
+the walk is bounded directly instead: `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` (default `2000`) caps it,
+newest segment first, and a walk that runs out of budget warns and leaves the floor where it got to.
+The value is honored literally, `0` included, and there is no unbounded setting — the failure it
+bounds is an `open()` that does not return, so a deployment that would rather wait raises the number.
+A database opened without `timestampFloorLog` pays none of it.
 
 The seed is best effort, and says so when it falls short: a segment that cannot be opened or scanned
 emits a `log.warn` global event, as does a segment holding a key more than ten years ahead of the
