@@ -1,4 +1,4 @@
-import type { Transaction } from '../src/transaction.ts';
+import { Transaction } from '../src/transaction.ts';
 import { withResolvers } from '../src/util.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
@@ -373,6 +373,101 @@ for (const { name, options, txnOptions } of testOptions) {
 				await expect(db.get('foo')).toBeUndefined();
 			}));
 
+		it(`${name} async should freeze setTimestamp after staging and dispatch`, () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				const txn = new Transaction(db.store, txnOptions);
+				const timestamp = txn.getTimestamp();
+				await txn.put('foo', 'bar');
+				let frozenError: any;
+				try {
+					txn.setTimestamp(timestamp + 1);
+				} catch (error) {
+					frozenError = error;
+				}
+				expect(frozenError).toMatchObject({
+					code: 'ERR_TIMESTAMP_FROZEN',
+					message: expect.stringContaining('transaction already has staged writes'),
+				});
+
+				const committing = txn.commit();
+				expect(() => txn.setTimestamp(timestamp + 1)).toThrow('transaction is not pending');
+				await committing;
+				expect(txn.getTimestamp()).toBe(timestamp);
+				expect(await db.get('foo')).toBe('bar');
+			}));
+
+		it(`${name} async should freeze setTimestamp after a log entry is staged`, () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				const log = db.useLog('stamped');
+				await db.transaction(async (txn: Transaction) => {
+					const timestamp = Date.now();
+					txn.setTimestamp(timestamp);
+					log.addEntry(Buffer.from('entry'), txn.id);
+					expect(() => txn.setTimestamp(timestamp + 1)).toThrow(
+						'transaction already has staged writes'
+					);
+				}, txnOptions);
+			}));
+
+		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
+			`${name} async should keep a durable log timestamp frozen across a coordinated retry`,
+			() =>
+				dbRunner({ dbOptions: [options] }, async ({ db }) => {
+					const log = db.useLog('retry');
+					await db.put('k', 'initial');
+					let attempts = 0;
+					const originTimestamp = Date.now() - 1000;
+					await db.transaction(
+						async (txn: Transaction, attempt) => {
+							attempts = attempt;
+							txn.setTimestamp(originTimestamp);
+							expect(txn.getTimestamp()).toBe(originTimestamp);
+							if (attempt > 1) {
+								expect(() => txn.setTimestamp(originTimestamp + 1)).toThrow(
+									'transaction log batch is already durable'
+								);
+							}
+							await txn.get('k');
+							if (attempt === 1) await db.put('k', 'conflict');
+							await txn.put('k', 'committed');
+							log.addEntry(Buffer.from('entry'), txn.id);
+						},
+						{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
+					);
+					expect(attempts).toBeGreaterThanOrEqual(2);
+					const entries = [...log.query({ start: 0 })];
+					expect(entries).toHaveLength(1);
+					expect(entries[0].timestamp).toBe(originTimestamp);
+				})
+		);
+
+		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
+			`${name} async should allow timestamp re-adoption after a non-durable coordinated retry`,
+			() =>
+				dbRunner({ dbOptions: [options] }, async ({ db }) => {
+					await db.put('k', 'initial');
+					let attempts = 0;
+					let adoptedTimestamp = 0;
+					await db.transaction(
+						async (txn: Transaction, attempt) => {
+							attempts = attempt;
+							if (attempt > 1) {
+								adoptedTimestamp = txn.getTimestamp() + 1;
+								txn.setTimestamp(adoptedTimestamp);
+								expect(txn.getTimestamp()).toBe(adoptedTimestamp);
+							}
+							await txn.get('k');
+							if (attempt === 1) await db.put('k', 'conflict');
+							await txn.put('k', 'committed');
+						},
+						{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
+					);
+					expect(attempts).toBeGreaterThanOrEqual(2);
+					expect(adoptedTimestamp).toBeGreaterThan(0);
+					expect(await db.get('k')).toBe('committed');
+				})
+		);
+
 		it(`${name} async should get and set timestamp`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				const start = Date.now() - 1000;
@@ -390,7 +485,16 @@ for (const { name, options, txnOptions } of testOptions) {
 					ts = txn.getTimestamp();
 					expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
-					expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
+					const rejected = 'Invalid timestamp, expected a finite positive number';
+					expect(() => txn.setTimestamp(-1)).toThrow(rejected);
+					expect(() => txn.setTimestamp(0)).toThrow(rejected);
+					expect(() => txn.setTimestamp(NaN)).toThrow(rejected);
+					expect(() => txn.setTimestamp(Infinity)).toThrow(rejected);
+					expect(() => txn.setTimestamp(-Infinity)).toThrow(rejected);
+					expect(() => txn.setTimestamp(8.64e15)).toThrow(rejected);
+					txn.setTimestamp(8.64e15 - 1);
+					expect(txn.getTimestamp()).toBe(8.64e15 - 1);
+					txn.setTimestamp(newTs);
 					expect(() => txn.setTimestamp('foo' as any)).toThrow(
 						'Invalid timestamp, expected positive number'
 					);
@@ -611,6 +715,19 @@ for (const { name, options, txnOptions } of testOptions) {
 				expect(db.getSync('foo')).toBeUndefined();
 			}));
 
+		it(`${name} sync should freeze setTimestamp after a write or commit`, () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				const txn = new Transaction(db.store, txnOptions);
+				const timestamp = txn.getTimestamp();
+				txn.putSync('foo', 'bar');
+				expect(() => txn.setTimestamp(timestamp + 1)).toThrow(
+					'transaction already has staged writes'
+				);
+				txn.commitSync();
+				expect(() => txn.setTimestamp(timestamp + 1)).toThrow('transaction is not pending');
+				expect(db.getSync('foo')).toBe('bar');
+			}));
+
 		it(`${name} sync should get and set timestamp`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				const start = Date.now() - 1000;
@@ -628,7 +745,16 @@ for (const { name, options, txnOptions } of testOptions) {
 					ts = txn.getTimestamp();
 					expect(ts).toBeGreaterThanOrEqual(newTs - 1000);
 
-					expect(() => txn.setTimestamp(-1)).toThrow('Invalid timestamp, expected positive number');
+					const rejected = 'Invalid timestamp, expected a finite positive number';
+					expect(() => txn.setTimestamp(-1)).toThrow(rejected);
+					expect(() => txn.setTimestamp(0)).toThrow(rejected);
+					expect(() => txn.setTimestamp(NaN)).toThrow(rejected);
+					expect(() => txn.setTimestamp(Infinity)).toThrow(rejected);
+					expect(() => txn.setTimestamp(-Infinity)).toThrow(rejected);
+					expect(() => txn.setTimestamp(8.64e15)).toThrow(rejected);
+					txn.setTimestamp(8.64e15 - 1);
+					expect(txn.getTimestamp()).toBe(8.64e15 - 1);
+					txn.setTimestamp(newTs);
 					expect(() => txn.setTimestamp('foo' as any)).toThrow(
 						'Invalid timestamp, expected positive number'
 					);

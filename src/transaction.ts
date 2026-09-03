@@ -175,10 +175,12 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Returns the transaction start timestamp in seconds. Defaults to the time at which
-	 * the transaction was created.
+	 * Returns the transaction timestamp in milliseconds since the Unix epoch. It
+	 * defaults to a process-wide monotonic value assigned when the transaction
+	 * was created. A producer may use this value as its write identity; the
+	 * transaction log uses it as the batch key.
 	 *
-	 * @returns The transaction start timestamp in seconds.
+	 * @returns The transaction timestamp in milliseconds.
 	 */
 	getTimestamp(): number {
 		return this.#txn.getTimestamp();
@@ -192,9 +194,14 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Set the transaction start timestamp in seconds.
+	 * Overrides the transaction timestamp in milliseconds since the Unix epoch.
+	 * Call this before reading the timestamp or staging writes when adopting an
+	 * origin timestamp for replication or replay. Once a write or log entry is
+	 * staged, the timestamp is frozen, but reapplying the same timestamp remains
+	 * idempotent while the transaction is pending. The value must be finite,
+	 * positive, and below 8640000000000000.
 	 *
-	 * @param timestamp - The timestamp to set in seconds.
+	 * @param timestamp - The timestamp to set in milliseconds.
 	 */
 	setTimestamp(timestamp?: number): void {
 		this.#txn.setTimestamp(timestamp);

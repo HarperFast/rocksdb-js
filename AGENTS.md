@@ -646,6 +646,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
 
+18. **A transaction timestamp freezes when native state captures it**: `setTimestamp()` may adopt an
+    origin timestamp for replication or replay only while the transaction is pending and before any
+    database write or transaction-log entry is staged. The log batch snapshots the timestamp at the
+    first `addLogEntry`; `committedPosition` survives coordinated-retry resets, so a batch already
+    written remains frozen across retries, though reapplying the same timestamp is idempotent while
+    the transaction remains pending. rocksdb-js does not define record value layouts: a producer
+    that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
