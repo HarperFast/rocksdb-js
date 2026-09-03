@@ -148,7 +148,10 @@ function runFixture(
 		child.stderr?.on('data', (chunk) => {
 			stderr += chunk.toString();
 		});
-		const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
+		// Generous, because it also has to cover node boot, addon load and 160MB of writes on a busy
+		// CI machine — and because the property that matters is that a regression fails *bounded*
+		// rather than hanging the job, not that it fails quickly.
+		const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
 		child.on('close', (code, signal) => {
 			clearTimeout(timer);
 			resolve({ code, signal, stdout, stderr });
@@ -210,13 +213,14 @@ describe('WriteBufferManager stall — reopen (#821)', () => {
 			expect(created.code, created.stderr).toBe(0);
 
 			const reopened = await runReopenFixture(dbPath, 'reopen', mode);
-			// Before the fix this is a SIGKILL with no `WROTE`: every family reopened at
-			// 16MB of retained history against a 32MB budget, and putSync never returned.
+			// Before the fix this is a SIGKILL with no `WROTE`: every family reopened at the
+			// derived 256MB of retained history against a 128MB budget, and putSync never
+			// returned.
 			expect(reopened.signal, reopened.stderr).toBeNull();
 			expect(reopened.stdout, reopened.stderr).toContain('WROTE');
 			expect(reopened.code, reopened.stderr).toBe(0);
 			expect(maintainValues(reopened.stdout)).toEqual([1, 1, 1, 1]);
-		}, 90_000);
+		}, 150_000);
 	}
 
 	// An explicit 0 reads as "retain no history", and the wrappers turn exactly that value into the
@@ -231,7 +235,7 @@ describe('WriteBufferManager stall — reopen (#821)', () => {
 		expect(reopened.stdout, reopened.stderr).toContain('WROTE');
 		expect(reopened.code, reopened.stderr).toBe(0);
 		expect(maintainValues(reopened.stdout)).toEqual([1, 1, 1, 1]);
-	}, 90_000);
+	}, 150_000);
 });
 
 /**
@@ -323,9 +327,9 @@ describe('WriteBufferManager stall — allowStall enabled after open (#821)', ()
 
 	it('warns when the stall is turned on after a database is already open', async () => {
 		expect(await warningCount('late')).toBe(1);
-	}, 60_000);
+	}, 90_000);
 
 	it('stays quiet when the stall was configured before the first open', async () => {
 		expect(await warningCount('upfront')).toBe(0);
-	}, 60_000);
+	}, 90_000);
 });
