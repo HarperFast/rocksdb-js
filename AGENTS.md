@@ -653,6 +653,51 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     written remains frozen across retries, though reapplying the same timestamp is idempotent while
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
+19. **A purged transaction-log segment stays readable through a mapping that already exists, but
+    nothing may pin that mapping**: `purgeLogs()` unlinks the file, which removes one link to an
+    inode whose bytes a retired segment never changes again. A reader's `MemoryMap` is the other
+    link, so the entries it mapped are still exactly the committed history and are still served —
+    truncating a read there would drop acknowledged entries that are perfectly readable. What the
+    purge is actually for is reclaiming the space, and that is what a strong cache of the mapping
+    defeated (HarperFast/harper#2337: one 16 MiB mapping of a deleted `.txnlog` resident until
+    restart). So:
+    - `TransactionLog._currentLogBuffer` — the fast path over the per-segment `_logBuffers` cache —
+      holds a `WeakRef`. It is only ever refreshed by `query()`, so a long-lived reader that calls
+      `query()` once and `next()` forever (harper's audit subscription) froze it on whatever segment
+      was current then, and retention later deleted exactly that segment. `_logBuffers` was already
+      weak; with both weak, the mapping is released at the next GC once the iterator holding it has
+      moved on, with no purge-time invalidation and no cross-handle signalling — which matters
+      because the store is process-global and every handle and `worker_threads` worker has its own
+      JS caches.
+    - On Windows a live mapping makes the unlink fail outright, so the purge skips that segment and
+      retention stalls until the buffer is collected; the loop is refused unlink → collection → the
+      next purge succeeds. `removeFile()` uses the non-throwing `std::filesystem::remove` overloads
+      on both platforms (a sharing violation used to unwind a C++ exception through the N-API purge
+      boundary) and the purge reports a segment it could not delete once per run via `log.warn`.
+    - A segment that vanished between the purge's scan and its unlink is forgotten from
+      `sequenceFiles` the way the scan forgets an already-missing one, rather than left registered.
+    - The store forgets a purged segment, so `getLogFileSize()` reports 0 for it and the mapping
+      becomes the only remaining description of the file. `readableExtent()` falls back to it,
+      walking the frames to the zero-timestamp end marker (`endOfEntries()`) so iteration still
+      advances to the next segment at the right offset; broken framing yields the whole mapping
+      instead, leaving the break for the read path to report with a resync point (invariant 11).
+      Taking the store's 0 as the bound silently dropped every entry the reader had not reached —
+      including entries appended after it last polled, which the writer's overlay extension made
+      visible in that same mapping.
+    - `nextReadableLogBuffer()` in `src/transaction-log-reader.ts` skips a deleted run when an
+      iterator advances: those segments are genuinely gone (no mapping exists), and stopping at the
+      hole stopped the iterator permanently — every later poll stopped at the same place. It uses
+      `_findPosition(0)` to jump straight to the oldest survivor, so a purged prefix costs one
+      native call rather than a probe per deleted segment. Only a segment the store has no bytes
+      for is skipped — one it still knows is merely unmappable for now (mid-rotation, 0 bytes at
+      mmap time, transient resource pressure), so iteration stops and retries on the next poll
+      rather than stepping over durable history. That gate is the segment's own extent, not
+      `_findPosition(0)`, which resolves the start of the contiguous run below the current segment
+      and so can name a segment past a _second_ hole.
+    - Not covered here: `purgeLogs({ destroy: true })` removes the store directory and a fresh store
+      restarts segment numbering at 1, so a cached buffer keyed by segment number can answer for a
+      different store's file. That is a cache-key identity problem, not a purge-coherence one; it is
+       pre-existing and Harper does not call `destroy` in production.
 
 ## Debugging native heap corruption
 

@@ -2476,6 +2476,163 @@ describe('Transaction Log', () => {
 				expect(Array.from(log.query({ start: 0 }))).toHaveLength(1);
 			}));
 
+		// Purging a segment unlinks it; a reader's memory map is the other link to the same
+		// immutable inode, so the entries it already mapped stay readable and are still served.
+		// What must not survive the purge is the mapping: a strong cache of it kept the deleted
+		// file resident for the life of the process (HarperFast/harper#2337).
+		describe('reader state after purge', () => {
+			const writeEntry = (db: RocksDatabase, log: TransactionLog, fill: number, length: number) =>
+				db.transaction(async (txn) => {
+					const value = Buffer.alloc(length, fill);
+					log.addEntry(value, txn.id);
+					db.putSync(`${log.name}-${fill}`, value, { transaction: txn });
+				});
+
+			// Two 150-byte entries fit in segment 1 under a 500-byte cap; the 300-byte third
+			// entry does not and rotates to segment 2. The flush moves the retention floor to
+			// segment 2, so the purge deletes segment 1.
+			const seedFirstSegment = async (db: RocksDatabase, log: TransactionLog) => {
+				await writeEntry(db, log, 1, 150);
+				await writeEntry(db, log, 2, 150);
+			};
+			const rotateAndPurgeFirstSegment = async (
+				db: RocksDatabase,
+				log: TransactionLog,
+				logDirectory: string
+			) => {
+				await writeEntry(db, log, 3, 300);
+				db.flushSync();
+				expect(db.purgeLogs({ name: log.name, before: Date.now() + 1000 })).toEqual([
+					join(logDirectory, '1.txnlog'),
+				]);
+			};
+
+			it.skipIf(process.platform === 'win32')(
+				'should finish the segment it mapped before the purge',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						await seedFirstSegment(db, log);
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						await rotateAndPurgeFirstSegment(db, log, join(dbPath, 'transaction_logs', 'foo'));
+
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+					})
+			);
+
+			// The mapping a reader holds also carries entries appended after it last polled: the
+			// writer extends the current segment's overlay in place. Bounding the read by the
+			// store's extent — which is gone once the segment is purged — dropped exactly those.
+			it.skipIf(process.platform === 'win32')(
+				'should yield entries appended to the segment it mapped before the purge',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						await writeEntry(db, log, 1, 150);
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						// lands in segment 1, which the iterator mapped but has not read again
+						await writeEntry(db, log, 2, 150);
+						await rotateAndPurgeFirstSegment(db, log, join(dbPath, 'transaction_logs', 'foo'));
+
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+					})
+			);
+
+			// A reader that fell behind the retention floor used to stop at the hole and stop
+			// there on every later poll, so it never saw another entry.
+			it('should resume past a purged run rather than stopping at the hole', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+					const log = db.useLog('foo');
+					const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+					await writeEntry(db, log, 1, 300);
+					const iterator = log.query({ start: 0 });
+					expect(iterator.next().value?.data[0]).toBe(1);
+
+					for (const fill of [2, 3, 4]) {
+						await writeEntry(db, log, fill, 300);
+					}
+					db.flushSync();
+					expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual(
+						[1, 2, 3].map((sequence) => join(logDirectory, `${sequence}.txnlog`))
+					);
+
+					expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([4]);
+					expect(Array.from(log.query({ start: 0 })).map((entry) => entry.data[0])).toEqual([4]);
+				}));
+
+			it.skipIf(!globalThis.gc || process.platform !== 'linux')(
+				'should release the mapping of a purged segment without a restart',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						const purgedLogFile = join(logDirectory, '1.txnlog');
+						const deletedMappings = () =>
+							readFileSync('/proc/self/maps', 'utf8')
+								.split('\n')
+								.filter((line) => line.includes(`${purgedLogFile} (deleted)`));
+						await seedFirstSegment(db, log);
+
+						// a committed read caches the current segment's mapping on the log, and a
+						// live iterator holds it too
+						expect(Array.from(log.query({ start: 0 }))).toHaveLength(2);
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						await rotateAndPurgeFirstSegment(db, log, logDirectory);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+
+						const end = performance.now() + 5000;
+						while (deletedMappings().length > 0 && performance.now() < end) {
+							globalThis.gc!();
+							await delay(20);
+						}
+						expect(deletedMappings()).toEqual([]);
+					})
+			);
+
+			// Windows cannot delete a mapped file at all, so there the reader releasing its
+			// mapping is what lets retention advance. Unverified locally (no Windows host); it
+			// runs only in the Windows CI job.
+			it.skipIf(process.platform !== 'win32' || !globalThis.gc)(
+				'should converge on a purge refused by a live mapping',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						const segment = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+						await seedFirstSegment(db, log);
+						// map segment 1, then rotate past it and make it purgeable
+						expect(Array.from(log.query({ start: 0 }))).toHaveLength(2);
+						await writeEntry(db, log, 3, 300);
+						db.flushSync();
+
+						// the mapping this handle holds is what refuses the unlink
+						const first = db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+						if (first.length > 0) {
+							// nothing was holding it after all; the segment is gone and the loop is moot
+							expect(existsSync(segment)).toBe(false);
+							return;
+						}
+						expect(existsSync(segment)).toBe(true);
+
+						const end = performance.now() + 10000;
+						let purged: string[] = [];
+						while (purged.length === 0 && performance.now() < end) {
+							globalThis.gc!();
+							await delay(100);
+							purged = db.purgeLogs({ name: 'foo', before: Date.now() + 1000 }) as string[];
+						}
+						expect(purged).toEqual([segment]);
+						expect(existsSync(segment)).toBe(false);
+					}),
+				30000
+			);
+		});
+
 		it('should return valid lastCommittedPosition after purging earlier log files and reopening', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');

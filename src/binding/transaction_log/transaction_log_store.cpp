@@ -655,6 +655,9 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
+	// Per run, not per process: a directory that stays unwritable stalls the retention
+	// floor, and one line ever would leave every later purge silent about it.
+	bool removeWarned = false;
 	auto lastFlushedPosition = this->getLastFlushedPosition();
 	uint32_t retentionFloorSequence = this->sequenceFiles.rbegin()->first;
 	if (this->sequenceFiles.find(lastFlushedPosition.logSequenceNumber) != this->sequenceFiles.end()) {
@@ -752,6 +755,27 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		uint32_t removedSize = logFile->size.load(std::memory_order_relaxed);
 		auto removed = logFile->removeFile();
 		if (!removed) {
+			// Gone underneath us (another process unlinked it after the scan above):
+			// forget it like the scan does, rather than leaving a segment registered
+			// that retention would keep tripping over.
+			std::error_code existsError;
+			if (!std::filesystem::exists(logFile->path, existsError) && !existsError) {
+				DEBUG_LOG("%p TransactionLogStore::purge Forgetting file removed underneath us: %s\n", this, logFile->path.string().c_str());
+				sequenceNumbersToRemove.push_back(sequenceNumber);
+				continue;
+			}
+			if (!removeWarned) {
+				removeWarned = true;
+				try {
+					std::ostringstream msg;
+					msg << "Transaction log segment " << logFile->path.string() << " could not be deleted ("
+						<< logFile->lastRemoveError.message() << "); retention cannot advance past it.";
+					DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
+					emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				} catch (...) {
+					// reporting is best-effort
+				}
+			}
 			if (all) {
 				continue;
 			}

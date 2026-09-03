@@ -221,7 +221,7 @@ export type TransactionLog = {
 	name: string;
 	path: string;
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
-	_currentLogBuffer: LogBuffer;
+	_currentLogBuffer: WeakRef<LogBuffer> | undefined;
 	_findPosition(timestamp: number): number;
 	_getLastCommittedPosition(): Buffer;
 	_getLastFlushed(): number;
