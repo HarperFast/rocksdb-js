@@ -29,10 +29,13 @@ function runFixture(
 	mode: string,
 	dbPath: string,
 	key: number,
-	log = LOG
+	log = LOG,
+	env: Record<string, string> = {}
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [fixture, mode, dbPath, String(key), log]);
+		const child = spawn(process.execPath, [fixture, mode, dbPath, String(key), log], {
+			env: { ...process.env, ...env },
+		});
 		let stdout = '';
 		let stderr = '';
 		child.stdout.on('data', (chunk) => (stdout += chunk));
@@ -159,8 +162,46 @@ describe('monotonic clock floor', () => {
 		const warned = await runFixture('warn', dbPath, highest);
 		expect(warned.stderr).toBe('');
 		expect(warned.code).toBe(0);
-		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('could not be read');
+
+		const { warnings, clock } = JSON.parse(warned.stdout);
+		expect(warnings.join(' ')).toContain('could not be read');
+		// The walk continues past the failure: the healthy segment's key still
+		// seeds the floor, and the unreadable segment's higher key does not.
+		expect(clock).toBeGreaterThan(highest - 60 * 1000);
+		expect(clock).toBeLessThan(highest);
 	}, 90000);
+
+	it('stops at the scan budget rather than stalling open, and says so', async () => {
+		const dbPath = newDBPath();
+		const highest = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, highest)).code).toBe(0);
+
+		// A budget of zero is honored literally, which is what makes this
+		// deterministic: nothing is scanned, so nothing seeds the floor.
+		const warned = await runFixture('warn', dbPath, highest, LOG, {
+			ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS: '0',
+		});
+		expect(warned.stderr).toBe('');
+		expect(warned.code).toBe(0);
+
+		const { warnings, clock } = JSON.parse(warned.stdout);
+		expect(warnings.join(' ')).toContain('scan budget');
+		expect(clock).toBeLessThan(highest);
+	}, 120000);
+
+	it('warns when the named log is not one this database has', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		// A typo protects nothing while looking configured, so it is not silent.
+		const warned = await runFixture('warn', dbPath, key, 'clcok');
+		expect(warned.stderr).toBe('');
+		expect(warned.code).toBe(0);
+		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('does not have');
+	}, 60000);
 
 	it('leaves the clock alone when no log is named', async () => {
 		const dbPath = newDBPath();
