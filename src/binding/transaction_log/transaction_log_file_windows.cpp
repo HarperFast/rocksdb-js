@@ -714,8 +714,13 @@ bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
 	constexpr uint32_t sectorSize = 512;
 	uint32_t tailLength = entriesEnd - newSize;
 	std::vector<char> zeros(std::min(chunkSize, tailLength), 0);
-	uint32_t boundarySectorEnd = ((newSize / sectorSize) + 1) * sectorSize;
-	uint32_t finalChunkEnd = std::min(entriesEnd, boundarySectorEnd);
+	// Measured as a remainder rather than a rounded-up absolute offset, which
+	// would wrap for a boundary in the last sector of the uint32_t extent and
+	// send the loop back to zero-fill the whole segment, header included. The
+	// sum below cannot overflow: the length is at most the tail, and
+	// `newSize + tailLength` is `entriesEnd`.
+	uint32_t sectorRemainder = sectorSize - (newSize % sectorSize);
+	uint32_t finalChunkEnd = newSize + std::min(sectorRemainder, tailLength);
 	for (uint32_t end = entriesEnd; end > finalChunkEnd; ) {
 		uint32_t remaining = end - finalChunkEnd;
 		uint32_t toWrite = remaining < chunkSize ? remaining : chunkSize;
