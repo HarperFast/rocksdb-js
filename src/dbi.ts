@@ -1,9 +1,35 @@
 import type { BufferWithDataView, Key } from './encoding.ts';
-import { FRESH_VERSION_FLAG } from './load-binding.ts';
+import {
+	FRESH_VERSION_FLAG,
+	HAS_DISTINCT_VERSION_FLAG,
+	VERSION_HEADER_TAG,
+} from './load-binding.ts';
 import type { NativeTransaction, TransactionLog } from './load-binding.ts';
 import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } from './store.ts';
 import type { Transaction } from './transaction.ts';
 import { type MaybePromise, when } from './util.ts';
+
+/**
+ * A value together with the two clock words of its header, as returned by
+ * {@link DBI#getEntry} and {@link DBI#getEntrySync}.
+ */
+export type Entry = {
+	/** The decoded value, exactly what `get()` / `getSync()` would return. */
+	value: any;
+	/**
+	 * The transaction timestamp the value was written under: its first word, and
+	 * the key of the transaction-log batch that recorded the write. `undefined`
+	 * when the value carries no header word.
+	 */
+	localTime?: number;
+	/**
+	 * The record version: the distinct second word when the producer set
+	 * `HAS_DISTINCT_VERSION_FLAG`, otherwise the same value as `localTime`.
+	 * `undefined` when there is no header word, or when the flag is set but the
+	 * second word is absent or unusable.
+	 */
+	version?: number;
+};
 
 export interface RocksDBOptions {
 	/**
@@ -368,6 +394,81 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		return this.store.decodeValue(this.store.getSync(this._context, key, true, options));
+	}
+
+	/**
+	 * Retrieves the value for the given key together with the two clock words of
+	 * its header: the transaction timestamp it was written under (`localTime`)
+	 * and its record version (`version`), which is a distinct second word only
+	 * when the producer set `HAS_DISTINCT_VERSION_FLAG` and equals `localTime`
+	 * otherwise.
+	 *
+	 * `value` is decoded exactly as `get()` decodes it, and the same option
+	 * behavior applies: `undefined` for a missing key, and the
+	 * `FRESH_VERSION_FLAG` sentinel — not an entry — when `expectedVersion` was
+	 * passed and the verification table confirmed the caller's cached copy.
+	 */
+	getEntry(key: Key, options?: GetOptions & T): MaybePromise<Entry | number | undefined> {
+		const raw = this.store.decoderCopies
+			? this.getBinaryFast(key, options)
+			: this.getBinary(key, options);
+		return raw instanceof Promise
+			? raw.then((resolved) => this.#toEntry(resolved, options))
+			: this.#toEntry(raw, options);
+	}
+
+	/**
+	 * Synchronously retrieves the value for the given key together with its two
+	 * clock words; see {@link DBI#getEntry} for the word semantics and the
+	 * return contract.
+	 */
+	getEntrySync(key: Key, options?: GetOptions & T): Entry | number | undefined {
+		const raw = this.store.decoderCopies
+			? this.getBinaryFastSync(key, options)
+			: this.getBinarySync(key, options);
+		return this.#toEntry(raw, options);
+	}
+
+	// Reads the header words before decoding: with a copying decoder `raw` is the
+	// shared read buffer, whose `length` is the buffer's capacity and `end` the
+	// value's size, and which is only valid until the next read.
+	#toEntry(raw: Buffer | number | undefined, options?: GetOptions & T): Entry | number | undefined {
+		if (raw === undefined || typeof raw === 'number') {
+			return raw;
+		}
+
+		const end = (raw as BufferWithDataView).end ?? raw.length;
+		let localTime: number | undefined;
+		let version: number | undefined;
+
+		if (end >= 8) {
+			const first = raw.readDoubleBE(0);
+			if (Number.isFinite(first) && first > 0) {
+				localTime = first;
+				version = first;
+			}
+			if (end >= 12) {
+				const metadata = raw.readUInt32BE(8);
+				if (
+					metadata >>> 24 === VERSION_HEADER_TAG &&
+					(metadata & HAS_DISTINCT_VERSION_FLAG) !== 0
+				) {
+					// The flag promises a second word; without a usable one there is no
+					// record version to report, and reporting `localTime` would claim a
+					// version the producer explicitly said this value does not have.
+					const distinct = end >= 20 ? raw.readDoubleBE(12) : Number.NaN;
+					version = Number.isFinite(distinct) && distinct > 0 ? distinct : undefined;
+				}
+			}
+		}
+
+		const value = options?.skipDecode
+			? raw
+			: this.store.decoderCopies || (this.store.encoding !== 'binary' && this.store.decoder)
+				? this.store.decodeValue(raw as BufferWithDataView)
+				: raw;
+
+		return { value, localTime, version };
 	}
 
 	/**
