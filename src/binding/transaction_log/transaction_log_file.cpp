@@ -241,6 +241,21 @@ void TransactionLogFile::openLocked(const double latestTimestamp) {
 	}
 }
 
+void TransactionLogFile::loadAppendBoundaryMarkerReadOnly() {
+	// readTransactionLogAppendBoundaryMarker returns 0 for an absent marker and
+	// fails closed on a stat error, so it needs no exists() gate.
+	try {
+		this->retiredAppendBoundary.store(
+			readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
+	} catch (const TransactionLogAppendBoundaryException&) {
+		// A marker whose segment is gone belongs to a generation this reader
+		// cannot see; anything else is a marker it must not read past.
+		if (std::filesystem::exists(this->path)) {
+			throw;
+		}
+	}
+}
+
 void TransactionLogFile::persistAppendBoundaryRetirement() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	if (this->readOnly) {

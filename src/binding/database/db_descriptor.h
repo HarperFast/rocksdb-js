@@ -188,23 +188,28 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::string path;
 
 	/**
-	 * `path` resolved to filesystem identity ONCE, at construction, and the only
-	 * key any TransactionLogStoreRegistry call may use.
+	 * `path` resolved to filesystem identity ONCE, at open, and the key both
+	 * registries address this database by: the `DBKey::path` component (see
+	 * `descriptorKey()` in db_registry.h) and every TransactionLogStoreRegistry
+	 * call.
 	 *
 	 * Two spellings of one directory (relative vs absolute, a trailing slash,
-	 * macOS `/tmp` -> `/private/tmp`) would otherwise open two registry entries
-	 * over one `transaction_logs` tree, and the guards that keep a writer off a
-	 * read-only-loaded store would look past each other while a writer truncated
-	 * a segment a reader had mapped. Resolving is not safe to repeat per call:
-	 * `weakly_canonical`/`absolute` consult the process CWD, so a `process.chdir()`
-	 * after open would remap this handle's key — a later `useLog()` would miss the
-	 * entry and, for a writer, create a second store outside the database, while
-	 * `Unregister()` would miss the original and never close its stores. It is
-	 * resolved exactly once per open, by `DBDescriptor::open` — which needs it
-	 * before this object exists, for the writable-adoption guard — and passed in,
-	 * so no two resolutions within one open can disagree.
+	 * macOS `/tmp` -> `/private/tmp`) must not become two entries. In the log
+	 * registry that would blind the guards that keep a writer off a
+	 * read-only-loaded store, letting a writer truncate a segment a reader had
+	 * mapped; in the database registry it would build a second descriptor for one
+	 * directory and open a second secondary instance on one workspace — the
+	 * in-process half of the exclusivity contract (invariant 18), which the
+	 * `.secondary.lock` cannot cover where that lock degrades to a no-op.
+	 *
+	 * Resolving is not safe to repeat: `weakly_canonical`/`absolute` consult the
+	 * process CWD, and nothing absolutizes the database path, so a
+	 * `process.chdir()` between two resolutions of one path yields two keys — a
+	 * later lookup would miss the entry it registered. `DBRegistry::OpenDB`
+	 * resolves once and passes the result down, so one open produces exactly one
+	 * identity.
 	 */
-	std::string logRegistryKey;
+	std::string identityPath;
 
 	/**
 	 * Process-unique identity for this descriptor's *open lifecycle*, used as the
@@ -492,7 +497,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 private:
 	DBDescriptor(
 		const std::string& path,
-		const std::string& logRegistryKey,
+		const std::string& identityPath,
 		const DBOptions& options,
 		const rocksdb::ColumnFamilyOptions& cfOptions,
 		std::shared_ptr<rocksdb::DB> db,
@@ -501,7 +506,8 @@ private:
 	);
 
 public:
-	static std::shared_ptr<DBDescriptor> open(const std::string& path, const DBOptions& options);
+	static std::shared_ptr<DBDescriptor> open(
+		const std::string& path, const std::string& identityPath, const DBOptions& options);
 	~DBDescriptor();
 
 	void close();

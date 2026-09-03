@@ -276,6 +276,13 @@ describe('Secondary Instances', () => {
 		const setup = new RocksDatabase(dbPath);
 		setup.open();
 		setup.putSync('round', 0);
+		// Only 'existing' is present when the follower opens; the writer creates
+		// 'late' afterwards.
+		const setupLog = setup.useLog('existing');
+		setup.transactionSync((txn) => {
+			txn.put('round', 0);
+			setupLog.addEntry(Buffer.from('existing 0'), txn.id);
+		});
 		setup.close();
 
 		const secondary = new RocksDatabase(dbPath, { secondaryPath });
@@ -283,6 +290,9 @@ describe('Secondary Instances', () => {
 		try {
 			secondary.open();
 			expect(secondary.getSync('round')).toBe(0);
+			const followerLog = secondary.useLog('existing');
+			const entriesAtOpen = Array.from(followerLog.query({ start: 0 })).length;
+			expect(entriesAtOpen).toBeGreaterThan(0);
 
 			const seen: number[] = [];
 			await new Promise<void>((resolve, reject) => {
@@ -333,6 +343,22 @@ describe('Secondary Instances', () => {
 			await secondary.catchUpWithPrimary();
 			expect(secondary.getSync('round')).toBe(rounds);
 			expect(secondary.getSync('key0')).toBe(`${'v'.repeat(4096)}${rounds}`);
+
+			// The log half of the contract, which is where cross-process differs
+			// from the same-process case the worker-thread test covers: a
+			// cross-process primary's appends to a store this follower already
+			// holds are not visible, and a store it created after the follower
+			// opened is not there at all. Both need a reopen.
+			expect(Array.from(followerLog.query({ start: 0 })).length).toBe(entriesAtOpen);
+			expect(() => secondary.useLog('late')).toThrow('not found');
+
+			// Reopening picks both up.
+			secondary.close();
+			secondary.open();
+			expect(Array.from(secondary.useLog('existing').query({ start: 0 })).length).toBeGreaterThan(
+				entriesAtOpen
+			);
+			expect(Array.from(secondary.useLog('late').query({ start: 0 })).length).toBeGreaterThan(0);
 		} finally {
 			secondary.close();
 			cleanup(dbPath, secondaryPath);

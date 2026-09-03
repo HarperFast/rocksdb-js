@@ -430,6 +430,16 @@ struct TransactionLogFile final {
 	/** Durably initialize a temporary marker, then atomically publish it if absent. */
 	void ensureAppendBoundaryMarker();
 
+	/**
+	 * The read-only half of ensureAppendBoundaryMarker: adopt an existing
+	 * marker's boundary (it caps what this reader may expose) and never create,
+	 * repair, or remove one — the marker tree belongs to the writer, which may
+	 * be live in another process. Platform-independent (it touches no fd or
+	 * HANDLE), so both platform bodies call this rather than keeping two copies
+	 * that drift.
+	 */
+	void loadAppendBoundaryMarkerReadOnly();
+
 	/** Durably overwrite the existing marker with a non-zero logical boundary. */
 	void writeAppendBoundaryMarker(uint32_t boundary);
 

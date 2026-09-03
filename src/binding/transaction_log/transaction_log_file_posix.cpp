@@ -88,19 +88,7 @@ TransactionLogFile::TransactionLogFile(
 void TransactionLogFile::ensureAppendBoundaryMarker() {
 	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
 	if (this->readOnly) {
-		// Read an existing marker (its boundary caps what this reader may
-		// expose) but never create, repair, or remove one — the marker tree
-		// belongs to the writer, which may be live in another process.
-		// readTransactionLogAppendBoundaryMarker returns 0 for an absent marker
-		// and fails closed on a stat error, so it needs no exists() gate here.
-		try {
-			this->retiredAppendBoundary.store(
-				readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
-		} catch (const TransactionLogAppendBoundaryException&) {
-			if (std::filesystem::exists(this->path)) {
-				throw;
-			}
-		}
+		this->loadAppendBoundaryMarkerReadOnly();
 		return;
 	}
 	std::error_code existsError;

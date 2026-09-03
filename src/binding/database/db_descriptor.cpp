@@ -255,7 +255,7 @@ public:
 				desc.get(), (unsigned long long)flushedSequence);
 
 			// Get stores from the registry
-			auto stores = TransactionLogStoreRegistry::GetStores(desc->logRegistryKey);
+			auto stores = TransactionLogStoreRegistry::GetStores(desc->identityPath);
 			for (auto& store : stores) {
 				store->databaseFlushBegin(flushedSequence);
 			}
@@ -295,7 +295,7 @@ public:
 					desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)it->second.flushedSequence);
 
 				// Get stores from the registry
-				auto stores = TransactionLogStoreRegistry::GetStores(desc->logRegistryKey);
+				auto stores = TransactionLogStoreRegistry::GetStores(desc->identityPath);
 				for (auto& store : stores) {
 					store->databaseFlushed(it->second.flushedSequence);
 				}
@@ -368,7 +368,7 @@ static uint64_t writeStallDebounceMs();
  */
 DBDescriptor::DBDescriptor(
 	const std::string& path,
-	const std::string& logRegistryKey,
+	const std::string& identityPath,
 	const DBOptions& options,
 	const rocksdb::ColumnFamilyOptions& cfOptions,
 	std::shared_ptr<rocksdb::DB> db,
@@ -376,7 +376,7 @@ DBDescriptor::DBDescriptor(
 	std::shared_ptr<rocksdb::Statistics> statistics
 ):
 	path(path),
-	logRegistryKey(logRegistryKey),
+	identityPath(identityPath),
 	vtEpoch(nextVtEpoch()),
 	mode(options.mode),
 	readOnly(options.readOnly),
@@ -527,7 +527,7 @@ void DBDescriptor::finishClose() {
 
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
-	TransactionLogStoreRegistry::Unregister(this->logRegistryKey);
+	TransactionLogStoreRegistry::Unregister(this->identityPath);
 
 	this->transactions.clear();
 	{
@@ -1228,20 +1228,15 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 /**
  * Creates a new DBDescriptor.
  */
-std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const DBOptions& options) {
+std::shared_ptr<DBDescriptor> DBDescriptor::open(
+	const std::string& path, const std::string& identityPath, const DBOptions& options) {
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
-
-	// The one resolution for this open: the guard below needs it before the
-	// descriptor exists, and the descriptor carries this exact string, so every
-	// registry call for this database agrees on one entry (see
-	// DBDescriptor::logRegistryKey for why re-resolving per call is unsafe).
-	const std::string logRegistryKey = rocksdb_js::resolveIdentityPath(path).string();
 
 	// Before any real work: a writable open must not adopt transaction log
 	// stores a read-only open loaded without tail recovery (see the method's
 	// header comment for why this cannot live inside Register).
-	TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(logRegistryKey, options.readOnly);
+	TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(identityPath, options.readOnly);
 
 	DBSettings& settings = DBSettings::getInstance();
 
@@ -1532,7 +1527,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, logRegistryKey, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, identityPath, options, cfOptions, db, std::move(columns), dbOptions.statistics));
 	descriptor->secondaryLockToken = secondaryLock.token;
 	secondaryLock.token = 0;
 
@@ -1547,8 +1542,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
-	TransactionLogStoreRegistry::Register(descriptor->logRegistryKey, logConfig);
-	TransactionLogStoreRegistry::DiscoverStores(descriptor->logRegistryKey, options.readOnly);
+	TransactionLogStoreRegistry::Register(descriptor->identityPath, logConfig);
+	TransactionLogStoreRegistry::DiscoverStores(descriptor->identityPath, options.readOnly);
 
 	return descriptor;
 }
@@ -2201,14 +2196,14 @@ void DBDescriptor::removeListenersByEnv(napi_env env) {
  * @param env The environment of the current callback.
  */
 napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
-	return TransactionLogStoreRegistry::ListStores(env, this->logRegistryKey);
+	return TransactionLogStoreRegistry::ListStores(env, this->identityPath);
 }
 
 /**
  * Purges transaction logs.
  */
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
-	return TransactionLogStoreRegistry::PurgeStores(env, this->logRegistryKey, options);
+	return TransactionLogStoreRegistry::PurgeStores(env, this->identityPath, options);
 }
 
 /**
@@ -2218,7 +2213,7 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
  * @returns The transaction log store.
  */
 std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
-	return TransactionLogStoreRegistry::ResolveStore(this->logRegistryKey, name, this->readOnly);
+	return TransactionLogStoreRegistry::ResolveStore(this->identityPath, name, this->readOnly);
 }
 
 void DBDescriptor::setLastError(std::string json) {

@@ -150,6 +150,11 @@ void DBRegistry::DestroyDB(const std::string& path) {
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
 
+	// Entries are keyed by resolved identity, so a caller's spelling has to be
+	// resolved the same way or destroy would walk past this path's descriptors
+	// and delete their files out from under them.
+	const std::string identityPath = rocksdb_js::resolveIdentityPath(path).string();
+
 	// One path can hold several descriptors — read-write, read-only, and any
 	// number of secondaries (the registry key is {path, readOnly,
 	// secondaryPath}) — and destroy deletes the files under all of them, so
@@ -170,7 +175,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto& [key, entry] : instance->databases) {
-			if (key.path == path && entry.descriptor && entry.descriptor->beginClose()) {
+			if (key.path == identityPath && entry.descriptor && entry.descriptor->beginClose()) {
 				DEBUG_LOG("%p DBRegistry::DestroyDB Claimed descriptor close (ref count = %ld)\n",
 					instance.get(), entry.descriptor.use_count());
 				claimed.emplace_back(entry.descriptor, entry.condition);
@@ -203,7 +208,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 			for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
-				if (it->first.path == path) {
+				if (it->first.path == identityPath) {
 					it = instance->databases.erase(it);
 				} else {
 					++it;
@@ -238,7 +243,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		// path (an entry mid-close is erased by its closer's guarded erase).
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
-			if (it->first.path == path && !it->second.descriptor) {
+			if (it->first.path == identityPath && !it->second.descriptor) {
 				it = instance->databases.erase(it);
 			} else {
 				++it;
@@ -301,6 +306,14 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
 	std::shared_ptr<DBDescriptor> descriptor;
+
+	// The single identity for this open: the registry key, the workspace scan
+	// and (via the descriptor) every transaction-log registry call all use this
+	// one string, so two spellings of one directory cannot become two
+	// descriptors. Resolved before the lock — it touches the filesystem, and
+	// databasesMutex serializes every open and close in the process.
+	const std::string identityPath = rocksdb_js::resolveIdentityPath(path).string();
+
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
 	// A secondary workspace belongs to exactly one secondary instance (RocksDB
@@ -308,14 +321,12 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// Same primary + same workspace shares the descriptor via the registry key;
 	// a different primary on the same workspace is rejected.
 	if (!options.secondaryPath.empty()) {
-		// The workspace is compared as resolved text on both sides, so the primary
-		// must be too: DBKey.path is the caller's raw spelling, and rejecting
-		// "/data/db" against "/data/./db" would tell a second component that its
-		// own database already owns the workspace.
-		const std::string primaryIdentity = rocksdb_js::resolveIdentityPath(path).string();
 		for (const auto& [existingKey, existingEntry] : instance->databases) {
+			// Both sides are resolved identities, so this compares databases, not
+			// spellings: the same database + workspace shares this descriptor via
+			// the key below and never reaches here.
 			if (existingKey.secondaryPath == options.secondaryPath &&
-				rocksdb_js::resolveIdentityPath(existingKey.path).string() != primaryIdentity) {
+				existingKey.path != identityPath) {
 				throw rocksdb_js::DBException(
 					"secondaryPath \"" + options.secondaryPath + "\" is already in use by database \"" +
 					existingKey.path + "\"; each secondary instance requires its own workspace directory"
@@ -324,7 +335,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		}
 	}
 
-	DBKey key{path, options.readOnly, options.secondaryPath};
+	DBKey key{identityPath, options.readOnly, options.secondaryPath};
 	auto entryIterator = instance->databases.find(key);
 	if (entryIterator == instance->databases.end()) {
 		// create entry with empty descriptor and new condition variable
@@ -471,7 +482,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		}
 	} else {
 		try {
-			entry.descriptor = DBDescriptor::open(path, options);
+			entry.descriptor = DBDescriptor::open(path, identityPath, options);
 		} catch (...) {
 			// Remove the stale entry (null descriptor) so it does not pollute the
 			// registry and cause null-dereference crashes in callers such as

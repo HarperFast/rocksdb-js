@@ -26,6 +26,12 @@ namespace rocksdb_js {
  * descriptor and its open RocksDB.
  */
 struct DBKey {
+	/**
+	 * The database's resolved filesystem identity (`DBDescriptor::identityPath`),
+	 * never a caller's raw spelling: two spellings of one directory would
+	 * otherwise hold two descriptors for it, and a second secondary instance
+	 * would open one workspace twice (invariant 18).
+	 */
 	std::string path;
 	bool readOnly;
 	std::string secondaryPath;
@@ -49,7 +55,7 @@ struct DBKeyHash {
  * close paths must use this rather than hand-building a partial key.
  */
 inline DBKey descriptorKey(const DBDescriptor& descriptor) {
-	return DBKey{descriptor.path, descriptor.readOnly, descriptor.secondaryPath};
+	return DBKey{descriptor.identityPath, descriptor.readOnly, descriptor.secondaryPath};
 }
 
 /**
