@@ -92,13 +92,11 @@ struct DBOptions final {
 	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB
 	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	std::string transactionLogsPath;
-	// Name of the transaction log whose batch keys this process originates. At
-	// open, the process-wide monotonic timestamp floor is raised above every key
-	// still durable in it, so a backward wall-clock step across a restart cannot
-	// reissue one. Empty (the default) leaves the floor untouched: a log written
-	// under timestamps adopted from another node is keyed by that node's clock,
-	// and native code cannot tell the two apart, so the caller names the log
-	// rather than having it guessed.
+	// Name of the transaction log whose batch keys this process originates; its
+	// largest durable key seeds the monotonic timestamp floor at open. Empty (the
+	// default) seeds nothing: a log written under timestamps adopted from another
+	// node is keyed by that node's clock, and nothing in the log distinguishes the
+	// two, so the caller names it rather than having it inferred.
 	std::string timestampFloorLog;
 	// Per-CF memtable size at which the memtable is sealed and flushed. Smaller
 	// values produce more frequent, faster flushes; larger values batch more

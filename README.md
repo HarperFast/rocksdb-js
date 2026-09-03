@@ -483,12 +483,13 @@ if (result === constants.FRESH_VERSION_FLAG) {
 Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
 the `expectedVersion` option is used.
 
-### `db.getEntry(key: Key, options?: GetOptions): MaybePromise<Entry | undefined>`
+### `db.getEntry(key: Key, options?: GetOptions): MaybePromise<Entry | number | undefined>`
 
 Retrieves the value for a given key together with the two clock words of its header, as
 `{ value, localTime, version }`. `value` is decoded exactly as `get()` decodes it, and the same
-options apply, including the `FRESH_VERSION_FLAG` sentinel described above. A missing key resolves
-`undefined`.
+options apply. A missing key resolves `undefined`, and — like `get()` — an `expectedVersion` the
+verification table confirms resolves the `FRESH_VERSION_FLAG` sentinel rather than an entry, which
+is why the return type includes `number`.
 
 ```typescript
 const entry = await db.getEntry('foo');
@@ -511,7 +512,7 @@ flag is set but the value does not carry a usable second word. rocksdb-js does n
 bytes; a producer does. See [Verification Table](#verification-table) for the layout and
 `constants.HAS_DISTINCT_VERSION_FLAG` for the flag.
 
-### `db.getEntrySync(key: Key, options?: GetOptions): Entry | undefined`
+### `db.getEntrySync(key: Key, options?: GetOptions): Entry | number | undefined`
 
 Synchronous version of `getEntry()`.
 

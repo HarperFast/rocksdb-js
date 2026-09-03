@@ -365,8 +365,7 @@ double TransactionLogStore::scanLargestDurableKey(
 		const bool openedForScan = !logFile->isOpen();
 		try {
 			if (openedForScan) {
-				// open() initializes a zero-length file by writing a header; a
-				// read-only pass must not do that, and such a file holds no keys.
+				// open() would initialize a zero-length file by writing a header.
 				std::error_code sizeError;
 				auto fileSize = std::filesystem::file_size(logFile->path, sizeError);
 				if (sizeError || fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
