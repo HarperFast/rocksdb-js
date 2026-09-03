@@ -921,7 +921,7 @@ Type: `number`
 The transaction ID represented as a 32-bit unsigned integer. Transaction IDs are unique to the
 RocksDB database path, regardless the database name/column family.
 
-#### `txn.setTimestamp(ts: number?): void`
+#### `txn.setTimestamp(ts?: number): void`
 
 Overrides the transaction timestamp in milliseconds since the Unix epoch. Replication receivers and
 crash replay can use this to adopt an origin transaction's log key. If called without a timestamp,
@@ -937,7 +937,7 @@ and encoding it.
 
 ```typescript
 await db.transaction(async (txn) => {
-	txn.setTimestamp(Date.now() / 1000);
+	txn.setTimestamp(Date.now());
 });
 ```
 

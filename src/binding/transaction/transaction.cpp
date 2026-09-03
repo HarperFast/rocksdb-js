@@ -1296,9 +1296,13 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction is not pending");
 	}
 	auto* txn = (*txnHandle)->txn;
-	if ((*txnHandle)->logEntryBatch || (*txnHandle)->committedPosition.logSequenceNumber > 0 ||
+	if ((*txnHandle)->committedPosition.logSequenceNumber > 0) {
+		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction log batch is already durable");
+	}
+	if ((*txnHandle)->logEntryBatch ||
 		(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
-		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction already has staged writes");
+		NAPI_THROW_JS_ERROR(
+			"ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction already has staged writes or log entries");
 	}
 
 	if (type == napi_undefined) {

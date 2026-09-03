@@ -423,7 +423,7 @@ for (const { name, options, txnOptions } of testOptions) {
 								firstTimestamp = txn.getTimestamp();
 							} else {
 								expect(() => txn.setTimestamp(firstTimestamp + 1)).toThrow(
-									'transaction already has staged writes'
+									'transaction log batch is already durable'
 								);
 								expect(txn.getTimestamp()).toBe(firstTimestamp);
 							}
@@ -438,6 +438,33 @@ for (const { name, options, txnOptions } of testOptions) {
 					const entries = [...log.query({ start: 0 })];
 					expect(entries).toHaveLength(1);
 					expect(entries[0].timestamp).toBe(firstTimestamp);
+				})
+		);
+
+		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
+			`${name} async should allow timestamp re-adoption after a non-durable coordinated retry`,
+			() =>
+				dbRunner({ dbOptions: [options] }, async ({ db }) => {
+					await db.put('k', 'initial');
+					let attempts = 0;
+					let adoptedTimestamp = 0;
+					await db.transaction(
+						async (txn: Transaction, attempt) => {
+							attempts = attempt;
+							if (attempt > 1) {
+								adoptedTimestamp = txn.getTimestamp() + 1;
+								txn.setTimestamp(adoptedTimestamp);
+								expect(txn.getTimestamp()).toBe(adoptedTimestamp);
+							}
+							await txn.get('k');
+							if (attempt === 1) await db.put('k', 'conflict');
+							await txn.put('k', 'committed');
+						},
+						{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
+					);
+					expect(attempts).toBeGreaterThanOrEqual(2);
+					expect(adoptedTimestamp).toBeGreaterThan(0);
+					expect(await db.get('k')).toBe('committed');
 				})
 		);
 

@@ -84,18 +84,15 @@ durable. README and AGENTS documentation will state the enforceable transaction-
 producer-owned record boundary. The repository build, native tests, full Vitest suite, and checks
 will run before push.
 
-## Planning review resolution
+## Alternatives rejected
 
-Round 1 returned `option-set-too-narrow`; the partial flag-reservation, detect-only floor, and
-construction-time adoption alternatives are now evaluated above. Round 2 returned
-`better-alternative-exists`, preferring to freeze the timestamp on the first `getTimestamp()` call.
-That alternative is overruled on compatibility: rocksdb-js already documents and tests
-read-then-override before staging, and a getter is observational for callers that do not encode its
-result. Changing every read into a state transition would break that public behavior while still
-being unable to prove that a producer's record bytes match the transaction timestamp. The enforced
-boundary remains the first native staging event; producer ordering is documented explicitly.
+Freezing the timestamp on the first `getTimestamp()` call would break existing documented and tested
+read-then-override behavior. A getter is observational for callers that do not encode its result,
+and making every read a state transition still could not prove that a producer's record bytes match
+the transaction timestamp. The enforced boundary therefore remains the first native staging event;
+producer ordering is documented explicitly.
 
-The round-2 suggestion to retain the clock-floor branch's far-future header bound is also rejected:
-it changes the append path using a ten-year policy introduced only for the removed floor. This PR
-restores `latestTimestamp` and segment-header behavior exactly to `origin/main`; any provenance-aware
-clock rollback design belongs in separate work.
+Retaining the removed clock-floor branch's far-future header bound would change the append path using
+a ten-year policy introduced only for that floor. This change instead restores `latestTimestamp` and
+segment-header behavior exactly to `origin/main`; any provenance-aware clock rollback design belongs
+in separate work.
