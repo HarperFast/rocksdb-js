@@ -1312,7 +1312,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		// caller expresses "this database uses one codec" for families it never
 		// names (see db_options.h).
 		std::unordered_map<std::string, PersistedCompression> persisted;
-		rocksdb::Status persistedStatus = loadPersistedCompression(path, persisted);
+		rocksdb::Status persistedStatus = loadPersistedCompression(identityPath, persisted);
 		if (!persistedStatus.ok()) {
 			// The DB exists (we just listed its column families), so a missing or
 			// unparseable OPTIONS file is NOT the fresh-DB case — we cannot recover
@@ -1417,7 +1417,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 
 		std::unique_ptr<rocksdb::DB> rdb;
 		DEBUG_LOG("DBDescriptor::open Opening secondary db for \"%s\" (secondary path \"%s\")\n", path.c_str(), options.secondaryPath.c_str());
-		rocksdb::Status status = rocksdb::DB::OpenAsSecondary(dbOptions, path, options.secondaryPath, cfDescriptors, &cfHandles, &rdb);
+		rocksdb::Status status = rocksdb::DB::OpenAsSecondary(dbOptions, identityPath, options.secondaryPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open secondary db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			// The initial replay is point-in-time tolerant (a missing file makes
@@ -1443,7 +1443,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	} else if (options.readOnly) {
 		std::unique_ptr<rocksdb::DB> rdb;
 		DEBUG_LOG("DBDescriptor::open Opening readonly db for \"%s\"\n", path.c_str());
-		rocksdb::Status status = rocksdb::DB::OpenForReadOnly(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		rocksdb::Status status = rocksdb::DB::OpenForReadOnly(dbOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open readonly db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			// A missing SST is NOT the corruption RocksDB's wording claims: a
@@ -1478,7 +1478,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 
 		rocksdb::TransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening pessimistic transaction db for \"%s\"\n", path.c_str());
-		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			throw rocksdb_js::DBException(status.ToString());
@@ -1488,7 +1488,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	} else {
 		rocksdb::OptimisticTransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
-		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			throw rocksdb_js::DBException(status.ToString());

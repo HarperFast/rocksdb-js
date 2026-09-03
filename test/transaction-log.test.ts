@@ -11,7 +11,15 @@ import { writeLazyTransactionLogSegments } from './lib/transaction-log-fixtures.
 import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
-import { existsSync, readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
+import {
+	existsSync,
+	readFileSync,
+	readdirSync,
+	readlinkSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+} from 'node:fs';
 import { mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { release } from 'node:os';
 import { join } from 'node:path';
@@ -2169,6 +2177,43 @@ describe('Transaction Log', () => {
 				expect(db.purgeLogs({ destroy: true })).toEqual([logFile]);
 				expect(existsSync(logDirectory)).toBe(false);
 			}));
+
+		// Paths the API hands back keep the caller's spelling. The registry keys
+		// databases by resolved filesystem identity, and letting that spelling
+		// reach an API result changes every returned path wherever the database
+		// is reached through a symlink — which is every macOS temp directory,
+		// but a deployment can do it anywhere (a blue/green `current` link).
+		it.skipIf(process.platform === 'win32')(
+			'should report log paths with the spelling the caller opened',
+			() =>
+				dbRunner({ skipOpen: true }, async ({ db: unused, dbPath }) => {
+					unused.close();
+					const linkPath = `${dbPath}-link`;
+					await mkdir(dbPath, { recursive: true });
+					symlinkSync(dbPath, linkPath, 'dir');
+					try {
+						const logDirectory = join(linkPath, 'transaction_logs', 'foo');
+						await mkdir(logDirectory, { recursive: true });
+						const logFile = join(logDirectory, '1.txnlog');
+						const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+						header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+						header.writeUInt8(1, 4);
+						header.writeDoubleBE(0, 5);
+						await writeFile(logFile, header);
+						await writeFile(join(logDirectory, 'txn.state'), Buffer.from([0, 0, 0, 0, 2, 0, 0, 0]));
+
+						const linked = new RocksDatabase(linkPath);
+						try {
+							linked.open();
+							expect(linked.purgeLogs({ destroy: true })).toEqual([logFile]);
+						} finally {
+							linked.close();
+						}
+					} finally {
+						rmSync(linkPath, { force: true });
+					}
+				})
+		);
 
 		it('should destroy a specific transaction log file', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {

@@ -330,9 +330,14 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// the key below and never reaches here.
 			if (existingKey.secondaryPath == options.secondaryPath &&
 				existingKey.path != identityPath) {
+				// Name the other database the way its caller spelled it; the key
+				// is resolved identity, which is not what an operator typed.
+				const std::string& conflicting = existingEntry.descriptor
+					? existingEntry.descriptor->path
+					: existingKey.path;
 				throw rocksdb_js::DBException(
 					"secondaryPath \"" + options.secondaryPath + "\" is already in use by database \"" +
-					existingKey.path + "\"; each secondary instance requires its own workspace directory"
+					conflicting + "\"; each secondary instance requires its own workspace directory"
 				);
 			}
 		}

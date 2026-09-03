@@ -2093,16 +2093,8 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	NAPI_GET_STRING(argv[0], rawPath, "Database path is required");
+	NAPI_GET_STRING(argv[0], path, "Database path is required");
 	const napi_value options = argv[1];
-
-	// Resolved ONCE, here, so identity and target cannot disagree: everything
-	// below — both registry keys, the RocksDB target, the default
-	// transaction-logs directory, destroy's deletions — uses this string. A
-	// second resolution elsewhere would key a descriptor as one database while
-	// it opens another if the mapping moved in between (a relative path plus a
-	// `process.chdir()`, a repointed symlink).
-	const std::string path = rocksdb_js::resolveIdentityPath(rawPath).string();
 
 	DBOptions dbHandleOptions;
 
