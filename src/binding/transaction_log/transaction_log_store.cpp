@@ -1245,21 +1245,20 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				currentFile->appendBoundaryMarkerEnabled = false;
 				activated = false;
 			}
-			if (activated) {
-				if (!readOnly) {
-					uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
-						? flushedPosition.positionInLogFile
-						: 0;
-					currentFile->recoverTail(protectedPosition);
-				}
+			// Recovery and retirement both write into the primary's log tree, so
+			// they belong to a writable load only (invariant 18). A read-only
+			// load keeps the segment as opened: `open()` already clamped `size`
+			// to any marker it found, which is the reader's view of it.
+			if (activated && !readOnly) {
+				uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
+					? flushedPosition.positionInLogFile
+					: 0;
+				currentFile->recoverTail(protectedPosition);
 				if (currentFile->appendBoundaryLost.load(std::memory_order_relaxed)) {
-					// Recovery could not make this segment appendable (see
-					// zeroTailLocked). Persist its logical boundary and retire it
-					// HERE, not on the first write: the write path's
-					// persist-then-rotate runs only from writeEntries' catch, and
-					// writeBatch can rotate ahead of it (the max-age check), which
-					// would lose the boundary and let a restart pull the orphaned
-					// tail back inside the logical file.
+					// Recovery could not make this segment appendable. Persist
+					// its boundary and retire it here rather than on the first
+					// write, which can rotate before the write path's
+					// persist-then-rotate runs and lose the boundary.
 					currentFile->persistAppendBoundaryRetirement();
 					activated = false;
 				}

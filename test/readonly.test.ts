@@ -330,6 +330,53 @@ describe('Readonly Operations', () => {
 			}
 		));
 
+	// The one guard whose regression mode is a process abort rather than a wrong
+	// value: resolveTransactionLogStore throws a DBException, which derives from
+	// std::exception (not std::runtime_error), and an escaped C++ exception
+	// aborts from an N-API callback. Both useLog surfaces must turn it into a JS
+	// error instead.
+	it('should reject a writer adopting a readonly-loaded log at both useLog surfaces', () =>
+		dbRunner({ skipOpen: true, dbOptions: [{}] }, async ({ db, dbPath }) => {
+			db.open();
+			const log = db.useLog('foo');
+			await db.transaction(async (txn) => {
+				await txn.put('foo', 'bar');
+				log.addEntry(Buffer.from('hello'), txn.id);
+			});
+
+			// A store that appears while the writer is already open — as a live
+			// primary in another process would create it — is discovered by the
+			// next open, and a secondary discovers it read-only (no tail
+			// recovery). The open writer must not then adopt it.
+			const logsDir = join(dbPath, 'transaction_logs');
+			cpSync(join(logsDir, 'foo'), join(logsDir, 'bar'), { recursive: true });
+
+			const secondary = new RocksDatabase(dbPath, { secondaryPath: `${dbPath}.secondary` });
+			try {
+				secondary.open();
+				expect(Array.from(secondary.useLog('bar').query({ start: 0 })).length).toBeGreaterThan(0);
+
+				expect(() => db.useLog('bar')).toThrow('is open read-only in this process');
+				await expect(
+					db.transaction(async (txn) => {
+						txn.useLog('bar');
+					})
+				).rejects.toThrow('is open read-only in this process');
+
+				// The writer is still usable: the rejection is an error, not a
+				// poisoned handle.
+				expect(db.getSync('foo')).toBe('bar');
+			} finally {
+				secondary.close();
+				rmSync(`${dbPath}.secondary`, {
+					force: true,
+					recursive: true,
+					maxRetries: 5,
+					retryDelay: 50,
+				});
+			}
+		}));
+
 	it('should refuse a writable open while transaction logs are held readonly', () =>
 		dbRunner(
 			{ skipOpen: true, dbOptions: [{}, { readOnly: true }, {}] },

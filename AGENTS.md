@@ -566,7 +566,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     zero-timestamp end-of-entries marker. Leaving those bytes is not benign: appends resume at `size`,
     so a later shorter batch would leave the stale bytes reading as an entry. POSIX has no such
     fallback and needs none — `ftruncate` ignores mappings, and the `O_APPEND` fd makes an in-place
-    rewrite land at EOF anyway. Recovery runs before mappings can be handed to readers.
+    rewrite land at EOF anyway. Recovery runs before mappings can be handed to readers. A zero-fill
+    that itself fails retires the segment rather than leaving it appendable, and retirement ends at
+    the same transaction boundary a repair would erase to (`unclosedTransactionBoundary`, shared by
+    both paths): the marker is a retired segment's only eraser, so an unclosed prefix left inside its
+    logical extent would be closed by the _next_ segment's first flagged batch — the cross-rotation
+    merge this invariant forbids.
 15. **A callback-style native method owes its caller exactly one settled callback on every path**:
     `Flush` and `Compact` take `resolve`/`reject` and used to `return` on a read-only database
     without invoking either, so `await db.flush()` there never resumed (#774). The sync siblings can

@@ -383,6 +383,18 @@ struct TransactionLogFile final {
 	 */
 	void discardUnclosedTransaction(
 		const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition);
+
+	/**
+	 * The offset this file must end at so it does not end mid-transaction:
+	 * `scan.lastCompleteTransactionEnd` when the scan proves the trailing run is
+	 * one interrupted batch of a flag-setting writer, otherwise `entriesEnd`
+	 * (keep the bytes). Warns about the ambiguous cases it keeps. Shared by the
+	 * two ways a file can be shortened — erasing the bytes
+	 * (discardUnclosedTransaction) and retiring the segment at a lower logical
+	 * boundary — so the two cannot drift apart. Caller holds fileMutex.
+	 */
+	uint32_t unclosedTransactionBoundary(
+		const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition);
 	void resetTimestampIndex();
 
 	/**

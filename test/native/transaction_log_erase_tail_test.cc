@@ -91,6 +91,50 @@ protected:
 		file->version = 1;
 	}
 
+	// Entry A closes a transaction, entry B does not (the prefix of a batch whose
+	// final entry never landed), then a torn entry header. `recoverTail()` must
+	// end this file at A, not at B.
+	void writeUnclosedTornImage(uint32_t entryAEnd, uint32_t entryBEnd, uint32_t tornSize) {
+		std::vector<char> image(tornSize, 0);
+		rocksdb_js::writeUint32BE(image.data(), TRANSACTION_LOG_TOKEN);
+		rocksdb_js::writeUint8(image.data() + 4, 1);
+		rocksdb_js::writeDoubleBE(image.data() + 5, 1.0);
+
+		rocksdb_js::writeDoubleBE(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE, 2.0);
+		rocksdb_js::writeUint32BE(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE + 8, 4);
+		rocksdb_js::writeUint8(image.data() + TRANSACTION_LOG_FILE_HEADER_SIZE + 12, TRANSACTION_LOG_ENTRY_LAST_FLAG);
+
+		rocksdb_js::writeDoubleBE(image.data() + entryAEnd, 3.0);
+		rocksdb_js::writeUint32BE(image.data() + entryAEnd + 8, 4);
+		rocksdb_js::writeUint8(image.data() + entryAEnd + 12, 0);
+
+		rocksdb_js::writeDoubleBE(image.data() + entryBEnd, 3.0);
+		rocksdb_js::writeUint32BE(image.data() + entryBEnd + 8, 100);
+
+		HANDLE handle = ::CreateFileW(
+			path.wstring().c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr
+		);
+		ASSERT_NE(handle, INVALID_HANDLE_VALUE);
+		DWORD written = 0;
+		ASSERT_TRUE(::WriteFile(handle, image.data(), static_cast<DWORD>(image.size()), &written, nullptr));
+		ASSERT_EQ(written, static_cast<DWORD>(image.size()));
+
+		file = std::make_unique<rocksdb_js::TransactionLogFile>(path, 1);
+		file->fileHandle = handle;
+		file->size = tornSize;
+		file->version = 1;
+	}
+
+	void reopenReadOnly() {
+		::CloseHandle(file->fileHandle);
+		file->fileHandle = ::CreateFileW(
+			path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr
+		);
+		ASSERT_NE(file->fileHandle, INVALID_HANDLE_VALUE);
+	}
+
 	void expectPhysicalSize(uint32_t expected) {
 		LARGE_INTEGER physicalSize;
 		ASSERT_TRUE(::GetFileSizeEx(file->fileHandle, &physicalSize));
@@ -157,17 +201,32 @@ TEST_F(TransactionLogEraseTail, TornTailRecoveryRetiresTheSegmentWhenZeroingFail
 	constexpr uint32_t tornSize = completeEnd + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2;
 	writeTornImage(tornSize, completeEnd);
 
-	::CloseHandle(file->fileHandle);
-	file->fileHandle = ::CreateFileW(
-		path.wstring().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr
-	);
-	ASSERT_NE(file->fileHandle, INVALID_HANDLE_VALUE);
+	reopenReadOnly();
 
 	file->recoverTail();
 
 	EXPECT_EQ(file->size.load(), completeEnd);
 	EXPECT_TRUE(file->appendBoundaryLost.load());
+	expectPhysicalSize(tornSize);
+}
+
+// A retired segment cannot erase anything, so the boundary it retires at is its
+// only eraser: whole entries of an interrupted transaction left inside the
+// logical extent would be glued onto the next segment's first batch by that
+// batch's last-entry flag, merging two source transactions into one for every
+// consumer that groups on it (AGENTS invariant 14, which spans rotations).
+TEST_F(TransactionLogEraseTail, RetirementEndsOnATransactionBoundary) {
+	constexpr uint32_t entrySize = TRANSACTION_LOG_ENTRY_HEADER_SIZE + 4;
+	constexpr uint32_t entryAEnd = TRANSACTION_LOG_FILE_HEADER_SIZE + entrySize;
+	constexpr uint32_t entryBEnd = entryAEnd + entrySize;
+	constexpr uint32_t tornSize = entryBEnd + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2;
+	writeUnclosedTornImage(entryAEnd, entryBEnd, tornSize);
+	reopenReadOnly();
+
+	file->recoverTail();
+
+	EXPECT_TRUE(file->appendBoundaryLost.load());
+	EXPECT_EQ(file->size.load(), entryAEnd) << "retired inside an unclosed transaction";
 	expectPhysicalSize(tornSize);
 }
 

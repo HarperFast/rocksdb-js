@@ -243,6 +243,13 @@ void TransactionLogFile::openLocked(const double latestTimestamp) {
 
 void TransactionLogFile::persistAppendBoundaryRetirement() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+	if (this->readOnly) {
+		// The marker tree belongs to the writer, which may be live in another
+		// process (invariant 18). A reader has nothing to retire — it never
+		// appends — so reaching here is a caller bug, not a recoverable state.
+		throw rocksdb_js::TransactionLogAppendBoundaryException(
+			"Cannot retire a read-only transaction log segment: " + this->path.string());
+	}
 	if (!this->appendBoundaryMarkerEnabled) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
 			"Cannot persist append-boundary retirement for unmanaged transaction log: " +
@@ -381,24 +388,34 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 			bool wasRetired = this->appendBoundaryLost.load(std::memory_order_relaxed);
 			bool repaired = this->truncateFile(scan.validEnd) ||
 				this->zeroTailLocked(scan.validEnd, fileSize);
-			// A zero-fill that could not finish retires the segment instead (it
-			// lowered `size` to the boundary and refused further appends). That
-			// is the same boundary move as a repair and owes the same
+			// A zero-fill that could not finish retires the segment instead.
+			// That is the same boundary move as a repair and owes the same
 			// bookkeeping — the pre-recovery index in particular still maps
 			// timestamps into the discarded range.
 			bool retired = !repaired && !wasRetired &&
 				this->appendBoundaryLost.load(std::memory_order_relaxed);
 			if (repaired || retired) {
-				this->size.store(scan.validEnd, std::memory_order_relaxed);
-				if (this->lastFlushedSize > scan.validEnd) {
-					this->lastFlushedSize = scan.validEnd;
+				// A retired segment cannot erase anything, so its logical
+				// boundary — the marker, which is what readers, purge counting,
+				// backups and strict validation all use (invariant 5) — is the
+				// only eraser it has. Retire at the last complete transaction
+				// rather than at the framing end, or the unclosed prefix left
+				// here is glued onto the next segment's first batch by that
+				// batch's flag, merging two source transactions into one
+				// (invariant 14, which spans rotations).
+				uint32_t newSize = retired
+					? this->unclosedTransactionBoundary(scan, scan.validEnd, protectedPosition)
+					: scan.validEnd;
+				this->size.store(newSize, std::memory_order_relaxed);
+				if (this->lastFlushedSize > newSize) {
+					this->lastFlushedSize = newSize;
 				}
 				this->resetTimestampIndex();
 
 				std::ostringstream msg;
 				msg << "Transaction log " << this->path.string()
-					<< " had a torn tail; dropped " << (fileSize - scan.validEnd)
-					<< " partial byte(s) back to the last valid entry (new size=" << scan.validEnd << ")";
+					<< " had a torn tail; dropped " << (fileSize - newSize)
+					<< " byte(s) back to the last valid entry (new size=" << newSize << ")";
 				if (retired) {
 					msg << ", and could not be made appendable again: the segment is retired and the "
 						   "store will rotate to a new one";
@@ -408,9 +425,7 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 
 				// The partial bytes are gone; whole entries of the same interrupted
-				// batch can still precede them. A retired segment is never appended
-				// to, so no later batch's flag can swallow them and there is
-				// nothing left to erase with.
+				// batch can still precede them.
 				if (repaired) {
 					this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);
 				}
@@ -422,21 +437,21 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 	}
 }
 
-void TransactionLogFile::discardUnclosedTransaction(
+uint32_t TransactionLogFile::unclosedTransactionBoundary(
 	const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition) {
 	uint32_t boundary = scan.lastCompleteTransactionEnd;
 	if (entriesEnd <= boundary) {
-		return; // the file ends on a transaction boundary
+		return entriesEnd; // the file ends on a transaction boundary
 	}
 	if (boundary < protectedPosition) {
 		std::ostringstream msg;
 		msg << "Transaction log " << this->path.string()
 			<< " has an unclosed transaction crossing the flushed position " << protectedPosition
 			<< "; leaving it intact to preserve durable log history.";
-		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n",
+		DEBUG_LOG("%p TransactionLogFile::unclosedTransactionBoundary WARNING: %s\n",
 			this, msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
-		return;
+		return entriesEnd;
 	}
 
 	// A zero boundary means no entry in this file closed a transaction. Either the
@@ -445,9 +460,9 @@ void TransactionLogFile::discardUnclosedTransaction(
 	// the bytes and let the store fall back to seeding its watermark from an older
 	// file. A non-zero boundary is the proof that this writer sets the flag.
 	if (boundary == 0) {
-		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction No closed transaction in %s; leaving %u trailing entries intact\n",
+		DEBUG_LOG("%p TransactionLogFile::unclosedTransactionBoundary No closed transaction in %s; leaving %u trailing entries intact\n",
 			this, this->path.string().c_str(), scan.unclosedTailEntries);
-		return;
+		return entriesEnd;
 	}
 
 	if (!scan.unclosedTailIsOneTransaction) {
@@ -456,8 +471,18 @@ void TransactionLogFile::discardUnclosedTransaction(
 			<< " unflagged entries spanning more than one timestamp after offset " << boundary
 			<< "; leaving them intact rather than discarding what may be complete transactions "
 			   "written before the last-entry flag existed.";
-		DEBUG_LOG("%p TransactionLogFile::discardUnclosedTransaction WARNING: %s\n", this, msg.str().c_str());
+		DEBUG_LOG("%p TransactionLogFile::unclosedTransactionBoundary WARNING: %s\n", this, msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		return entriesEnd;
+	}
+
+	return boundary;
+}
+
+void TransactionLogFile::discardUnclosedTransaction(
+	const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition) {
+	uint32_t boundary = this->unclosedTransactionBoundary(scan, entriesEnd, protectedPosition);
+	if (boundary >= entriesEnd) {
 		return;
 	}
 

@@ -62,9 +62,9 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &transactionId));
 	}
 
-	// Constructing the handle resolves the store, which throws for a writer
-	// refused a read-only-loaded store or a store directory that cannot be
-	// created. A C++ exception escaping an N-API callback aborts the process.
+	// Constructing the handle resolves the store, which throws a DBException —
+	// std::exception, not std::runtime_error. An escaped C++ exception aborts
+	// the process from an N-API callback.
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle;
 	try {
 		txnLogHandle = new std::shared_ptr<TransactionLogHandle>(

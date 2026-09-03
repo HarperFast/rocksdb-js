@@ -442,9 +442,7 @@ struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	 * was queued, so exactly one of the execute callback and the destructor
 	 * releases it. Queued work that is cancelled never runs execute, and a
 	 * claim left standing there makes `finishClose()` — which waits on the
-	 * counter unbounded — wedge close and destroy. Nothing here calls
-	 * `napi_cancel_async_work` today, so that arm is unreachable exactly like
-	 * the `napi_cancelled` branches below it (AGENTS invariant 15).
+	 * counter unbounded — wedge close and destroy.
 	 */
 	std::atomic<bool> inFlightReleased{false};
 
