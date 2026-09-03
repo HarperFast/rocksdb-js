@@ -175,10 +175,10 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Returns the transaction timestamp in milliseconds since the Unix epoch: the
-	 * write identity of every record this transaction writes (their first word)
-	 * and the key of its transaction-log batch. Defaults to a process-wide
-	 * strictly increasing clock value claimed when the transaction was created.
+	 * Returns the transaction timestamp in milliseconds since the Unix epoch. It
+	 * defaults to a process-wide monotonic value assigned when the transaction
+	 * was created. A producer may use this value as its write identity; the
+	 * transaction log uses it as the batch key.
 	 *
 	 * @returns The transaction timestamp in milliseconds.
 	 */
@@ -194,12 +194,11 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Overrides the transaction timestamp, in milliseconds since the Unix epoch.
-	 * For adopting an origin's timestamp when applying a replicated transaction
-	 * or replaying a log; local writes keep the assigned one. Without an
-	 * argument, claims a fresh clock value. The value must be a finite positive
-	 * number below 8640000000000000, and the transaction must still be pending
-	 * with nothing staged: the first write or log entry freezes the timestamp.
+	 * Overrides the transaction timestamp in milliseconds since the Unix epoch.
+	 * Call this before reading the timestamp or staging writes when adopting an
+	 * origin timestamp for replication or replay. Once a write or log entry is
+	 * staged, the timestamp is frozen. The value must be finite, positive, and
+	 * below 8640000000000000.
 	 *
 	 * @param timestamp - The timestamp to set in milliseconds.
 	 */

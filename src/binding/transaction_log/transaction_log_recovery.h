@@ -2,7 +2,6 @@
 #define __TRANSACTION_LOG_RECOVERY_H__
 
 #include <cstdint>
-#include "core/platform.h"
 
 namespace rocksdb_js {
 
@@ -61,21 +60,6 @@ struct RecoveryScan final {
 	 * assign repeated timestamps to separate transactions.
 	 */
 	bool unclosedTailIsOneTransaction;
-	/**
-	 * Largest entry timestamp among the frames the walk accepted (those before
-	 * `validEnd`) that is finite and at most `plausibleBound`, or 0 when there
-	 * are none. Batch keys are not monotonic
-	 * in log order, so this is a maximum over the walk, not the last entry's
-	 * key. Feeds the open-time clock floor (TransactionLogStore::load); the
-	 * bound keeps one corrupt far-future key from masking the real maximum.
-	 */
-	double maxTimestamp;
-	/**
-	 * Largest finite entry timestamp the walk saw above that bound, or 0 —
-	 * reported so the store can warn about a far-future key it will not seed
-	 * from.
-	 */
-	double maxImplausibleTimestamp;
 };
 
 /**
@@ -102,25 +86,20 @@ using TransactionLogReadFn = bool (*)(void* context, uint32_t offset, void* dest
  * @param context  Passed through to `read`.
  */
 RecoveryScan scanTransactionLogForRecovery(
-	uint32_t fileSize, TransactionLogReadFn read, void* context,
-	double plausibleBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
+	uint32_t fileSize, TransactionLogReadFn read, void* context);
 
 /**
  * In-memory adapter over scanTransactionLogForRecovery(fileSize, read, context).
  * Used by validation and native tests that already hold a buffer.
  */
-RecoveryScan scanTransactionLogForRecovery(
-	const char* data, uint32_t fileSize,
-	double plausibleBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
+RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize);
 
 /**
  * File adapter: takes fileMutex, then scans via positional reads on `file`.
  * Callers that already hold fileMutex must use TransactionLogFile::scanRecoveryLocked()
  * instead (the mutex is not recursive). Throws DBException on I/O failure.
  */
-RecoveryScan scanTransactionLogForRecovery(
-	TransactionLogFile& file,
-	double plausibleBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
+RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file);
 
 /**
  * Counts the well-formed v1 entry frames in an in-memory transaction log image.

@@ -1,22 +1,9 @@
 import type { BufferWithDataView, Key } from './encoding.ts';
-import { FRESH_VERSION_FLAG, HAS_DISTINCT_VERSION_FLAG } from './load-binding.ts';
+import { FRESH_VERSION_FLAG } from './load-binding.ts';
 import type { NativeTransaction, TransactionLog } from './load-binding.ts';
 import type { GetOptions, PutOptions, Store, StoreContext, StoreGetOptions } from './store.ts';
 import type { Transaction } from './transaction.ts';
 import { type MaybePromise, when } from './util.ts';
-
-const VERSION_HEADER_TAG = 0x0e;
-
-/**
- * A value with its two clock words, as returned by `getEntry()` / `getEntrySync()`.
- */
-export type Entry = {
-	value: any;
-	/** The transaction timestamp that wrote the value: its first word and log batch key. */
-	localTime?: number;
-	/** The record version: the distinct second word when flagged, otherwise `localTime`. */
-	version?: number;
-};
 
 export interface RocksDBOptions {
 	/**
@@ -381,70 +368,6 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		}
 
 		return this.store.decodeValue(this.store.getSync(this._context, key, true, options));
-	}
-
-	/**
-	 * Synchronously retrieves the value for the given key together with its two
-	 * clock words, per the README's "Value-header contract".
-	 */
-	getEntrySync(key: Key): Entry | undefined {
-		const raw = this.store.decoderCopies ? this.getBinaryFastSync(key) : this.getBinarySync(key);
-		if (raw === undefined || typeof raw === 'number') {
-			return undefined;
-		}
-		return this.#buildEntry(raw);
-	}
-
-	/**
-	 * Retrieves the value for the given key together with its two clock words;
-	 * the asynchronous counterpart of `getEntrySync()` (see it for the word
-	 * semantics).
-	 */
-	getEntry(key: Key): MaybePromise<Entry | undefined> {
-		const raw = this.store.decoderCopies ? this.getBinaryFast(key) : this.getBinary(key);
-		if (raw instanceof Promise) {
-			return raw.then((resolved) =>
-				resolved === undefined || typeof resolved === 'number'
-					? undefined
-					: this.#buildEntry(resolved)
-			);
-		}
-		if (raw === undefined || typeof raw === 'number') {
-			return undefined;
-		}
-		return this.#buildEntry(raw);
-	}
-
-	// With a copying decoder `raw` is the reusable read buffer: its `length` is
-	// the capacity and `end` the value's size, and it is valid only until the
-	// next read, so the words and the decode both happen here before returning.
-	#buildEntry(raw: Buffer): Entry {
-		const end = (raw as BufferWithDataView).end ?? raw.length;
-		let localTime: number | undefined;
-		let version: number | undefined;
-		if (end >= 8) {
-			const first = raw.readDoubleBE(0);
-			if (Number.isFinite(first) && first > 0) {
-				localTime = first;
-				version = first;
-			}
-			if (end >= 12) {
-				const metadata = raw.readUInt32BE(8);
-				if (
-					metadata >>> 24 === VERSION_HEADER_TAG &&
-					(metadata & HAS_DISTINCT_VERSION_FLAG) !== 0
-				) {
-					const distinct = end >= 20 ? raw.readDoubleBE(12) : NaN;
-					version = Number.isFinite(distinct) && distinct > 0 ? distinct : undefined;
-				}
-			}
-		}
-		const value = this.store.decoderCopies
-			? this.store.decodeValue(raw as BufferWithDataView)
-			: this.store.encoding === 'binary' || !this.store.decoder
-				? raw
-				: this.store.decodeValue(raw as BufferWithDataView);
-		return { value, localTime, version };
 	}
 
 	/**

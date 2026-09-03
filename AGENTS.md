@@ -646,74 +646,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
 
-18. **A transaction's timestamp is its write identity, and the clock that issues it is floored by
-    the log at open**: `TransactionHandle::startTimestamp` is claimed from the process-global
-    monotonic clock (`getMonotonicTimestamp()`, `core/platform.cpp`) at construction, becomes the
-    first 8-byte word of every record the transaction writes and the key of its transaction-log
-    batch (snapshotted at the first `addLogEntry`), and harper seeks the per-origin log at exactly
-    that key to find a record's own entry. Identity is (origin nodeId, first word), so uniqueness is
-    only required within one origin's log — which is why concurrent commits landing out of claim
-    order (a later log entry with a smaller key) are fine, and why `setTimestamp` exists at all: a
-    replication receiver or crash replay adopts the _origin's_ first word. `Transaction::SetTimestamp`
-    therefore rejects non-finite, non-positive and `>= MAX_TIMESTAMP_MS` (8.64e15) values, any call
-    outside `Pending`, and any call once a write or log entry is staged — a later change would split
-    the records' first word from the batch key. A source/origin-supplied record _version_ is a
-    separate second word (offset 12, under `HAS_DISTINCT_VERSION_FLAG` = 0x20000 in the metadata
-    word) that nothing native interprets; `DBI.getEntry()` is the one decoder of both words and the
-    README's "Value-header contract" is the byte layout harper's encoder must match. rocksdb-js
-    stamps nothing at commit: the put/commit hot path gained no claim, CAS or clock read (the
-    commit-time keep-if-greater design was rejected in #811 because it re-stamped every transaction
-    outlived by a concurrent commit).
-
-    The hole this closes is a restart after a wall-clock rollback reissuing a key already durable in
-    this node's log. `TransactionLogStore::load()` seeds `latestTimestamp` — which used to start at 0
-    on every open and only track batches written by the current process — from every segment's
-    file-header word plus `RecoveryScan::maxTimestamp` of the active segment (and of any older
-    segment the committed-boundary back-walk scans anyway), then calls
-    `raiseMonotonicTimestampFloor()` (raise-only CAS; ignores non-finite / non-positive /
-    out-of-domain values). This runs inside `DBDescriptor::open` → `DiscoverStores`, before the
-    descriptor reaches any `DBHandle`, so no transaction on that database can be constructed first.
-    The header chain is what makes this cheap: a segment's header is the store's `latestTimestamp`
-    when the segment was created, so once a store has been loaded by this code every later rotation
-    stamps a header that bounds all older segments, and the seed is max(headers, active-segment
-    scan) rather than a walk of every retained byte (measured ~4 GB/s warm for 200-byte entries,
-    i.e. bounded by disk throughput per open, under the registry mutex — the reason a full scan was
-    not chosen). Known gap: a store whose rotated segments were all written by a pre-#811 binary
-    that had itself restarted after a rollback can hold a key no header records; the first rotation
-    after upgrade repairs the chain. A segment whose header cannot be read emits a `log.warn` rather
-    than failing the open (load fails open for broken segments by design). The floor is
-    process-wide and also absorbs adopted origin keys, so a peer clock far ahead advances this
-    node's clock after its next restart — bounded by `MAX_CLOCK_FLOOR_SKEW_MS` (ten years): a key
-    further ahead of the wall clock than that never becomes a candidate (`RecoveryScan::maxTimestamp`
-    and `raiseLatestTimestamp` both apply the bound, so it is neither seeded nor stamped into a
-    header and cannot mask a plausible key beside it; `load()` warns), because ulp is 1 at the
-    8.64e15 cap, so one durable `setTimestamp(8.64e15 - 1)` would otherwise put the floor one step
-    below the cap and wedge every transaction constructor in the process, across restarts, with no
-    reset API. One definition of plausible everywhere — the current wall clock plus the skew,
-    `TransactionLogStore::isPlausibleTimestamp` and `raiseMonotonicTimestampFloor` reading the same
-    clock — because any cached or process-floor-anchored variant diverged from the floor (a
-    construction-time bound silently stopped the header chain after a post-boot NTP correction; a
-    floor-anchored bound compounded on an already-raised floor; a lazily-ratcheted bound stayed
-    high after a backward correction), and every divergence readmits a key the floor refuses,
-    which is the masking bug again. `load()` samples that bound once and uses it for every header,
-    every entry scan (`RecoveryScan` takes it as a parameter) and the final floor raise, so no two
-    candidates of one load are judged against different clocks; `writeBatch` judges the batch key
-    against the sample the previous append already took for `fileLastWriteTime` (`lastAppendMs`,
-    seeded at construction), so no commit pays a clock read for this and the header a rotation
-    stamps still carries the rotating batch's key, as it always has. A rotated segment whose
-    header is above the bound was stamped by a pre-bound writer that cannot be trusted to have kept
-    a running maximum in any of its headers, so every older segment is walked, at every open, until
-    retention purges that segment — no "trusted newer header" shortcut, because nothing in the
-    files proves a newer plausible header was stamped after a complete walk. The freeze in `SetTimestamp` also keys on
-    `committedPosition.logSequenceNumber`, which survives `resetTransaction()`: a coordinated-retry
-    attempt whose log batch already landed must keep the key that batch was written under. `getMonotonicTimestamp()` still throws `DBException` once the next value would reach
-    `MAX_TIMESTAMP_MS` (unreachable through the floor now, defensive); its three callers
-    (`TransactionHandle` construction — which claims the clock _before_ `resetTransaction()` so a
-    throw cannot leak the RocksDB transaction — `Database::GetMonotonicTimestamp`,
-    `Transaction::SetTimestamp`) all sit behind a try/catch that surfaces it as a JS error. Native tests must never leave the process floor at the
-    cap, and Vitest must not raise it by more than the tolerances its sibling files assert against wall time
-    (`test/misc.test.ts`), which is why `test/dual-clock.test.ts` runs the floor scenario in forked
-    children.
+18. **A transaction timestamp freezes when native state captures it**: `setTimestamp()` may adopt an
+    origin timestamp for replication or replay only while the transaction is pending and before any
+    database write or transaction-log entry is staged. The log batch snapshots the timestamp at the
+    first `addLogEntry`; `committedPosition` survives coordinated-retry resets, so a batch already
+    written remains frozen across retries. rocksdb-js does not define record value layouts: a
+    producer that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
 
 ## Debugging native heap corruption
 

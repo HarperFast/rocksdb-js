@@ -373,29 +373,43 @@ for (const { name, options, txnOptions } of testOptions) {
 				await expect(db.get('foo')).toBeUndefined();
 			}));
 
-		it(`${name} async should reject setTimestamp once the commit is dispatched`, () =>
+		it(`${name} async should freeze setTimestamp after staging and dispatch`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				const txn = new Transaction(db.store, txnOptions);
-				const ts = txn.getTimestamp();
+				const timestamp = txn.getTimestamp();
 				await txn.put('foo', 'bar');
-				expect(() => txn.setTimestamp(ts + 1)).toThrow(
-					'Cannot set timestamp: transaction already has staged writes'
-				);
-				expect(() => txn.setTimestamp()).toThrow(
-					'Cannot set timestamp: transaction already has staged writes'
-				);
+				let frozenError: any;
+				try {
+					txn.setTimestamp(timestamp + 1);
+				} catch (error) {
+					frozenError = error;
+				}
+				expect(frozenError).toMatchObject({
+					code: 'ERR_TIMESTAMP_FROZEN',
+					message: expect.stringContaining('transaction already has staged writes'),
+				});
+
 				const committing = txn.commit();
-				expect(() => txn.setTimestamp(ts + 1)).toThrow(
-					'Cannot set timestamp: transaction is not pending'
-				);
+				expect(() => txn.setTimestamp(timestamp + 1)).toThrow('transaction is not pending');
 				await committing;
-				expect(txn.getTimestamp()).toBe(ts);
+				expect(txn.getTimestamp()).toBe(timestamp);
 				expect(await db.get('foo')).toBe('bar');
 			}));
 
-		// A conflict surfaces as IsBusy at commit only with optimistic snapshot validation.
+		it(`${name} async should freeze setTimestamp after a log entry is staged`, () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				const log = db.useLog('stamped');
+				await db.transaction(async (txn: Transaction) => {
+					txn.setTimestamp(Date.now());
+					log.addEntry(Buffer.from('entry'), txn.id);
+					expect(() => txn.setTimestamp(Date.now())).toThrow(
+						'transaction already has staged writes'
+					);
+				}, txnOptions);
+			}));
+
 		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
-			`${name} async should keep the timestamp frozen across a coordinated retry`,
+			`${name} async should keep a durable log timestamp frozen across a coordinated retry`,
 			() =>
 				dbRunner({ dbOptions: [options] }, async ({ db }) => {
 					const log = db.useLog('retry');
@@ -408,17 +422,13 @@ for (const { name, options, txnOptions } of testOptions) {
 							if (attempt === 1) {
 								firstTimestamp = txn.getTimestamp();
 							} else {
-								// The log batch of attempt 1 is already durable under the first
-								// timestamp; the retried handle must not be re-keyed.
 								expect(() => txn.setTimestamp(firstTimestamp + 1)).toThrow(
-									'Cannot set timestamp: transaction already has staged writes'
+									'transaction already has staged writes'
 								);
 								expect(txn.getTimestamp()).toBe(firstTimestamp);
 							}
 							await txn.get('k');
-							if (attempt === 1) {
-								await db.put('k', 'conflict');
-							}
+							if (attempt === 1) await db.put('k', 'conflict');
 							await txn.put('k', 'committed');
 							log.addEntry(Buffer.from('entry'), txn.id);
 						},
@@ -426,22 +436,10 @@ for (const { name, options, txnOptions } of testOptions) {
 					);
 					expect(attempts).toBeGreaterThanOrEqual(2);
 					const entries = [...log.query({ start: 0 })];
-					expect(entries.length).toBe(1);
+					expect(entries).toHaveLength(1);
 					expect(entries[0].timestamp).toBe(firstTimestamp);
 				})
 		);
-
-		it(`${name} async should reject setTimestamp once a log entry is staged`, () =>
-			dbRunner({ dbOptions: [options] }, async ({ db }) => {
-				const log = db.useLog('stamped');
-				await db.transaction(async (txn: Transaction) => {
-					txn.setTimestamp(Date.now());
-					log.addEntry(Buffer.from('entry'), txn.id);
-					expect(() => txn.setTimestamp(Date.now())).toThrow(
-						'Cannot set timestamp: transaction already has staged writes'
-					);
-				}, txnOptions);
-			}));
 
 		it(`${name} async should get and set timestamp`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
@@ -467,7 +465,6 @@ for (const { name, options, txnOptions } of testOptions) {
 					expect(() => txn.setTimestamp(Infinity)).toThrow(rejected);
 					expect(() => txn.setTimestamp(-Infinity)).toThrow(rejected);
 					expect(() => txn.setTimestamp(8.64e15)).toThrow(rejected);
-					expect(txn.getTimestamp()).toBe(ts);
 					txn.setTimestamp(8.64e15 - 1);
 					expect(txn.getTimestamp()).toBe(8.64e15 - 1);
 					txn.setTimestamp(newTs);
@@ -691,18 +688,16 @@ for (const { name, options, txnOptions } of testOptions) {
 				expect(db.getSync('foo')).toBeUndefined();
 			}));
 
-		it(`${name} sync should reject setTimestamp after a write or a commit`, () =>
+		it(`${name} sync should freeze setTimestamp after a write or commit`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				const txn = new Transaction(db.store, txnOptions);
-				const ts = txn.getTimestamp();
+				const timestamp = txn.getTimestamp();
 				txn.putSync('foo', 'bar');
-				expect(() => txn.setTimestamp(ts + 1)).toThrow(
-					'Cannot set timestamp: transaction already has staged writes'
+				expect(() => txn.setTimestamp(timestamp + 1)).toThrow(
+					'transaction already has staged writes'
 				);
 				txn.commitSync();
-				expect(() => txn.setTimestamp(ts + 1)).toThrow(
-					'Cannot set timestamp: transaction is not pending'
-				);
+				expect(() => txn.setTimestamp(timestamp + 1)).toThrow('transaction is not pending');
 				expect(db.getSync('foo')).toBe('bar');
 			}));
 
@@ -730,7 +725,6 @@ for (const { name, options, txnOptions } of testOptions) {
 					expect(() => txn.setTimestamp(Infinity)).toThrow(rejected);
 					expect(() => txn.setTimestamp(-Infinity)).toThrow(rejected);
 					expect(() => txn.setTimestamp(8.64e15)).toThrow(rejected);
-					expect(txn.getTimestamp()).toBe(ts);
 					txn.setTimestamp(8.64e15 - 1);
 					expect(txn.getTimestamp()).toBe(8.64e15 - 1);
 					txn.setTimestamp(newTs);

@@ -7,7 +7,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -17,7 +16,6 @@
 #endif
 #include "core/encoding.h"
 #include "core/exception.h"
-#include "core/platform.h"
 #include "transaction_log/transaction_log_file.h"
 #include "transaction_log/transaction_log_recovery.h"
 
@@ -587,55 +585,3 @@ TEST(TransactionLogRecoveryFile, ReadsAHeaderPastTwoGiBOnASparseFile) {
 }
 #endif
 
-
-TEST(TransactionLogMaxTimestamp, HeaderOnlyHasNoMaximum) {
-	LogImage img;
-	EXPECT_EQ(scanTransactionLogForRecovery(img.data(), img.size()).maxTimestamp, 0.0);
-}
-
-TEST(TransactionLogMaxTimestamp, IsTheLargestKeyNotTheLastOne) {
-	// Batch keys are not monotonic in log order (concurrent transactions commit
-	// out of claim order), so the seed must be a maximum over the walk.
-	LogImage img;
-	img.entry(10, 1, 5.0).entry(10, 1, 9.0).entry(10, 1, 7.0);
-	EXPECT_EQ(scanTransactionLogForRecovery(img.data(), img.size()).maxTimestamp, 9.0);
-}
-
-TEST(TransactionLogMaxTimestamp, IncludesAnUnclosedTailAndExcludesATornFrame) {
-	LogImage img;
-	img.entry(10, 1, 5.0).entry(10, 0, 9.0);
-	img.entryRaw(/*declaredLength=*/5000, /*actualDataLen=*/12, 1, 11.0);
-	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
-	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
-	EXPECT_EQ(scan.maxTimestamp, 9.0);
-}
-
-TEST(TransactionLogMaxTimestamp, StopsAtAMidFileBreak) {
-	LogImage img;
-	img.entry(10, 1, 5.0);
-	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 6.0);
-	for (int i = 0; i < 12; ++i) {
-		img.entry(16, 1, 50.0);
-	}
-	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
-	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
-	EXPECT_EQ(scan.maxTimestamp, 5.0);
-}
-
-TEST(TransactionLogMaxTimestamp, SkipsNonFiniteKeys) {
-	LogImage img;
-	img.entry(10, 1, 5.0)
-		.entry(10, 1, std::numeric_limits<double>::infinity())
-		.entry(10, 1, std::numeric_limits<double>::quiet_NaN())
-		.entry(10, 1, 6.0);
-	EXPECT_EQ(scanTransactionLogForRecovery(img.data(), img.size()).maxTimestamp, 6.0);
-}
-
-TEST(TransactionLogMaxTimestamp, ReportsAFarFutureKeySeparately) {
-	const double farKey = rocksdb_js::MAX_TIMESTAMP_MS - 1.0;
-	LogImage img;
-	img.entry(10, 1, 5.0).entry(10, 1, farKey).entry(10, 1, 6.0);
-	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
-	EXPECT_EQ(scan.maxTimestamp, 6.0);
-	EXPECT_EQ(scan.maxImplausibleTimestamp, farKey);
-}

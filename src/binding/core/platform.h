@@ -38,45 +38,7 @@ void setThreadName(const char* name);
 
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
 
-/**
- * Exclusive upper bound of the millisecond-timestamp domain (the largest
- * JavaScript `Date`, 8.64e15 ms). Transaction timestamps, transaction-log batch
- * keys and the clock floor all live below it.
- */
-constexpr double MAX_TIMESTAMP_MS = 8.64e15;
-
-/**
- * Returns a process-wide strictly increasing wall-clock timestamp in
- * milliseconds. Ties and clock rollbacks resolve to `nextafter(last, +inf)`.
- * Throws DBException once the next value would reach MAX_TIMESTAMP_MS.
- */
 double getMonotonicTimestamp();
-
-/**
- * How far ahead of the wall clock a clock-floor seed may sit before it is
- * treated as implausible (a corrupt or hostile persisted key rather than a
- * rollback to recover from) and ignored: ten years. A durable key can only be
- * ahead of the wall clock by the size of the rollback that followed it, and
- * a seed beyond this would move every timestamp the process issues, for every
- * database, that far into the future permanently.
- */
-constexpr double MAX_CLOCK_FLOOR_SKEW_MS = 10.0 * 365.25 * 24.0 * 3600.0 * 1000.0;
-
-/**
- * Raises the floor getMonotonicTimestamp() issues above to `floor`, raise-only
- * and only for a value inside the domain and the skew window; returns whether
- * it moved. Seeded at transaction-log store load from the largest durable
- * batch key (see TransactionLogStore::load).
- */
-bool raiseMonotonicTimestampFloor(double floor);
-
-/**
- * Same, against a caller-supplied plausible bound (wall clock + skew sampled
- * once), so one load classifies every candidate against one clock reading.
- */
-bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
-
-double getWallClockTimestamp();
 
 void tryCreateDirectory(
 	const std::filesystem::path& path,

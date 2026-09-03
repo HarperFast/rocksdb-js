@@ -1,9 +1,9 @@
-#include <cmath>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -89,15 +89,9 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "coordinatedRetry", coordinatedRetry));
 
 	// create shared_ptr on heap so it persists after function returns
-	std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
-	try {
-		txnHandle = new std::shared_ptr<TransactionHandle>(
-			std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot)
-		);
-	} catch (const std::exception& e) {
-		::napi_throw_error(env, nullptr, e.what());
-		return nullptr;
-	}
+	std::shared_ptr<TransactionHandle>* txnHandle = new std::shared_ptr<TransactionHandle>(
+		std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot)
+	);
 	(*txnHandle)->coordinatedRetry = coordinatedRetry;
 
 	(*dbHandle)->descriptor->transactionAdd(*txnHandle);
@@ -1296,42 +1290,31 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 
-	// Frozen once anything carries it: records' first words and the log batch
-	// key must stay equal (AGENTS.md invariant 18).
+	// The commit lane may delete txn after leaving Pending, so this check must
+	// precede the staged-write inspection.
 	if ((*txnHandle)->state != TransactionState::Pending) {
-		::napi_throw_error(env, nullptr, "Cannot set timestamp: transaction is not pending");
-		return nullptr;
+		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction is not pending");
 	}
 	auto* txn = (*txnHandle)->txn;
 	if ((*txnHandle)->logEntryBatch || (*txnHandle)->committedPosition.logSequenceNumber > 0 ||
 		(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
-		::napi_throw_error(env, nullptr, "Cannot set timestamp: transaction already has staged writes");
-		return nullptr;
+		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction already has staged writes");
 	}
 
 	if (type == napi_undefined) {
-		try {
-			(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
-		} catch (const std::exception& e) {
-			::napi_throw_error(env, nullptr, e.what());
-			return nullptr;
-		}
+		// use current timestamp
+		(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 	} else if (type == napi_number) {
 		double timestampMs = 0.0;
 		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),
 			"Invalid timestamp, expected positive number");
-		// NaN poisons the log's timestamp index and Infinity has no successor;
-		// the cap keeps every key (and the clock floor seeded from it) a valid
-		// millisecond date.
-		if (!(timestampMs > 0) || !std::isfinite(timestampMs) || timestampMs >= rocksdb_js::MAX_TIMESTAMP_MS) {
-			::napi_throw_error(env, nullptr,
+		if (!(timestampMs > 0) || !std::isfinite(timestampMs) || timestampMs >= 8.64e15) {
+			NAPI_THROW_JS_ERROR("ERR_INVALID_TIMESTAMP",
 				"Invalid timestamp, expected a finite positive number below 8640000000000000");
-			return nullptr;
 		}
 		(*txnHandle)->startTimestamp = timestampMs;
 	} else {
-		::napi_throw_error(env, nullptr, "Invalid timestamp, expected positive number");
-		return nullptr;
+		NAPI_THROW_JS_ERROR("ERR_INVALID_TIMESTAMP", "Invalid timestamp, expected positive number");
 	}
 
 	NAPI_RETURN_UNDEFINED();

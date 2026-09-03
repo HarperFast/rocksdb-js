@@ -66,16 +66,6 @@ std::filesystem::path transactionLogAppendBoundaryMarkerPath(
 uint32_t readTransactionLogAppendBoundaryMarker(
 	const std::filesystem::path& logPath);
 
-/**
- * Reads the header timestamp of a v1 log file without opening it as a
- * TransactionLogFile: the store's `latestTimestamp` at the moment the file was
- * created, i.e. an upper bound on every batch key the store had written by
- * then. An empty file (a segment created but never written) reads as 0. Throws
- * TransactionLogFormatException on a short/invalid header and DBException on
- * an I/O failure.
- */
-double readTransactionLogFileHeaderTimestamp(const std::filesystem::path& logPath);
-
 class TransactionLogFormatException final : public std::exception {
 	std::string message;
 public:
@@ -186,19 +176,6 @@ struct TransactionLogFile final {
 	 * skip recovery.
 	 */
 	std::atomic<uint32_t> lastCompleteTransactionEnd = 0;
-
-	/**
-	 * `RecoveryScan::maxTimestamp` of the same open-time scan: the largest entry
-	 * key in this file, or 0 if it holds none or was never scanned.
-	 */
-	std::atomic<double> maxEntryTimestamp = 0;
-	std::atomic<double> maxImplausibleEntryTimestamp = 0;
-
-	/**
-	 * The open-time scan stopped at a mid-file framing break, so the entries
-	 * after it (kept readable, see recoverTail()) are not in `maxEntryTimestamp`.
-	 */
-	std::atomic<bool> scanStoppedAtBreak = false;
 
 	/**
 	 * The time of the last write to this file, kept in-memory to avoid a
@@ -366,9 +343,7 @@ struct TransactionLogFile final {
 	 * any appends; only meaningful for the active (current) log file. Bytes before
 	 * protectedPosition are retained because txn.state proves RocksDB flushed them.
 	 */
-	void recoverTail(
-		uint32_t protectedPosition = 0,
-		double plausibleBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
+	void recoverTail(uint32_t protectedPosition = 0);
 
 	/**
 	 * Open-time framing scan via positional header reads. Precondition: the caller
@@ -376,7 +351,7 @@ struct TransactionLogFile final {
 	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
 	 * this->size (append-owned written extent), not the mapped/pre-extended size.
 	 */
-	RecoveryScan scanRecoveryLocked(double plausibleBound);
+	RecoveryScan scanRecoveryLocked();
 
 	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file
@@ -406,8 +381,7 @@ struct TransactionLogFile final {
 	 * one ends mid-transaction. Throws DBException on I/O failure; load() catches
 	 * that and falls back toward txn.state.
 	 */
-	uint32_t scanForLastCompleteTransactionEnd(
-		double plausibleBound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
+	uint32_t scanForLastCompleteTransactionEnd();
 
 	/**
 	 * Closes the log file and removes it.

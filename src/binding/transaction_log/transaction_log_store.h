@@ -10,8 +10,6 @@
 #include <memory>
 #include <mutex>
 #include <atomic>
-#include <cmath>
-#include "core/platform.h"
 #include <functional>
 #include "rocksdb/db.h"
 #include "transaction_log_entry.h"
@@ -209,42 +207,10 @@ struct TransactionLogStore final {
 	std::string name;
 
 	/**
-	 * The largest batch key this store is known to hold: seeded at load() from
-	 * the segment headers and the recovery scans, then raised by every
-	 * writeBatch(). Stamped into each new segment's file header, which is what
-	 * makes the newest header an upper bound on every older segment's keys.
+	 * The timestamp of the most recent transaction log batch being written.
+	 * This value is used in the transaction log file header timestamp.
 	 */
 	double latestTimestamp = 0;
-
-	/**
-	 * The floor's own plausibility rule (wall clock + MAX_CLOCK_FLOOR_SKEW_MS),
-	 * sampled once per load; writeBatch() uses the previous append's sample
-	 * (`lastAppendMs`) so no commit reads the clock for it.
-	 */
-	static double plausibleBoundNow() {
-		return getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
-	}
-
-	double lastAppendMs = getWallClockTimestamp();
-
-	bool raiseLatestTimestamp(double timestamp, double plausibleBound) {
-		if (timestamp > this->latestTimestamp && timestamp <= plausibleBound) {
-			this->latestTimestamp = timestamp;
-			return true;
-		}
-		return false;
-	}
-
-	/**
-	 * False when load() could not inspect a segment, an entry scan, or the
-	 * entries past a mid-file framing break, so `latestTimestamp` may be below a
-	 * batch key already in this log; load() emits a `log.warn` for it.
-	 */
-	bool clockFloorComplete = true;
-
-	bool raiseLatestTimestamp(double timestamp) {
-		return this->raiseLatestTimestamp(timestamp, plausibleBoundNow());
-	}
 
 	/**
 	 * The directory containing the transaction store's sequence log files.

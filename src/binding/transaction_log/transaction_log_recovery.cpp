@@ -2,9 +2,7 @@
 #include "transaction_log/transaction_log_file.h" // header-size constants, TransactionLogFile
 #include "core/encoding.h"                         // readDoubleBE / readUint32BE
 #include "core/exception.h"
-#include "core/platform.h"
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -137,17 +135,15 @@ bool validFramingResumes(ScanReader& source, uint32_t from) {
 } // namespace
 
 RecoveryScan scanTransactionLogForRecovery(
-	uint32_t fileSize, TransactionLogReadFn read, void* context, double plausibleBound
+	uint32_t fileSize, TransactionLogReadFn read, void* context
 ) {
 	uint32_t lastCompleteEnd = 0;
 	uint32_t tailEntries = 0;
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
-	double maxTimestamp = 0;
-	double maxImplausibleTimestamp = 0;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
-			tailEntries > 0 && tailUniformTimestamp, maxTimestamp, maxImplausibleTimestamp };
+			tailEntries > 0 && tailUniformTimestamp };
 	};
 
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
@@ -181,13 +177,6 @@ RecoveryScan scanTransactionLogForRecovery(
 			return scan(RecoveryScan::Kind::TruncateTail, pos);
 		}
 		bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
-		if (timestamp > plausibleBound) {
-			if (timestamp > maxImplausibleTimestamp && std::isfinite(timestamp)) {
-				maxImplausibleTimestamp = timestamp;
-			}
-		} else if (timestamp > maxTimestamp) {
-			maxTimestamp = timestamp;
-		}
 		if (tailEntries++ == 0) {
 			tailTimestamp = timestamp;
 		} else if (timestamp != tailTimestamp) {
@@ -211,13 +200,13 @@ bool readFromBuffer(void* context, uint32_t offset, void* dest, uint32_t n) {
 
 } // namespace
 
-RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize, double plausibleBound) {
-	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data), plausibleBound);
+RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) {
+	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data));
 }
 
-RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file, double plausibleBound) {
+RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file) {
 	std::lock_guard<std::mutex> lock(file.fileMutex);
-	return file.scanRecoveryLocked(plausibleBound);
+	return file.scanRecoveryLocked();
 }
 
 uint32_t countTransactionLogEntries(const char* data, uint32_t fileSize) {

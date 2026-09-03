@@ -477,31 +477,6 @@ if (result === constants.FRESH_VERSION_FLAG) {
 Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
 the `expectedVersion` option is used.
 
-### `db.getEntry(key: Key): MaybePromise<Entry | undefined>`
-
-Retrieves the value for the given key together with its two clock words, per the
-[value-header contract](#value-header-contract):
-
-- `localTime` — the first 8-byte word: the timestamp of the transaction that wrote the value, which
-  is also the key of that transaction's batch in the transaction log.
-- `version` — the record version: the distinct second word when the value carries
-  `HAS_DISTINCT_VERSION_FLAG`, otherwise equal to `localTime`.
-
-A word that is not a finite positive number is `undefined`; so is `version` on a flagged value too
-short to hold the second word. `value` is decoded as `get()` would (raw bytes on a `'binary'` store).
-Like `get()`, this resolves synchronously when the value is cached and returns a promise otherwise.
-The words are only meaningful for a store whose producer writes the contract; on any other store
-they are arbitrary value bytes.
-
-```typescript
-const entry = await db.getEntry('foo');
-console.log(entry.localTime, entry.version, entry.value);
-```
-
-### `db.getEntrySync(key: Key): Entry | undefined`
-
-Synchronous version of `getEntry()`.
-
 ### `db.getEstimatedKeyCount(): number`
 
 Retrieves the estimated number of keys in the database. This is an alias for
@@ -596,9 +571,7 @@ const range = db.getKeysCount({ start: 'a', end: 'z' }); // exact number of keys
 ### `db.getMonotonicTimestamp(): number`
 
 Returns the current timestamp as a monotonically increasing timestamp in milliseconds represented as
-a decimal number. The clock is process-wide and strictly increasing: a tie or a wall-clock rollback
-resolves to the next representable double above the last value issued. It is the clock that assigns
-every transaction its timestamp (see [Timestamps and write identity](#timestamps-and-write-identity)).
+a decimal number. This process-wide clock also supplies each transaction's initial timestamp.
 
 ```typescript
 const ts = db.getMonotonicTimestamp();
@@ -895,12 +868,13 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.commit(): Promise<void>` Asynchronously commits the transaction and closes the transaction.
 - `txn.commitSync()` Synchronously commits and closes the transaction.
 - `txn.getTimestamp(): number` Retrieves the transaction timestamp in milliseconds as a decimal. It
-  defaults to a value claimed from the monotonic clock when the transaction was created.
+  defaults to a process-wide monotonic value assigned when the transaction was created.
 - `txn.id: number` The read-only transaction ID. Transaction IDs are unique to the RocksDB database
   path, regardless the database name/column family.
-- `txn.setTimestamp(ts?: number): void` Overrides the transaction timestamp (milliseconds). If called
-  without a timestamp, it claims a fresh clock value. Only allowed while the transaction is pending
-  with nothing staged; the value must be a finite positive number below `8.64e15`.
+- `txn.setTimestamp(ts?: number): void` Overrides the transaction timestamp in milliseconds. If
+  called without a timestamp, it claims a fresh monotonic value. It must be called before staging
+  any write or transaction-log entry, and a supplied value must be finite, positive, and below
+  `8.64e15`.
 
 #### `txn.abandonWrites(): void`
 
@@ -936,10 +910,9 @@ Once called, no further transaction operations are permitted.
 
 #### `txn.getTimestamp(): number`
 
-Retrieves the transaction timestamp in milliseconds since the Unix epoch, as a decimal. It defaults
-to a value claimed from `db.getMonotonicTimestamp()` when the transaction was created, and it is the
-transaction's write identity: the first word of every record it writes and the key of its batch in
-the transaction log (see [Timestamps and write identity](#timestamps-and-write-identity)).
+Retrieves the transaction timestamp in milliseconds since the Unix epoch as a decimal. It defaults
+to a process-wide monotonic value assigned when the transaction was created. The transaction log
+uses this timestamp as the batch key; producers may also encode it into their own record format.
 
 #### `txn.id`
 
@@ -948,90 +921,25 @@ Type: `number`
 The transaction ID represented as a 32-bit unsigned integer. Transaction IDs are unique to the
 RocksDB database path, regardless the database name/column family.
 
-#### `txn.setTimestamp(ts?: number): void`
+#### `txn.setTimestamp(ts: number?): void`
 
-Overrides the transaction timestamp, in milliseconds since the Unix epoch. It exists so that a
-replication receiver applying another node's transaction, or a crash replay re-applying a logged
-one, can adopt the _origin's_ timestamp as the write identity of what it writes; a local write keeps
-the assigned one. If called without a timestamp, it claims a fresh clock value.
+Overrides the transaction timestamp in milliseconds since the Unix epoch. Replication receivers and
+crash replay can use this to adopt an origin transaction's log key. If called without a timestamp,
+it claims a fresh monotonic value.
 
-Constraints, each enforced with a thrown error:
+The override must happen while the transaction is pending and before any database write or
+transaction-log entry is staged. A log batch that has already been written keeps its timestamp
+across a coordinated retry. A supplied value must be finite, positive, and below `8.64e15`.
 
-- The value must be a finite positive number below `8.64e15` (the largest JavaScript `Date`), so
-  `NaN`, `±Infinity`, `0`, negatives and out-of-domain values are rejected.
-- The transaction must still be pending: a call after `commit()` / `commitSync()` has been
-  dispatched is rejected.
-- Nothing may be staged yet: the first `put`/`remove` or log entry freezes the timestamp, because
-  records already carry it as their first word and the log batch already carries it as its key.
+rocksdb-js does not define a record's value layout or version metadata. A producer that copies the
+transaction timestamp into record bytes is responsible for calling `setTimestamp()` before reading
+and encoding it.
 
 ```typescript
 await db.transaction(async (txn) => {
-	txn.setTimestamp(originTimestamp);
-	await txn.put('foo', replicatedValue);
+	txn.setTimestamp(Date.now() / 1000);
 });
 ```
-
-## Timestamps and write identity
-
-Every transaction is assigned a timestamp when it is created, claimed from the process-wide
-monotonic clock behind `db.getMonotonicTimestamp()` (milliseconds since the Unix epoch, strictly
-increasing within a process). That timestamp is the transaction's **write identity**: a producer
-writes it as the first 8-byte word of every record the transaction stores, and the transaction log
-uses it as the key of the transaction's batch, so a record can always find its own log entry by
-seeking the log at its first word. Identity is the pair (origin node, first word): uniqueness only
-has to hold within one origin's log, which is what that origin's clock provides.
-
-`txn.setTimestamp()` is the one way to write under a timestamp the local clock did not assign. It is
-for adopting an **origin's** timestamp when applying a replicated transaction or replaying a log,
-and nothing else; see its constraints above.
-
-Batch keys are **not** monotonic in log order under concurrency: a transaction that claimed its
-timestamp earlier can commit after a later one, so a later entry can carry a smaller key. Consumers
-that resume from a timestamp already handle this (`findPositionByTimestamp` is a running-maxima
-seek); the ordering guarantee is on claim order, not commit order.
-
-### Clock floor at open
-
-A process restart with a wall clock that has gone backwards would otherwise let the clock reissue a
-timestamp already present in this node's log. When a database opens, each of its transaction-log
-stores raises the process clock floor to the largest batch key it holds, so every timestamp issued
-from then on is above every key already durable in that log. The floor is raise-only and
-process-wide (it covers every database and `worker_threads` worker in the process); a database
-without transaction logs leaves the clock untouched.
-
-The largest key is found without reading the whole log: every segment's file header carries the
-store's latest key at the moment the segment was created, and the active segment's entries are
-walked by the same open-time recovery scan that repairs a torn tail. Once a store has been opened by
-a version with this behavior, every new segment's header bounds the keys of all older segments, so
-the seed is complete from then on. A store written entirely by an older version can still hold a key
-in a rotated segment that no header records (only if that older version already ran through a
-wall-clock rollback); the first rotation after upgrade closes that gap. A segment whose header
-cannot be read does not fail the open; a `log.warn` event is emitted instead. Adopted (origin)
-timestamps count towards the seed too, so a peer whose clock ran somewhat ahead moves this node's
-clock ahead of it after the next restart. A key more than ten years ahead of the wall clock is not
-a rollback to recover from but a corrupt or hostile value: it is never a seed candidate and never
-stamped into a header (a `log.warn` reports it), so it cannot move every timestamp this process
-issues that far ahead, and it cannot hide a plausible key beside it. A rotated segment whose header
-carries such a key was stamped by an older version, which cannot be trusted to have kept a running
-maximum in any of its headers, so every older segment is walked instead; that cost recurs at each
-open until retention purges the segment carrying the far header, and the warning names the key.
-
-### Value-header contract
-
-The first 20 bytes of a value on a store that opts into versions (the verification table, and
-`getEntry()`) are laid out as follows; everything after them belongs to the producer.
-
-| Offset | Size | Contents                                                                                   |
-| ------ | ---- | ------------------------------------------------------------------------------------------ |
-| 0      | 8    | First word: the transaction timestamp, big-endian float64 (`localTime`; the log batch key) |
-| 8      | 4    | Metadata word, big-endian: tag byte `0x0e`, then 24 producer flag bits (optional)          |
-| 12     | 8    | Second word: the record version, big-endian float64, present only under the flag below     |
-
-- `constants.VERSION_NOT_UNIQUE_FLAG` (`0x10000`) is read natively by the verification table.
-- `HAS_DISTINCT_VERSION_FLAG` (`0x20000`, also `constants.HAS_DISTINCT_VERSION_FLAG`) says the second
-  word is present; it must sit **immediately after the metadata word**, ahead of any other
-  flag-dependent field the producer appends. Without the flag the record version is the first word.
-  The flag is not interpreted natively; the verification table keys on the first word either way.
 
 ## Error Handling
 
