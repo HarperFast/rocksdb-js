@@ -1302,7 +1302,7 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	if (type == napi_number) {
 		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),
 			"Invalid timestamp, expected positive number");
-		if (!(timestampMs > 0) || !std::isfinite(timestampMs) || timestampMs >= 8.64e15) {
+		if (timestampMs <= 0 || !std::isfinite(timestampMs) || timestampMs >= 8.64e15) {
 			NAPI_THROW_JS_ERROR("ERR_INVALID_TIMESTAMP",
 				"Invalid timestamp, expected a finite positive number below 8640000000000000");
 		}
