@@ -560,7 +560,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     mapping because mapped ranges prevent `SetEndOfFile` from shrinking the file. Windows uses the same
     physical truncation when the scan detects a torn tail, but its pre-extended zero padding makes an
     entry with a durable header and partially durable payload look complete; detecting that case needs
-    a payload checksum. Recovery runs before mappings can be handed to readers.
+    a payload checksum. When Windows cannot shrink the file at all — sections there are mandatory, so
+    any mapping this code does not own (a reader's handout, another process) blocks `SetEndOfFile` —
+    a torn tail is zero-filled over `[validEnd, size)` instead (`zeroTailLocked`), restoring the
+    zero-timestamp end-of-entries marker. Leaving those bytes is not benign: appends resume at `size`,
+    so a later shorter batch would leave the stale bytes reading as an entry. POSIX has no such
+    fallback and needs none — `ftruncate` ignores mappings, and the `O_APPEND` fd makes an in-place
+    rewrite land at EOF anyway. Recovery runs before mappings can be handed to readers. A zero-fill
+    that itself fails retires the segment rather than leaving it appendable, and retirement ends at
+    the same transaction boundary a repair would erase to (`unclosedTransactionBoundary`, shared by
+    both paths): the marker is a retired segment's only eraser, so an unclosed prefix left inside its
+    logical extent would be closed by the _next_ segment's first flagged batch — the cross-rotation
+    merge this invariant forbids.
 15. **A callback-style native method owes its caller exactly one settled callback on every path**:
     `Flush` and `Compact` take `resolve`/`reject` and used to `return` on a read-only database
     without invoking either, so `await db.flush()` there never resumed (#774). The sync siblings can
@@ -645,6 +656,65 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     leaker repro still faults in Node's second-pass napi finalizer drain even with the fix; it
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
+
+18. **A secondary open's identity is `{path, readOnly, secondaryPath}` and its workspace is
+    exclusive**: `secondaryPath` opens via `DB::OpenAsSecondary` (a read-only follower of a live
+    primary, advanced by `catchUpWithPrimary()`), and the registry `DBKey` carries all three fields
+    — every purge/close path must reconstruct the FULL key via `descriptorKey()` (db_registry.h);
+    a hand-built partial key silently misses the secondary's entry and leaks the descriptor plus
+    the open RocksDB (the backup/backup-stream/checkpoint purge-retry destructors are the
+    historical trap). A secondary forces `max_open_files = -1` because the eagerly-opened,
+    fd-held table AND blob files are what make the primary's deletions safe — a bounded table
+    cache reintroduces the exact missing-file race the mode exists to avoid (the same reason a
+    plain `readOnly` open loses that race: it opens files it holds no reference on, and even a
+    successful open reads lazily afterward). RocksDB does NOT stop two secondary instances from
+    sharing one workspace and they corrupt each other's state
+    (`test/native/secondary_blob_test.cc` proves the second open succeeds), so exclusivity is
+    enforced by us: in-process by the registry key + a cross-primary scan in `OpenDB`,
+    cross-process by a kernel advisory lock on `<secondaryPath>/.secondary.lock` (invariant 7's
+    lock utility; released in `finishClose()` after `db.reset()`). Upstream documents
+    secondary+BlobDB as unsupported (facebook/rocksdb#13296) while this codebase enables blob
+    files unconditionally — the pinned build fd-holds blob files like SSTs (verified empirically),
+    so `secondary_blob_test.cc` is the regression net that must stay green on every RocksDB
+    upgrade. The missing-file open race classifier (`core/open_status.cpp`,
+    `ERR_CONCURRENT_COMPACTION`) matches `.sst`, `.blob`, AND `.log` at a filename-token boundary —
+    a live writer reclaims all three (compaction inputs, blob GC, flushed WAL segments) and each
+    was observed as the file the read-only open tripped on. (A secondary open rarely needs it: its
+    point-in-time replay falls back to the last fully-present version instead of failing.)
+
+    Two adjacent rules the mode forced into existence. **A read-only or secondary open must not
+    mutate the primary's transaction logs**: `DiscoverStores(path, callerReadOnly)` loads stores
+    with no retention purge and no `recoverTail` truncation — the log directory may
+    belong to a live writer in another process whose append-owned `size` would keep appending past
+    a reader's truncation (invariant 5, the harper#2016 class); readers tolerate the unrecovered
+    torn tail via the CorruptFrameError/resync protocol. **The OPENING handle's mode decides, not
+    the registry entry's**: the entry is path-global, shared by every handle on the path, and
+    outlives the handle that created it, so a writer that has since closed must not leave the entry
+    stamped writable and make the next secondary's discovery load a newly-appeared store with
+    recovery (the same rule `ResolveStore`'s `callerReadOnly` follows; the entry no longer carries a
+    mode at all). The inverse hazard is a WRITER adopting
+    stores a read-only open loaded without recovery (appends would land past a torn tail), so
+    `EnsureWritableRegistrationSafe` — called at the top of `DBDescriptor::open`, NOT from
+    `Register` (a throw there would run the half-built descriptor's close and decrement a refcount
+    it never incremented) — rejects the writable open while read-only-loaded stores are live,
+    deciding on each live store's own `TransactionLogStore::readOnly` for the same reason.
+    A cross-process log reader also inherits a mapping hazard the same-process case does not
+    have: a read-only file's `MAP_SHARED` overlay covers `[0, size)` including an unrecovered
+    torn tail, so if the primary process restarts and its `recoverTail()` truncates below a
+    mapped page, a follower scanning that region takes SIGBUS — an uncatchable process kill.
+    Invariant 14's "POSIX needs none" reasoning covers a same-process writer only. Reading a
+    read-only store through positional reads instead of a shared mapping is the fix; until then
+    a follower against a crash-restarting primary carries that risk.
+    A secondary's log view is therefore "what this process has resident", not a frozen extent: a
+    store an in-process writer holds open — or creates later — is the same object, so its appends
+    are visible; only a cross-process primary's new stores and appends need a reopen. That is
+    not a leak of unsafe state — the log write completes before the RocksDB commit for every
+    writer, so the log leads the database view by construction and every log consumer already has
+    to tolerate it.
+    And **`DBRegistry::DestroyDB` must claim and close EVERY descriptor for the path** (read-write,
+    read-only, each secondary): erasing an entry unclosed leaks its resources for the life of the
+    process — for a secondary, the workspace `.secondary.lock` is only released by `finishClose()`,
+    so a leaked one wedges its workspace permanently.
 
 ## Debugging native heap corruption
 

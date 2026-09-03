@@ -69,6 +69,32 @@ void TransactionLogStoreRegistry::Register(const std::string& dbPath, const Tran
 	}
 }
 
+void TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(const std::string& dbPath, bool readOnly) {
+	if (!instance || readOnly) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(instance->entriesMutex);
+	auto it = instance->entries.find(dbPath);
+	if (it == instance->entries.end()) {
+		return;
+	}
+	// Each store records how it was loaded, so this decides on what is actually
+	// live rather than on how the entry's first opener was configured: an entry
+	// can outlive the writer that created it and go on serving read-only opens
+	// (and vice versa).
+	std::lock_guard<std::mutex> storeLock(it->second->storesMutex);
+	for (const auto& [name, store] : it->second->stores) {
+		if (store->readOnly) {
+			throw rocksdb_js::DBException(
+				"Cannot open \"" + dbPath + "\" for writing: its transaction logs are open read-only in "
+				"this process (loaded without tail recovery, which appends must not skip). Close the "
+				"read-only or secondary handle first, or open the writable handle before it."
+			);
+		}
+	}
+}
+
 /**
  * Unregisters a DBDescriptor for the given database path.
  */
@@ -121,15 +147,14 @@ void TransactionLogStoreRegistry::Unregister(const std::string& dbPath) {
 /**
  * Discovers existing transaction log stores in the transaction logs directory.
  */
-void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
+void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath, bool callerReadOnly) {
 	if (!instance) {
 		DEBUG_LOG("TransactionLogStoreRegistry::DiscoverStores Registry not initialized\n");
 		return;
 	}
 
 	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
-	std::string transactionLogsPath;
-	const TransactionLogStoreConfig* config = nullptr;
+	TransactionLogStoreConfig config;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
@@ -141,13 +166,11 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 			return;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the lock
 		entry = it->second;
-		transactionLogsPath = entry->config.transactionLogsPath;
-		config = &entry->config;
+		config = entry->config;
 	}
 
-	if (transactionLogsPath.empty() || !std::filesystem::exists(transactionLogsPath)) {
+	if (config.transactionLogsPath.empty() || !std::filesystem::exists(config.transactionLogsPath)) {
 		DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores No transaction logs path or directory does not exist for \"%s\"\n",
 			instance.get(), dbPath.c_str());
 		return;
@@ -155,13 +178,29 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 
 	std::lock_guard<std::mutex> storeLock(entry->storesMutex);
 
-	for (const auto& dirEntry : std::filesystem::directory_iterator(transactionLogsPath)) {
+	for (const auto& dirEntry : std::filesystem::directory_iterator(config.transactionLogsPath)) {
 		if (dirEntry.is_directory()) {
+			// A store already live in this process must not be re-loaded: load()
+			// runs tail recovery, which would truncate the live store's active
+			// file while its append-owned `size` keeps appending past the new
+			// EOF (invariant 5). The emplace below never replaced duplicates,
+			// but load()'s side effects ran before it could decide that.
+			auto storeName = dirEntry.path().filename().string();
+			if (entry->stores.count(storeName)) {
+				continue;
+			}
+			// The OPENING handle's mode decides, never the entry's: the entry is
+			// path-global and shared by every handle on this path, so a writer
+			// that opened first (and has since closed) must not make a
+			// secondary's discovery load stores writably — that would run
+			// retention purge and recoverTail() truncation against a live
+			// primary's logs (invariant 5, the harper#2016 class).
 			auto store = TransactionLogStore::load(
 				dirEntry.path(),
-				config->transactionLogMaxSize,
-				config->transactionLogRetentionMs,
-				config->transactionLogMaxAgeThreshold
+				config.transactionLogMaxSize,
+				config.transactionLogRetentionMs,
+				config.transactionLogMaxAgeThreshold,
+				callerReadOnly
 			);
 			if (store) {
 				DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores Found store \"%s\" for \"%s\"\n",
@@ -177,7 +216,8 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
  */
 std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	const std::string& dbPath,
-	const std::string& name
+	const std::string& name,
+	bool callerReadOnly
 ) {
 	if (!instance) {
 		DEBUG_LOG("TransactionLogStoreRegistry::ResolveStore Registry not initialized\n");
@@ -185,7 +225,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	}
 
 	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
-	const TransactionLogStoreConfig* config = nullptr;
+	TransactionLogStoreConfig config;
 
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
@@ -197,9 +237,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			return nullptr;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the lock
 		entry = it->second;
-		config = &entry->config;
+		config = entry->config;
 	}
 
 	std::lock_guard<std::mutex> storeLock(entry->storesMutex);
@@ -208,6 +247,18 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	if (storeIt != entry->stores.end()) {
 		// Check if the store is closing - if so, we need to create a new one
 		if (!storeIt->second->isClosing.load(std::memory_order_relaxed)) {
+			// A store loaded read-only skipped recoverTail(), so a writer
+			// adopting it would append past a torn tail (invariant 5, #748).
+			// EnsureWritableRegistrationSafe covers the open, but a store can
+			// also appear AFTER a writer is already open — discovered by a
+			// later read-only/secondary open — and only this path sees that.
+			if (!callerReadOnly && storeIt->second->readOnly) {
+				throw rocksdb_js::DBException(
+					"Transaction log \"" + name + "\" for \"" + dbPath + "\" is open read-only in this "
+					"process (loaded without tail recovery, which appends must not skip). Close the "
+					"read-only or secondary handle and reopen this one to write to it."
+				);
+			}
 			DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Found store \"%s\" for \"%s\"\n",
 				instance.get(), name.c_str(), dbPath.c_str());
 			return storeIt->second;
@@ -216,8 +267,19 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			instance.get(), name.c_str(), dbPath.c_str());
 	}
 
+	// A read-only caller never creates or loads a store: an unresolved store is
+	// not found — never created (mkdir in what may be a foreign live primary's
+	// tree) and never lazily loaded/published (see the header comment). Its log
+	// view is therefore what this process has resident, which a cross-process
+	// primary cannot add to without a reopen.
+	if (callerReadOnly) {
+		DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Store \"%s\" not found for read-only \"%s\"\n",
+			instance.get(), name.c_str(), dbPath.c_str());
+		return nullptr;
+	}
+
 	// Create new store
-	auto logDirectory = std::filesystem::path(config->transactionLogsPath) / name;
+	auto logDirectory = std::filesystem::path(config.transactionLogsPath) / name;
 	DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Creating new store \"%s\" for \"%s\"\n",
 		instance.get(), name.c_str(), dbPath.c_str());
 
@@ -227,9 +289,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	auto txnLogStore = std::make_shared<TransactionLogStore>(
 		name,
 		logDirectory,
-		config->transactionLogMaxSize,
-		config->transactionLogRetentionMs,
-		config->transactionLogMaxAgeThreshold
+		config.transactionLogMaxSize,
+		config.transactionLogRetentionMs,
+		config.transactionLogMaxAgeThreshold
 	);
 
 	// Use insert_or_assign to replace any closing store with the same name
@@ -261,7 +323,6 @@ napi_value TransactionLogStoreRegistry::ListStores(napi_env env, const std::stri
 			return result;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the lock
 		entry = it->second;
 	}
 
@@ -318,7 +379,6 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 			return removed;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the lock
 		entry = it->second;
 	}
 

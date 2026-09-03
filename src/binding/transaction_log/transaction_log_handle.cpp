@@ -46,6 +46,9 @@ void TransactionLogHandle::addEntry(
 		DEBUG_LOG("%p TransactionLogHandle::addEntry Store was destroyed or closing, re-resolving \"%s\"\n", this, this->logName.c_str());
 		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
 		this->store = store; // update weak_ptr to point to new store
+		if (!store) {
+			throw rocksdb_js::DBException("Transaction log \"" + this->logName + "\" not found");
+		}
 	}
 
 	// check if transaction is already bound to a different log store
@@ -108,7 +111,14 @@ bool TransactionLogHandle::collectStats(TransactionLogStoreStats& out) {
 		if (!dbHandle) {
 			return false;
 		}
-		store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
+		try {
+			store = dbHandle->descriptor->resolveTransactionLogStore(this->logName);
+		} catch (const std::exception&) {
+			// Resolution refuses a writer a read-only-loaded store; stats are
+			// not worth failing (or aborting, if a caller is on a thread with
+			// no handler) over.
+			return false;
+		}
 		this->store = store;
 	}
 	if (!store) {

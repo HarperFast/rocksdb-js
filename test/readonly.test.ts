@@ -1,6 +1,8 @@
+import { RocksDatabase } from '../src/index.ts';
 import { TransactionLog } from '../src/load-binding.ts';
 import { dbRunner } from './lib/util.ts';
 import { spawn } from 'node:child_process';
+import { appendFileSync, cpSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -9,6 +11,36 @@ describe('Readonly Operations', () => {
 		dbRunner({ skipOpen: true, dbOptions: [{ readOnly: true }] }, async ({ db }) => {
 			expect(() => db.open()).toThrow('Database does not exist');
 		}));
+
+	it('should report a missing SST as the concurrent-compaction race, not corruption', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
+			async ({ db }, { db: db2, dbPath }) => {
+				// Produce an SST, then remove it out from under the MANIFEST — the
+				// same shape a live writer's compaction produces mid-open.
+				db.open();
+				db.putSync('foo', 'bar');
+				db.flushSync();
+				db.close();
+
+				const sst = readdirSync(dbPath).find((file) => file.endsWith('.sst'));
+				expect(sst).toBeDefined();
+				rmSync(join(dbPath, sst!));
+
+				let error: Error & { code?: string };
+				try {
+					db2.open();
+					expect.fail('expected the read-only open to throw');
+				} catch (err) {
+					error = err as Error;
+				}
+				expect(error!.code).toBe('ERR_CONCURRENT_COMPACTION');
+				expect(error!.message).toMatch(/concurrent compaction/);
+				expect(error!.message).not.toMatch(/Database does not exist/);
+				// The original RocksDB status text is preserved for diagnosis.
+				expect(error!.message).toContain(sst);
+			}
+		));
 
 	it('should error write operations and transactions in readonly mode', () =>
 		dbRunner(
@@ -190,6 +222,213 @@ describe('Readonly Operations', () => {
 			const value4 = Array.from(txnLog2.query({ start: 0 }));
 			expect(value3).toEqual(value4);
 		}));
+
+	it('should not recover (truncate) transaction logs on a readonly open', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }, {}] },
+			async ({ db, dbPath }, { db: readOnly }, { db: writer }) => {
+				// Write real log entries, then fully close so the registry entry is
+				// released and the next open re-discovers the store from disk.
+				db.open();
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					await txn.put('foo', 'bar');
+					log.addEntry(Buffer.from('hello'), txn.id);
+				});
+				db.close();
+
+				// Simulate a torn append: garbage past the last complete entry. A
+				// writer's recovery truncates this; a read-only open must not — the
+				// file may belong to a live writer in another process, and reader
+				// truncation is how acknowledged writes vanish (invariant 5).
+				const logDir = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = readdirSync(logDir).find((file) => file.endsWith('.txnlog'));
+				expect(logFile).toBeDefined();
+				const logPath = join(logDir, logFile!);
+				appendFileSync(logPath, Buffer.alloc(64, 0xff));
+				const tornSize = statSync(logPath).size;
+
+				readOnly.open();
+				// Intact entries are still readable through the read-only handle.
+				const entries = Array.from(readOnly.useLog('foo').query({ start: 0 }));
+				expect(entries.length).toBeGreaterThan(0);
+				expect(statSync(logPath).size).toBe(tornSize);
+				readOnly.close();
+				expect(statSync(logPath).size).toBe(tornSize);
+
+				// A writable open owns recovery and discards the torn tail.
+				writer.open();
+				const recovered = readFileSync(logPath);
+				expect(recovered.length).toBeLessThanOrEqual(tornSize);
+				const tailIsCleared = recovered.subarray(tornSize - 64).every((byte) => byte === 0);
+				if (process.platform === 'win32') {
+					// Windows cannot shrink a file while any mapping covers it
+					// (sections are mandatory), and whether the read-only
+					// handle's mapping above is still live here is a GC-timing
+					// detail — so recovery either truncates or zero-fills the
+					// torn range, and the zero-fill path is asserted
+					// deterministically in test/native/transaction_log_erase_tail_test.cc.
+					expect(recovered.length < tornSize || tailIsCleared).toBe(true);
+				} else {
+					expect(recovered.length).toBeLessThan(tornSize);
+					expect(tailIsCleared).toBe(true);
+				}
+			}
+		));
+
+	// The registry entry for a path is shared by every handle on it and outlives
+	// the handle that created it, so the mode of the OPENING handle — not the
+	// entry's — has to decide how discovery loads a store. A writer that has
+	// since closed used to leave the entry stamped writable, and the next
+	// read-only open then loaded newly-appeared stores with retention purge and
+	// recoverTail() truncation against what may be a live primary's logs.
+	it('should not recover logs discovered after a writer closed but left the entry alive', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
+			async ({ db, dbPath }, { db: readOnly1 }) => {
+				db.open();
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					await txn.put('foo', 'bar');
+					log.addEntry(Buffer.from('hello'), txn.id);
+				});
+
+				// The read-only handle keeps the path's registry entry alive past
+				// the writer's close.
+				readOnly1.open();
+				db.close();
+
+				// A store that appears only now — as a live primary in another
+				// process would create it — is discovered by the next open.
+				const logsDir = join(dbPath, 'transaction_logs');
+				cpSync(join(logsDir, 'foo'), join(logsDir, 'bar'), { recursive: true });
+				const barLog = join(
+					logsDir,
+					'bar',
+					readdirSync(join(logsDir, 'bar')).find((file) => file.endsWith('.txnlog'))!
+				);
+				appendFileSync(barLog, Buffer.alloc(64, 0xff));
+				const tornSize = statSync(barLog).size;
+
+				// A distinct handle kind (a secondary) is a distinct registry
+				// entry, so this open runs its own discovery of the new store.
+				const secondary = new RocksDatabase(dbPath, { secondaryPath: `${dbPath}.secondary` });
+				try {
+					secondary.open();
+					expect(statSync(barLog).size).toBe(tornSize);
+					expect(Array.from(secondary.useLog('bar').query({ start: 0 })).length).toBeGreaterThan(0);
+				} finally {
+					secondary.close();
+					// Windows can still hold the workspace briefly after close.
+					rmSync(`${dbPath}.secondary`, {
+						force: true,
+						recursive: true,
+						maxRetries: 5,
+						retryDelay: 50,
+					});
+				}
+			}
+		));
+
+	// The one guard whose regression mode is a process abort rather than a wrong
+	// value: resolveTransactionLogStore throws a DBException, which derives from
+	// std::exception (not std::runtime_error), and an escaped C++ exception
+	// aborts from an N-API callback. Both useLog surfaces must turn it into a JS
+	// error instead.
+	it('should reject a writer adopting a readonly-loaded log at both useLog surfaces', () =>
+		dbRunner({ skipOpen: true, dbOptions: [{}] }, async ({ db, dbPath }) => {
+			db.open();
+			const log = db.useLog('foo');
+			await db.transaction(async (txn) => {
+				await txn.put('foo', 'bar');
+				log.addEntry(Buffer.from('hello'), txn.id);
+			});
+
+			// A store that appears while the writer is already open — as a live
+			// primary in another process would create it — is discovered by the
+			// next open, and a secondary discovers it read-only (no tail
+			// recovery). The open writer must not then adopt it.
+			const logsDir = join(dbPath, 'transaction_logs');
+			cpSync(join(logsDir, 'foo'), join(logsDir, 'bar'), { recursive: true });
+
+			const secondary = new RocksDatabase(dbPath, { secondaryPath: `${dbPath}.secondary` });
+			try {
+				secondary.open();
+				expect(Array.from(secondary.useLog('bar').query({ start: 0 })).length).toBeGreaterThan(0);
+
+				expect(() => db.useLog('bar')).toThrow('is open read-only in this process');
+				await expect(
+					db.transaction(async (txn) => {
+						txn.useLog('bar');
+					})
+				).rejects.toThrow('is open read-only in this process');
+
+				// The writer is still usable: the rejection is an error, not a
+				// poisoned handle.
+				expect(db.getSync('foo')).toBe('bar');
+			} finally {
+				secondary.close();
+				rmSync(`${dbPath}.secondary`, {
+					force: true,
+					recursive: true,
+					maxRetries: 5,
+					retryDelay: 50,
+				});
+			}
+		}));
+
+	it('should refuse a writable open while transaction logs are held readonly', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }, {}] },
+			async ({ db }, { db: readOnly }, { db: writer }) => {
+				db.open();
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					await txn.put('foo', 'bar');
+					log.addEntry(Buffer.from('hello'), txn.id);
+				});
+				db.close();
+
+				// The read-only open loaded the store without tail recovery, so a
+				// writer must not adopt it: appends would land past a torn tail.
+				readOnly.open();
+				expect(() => writer.open()).toThrow('transaction logs are open read-only in this process');
+
+				// Once the read-only handle closes, the writer loads with recovery.
+				readOnly.close();
+				writer.open();
+				expect(writer.getSync('foo')).toBe('bar');
+			}
+		));
+
+	// The guard only meets both handles when they land on the same log-store
+	// registry entry, and the entry is keyed by path. Two spellings of one
+	// directory (a trailing slash here; a relative path or a symlinked /tmp in
+	// the field) used to open two entries over one transaction_logs tree, so the
+	// writer never saw the reader and truncated a segment the reader had mapped.
+	it('should refuse a writable open spelled differently from the readonly one', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
+			async ({ db, dbPath }, { db: readOnly }) => {
+				db.open();
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					await txn.put('foo', 'bar');
+					log.addEntry(Buffer.from('hello'), txn.id);
+				});
+				db.close();
+
+				readOnly.open();
+				const writer = new RocksDatabase(`${dbPath}/`);
+				try {
+					expect(() => writer.open()).toThrow(
+						'transaction logs are open read-only in this process'
+					);
+				} finally {
+					writer.close();
+				}
+			}
+		));
 
 	it('should open a db in readonly mode in separate process', () =>
 		dbRunner(async ({ db, dbPath }) => {

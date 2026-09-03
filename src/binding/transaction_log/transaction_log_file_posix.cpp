@@ -87,6 +87,10 @@ TransactionLogFile::TransactionLogFile(
 
 void TransactionLogFile::ensureAppendBoundaryMarker() {
 	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
+	if (this->readOnly) {
+		this->loadAppendBoundaryMarkerReadOnly();
+		return;
+	}
 	std::error_code existsError;
 	if (std::filesystem::exists(markerPath, existsError)) {
 		try {
@@ -270,25 +274,36 @@ void TransactionLogFile::openFile() {
 
 	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str());
 
-	// ensure parent directory exists (may have been deleted by purge())
-	auto parentPath = this->path.parent_path();
-	if (!parentPath.empty()) {
-		try {
-			DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
-			rocksdb_js::tryCreateDirectory(parentPath);
-		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
-				this, parentPath.string().c_str(), e.what());
-			throw rocksdb_js::DBException("Failed to create parent directory: " + parentPath.string());
+	if (this->readOnly) {
+		// A reader creates neither the file nor its parent directory, and can
+		// open logs on a read-only-mounted volume or owned by another uid.
+		this->fd = ::open(this->path.c_str(), O_RDONLY);
+		if (this->fd < 0) {
+			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read: %s (error=%d)\n",
+				this, this->path.string().c_str(), errno);
+			throw rocksdb_js::DBException("Failed to open sequence file for read: " + this->path.string());
 		}
-	}
+	} else {
+		// ensure parent directory exists (may have been deleted by purge())
+		auto parentPath = this->path.parent_path();
+		if (!parentPath.empty()) {
+			try {
+				DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
+				rocksdb_js::tryCreateDirectory(parentPath);
+			} catch (const std::filesystem::filesystem_error& e) {
+				DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
+					this, parentPath.string().c_str(), e.what());
+				throw rocksdb_js::DBException("Failed to create parent directory: " + parentPath.string());
+			}
+		}
 
-	// open file for both reading and writing
-	this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0640);
-	if (this->fd < 0) {
-		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
-			this, this->path.string().c_str(), errno);
-		throw rocksdb_js::DBException("Failed to open sequence file for read/write: " + this->path.string());
+		// open file for both reading and writing
+		this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0640);
+		if (this->fd < 0) {
+			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
+				this, this->path.string().c_str(), errno);
+			throw rocksdb_js::DBException("Failed to open sequence file for read/write: " + this->path.string());
+		}
 	}
 
 	// get file size
@@ -606,6 +621,13 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	}
 #endif
 	return true;
+}
+
+bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
+	// See the header: nothing for this fallback to rescue on POSIX.
+	(void)newSize;
+	(void)entriesEnd;
+	return false;
 }
 
 bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {

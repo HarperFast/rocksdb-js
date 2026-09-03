@@ -285,8 +285,56 @@ export interface StoreOptions extends Omit<
 	 * will throw an error with code `ERR_DATABASE_READONLY`, except for
 	 * `flush()`/`flushSync()`/`compact()`/`compactSync()`, which succeed as
 	 * no-ops.
+	 *
+	 * A read-only open is a **point-in-time snapshot**: it replays the MANIFEST
+	 * as of the open and never sees later writes. It is safe against a
+	 * quiescent database (nothing else writing), but **unsafe against a live
+	 * writer**: the open holds no reference on the files it is about to read,
+	 * so a concurrent compaction or blob GC in the writing process can delete
+	 * one mid-open and the open fails with `ERR_CONCURRENT_COMPACTION` (the
+	 * database is not corrupt — the reader lost a race). Even a successful open
+	 * can fail *later reads* the same way: files the snapshot references are
+	 * opened lazily, and the writer keeps deleting obsolete ones. To follow a
+	 * database another process is actively writing, open a secondary instead
+	 * (see `secondaryPath`) — that is the supported mode for a live follower.
 	 */
 	readOnly?: boolean;
+
+	/**
+	 * Opens the database as a **secondary instance**: a read-only follower of a
+	 * live primary that tolerates the primary deleting files and sees new
+	 * writes on each `catchUpWithPrimary()` / `catchUpWithPrimarySync()` call.
+	 * This is the supported way to read a database another process is actively
+	 * writing (a plain `readOnly` open is only safe against a quiescent
+	 * database — see `readOnly`).
+	 *
+	 * The value is the secondary instance's own workspace directory (RocksDB
+	 * keeps the secondary's private state there; it is created if missing).
+	 * It must be distinct from the database `path` (enforced at open) and
+	 * exclusive to one secondary instance — two secondaries sharing a
+	 * workspace corrupt each other's state. Reusing a workspace in-process for
+	 * a DIFFERENT database is rejected at open (the same database and
+	 * workspace share the one follower instance), and a kernel advisory lock
+	 * on `<secondaryPath>/.secondary.lock`
+	 * excludes other processes — but on filesystems without advisory locking
+	 * (e.g. FUSE/9p mounts behind Docker Desktop bind mounts) the lock
+	 * degrades to a no-op, and on network filesystems it does not exclude
+	 * across hosts, so workspace exclusivity is the caller's job there.
+	 *
+	 * Implies `readOnly: true` (combining with an explicit `readOnly: false`
+	 * throws) and forces `maxOpenFiles: -1`: every table and blob file is
+	 * opened and held for the life of each version, which is what makes the
+	 * primary's file deletions safe — note the file-descriptor footprint on
+	 * large databases. Column families created by the primary after the
+	 * secondary opens are invisible until the secondary reopens.
+	 *
+	 * Note: RocksDB upstream documents secondary instances as unsupported in
+	 * combination with integrated BlobDB (which this library enables for
+	 * values >= 2KB); this library's pinned RocksDB build handles blob files
+	 * in secondary mode and it is covered by tests, but the combination is
+	 * not guaranteed by upstream.
+	 */
+	secondaryPath?: string;
 
 	sharedStructuresKey?: symbol;
 
@@ -508,6 +556,14 @@ export class Store {
 	readOnly: boolean;
 
 	/**
+	 * The secondary instance's workspace directory when the database is opened
+	 * as a secondary (see `RocksDatabaseOptions.secondaryPath`); `undefined`
+	 * otherwise. A secondary is read-only, so `readOnly` is `true` whenever
+	 * this is set.
+	 */
+	secondaryPath?: string;
+
+	/**
 	 * Encoder specific flag used to signal that the encoder should use a random
 	 * access structure.
 	 */
@@ -614,7 +670,18 @@ export class Store {
 		this.parallelismThreads = options?.parallelismThreads;
 		this.path = path;
 		this.pessimistic = options?.pessimistic ?? false;
-		this.readOnly = options?.readOnly ?? false;
+		// null (the natural absent value from JSON/env-derived config) must mean
+		// absent exactly like the native layer treats napi_null — a null that
+		// implied readOnly would silently hand the caller the point-in-time open
+		// this option exists to replace.
+		const secondaryPath = options?.secondaryPath ?? undefined;
+		if (secondaryPath !== undefined && options?.readOnly === false) {
+			throw new Error(
+				'A secondary open is read-only; secondaryPath cannot be combined with readOnly: false'
+			);
+		}
+		this.readOnly = options?.readOnly ?? secondaryPath !== undefined;
+		this.secondaryPath = secondaryPath;
 		this.randomAccessStructure = options?.randomAccessStructure ?? false;
 		this.readKey = readKey;
 		this.sharedStructuresKey = options?.sharedStructuresKey;
@@ -1156,6 +1223,7 @@ export class Store {
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
 			readOnly: this.readOnly,
+			secondaryPath: this.secondaryPath,
 			statsLevel: this.statsLevel,
 			transactionLogMaxAgeThreshold: this.transactionLogMaxAgeThreshold,
 			transactionLogMaxSize: this.transactionLogMaxSize,

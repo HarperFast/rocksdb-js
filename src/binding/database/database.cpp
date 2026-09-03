@@ -1,5 +1,6 @@
 #include <node_api.h>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -427,6 +428,255 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * State for the `CatchUpWithPrimary` async work. Pins the descriptor for the
+ * duration of the replay so a concurrent close cannot destroy the RocksDB
+ * instance under the worker; like backup/checkpoint, that pin can be the
+ * reason a racing close skipped its registry purge, so the destructor retries
+ * it (HarperFast/rocksdb-js#672 discipline).
+ */
+struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
+	std::shared_ptr<DBDescriptor> descriptor;
+
+	/**
+	 * Guards the `operationsInFlight` claim this state inherited when the work
+	 * was queued, so exactly one of the execute callback and the destructor
+	 * releases it. Queued work that is cancelled never runs execute, and a
+	 * claim left standing there makes `finishClose()` — which waits on the
+	 * counter unbounded — wedge close and destroy.
+	 */
+	std::atomic<bool> inFlightReleased{false};
+
+	AsyncCatchUpState(
+		napi_env env,
+		std::shared_ptr<DBHandle> handle,
+		std::shared_ptr<DBDescriptor> descriptor
+	) :
+		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
+		descriptor(std::move(descriptor)) {}
+
+	void releaseInFlight() {
+		if (this->inFlightReleased.exchange(true)) {
+			return;
+		}
+		if (--this->descriptor->operationsInFlight == 0 && this->descriptor->isClosing()) {
+			this->descriptor->operationsInFlight.notify_all();
+		}
+	}
+
+	~AsyncCatchUpState() override {
+		this->releaseInFlight();
+		if (this->descriptor) {
+			DBKey key = descriptorKey(*this->descriptor);
+			this->descriptor.reset();
+			DBRegistry::PurgeIfUnreferenced(key);
+		}
+	}
+};
+
+static bool throwIfNotSecondary(napi_env env, const std::shared_ptr<DBHandle>& dbHandle) {
+	if (dbHandle->descriptor->secondaryPath.empty()) {
+		::napi_throw_error(
+			env,
+			"ERR_NOT_SECONDARY",
+			"Database is not a secondary instance; catchUpWithPrimary requires opening with the secondaryPath option"
+		);
+		return false;
+	}
+	return true;
+}
+
+/**
+ * RAII release for a descriptor `operationsInFlight` claim made on the JS
+ * thread, mirroring CheckpointInFlightClaim: decrements (and wakes a waiting
+ * `finishClose()`) on any early return before the claim is handed off. Handoff
+ * happens the moment `AsyncCatchUpState` is allocated, because that object
+ * releases the claim itself — from the worker when it runs, from its destructor
+ * when setup fails and it unwinds. Two owners would decrement twice and
+ * underflow the counter, and `finishClose()` waits on it unbounded.
+ */
+struct CatchUpInFlightClaim {
+	DBDescriptor* descriptor;
+	const bool& handedOff;
+
+	~CatchUpInFlightClaim() {
+		if (!handedOff && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
+			descriptor->operationsInFlight.notify_all();
+		}
+	}
+};
+
+/**
+ * Advances a secondary instance to the primary's current state asynchronously
+ * by tailing and replaying the primary's MANIFEST and WAL.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * await db.catchUpWithPrimary();
+ * ```
+ */
+napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+
+	napi_value resolve = argv[0];
+	napi_value reject = argv[1];
+
+	if (!throwIfNotSecondary(env, *dbHandle)) {
+		return nullptr;
+	}
+
+	// Claim an in-flight operation BEFORE queuing so teardown paths that call
+	// DBDescriptor::finishClose() — which waits on this counter unbounded, while
+	// DBHandle::close()'s async-work drain is bounded and its failure ignored —
+	// cannot reset descriptor->db under a long replay (a follower catching up on
+	// a big backlog opens every new SST/blob eagerly and routinely exceeds the
+	// drain timeout).
+	auto descriptor = (*dbHandle)->descriptor;
+	++descriptor->operationsInFlight;
+	bool handedOff = false;
+	CatchUpInFlightClaim claim{descriptor.get(), handedOff};
+
+	if (descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"database.catchUpWithPrimary",
+		NAPI_AUTO_LENGTH,
+		&name
+	));
+
+	// Owned here until the work is queued. An N-API failure on any step below
+	// returns through NAPI_STATUS_THROWS, and a leaked state would keep its
+	// strong descriptor pin forever: PurgeIfUnreferenced would never see the
+	// count drop, so the follower's RocksDB and its <secondaryPath>/.secondary
+	// .lock would stay held for the life of the process, leaving that workspace
+	// unopenable by any process on the host until restart.
+	//
+	// The state takes the in-flight claim with it: from here the claim is
+	// released exactly once, by the state (its destructor when this unwinds,
+	// the worker otherwise). Leaving `handedOff` false would release it twice
+	// on a failure path and underflow the counter, wedging finishClose()'s
+	// unbounded wait forever.
+	//
+	// The async-work registration has to precede the allocation for the same
+	// reason: ~BaseAsyncState unregisters unconditionally, so a state destroyed
+	// during setup would decrement a count that was never incremented and
+	// close()'s drain would then report "nothing in flight" while a worker is
+	// still running.
+	(*dbHandle)->registerAsyncWork();
+	auto owned = std::make_unique<AsyncCatchUpState>(env, *dbHandle, descriptor);
+	handedOff = true;
+	AsyncCatchUpState* state = owned.get();
+
+	// ~BaseAsyncState drops the resolve/reject refs without deleting them (the
+	// completion path deletes them as it calls them), so setup has to.
+	struct SetupRefs {
+		AsyncCatchUpState* state;
+		bool released = false;
+		~SetupRefs() {
+			if (released) {
+				return;
+			}
+			if (state->resolveRef != nullptr) {
+				::napi_delete_reference(state->env, state->resolveRef);
+				state->resolveRef = nullptr;
+			}
+			if (state->rejectRef != nullptr) {
+				::napi_delete_reference(state->env, state->rejectRef);
+				state->rejectRef = nullptr;
+			}
+		}
+	} setupRefs{state};
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env doNotUse, void* data) { // execute
+			auto state = reinterpret_cast<AsyncCatchUpState*>(data);
+			// Only the atomic isCancelled() may be inspected here — opened()
+			// reads the handle's non-atomic descriptor while a concurrent
+			// close() resets it on the JS thread (AGENTS invariant 9; same
+			// discipline as CreateCheckpoint). state->descriptor is this
+			// worker's own strong pin and stays valid regardless.
+			if (!state->handle || state->handle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during catch-up operation");
+			} else {
+				state->status = state->descriptor->catchUpWithPrimary();
+			}
+			state->releaseInFlight();
+			state->signalExecuteCompleted();
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			auto state = reinterpret_cast<AsyncCatchUpState*>(data);
+
+			state->deleteAsyncWork();
+
+			if (status != napi_cancelled) {
+				if (state->status.ok()) {
+					napi_value undefined;
+					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+					state->callResolve(undefined);
+				} else {
+					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Catch up with primary failed");
+					state->callReject(error);
+				}
+			}
+
+			delete state;
+		},
+		state,
+		&state->asyncWork
+	));
+
+	napi_status queued = ::napi_queue_async_work(env, state->asyncWork);
+	if (queued != napi_ok) {
+		// The work was created but will never run, and ~BaseAsyncState asserts
+		// it was deleted first. The destructor unregisters the async work and
+		// releases the in-flight claim; setupRefs deletes the references.
+		owned->deleteAsyncWork();
+		NAPI_STATUS_THROWS(queued);
+	}
+	setupRefs.released = true;
+	owned.release();
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Advances a secondary instance to the primary's current state synchronously.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.catchUpWithPrimarySync();
+ * ```
+ */
+napi_value Database::CatchUpWithPrimarySync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	if (!throwIfNotSecondary(env, *dbHandle)) {
+		return nullptr;
+	}
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(
+		(*dbHandle)->descriptor->catchUpWithPrimary(),
+		"Catch up with primary failed"
+	);
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Destroys the RocksDB database.
  *
  * @example
@@ -441,8 +691,22 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	THROW_IF_READONLY((*dbHandle)->descriptor, "Destroy failed: ");
 
 	if (*dbHandle) {
+		// A handle that was never opened knows no path, and destroy ends in
+		// remove_all(): refuse rather than resolve an empty string into
+		// whatever the platform makes of it.
+		if ((*dbHandle)->identityPath.empty() && (*dbHandle)->path.empty()) {
+			::napi_throw_error(env, nullptr, "Database has never been opened");
+			return nullptr;
+		}
 		try {
-			DBRegistry::DestroyDB((*dbHandle)->path);
+			// The identity this handle resolved at open, which it keeps after
+			// close: re-deriving it from the caller's spelling would follow a
+			// mapping that may have moved since and name a different database.
+			DBRegistry::DestroyDB(
+				(*dbHandle)->identityPath.empty()
+					? (*dbHandle)->path
+					: (*dbHandle)->identityPath
+			);
 		} catch (const std::exception& e) {
 			DEBUG_LOG("%p Database::Destroy Error: %s\n", dbHandle->get(), e.what());
 			::napi_throw_error(env, nullptr, e.what());
@@ -1937,6 +2201,58 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", dbHandleOptions.name));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "noBlockCache", dbHandleOptions.noBlockCache));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "readOnly", dbHandleOptions.readOnly));
+
+	// secondaryPath: a present, non-empty string switches the open to
+	// DB::OpenAsSecondary (see DBOptions::secondaryPath). A present empty
+	// string is rejected rather than silently treated as "not secondary".
+	bool hasSecondaryPath = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "secondaryPath", &hasSecondaryPath));
+	if (hasSecondaryPath) {
+		napi_value secondaryPathValue;
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "secondaryPath", &secondaryPathValue));
+		napi_valuetype secondaryPathType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, secondaryPathValue, &secondaryPathType));
+		if (secondaryPathType != napi_undefined && secondaryPathType != napi_null) {
+			if (secondaryPathType != napi_string) {
+				::napi_throw_error(env, nullptr, "secondaryPath must be a string");
+				return nullptr;
+			}
+			NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "secondaryPath", dbHandleOptions.secondaryPath));
+			if (dbHandleOptions.secondaryPath.empty()) {
+				::napi_throw_error(env, nullptr, "secondaryPath must not be empty");
+				return nullptr;
+			}
+			// Resolve once, here: the workspace is part of the registry key and
+			// is what the in-process exclusivity scan, the nesting check and the
+			// advisory lock file all key on, so two spellings of one directory
+			// (relative vs absolute, a `..` hop, a symlinked parent) must not
+			// read as two workspaces. The JS-side `db.secondaryPath` getter
+			// still reports what the caller passed.
+			dbHandleOptions.secondaryPath =
+				rocksdb_js::resolveIdentityPath(dbHandleOptions.secondaryPath).string();
+		}
+	}
+	if (!dbHandleOptions.secondaryPath.empty()) {
+		// A secondary is read-only by construction. An explicit readOnly: false
+		// is a contradiction to reject, not to silently override; absent or
+		// true both normalize to true.
+		if (!dbHandleOptions.readOnly) {
+			bool hasReadOnly = false;
+			NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "readOnly", &hasReadOnly));
+			if (hasReadOnly) {
+				napi_value readOnlyValue;
+				NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "readOnly", &readOnlyValue));
+				napi_valuetype readOnlyType;
+				NAPI_STATUS_THROWS(::napi_typeof(env, readOnlyValue, &readOnlyType));
+				if (readOnlyType == napi_boolean) {
+					::napi_throw_error(env, nullptr, "A secondary open is read-only; secondaryPath cannot be combined with readOnly: false");
+					return nullptr;
+				}
+			}
+			dbHandleOptions.readOnly = true;
+		}
+	}
+
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "parallelismThreads", dbHandleOptions.parallelismThreads));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "writeBufferSize", dbHandleOptions.writeBufferSize));
 	// Parse as double and validate BEFORE narrowing: napi_get_value_int32
@@ -1951,6 +2267,28 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 	dbHandleOptions.maxOpenFiles = static_cast<int32_t>(maxOpenFilesValue);
+	if (!dbHandleOptions.secondaryPath.empty()) {
+		// A secondary must hold every table/blob file open (max_open_files = -1)
+		// — the held fds are what make the primary's deletions safe, so a
+		// bounded table cache would reintroduce the missing-file race this mode
+		// exists to avoid. Reject an explicit conflicting request rather than
+		// silently ignore it; absent (or an explicit -1) opens unbounded.
+		if (dbHandleOptions.maxOpenFiles != -1) {
+			bool hasMaxOpenFiles = false;
+			NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "maxOpenFiles", &hasMaxOpenFiles));
+			if (hasMaxOpenFiles) {
+				napi_value maxOpenFilesProp;
+				NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "maxOpenFiles", &maxOpenFilesProp));
+				napi_valuetype maxOpenFilesType;
+				NAPI_STATUS_THROWS(::napi_typeof(env, maxOpenFilesProp, &maxOpenFilesType));
+				if (maxOpenFilesType == napi_number) {
+					::napi_throw_error(env, nullptr, "A secondary open requires maxOpenFiles: -1 (every table file is held open so the primary can safely delete files); omit the option or pass -1");
+					return nullptr;
+				}
+			}
+			dbHandleOptions.maxOpenFiles = -1;
+		}
+	}
 
 	// Parse maxLogFileSize as a double and validate BEFORE narrowing to
 	// uint64_t: getValue(uint64_t&) casts a negative int64 to a huge unsigned
@@ -2051,6 +2389,10 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		// the descriptor, we can attach the database instance's smart_ptr to
 		// the descriptor so it gets cleaned up when the descriptor is closed
 		(*dbHandle)->descriptor->attach(*dbHandle);
+	} catch (const rocksdb_js::DBException& e) {
+		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what());
+		::napi_throw_error(env, e.code(), e.what());
+		return nullptr;
 	} catch (const std::exception& e) {
 		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what());
 		::napi_throw_error(env, nullptr, e.what());
@@ -2350,6 +2692,8 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "addListener", nullptr, AddListener, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "backup", nullptr, Backup, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "backupStream", nullptr, BackupStream, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "catchUpWithPrimary", nullptr, CatchUpWithPrimary, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "catchUpWithPrimarySync", nullptr, CatchUpWithPrimarySync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },

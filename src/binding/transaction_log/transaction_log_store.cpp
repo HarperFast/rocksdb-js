@@ -182,6 +182,7 @@ std::shared_ptr<TransactionLogFile> TransactionLogStore::getLogFile(const uint32
 		std::string filename = std::to_string(sequenceNumber) + ".txnlog";
 		auto logFilePath = this->path / filename;
 		logFile = std::make_shared<TransactionLogFile>(logFilePath, sequenceNumber, true);
+		logFile->readOnly = this->readOnly;
 		this->sequenceFiles[sequenceNumber] = logFile;
 		this->nextLogPosition = { 0, sequenceNumber };
 	}
@@ -815,6 +816,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	uint32_t retiredBoundary = readTransactionLogAppendBoundaryMarker(path);
 	auto logFile = std::make_shared<TransactionLogFile>(
 		path, sequenceNumber, retiredBoundary > 0);
+	logFile->readOnly = this->readOnly;
 	if (retiredBoundary > 0) {
 		logFile->retiredAppendBoundary.store(retiredBoundary, std::memory_order_relaxed);
 		logFile->appendBoundaryLost.store(true, std::memory_order_relaxed);
@@ -1162,7 +1164,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	const std::filesystem::path& path,
 	const uint32_t maxFileSize,
 	const std::chrono::milliseconds& retentionMs,
-	const float maxAgeThreshold
+	const float maxAgeThreshold,
+	const bool readOnly
 ) {
 	auto dirName = path.filename().string();
 
@@ -1172,6 +1175,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	}
 
 	std::shared_ptr<TransactionLogStore> store = std::make_shared<TransactionLogStore>(dirName, path, maxFileSize, retentionMs, maxAgeThreshold);
+	store->readOnly = readOnly;
 
 	// find `.txnlog` files in the directory
 	try {
@@ -1185,7 +1189,6 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					uint32_t sequenceNumber = 0;
 
 					sequenceNumber = std::stoul(sequenceNumberStr);
-
 					store->registerLogFile(filePath, sequenceNumber);
 				}
 			} catch (const TransactionLogAppendBoundaryException&) {
@@ -1213,7 +1216,11 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	LogPosition flushedPosition = store->getLastFlushedPosition();
 
 	// Only the active file can carry a torn append; recover it after discovery and
-	// refresh the write position if recovery shortened it.
+	// refresh the write position if recovery shortened it. A read-only load must
+	// NOT recover: recovery truncates, the active file may belong to a live
+	// writer in another process whose append-owned `size` would keep appending
+	// past the new EOF (invariant 5), and this store will never append. Readers
+	// handle the unrecovered tail through the CorruptFrameError/resync protocol.
 	uint32_t storeCurrentSeq = store->currentSequenceNumber.load(std::memory_order_relaxed);
 	if (storeCurrentSeq > 0) {
 		auto currentIt = store->sequenceFiles.find(storeCurrentSeq);
@@ -1238,11 +1245,25 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				currentFile->appendBoundaryMarkerEnabled = false;
 				activated = false;
 			}
-			if (activated) {
+			// Recovery and retirement both write into the primary's log tree, so
+			// they belong to a writable load only (invariant 18). A read-only
+			// load keeps the segment as opened: `open()` already clamped `size`
+			// to any marker it found, which is the reader's view of it.
+			if (activated && !readOnly) {
 				uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
 					? flushedPosition.positionInLogFile
 					: 0;
 				currentFile->recoverTail(protectedPosition);
+				if (currentFile->appendBoundaryLost.load(std::memory_order_relaxed)) {
+					// Recovery could not make this segment appendable. Persist
+					// its boundary and retire it here rather than on the first
+					// write, which can rotate before the write path's
+					// persist-then-rotate runs and lose the boundary.
+					currentFile->persistAppendBoundaryRetirement();
+					activated = false;
+				}
+			}
+			if (activated) {
 				store->nextLogPosition = { currentFile->size, storeCurrentSeq };
 			} else {
 				uint32_t nextWritableSequence = storeCurrentSeq + 1;
@@ -1279,7 +1300,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			if (openedForScan) {
 				logFile->open(store->latestTimestamp);
 			}
-			uint32_t completeEnd = isCurrent
+			// The current file's cached boundary is a product of recoverTail's
+			// scan; a read-only load skipped recovery, so scan here instead.
+			uint32_t completeEnd = isCurrent && !readOnly
 				? logFile->lastCompleteTransactionEnd.load(std::memory_order_relaxed)
 				: logFile->scanForLastCompleteTransactionEnd();
 			if (openedForScan) {
@@ -1307,7 +1330,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		}
 	}
 	*store->lastCommittedPosition = recoveredPosition < flushedPosition ? flushedPosition : recoveredPosition;
-	if (retentionMs.count() > 0) {
+	if (retentionMs.count() > 0 && !readOnly) {
 		try {
 			store->purge(nullptr, false, 0, false);
 		} catch (const std::exception& e) {

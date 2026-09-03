@@ -7,7 +7,9 @@
 #include "core/platform.h"
 #include <aclapi.h>
 #include <sddl.h>
+#include <algorithm>
 #include <cstdio>
+#include <vector>
 
 namespace rocksdb_js {
 
@@ -25,6 +27,10 @@ TransactionLogFile::TransactionLogFile(
 
 void TransactionLogFile::ensureAppendBoundaryMarker() {
 	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
+	if (this->readOnly) {
+		this->loadAppendBoundaryMarkerReadOnly();
+		return;
+	}
 	std::error_code existsError;
 	if (std::filesystem::exists(markerPath, existsError)) {
 		try {
@@ -185,39 +191,68 @@ void TransactionLogFile::openFile() {
 
 	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str());
 
-	// ensure parent directory exists (may have been deleted by purge())
-	auto parentPath = this->path.parent_path();
-	if (!parentPath.empty()) {
-		try {
-			DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
-			rocksdb_js::tryCreateDirectory(parentPath);
-		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
-				this, parentPath.string().c_str(), e.what());
-			throw rocksdb_js::DBException("Failed to create parent directory: " + parentPath.string());
+	// A reader creates neither the file nor its parent directory (invariant 18:
+	// the tree belongs to the writer, which may be live in another process), and
+	// never restamps permissions — the `exists()` check below races a segment
+	// the primary is creating right now, and the follower would rewrite its DACL.
+	// Mirrors the POSIX sibling.
+	bool fileExisted = true;
+	if (!this->readOnly) {
+		// ensure parent directory exists (may have been deleted by purge())
+		auto parentPath = this->path.parent_path();
+		if (!parentPath.empty()) {
+			try {
+				DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
+				rocksdb_js::tryCreateDirectory(parentPath);
+			} catch (const std::filesystem::filesystem_error& e) {
+				DEBUG_LOG("%p TransactionLogFile::openFile Failed to create parent directory: %s (error=%s)\n",
+					this, parentPath.string().c_str(), e.what());
+				throw rocksdb_js::DBException("Failed to create parent directory: " + parentPath.string());
+			}
 		}
+
+		// Check if file already exists before creating/opening
+		fileExisted = std::filesystem::exists(this->path);
 	}
 
-	// Check if file already exists before creating/opening
-	bool fileExisted = std::filesystem::exists(this->path);
+	if (this->readOnly) {
+		// A reader never creates the file and can open logs on a read-only or
+		// otherwise write-protected volume.
+		this->fileHandle = ::CreateFileW(
+			this->path.wstring().c_str(),
+			GENERIC_READ,
+			FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+			nullptr,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr
+		);
+		if (this->fileHandle == INVALID_HANDLE_VALUE) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str());
+			throw rocksdb_js::DBException("Failed to open sequence file for read: " + this->path.string());
+		}
+	} else {
+		// open file for both reading and writing
+		this->fileHandle = ::CreateFileW(
+			this->path.wstring().c_str(),
+			GENERIC_READ | GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE,
+			nullptr,
+			OPEN_ALWAYS,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr
+		);
 
-	// open file for both reading and writing
-	this->fileHandle = ::CreateFileW(
-		this->path.wstring().c_str(),
-		GENERIC_READ | GENERIC_WRITE,
-		FILE_SHARE_READ | FILE_SHARE_WRITE,
-		nullptr,
-		OPEN_ALWAYS,
-		FILE_ATTRIBUTE_NORMAL,
-		nullptr
-	);
-
-	if (this->fileHandle == INVALID_HANDLE_VALUE) {
-		DWORD error = ::GetLastError();
-		std::string errorMessage = getWindowsErrorMessage(error);
-		DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%lu: %s)\n",
-			this, this->path.string().c_str(), error, errorMessage.c_str());
-		throw rocksdb_js::DBException("Failed to open sequence file for read/write: " + this->path.string());
+		if (this->fileHandle == INVALID_HANDLE_VALUE) {
+			DWORD error = ::GetLastError();
+			std::string errorMessage = getWindowsErrorMessage(error);
+			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%lu: %s)\n",
+				this, this->path.string().c_str(), error, errorMessage.c_str());
+			throw rocksdb_js::DBException("Failed to open sequence file for read/write: " + this->path.string());
+		}
 	}
 
 	// Set file permissions equivalent to Unix 640 (owner: read+write, group: read, others: none)
@@ -367,7 +402,20 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	// In windows, we can not map beyond the size of the file (without using driver-level APIs that directly call procedures
 	// in NT.DLL). So we must expand the file to the full size before we can map it.
 	// Check the actual file size on disk to avoid repeated expansions
-	if (fileSize > this->size.load(std::memory_order_relaxed)) {
+	if (this->readOnly) {
+		// A reader cannot (and must not) extend the file; clamp the mapping to
+		// the physical size instead — for a live writer's active segment that is
+		// already the writer's pre-extended maxFileSize.
+		LARGE_INTEGER physicalSize;
+		if (::GetFileSizeEx(this->fileHandle, &physicalSize) &&
+			physicalSize.QuadPart < static_cast<LONGLONG>(fileSize)
+		) {
+			fileSize = static_cast<uint32_t>(physicalSize.QuadPart);
+		}
+		if (fileSize == 0) {
+			return nullptr;
+		}
+	} else if (fileSize > this->size.load(std::memory_order_relaxed)) {
 		LARGE_INTEGER currentPos;
 		LARGE_INTEGER distanceToMove;
 		// First, we have to get the current position, so we can restore it (if we get to a point where no other code relies on position, could remove this)
@@ -616,11 +664,93 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	return true;
 }
 
+/**
+ * A zero-fill that did not complete (a short write, or zeros that would not
+ * sync) leaves the segment in a state no append may use: the caller keeps the
+ * old logical `size`, so the next batch would land past a zero end-of-entries
+ * marker and be invisible to every reader — acknowledged writes hidden, the
+ * failure mode this whole path exists to prevent. Retire the segment instead
+ * (the ENOSPC discipline of invariant 5): `size` drops to the boundary the
+ * repair was aiming at, appends are refused, and the store persists that
+ * boundary and rotates on the next write rather than appending here.
+ */
+bool TransactionLogFile::retireAfterFailedZeroTail(uint32_t newSize, const char* stage) {
+	DEBUG_LOG("%p TransactionLogFile::zeroTailLocked %s failed for %s (error=%lu); retiring the segment at %u\n",
+		this, stage, this->path.string().c_str(), ::GetLastError(), newSize);
+	this->size.store(newSize, std::memory_order_relaxed);
+	this->appendBoundaryLost.store(true, std::memory_order_relaxed);
+	return false;
+}
+
+bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
+	if (this->fileHandle == INVALID_HANDLE_VALUE || entriesEnd <= newSize) {
+		return false;
+	}
+
+	// Only the entries extent is rewritten: everything past the end of entries
+	// is already the zero padding this file was pre-extended with, so a
+	// pre-extended active segment costs one small write here, not a maxFileSize
+	// one.
+	//
+	// Back to front, so the zero AT `newSize` — the byte that makes readers stop
+	// there — is written last, and durable last: everything above it is flushed
+	// BEFORE that final chunk is even issued. Ordering the writes alone would
+	// only order the calls; the cache and the drive may persist them in any
+	// order, and a crash that persisted `newSize` first would leave a clean-
+	// looking end-of-entries marker with live bytes behind it — recovery would
+	// never look past it again, and a later shorter batch would leave those
+	// stale bytes reading as an entry (invariant 5). A crash before that final
+	// chunk instead leaves the original framing break, which the next open's
+	// recovery re-detects and re-attempts.
+	// The boundary write is its own sector so the barrier below actually
+	// separates it: making it a whole 64 KiB chunk would put the boundary and
+	// the stale bytes behind it in one buffered write for any tail smaller than
+	// that — the common case, a single partial entry — and the cache could
+	// still persist the boundary page first. A sector is the smallest unit a
+	// drive writes atomically, so a crash either lands these zeros or leaves the
+	// torn tail; there is no third state.
+	constexpr uint32_t chunkSize = 64 * 1024;
+	constexpr uint32_t sectorSize = 512;
+	uint32_t tailLength = entriesEnd - newSize;
+	std::vector<char> zeros(std::min(chunkSize, tailLength), 0);
+	uint32_t finalChunkEnd = newSize + std::min(sectorSize, tailLength);
+	for (uint32_t end = entriesEnd; end > finalChunkEnd; ) {
+		uint32_t remaining = end - finalChunkEnd;
+		uint32_t toWrite = remaining < chunkSize ? remaining : chunkSize;
+		uint32_t offset = end - toWrite;
+		int64_t written = this->writeToFile(zeros.data(), toWrite, static_cast<int64_t>(offset));
+		if (written != static_cast<int64_t>(toWrite)) {
+			return this->retireAfterFailedZeroTail(newSize, "WriteFile");
+		}
+		end = offset;
+	}
+
+	// Make everything above the boundary durable before the boundary is written
+	// at all, so no crash can leave a clean-looking end-of-entries marker with
+	// live bytes behind it.
+	if (entriesEnd > finalChunkEnd && !::FlushFileBuffers(this->fileHandle)) {
+		return this->retireAfterFailedZeroTail(newSize, "FlushFileBuffers");
+	}
+
+	int64_t written = this->writeToFile(
+		zeros.data(), finalChunkEnd - newSize, static_cast<int64_t>(newSize));
+	if (written != static_cast<int64_t>(finalChunkEnd - newSize)) {
+		return this->retireAfterFailedZeroTail(newSize, "WriteFile");
+	}
+
+	if (!::FlushFileBuffers(this->fileHandle)) {
+		// The zeros are not durable, so a crash could still resurrect the torn
+		// bytes; the segment cannot be appended to either way.
+		return this->retireAfterFailedZeroTail(newSize, "FlushFileBuffers");
+	}
+	return true;
+}
+
 bool TransactionLogFile::eraseTail(uint32_t newSize, uint32_t entriesEnd) {
 	if (this->fileHandle == INVALID_HANDLE_VALUE || entriesEnd <= newSize) {
 		return false;
 	}
-	return this->truncateFile(newSize);
+	return this->truncateFile(newSize) || this->zeroTailLocked(newSize, entriesEnd);
 }
 
 std::string getWindowsErrorMessage(DWORD errorCode) {

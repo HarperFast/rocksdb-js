@@ -40,6 +40,30 @@ std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::fil
 
 double getMonotonicTimestamp();
 
+/**
+ * Resolves a path to the one spelling this process uses to identify it:
+ * symlinks and `..`/`.` components collapsed, relative paths made absolute.
+ * Falls back to a purely lexical absolute path when the filesystem cannot be
+ * consulted (a missing parent, a permission error) so it never throws.
+ *
+ * Identity comparisons — the registry key for a secondary workspace, the
+ * primary/secondary nesting check, the advisory lock file — must go through
+ * this, or two spellings of one directory read as two directories.
+ */
+std::filesystem::path resolveIdentityPath(const std::string& path);
+
+/**
+ * True when `child` is `parent` itself or lives underneath it. Both arguments
+ * should already be resolved (see `resolveIdentityPath`). Existing paths are
+ * compared by filesystem identity (`equivalent()` over the child's ancestors),
+ * which is correct on case-sensitive and case-insensitive volumes alike —
+ * case sensitivity is a volume property, not an OS one. A path that does not
+ * exist falls back to a lexical, case-preserving prefix test, where a `parent`
+ * that already ends in a separator (a filesystem root such as `/` or `C:/`) is
+ * handled: the separator is not required twice.
+ */
+bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child);
+
 void tryCreateDirectory(
 	const std::filesystem::path& path,
 	std::filesystem::perms permissions =

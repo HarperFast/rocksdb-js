@@ -1,4 +1,6 @@
 #include "core/background_error.h"
+#include "core/file_lock.h"
+#include "core/open_status.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
@@ -13,6 +15,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <system_error>
 #include <unordered_map>
@@ -252,7 +255,7 @@ public:
 				desc.get(), (unsigned long long)flushedSequence);
 
 			// Get stores from the registry
-			auto stores = TransactionLogStoreRegistry::GetStores(desc->path);
+			auto stores = TransactionLogStoreRegistry::GetStores(desc->identityPath);
 			for (auto& store : stores) {
 				store->databaseFlushBegin(flushedSequence);
 			}
@@ -292,7 +295,7 @@ public:
 					desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)it->second.flushedSequence);
 
 				// Get stores from the registry
-				auto stores = TransactionLogStoreRegistry::GetStores(desc->path);
+				auto stores = TransactionLogStoreRegistry::GetStores(desc->identityPath);
 				for (auto& store : stores) {
 					store->databaseFlushed(it->second.flushedSequence);
 				}
@@ -365,6 +368,7 @@ static uint64_t writeStallDebounceMs();
  */
 DBDescriptor::DBDescriptor(
 	const std::string& path,
+	const std::string& identityPath,
 	const DBOptions& options,
 	const rocksdb::ColumnFamilyOptions& cfOptions,
 	std::shared_ptr<rocksdb::DB> db,
@@ -372,9 +376,11 @@ DBDescriptor::DBDescriptor(
 	std::shared_ptr<rocksdb::Statistics> statistics
 ):
 	path(path),
+	identityPath(identityPath),
 	vtEpoch(nextVtEpoch()),
 	mode(options.mode),
 	readOnly(options.readOnly),
+	secondaryPath(options.secondaryPath),
 	cfOptions(cfOptions),
 	db(db),
 	columns(std::move(columns)),
@@ -521,7 +527,7 @@ void DBDescriptor::finishClose() {
 
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
-	TransactionLogStoreRegistry::Unregister(this->path);
+	TransactionLogStoreRegistry::Unregister(this->identityPath);
 
 	this->transactions.clear();
 	{
@@ -532,6 +538,14 @@ void DBDescriptor::finishClose() {
 	this->events.releaseAll();
 
 	this->db.reset();
+
+	// The workspace lock outlives the RocksDB instance (released just above) so
+	// no moment exists where a second secondary can open the workspace while
+	// this instance still touches it.
+	if (this->secondaryLockToken) {
+		rocksdb_js::releaseFileLock(this->secondaryLockToken);
+		this->secondaryLockToken = 0;
+	}
 }
 
 napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed) {
@@ -1214,9 +1228,15 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 /**
  * Creates a new DBDescriptor.
  */
-std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const DBOptions& options) {
+std::shared_ptr<DBDescriptor> DBDescriptor::open(
+	const std::string& path, const std::string& identityPath, const DBOptions& options) {
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
+
+	// Before any real work: a writable open must not adopt transaction log
+	// stores a read-only open loaded without tail recovery (see the method's
+	// header comment for why this cannot live inside Register).
+	TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(identityPath, options.readOnly);
 
 	DBSettings& settings = DBSettings::getInstance();
 
@@ -1277,7 +1297,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	// try to list existing column families
 	DEBUG_LOG("DBDescriptor::open Listing column families for \"%s\"\n", path.c_str());
-	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path, &columnFamilyNames);
+	rocksdb::Status listStatus = rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), identityPath, &columnFamilyNames);
 	if (listStatus.ok() && !columnFamilyNames.empty()) {
 		// Database exists. Compression is per-CF: opening one column family must
 		// not change another's algorithm, and RocksDB requires opening every CF
@@ -1292,7 +1312,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// caller expresses "this database uses one codec" for families it never
 		// names (see db_options.h).
 		std::unordered_map<std::string, PersistedCompression> persisted;
-		rocksdb::Status persistedStatus = loadPersistedCompression(path, persisted);
+		rocksdb::Status persistedStatus = loadPersistedCompression(identityPath, persisted);
 		if (!persistedStatus.ok()) {
 			// The DB exists (we just listed its column families), so a missing or
 			// unparseable OPTIONS file is NOT the fresh-DB case — we cannot recover
@@ -1331,16 +1351,118 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		cfDescriptors = { rocksdb::ColumnFamilyDescriptor(rocksdb::kDefaultColumnFamilyName, cfo) };
 	}
 
+	// Releases the secondary workspace lock on any throw between acquisition
+	// and its ownership transfer to the descriptor below. Declared BEFORE the
+	// db shared_ptr so reverse destruction destroys the RocksDB instance first
+	// — the lock must never be released while the secondary still touches its
+	// workspace.
+	struct SecondaryLockGuard {
+		uint32_t token = 0;
+		~SecondaryLockGuard() {
+			if (token) {
+				rocksdb_js::releaseFileLock(token);
+			}
+		}
+	} secondaryLock;
+
 	std::vector<rocksdb::ColumnFamilyHandle*> cfHandles;
 	std::shared_ptr<rocksdb::DB> db;
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
-	if (options.readOnly) {
+	if (!options.secondaryPath.empty()) {
+		// RocksDB requires every table (and blob) file opened and held for the
+		// life of each version — the held fds are what make the primary's file
+		// deletions safe — so the bounded default is overridden unconditionally
+		// (Database::Open already rejected an explicit conflicting request).
+		dbOptions.max_open_files = -1;
+
+		// The workspace must be neither the primary's data directory nor nested
+		// inside it: the lock file and the secondary's info-LOG rotation would
+		// land among the primary's files, and destroy()'s remove_all(path)
+		// would delete a live secondary's workspace under it. Both sides are
+		// already resolved by Database::Open, so differently-spelled aliases and
+		// symlinked parents are caught.
+		if (rocksdb_js::isPathWithin(identityPath, options.secondaryPath)) {
+			throw rocksdb_js::DBException(
+				"secondaryPath must be a separate directory outside the database path \"" + path + "\""
+			);
+		}
+
+		// The secondary's workspace is created here (missing parents included);
+		// RocksDB itself creates its files inside it but a clearer error belongs
+		// to the path the caller actually passed.
+		std::error_code createError;
+		std::filesystem::create_directories(options.secondaryPath, createError);
+		if (createError) {
+			throw rocksdb_js::DBException(
+				"Failed to create secondary path \"" + options.secondaryPath + "\": " + createError.message()
+			);
+		}
+
+		// A workspace is exclusive to ONE secondary instance, and RocksDB does
+		// not enforce that itself (a second OpenAsSecondary on the same
+		// workspace succeeds — see test/native/secondary_blob_test.cc), so a
+		// kernel advisory lock does, across processes and containers sharing a
+		// volume. The registry key already covers in-process sharing: the same
+		// primary + workspace reuses this descriptor and never re-acquires.
+		secondaryLock.token = rocksdb_js::tryAcquireFileLock(
+			(std::filesystem::path(options.secondaryPath) / ".secondary.lock").string()
+		);
+		if (secondaryLock.token == 0) {
+			throw rocksdb_js::DBException(
+				"secondaryPath \"" + options.secondaryPath + "\" is locked by another secondary "
+				"instance; each secondary requires its own workspace directory"
+			);
+		}
+
+		std::unique_ptr<rocksdb::DB> rdb;
+		DEBUG_LOG("DBDescriptor::open Opening secondary db for \"%s\" (secondary path \"%s\")\n", path.c_str(), options.secondaryPath.c_str());
+		rocksdb::Status status = rocksdb::DB::OpenAsSecondary(dbOptions, identityPath, options.secondaryPath, cfDescriptors, &cfHandles, &rdb);
+		if (!status.ok()) {
+			DEBUG_LOG("DBDescriptor::open Failed to open secondary db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
+			// The initial replay is point-in-time tolerant (a missing file makes
+			// it fall back to the last fully-present version rather than fail —
+			// covered in test/secondary.test.ts), so this classification is a
+			// safety net for shapes that still error, not the expected path.
+			if (rocksdb_js::isMissingSstOpenRace(status)) {
+				throw rocksdb_js::DBException(
+					"ERR_CONCURRENT_COMPACTION",
+					"Secondary open failed: a file this open needed was already gone when it tried to "
+					"read it. If the primary is live, it removed the file (compaction, blob GC, or "
+					"flush) mid-open and the database is not corrupt — retry the open. If the primary "
+					"is not running, the file is genuinely missing. (" + status.ToString() + ")"
+				);
+			}
+			throw rocksdb_js::DBException(
+				"Failed to open database \"" + path + "\" as secondary (secondary path \"" +
+				options.secondaryPath + "\"): " + status.ToString()
+			);
+		}
+		DEBUG_LOG("DBDescriptor::open Opened secondary db for \"%s\"\n", path.c_str());
+		db = std::shared_ptr<rocksdb::DB>(rdb.release(), DBDeleter{});
+	} else if (options.readOnly) {
 		std::unique_ptr<rocksdb::DB> rdb;
 		DEBUG_LOG("DBDescriptor::open Opening readonly db for \"%s\"\n", path.c_str());
-		rocksdb::Status status = rocksdb::DB::OpenForReadOnly(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		rocksdb::Status status = rocksdb::DB::OpenForReadOnly(dbOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open readonly db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
+			// A missing SST is NOT the corruption RocksDB's wording claims: a
+			// read-only open replays the MANIFEST and then opens each file it
+			// names holding no reference on any of them, so a compaction in a
+			// process actively writing this database can unlink an input file
+			// between those steps. Report the race as itself — never as MANIFEST
+			// corruption, and never as the database not existing.
+			if (rocksdb_js::isMissingSstOpenRace(status)) {
+				throw rocksdb_js::DBException(
+					"ERR_CONCURRENT_COMPACTION",
+					"Read-only open failed: a file this open needed was already gone when it tried to "
+					"read it. If another process is actively writing this database, a concurrent "
+					"compaction, blob GC, or flush removed the file and the database is not corrupt — "
+					"retry the open, or open as a secondary (secondaryPath) to follow a live database. "
+					"If nothing is writing this database, the file is genuinely missing. (" +
+					status.ToString() + ")"
+				);
+			}
 			if (status.IsIOError()) {
 				DEBUG_LOG("DBDescriptor::open IOError: %s\n", status.ToString().c_str());
 				throw rocksdb_js::DBException("Database does not exist");
@@ -1356,7 +1478,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 		rocksdb::TransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening pessimistic transaction db for \"%s\"\n", path.c_str());
-		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			throw rocksdb_js::DBException(status.ToString());
@@ -1366,7 +1488,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	} else {
 		rocksdb::OptimisticTransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
-		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, path, cfDescriptors, &cfHandles, &rdb);
+		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			throw rocksdb_js::DBException(status.ToString());
@@ -1386,6 +1508,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		}
 	}
 	if (!columnExists) {
+		// Same message as DBRegistry::OpenDB's already-open path — a read-only
+		// or secondary instance cannot create the missing family, and RocksDB's
+		// own NotSupported wording would bury which family was asked for.
+		if (options.readOnly) {
+			throw rocksdb_js::DBException(
+				"Column family \"" + options.name + "\" not found: cannot create column family in read-only mode"
+			);
+		}
 		auto cfo = cfOptions;
 		if (options.compression) {
 			applyCompression(cfo, *options.compression, options.compressionLevel);
@@ -1396,7 +1526,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, identityPath, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	descriptor->secondaryLockToken = secondaryLock.token;
+	secondaryLock.token = 0;
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is
@@ -1409,8 +1541,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
-	TransactionLogStoreRegistry::Register(path, logConfig);
-	TransactionLogStoreRegistry::DiscoverStores(path);
+	TransactionLogStoreRegistry::Register(descriptor->identityPath, logConfig);
+	TransactionLogStoreRegistry::DiscoverStores(descriptor->identityPath, options.readOnly);
 
 	return descriptor;
 }
@@ -2063,14 +2195,14 @@ void DBDescriptor::removeListenersByEnv(napi_env env) {
  * @param env The environment of the current callback.
  */
 napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
-	return TransactionLogStoreRegistry::ListStores(env, this->path);
+	return TransactionLogStoreRegistry::ListStores(env, this->identityPath);
 }
 
 /**
  * Purges transaction logs.
  */
 napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
-	return TransactionLogStoreRegistry::PurgeStores(env, this->path, options);
+	return TransactionLogStoreRegistry::PurgeStores(env, this->identityPath, options);
 }
 
 /**
@@ -2080,7 +2212,7 @@ napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) 
  * @returns The transaction log store.
  */
 std::shared_ptr<TransactionLogStore> DBDescriptor::resolveTransactionLogStore(const std::string& name) {
-	return TransactionLogStoreRegistry::ResolveStore(this->path, name);
+	return TransactionLogStoreRegistry::ResolveStore(this->identityPath, name, this->readOnly);
 }
 
 void DBDescriptor::setLastError(std::string json) {
@@ -2208,6 +2340,12 @@ rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
 		flushOptions,
 		columnHandles
 	);
+}
+
+rocksdb::Status DBDescriptor::catchUpWithPrimary() {
+	std::lock_guard<std::mutex> lock(this->catchUpMutex);
+	DEBUG_LOG("%p DBDescriptor::catchUpWithPrimary Catching up with primary for \"%s\"\n", this, this->path.c_str());
+	return this->db->TryCatchUpWithPrimary();
 }
 
 rocksdb::Status DBDescriptor::compactRange(

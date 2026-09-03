@@ -112,6 +112,40 @@ Creates a new database instance.
     [`flushSync()`](#dbflushsyncoptions-void), [`compact()`](#dbcompactoptions-promisevoid) and
     [`compactSync()`](#dbcompactsyncoptions-void) are the exception: they have nothing to do when
     there are no writes, so they succeed as no-ops rather than throwing.
+
+    A read-only open is a **point-in-time snapshot**: it never sees later writes. It is safe
+    against a quiescent database, but **unsafe against a live writer**: the open holds no reference
+    on the files it is about to read, so a concurrent compaction, blob GC, or flush in the writing
+    process can delete one mid-open and the open throws with code `ERR_CONCURRENT_COMPACTION` — the
+    database is not corrupt; the reader lost a race, and retrying can succeed. Even a successful
+    open can fail _later reads_ the same way, because files the snapshot references are opened
+    lazily while the writer keeps deleting obsolete ones. To follow a database another process is
+    actively writing, open a secondary instead (`secondaryPath` below) — that is the supported mode
+    for a live follower.
+
+  - `secondaryPath: string` Opens the database as a **secondary instance**: a read-only follower of
+    a live primary that tolerates the primary deleting files and sees new writes on each
+    [`catchUpWithPrimary()`](#dbcatchupwithprimary-promisevoid) call. This is the supported way to
+    read a database another process is actively writing. The value is the secondary instance's own
+    workspace directory (created if missing) where RocksDB keeps the secondary's private state — it
+    must be outside `path` (enforced) and exclusive to one secondary instance. Exclusivity is
+    enforced: reusing a workspace in-process for a different database is rejected at open (the same
+    database + workspace share the one follower instance), and a kernel advisory lock on
+    `<secondaryPath>/.secondary.lock` (same discipline and caveats as the
+    [backup directory lock](#backups)) excludes other processes — with the same limits: on
+    filesystems without advisory locking (`flock` unsupported — e.g. the FUSE/9p mounts behind
+    Docker Desktop bind mounts) the lock degrades to a no-op, and on network filesystems with
+    node-local `flock` (NFS `local_lock`, CIFS, 9p) it does not exclude across hosts, so workspace
+    exclusivity is the caller's job there. Implies
+    `readOnly: true` (an explicit `readOnly: false` throws), so all read-only behavior above
+    applies. Forces `maxOpenFiles: -1`: every table and blob file is opened and held for the life
+    of each version, which is what makes the primary's deletions safe — budget file descriptors
+    accordingly on large databases (an explicit `maxOpenFiles` other than `-1` is rejected). Column
+    families created by the primary after the secondary opens are invisible until the secondary
+    reopens. Note: RocksDB upstream documents secondary instances as unsupported in combination
+    with integrated BlobDB (which this library enables for values ≥ 2KB); the pinned RocksDB build
+    handles blob files in secondary mode — covered by native regression tests — but upstream does
+    not guarantee the combination.
   - `statsLevel: StatsLevel` Controls which type of statistics to skip and reduce statistic
     overhead. Defaults to `StatsLevel.ExceptDetailedTimers`.
   - `store: Store` A custom store that handles all interaction between the `RocksDatabase` or
@@ -260,6 +294,20 @@ There's also a static `open()` method for convenience that performs the same thi
 const db = RocksDatabase.open('path/to/db');
 ```
 
+### `db.secondaryPath: string | undefined`
+
+The secondary instance's workspace directory when the database was opened as a
+[secondary](#new-rocksdatabasepath-options) (a read-only follower of a live primary), or
+`undefined` for a regular or plain read-only open.
+
+```typescript
+const follower = RocksDatabase.open('/path/to/database', {
+	secondaryPath: '/path/to/follower-workspace',
+});
+console.log(follower.secondaryPath); // '/path/to/follower-workspace'
+console.log(follower.readOnly); // true
+```
+
 ### `db.status: 'opened' | 'closed'`
 
 Returns a string `'opened'` or `'closed'` indicating if the database is opened or closed.
@@ -269,6 +317,50 @@ console.log(db.status);
 ```
 
 ## Data Operations
+
+### `db.catchUpWithPrimary(): Promise<void>`
+
+Advances a [secondary instance](#new-rocksdatabasepath-options) to the primary's current state by
+tailing and replaying the primary's MANIFEST and WAL. A secondary does not see the primary's
+writes — flushed or not — until it catches up. Reads through the handle remain safe while the
+catch-up runs; catch-ups on the same database are serialized internally.
+
+Throws with code `ERR_NOT_SECONDARY` on a database that was not opened with `secondaryPath`.
+Column families the primary created after the secondary opened stay invisible until the secondary
+reopens; ones the primary dropped remain readable until then. Catch-up advances the **database**
+view only: transaction-log reads through a secondary serve the stores discovered at open, and a
+store the primary creates afterward becomes visible only on reopen. Whether entries appended to an
+already-open store are visible depends on where the writer is: a cross-process primary's appends
+are not (the reader's view of the file extent is fixed at open), while a writer in the _same_
+process shares the store object, so its appends are. Either way a log entry can describe data the
+database view does not have yet — the log write completes before the RocksDB commit for every
+writer, so log-leads-database is the normal direction and a consumer has to tolerate it. Serialize
+catch-up calls per database. Each async call holds a libuv worker for the whole replay, and
+concurrent calls queue on an internal per-database mutex while holding theirs, so a handful of
+overlapping catch-ups on a backlogged follower can exhaust the default four-thread pool and stall
+unrelated `fs`/`dns`/`crypto` work in the process. Await one before starting the next rather than
+firing one per timer tick.
+
+```typescript
+const primary = RocksDatabase.open('/path/to/database');
+const follower = RocksDatabase.open('/path/to/database', {
+	secondaryPath: '/path/to/follower-workspace',
+});
+
+primary.putSync('foo', 'bar');
+console.log(follower.getSync('foo')); // undefined — not caught up yet
+await follower.catchUpWithPrimary();
+console.log(follower.getSync('foo')); // 'bar'
+```
+
+### `db.catchUpWithPrimarySync(): void`
+
+Synchronous version of `catchUpWithPrimary()`. The replay runs on the JS thread, so prefer the
+async form unless the caller is already blocking.
+
+```typescript
+follower.catchUpWithPrimarySync();
+```
 
 ### `db.clear(options?): Promise<number>`
 

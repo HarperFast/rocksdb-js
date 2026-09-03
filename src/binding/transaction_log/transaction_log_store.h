@@ -236,6 +236,16 @@ struct TransactionLogStore final {
 	float maxAgeThreshold;
 
 	/**
+	 * Set when this store was loaded by a read-only/secondary open: every file
+	 * it registers opens read-only and mutates nothing (see
+	 * TransactionLogFile::readOnly), and load() skipped retention and tail
+	 * recovery. The append path is unreachable for such a store (guarded at
+	 * the N-API layer), and a writable open refuses to adopt it
+	 * (EnsureWritableRegistrationSafe).
+	 */
+	bool readOnly = false;
+
+	/**
 	 * The current sequence number of the transaction log file. Atomic because it
 	 * is written on the write path (under writeMutex) but read on the read path
 	 * (getMemoryMap/findPositionByTimestamp under dataSetsMutex) — different
@@ -521,13 +531,18 @@ struct TransactionLogStore final {
 	 * @param maxFileSize The maximum size of a transaction log before it is
 	 * rotated to the next sequence number.
 	 * @param retentionMs The retention period for transaction logs.
+	 * @param readOnly When true the load mutates nothing on disk: no retention
+	 * purge and no tail recovery, because the directory may belong to a live
+	 * writer in another process. Comes from the OPENING handle's mode (see
+	 * TransactionLogStoreRegistry::DiscoverStores).
 	 * @returns The transaction log store.
 	 */
 	static std::shared_ptr<TransactionLogStore> load(
 		const std::filesystem::path& path,
 		const uint32_t maxFileSize,
 		const std::chrono::milliseconds& retentionMs,
-		const float maxAgeThreshold
+		const float maxAgeThreshold,
+		const bool readOnly = false
 	);
 
 private:
