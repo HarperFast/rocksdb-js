@@ -223,9 +223,12 @@ The CLI exposes the same check as `verify-logs [name]`.
 Log entries are not in timestamp order. A transaction claims its timestamp from the process-wide
 monotonic clock when it is constructed but is appended when it commits, so under concurrency a later
 entry can carry a smaller timestamp; an entry that adopted an origin timestamp with
-`txn.setTimestamp()` carries that origin's clock instead. Timestamps are unique within a process,
-since the monotonic clock is strictly increasing there, but a restart after the wall clock moved
-backwards can reissue one.
+`txn.setTimestamp()` carries that origin's clock instead. Timestamps are not unique: the monotonic
+clock never issues the same value twice within a process, but a restart after the wall clock moved
+backwards can reissue one, and `txn.setTimestamp()` can assign any value — including one already
+in the log — to as many transactions as the caller likes. Deduplicating on the timestamp alone is
+therefore never safe; a consumer that needs identity has to supply it (Harper pairs the timestamp
+with the originating node).
 
 When reading the transaction log file, each transaction entry header must be read and indexed. The
 index records only the entries whose timestamp is greater than every earlier one in the file — a

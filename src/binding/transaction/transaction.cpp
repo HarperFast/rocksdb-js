@@ -1290,8 +1290,10 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	napi_valuetype type;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 
-	// The commit lane may delete txn after leaving Pending, so this check must
-	// precede the staged-write inspection.
+	// The commit lane may delete txn after leaving Pending, so this check must precede the
+	// staged-write inspection. Reading state unsynchronized is safe here because Commit() leaves
+	// Pending on this same JS thread before dispatching, so a lane that can touch txn is never
+	// concurrent with a Pending observation.
 	if ((*txnHandle)->state != TransactionState::Pending) {
 		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction is not pending");
 	}

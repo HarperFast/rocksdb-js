@@ -1566,11 +1566,13 @@ holds the last-known version for that key. Because slots are addressed by a hash
 share a slot; a collision only ever causes a conservative miss (a real read), never a stale value to
 be treated as fresh.
 
-This first word is the only version the table knows about. A producer whose record format also
-carries a separately assigned version elsewhere in the value must still pass the first word as
-`expectedVersion`: the other value is never published to a slot, so comparing against it would miss
-the fast path and — if it ever coincided with the key's real first word — could report a stale
-cached copy as fresh.
+This first word is the only version the table derives on its own: it is what a read with
+`populateVersion: true` publishes and what a transaction write invalidates against. A producer whose
+record format also carries a separately assigned version elsewhere in the value must keep using the
+first word on both sides of the check — as `expectedVersion`, and as the argument to any explicit
+[`db.populateVersion()`](#dbpopulateversionkey-key-version-number-void) call, which publishes
+whatever it is given. Comparing against the other value would miss the fast path, and publishing it
+would make the slot disagree with what the next write invalidates.
 
 The freshness check works as follows:
 
