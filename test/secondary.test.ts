@@ -210,15 +210,26 @@ describe('Secondary Instances', () => {
 			primaryA.open();
 			primaryB.open();
 			secondaryA.open();
+			// Substring checks, not a RegExp: a Windows path is full of
+			// backslashes, and interpolating one into a pattern turns each into
+			// an identity escape that no longer matches the literal path.
+			//
 			// The workspace in the message is the resolved spelling (the native
 			// layer resolves it once so two spellings of one directory cannot
 			// read as two workspaces), which differs from the argument wherever
-			// the temp directory is a symlink (macOS).
-			expect(() => secondaryB.open()).toThrow(
-				new RegExp(
-					`secondaryPath "[^"]*${basename(secondaryPath)}" is already in use by database "${dbPathA}"`
-				)
+			// the temp directory is aliased (a macOS symlink, a Windows short
+			// name). The database, though, is named the way its own caller
+			// spelled it.
+			let conflict: Error | undefined;
+			try {
+				secondaryB.open();
+			} catch (err) {
+				conflict = err as Error;
+			}
+			expect(conflict?.message).toContain(
+				`${basename(secondaryPath)}" is already in use by database`
 			);
+			expect(conflict?.message).toContain(dbPathA);
 		} finally {
 			secondaryB.close();
 			secondaryA.close();
@@ -339,8 +350,15 @@ describe('Secondary Instances', () => {
 			}
 
 			// A final catch-up sees the writer's last round; without it the view
-			// stays where the last catch-up left it.
-			await secondary.catchUpWithPrimary();
+			// stays where the last catch-up left it. More than one call may be
+			// needed: catch-up replays what the primary has made visible, and the
+			// exited writer's last MANIFEST/WAL records can still be landing.
+			for (let attempt = 0; attempt < 40 && secondary.getSync('round') !== rounds; attempt++) {
+				await secondary.catchUpWithPrimary();
+				if (secondary.getSync('round') !== rounds) {
+					await delay(25);
+				}
+			}
 			expect(secondary.getSync('round')).toBe(rounds);
 			expect(secondary.getSync('key0')).toBe(`${'v'.repeat(4096)}${rounds}`);
 
