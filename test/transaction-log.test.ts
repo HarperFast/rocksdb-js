@@ -2724,6 +2724,32 @@ describe('Transaction Log', () => {
 					expect(queryResults.length).toBe(1);
 				}
 			));
+
+		it.skipIf(process.platform === 'win32')('should restore txn.state after it was unlinked', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				const stateFile = join(dbPath, 'transaction_logs', 'foo', 'txn.state');
+				const value = Buffer.alloc(10, 'a');
+				const commit = () =>
+					db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+						db.putSync('foo', value, { transaction: txn });
+					});
+
+				await commit();
+				db.flushSync();
+				expect(existsSync(stateFile)).toBe(true);
+
+				// the state stream stays open across flushes and still reports open once the
+				// file is gone; the next flush has to notice the pathname instead
+				await unlink(stateFile);
+				await commit();
+				db.flushSync();
+				expect(existsSync(stateFile)).toBe(true);
+				const contents = readFileSync(stateFile);
+				expect(contents.readUInt32LE(4)).toBe(1);
+			})
+		);
 	});
 
 	describe('flush()', () => {

@@ -699,6 +699,22 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       different store's file. That is a cache-key identity problem, not a purge-coherence one; it is
        pre-existing and Harper does not call `destroy` in production.
 
+19. **`databaseFlushed()` trusts the pathname, not `ofstream::is_open()`, before writing
+    `txn.state`**: the stream is kept open across flushes, and after the file (or the whole store
+    directory) is unlinked it still reports open, so every write landed in the orphaned inode while
+    `getLastFlushedPosition()` — which reads by path — returned the `{0,0}` sentinel and retention
+    never advanced. Today only `purgeLogs({ destroy: true })` removes the directory, and Harper
+    never calls it in production, so this is hardening rather than a live bug. The check runs
+    _before_ the unchanged-position shortcut (a flush resolving to the already-recorded position must
+    still restore a missing file), recreates the directory the way `getLogFile()` does, re-checks
+    `isClosing` under `flushedStateMutex` so a concurrent destroy cannot be resurrected (`doClose()`
+    sets `isClosing` before taking that mutex, so a reopen that saw it clear is ordered before the
+    destroy's final directory removal; `doPurge`'s own `remove_all` of an emptied directory runs
+    earlier with `isClosing` still clear, and a directory recreated in that window is removed again
+    by the destroy), and advances `lastWrittenFlushedPosition` only after a successful
+    write. It runs on RocksDB's flush thread, so every filesystem failure is caught and reported once
+    via `log.warn` (`flushedStateWarningEmitted`) and the write is retried on the next flush.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
