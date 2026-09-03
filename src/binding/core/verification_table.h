@@ -71,8 +71,8 @@ constexpr uint32_t VERSION_NOT_UNIQUE_FLAG = 0x10000;
 // version distinct from the first word, as an 8-byte big-endian float64 at offset 12 immediately
 // after the metadata word. The first word stays the transaction timestamp — the write identity the
 // VerificationTable keys on and the transaction-log batch key — and the second is the version a
-// source or origin supplied. Absent, the two are equal. Decoded by `getEntry()` / `getEntrySync()`
-// and exported as `constants.HAS_DISTINCT_VERSION_FLAG` so a producer sets the bit that is read.
+// source or origin supplied. Absent, the two are equal. Exported as
+// `constants.HAS_DISTINCT_VERSION_FLAG` and decoded by `getEntry()` / `getEntrySync()`.
 constexpr uint32_t HAS_DISTINCT_VERSION_FLAG = 0x20000;
 
 // A real version: bit 63 clear and nonzero.

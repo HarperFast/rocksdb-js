@@ -256,6 +256,19 @@ timestamp is keyed by another node's clock, and seeding from it would ratchet th
 to the fastest of those nodes at each restart. Native code cannot tell the two kinds of log apart,
 which is why the caller names it and why an unset option leaves the clock alone.
 
+The walk is the cost of the guarantee, and it is paid on the calling thread before `open()` returns.
+It reads entry headers through a shared 64 KiB window and seeks past payloads, so it scales with the
+number of entries in the named log rather than its size. Measured on Linux with a warm page cache,
+against the same database opened without the option:
+
+| Named log                         | Added open time (median) |
+| --------------------------------- | ------------------------ |
+| 25,000 entries, 99 MB, 7 segments | ~31 ms                   |
+| 250,000 entries, 19 MB            | ~273 ms                  |
+
+Roughly a millisecond per thousand entries, so the retention window that bounds the log also bounds
+the seed. A database opened without `timestampFloorLog` pays none of it.
+
 The seed is best effort, and says so when it falls short: a segment that cannot be opened or scanned
 emits a `log.warn` global event, as does a segment holding a key more than ten years ahead of the
 wall clock, whose keys are left out of the floor as corruption rather than a rollback to recover
