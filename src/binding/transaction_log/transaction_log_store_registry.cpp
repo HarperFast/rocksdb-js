@@ -167,8 +167,7 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath, bool
 		}
 
 		// Take a shared_ptr copy to keep the entry alive after releasing the
-		// lock, and a config copy so a concurrent Register/Unregister on another
-		// thread cannot change the fields read below.
+		// lock, and a config copy to read it without holding entriesMutex.
 		entry = it->second;
 		config = entry->config;
 	}
@@ -241,8 +240,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		}
 
 		// Take a shared_ptr copy to keep the entry alive after releasing the
-		// lock, and a config copy so a concurrent Register/Unregister on another
-		// thread cannot change the fields read below.
+		// lock, and a config copy to read it without holding entriesMutex.
 		entry = it->second;
 		config = entry->config;
 	}

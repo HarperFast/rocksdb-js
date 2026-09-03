@@ -62,9 +62,18 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &transactionId));
 	}
 
-	std::shared_ptr<TransactionLogHandle>* txnLogHandle = new std::shared_ptr<TransactionLogHandle>(
-		std::make_shared<TransactionLogHandle>(*dbHandle, name, (*dbHandle)->descriptor->readOnly)
-	);
+	// Constructing the handle resolves the store, which throws for a writer
+	// refused a read-only-loaded store or a store directory that cannot be
+	// created. A C++ exception escaping an N-API callback aborts the process.
+	std::shared_ptr<TransactionLogHandle>* txnLogHandle;
+	try {
+		txnLogHandle = new std::shared_ptr<TransactionLogHandle>(
+			std::make_shared<TransactionLogHandle>(*dbHandle, name, (*dbHandle)->descriptor->readOnly)
+		);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	(*txnLogHandle)->transactionId = transactionId;
 
 	// A read-only registration never creates or lazily loads a store, so an

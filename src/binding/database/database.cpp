@@ -442,13 +442,9 @@ struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	 * was queued, so exactly one of the execute callback and the destructor
 	 * releases it. Queued work that is cancelled never runs execute, and a
 	 * claim left standing there makes `finishClose()` — which waits on the
-	 * counter unbounded — wedge close and destroy.
-	 *
-	 * Nothing in this addon calls `napi_cancel_async_work`, so that branch is
-	 * unreachable today and has no test (the same standing note as the
-	 * `napi_cancelled` arms in every `complete` callback here — AGENTS
-	 * invariant 15); this keeps the release correct if one ever appears,
-	 * because the cost of getting it wrong is a permanent hang with no error.
+	 * counter unbounded — wedge close and destroy. Nothing here calls
+	 * `napi_cancel_async_work` today, so that arm is unreachable exactly like
+	 * the `napi_cancelled` branches below it (AGENTS invariant 15).
 	 */
 	std::atomic<bool> inFlightReleased{false};
 

@@ -378,9 +378,17 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 			}
 			DEBUG_LOG("%p TransactionLogFile::recoverTail Torn tail in %s: truncating %u -> %u bytes\n",
 				this, this->path.string().c_str(), fileSize, scan.validEnd);
-			if (this->truncateFile(scan.validEnd) ||
-				this->zeroTailLocked(scan.validEnd, fileSize)
-			) {
+			bool wasRetired = this->appendBoundaryLost.load(std::memory_order_relaxed);
+			bool repaired = this->truncateFile(scan.validEnd) ||
+				this->zeroTailLocked(scan.validEnd, fileSize);
+			// A zero-fill that could not finish retires the segment instead (it
+			// lowered `size` to the boundary and refused further appends). That
+			// is the same boundary move as a repair and owes the same
+			// bookkeeping — the pre-recovery index in particular still maps
+			// timestamps into the discarded range.
+			bool retired = !repaired && !wasRetired &&
+				this->appendBoundaryLost.load(std::memory_order_relaxed);
+			if (repaired || retired) {
 				this->size.store(scan.validEnd, std::memory_order_relaxed);
 				if (this->lastFlushedSize > scan.validEnd) {
 					this->lastFlushedSize = scan.validEnd;
@@ -390,13 +398,22 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 				std::ostringstream msg;
 				msg << "Transaction log " << this->path.string()
 					<< " had a torn tail; dropped " << (fileSize - scan.validEnd)
-					<< " partial byte(s) back to the last valid entry (new size=" << scan.validEnd << ").";
+					<< " partial byte(s) back to the last valid entry (new size=" << scan.validEnd << ")";
+				if (retired) {
+					msg << ", and could not be made appendable again: the segment is retired and the "
+						   "store will rotate to a new one";
+				}
+				msg << ".";
 				DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
 				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 
 				// The partial bytes are gone; whole entries of the same interrupted
-				// batch can still precede them.
-				this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);
+				// batch can still precede them. A retired segment is never appended
+				// to, so no later batch's flag can swallow them and there is
+				// nothing left to erase with.
+				if (repaired) {
+					this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);
+				}
 			} else {
 				DEBUG_LOG("%p TransactionLogFile::recoverTail Truncate failed (or unsupported on this platform) for %s\n",
 					this, this->path.string().c_str());

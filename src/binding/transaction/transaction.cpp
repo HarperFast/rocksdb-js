@@ -1370,7 +1370,11 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	std::shared_ptr<TransactionLogStore> store;
 	try {
 		store = (*txnHandle)->dbHandle->descriptor->resolveTransactionLogStore(name);
-	} catch (const std::runtime_error& e) {
+	} catch (const std::exception& e) {
+		// DBException derives from std::exception, not std::runtime_error, and
+		// resolution throws it (a writer refused a read-only-loaded store, a
+		// store directory that cannot be created). An escaped C++ exception
+		// aborts the process from an N-API callback.
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}

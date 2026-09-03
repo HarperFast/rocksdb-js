@@ -169,12 +169,9 @@ std::filesystem::path resolveIdentityPath(const std::string& path) {
 }
 
 bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child) {
-	// Ask the filesystem first: `equivalent()` compares inode/file identity, so
-	// it answers correctly whether the volume is case-sensitive or not, and it
-	// sees through hard links and bind mounts that no string comparison can.
-	// Case sensitivity is a property of the VOLUME, not the OS (APFS can be
-	// case-sensitive, Windows directories can be), so folding by platform would
-	// reject a distinct `/volume/Data` as if it were `/volume/data`.
+	// Case sensitivity is a property of the volume, not the OS (APFS can be
+	// case-sensitive, Windows directories can be), so file identity is the only
+	// comparison that is right on both kinds.
 	std::error_code error;
 	if (std::filesystem::exists(parent, error) && !error) {
 		for (auto probe = child; !probe.empty(); ) {

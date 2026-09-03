@@ -1252,6 +1252,19 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 						: 0;
 					currentFile->recoverTail(protectedPosition);
 				}
+				if (currentFile->appendBoundaryLost.load(std::memory_order_relaxed)) {
+					// Recovery could not make this segment appendable (see
+					// zeroTailLocked). Persist its logical boundary and retire it
+					// HERE, not on the first write: the write path's
+					// persist-then-rotate runs only from writeEntries' catch, and
+					// writeBatch can rotate ahead of it (the max-age check), which
+					// would lose the boundary and let a restart pull the orphaned
+					// tail back inside the logical file.
+					currentFile->persistAppendBoundaryRetirement();
+					activated = false;
+				}
+			}
+			if (activated) {
 				store->nextLogPosition = { currentFile->size, storeCurrentSeq };
 			} else {
 				uint32_t nextWritableSequence = storeCurrentSeq + 1;
