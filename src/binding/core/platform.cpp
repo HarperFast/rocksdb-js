@@ -155,6 +155,13 @@ double getMonotonicTimestamp() {
 }
 
 std::filesystem::path resolveIdentityPath(const std::string& path) {
+	if (path.empty()) {
+		// Never resolve nothing into something: libc++ implements
+		// `absolute("")` as the standard's `current_path() / p`, which hands back
+		// the process CWD with no error, and a caller that then deletes what it
+		// resolved would delete the working directory. libstdc++ errors instead.
+		return {};
+	}
 	std::error_code error;
 	auto resolved = std::filesystem::weakly_canonical(path, error);
 	if (!error && !resolved.empty()) {

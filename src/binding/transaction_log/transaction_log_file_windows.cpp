@@ -692,14 +692,21 @@ bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
 	// pre-extended active segment costs one small write here, not a maxFileSize
 	// one.
 	//
-	// Back to front, so the zero AT `newSize` — the byte that makes readers
-	// stop there — is the last one written. A failure part-way then leaves the
-	// original framing break in place (a torn tail readers resync past), never
-	// a premature end-of-entries marker with live bytes behind it.
+	// Back to front, so the zero AT `newSize` — the byte that makes readers stop
+	// there — is written last, and durable last: everything above it is flushed
+	// BEFORE that final chunk is even issued. Ordering the writes alone would
+	// only order the calls; the cache and the drive may persist them in any
+	// order, and a crash that persisted `newSize` first would leave a clean-
+	// looking end-of-entries marker with live bytes behind it — recovery would
+	// never look past it again, and a later shorter batch would leave those
+	// stale bytes reading as an entry (invariant 5). A crash before that final
+	// chunk instead leaves the original framing break, which the next open's
+	// recovery re-detects and re-attempts.
 	constexpr uint32_t chunkSize = 64 * 1024;
 	std::vector<char> zeros(std::min(chunkSize, entriesEnd - newSize), 0);
-	for (uint32_t end = entriesEnd; end > newSize; ) {
-		uint32_t remaining = end - newSize;
+	uint32_t finalChunkEnd = newSize + std::min(chunkSize, entriesEnd - newSize);
+	for (uint32_t end = entriesEnd; end > finalChunkEnd; ) {
+		uint32_t remaining = end - finalChunkEnd;
 		uint32_t toWrite = remaining < chunkSize ? remaining : chunkSize;
 		uint32_t offset = end - toWrite;
 		int64_t written = this->writeToFile(zeros.data(), toWrite, static_cast<int64_t>(offset));
@@ -707,6 +714,17 @@ bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
 			return this->retireAfterFailedZeroTail(newSize, "WriteFile");
 		}
 		end = offset;
+	}
+
+	// Make everything above the boundary durable before the boundary itself.
+	if (entriesEnd > finalChunkEnd && !::FlushFileBuffers(this->fileHandle)) {
+		return this->retireAfterFailedZeroTail(newSize, "FlushFileBuffers");
+	}
+
+	int64_t written = this->writeToFile(
+		zeros.data(), finalChunkEnd - newSize, static_cast<int64_t>(newSize));
+	if (written != static_cast<int64_t>(finalChunkEnd - newSize)) {
+		return this->retireAfterFailedZeroTail(newSize, "WriteFile");
 	}
 
 	if (!::FlushFileBuffers(this->fileHandle)) {

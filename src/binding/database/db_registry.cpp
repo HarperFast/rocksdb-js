@@ -155,6 +155,12 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// and delete their files out from under them. An open handle passes its
 	// descriptor's identity, for which this is a no-op.
 	const std::string identityPath = rocksdb_js::resolveIdentityPath(path).string();
+	if (identityPath.empty()) {
+		// This function ends in remove_all(), so an empty target is never a
+		// no-op worth risking: it is a caller bug, and on a libc++ platform an
+		// empty path resolves to the process CWD.
+		throw rocksdb_js::DBException("Cannot destroy database: no database path");
+	}
 
 	// One path can hold several descriptors — read-write, read-only, and any
 	// number of secondaries (the registry key is {path, readOnly,

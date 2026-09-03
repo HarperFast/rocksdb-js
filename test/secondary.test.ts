@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../src/index.ts';
+import { RocksDatabase, registryStatus } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -382,6 +382,54 @@ describe('Secondary Instances', () => {
 			expect(Array.from(secondary.useLog('late').query({ start: 0 })).length).toBeGreaterThan(0);
 		} finally {
 			secondary.close();
+			cleanup(dbPath, secondaryPath);
+		}
+	});
+
+	// The most intricate new native lifecycle: the in-flight claim is taken
+	// before the work is queued and handed to the async state, which releases it
+	// exactly once (worker on success, destructor when setup fails) and re-runs
+	// the registry purge. Getting that wrong double-releases the counter that
+	// finishClose() waits on unbounded, or skips the purge and leaks the
+	// follower's workspace lock for the life of the process — a hang or a leak,
+	// neither of which any other test would surface.
+	it('should settle an in-flight catch-up when the database is torn down', async () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		const primary = new RocksDatabase(dbPath);
+		const secondary = new RocksDatabase(dbPath, { secondaryPath });
+		try {
+			primary.open();
+			for (let i = 0; i < 200; i++) {
+				primary.putSync(`key${i}`, 'v'.repeat(4096));
+			}
+			primary.flushSync();
+			secondary.open();
+
+			const settled = secondary.catchUpWithPrimary().then(
+				() => 'settled',
+				() => 'settled'
+			);
+			// destroy() tears down through finishClose(), which waits on the
+			// in-flight claim rather than the async-work tracker, and throws while
+			// the operation still holds a descriptor reference.
+			expect(() => secondary.destroy()).toThrow();
+			await expect(settled).resolves.toBe('settled');
+
+			// The claim was released exactly once, so this close returns instead
+			// of waiting forever on a counter that never reaches zero.
+			secondary.close();
+			expect(secondary.isOpen()).toBe(false);
+			primary.close();
+
+			// Nothing of this database is left in the process-global registry: a
+			// descriptor still registered here would keep its RocksDB open for the
+			// life of the worker and surface in another file's registry assertions
+			// rather than this one's (HarperFast/rocksdb-js#672).
+			expect(registryStatus().filter((entry) => entry.path === dbPath)).toEqual([]);
+		} finally {
+			secondary.close();
+			primary.close();
 			cleanup(dbPath, secondaryPath);
 		}
 	});

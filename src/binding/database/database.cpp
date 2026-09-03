@@ -691,6 +691,13 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	THROW_IF_READONLY((*dbHandle)->descriptor, "Destroy failed: ");
 
 	if (*dbHandle) {
+		// A handle that was never opened knows no path, and destroy ends in
+		// remove_all(): refuse rather than resolve an empty string into
+		// whatever the platform makes of it.
+		if ((*dbHandle)->identityPath.empty() && (*dbHandle)->path.empty()) {
+			::napi_throw_error(env, nullptr, "Database has never been opened");
+			return nullptr;
+		}
 		try {
 			// The identity this handle resolved at open, which it keeps after
 			// close: re-deriving it from the caller's spelling would follow a

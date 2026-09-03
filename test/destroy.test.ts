@@ -1,8 +1,43 @@
-import { dbRunner } from './lib/util.ts';
-import { existsSync } from 'node:fs';
+import { dbRunner, generateDBPath } from './lib/util.ts';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('Destroy', () => {
+	// destroy() ends in remove_all(), so it must never turn "no path" into a
+	// path. A handle that was never opened has none, and resolving an empty
+	// string hands back the process working directory on libc++ (the standard's
+	// current_path() / p) — deleting the directory the process runs in. Driven
+	// from a child with a throwaway CWD so a regression here cannot reach
+	// anything real.
+	it('should refuse to destroy a database that was never opened', async () => {
+		const dbPath = generateDBPath();
+		const cwd = `${dbPath}-cwd`;
+		mkdirSync(cwd, { recursive: true });
+		writeFileSync(join(cwd, 'sentinel.txt'), 'keep me');
+		try {
+			const { code, output } = await new Promise<{ code: number | null; output: string }>(
+				(resolve, reject) => {
+					const child = spawn(
+						process.execPath,
+						[join(__dirname, 'fixtures', 'fork-destroy-unopened.mts'), dbPath],
+						{ cwd }
+					);
+					let output = '';
+					child.stdout.on('data', (chunk) => (output += chunk));
+					child.stderr.on('data', (chunk) => (output += chunk));
+					child.on('close', (code) => resolve({ code, output }));
+					child.on('error', reject);
+				}
+			);
+			expect(code, output).toBe(0);
+			expect(existsSync(join(cwd, 'sentinel.txt'))).toBe(true);
+		} finally {
+			rmSync(cwd, { force: true, recursive: true });
+		}
+	});
+
 	it('should destroy a closed database', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			expect(db.isOpen()).toBe(true);
