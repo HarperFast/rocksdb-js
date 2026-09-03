@@ -5,7 +5,7 @@ import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 function cleanup(...paths: string[]): void {
 	if (process.env.KEEP_FILES) {
@@ -431,6 +431,24 @@ describe('Secondary Instances', () => {
 			// life of the worker and surface in another file's registry assertions
 			// rather than this one's (HarperFast/rocksdb-js#672).
 			expect(registryStatus().filter((entry) => entry.path === dbPath)).toEqual([]);
+
+			// The other half of #672, which the destroy above cannot reach because
+			// it erases the entries itself: a plain close() while a catch-up is
+			// still running skips the purge (the operation holds a descriptor
+			// reference), so the async state's destructor has to retry it on
+			// release. Without that retry the entry — and its RocksDB, and the
+			// follower's workspace lock — outlive every handle.
+			const reopened = new RocksDatabase(dbPath, { secondaryPath });
+			reopened.open();
+			const racing = reopened.catchUpWithPrimary().then(
+				() => 'settled',
+				() => 'settled'
+			);
+			reopened.close();
+			await expect(racing).resolves.toBe('settled');
+			await vi.waitFor(() =>
+				expect(registryStatus().filter((entry) => entry.path === dbPath)).toEqual([])
+			);
 		} finally {
 			secondary.close();
 			primary.close();

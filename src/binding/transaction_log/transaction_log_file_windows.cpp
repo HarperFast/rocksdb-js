@@ -702,18 +702,20 @@ bool TransactionLogFile::zeroTailLocked(uint32_t newSize, uint32_t entriesEnd) {
 	// stale bytes reading as an entry (invariant 5). A crash before that final
 	// chunk instead leaves the original framing break, which the next open's
 	// recovery re-detects and re-attempts.
-	// The boundary write is its own sector so the barrier below actually
-	// separates it: making it a whole 64 KiB chunk would put the boundary and
-	// the stale bytes behind it in one buffered write for any tail smaller than
-	// that — the common case, a single partial entry — and the cache could
-	// still persist the boundary page first. A sector is the smallest unit a
-	// drive writes atomically, so a crash either lands these zeros or leaves the
-	// torn tail; there is no third state.
+	// The boundary write covers `newSize` to the end of the sector it sits in,
+	// and nothing more, so the barrier below actually separates it. Two sizes
+	// would not: a whole 64 KiB chunk puts the boundary and the stale bytes
+	// behind it in one buffered write for any tail smaller than that (the common
+	// case, a single partial entry), and a fixed 512 bytes from an arbitrary
+	// entry offset straddles two sectors. Within one sector the drive either
+	// lands these zeros or leaves the torn tail; there is no third state where a
+	// clean end-of-entries marker sits above bytes that are still live.
 	constexpr uint32_t chunkSize = 64 * 1024;
 	constexpr uint32_t sectorSize = 512;
 	uint32_t tailLength = entriesEnd - newSize;
 	std::vector<char> zeros(std::min(chunkSize, tailLength), 0);
-	uint32_t finalChunkEnd = newSize + std::min(sectorSize, tailLength);
+	uint32_t boundarySectorEnd = ((newSize / sectorSize) + 1) * sectorSize;
+	uint32_t finalChunkEnd = std::min(entriesEnd, boundarySectorEnd);
 	for (uint32_t end = entriesEnd; end > finalChunkEnd; ) {
 		uint32_t remaining = end - finalChunkEnd;
 		uint32_t toWrite = remaining < chunkSize ? remaining : chunkSize;
