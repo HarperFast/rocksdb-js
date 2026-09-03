@@ -530,8 +530,7 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	// DBHandle::close()'s async-work drain is bounded and its failure ignored —
 	// cannot reset descriptor->db under a long replay (a follower catching up on
 	// a big backlog opens every new SST/blob eagerly and routinely exceeds the
-	// drain timeout). Same discipline, same isClosing() ordering rationale, as
-	// CreateCheckpoint's claim.
+	// drain timeout).
 	auto descriptor = (*dbHandle)->descriptor;
 	++descriptor->operationsInFlight;
 	bool handedOff = false;
@@ -570,9 +569,8 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 			} else {
 				state->status = state->descriptor->catchUpWithPrimary();
 			}
-			// Release the in-flight claim made on the JS thread (the worker owns
-			// this decrement once the work was queued); wake any finishClose()
-			// waiting on it before it tears down descriptor->db.
+			// Wake any finishClose() waiting on the claim before it tears down
+			// descriptor->db.
 			state->releaseInFlight();
 			state->signalExecuteCompleted();
 		},

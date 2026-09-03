@@ -335,8 +335,11 @@ are not (the reader's view of the file extent is fixed at open), while a writer 
 process shares the store object, so its appends are. Either way a log entry can describe data the
 database view does not have yet — the log write completes before the RocksDB commit for every
 writer, so log-leads-database is the normal direction and a consumer has to tolerate it. Serialize
-catch-up calls per database — concurrent calls queue on libuv workers behind an internal
-per-database mutex.
+catch-up calls per database. Each async call holds a libuv worker for the whole replay, and
+concurrent calls queue on an internal per-database mutex while holding theirs, so a handful of
+overlapping catch-ups on a backlogged follower can exhaust the default four-thread pool and stall
+unrelated `fs`/`dns`/`crypto` work in the process. Await one before starting the next rather than
+firing one per timer tick.
 
 ```typescript
 const primary = RocksDatabase.open('/path/to/database');

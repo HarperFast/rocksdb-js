@@ -231,8 +231,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 		}
 
-		// Release our references to the descriptors
-		// This will trigger the destructors which properly close the DBs
 		DEBUG_LOG("%p DBRegistry::DestroyDB Releasing descriptor references\n", instance.get());
 		claimed.clear();
 	} else {

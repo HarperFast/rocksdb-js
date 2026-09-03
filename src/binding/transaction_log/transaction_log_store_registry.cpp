@@ -43,6 +43,24 @@ void TransactionLogStoreRegistry::Shutdown() {
 	}
 }
 
+namespace {
+
+/**
+ * The entry map keys one database's log stores by its path, and the guards that
+ * keep a writer off a read-only-loaded store (and vice versa) only meet when
+ * both handles land on the same entry. Two spellings of one directory —
+ * relative vs absolute, a trailing slash, macOS `/tmp` resolving to
+ * `/private/tmp` — would otherwise open two entries over ONE `transaction_logs`
+ * tree, and the guards would look past each other while a writer truncates a
+ * segment a reader has mapped and handed to JS. File identity is the key;
+ * resolve it before taking `entriesMutex` (it touches the filesystem).
+ */
+std::string registryKey(const std::string& dbPath) {
+	return rocksdb_js::resolveIdentityPath(dbPath).string();
+}
+
+} // namespace
+
 /**
  * Registers a DBDescriptor for the given database path.
  */
@@ -52,15 +70,16 @@ void TransactionLogStoreRegistry::Register(const std::string& dbPath, const Tran
 		return;
 	}
 
+	const std::string key = registryKey(dbPath);
 	std::lock_guard<std::mutex> lock(instance->entriesMutex);
 
-	auto it = instance->entries.find(dbPath);
+	auto it = instance->entries.find(key);
 	if (it == instance->entries.end()) {
 		// Create new entry
 		auto entry = std::make_shared<TransactionLogStoreRegistryEntry>(config);
 		DEBUG_LOG("%p TransactionLogStoreRegistry::Register Created entry for \"%s\" (refCount=1)\n",
 			instance.get(), dbPath.c_str());
-		instance->entries.emplace(dbPath, entry);
+		instance->entries.emplace(key, entry);
 	} else {
 		// Increment reference count
 		it->second->refCount++;
@@ -74,8 +93,9 @@ void TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(const std::stri
 		return;
 	}
 
+	const std::string key = registryKey(dbPath);
 	std::lock_guard<std::mutex> lock(instance->entriesMutex);
-	auto it = instance->entries.find(dbPath);
+	auto it = instance->entries.find(key);
 	if (it == instance->entries.end()) {
 		return;
 	}
@@ -107,9 +127,10 @@ void TransactionLogStoreRegistry::Unregister(const std::string& dbPath) {
 	std::vector<std::shared_ptr<TransactionLogStore>> storesToClose;
 
 	{
+		const std::string key = registryKey(dbPath);
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 
-		auto it = instance->entries.find(dbPath);
+		auto it = instance->entries.find(key);
 		if (it == instance->entries.end()) {
 			DEBUG_LOG("%p TransactionLogStoreRegistry::Unregister Entry not found for \"%s\"\n",
 				instance.get(), dbPath.c_str());
@@ -157,17 +178,17 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath, bool
 	TransactionLogStoreConfig config;
 
 	{
+		const std::string key = registryKey(dbPath);
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 
-		auto it = instance->entries.find(dbPath);
+		auto it = instance->entries.find(key);
 		if (it == instance->entries.end()) {
 			DEBUG_LOG("%p TransactionLogStoreRegistry::DiscoverStores Entry not found for \"%s\"\n",
 				instance.get(), dbPath.c_str());
 			return;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the
-		// lock, and a config copy to read it without holding entriesMutex.
+		// The copies outlive the lock.
 		entry = it->second;
 		config = entry->config;
 	}
@@ -230,17 +251,17 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	TransactionLogStoreConfig config;
 
 	{
+		const std::string key = registryKey(dbPath);
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 
-		auto it = instance->entries.find(dbPath);
+		auto it = instance->entries.find(key);
 		if (it == instance->entries.end()) {
 			DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Entry not found for \"%s\"\n",
 				instance.get(), dbPath.c_str());
 			return nullptr;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the
-		// lock, and a config copy to read it without holding entriesMutex.
+		// The copies outlive the lock.
 		entry = it->second;
 		config = entry->config;
 	}
@@ -318,16 +339,17 @@ napi_value TransactionLogStoreRegistry::ListStores(napi_env env, const std::stri
 	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 
 	{
+		const std::string key = registryKey(dbPath);
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 
-		auto it = instance->entries.find(dbPath);
+		auto it = instance->entries.find(key);
 		if (it == instance->entries.end()) {
 			DEBUG_LOG("%p TransactionLogStoreRegistry::ListStores Entry not found for \"%s\"\n",
 				instance.get(), dbPath.c_str());
 			return result;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the lock
+		// The copy outlives the lock.
 		entry = it->second;
 	}
 
@@ -375,16 +397,17 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 
 	{
+		const std::string key = registryKey(dbPath);
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 
-		auto it = instance->entries.find(dbPath);
+		auto it = instance->entries.find(key);
 		if (it == instance->entries.end()) {
 			DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Entry not found for \"%s\"\n",
 				instance.get(), dbPath.c_str());
 			return removed;
 		}
 
-		// Take a shared_ptr copy to keep the entry alive after releasing the lock
+		// The copy outlives the lock.
 		entry = it->second;
 	}
 
@@ -472,9 +495,10 @@ std::vector<std::shared_ptr<TransactionLogStore>> TransactionLogStoreRegistry::G
 	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 
 	{
+		const std::string key = registryKey(dbPath);
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 
-		auto it = instance->entries.find(dbPath);
+		auto it = instance->entries.find(key);
 		if (it == instance->entries.end()) {
 			return result;
 		}

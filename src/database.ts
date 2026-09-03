@@ -422,6 +422,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * handle's database view does not have yet — the log write completes before
 	 * the RocksDB commit for every writer, so consumers must tolerate the log
 	 * leading the database.
+	 *
+	 * Await one call before starting the next: the replay holds a libuv worker
+	 * for its whole duration and concurrent calls queue on a per-database mutex
+	 * while holding theirs, so overlapping catch-ups on a backlogged follower
+	 * can exhaust the default four-thread pool and stall unrelated I/O.
 	 */
 	catchUpWithPrimary(): Promise<void> {
 		return new Promise((resolve, reject) => this.store.db.catchUpWithPrimary(resolve, reject));

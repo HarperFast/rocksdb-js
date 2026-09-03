@@ -401,6 +401,35 @@ describe('Readonly Operations', () => {
 			}
 		));
 
+	// The guard only meets both handles when they land on the same log-store
+	// registry entry, and the entry is keyed by path. Two spellings of one
+	// directory (a trailing slash here; a relative path or a symlinked /tmp in
+	// the field) used to open two entries over one transaction_logs tree, so the
+	// writer never saw the reader and truncated a segment the reader had mapped.
+	it('should refuse a writable open spelled differently from the readonly one', () =>
+		dbRunner(
+			{ skipOpen: true, dbOptions: [{}, { readOnly: true }] },
+			async ({ db, dbPath }, { db: readOnly }) => {
+				db.open();
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					await txn.put('foo', 'bar');
+					log.addEntry(Buffer.from('hello'), txn.id);
+				});
+				db.close();
+
+				readOnly.open();
+				const writer = new RocksDatabase(`${dbPath}/`);
+				try {
+					expect(() => writer.open()).toThrow(
+						'transaction logs are open read-only in this process'
+					);
+				} finally {
+					writer.close();
+				}
+			}
+		));
+
 	it('should open a db in readonly mode in separate process', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			db.putSync('foo', 'bar');

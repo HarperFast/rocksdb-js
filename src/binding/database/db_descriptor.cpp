@@ -1426,8 +1426,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				throw rocksdb_js::DBException(
 					"ERR_CONCURRENT_COMPACTION",
 					"Secondary open failed: a file this open needed was already gone when it tried to "
-					"read it — the primary removed it (compaction, blob GC, or flush) mid-open. The "
-					"database is not corrupt; retry the open. (" + status.ToString() + ")"
+					"read it. If the primary is live, it removed the file (compaction, blob GC, or "
+					"flush) mid-open and the database is not corrupt — retry the open. If the primary "
+					"is not running, the file is genuinely missing. (" + status.ToString() + ")"
 				);
 			}
 			throw rocksdb_js::DBException(
