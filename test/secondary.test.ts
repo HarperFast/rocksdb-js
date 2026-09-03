@@ -353,7 +353,10 @@ describe('Secondary Instances', () => {
 			// stays where the last catch-up left it. More than one call may be
 			// needed: catch-up replays what the primary has made visible, and the
 			// exited writer's last MANIFEST/WAL records can still be landing.
-			for (let attempt = 0; attempt < 40 && secondary.getSync('round') !== rounds; attempt++) {
+			// A small budget on purpose: it absorbs an exiting writer's last
+			// records still landing, and still fails if one catch-up is
+			// systematically not enough.
+			for (let attempt = 0; attempt < 5 && secondary.getSync('round') !== rounds; attempt++) {
 				await secondary.catchUpWithPrimary();
 				if (secondary.getSync('round') !== rounds) {
 					await delay(25);

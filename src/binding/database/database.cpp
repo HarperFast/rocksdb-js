@@ -692,15 +692,13 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 
 	if (*dbHandle) {
 		try {
-			// Prefer the identity the descriptor resolved at open: re-deriving it
-			// from a mapping that may have moved since would name a different
-			// directory than the one this handle is using. A closed handle has no
-			// descriptor left, so destroy still accepts the path it was opened
-			// with and DestroyDB resolves that itself.
+			// The identity this handle resolved at open, which it keeps after
+			// close: re-deriving it from the caller's spelling would follow a
+			// mapping that may have moved since and name a different database.
 			DBRegistry::DestroyDB(
-				(*dbHandle)->descriptor
-					? (*dbHandle)->descriptor->identityPath
-					: (*dbHandle)->path
+				(*dbHandle)->identityPath.empty()
+					? (*dbHandle)->path
+					: (*dbHandle)->identityPath
 			);
 		} catch (const std::exception& e) {
 			DEBUG_LOG("%p Database::Destroy Error: %s\n", dbHandle->get(), e.what());
