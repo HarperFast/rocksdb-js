@@ -199,7 +199,10 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * `weakly_canonical`/`absolute` consult the process CWD, so a `process.chdir()`
 	 * after open would remap this handle's key — a later `useLog()` would miss the
 	 * entry and, for a writer, create a second store outside the database, while
-	 * `Unregister()` would miss the original and never close its stores.
+	 * `Unregister()` would miss the original and never close its stores. It is
+	 * resolved exactly once per open, by `DBDescriptor::open` — which needs it
+	 * before this object exists, for the writable-adoption guard — and passed in,
+	 * so no two resolutions within one open can disagree.
 	 */
 	std::string logRegistryKey;
 
@@ -489,6 +492,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 private:
 	DBDescriptor(
 		const std::string& path,
+		const std::string& logRegistryKey,
 		const DBOptions& options,
 		const rocksdb::ColumnFamilyOptions& cfOptions,
 		std::shared_ptr<rocksdb::DB> db,

@@ -266,6 +266,79 @@ describe('Secondary Instances', () => {
 		}
 	});
 
+	// The mode's headline case, in the shape it actually runs: the primary is a
+	// separate PROCESS. A worker thread would share this process's log-store
+	// registry and file handles with the follower, which is exactly the
+	// configuration whose transaction-log semantics differ.
+	it('should follow a primary running in another process', async () => {
+		const dbPath = generateDBPath();
+		const secondaryPath = `${dbPath}.secondary`;
+		const setup = new RocksDatabase(dbPath);
+		setup.open();
+		setup.putSync('round', 0);
+		setup.close();
+
+		const secondary = new RocksDatabase(dbPath, { secondaryPath });
+		const rounds = 12;
+		try {
+			secondary.open();
+			expect(secondary.getSync('round')).toBe(0);
+
+			const seen: number[] = [];
+			await new Promise<void>((resolve, reject) => {
+				const child = spawn(process.execPath, [
+					join(__dirname, 'fixtures', 'fork-secondary-writer.mts'),
+					dbPath,
+					String(rounds),
+					String(4096),
+				]);
+				let output = '';
+				let pending = Promise.resolve();
+				child.stdout.on('data', (chunk) => {
+					output += chunk;
+					// Catch up while the writer keeps flushing and compacting, so
+					// the follower is reading a directory whose files are being
+					// deleted under it.
+					pending = pending.then(async () => {
+						await secondary.catchUpWithPrimary();
+						seen.push(secondary.getSync('round') as number);
+					});
+				});
+				child.stderr.on('data', (chunk) => (output += chunk));
+				child.on('close', (code) => {
+					pending.then(
+						() => {
+							try {
+								expect(code, output).toBe(0);
+								resolve();
+							} catch (error) {
+								reject(error);
+							}
+						},
+						(error) => reject(error)
+					);
+				});
+				child.on('error', reject);
+			});
+
+			// Never went backwards, and every read succeeded against a directory
+			// the writer was reclaiming files from.
+			expect(seen.length).toBeGreaterThan(0);
+			for (let i = 1; i < seen.length; i++) {
+				expect(seen[i]).toBeGreaterThanOrEqual(seen[i - 1]);
+			}
+
+			// A final catch-up sees the writer's last round; without it the view
+			// stays where the last catch-up left it.
+			await secondary.catchUpWithPrimary();
+			expect(secondary.getSync('round')).toBe(rounds);
+			expect(secondary.getSync('key0')).toBe(`${'v'.repeat(4096)}${rounds}`);
+		} finally {
+			secondary.close();
+			cleanup(dbPath, secondaryPath);
+		}
+	});
+
 	it('should tolerate a missing file at secondary open (point-in-time fallback)', async () => {
 		const dbPath = generateDBPath();
 		const secondaryPath = `${dbPath}.secondary`;

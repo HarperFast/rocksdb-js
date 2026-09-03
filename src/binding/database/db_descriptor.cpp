@@ -368,6 +368,7 @@ static uint64_t writeStallDebounceMs();
  */
 DBDescriptor::DBDescriptor(
 	const std::string& path,
+	const std::string& logRegistryKey,
 	const DBOptions& options,
 	const rocksdb::ColumnFamilyOptions& cfOptions,
 	std::shared_ptr<rocksdb::DB> db,
@@ -375,7 +376,7 @@ DBDescriptor::DBDescriptor(
 	std::shared_ptr<rocksdb::Statistics> statistics
 ):
 	path(path),
-	logRegistryKey(rocksdb_js::resolveIdentityPath(path).string()),
+	logRegistryKey(logRegistryKey),
 	vtEpoch(nextVtEpoch()),
 	mode(options.mode),
 	readOnly(options.readOnly),
@@ -1231,8 +1232,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
 
-	// Resolved once here and again on the descriptor, so this guard and every
-	// later registry call for this database agree on one entry (see
+	// The one resolution for this open: the guard below needs it before the
+	// descriptor exists, and the descriptor carries this exact string, so every
+	// registry call for this database agrees on one entry (see
 	// DBDescriptor::logRegistryKey for why re-resolving per call is unsafe).
 	const std::string logRegistryKey = rocksdb_js::resolveIdentityPath(path).string();
 
@@ -1379,17 +1381,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		// (Database::Open already rejected an explicit conflicting request).
 		dbOptions.max_open_files = -1;
 
-		// The secondary's workspace is created here (missing parents included);
-		// RocksDB itself creates its files inside it but a clearer error belongs
-		// to the path the caller actually passed.
-		std::error_code createError;
-		std::filesystem::create_directories(options.secondaryPath, createError);
-		if (createError) {
-			throw rocksdb_js::DBException(
-				"Failed to create secondary path \"" + options.secondaryPath + "\": " + createError.message()
-			);
-		}
-
 		// The workspace must be neither the primary's data directory nor nested
 		// inside it: the lock file and the secondary's info-LOG rotation would
 		// land among the primary's files, and destroy()'s remove_all(path)
@@ -1400,6 +1391,17 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 				rocksdb_js::resolveIdentityPath(path), options.secondaryPath)) {
 			throw rocksdb_js::DBException(
 				"secondaryPath must be a separate directory outside the database path \"" + path + "\""
+			);
+		}
+
+		// The secondary's workspace is created here (missing parents included);
+		// RocksDB itself creates its files inside it but a clearer error belongs
+		// to the path the caller actually passed.
+		std::error_code createError;
+		std::filesystem::create_directories(options.secondaryPath, createError);
+		if (createError) {
+			throw rocksdb_js::DBException(
+				"Failed to create secondary path \"" + options.secondaryPath + "\": " + createError.message()
 			);
 		}
 
@@ -1530,7 +1532,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, logRegistryKey, options, cfOptions, db, std::move(columns), dbOptions.statistics));
 	descriptor->secondaryLockToken = secondaryLock.token;
 	secondaryLock.token = 0;
 
@@ -1545,8 +1547,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
-	TransactionLogStoreRegistry::Register(logRegistryKey, logConfig);
-	TransactionLogStoreRegistry::DiscoverStores(logRegistryKey, options.readOnly);
+	TransactionLogStoreRegistry::Register(descriptor->logRegistryKey, logConfig);
+	TransactionLogStoreRegistry::DiscoverStores(descriptor->logRegistryKey, options.readOnly);
 
 	return descriptor;
 }

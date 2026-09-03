@@ -18,8 +18,12 @@ static bool namesFileWithExtension(const std::string& message, const char* exten
 			return true;
 		}
 		const char next = message[end];
+		// Whitespace, quoting, or punctuation ends the filename token. `\r` and
+		// `\t` matter on Windows, whose FormatMessage text this classifier
+		// explicitly matches and which ends lines with CRLF.
 		if (next == ':' || next == ' ' || next == '\'' || next == '"' ||
-			next == ')' || next == ',' || next == '\n'
+			next == ')' || next == ',' || next == ';' ||
+			next == '\n' || next == '\r' || next == '\t'
 		) {
 			return true;
 		}

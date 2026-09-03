@@ -36,6 +36,17 @@ TEST(OpenStatus, WindowsNotFoundTextNamingSstIsTheRace) {
 	EXPECT_TRUE(isMissingSstOpenRace(status));
 }
 
+// A Windows status can end the line right after the filename (FormatMessage
+// text is CRLF-terminated), so the filename token must end on \r as well —
+// otherwise the classifier misses on the one platform whose wording it
+// explicitly matches.
+TEST(OpenStatus, CrlfTerminatedFilenameIsTheRace) {
+	rocksdb::Status status = rocksdb::Status::IOError(
+		"While open a file for random read: C:\\data\\db\\000046.sst\r\n"
+		"The system cannot find the file specified.\r\n");
+	EXPECT_TRUE(isMissingSstOpenRace(status));
+}
+
 // Real corruption inside an SST names the file but carries no not-found
 // signal; it must keep failing as corruption.
 TEST(OpenStatus, ChecksumMismatchInSstIsNotTheRace) {

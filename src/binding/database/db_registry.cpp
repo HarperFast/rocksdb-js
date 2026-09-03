@@ -308,8 +308,14 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// Same primary + same workspace shares the descriptor via the registry key;
 	// a different primary on the same workspace is rejected.
 	if (!options.secondaryPath.empty()) {
+		// The workspace is compared as resolved text on both sides, so the primary
+		// must be too: DBKey.path is the caller's raw spelling, and rejecting
+		// "/data/db" against "/data/./db" would tell a second component that its
+		// own database already owns the workspace.
+		const std::string primaryIdentity = rocksdb_js::resolveIdentityPath(path).string();
 		for (const auto& [existingKey, existingEntry] : instance->databases) {
-			if (existingKey.secondaryPath == options.secondaryPath && existingKey.path != path) {
+			if (existingKey.secondaryPath == options.secondaryPath &&
+				rocksdb_js::resolveIdentityPath(existingKey.path).string() != primaryIdentity) {
 				throw rocksdb_js::DBException(
 					"secondaryPath \"" + options.secondaryPath + "\" is already in use by database \"" +
 					existingKey.path + "\"; each secondary instance requires its own workspace directory"
