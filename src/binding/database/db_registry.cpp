@@ -203,8 +203,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 		}
 
-		// Now that the closes are complete, remove the path's entries and wake
-		// any OpenDB waiting on this path.
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 			for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
@@ -224,8 +222,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			std::rethrow_exception(closeError);
 		}
 
-		// After closing, check for lingering references — each descriptor
-		// should only have our local claim (= 1) at this point
+		// Each descriptor should hold only our local claim by now.
 		for (auto& [descriptor, condition] : claimed) {
 			size_t refCountAfterClose = descriptor.use_count();
 			if (refCountAfterClose > 1) {
@@ -349,20 +346,35 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		entryIterator = it;
 	}
 
-	auto& entry = entryIterator->second;
-
-	// wait for any closing database on this specific path to be fully removed before proceeding
-	entry.condition->wait(lock, [&]() {
-		if (entry.descriptor) {
-			if (entry.descriptor->isClosing()) {
-				DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str());
-				entry.descriptor.reset();
-				return false; // keep waiting
-			}
-			return true; // database exists and is not closing
+	// Wait for any closing database on this path to be fully removed. The map
+	// node must not be held across the wait: DestroyDB erases every entry for
+	// the path, so a reference into it would dangle and its condition variable
+	// would be destroyed with this thread still parked on it. Re-find the entry
+	// after every wake and park on whatever condition the CURRENT entry has —
+	// an entry erased and re-created while we waited carries a new condition,
+	// and staying on the old one would miss its notify.
+	while (true) {
+		entryIterator = instance->databases.find(key);
+		if (entryIterator == instance->databases.end()) {
+			entryIterator = instance->databases.emplace(key, DBRegistryEntry()).first;
+			break; // no database on this path: proceed to open
 		}
-		return true; // database doesn't exist, can proceed
-	});
+		auto& current = entryIterator->second;
+		if (!current.descriptor) {
+			break; // entry exists but holds no database
+		}
+		if (!current.descriptor->isClosing()) {
+			break; // database exists and is not closing
+		}
+		DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str());
+		// Drop the registry's reference so the closer can finish, then own the
+		// condition across the wait: the closer notifies it after erasing.
+		current.descriptor.reset();
+		std::shared_ptr<std::condition_variable> condition = current.condition;
+		condition->wait(lock);
+	}
+
+	auto& entry = entryIterator->second;
 
 	// at this point, either:
 	// 1. descriptor is set to a valid, non-closing database, or

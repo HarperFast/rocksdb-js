@@ -569,8 +569,6 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 			} else {
 				state->status = state->descriptor->catchUpWithPrimary();
 			}
-			// Wake any finishClose() waiting on the claim before it tears down
-			// descriptor->db.
 			state->releaseInFlight();
 			state->signalExecuteCompleted();
 		},
