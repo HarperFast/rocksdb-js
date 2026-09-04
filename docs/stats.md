@@ -73,12 +73,11 @@ By default, `db.getStats()` returns properties only.
 | `txnlog.totalSizeBytes`                     | Total on-disk size in bytes of all transaction log files, summed across all logs.                                                                                                                                             | gauge  |
 | `txnlog.transactionsWritten`                | Cumulative number of transactions successfully written to the logs (lifetime total), summed across all logs.                                                                                                                  | ticker |
 | `txnlog.uncommittedTransactions`            | Number of transactions written to a log but not yet committed to RocksDB, summed across all logs.                                                                                                                             | gauge  |
-
-| `writeBufferManager.bufferSize` | The `WriteBufferManager`'s memtable-memory budget in bytes, read live. `0` when no manager is configured. **Process-wide**, not per-database — see below. | gauge |
-| `writeBufferManager.memoryUsage` | Total memtable memory in bytes charged against the manager. **Process-wide.** | gauge |
-| `writeBufferManager.mutableMemoryUsage` | The share of `writeBufferManager.memoryUsage` held by active (mutable) memtables; the rest is awaiting flush or retained write history. **Process-wide.** | gauge |
-| `writeBufferManager.stallActive` | `1` while the manager is stalling writes, else `0`. **Process-wide.** | gauge |
-| `writeBufferManager.stallActiveMs` | How long the current stall has been active, in milliseconds; `0` when not stalled. Sampled once a second by the stall watchdog. **Process-wide.** | gauge |
+| `writeBufferManager.bufferSize`             | The `WriteBufferManager`'s memtable-memory budget in bytes, read live. `0` when no manager is configured. **Process-wide**, not per-database — see below.                                                                     | gauge  |
+| `writeBufferManager.memoryUsage`            | Total memtable memory in bytes charged against the manager. **Process-wide.**                                                                                                                                                 | gauge  |
+| `writeBufferManager.mutableMemoryUsage`     | The share of `writeBufferManager.memoryUsage` held by active (mutable) memtables; the rest is awaiting flush or retained write history. **Process-wide.**                                                                     | gauge  |
+| `writeBufferManager.stallActive`            | `1` while the manager is stalling writes, else `0`. **Process-wide.**                                                                                                                                                         | gauge  |
+| `writeBufferManager.stallActiveMs`          | How long the current stall has been active, in milliseconds; `0` when not stalled. Sampled once a second by the stall watchdog. **Process-wide.**                                                                             | gauge  |
 
 #### The `writeBufferManager.*` keys are process-wide
 

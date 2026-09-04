@@ -119,6 +119,20 @@ TEST(ResolveWbmStallWarnMs, DefaultsWhenUnsetOrMalformed) {
 	EXPECT_EQ(resolveWbmStallWarnMs("86400001"), 5000u);
 }
 
+TEST(ResolveWbmStallWarnMs, ReportsWhichInputsItRefused) {
+	bool rejected = true;
+	EXPECT_EQ(resolveWbmStallWarnMs(nullptr, &rejected), 5000u);
+	EXPECT_FALSE(rejected); // unset is not a rejection
+	EXPECT_EQ(resolveWbmStallWarnMs("2500", &rejected), 2500u);
+	EXPECT_FALSE(rejected);
+	EXPECT_EQ(resolveWbmStallWarnMs("1", &rejected), 1000u);
+	EXPECT_FALSE(rejected); // clamped up, not refused
+	EXPECT_EQ(resolveWbmStallWarnMs("abc", &rejected), 5000u);
+	EXPECT_TRUE(rejected);
+	EXPECT_EQ(resolveWbmStallWarnMs("86400001", &rejected), 5000u);
+	EXPECT_TRUE(rejected);
+}
+
 TEST(ResolveWbmStallWarnMs, ZeroDisablesAndSubSampleClampsUp) {
 	EXPECT_EQ(resolveWbmStallWarnMs("0"), 0u);
 	EXPECT_EQ(resolveWbmStallWarnMs("1"), 1000u);
@@ -162,6 +176,19 @@ TEST(FormatWriteBufferManagerStallReport, GroupsAMixedRetentionInventory) {
 		),
 		std::string::npos
 	);
+}
+
+TEST(FormatWriteBufferManagerStallReport, SaysSoWhenTheInventoryCouldNotBeCollected) {
+	WriteBufferManagerStallReport report;
+	report.bufferSize = 1024;
+	report.memoryUsage = 1024;
+	report.inventoryAvailable = false;
+	std::string line = formatWriteBufferManagerStallReport(report);
+	// The alarm still fires: it must not wait on a registry lock held by a close
+	// that is itself stuck behind this stall.
+	EXPECT_NE(line.find("usage=1.0KB"), std::string::npos);
+	EXPECT_NE(line.find("columnFamilies=unavailable"), std::string::npos);
+	EXPECT_NE(line.find("maxWriteBufferSizeToMaintain=unavailable"), std::string::npos);
 }
 
 TEST(FormatWriteBufferManagerStallReport, OmitsPercentagesWhenThereIsNoBudget) {

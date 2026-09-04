@@ -35,6 +35,12 @@ struct WriteBufferManagerStats final {
 	bool watchdogRunning = false;
 	uint64_t columnFamilies = 0;
 	std::map<int64_t, uint64_t> maxWriteBufferSizeToMaintain;
+	/**
+	 * False when the registry lock was held by a close that is itself wedged on
+	 * the stall being diagnosed, so the two fields above are empty rather than
+	 * measured. A diagnostic that blocks on that lock answers nothing at all.
+	 */
+	bool inventoryAvailable = true;
 };
 
 /**
@@ -98,9 +104,14 @@ private:
 	std::condition_variable watchdogCv;
 	bool watchdogStarted = false;
 	bool watchdogStopRequested = false;
+	// Bumped on every start. A thread whose generation is stale exits even if a
+	// new start has already cleared `watchdogStopRequested`: the joiner releases
+	// watchdogMutex before `join()`, so without this the retiring thread can
+	// observe the reset flag and loop forever with its joiner blocked on it.
+	uint64_t watchdogGeneration = 0;
 
 	void ensureWriteBufferManagerWatchdog();
-	void runWriteBufferManagerWatchdog();
+	void runWriteBufferManagerWatchdog(uint64_t generation);
 	void sampleWriteBufferManagerStall(WbmStallWatchdogState& state, uint64_t thresholdMs);
 
 	bool compactOnClose;
@@ -176,6 +187,14 @@ public:
 
 	/** Joins the stall watchdog. Idempotent, and restartable afterwards. */
 	void joinWriteBufferManagerWatchdog();
+
+	/**
+	 * Joins the watchdog if the module's cleanup hook never ran. `process.exit()`
+	 * skips N-API env cleanup, and destroying a joinable `std::thread` calls
+	 * `std::terminate()` — an observability feature must not turn a clean exit
+	 * into SIGABRT. Mirrors `~CommitWorker`.
+	 */
+	~DBSettings();
 
 	inline bool getCompactOnClose() const {
 		return compactOnClose;

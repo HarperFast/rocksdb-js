@@ -102,8 +102,14 @@ public:
 	 * order `OpenDB` already establishes) and copies no `shared_ptr` out, so it
 	 * cannot inflate a descriptor's use count and make a racing close skip its
 	 * purge. Safe to call from a non-JS thread.
+	 *
+	 * `databasesMutex` is acquired with `try_lock`, returning false rather than
+	 * waiting: `PurgeAll` holds it across `descriptor->close()`, whose flush waits
+	 * out a write stall (AGENTS.md note 16), so blocking here would silence the
+	 * stall alarm and hang `getWriteBufferManagerStats()` during exactly the
+	 * incident both exist to report.
 	 */
-	static void CollectWriteBufferManagerInventory(
+	static bool CollectWriteBufferManagerInventory(
 		const rocksdb::WriteBufferManager* wbm,
 		uint64_t& columnFamilies,
 		std::map<int64_t, uint64_t>& maxWriteBufferSizeToMaintain

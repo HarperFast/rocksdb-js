@@ -697,6 +697,13 @@ export type WriteBufferManagerStats = {
 	/** Live column families across every writable database attached to this manager. */
 	columnFamilies: number;
 	/**
+	 * `false` when the column-family inventory could not be collected because the
+	 * database registry was locked — most plausibly by a close that is itself
+	 * waiting out this stall. `columnFamilies` is then `0` and
+	 * `maxWriteBufferSizeToMaintain` empty; every other field is still live.
+	 */
+	inventoryAvailable: boolean;
+	/**
 	 * Effective per-column-family `max_write_buffer_size_to_maintain` (as a decimal
 	 * string) to the number of those column families holding it. Effective, not
 	 * requested: RocksDB rewrites a requested `0` for a transaction database.

@@ -35,7 +35,10 @@ void appendPercentOfBudget(std::ostringstream& out, uint64_t part, uint64_t budg
 
 } // namespace
 
-uint64_t resolveWbmStallWarnMs(const char* raw) {
+uint64_t resolveWbmStallWarnMs(const char* raw, bool* rejected) {
+	if (rejected != nullptr) {
+		*rejected = false;
+	}
 	if (raw == nullptr || *raw == '\0') {
 		return WBM_STALL_WARN_MS_DEFAULT;
 	}
@@ -44,6 +47,9 @@ uint64_t resolveWbmStallWarnMs(const char* raw) {
 	long long parsed = ::strtoll(raw, &end, 10);
 	if (errno != 0 || end == raw || *end != '\0' || parsed < 0 ||
 		static_cast<unsigned long long>(parsed) > WBM_STALL_WARN_MS_MAX) {
+		if (rejected != nullptr) {
+			*rejected = true;
+		}
 		return WBM_STALL_WARN_MS_DEFAULT;
 	}
 	uint64_t value = static_cast<uint64_t>(parsed);
@@ -70,8 +76,12 @@ std::string formatWriteBufferManagerStallReport(const WriteBufferManagerStallRep
 	appendBytes(out, report.mutableMemoryUsage);
 	appendPercentOfBudget(out, report.mutableMemoryUsage, report.bufferSize);
 	out << " allowStall=" << (report.allowStall ? "true" : "false")
-		<< " costToCache=" << (report.costToCache ? "true" : "false")
-		<< " columnFamilies=" << report.columnFamilies << " maxWriteBufferSizeToMaintain={";
+		<< " costToCache=" << (report.costToCache ? "true" : "false");
+	if (!report.inventoryAvailable) {
+		out << " columnFamilies=unavailable maxWriteBufferSizeToMaintain=unavailable";
+		return out.str();
+	}
+	out << " columnFamilies=" << report.columnFamilies << " maxWriteBufferSizeToMaintain={";
 	bool first = true;
 	for (const auto& [target, count] : report.maxWriteBufferSizeToMaintain) {
 		if (!first) {

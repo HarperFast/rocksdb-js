@@ -240,15 +240,18 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), path.c_str());
 }
 
-void DBRegistry::CollectWriteBufferManagerInventory(
+bool DBRegistry::CollectWriteBufferManagerInventory(
 	const rocksdb::WriteBufferManager* wbm,
 	uint64_t& columnFamilies,
 	std::map<int64_t, uint64_t>& maxWriteBufferSizeToMaintain
 ) {
 	if (!instance || wbm == nullptr) {
-		return;
+		return false;
 	}
-	std::lock_guard<std::mutex> lock(instance->databasesMutex);
+	std::unique_lock<std::mutex> lock(instance->databasesMutex, std::try_to_lock);
+	if (!lock.owns_lock()) {
+		return false;
+	}
 	for (const auto& [key, entry] : instance->databases) {
 		const auto& descriptor = entry.descriptor;
 		if (!descriptor || descriptor->readOnly || descriptor->attachedWriteBufferManager != wbm) {
@@ -263,6 +266,7 @@ void DBRegistry::CollectWriteBufferManagerInventory(
 			maxWriteBufferSizeToMaintain[columnDescriptor->maxWriteBufferSizeToMaintain]++;
 		}
 	}
+	return true;
 }
 
 /**

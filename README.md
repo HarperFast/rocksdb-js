@@ -236,6 +236,9 @@ where the call was made.
 - `watchdogRunning: boolean` Whether the stall watchdog thread is running.
 - `columnFamilies: number` Live column families across every writable database attached to this
   manager.
+- `inventoryAvailable: boolean` `false` when the inventory could not be collected because the
+  database registry was locked — most plausibly by a close waiting out this same stall. The two
+  inventory fields are then empty and everything else is still live; the call never blocks on it.
 - `maxWriteBufferSizeToMaintain: Record<string, number>` Effective per-column-family retained-history
   target (as a decimal string) to how many of those column families carry it. Effective, not
   requested: RocksDB rewrites a requested `0` for a transaction database.

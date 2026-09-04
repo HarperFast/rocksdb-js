@@ -14,7 +14,6 @@ namespace rocksdb_js {
  */
 constexpr uint64_t WBM_STALL_SAMPLE_INTERVAL_MS = 1000;
 
-/** Default for `ROCKSDB_JS_WBM_STALL_WARN_MS`. */
 constexpr uint64_t WBM_STALL_WARN_MS_DEFAULT = 5000;
 
 /**
@@ -28,9 +27,10 @@ constexpr uint64_t WBM_STALL_WARN_MS_MAX = 24 * 60 * 60 * 1000;
  * Parses `ROCKSDB_JS_WBM_STALL_WARN_MS`. `0` disables the watchdog; anything
  * below one sample interval clamps up to it (a threshold the sampler cannot
  * resolve is a lie); malformed, negative, or out-of-range falls back to the
- * default.
+ * default. Falling back rather than clamping errs toward alarming earlier than
+ * asked, never later — but silently, so `rejected` reports it for a diagnostic.
  */
-uint64_t resolveWbmStallWarnMs(const char* raw);
+uint64_t resolveWbmStallWarnMs(const char* raw, bool* rejected = nullptr);
 
 /**
  * Decision state for the WriteBufferManager stall watchdog. Node-free and
@@ -104,6 +104,13 @@ struct WriteBufferManagerStallReport final {
 	uint64_t columnFamilies = 0;
 	/** Effective `max_write_buffer_size_to_maintain` -> number of column families with it. */
 	std::map<int64_t, uint64_t> maxWriteBufferSizeToMaintain;
+	/**
+	 * False when the registry was locked by a close that is itself wedged on this
+	 * stall, so the two fields above are empty rather than measured. The line is
+	 * still emitted: an alarm that waits for the inventory would go silent in
+	 * exactly the incident it exists for.
+	 */
+	bool inventoryAvailable = true;
 };
 
 std::string formatWriteBufferManagerStallReport(const WriteBufferManagerStallReport& report);

@@ -125,6 +125,7 @@ describe('WriteBufferManager', () => {
 
 				const opened: RocksDatabase[] = [];
 				try {
+					expect(RocksDatabase.getWriteBufferManagerStats().inventoryAvailable).toBe(true);
 					const baseline = columnFamilies();
 
 					const attached = new RocksDatabase(attachedPath, { name: 'attached' });
