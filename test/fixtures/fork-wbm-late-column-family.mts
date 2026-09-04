@@ -26,5 +26,13 @@ RocksDatabase.config({ writeBufferManagerSize: 0 });
 const late = RocksDatabase.open(join(dbPath, 'db'), { name: 'late' });
 late.putSync(Buffer.from('k'), Buffer.alloc(1024, 1));
 
+// An explicit positive target is still the caller's to choose on a late family, clamp or no clamp.
+const explicitTarget = RocksDatabase.open(join(dbPath, 'db'), {
+	name: 'explicit',
+	maxWriteBufferSizeToMaintain: 256 * 1024 * 1024,
+});
+explicitTarget.putSync(Buffer.from('k'), Buffer.alloc(1024, 1));
+
+explicitTarget.close();
 late.close();
 db.close();
