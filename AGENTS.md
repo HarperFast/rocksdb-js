@@ -886,7 +886,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     - Not covered here: `purgeLogs({ destroy: true })` removes the store directory and a fresh store
       restarts segment numbering at 1, so a cached buffer keyed by segment number can answer for a
       different store's file. That is a cache-key identity problem, not a purge-coherence one; it is
-       pre-existing and Harper does not call `destroy` in production.
+      pre-existing and Harper does not call `destroy` in production.
 
 23. **`databaseFlushed()` trusts the pathname, not `ofstream::is_open()`, before writing
     `txn.state`**: the stream is kept open across flushes, and after the file (or the whole store
