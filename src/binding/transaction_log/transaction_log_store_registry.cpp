@@ -186,9 +186,12 @@ namespace {
  * Bound on the open-time floor scan, from `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS`
  * (default 2000). Honored literally, including `0`, which scans nothing and
  * warns; there is no unbounded setting, because the failure this bounds is an
- * open that never returns. Read once per process — `::getenv` is not safe
- * against a concurrent `::setenv` from a `process.env` write — so it must be
- * set in the environment the process starts with.
+ * open that never returns. Capped at a day, since a `steady_clock` deadline is
+ * computed from it and the addition overflows in the clock's own resolution —
+ * silently wrapping into the past, which would scan nothing at all, the exact
+ * opposite of what a caller raising the value asked for. Read once per process
+ * — `::getenv` is not safe against a concurrent `::setenv` from a `process.env`
+ * write — so it must be set in the environment the process starts with.
  */
 std::chrono::milliseconds timestampFloorScanBudget() {
 	static const std::chrono::milliseconds budget = [] {
@@ -197,8 +200,9 @@ std::chrono::milliseconds timestampFloorScanBudget() {
 			try {
 				size_t consumed = 0;
 				long long parsed = std::stoll(raw, &consumed);
+				constexpr long long maxBudgetMs = 24LL * 60LL * 60LL * 1000LL;
 				if (consumed == std::strlen(raw) && parsed >= 0) {
-					return std::chrono::milliseconds(parsed);
+					return std::chrono::milliseconds(std::min(parsed, maxBudgetMs));
 				}
 			} catch (const std::exception&) {
 				// malformed: fall through to the default

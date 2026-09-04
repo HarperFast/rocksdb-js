@@ -254,6 +254,22 @@ describe('monotonic clock floor', () => {
 		expect(clock).toBeLessThan(key);
 	}, 120000);
 
+	it('still scans under a budget too large for the clock to add', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		// Raising the budget is the documented way to buy a longer scan; a value
+		// this large must not overflow the deadline and scan nothing instead.
+		const read = await runFixture('read', dbPath, key, LOG, {
+			ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS: '99999999999999',
+		});
+		expect(read.stderr).toBe('');
+		expect(read.code).toBe(0);
+		expect(JSON.parse(read.stdout).clock).toBeGreaterThan(key);
+	}, 60000);
+
 	it('leaves the clock alone when no log is named', async () => {
 		const dbPath = newDBPath();
 		const key = aheadOfNow();

@@ -216,7 +216,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   rather than its entry count, so without a bound a large log is an open that does not return. It
   goes newest segment first and, on running out, warns and keeps the floor it reached — losing
   coverage, never correctness. Honored literally, `0` included (scan nothing, warn); there is no
-  unbounded setting, so a deployment that would rather wait raises the value. Read once per process
+  unbounded setting, so a deployment that would rather wait raises the value (capped at a day: the
+  deadline is a `steady_clock` time point, and a larger value overflows its resolution and wraps
+  into the past, scanning nothing). Read once per process
   (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
   `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is started with
 - `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` - Rate-limit window (default `1000`) for the
