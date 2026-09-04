@@ -1,7 +1,6 @@
 #include "database/db_settings.h"
 #include <random>
 #include "database/db_stats.h"
-#include "napi/global_events.h"
 #include "napi/macros.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -180,12 +179,10 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	// consistent view of the manager. Throwing happens before any state
 	// mutation, so a rejected costToCache change leaves the live manager
 	// untouched.
-	bool warnStallEnabledLate = false;
 	{
 		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
 		const bool wbmAlreadyCreated = (settings.writeBufferManager != nullptr);
 		const bool oldCostToCache = settings.writeBufferManagerCostToCache.load(std::memory_order_relaxed);
-		const bool oldAllowStall = settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed);
 
 		if (wbmAlreadyCreated && costToCacheProvided && newCostToCache != oldCostToCache) {
 			::napi_throw_error(env, nullptr,
@@ -220,25 +217,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			} else {
 				DBStats::getInstance().disableWriteBufferManagerWatchdog();
 			}
-			// `max_write_buffer_size_to_maintain` is an immutable ColumnFamilyOptions field fixed
-			// when a family is created, so resolveMaxWriteBufferSizeToMaintain's stall safeguard can
-			// only ever be applied at that moment. Families created before this call keep the target
-			// they were created with, and no later configuration can lower it.
-			warnStallEnabledLate = newAllowStall && !oldAllowStall;
 		}
-	}
-
-	if (warnStallEnabledLate && GlobalEvents::hasListeners()) {
-		emitGlobalEvent(
-			"log.warn",
-			ListenerData::fromStrings({
-				"writeBufferManagerAllowStall was enabled after the WriteBufferManager was created. "
-				"Any column family created before this call keeps the retained memtable history "
-				"target it was created with, so the stall safeguard cannot be applied to it and its "
-				"history can exhaust the manager's budget. Enable it on the first config() call, "
-				"before any database is opened."
-			})
-		);
 	}
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
