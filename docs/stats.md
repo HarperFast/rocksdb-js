@@ -73,6 +73,28 @@ By default, `db.getStats()` returns properties only.
 | `txnlog.totalSizeBytes`                     | Total on-disk size in bytes of all transaction log files, summed across all logs.                                                                                                                                             | gauge  |
 | `txnlog.transactionsWritten`                | Cumulative number of transactions successfully written to the logs (lifetime total), summed across all logs.                                                                                                                  | ticker |
 | `txnlog.uncommittedTransactions`            | Number of transactions written to a log but not yet committed to RocksDB, summed across all logs.                                                                                                                             | gauge  |
+| `writeBufferManager.bufferSize`             | The `WriteBufferManager`'s memtable-memory budget in bytes, read live. `0` when no manager is configured. **Process-wide**, not per-database — see below.                                                                     | gauge  |
+| `writeBufferManager.memoryUsage`            | Total memtable memory in bytes charged against the manager. **Process-wide.**                                                                                                                                                 | gauge  |
+| `writeBufferManager.mutableMemoryUsage`     | The share of `writeBufferManager.memoryUsage` held by active (mutable) memtables; the rest is awaiting flush or retained write history. **Process-wide.**                                                                     | gauge  |
+| `writeBufferManager.stallActive`            | `1` while the manager is stalling writes, else `0`. **Process-wide.**                                                                                                                                                         | gauge  |
+| `writeBufferManager.stallActiveMs`          | How long the current stall has been active, in milliseconds; `0` when not stalled. Sampled once a second by the stall watchdog. **Process-wide.**                                                                             | gauge  |
+
+#### The `writeBufferManager.*` keys are process-wide
+
+The `WriteBufferManager` is a **singleton shared by every database opened in this process**,
+`worker_threads` included. These five keys therefore describe the whole process no matter which
+database's `getStats()` returned them — two databases in one process always report identical
+values, and the numbers do not attribute memory to the database you asked. They appear regardless
+of `enableStats`, like the `txnlog.*` and `commitPipeline.*` keys.
+`RocksDatabase.getWriteBufferManagerStats()` returns the same values plus the manager's
+configuration and its live column-family inventory.
+
+`writeBufferManager.stallActive` is the only signal that distinguishes a `WriteBufferManager`
+stall from an idle database. RocksDB's own stall accounting does not cover it:
+`rocksdb.stall.micros`, `rocksdb.db.write.stall` and the `'writeStall'` event all track the
+`WriteController` (L0 and pending-compaction triggers), while a `WriteBufferManager` stall blocks
+writers on a separate queue and touches none of them. Through an eight-hour production wedge all
+three read `0` (HarperFast/rocksdb-js#822).
 
 ### Basic + Curated Stats
 
@@ -432,6 +454,27 @@ which includes all of the stats above plus the following:
 | `rocksdb.write.raw.block.micros`                                   | Distribution of raw block write latencies (microseconds).                                                                                     | histogram |
 | `rocksdb.write.self`                                               | Number of writes processed by the calling thread itself (as the write group leader).                                                          | ticker    |
 | `rocksdb.write.wal`                                                | Number of writes that were written to the WAL.                                                                                                | ticker    |
+
+#### `flush.reason.*` vs `atomic_flush.request.reason.*`
+
+This library always opens databases with RocksDB's `atomic_flush`. That does **not** move
+`WriteBufferManager`-pressure flushes off `rocksdb.flush.reason.write_buffer_manager` and onto
+`rocksdb.atomic_flush.request.reason.write_buffer_manager` — measured on this library, both counters
+move together (HarperFast/rocksdb-js#822).
+
+They count different events, though, and neither magnitude can be derived from the other:
+
+- `rocksdb.atomic_flush.request.reason.<reason>` counts flush **requests** — scheduling decisions.
+- `rocksdb.flush.reason.<reason>` counts the flushes that actually **ran**.
+
+Measured ratios in one process ranged from 1:1 (a single column family) to about 1:2 (two to six
+column families), and requests can outnumber executed flushes when several databases share one
+manager. Treat them as two views of the same pressure, not as a fixed multiple.
+
+Neither counter reports a stall. A `0` on both during a `WriteBufferManager` stall is the expected
+reading, not a broken counter: the flush trigger looks only at _mutable_ memory, so a budget held by
+retained history or by memtables already awaiting flush never requests a flush at all.
+`writeBufferManager.stallActive` is what distinguishes that state from an idle database.
 
 ## Transaction Log Stats
 

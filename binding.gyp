@@ -58,6 +58,7 @@
 				'src/binding/core/platform.cpp',
 				'src/binding/core/file_lock.cpp',
 				'src/binding/core/verification_table.cpp',
+				'src/binding/core/wbm_stall_watchdog.cpp',
 				'src/binding/napi/background_error.cpp',
 				'src/binding/napi/event_emitter.cpp',
 				'src/binding/napi/global_events.cpp',
@@ -235,6 +236,7 @@
 				'src/binding/core/platform.cpp',
 				'src/binding/core/file_lock.cpp',
 				'src/binding/core/verification_table.cpp',
+				'src/binding/core/wbm_stall_watchdog.cpp',
 				'src/binding/database/backup_disk_space.cpp',
 				'src/binding/transaction_log/transaction_log_file.cpp',
 				'src/binding/transaction_log/transaction_log_recovery.cpp',
@@ -257,6 +259,7 @@
 				'test/native/transaction_log_validation_test.cc',
 				'test/native/transaction_log_writev_test.cc',
 				'test/native/verification_table_test.cc',
+				'test/native/wbm_stall_watchdog_test.cc',
 				'test/native/write_stall_debounce_test.cc',
 			],
 			'defines': [

@@ -368,6 +368,7 @@ DBDescriptor::DBDescriptor(
 	const DBOptions& options,
 	const rocksdb::ColumnFamilyOptions& cfOptions,
 	std::shared_ptr<rocksdb::DB> db,
+	rocksdb::WriteBufferManager* attachedWriteBufferManager,
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
 	std::shared_ptr<rocksdb::Statistics> statistics
 ):
@@ -377,6 +378,7 @@ DBDescriptor::DBDescriptor(
 	readOnly(options.readOnly),
 	cfOptions(cfOptions),
 	db(db),
+	attachedWriteBufferManager(attachedWriteBufferManager),
 	columns(std::move(columns)),
 	statistics(statistics)
 {
@@ -1232,8 +1234,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	// memory is bounded across all DBs in this process. With cost_to_cache,
 	// active memtables share the block cache pool — the cache shrinks during
 	// write bursts and reclaims room as memtables flush.
+	rocksdb::WriteBufferManager* attachedWriteBufferManager = nullptr;
 	if (auto wbm = settings.getWriteBufferManager()) {
 		dbOptions.write_buffer_manager = wbm;
+		attachedWriteBufferManager = wbm.get();
 	}
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	// Bound how many table files RocksDB holds open: with the RocksDB default
@@ -1379,7 +1383,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	bool columnExists = false;
 	for (size_t n = 0; n < cfHandles.size(); ++n) {
 		auto column = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
-		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
+		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
+			column, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+		);
 		columns[cfDescriptors[n].name] = columnDescriptor;
 		if (cfDescriptors[n].name == options.name) {
 			columnExists = true;
@@ -1391,12 +1397,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 			applyCompression(cfo, *options.compression, options.compressionLevel);
 		}
 		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, cfo);
-		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
+		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
+			column, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+		);
 		columns[options.name] = columnDescriptor;
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, attachedWriteBufferManager, std::move(columns), dbOptions.statistics));
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is

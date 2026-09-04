@@ -1,14 +1,47 @@
 #ifndef __DB_SETTINGS_H__
 #define __DB_SETTINGS_H__
 
+#include <atomic>
+#include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <node_api.h>
+#include <thread>
 #include "rocksdb/cache.h"
 #include "rocksdb/write_buffer_manager.h"
 #include "core/verification_table.h"
+#include "core/wbm_stall_watchdog.h"
 
 namespace rocksdb_js {
+
+/**
+ * Live state of the process-wide `WriteBufferManager`, as reported by
+ * `db.getStats()` / `db.getStat()` and `RocksDatabase.getWriteBufferManagerStats()`.
+ *
+ * The column-family inventory is filled in only when the caller asks for it: it
+ * walks the database registry, while everything above it is a handful of atomic
+ * loads. `getStats()` is a scrape path and takes the cheap half.
+ */
+struct WriteBufferManagerStats final {
+	bool enabled = false;
+	uint64_t bufferSize = 0;
+	uint64_t memoryUsage = 0;
+	uint64_t mutableMemoryUsage = 0;
+	bool allowStall = false;
+	bool costToCache = false;
+	bool stallActive = false;
+	uint64_t stallActiveMs = 0;
+	bool watchdogRunning = false;
+	uint64_t columnFamilies = 0;
+	std::map<int64_t, uint64_t> maxWriteBufferSizeToMaintain;
+	/**
+	 * False when the registry lock was held by a close that is itself wedged on
+	 * the stall being diagnosed, so the two fields above are empty rather than
+	 * measured. A diagnostic that blocks on that lock answers nothing at all.
+	 */
+	bool inventoryAvailable = true;
+};
 
 /**
  * Stores the global settings for RocksDB databases as well as various global
@@ -47,6 +80,44 @@ private:
 
 	std::shared_ptr<rocksdb::WriteBufferManager> writeBufferManager;
 	std::mutex writeBufferManagerMutex;
+
+	// The manager, published with release ordering once it is fully constructed
+	// and never reset — a runtime `writeBufferManagerSize: 0` is a "no new
+	// attachments" signal, not a teardown, so the raw pointer stays valid for the
+	// process lifetime. Read paths take one acquire load instead of
+	// writeBufferManagerMutex: a metrics scrape must not contend with config()
+	// or a database open.
+	std::atomic<rocksdb::WriteBufferManager*> writeBufferManagerPtr{nullptr};
+
+	std::atomic<uint64_t> writeBufferManagerStallActiveMs{0};
+	std::atomic<bool> writeBufferManagerWatchdogRunning{false};
+	// Lock-free mirror of watchdogStopRequested, so the sample path can abandon a
+	// report before writing it. The report's stderr write is unbounded on a full
+	// pipe and a joiner waits behind it; this bounds that wait to a write already
+	// in progress rather than one about to start.
+	std::atomic<bool> writeBufferManagerWatchdogStopping{false};
+
+	// Watchdog lifecycle. The start path runs under databasesMutex ->
+	// writeBufferManagerMutex (DBRegistry::OpenDB holds the former across
+	// DBDescriptor::open), so watchdogMutex is the innermost lock and the
+	// watchdog thread must never hold it while taking either of the other two —
+	// it drops watchdogMutex before every sample, and the sample's inventory walk
+	// is the one place it takes databasesMutex.
+	std::thread watchdogThread;
+	std::mutex watchdogMutex;
+	std::condition_variable watchdogCv;
+	bool watchdogStarted = false;
+	bool watchdogStopRequested = false;
+	// Bumped on every start. A thread whose generation is stale exits even if a
+	// new start has already cleared `watchdogStopRequested`: the joiner releases
+	// watchdogMutex before `join()`, so without this the retiring thread can
+	// observe the reset flag and loop forever with its joiner blocked on it.
+	uint64_t watchdogGeneration = 0;
+	bool watchdogAtexitRegistered = false;
+
+	void ensureWriteBufferManagerWatchdog();
+	void runWriteBufferManagerWatchdog(uint64_t generation);
+	void sampleWriteBufferManagerStall(WbmStallWatchdogState& state, uint64_t thresholdMs);
 
 	bool compactOnClose;
 
@@ -94,6 +165,43 @@ public:
 
 	std::shared_ptr<rocksdb::WriteBufferManager> getWriteBufferManager();
 
+	/**
+	 * Returns the manager if one has already been created, without creating it.
+	 * Lock-free and safe from any thread — a stats read must never materialize
+	 * the manager as a side effect (the peer of `getVerificationTableRaw()`,
+	 * without its mutex).
+	 */
+	rocksdb::WriteBufferManager* getWriteBufferManagerRaw() const {
+		return this->writeBufferManagerPtr.load(std::memory_order_acquire);
+	}
+
+	/**
+	 * Samples the manager's live state. `includeColumnFamilies` additionally walks
+	 * the database registry for the attached, writable column-family inventory,
+	 * which is O(open column families) — leave it off on scrape paths.
+	 */
+	WriteBufferManagerStats getWriteBufferManagerStats(bool includeColumnFamilies);
+
+	/**
+	 * Signals the stall watchdog to stop without waiting for it. Split from the
+	 * join so teardown can shut databases down (and flush) while the watchdog is
+	 * still winding down: its warn line goes to stderr, which can block on a full
+	 * pipe, and a logging stall must never sit in front of the flush path.
+	 */
+	void requestWriteBufferManagerWatchdogStop();
+
+	/** Joins the stall watchdog. Idempotent, and restartable afterwards. */
+	void joinWriteBufferManagerWatchdog();
+
+	/**
+	 * Joins the watchdog if neither the module's cleanup hook nor the `atexit`
+	 * handler registered at watchdog start ran. `process.exit()` skips N-API env
+	 * cleanup, and destroying a joinable `std::thread` calls `std::terminate()` —
+	 * an observability feature must not turn a clean exit into SIGABRT. Mirrors
+	 * `~CommitWorker`.
+	 */
+	~DBSettings();
+
 	inline bool getCompactOnClose() const {
 		return compactOnClose;
 	}
@@ -116,6 +224,8 @@ public:
 	VerificationTable* getVerificationTableRaw();
 
 	static napi_value Config(napi_env env, napi_callback_info info);
+
+	static napi_value GetWriteBufferManagerStats(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
 };

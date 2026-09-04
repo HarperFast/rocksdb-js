@@ -2,6 +2,7 @@
 #define __DB_REGISTRY_H__
 
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -86,6 +87,33 @@ private:
 
 public:
 	static void CloseDB(const std::shared_ptr<DBHandle> handle);
+
+	/**
+	 * Counts the live column families that draw on `wbm`, grouped by their
+	 * effective `max_write_buffer_size_to_maintain` — the inventory the stall
+	 * report needs to explain a full budget.
+	 *
+	 * Only descriptors that attached this exact manager and are writable are
+	 * counted: a database opened before the manager was configured, or read-only,
+	 * cannot account for its memory, and including it would report a retention
+	 * distribution that is not the one holding the budget.
+	 *
+	 * Reads only cached integers under `databasesMutex` -> `columnsMutex` (the
+	 * order `OpenDB` already establishes) and copies no `shared_ptr` out, so it
+	 * cannot inflate a descriptor's use count and make a racing close skip its
+	 * purge. Safe to call from a non-JS thread.
+	 *
+	 * `databasesMutex` is acquired with `try_lock`, returning false rather than
+	 * waiting: `PurgeAll` holds it across `descriptor->close()`, whose flush waits
+	 * out a write stall (AGENTS.md note 16), so blocking here would silence the
+	 * stall alarm and hang `getWriteBufferManagerStats()` during exactly the
+	 * incident both exist to report.
+	 */
+	static bool CollectWriteBufferManagerInventory(
+		const rocksdb::WriteBufferManager* wbm,
+		uint64_t& columnFamilies,
+		std::map<int64_t, uint64_t>& maxWriteBufferSizeToMaintain
+	);
 #ifdef DEBUG
 	static void DebugLogDescriptorRefs();
 #endif

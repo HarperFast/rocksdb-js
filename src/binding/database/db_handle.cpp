@@ -14,6 +14,59 @@ namespace {
 constexpr const char* COMMIT_PIPELINE_LOG_QUEUE_DEPTH_KEY = "commitPipeline.logQueueDepth";
 constexpr const char* COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY = "commitPipeline.commitQueueDepth";
 
+// Process-wide WriteBufferManager gauges. These describe the singleton manager
+// shared by every database in the process, not this database (see docs/stats.md).
+constexpr const char* WBM_BUFFER_SIZE_KEY = "writeBufferManager.bufferSize";
+constexpr const char* WBM_MEMORY_USAGE_KEY = "writeBufferManager.memoryUsage";
+constexpr const char* WBM_MUTABLE_MEMORY_USAGE_KEY = "writeBufferManager.mutableMemoryUsage";
+constexpr const char* WBM_STALL_ACTIVE_KEY = "writeBufferManager.stallActive";
+constexpr const char* WBM_STALL_ACTIVE_MS_KEY = "writeBufferManager.stallActiveMs";
+
+bool lookupWriteBufferManagerStat(
+	const std::string& statName,
+	const WriteBufferManagerStats& stats,
+	double& value
+) {
+	if (statName == WBM_BUFFER_SIZE_KEY) {
+		value = static_cast<double>(stats.bufferSize);
+	} else if (statName == WBM_MEMORY_USAGE_KEY) {
+		value = static_cast<double>(stats.memoryUsage);
+	} else if (statName == WBM_MUTABLE_MEMORY_USAGE_KEY) {
+		value = static_cast<double>(stats.mutableMemoryUsage);
+	} else if (statName == WBM_STALL_ACTIVE_KEY) {
+		value = stats.stallActive ? 1 : 0;
+	} else if (statName == WBM_STALL_ACTIVE_MS_KEY) {
+		value = static_cast<double>(stats.stallActiveMs);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+void setWriteBufferManagerStatsOnObject(
+	napi_env env,
+	napi_value result,
+	const WriteBufferManagerStats& stats
+) {
+	static constexpr const char* keys[] = {
+		WBM_BUFFER_SIZE_KEY,
+		WBM_MEMORY_USAGE_KEY,
+		WBM_MUTABLE_MEMORY_USAGE_KEY,
+		WBM_STALL_ACTIVE_KEY,
+		WBM_STALL_ACTIVE_MS_KEY,
+	};
+	for (const char* key : keys) {
+		double value = 0;
+		if (!lookupWriteBufferManagerStat(key, stats, value)) {
+			continue;
+		}
+		napi_value jsValue;
+		if (::napi_create_double(env, value, &jsValue) == napi_ok) {
+			::napi_set_named_property(env, result, key, jsValue);
+		}
+	}
+}
+
 bool lookupTxnlogSummaryStat(
 	const std::string& statName,
 	const TransactionLogStoreStats& total,
@@ -188,6 +241,22 @@ napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
 		return jsValue;
 	}
 
+	// process-wide WriteBufferManager gauges: computed here, so an unknown key in
+	// this namespace returns undefined rather than falling through to the RocksDB
+	// statistics path, which throws when statistics are disabled.
+	if (statName.rfind("writeBufferManager.", 0) == 0) {
+		WriteBufferManagerStats wbmStats =
+			DBSettings::getInstance().getWriteBufferManagerStats(false);
+		double value = 0;
+		napi_value jsValue;
+		if (lookupWriteBufferManagerStat(statName, wbmStats, value)) {
+			NAPI_STATUS_THROWS(::napi_create_double(env, value, &jsValue));
+		} else {
+			NAPI_STATUS_THROWS(::napi_get_undefined(env, &jsValue));
+		}
+		return jsValue;
+	}
+
 	// transaction log summary stats are computed here (not RocksDB tickers or
 	// column-family properties), so resolve them before anything else.
 	if (statName.rfind("txnlog.", 0) == 0) {
@@ -294,6 +363,14 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 		this->collectTransactionLogSummary(total, logCount);
 		setTxnlogSummaryStatsOnObject(env, result, total, logCount);
 	}
+
+	// process-wide WriteBufferManager gauges. Like the txnlog summary above, these
+	// are independent of the RocksDB statistics gate. The column-family inventory
+	// is deliberately left out: it walks the registry, and this is a scrape path
+	// (RocksDatabase.getWriteBufferManagerStats() carries it).
+	setWriteBufferManagerStatsOnObject(
+		env, result, DBSettings::getInstance().getWriteBufferManagerStats(false)
+	);
 
 	// commit-pipeline queue depths
 	{
