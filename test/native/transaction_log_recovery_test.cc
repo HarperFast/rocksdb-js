@@ -3,10 +3,12 @@
 // leave a mid-file corruption intact, or do nothing.
 
 #include <gtest/gtest.h>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -166,6 +168,53 @@ TEST(TransactionLogRecovery, BrokenFrameThenLongValidRunIsMidFileCorruption) {
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
 	EXPECT_EQ(scan.validEnd, breakOffset);
+}
+
+TEST(TransactionLogRecovery, MaxTimestampIsTheLargestKeyNotTheLastOne) {
+	LogImage img;
+	img.entry(10, 1, 500.0).entry(10, 1, 900.0).entry(10, 1, 700.0);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	// Batch keys are not ordered within a file, so this is a running maximum.
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 900.0);
+	EXPECT_DOUBLE_EQ(scan.maxImplausibleTimestamp, 0.0);
+}
+
+TEST(TransactionLogRecovery, MaxTimestampSplitsAtThePlausibleBound) {
+	LogImage img;
+	img.entry(10, 1, 500.0).entry(10, 1, 9000.0).entry(10, 1, 700.0);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size(), /*plausibleBound=*/1000.0);
+	// The out-of-bound key is kept apart rather than discarding the file's real
+	// keys, which the clock floor seeds from.
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 700.0);
+	EXPECT_DOUBLE_EQ(scan.maxImplausibleTimestamp, 9000.0);
+}
+
+TEST(TransactionLogRecovery, MaxTimestampStopsAtAMidFileBreak) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	// Entries after a mid-file break are durable and query() resyncs past them,
+	// but this walk cannot reach them — so their keys are absent from maxTimestamp
+	// and the caller has to treat the answer as incomplete.
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16, 1, 4000.0);
+	}
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
+TEST(TransactionLogRecovery, MaxTimestampStopsAtATornTailToo) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	// A torn tail stops the walk at the same place a mid-file break does. When the
+	// break sits inside a flushed prefix, recoverTail() leaves the file whole, so
+	// the keys after it stay durable and unread.
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 4000.0);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
 }
 
 TEST(TransactionLogRecovery, BrokenFrameThenFewEntriesReachingEofIsNotTruncated) {
@@ -585,3 +634,59 @@ TEST(TransactionLogRecoveryFile, ReadsAHeaderPastTwoGiBOnASparseFile) {
 }
 #endif
 
+
+namespace {
+
+std::filesystem::path uniqueMaxEntryScanPath() {
+	auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+	return std::filesystem::temp_directory_path() /
+		("rocksdb-js-max-entry-scan-" + std::to_string(nonce) + ".txnlog");
+}
+
+} // namespace
+
+// Over a real TransactionLogFile, not the buffer adapter: the propagation from
+// the scan's classification to MaxEntryScan::stoppedAtBreak is what decides
+// whether the clock floor reports an incomplete answer, and a torn tail reaches
+// it by a different classification than a mid-file break.
+TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
+	auto path = uniqueMaxEntryScanPath();
+	{
+		LogImage img;
+		img.entry(10, 1, 500.0);
+		// Declares far more than it wrote, with nothing valid behind it.
+		img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 4000.0);
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out.write(img.data(), img.size());
+	}
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	file.open(1770000000000.0);
+	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
+	file.close();
+	std::error_code error;
+	std::filesystem::remove(path, error);
+
+	EXPECT_TRUE(scan.stoppedAtBreak);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
+TEST(TransactionLogMaxEntryScan, ACleanFileIsNotReportedAsStoppedShort) {
+	auto path = uniqueMaxEntryScanPath();
+	{
+		LogImage img;
+		img.entry(10, 1, 500.0).entry(10, 1, 900.0);
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out.write(img.data(), img.size());
+	}
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	file.open(1770000000000.0);
+	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
+	file.close();
+	std::error_code error;
+	std::filesystem::remove(path, error);
+
+	EXPECT_FALSE(scan.stoppedAtBreak);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 900.0);
+}

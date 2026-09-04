@@ -225,7 +225,8 @@ monotonic clock when it is constructed but is appended when it commits, so under
 entry can carry a smaller timestamp; an entry that adopted an origin timestamp with
 `txn.setTimestamp()` carries that origin's clock instead. Timestamps are not unique: the monotonic
 clock never issues the same value twice within a process, but a restart after the wall clock moved
-backwards can reissue one, and `txn.setTimestamp()` can assign any value — including one already
+backwards can reissue one unless the floor below is seeded, and `txn.setTimestamp()` can assign any
+value — including one already
 in the log — to as many transactions as the caller likes. Deduplicating on the timestamp alone is
 therefore never safe; a consumer that needs identity has to supply it (Harper pairs the timestamp
 with the originating node).
@@ -235,6 +236,58 @@ index records only the entries whose timestamp is greater than every earlier one
 running maxima — and a query seeks to the lower bound of that index, which is guaranteed to sit at
 or before every entry in the requested range. Reading forward from there and filtering is what makes
 range queries correct on an unordered file.
+
+## The Timestamp Floor At Open
+
+A transaction's timestamp is the key of the batch it is written under, so it has to stay unique
+within the log it is written to. The process clock (`db.getMonotonicTimestamp()`) guarantees that
+only within one process: a new process reads the wall clock again, so a backward step between runs
+can reissue a key that is already durable in the log.
+
+Opening with the `timestampFloorLog` option names the log whose keys this process originates. Every
+segment of that store is then walked once, after open-time recovery has decided which bytes are
+still durable, and the process clock is raised above the largest key found — before the database
+handle is returned, so no transaction can be constructed below it. Keys are not ordered within or
+across segments, and a segment header records the store's latest timestamp only as of that
+segment's creation, so there is no shortcut: every segment is read.
+
+Name only a log this process originates. A log a replication receiver writes under an adopted origin
+timestamp is keyed by another node's clock, and seeding from it would ratchet this process's clock
+to the fastest of those nodes at each restart. Native code cannot tell the two kinds of log apart,
+which is why the caller names it and why an unset option leaves the clock alone.
+
+The walk is the cost of the guarantee, and it is paid on the calling thread before `open()` returns.
+It reads entry headers through a shared 64 KiB window and seeks past payloads, so it scales with the
+number of entries in the named log rather than its size. Measured on Linux with a warm page cache,
+against the same database opened without the option:
+
+| Named log                         | Added open time (median) |
+| --------------------------------- | ------------------------ |
+| 25,000 entries, 99 MB, 7 segments | ~31 ms                   |
+| 250,000 entries, 19 MB            | ~273 ms                  |
+
+Roughly a millisecond per thousand entries. Retention bounds a log's age, not its entry count, so
+the walk is bounded directly instead: `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` (default `2000`) caps it,
+newest segment first, and a walk that runs out of budget warns and leaves the floor where it got to.
+The budget is checked between segments, so it can overshoot by one segment's walk: with the 13-byte
+entry header a default 16 MB segment holds up to roughly 1.2 million entries, and both a larger
+`transactionLogMaxSize` and a single batch too big for one segment raise that.
+The value is honored literally between `0` (scan nothing, and warn) and one day, and there is no
+unbounded setting — the failure it bounds is an `open()` that does not return, so a deployment that
+would rather wait raises the number. Above a day it is clamped, because the deadline is a monotonic
+clock time point and a larger value overflows its resolution and wraps into the past.
+A database opened without `timestampFloorLog` pays none of it.
+
+The seed is best effort, and says so when it falls short: a segment that cannot be opened or scanned
+emits a `log.warn` global event, as does a framing break (the entries past it can still be durable —
+`query()` resyncs to them — but this walk stops there), a budget that runs out, and a
+`timestampFloorLog` naming a log the database does not have. A key more than ten years ahead of the
+wall clock is left out of the floor as corruption rather than a rollback to recover from, per entry
+rather than per segment so it does not take the real keys beside it with it, and it warns too.
+
+The option is fixed at the first open of a path in the process — the database descriptor is shared
+across handles and `worker_threads` envs — so a later open of the same path that names a log cannot
+re-run the seed and warns instead of appearing to work.
 
 ### Sequential Read
 

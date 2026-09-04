@@ -135,15 +135,17 @@ bool validFramingResumes(ScanReader& source, uint32_t from) {
 } // namespace
 
 RecoveryScan scanTransactionLogForRecovery(
-	uint32_t fileSize, TransactionLogReadFn read, void* context
+	uint32_t fileSize, TransactionLogReadFn read, void* context, double plausibleBound
 ) {
 	uint32_t lastCompleteEnd = 0;
 	uint32_t tailEntries = 0;
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
+	double maxTimestamp = 0;
+	double maxImplausibleTimestamp = 0;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
-			tailEntries > 0 && tailUniformTimestamp };
+			tailEntries > 0 && tailUniformTimestamp, maxTimestamp, maxImplausibleTimestamp };
 	};
 
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
@@ -177,6 +179,13 @@ RecoveryScan scanTransactionLogForRecovery(
 			return scan(RecoveryScan::Kind::TruncateTail, pos);
 		}
 		bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
+		if (timestamp > plausibleBound) {
+			if (timestamp > maxImplausibleTimestamp) {
+				maxImplausibleTimestamp = timestamp;
+			}
+		} else if (timestamp > maxTimestamp) {
+			maxTimestamp = timestamp;
+		}
 		if (tailEntries++ == 0) {
 			tailTimestamp = timestamp;
 		} else if (timestamp != tailTimestamp) {
@@ -200,8 +209,11 @@ bool readFromBuffer(void* context, uint32_t offset, void* dest, uint32_t n) {
 
 } // namespace
 
-RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) {
-	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data));
+RecoveryScan scanTransactionLogForRecovery(
+	const char* data, uint32_t fileSize, double plausibleBound
+) {
+	return scanTransactionLogForRecovery(
+		fileSize, readFromBuffer, const_cast<char*>(data), plausibleBound);
 }
 
 RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file) {

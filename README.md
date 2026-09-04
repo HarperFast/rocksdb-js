@@ -129,6 +129,12 @@ Creates a new database instance.
     before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults to
     `"${db.path}/transaction_logs"`.
+  - `timestampFloorLog: string` The name of the transaction log whose batch keys this process
+    originates. At open, the process-wide monotonic clock is raised above every batch key still
+    durable in that log, so a backward wall-clock step between runs cannot reissue a transaction
+    timestamp that is already a key in it. See
+    [Timestamp floor at open](#timestamp-floor-at-open). Unset by default, which leaves the clock
+    alone.
   - `verificationTable: boolean` When `true`, this column family participates in the process-global
     [Verification Table](#verification-table): transaction writes to this column family invalidate
     the verification slot for each written key. Enable this only for column families whose records
@@ -477,6 +483,39 @@ if (result === constants.FRESH_VERSION_FLAG) {
 Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
 the `expectedVersion` option is used.
 
+### `db.getEntry(key: Key, options?: GetOptions): MaybePromise<Entry | number | undefined>`
+
+Retrieves the value for a given key together with the two clock words of its header, as
+`{ value, localTime, version }`. `value` is decoded exactly as `get()` decodes it, and the same
+options apply. A missing key resolves `undefined`, and — like `get()` — an `expectedVersion` the
+verification table confirms resolves the `FRESH_VERSION_FLAG` sentinel rather than an entry, which
+is why the return type includes `number`.
+
+```typescript
+const entry = await db.getEntry('foo');
+console.log(entry.localTime); // 1764307857213.739 — the transaction that wrote it
+console.log(entry.version); // the record version
+```
+
+The two words come from the value's header, the same bytes the
+[Verification Table](#verification-table) reads:
+
+- **`localTime`** is the first word: the timestamp of the transaction that wrote the value, which is
+  also the key of the transaction-log batch that recorded the write. It is the value's write
+  identity within this node's log — [`db.useLog(name).query({ start: localTime })`](#dbuselogname)
+  seeks the entry at exactly that key.
+- **`version`** is the record version: the distinct second word when the producer set
+  `HAS_DISTINCT_VERSION_FLAG` in the metadata word, and otherwise the same value as `localTime`.
+
+Both are `undefined` for a value with no header word, and `version` alone is `undefined` when the
+flag is set but the value does not carry a usable second word. rocksdb-js does not write these
+bytes; a producer does. See [Verification Table](#verification-table) for the layout and
+`constants.HAS_DISTINCT_VERSION_FLAG` for the flag.
+
+### `db.getEntrySync(key: Key, options?: GetOptions): Entry | number | undefined`
+
+Synchronous version of `getEntry()`.
+
 ### `db.getEstimatedKeyCount(): number`
 
 Retrieves the estimated number of keys in the database. This is an alias for
@@ -571,12 +610,33 @@ const range = db.getKeysCount({ start: 'a', end: 'z' }); // exact number of keys
 ### `db.getMonotonicTimestamp(): number`
 
 Returns the current timestamp as a monotonically increasing timestamp in milliseconds represented as
-a decimal number. This process-wide clock also supplies each transaction's initial timestamp.
+a decimal number. This process-wide clock supplies each transaction's initial timestamp, which is
+also the key of the transaction-log batch the transaction is written under.
 
 ```typescript
 const ts = db.getMonotonicTimestamp();
 console.log(ts); // 1764307857213.739
 ```
+
+#### Timestamp floor at open
+
+The clock is monotonic within a process, not across restarts: a new process reads the wall clock
+again, so a backward step between runs can reissue a timestamp that is already a batch key in this
+node's transaction log. Opening with
+[`timestampFloorLog`](#rocksdatabaseopenpath-string-options-object-rocksdatabase) raises the clock
+above every batch key still durable in the named log before the database handle is returned, so no
+transaction can be constructed below it.
+
+Name only a log this process **originates**. A log written under a timestamp adopted from another
+node — a replication receiver calling [`txn.setTimestamp()`](#txnsettimestampts-number-void) — is
+keyed by that node's clock; seeding from it would ratchet this process's clock to the fastest of
+those nodes at every restart, and there is no way for the database to tell the two kinds of log
+apart on its own.
+
+The seed is best effort. A segment that cannot be read at open, and a key more than ten years ahead
+of the wall clock (corruption rather than a rollback to recover from), are both left out of the
+floor and reported as a `log.warn` global event. The floor is process-wide, so it applies to every
+database open in the process.
 
 ### `db.getOldestSnapshotTimestamp(): number`
 
@@ -1588,6 +1648,39 @@ retries once the write intent is released.
 
 The table is **process-global** and backed by a single shared structure, so versions populated on
 the main thread are visible to `worker_threads` workers and vice versa.
+
+### Value-header contract
+
+rocksdb-js does not define a record's value layout. It reads only a header a producer may choose to
+write at the front of the value, and every byte of it is the producer's to fill in:
+
+| Offset | Bytes | Meaning                                                                                                  |
+| ------ | ----- | -------------------------------------------------------------------------------------------------------- |
+| 0      | 8     | First word: big-endian float64. The version the verification table keys on.                              |
+| 8      | 4     | Metadata word: big-endian, top byte `0x0E` (`constants.VERSION_HEADER_TAG`), low 24 bits producer flags. |
+| 12     | 8     | Second word: big-endian float64, present only under `HAS_DISTINCT_VERSION_FLAG`.                         |
+
+The **first word** is the only version the table derives on its own. In a store whose producer sets
+the transaction's timestamp there, it is also the key of the transaction-log batch the write was
+recorded under, which is what lets a record find its own log entry.
+
+Two flags in the metadata word are named by this library:
+
+- `constants.VERSION_NOT_UNIQUE_FLAG` (`0x10000`) — the producer has stored more than one distinct
+  value under this version, so version equality proves nothing about a cached copy. This is the one
+  flag the native layer interprets: such a value is never answered `FRESH_VERSION_FLAG` and its
+  version is never published to a slot.
+- `constants.HAS_DISTINCT_VERSION_FLAG` (`0x20000`) — the value carries a record version distinct
+  from the first word, in the second word at offset 12. Not interpreted natively; read it through
+  [`db.getEntry()`](#dbgetentrykey-key-options-getoptions-maybepromiseentry--number--undefined), which
+  returns both words. A value without the flag decodes as `version === localTime`, which is how a
+  value written before the flag existed reads.
+
+A producer that keeps a separately assigned version in the second word must still use the **first**
+word on both sides of a freshness check — as `expectedVersion`, and as the argument to
+`db.populateVersion()`, which publishes whatever it is given. Passing the record version instead
+would miss the fast path, and publishing it would leave the slot disagreeing with what the next
+write invalidates.
 
 ### Enabling the verification table
 

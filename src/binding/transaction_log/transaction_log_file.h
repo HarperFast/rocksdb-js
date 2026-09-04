@@ -6,6 +6,7 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include <limits>
 #include <string>
 #include <utility>
 #include "core/debug.h"
@@ -351,7 +352,7 @@ struct TransactionLogFile final {
 	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
 	 * this->size (append-owned written extent), not the mapped/pre-extended size.
 	 */
-	RecoveryScan scanRecoveryLocked();
+	RecoveryScan scanRecoveryLocked(double plausibleBound = std::numeric_limits<double>::infinity());
 
 	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file
@@ -382,6 +383,30 @@ struct TransactionLogFile final {
 	 * that and falls back toward txn.state.
 	 */
 	uint32_t scanForLastCompleteTransactionEnd();
+
+	struct MaxEntryScan final {
+		/** Largest key at or below `plausibleBound`, or 0 if the file holds none. */
+		double maxTimestamp = 0;
+		/** Largest key above it, kept apart so one bad key does not discard the rest. */
+		double maxImplausibleTimestamp = 0;
+		/**
+		 * The walk stopped at a framing break rather than at the end of the entries,
+		 * so any key after it is missing from `maxTimestamp`. Both classifications
+		 * count: entries after a mid-file break are durable and `query()` resyncs
+		 * past them (AGENTS.md invariant 11), and a torn tail whose break sits
+		 * inside the flushed prefix leaves the file at full extent too.
+		 */
+		bool stoppedAtBreak = false;
+	};
+
+	/**
+	 * The largest batch key still durable in this file. Walks the same framing as
+	 * scanForLastCompleteTransactionEnd() over the file's current extent, so it
+	 * must run *after* open-time recovery: a key that recoverTail() truncated away
+	 * is no longer durable and must not reach the clock floor. Throws DBException
+	 * on I/O failure.
+	 */
+	MaxEntryScan scanMaxEntryTimestamp(double plausibleBound);
 
 	/**
 	 * Closes the log file and removes it.

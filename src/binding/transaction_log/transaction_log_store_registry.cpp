@@ -4,7 +4,15 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "napi/global_events.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 #include <filesystem>
+#include <sstream>
 #include <vector>
 
 namespace rocksdb_js {
@@ -169,6 +177,138 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath) {
 				entry->stores.emplace(store->name, store);
 			}
 		}
+	}
+}
+
+namespace {
+
+/**
+ * Bound on the open-time floor scan, from `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS`
+ * (default 2000). Honored literally, including `0`, which scans nothing and
+ * warns; there is no unbounded setting, because the failure this bounds is an
+ * open that never returns. Capped at a day, since a `steady_clock` deadline is
+ * computed from it and the addition overflows in the clock's own resolution —
+ * silently wrapping into the past, which would scan nothing at all, the exact
+ * opposite of what a caller raising the value asked for. Read once per process
+ * — `::getenv` is not safe against a concurrent `::setenv` from a `process.env`
+ * write — so it must be set in the environment the process starts with.
+ */
+std::chrono::milliseconds timestampFloorScanBudget() {
+	static const std::chrono::milliseconds budget = [] {
+		const char* raw = ::getenv("ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS");
+		if (raw != nullptr && *raw != '\0') {
+			try {
+				size_t consumed = 0;
+				long long parsed = std::stoll(raw, &consumed);
+				constexpr long long maxBudgetMs = 24LL * 60LL * 60LL * 1000LL;
+				if (consumed == std::strlen(raw) && parsed >= 0) {
+					return std::chrono::milliseconds(std::min(parsed, maxBudgetMs));
+				}
+			} catch (const std::exception&) {
+				// malformed: fall through to the default
+			}
+		}
+		return std::chrono::milliseconds(2000);
+	}();
+	return budget;
+}
+
+} // namespace
+
+void TransactionLogStoreRegistry::SeedTimestampFloor(
+	const std::string& dbPath,
+	const std::string& logName
+) {
+	if (!instance || logName.empty()) {
+		return;
+	}
+
+	std::shared_ptr<TransactionLogStore> store;
+	bool namedStoreMissing = false;
+	bool otherStores = false;
+	{
+		std::lock_guard<std::mutex> lock(instance->entriesMutex);
+		auto it = instance->entries.find(dbPath);
+		if (it == instance->entries.end()) {
+			return;
+		}
+		std::lock_guard<std::mutex> storeLock(it->second->storesMutex);
+		auto storeIt = it->second->stores.find(logName);
+		if (storeIt == it->second->stores.end()) {
+			// Nothing durable to resume above; a log created later this session only
+			// ever receives keys this process has already issued. Other stores being
+			// present makes this a misnamed option rather than a first open, and a
+			// misnamed one protects nothing while looking configured.
+			otherStores = !it->second->stores.empty();
+			namedStoreMissing = true;
+		} else {
+			store = storeIt->second;
+		}
+	}
+
+	if (namedStoreMissing) {
+		if (otherStores) {
+			std::ostringstream msg;
+			msg << "timestampFloorLog names transaction log \"" << logName << "\", which database "
+				<< dbPath << " does not have; the monotonic timestamp floor was not seeded.";
+			DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		}
+		return;
+	}
+
+	// Below MAX_TIMESTAMP_MS, which raiseMonotonicTimestampFloor() refuses outright:
+	// a key at the domain edge is reported as refused rather than dropped in silence.
+	const double plausibleBound = std::min(
+		getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS,
+		std::nextafter(MAX_TIMESTAMP_MS, 0.0));
+	auto scan = store->scanLargestDurableKey(plausibleBound, timestampFloorScanBudget());
+
+	if (raiseMonotonicTimestampFloor(scan.largestKey, plausibleBound)) {
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor Raised clock floor to %f from log \"%s\" of \"%s\"\n",
+			instance.get(), scan.largestKey, logName.c_str(), dbPath.c_str());
+	}
+
+	if (scan.refusedKey > 0) {
+		std::ostringstream msg;
+		msg << "Transaction log \"" << logName << "\" of database " << dbPath
+			<< " holds a batch key more than "
+			<< static_cast<long long>(MAX_CLOCK_FLOOR_SKEW_MS / 86400000.0)
+			<< " days ahead of the wall clock (" << std::fixed << scan.refusedKey
+			<< "); it was left out of the monotonic timestamp floor as corruption rather than a"
+			   " rollback to recover from. This check excludes such keys one at a time, not the"
+			   " segments holding them.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	}
+
+	if (!scan.complete) {
+		// Every reason, not the first: a budget that runs out while a segment also
+		// has a framing break would otherwise send the operator after the wrong one.
+		std::vector<std::string> reasons;
+		if (scan.budgetExhausted) {
+			reasons.emplace_back(
+				"the timestamp floor scan budget ran out (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS)");
+		}
+		if (scan.stoppedAtBreak) {
+			reasons.emplace_back(
+				"a segment's framing breaks partway through, so any entry after the break — durable"
+				" when the break sits inside a flushed prefix, and reported by a query as a corrupt"
+				" frame — was not read");
+		}
+		if (scan.readFailed || reasons.empty()) {
+			reasons.emplace_back("a segment could not be read at open");
+		}
+
+		std::ostringstream msg;
+		msg << "Transaction log \"" << logName << "\" of database " << dbPath
+			<< " was not fully scanned: ";
+		for (size_t i = 0; i < reasons.size(); ++i) {
+			msg << (i == 0 ? "" : "; and ") << reasons[i];
+		}
+		msg << ". The monotonic timestamp floor may sit below a batch key already durable in it.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	}
 }
 

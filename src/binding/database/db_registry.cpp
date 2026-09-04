@@ -1,4 +1,5 @@
 #include <chrono>
+#include <sstream>
 #include <vector>
 #include "database/db_registry.h"
 #include "transaction/transaction_handle.h"
@@ -7,6 +8,7 @@
 #include "core/compression.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "napi/global_events.h"
 #include "rocksdb/table.h"
 
 namespace rocksdb_js {
@@ -323,6 +325,24 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		// reopen (non-explicit default / unset) inherit the live value, so a
 		// default-carrying reopen after a custom first open does NOT falsely
 		// reject (mirrors the compression discipline below).
+		if (!options.timestampFloorLog.empty() &&
+			options.timestampFloorLog != entry.descriptor->timestampFloorLog
+		) {
+			// The seed runs once, inside DBDescriptor::open, before any transaction
+			// on this path can exist; a later open of the same path cannot re-run it.
+			// Warn rather than throw: unlike the options below, this one only ever
+			// raises a floor, so refusing the open would cost more than it protects.
+			std::ostringstream msg;
+			msg << "Database \"" << path << "\" is already open"
+				<< (entry.descriptor->timestampFloorLog.empty()
+					? " without a timestampFloorLog"
+					: " with timestampFloorLog \"" + entry.descriptor->timestampFloorLog + "\"")
+				<< "; this open's timestampFloorLog \"" << options.timestampFloorLog
+				<< "\" was ignored and the monotonic timestamp floor was not seeded from it.";
+			DEBUG_LOG("DBRegistry::OpenDB WARNING: %s\n", msg.str().c_str());
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		}
+
 		{
 			rocksdb::DBOptions current = entry.descriptor->db->GetDBOptions();
 			// Widen the live size_t to uint64_t rather than narrowing the request to

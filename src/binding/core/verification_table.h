@@ -67,6 +67,14 @@ constexpr uint64_t VT_SETTLED_GEN_MASK = (1ULL << 62) - 1;  // bits 61..0:  62-b
 constexpr uint8_t VERSION_HEADER_TAG = 0x0E;
 constexpr uint32_t VERSION_NOT_UNIQUE_FLAG = 0x10000;
 
+// A second producer flag in the same word, not interpreted natively: the value carries a record
+// version distinct from the first word, as an 8-byte big-endian float64 at offset 12 immediately
+// after the metadata word. The first word stays the transaction timestamp — the write identity the
+// VerificationTable keys on and the transaction-log batch key — and the second is the version a
+// source or origin supplied. Absent, the two are equal. Exported as
+// `constants.HAS_DISTINCT_VERSION_FLAG` and decoded by `getEntry()` / `getEntrySync()`.
+constexpr uint32_t HAS_DISTINCT_VERSION_FLAG = 0x20000;
+
 // A real version: bit 63 clear and nonzero.
 inline bool vtIsVersion(uint64_t v) { return v != 0 && (v & VT_TAG_BIT) == 0; }
 // A lock: tagged with the settled bit clear.

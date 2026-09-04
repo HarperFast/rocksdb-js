@@ -464,6 +464,48 @@ struct TransactionLogStore final {
 	 */
 	LogPosition getLastFlushedPosition();
 
+	/** `complete` false means the floor may sit below a key that is still durable. */
+	struct DurableKeyScan final {
+		double largestKey = 0;
+		/** The largest key beyond the plausible bound, left out of `largestKey`. */
+		double refusedKey = 0;
+		bool complete = true;
+		bool budgetExhausted = false;
+		/** A segment's framing broke mid-file, so the walk stopped before its end. */
+		bool stoppedAtBreak = false;
+		/** A segment could not be opened, stat'd or read. */
+		bool readFailed = false;
+	};
+
+	/**
+	 * The largest batch key still durable across this store's segments, or 0 when
+	 * it holds none. Keys are not ordered within or across segments, so every
+	 * segment is walked; there is no header word or last entry that bounds the
+	 * rest (`latestTimestamp` is process-local and starts at 0, so a segment
+	 * created after a backward clock step carries a header below keys already
+	 * durable in an older one).
+	 *
+	 * Runs after open-time recovery: a key in bytes `recoverTail()` truncated is
+	 * no longer durable.
+	 *
+	 * Newest segment first, and bounded by `budget`, which is honored literally:
+	 * a budget of zero scans nothing. There is no unbounded setting — a caller
+	 * that would rather wait than lose coverage raises the number. The
+	 * walk is O(entries) on the calling thread during open, and a log's retention
+	 * window bounds its age rather than its entry count, so an unbounded walk is
+	 * an unbounded stall. Stopping early costs coverage, which the caller reports,
+	 * rather than correctness; the newest segment is scanned first because a
+	 * rollback leaves the highest keys in the run that was interrupted.
+	 *
+	 * Keys beyond `plausibleBound` were corrupted or written by a caller that
+	 * assigned an arbitrary timestamp. They are left out of the maximum per
+	 * *entry*, not per segment, so one bad key cannot discard the real keys
+	 * beside it, and the largest of them comes back in `refusedKey`.
+	 */
+	DurableKeyScan scanLargestDurableKey(
+		double plausibleBound,
+		std::chrono::milliseconds budget);
+
 	/**
 	 * Returns a point-in-time snapshot of the files that make up this store, for
 	 * backup. Enumerates the sequence files under `dataSetsMutex` (holding

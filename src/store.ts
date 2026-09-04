@@ -555,6 +555,12 @@ export class Store {
 	transactionLogsPath?: string;
 
 	/**
+	 * The transaction log whose batch keys this process originates; seeds the
+	 * monotonic timestamp floor at open. See `StoreOptions.timestampFloorLog`.
+	 */
+	timestampFloorLog?: string;
+
+	/**
 	 * Whether this store's column family participates in the VerificationTable.
 	 */
 	verificationTable?: boolean;
@@ -623,6 +629,7 @@ export class Store {
 		this.transactionLogMaxSize = options?.transactionLogMaxSize;
 		this.transactionLogRetention = options?.transactionLogRetention;
 		this.transactionLogsPath = options?.transactionLogsPath;
+		this.timestampFloorLog = options?.timestampFloorLog;
 		this.verificationTable = options?.verificationTable;
 		this.writeBufferSize = options?.writeBufferSize;
 		this.writeKey = writeKey;
@@ -1163,6 +1170,7 @@ export class Store {
 				? parseDuration(this.transactionLogRetention)
 				: undefined,
 			transactionLogsPath: this.transactionLogsPath,
+			timestampFloorLog: this.timestampFloorLog,
 			verificationTable: this.verificationTable,
 			writeBufferSize: this.writeBufferSize,
 		});

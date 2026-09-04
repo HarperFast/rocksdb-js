@@ -210,6 +210,17 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   ambiguous "disable the bound") falls back to the default like any malformed
   value. There is no opt-out: a deployment that would rather wait than fail a
   legitimately slow holder raises the value instead
+- `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` - Bound (default `2000`) on the open-time walk that seeds the
+  monotonic timestamp floor from the `timestampFloorLog` log. The walk is O(entries in that log) on
+  the calling thread inside `RocksDatabase.open()`, and a log's retention window bounds its age
+  rather than its entry count, so without a bound a large log is an open that does not return. It
+  goes newest segment first and, on running out, warns and keeps the floor it reached — losing
+  coverage, never correctness. Honored literally, `0` included (scan nothing, warn); there is no
+  unbounded setting, so a deployment that would rather wait raises the value (capped at a day: the
+  deadline is a `steady_clock` time point, and a larger value overflows its resolution and wraps
+  into the past, scanning nothing). Read once per process
+  (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
+  `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is started with
 - `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` - Rate-limit window (default `1000`) for the
   per-database `'writeStall'` event. The event is rising-edge only (fires when a
   column family enters a stall); during a sustained oscillating stall it re-emits
@@ -653,6 +664,28 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     written remains frozen across retries, though reapplying the same timestamp is idempotent while
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
+
+19. **A transaction timestamp is only unique within one process unless the caller names its log**:
+    `getMonotonicTimestamp()` (`core/platform.cpp`) ratchets a file-static atomic that starts at `0`
+    in every new process, then re-reads the wall clock — so a backward clock step between runs
+    reissues transaction timestamps, which are transaction-log batch keys (`writeBatch`) and, for a
+    producer that encodes them, record versions. The `timestampFloorLog` open option names the log
+    this process _originates_; `TransactionLogStoreRegistry::SeedTimestampFloor` walks that store
+    after `DiscoverStores()` and raises the floor, inside `DBDescriptor::open` and therefore before
+    any handle — and so any transaction — exists.
+    **The log must be named, never inferred.** `useLog(name)` takes an arbitrary name and native
+    code has no origin semantics for it: Harper opens one log per origin node and a replication
+    receiver adopts the origin's timestamp through `setTimestamp()` before writing, so a peer's log
+    is keyed by _that node's_ clock. Seeding from every log would ratchet this node's clock to the
+    fastest peer at each restart, and the peers would adopt those keys onward. Two other traps the
+    implementation encodes: the seed runs **after** recovery, because a key in bytes `recoverTail()`
+    truncates is not durable; and **every segment is walked**, because keys are unordered and a
+    segment header holds only `latestTimestamp` as of that segment's creation — which, starting at
+    `0` each process, is _below_ older segments' keys after a rollback, not above them. Failure is
+    best effort by design (a `log.warn`, not a refused open): one unreadable legacy segment must not
+    make a database unopenable, and neither must a log large enough to outlast
+    `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` — the walk is O(entries) on the thread inside `open()`, so
+    it is bounded, newest segment first, and reports what it did not reach.
 
 ## Debugging native heap corruption
 
