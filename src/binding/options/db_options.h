@@ -50,11 +50,14 @@ struct DBOptions final {
 	// Bytes of recent memtable history to retain in memory for transaction
 	// conflict checking. -1 derives the value from
 	// `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default
-	// for OptimisticTransactionDB) — EXCEPT when a stalling WriteBufferManager
-	// is configured, where the derived value becomes 0 because retained history
-	// the manager's budget cannot hold stalls writes permanently (see
+	// for OptimisticTransactionDB) — EXCEPT when a WriteBufferManager is
+	// configured at all, where the derived value becomes 1 because retained
+	// history the manager's budget cannot hold is never reclaimed (and stalls
+	// writes permanently under allowStall). It is 1 and not
+	// 0 because RocksDB's transaction wrappers rewrite a 0 target back to the
+	// derived value, which is why an explicit 0 is normalized too (see
 	// resolveMaxWriteBufferSizeToMaintain in db_descriptor.cpp). An explicit
-	// value is always honored as given.
+	// positive value is always honored as given.
 	int64_t maxWriteBufferSizeToMaintain = -1;
 	// Maximum number of table files RocksDB keeps open (`max_open_files`).
 	// 0 = auto: derive a budget from the effective per-process open-file limit

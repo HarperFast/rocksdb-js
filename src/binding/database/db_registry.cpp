@@ -371,7 +371,11 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
 			// Preserve retained settings while applying every per-CF option from
 			// the handle creating this family.
-			auto cfOptions = buildColumnFamilyOptions(options, entry.descriptor->cfOptions);
+			auto cfOptions = buildColumnFamilyOptions(
+				options,
+				entry.descriptor->db->GetDBOptions().write_buffer_manager != nullptr,
+				entry.descriptor->cfOptions
+			);
 			if (options.compression) {
 				cfOptions.compression = *options.compression;
 				cfOptions.blob_compression_type = *options.compression;

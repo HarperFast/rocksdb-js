@@ -2,11 +2,14 @@
 #include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
+#include "napi/global_events.h"
 #include "napi/helpers.h"
 #include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "rocksdb/convenience.h"
+#include "rocksdb/env.h"
 #include "rocksdb/listener.h"
+#include "rocksdb/write_buffer_manager.h"
 #include "rocksdb/utilities/options_util.h"
 #include <algorithm>
 #include <cctype>
@@ -14,6 +17,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <sstream>
 #include <system_error>
 #include <unordered_map>
 
@@ -63,43 +67,111 @@ static void applyCompression(
 }
 
 /**
- * Resolves `max_write_buffer_size_to_maintain` for a column family.
- *
- * Retained memtable history is a floor, not a cap — RocksDB trims down to this target and never
- * below — and that memory is charged to the process-wide WriteBufferManager. A target the budget
- * cannot hold is therefore a deadlock rather than backpressure: the budget fills with history that
- * is never released, and a manager built with `allowStall` stalls every write to the database
- * permanently.
- *
- * The derived default (`-1` → `maxWriteBufferNumber * writeBufferSize`) is dropped to 0 under any
- * stalling manager. Deliberately coarse: the safe per-family bound is the budget divided by the
- * live column-family count, which is not knowable here, so a comfortably-sized budget loses its
- * history window too. The cost is that conflict checking reports "cannot determine"
- * (`kTryAgain`) more often, which callers retry; the cost of the alternative is a hang.
- *
- * That cost was measured rather than assumed, which is why the coarse form is kept instead of a
- * budget-aware clamp: it is ~zero whenever flushing is organic (driven by memtables filling), and
- * only appears once flushes are frequent relative to transaction lifetime — at a forced 20ms
- * cadence against 20ms+ transactions it roughly doubles attempts per commit, as history is what
- * would otherwise resolve a non-conflicting transaction whose snapshot has already been flushed
- * away. A clamp would only recover that regime.
- *
- * An explicit caller value is honored untouched — sizing it against the budget and the
- * column-family count is then the caller's job.
+ * The smallest retained-history target a transaction database can actually be given; see
+ * `resolveMaxWriteBufferSizeToMaintain` for why the safeguard cannot be 0.
  */
-static int64_t resolveMaxWriteBufferSizeToMaintain(const DBOptions& options) {
-	if (options.maxWriteBufferSizeToMaintain >= 0) {
+constexpr int64_t kMinRetainedHistoryTarget = 1;
+
+/**
+ * Resolves `max_write_buffer_size_to_maintain` for a column family. AGENTS.md invariant 10 is the
+ * full account; the three facts the code cannot state are:
+ *
+ * 1. It cannot be 0. Both transaction wrappers rewrite a 0 target to -1 before `DB::Open` sees it
+ *    (`OptimisticTransactionDB::Open`, `TransactionDB::PrepareWrap`), and `SanitizeOptions` expands
+ *    -1 to `max_write_buffer_number * write_buffer_size` — so 0 asks for the largest history there
+ *    is, not none. An explicit caller 0 is normalized for that reason (rocksdb-js#821).
+ * 2. `kMinRetainedHistoryTarget` is not "no history". `TrimHistory` measures
+ *    `MemoryAllocatedBytesExcludingLast()`, which excludes the entry it would drop, so the newest
+ *    flushed memtable survives until that family's next write schedules a trim. One memtable per
+ *    family is the floor, and no positive target beats it.
+ * 3. `writeBufferManagerAttached` is the manager this database holds, never `DBSettings`. Both the
+ *    global size and `allowStall` are mutable at runtime while this target is fixed once the family
+ *    exists, so reading them would leave families created on either side of a change unprotected.
+ */
+static int64_t resolveMaxWriteBufferSizeToMaintain(
+	const DBOptions& options,
+	bool writeBufferManagerAttached
+) {
+	if (options.maxWriteBufferSizeToMaintain > 0) {
 		return options.maxWriteBufferSizeToMaintain;
 	}
-	DBSettings& settings = DBSettings::getInstance();
-	if (settings.getWriteBufferManagerSize() > 0 && settings.getWriteBufferManagerAllowStall()) {
-		return 0;
+	if (options.maxWriteBufferSizeToMaintain == 0) {
+		return kMinRetainedHistoryTarget;
+	}
+	if (writeBufferManagerAttached) {
+		return kMinRetainedHistoryTarget;
 	}
 	return options.maxWriteBufferSizeToMaintain;
 }
 
+/**
+ * Reports a database whose retained-history floors already reach its WriteBufferManager's budget,
+ * which is memory the manager can never reclaim — and, under `allowStall`, a permanent write stall
+ * rather than backpressure (see `resolveMaxWriteBufferSizeToMaintain`).
+ *
+ * This is a report, never a guarantee, and it must not be read as one: only the families known at
+ * this open are counted, and families created later add to the same budget. Read-only opens are
+ * excluded because they create no memtables and so cannot contribute to it.
+ */
+static void warnIfHistoryExceedsWriteBufferBudget(
+	const std::string& path,
+	int64_t historyTarget,
+	size_t familyCount,
+	bool readOnly,
+	const std::shared_ptr<rocksdb::WriteBufferManager>& writeBufferManager,
+	const std::shared_ptr<rocksdb::Logger>& infoLog
+) {
+	if (readOnly || historyTarget <= 0 || familyCount == 0 || !writeBufferManager) {
+		return;
+	}
+	// The budget comes from the manager this database holds, not `DBSettings`: a runtime
+	// `writeBufferManagerSize: 0` does not resize the live manager, so the global would read 0 while
+	// this database is still charged against the real budget. `allowStall` does come from the
+	// settings, which mirror the single manager's live value — `DBSettings::Config` pushes every
+	// change through `SetAllowStall`, and RocksDB exposes no getter for it.
+	const uint64_t budget = static_cast<uint64_t>(writeBufferManager->buffer_size());
+	if (budget == 0) {
+		return;
+	}
+	const bool stalls = DBSettings::getInstance().getWriteBufferManagerAllowStall();
+
+	// `familyCount * historyTarget >= budget`, by division: the caller's target is an unvalidated
+	// int64 (see database.cpp), so the product can overflow. RocksDB stalls at
+	// `memory_usage() >= buffer_size()`, so equality already wedges.
+	const uint64_t target = static_cast<uint64_t>(historyTarget);
+	const uint64_t affordableFamilies = budget / target;
+	if (familyCount < affordableFamilies ||
+		(familyCount == affordableFamilies && budget % target != 0)) {
+		return;
+	}
+
+	std::ostringstream msg;
+	msg << "Database \"" << path << "\" was opened with " << familyCount
+		<< " column families retaining at least " << target
+		<< " bytes of memtable history each, which already reaches the " << budget
+		<< "-byte WriteBufferManager budget. Retained history is only trimmed down to that target, "
+		<< "so that memory is never returned to the manager"
+		<< (stalls
+			? ", and because the manager is configured to stall writers, writes to this database "
+			  "can stall permanently. "
+			: ". ")
+		<< "Only the column families known at this open are counted; families created later add to "
+		<< "the same budget, so a database that does not warn is not proven safe.";
+	const std::string text = msg.str();
+	DEBUG_LOG("DBDescriptor::open WARNING: %s\n", text.c_str());
+	// Also to the database's own LOG: a deployment that registers no JS listener still needs a
+	// durable record of the configuration alongside the options block it applies to.
+	if (infoLog) {
+		rocksdb::Warn(infoLog, "%s", text.c_str());
+	}
+	if (GlobalEvents::hasListeners()) {
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ text }));
+	}
+}
+
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
+	bool writeBufferManagerAttached,
 	rocksdb::ColumnFamilyOptions cfOptions
 ) {
 	rocksdb::BlockBasedTableOptions tableOptions;
@@ -114,7 +186,8 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.enable_blob_garbage_collection = true;
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
-	cfOptions.max_write_buffer_size_to_maintain = resolveMaxWriteBufferSizeToMaintain(options);
+	cfOptions.max_write_buffer_size_to_maintain =
+		resolveMaxWriteBufferSizeToMaintain(options, writeBufferManagerAttached);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
 }
@@ -1261,7 +1334,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	// Base options shared by every column family. Compression is applied per CF
 	// below so opening one family cannot restamp another's algorithm.
-	auto cfOptions = buildColumnFamilyOptions(options);
+	auto cfOptions = buildColumnFamilyOptions(options, dbOptions.write_buffer_manager != nullptr);
 
 	// Shared listener state, created BEFORE DB::Open so a background error fired
 	// during open has a valid, race-free target (the descriptor does not exist
@@ -1394,6 +1467,15 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 		columns[options.name] = columnDescriptor;
 	}
+
+	warnIfHistoryExceedsWriteBufferBudget(
+		path,
+		cfOptions.max_write_buffer_size_to_maintain,
+		columns.size(),
+		options.readOnly,
+		dbOptions.write_buffer_manager,
+		db->GetDBOptions().info_log
+	);
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, options, cfOptions, db, std::move(columns), dbOptions.statistics));

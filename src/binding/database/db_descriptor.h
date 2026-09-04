@@ -40,8 +40,13 @@ struct TransactionHandle;
 struct UserSharedBufferData;
 struct UserSharedBufferFinalizeData;
 
+/**
+ * `writeBufferManagerAttached` must describe the database this column family belongs to, never the
+ * current `DBSettings` value — see `resolveMaxWriteBufferSizeToMaintain` for why they diverge.
+ */
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
+	bool writeBufferManagerAttached,
 	rocksdb::ColumnFamilyOptions cfOptions = {}
 );
 

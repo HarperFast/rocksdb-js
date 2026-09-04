@@ -179,52 +179,61 @@ describe('WriteBufferManager', () => {
 					expect(settledActive).toBeLessThan(peakActive / 10);
 				}));
 
+			// An explicit history target: with a manager configured, the derived default is now the
+			// minimal one (see resolveMaxWriteBufferSizeToMaintain), which releases each flushed
+			// memtable instead of retaining it — so a test about what the retained window charges to
+			// the cache has to ask for a window. 256MB is what the default used to derive to here.
 			it('should observe cache usage grow with memtable bytes (WBM charge is visible)', () =>
-				dbRunner({ dbOptions: [{ enableStats: true }] }, async ({ db }) => {
-					// What costToCache actually does: WBM charges are
-					// reflected in `block-cache-usage` (pinned entries that
-					// account for memtable memory). This means a single
-					// observability metric — block-cache-usage — covers
-					// both the read cache AND the memtable footprint.
-					//
-					// What it does NOT do: enforce blockCacheSize as a hard
-					// cap on memtable memory. The structural cap on
-					// memtables is `writeBufferManagerSize`. The cache
-					// capacity just controls how much room is *left* for
-					// genuine read-cached blocks after WBM has charged its
-					// share.
-					const cache = (): number => Number(db.getDBProperty('rocksdb.block-cache-usage') ?? 0);
-					const pinned = (): number =>
-						Number(db.getDBProperty('rocksdb.block-cache-pinned-usage') ?? 0);
+				dbRunner(
+					{
+						dbOptions: [{ enableStats: true, maxWriteBufferSizeToMaintain: 256 * 1024 * 1024 }],
+					},
+					async ({ db }) => {
+						// What costToCache actually does: WBM charges are
+						// reflected in `block-cache-usage` (pinned entries that
+						// account for memtable memory). This means a single
+						// observability metric — block-cache-usage — covers
+						// both the read cache AND the memtable footprint.
+						//
+						// What it does NOT do: enforce blockCacheSize as a hard
+						// cap on memtable memory. The structural cap on
+						// memtables is `writeBufferManagerSize`. The cache
+						// capacity just controls how much room is *left* for
+						// genuine read-cached blocks after WBM has charged its
+						// share.
+						const cache = (): number => Number(db.getDBProperty('rocksdb.block-cache-usage') ?? 0);
+						const pinned = (): number =>
+							Number(db.getDBProperty('rocksdb.block-cache-pinned-usage') ?? 0);
 
-					const value = 'x'.repeat(4096);
-					const samples: { written: number; usage: number; pinned: number }[] = [];
+						const value = 'x'.repeat(4096);
+						const samples: { written: number; usage: number; pinned: number }[] = [];
 
-					for (let burst = 0; burst < 3; burst++) {
-						for (let i = 0; i < 1000; i++) {
-							await db.put(`${burst}-${i.toString().padStart(6, '0')}`, value);
+						for (let burst = 0; burst < 3; burst++) {
+							for (let i = 0; i < 1000; i++) {
+								await db.put(`${burst}-${i.toString().padStart(6, '0')}`, value);
+							}
+							await db.flush();
+							samples.push({
+								written: (burst + 1) * 1000 * 4096,
+								usage: cache(),
+								pinned: pinned(),
+							});
 						}
-						await db.flush();
-						samples.push({
-							written: (burst + 1) * 1000 * 4096,
-							usage: cache(),
-							pinned: pinned(),
-						});
-					}
 
-					// All WBM reservations show up as pinned entries (the
-					// cache cannot evict them) — verify the pinned figure
-					// tracks total usage.
-					for (const s of samples) {
-						expect(s.pinned).toBeGreaterThan(s.usage * 0.5);
-					}
+						// All WBM reservations show up as pinned entries (the
+						// cache cannot evict them) — verify the pinned figure
+						// tracks total usage.
+						for (const s of samples) {
+							expect(s.pinned).toBeGreaterThan(s.usage * 0.5);
+						}
 
-					// And cache usage rises monotonically as we add data
-					// to the maintained window — proving the charge is
-					// accumulating in the cache where Harper can observe
-					// it with a single property.
-					expect(samples[2].usage).toBeGreaterThan(samples[0].usage);
-				}));
+						// And cache usage rises monotonically as we add data
+						// to the maintained window — proving the charge is
+						// accumulating in the cache where Harper can observe
+						// it with a single property.
+						expect(samples[2].usage).toBeGreaterThan(samples[0].usage);
+					}
+				));
 
 			it('should cap memtable memory at writeBufferManagerSize (not blockCacheSize)', () =>
 				dbRunner({ dbOptions: [{ enableStats: true }] }, async ({ db }) => {
@@ -259,44 +268,51 @@ describe('WriteBufferManager', () => {
 			// the older flushed memtables age out. After the second cycle,
 			// some of the first-cycle's cache charge is released.
 			it('should release older charges when newer writes push them out of the maintain window', () =>
-				dbRunner({ dbOptions: [{ enableStats: true }] }, async ({ db }) => {
-					const cache = (): number => Number(db.getDBProperty('rocksdb.block-cache-usage') ?? 0);
-					const sizeAllMem = (): number =>
-						Number(db.getDBProperty('rocksdb.size-all-mem-tables') ?? 0);
+				dbRunner(
+					{
+						// Explicit for the same reason as the growth test above: the maintain window this
+						// exercises is no longer the default when a manager is configured.
+						dbOptions: [{ enableStats: true, maxWriteBufferSizeToMaintain: 256 * 1024 * 1024 }],
+					},
+					async ({ db }) => {
+						const cache = (): number => Number(db.getDBProperty('rocksdb.block-cache-usage') ?? 0);
+						const sizeAllMem = (): number =>
+							Number(db.getDBProperty('rocksdb.size-all-mem-tables') ?? 0);
 
-					const value = 'x'.repeat(8192);
+						const value = 'x'.repeat(8192);
 
-					// Cycle 1: write 16 MB and flush.
-					for (let i = 0; i < 2000; i++) {
-						await db.put(`a-${i.toString().padStart(6, '0')}`, value);
+						// Cycle 1: write 16 MB and flush.
+						for (let i = 0; i < 2000; i++) {
+							await db.put(`a-${i.toString().padStart(6, '0')}`, value);
+						}
+						await db.flush();
+						const cycle1Cache = cache();
+						const cycle1AllMem = sizeAllMem();
+
+						// Cycle 2: write 16 MB more and flush.
+						for (let i = 0; i < 2000; i++) {
+							await db.put(`b-${i.toString().padStart(6, '0')}`, value);
+						}
+						await db.flush();
+						await new Promise((resolve) => setTimeout(resolve, 100));
+						const cycle2Cache = cache();
+						const cycle2AllMem = sizeAllMem();
+
+						// The maintain window (default ~128 MB / CF) is large
+						// enough that both 16 MB cycles fit. So we expect
+						// roughly-proportional growth here, not capping — but
+						// also not unbounded growth past the maintain window.
+						// Document the observation: cache scales with maintain
+						// window size.
+						expect(cycle2AllMem).toBeGreaterThan(cycle1AllMem);
+						expect(cycle2Cache).toBeGreaterThan(cycle1Cache);
+
+						// The promise we DO make is that this growth is bounded.
+						// Even after writing 32 MB total, cache usage stays
+						// well below the WBM cap (64 MB).
+						expect(cycle2Cache).toBeLessThan(64 * 1024 * 1024);
 					}
-					await db.flush();
-					const cycle1Cache = cache();
-					const cycle1AllMem = sizeAllMem();
-
-					// Cycle 2: write 16 MB more and flush.
-					for (let i = 0; i < 2000; i++) {
-						await db.put(`b-${i.toString().padStart(6, '0')}`, value);
-					}
-					await db.flush();
-					await new Promise((resolve) => setTimeout(resolve, 100));
-					const cycle2Cache = cache();
-					const cycle2AllMem = sizeAllMem();
-
-					// The maintain window (default ~128 MB / CF) is large
-					// enough that both 16 MB cycles fit. So we expect
-					// roughly-proportional growth here, not capping — but
-					// also not unbounded growth past the maintain window.
-					// Document the observation: cache scales with maintain
-					// window size.
-					expect(cycle2AllMem).toBeGreaterThan(cycle1AllMem);
-					expect(cycle2Cache).toBeGreaterThan(cycle1Cache);
-
-					// The promise we DO make is that this growth is bounded.
-					// Even after writing 32 MB total, cache usage stays
-					// well below the WBM cap (64 MB).
-					expect(cycle2Cache).toBeLessThan(64 * 1024 * 1024);
-				}));
+				));
 		});
 	});
 });

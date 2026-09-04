@@ -95,10 +95,20 @@ Creates a new database instance.
   - `maxWriteBufferSizeToMaintain: number` The number of bytes of recent memtable history to keep in
     memory for transaction conflict checking. `-1` (the default) derives the value from
     `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default for optimistic
-    transactions) — except when a stalling [`writeBufferManager`](#dbconfigoptions) is configured
-    (`writeBufferManagerSize > 0` with `writeBufferManagerAllowStall`), in which case it resolves to
-    `0` to avoid retaining memtable history the manager will never release. An explicit non-negative
-    value is always honored as-is.
+    transactions) — except when the database has a [`writeBufferManager`](#dbconfigoptions)
+    attached, in which case it resolves to `1` so the manager is not filled with history it will
+    never release. What decides this is the manager the database itself holds, not the current
+    `writeBufferManagerSize`: a column family created later on an already-open database is clamped
+    too, because its history is still charged to that manager. It also applies to any attached
+    manager, not only a stalling one — `writeBufferManagerAllowStall` can be changed at runtime
+    while this value is fixed when a column family is created, and history the budget cannot reclaim
+    is a problem either way. `1` is the smallest target a transactional database can be given: RocksDB's transaction wrappers rewrite a `0` target to
+    the derived value, so `0` requests the _largest_ history rather than none, and an explicitly
+    requested `0` is normalized to `1` for the same reason. A positive target still retains the most
+    recent flushed memtable per column family until that family's next write. An explicit positive
+    value is honored as-is; sizing it against the budget and the column-family count is then yours,
+    and a configuration whose known families already reach the budget is reported on the
+    [`'log.warn'`](#event-api) channel.
   - `name: string` The column family name. Defaults to `"default"`.
   - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
     default and the cache is shared across all database instances.
@@ -198,8 +208,10 @@ Sets global database settings.
     back into the reclaimed space. Defaults to `false`.
   - `writeBufferManagerSize: number` Total memtable memory limit (bytes) shared across every
     database opened in this process. When set, RocksDB uses a single `WriteBufferManager` so write
-    buffers are bounded process-wide rather than per database. A value of `0` disables the manager.
-    Defaults to `0`.
+    buffers are bounded process-wide rather than per database. Defaults to `0`, which means no
+    manager. Setting `0` later stops _new_ opens from attaching one, but does not detach or resize
+    the manager a database already holds — `write_buffer_manager` is fixed for the life of an open
+    database, so its memtables stay charged against that budget.
 
 ```typescript
 RocksDatabase.config({
