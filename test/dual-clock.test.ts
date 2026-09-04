@@ -1,8 +1,13 @@
-import { HAS_DISTINCT_VERSION_FLAG, RocksDatabase, constants } from '../src/index.ts';
+import { RocksDatabase, constants } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
-const { VERSION_HEADER_TAG, VERSION_NOT_UNIQUE_FLAG, FRESH_VERSION_FLAG } = constants;
+const {
+	HAS_DISTINCT_VERSION_FLAG,
+	VERSION_HEADER_TAG,
+	VERSION_NOT_UNIQUE_FLAG,
+	FRESH_VERSION_FLAG,
+} = constants;
 
 /**
  * A value carrying the header `getEntry()` reads: an 8-byte big-endian first word, the 4-byte
@@ -39,7 +44,6 @@ const rawDB = { dbOptions: [{ encoding: false as const }] };
 
 describe('getEntry() / getEntrySync()', () => {
 	it('exports the distinct-version flag and the header tag', () => {
-		expect(HAS_DISTINCT_VERSION_FLAG).toBe(0x20000);
 		expect(constants.HAS_DISTINCT_VERSION_FLAG).toBe(0x20000);
 		expect(VERSION_HEADER_TAG).toBe(0x0e);
 		// The three producer flags live in the same 24-bit field and must not collide.
