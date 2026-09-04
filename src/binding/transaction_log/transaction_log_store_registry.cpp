@@ -282,7 +282,11 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 			<< (scan.budgetExhausted
 				? " was still being scanned when the timestamp floor scan budget ran out"
 				  " (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS)"
-				: " has a segment that could not be read at open")
+				: scan.stoppedAtBreak
+					? " has a segment whose framing breaks mid-file, so the entries after the"
+					  " break — which a query resyncs past and reports as a corrupt frame — were"
+					  " not read"
+					: " has a segment that could not be read at open")
 			<< "; the monotonic timestamp floor may sit below a batch key already durable in it.";
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));

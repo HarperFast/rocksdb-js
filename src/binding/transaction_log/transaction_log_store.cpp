@@ -396,6 +396,7 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 				// Entries past a mid-file break are durable and are served by
 				// query()'s resync (AGENTS.md invariant 11); this walk cannot reach
 				// them, so the floor may sit below one of their keys.
+				result.stoppedAtBreak = true;
 				result.complete = false;
 			}
 		} catch (const std::exception& e) {

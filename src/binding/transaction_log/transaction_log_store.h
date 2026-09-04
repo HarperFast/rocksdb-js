@@ -464,16 +464,15 @@ struct TransactionLogStore final {
 	 */
 	LogPosition getLastFlushedPosition();
 
-	/**
-	 * Result of scanLargestDurableKey(). `complete` false means the floor derived
-	 * from `largestKey` may sit below a key that is still durable.
-	 */
+	/** `complete` false means the floor may sit below a key that is still durable. */
 	struct DurableKeyScan final {
 		double largestKey = 0;
 		/** The largest key beyond the plausible bound, left out of `largestKey`. */
 		double refusedKey = 0;
 		bool complete = true;
 		bool budgetExhausted = false;
+		/** A segment's framing broke mid-file, so the walk stopped before its end. */
+		bool stoppedAtBreak = false;
 	};
 
 	/**

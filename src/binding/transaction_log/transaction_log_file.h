@@ -384,7 +384,6 @@ struct TransactionLogFile final {
 	 */
 	uint32_t scanForLastCompleteTransactionEnd();
 
-	/** What scanMaxEntryTimestamp() found in one segment. */
 	struct MaxEntryScan final {
 		/** Largest key at or below `plausibleBound`, or 0 if the file holds none. */
 		double maxTimestamp = 0;

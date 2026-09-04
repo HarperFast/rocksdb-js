@@ -55,7 +55,7 @@ constexpr double MAX_TIMESTAMP_MS = 8.64e15;
  */
 constexpr double MAX_CLOCK_FLOOR_SKEW_MS = 10.0 * 365.25 * 24.0 * 3600.0 * 1000.0;
 
-/** The raw wall clock in milliseconds, without the monotonic floor applied. */
+/** The wall clock in milliseconds, without the monotonic floor applied. */
 double getWallClockTimestamp();
 
 double getMonotonicTimestamp();
