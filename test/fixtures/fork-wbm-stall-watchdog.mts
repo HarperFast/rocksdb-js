@@ -49,11 +49,11 @@ await new Promise<void>((resolve, reject) => {
 // Poll until the stall has been active long enough for the watchdog to have
 // reported, plus several more of its samples to prove it does not repeat.
 const OBSERVE_AFTER_REPORT_MS = 6000;
-const deadline = Date.now() + 90_000;
+const deadline = performance.now() + 90_000;
 let sawStall = false;
 let cleared = false;
 let stalledSince = 0;
-while (Date.now() < deadline) {
+while (performance.now() < deadline) {
 	const stats = RocksDatabase.getWriteBufferManagerStats();
 	const fromGetStats = db.getStats();
 	console.log(
@@ -76,7 +76,7 @@ while (Date.now() < deadline) {
 	if (stats.stallActive) {
 		if (!sawStall) {
 			sawStall = true;
-			stalledSince = Date.now();
+			stalledSince = performance.now();
 		}
 	} else if (sawStall) {
 		// A stall that cleared mid-window could produce a second episode, and with
@@ -85,7 +85,7 @@ while (Date.now() < deadline) {
 		cleared = true;
 		break;
 	}
-	if (sawStall && Date.now() - stalledSince > OBSERVE_AFTER_REPORT_MS) {
+	if (sawStall && performance.now() - stalledSince > OBSERVE_AFTER_REPORT_MS) {
 		break;
 	}
 	await delay(250);
