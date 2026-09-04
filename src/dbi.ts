@@ -410,8 +410,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * `skipDecode` likewise behaves as it does on `get()`: on a store whose
 	 * decoder copies, `value` is then the reusable read buffer `getBinaryFast()`
 	 * returns, whose `length` is the buffer's capacity rather than the value's
-	 * size and whose contents are only valid until the next read. Copy
-	 * `value.subarray(0, entry.value.end)` to keep it.
+	 * size and whose contents are only valid until the next read. To keep it,
+	 * copy the value's own extent: `Buffer.from(value.subarray(0, value.end))`.
 	 */
 	getEntry(key: Key, options?: GetOptions & T): MaybePromise<Entry | number | undefined> {
 		const raw = this.store.decoderCopies
