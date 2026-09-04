@@ -136,7 +136,7 @@ describe('getEntry() / getEntrySync()', () => {
 			expect(entry.localTime).toBeUndefined();
 		}));
 
-	it('honors skipDecode', () =>
+	it('honors skipDecode, returning the same bytes the binary read returns', () =>
 		dbRunner(async ({ db }) => {
 			await db.put('k', { hello: 'world' });
 
@@ -145,6 +145,15 @@ describe('getEntry() / getEntrySync()', () => {
 
 			const raw = db.getEntrySync('k', { skipDecode: true }) as any;
 			expect(raw.value).toBeInstanceOf(Uint8Array);
+
+			// Same contract as `get(key, { skipDecode: true })`: the undecoded bytes,
+			// which on a copying-decoder store are the reusable read buffer, so the
+			// value's own extent is `end` and not `length`.
+			const expected = db.getBinarySync('k') as Buffer;
+			const end = raw.value.end ?? raw.value.length;
+			expect(Buffer.from(raw.value.subarray(0, end))).toEqual(
+				Buffer.from(expected.subarray(0, (expected as any).end ?? expected.length))
+			);
 		}));
 
 	it('reads through a transaction', () =>
