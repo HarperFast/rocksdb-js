@@ -85,8 +85,7 @@ describe('WriteBufferManager', () => {
 					expect(stats.bufferSize).toBe(64 * 1024 * 1024);
 					expect(stats.costToCache).toBe(true);
 					expect(stats.allowStall).toBe(false);
-					// Nothing can stall a manager built without allowStall, so the
-					// watchdog is deliberately not running.
+					// Nothing can stall a manager built without allowStall.
 					expect(stats.stallActive).toBe(false);
 					expect(stats.watchdogRunning).toBe(false);
 					expect(stats.memoryUsage).toBeGreaterThan(1024 * 1024);
@@ -109,12 +108,26 @@ describe('WriteBufferManager', () => {
 					expect(typeof db.getStat('writeBufferManager.mutableMemoryUsage')).toBe('number');
 					expect(db.getStat('writeBufferManager.stallActive')).toBe(0);
 					expect(db.getStat('writeBufferManager.stallActiveMs')).toBe(0);
-					// An unknown key in this namespace is never a RocksDB ticker or
-					// property, so it must not fall through to the statistics path —
-					// which throws when statistics are disabled, i.e. exactly when an
+					// An unknown key here must not fall through to the statistics path,
+					// which throws when statistics are disabled — i.e. exactly when an
 					// operator is reaching for this during an incident.
 					expect(db.getStat('writeBufferManager.nope')).toBeUndefined();
 				}));
+
+			it('should start and stop the watchdog on the allowStall edges', () => {
+				expect(RocksDatabase.getWriteBufferManagerStats().watchdogRunning).toBe(false);
+				try {
+					// allowStall is the only thing that makes a stall reachable, and it
+					// is mutable at runtime, so the watchdog has to follow both edges
+					// rather than only the manager's construction.
+					RocksDatabase.config({ writeBufferManagerAllowStall: true });
+					expect(RocksDatabase.getWriteBufferManagerStats().watchdogRunning).toBe(true);
+					RocksDatabase.config({ writeBufferManagerAllowStall: false });
+					expect(RocksDatabase.getWriteBufferManagerStats().watchdogRunning).toBe(false);
+				} finally {
+					RocksDatabase.config({ writeBufferManagerAllowStall: false });
+				}
+			});
 
 			it('should count only column families attached to this manager', () => {
 				const detachedPath = generateDBPath();

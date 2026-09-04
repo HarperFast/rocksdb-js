@@ -169,6 +169,9 @@ void DBSettings::ensureWriteBufferManagerWatchdog() {
 		this->watchdogThread =
 			std::thread([this, generation]() { this->runWriteBufferManagerWatchdog(generation); });
 		this->watchdogStarted = true;
+		// Set here, not on the new thread: a caller that enables stalling and reads
+		// back immediately must not be told the watchdog is absent.
+		this->writeBufferManagerWatchdogRunning.store(true, std::memory_order_relaxed);
 	} catch (...) {
 		this->watchdogStarted = false;
 		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
@@ -201,7 +204,6 @@ void DBSettings::joinWriteBufferManagerWatchdog() {
 
 void DBSettings::runWriteBufferManagerWatchdog(uint64_t generation) {
 	setThreadName("rocksdb-wbm-watchdog");
-	this->writeBufferManagerWatchdogRunning.store(true, std::memory_order_relaxed);
 	const uint64_t thresholdMs = writeBufferManagerStallWarnMs();
 	WbmStallWatchdogState state;
 	std::unique_lock<std::mutex> lock(this->watchdogMutex);
@@ -408,10 +410,13 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		if (wbmAlreadyCreated && allowStallProvided) {
 			settings.writeBufferManager->SetAllowStall(newAllowStall);
 			if (newAllowStall) {
-				// Stalling was just enabled on a live manager, so the databases
-				// already attached to it can now stall without any further open
-				// to start the watchdog.
+				// The databases already attached can stall from here on, with no
+				// further open to start the watchdog.
 				settings.ensureWriteBufferManagerWatchdog();
+			} else {
+				// Nothing can stall any more, so the thread would poll forever and
+				// report watchdogRunning against allowStall: false.
+				settings.joinWriteBufferManagerWatchdog();
 			}
 		}
 	}
