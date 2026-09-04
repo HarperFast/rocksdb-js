@@ -376,6 +376,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	// consistent view of the manager. Throwing happens before any state
 	// mutation, so a rejected costToCache change leaves the live manager
 	// untouched.
+	bool retireWatchdog = false;
 	{
 		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
 		const bool wbmAlreadyCreated = (settings.writeBufferManager != nullptr);
@@ -416,9 +417,17 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			} else {
 				// Nothing can stall any more, so the thread would poll forever and
 				// report watchdogRunning against allowStall: false.
-				settings.joinWriteBufferManagerWatchdog();
+				retireWatchdog = true;
 			}
 		}
+	}
+
+	// Joined outside the critical section: the watchdog's report path writes to
+	// stderr, which blocks on a full pipe, and every DBDescriptor::open needs
+	// writeBufferManagerMutex. Same split, and the same reason, as the teardown
+	// path in binding.cpp.
+	if (retireWatchdog) {
+		settings.joinWriteBufferManagerWatchdog();
 	}
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
