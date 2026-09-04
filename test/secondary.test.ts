@@ -83,6 +83,10 @@ describe('Secondary Instances', () => {
 			await secondary.transaction(async (txn) => {
 				expect(await txn.get('foo')).toBe('bar');
 			});
+
+			secondary.close();
+			expect(() => secondary.destroy()).toThrow('Unsupported operation in read-only mode');
+			expect(primary.getSync('foo')).toBe('bar');
 		} finally {
 			secondary.close();
 			primary.close();

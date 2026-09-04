@@ -711,9 +711,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     not a leak of unsafe state — the log write completes before the RocksDB commit for every
     writer, so the log leads the database view by construction and every log consumer already has
     to tolerate it.
-    Transaction-log paths follow the database identity rule too: capture the physical
+    Transaction-log paths follow the database identity rule too: the first opener captures the physical
     `transactionLogsPath` once at open and use that immutable identity for discovery, appends,
-    purge, and backup. Keep the caller's original spelling separately for stats and returned purge
+    purge, and backup. It keeps that opener's original spelling separately for stats and returned purge
     paths. Re-resolving a symlinked or relative path after open can redirect the log half of a
     transaction to a different directory; returning only the resolved identity breaks callers
     that match paths against the spelling they supplied.

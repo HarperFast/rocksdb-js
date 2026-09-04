@@ -150,10 +150,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
 
-	// The caller resolves a never-opened handle's spelling at the N-API boundary;
-	// an opened handle passes the immutable identity captured at open. Resolving
-	// either one again here would consult a filesystem mapping that may have
-	// changed and could redirect this destructive operation.
 	const std::string& identityPath = path;
 	if (identityPath.empty()) {
 		// This function ends in remove_all(), so an empty target is never a
@@ -180,7 +176,24 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// It also keeps a concurrent OpenDB waiting on the entry's condition
 	// instead of re-opening the path while its files are being destroyed.
 	{
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		std::unique_lock<std::mutex> lock(instance->databasesMutex);
+		// A normal close may already own one descriptor for this path. Wait for
+		// every such close to remove its entry before claiming the survivors; a
+		// read-only/secondary descriptor has no database LOCK to stop deletion
+		// while finishClose() is still using its files.
+		while (true) {
+			std::shared_ptr<std::condition_variable> closingCondition;
+			for (const auto& [key, entry] : instance->databases) {
+				if (key.path == identityPath && entry.descriptor && entry.descriptor->isClosing()) {
+					closingCondition = entry.condition;
+					break;
+				}
+			}
+			if (!closingCondition) {
+				break;
+			}
+			closingCondition->wait(lock);
+		}
 		for (auto& [key, entry] : instance->databases) {
 			if (key.path == identityPath && entry.descriptor && entry.descriptor->beginClose()) {
 				DEBUG_LOG("%p DBRegistry::DestroyDB Claimed descriptor close (ref count = %ld)\n",
@@ -243,8 +256,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		DEBUG_LOG("%p DBRegistry::DestroyDB Releasing descriptor references\n", instance.get());
 		claimed.clear();
 	} else {
-		// No open descriptor claimed; remove any placeholder entries for the
-		// path (an entry mid-close is erased by its closer's guarded erase).
+		// No open descriptor claimed; remove any placeholder entries for the path.
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
 			if (it->first.path == identityPath && !it->second.descriptor) {
@@ -255,13 +267,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 	}
 
-	// Now the database lock should be released, safe to destroy
-	// The resolved identity is what was claimed and closed above, so it is also
-	// what gets deleted: deleting the caller's spelling instead would target
-	// whatever it points at NOW, which a symlink repoint during those closes
-	// (they flush, wait on compactions and join threads) can make a different
-	// directory. A database reached through a symlink therefore has its real
-	// directory removed and the link left dangling.
+	// Now the database lock should be released, safe to destroy. Use the same
+	// immutable identity that was claimed above (see DBHandle::identityPath).
 	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), identityPath.c_str());
 	rocksdb::Status status = rocksdb::DestroyDB(identityPath, rocksdb::Options());
 	if (!status.ok()) {
@@ -378,9 +385,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			break; // database exists and is not closing
 		}
 		DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str());
-		// Own the condition across the wait: the closer erases this map node before
-		// notifying. Keep the descriptor in the entry so a spurious wake still sees
-		// isClosing() and cannot treat a null slot as permission to reopen early.
+		// Keep the descriptor visible so a spurious wake cannot reopen early.
 		std::shared_ptr<std::condition_variable> condition = current.condition;
 		condition->wait(lock);
 	}

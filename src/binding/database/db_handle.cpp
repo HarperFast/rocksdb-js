@@ -341,6 +341,7 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->columnDescriptor = std::move(handleParams->columnDescriptor);
 	this->descriptor = std::move(handleParams->descriptor);
 	this->identityPath = this->descriptor->identityPath;
+	this->readOnly = options.readOnly;
 	this->disableWAL = options.disableWAL;
 	this->enableVerificationTable = options.verificationTable;
 

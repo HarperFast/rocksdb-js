@@ -688,7 +688,7 @@ napi_value Database::CatchUpWithPrimarySync(napi_env env, napi_callback_info inf
 napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE();
-	THROW_IF_READONLY((*dbHandle)->descriptor, "Destroy failed: ");
+	THROW_IF_READONLY((*dbHandle), "Destroy failed: ");
 
 	if (*dbHandle) {
 		// A handle that was never opened knows no path, and destroy ends in

@@ -1,6 +1,7 @@
+import { RocksDatabase } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -47,6 +48,45 @@ describe('Destroy', () => {
 			db.destroy();
 			expect(existsSync(dbPath)).toBe(false);
 			expect(db.isOpen()).toBe(false);
+		}));
+
+	it.skipIf(process.platform === 'win32')(
+		'should destroy the database opened before its symlink was repointed',
+		() => {
+			const dbPath = generateDBPath();
+			const replacementPath = `${dbPath}-replacement`;
+			const linkPath = `${dbPath}-link`;
+			mkdirSync(dbPath, { recursive: true });
+			mkdirSync(replacementPath, { recursive: true });
+			writeFileSync(join(replacementPath, 'sentinel.txt'), 'keep me');
+			symlinkSync(dbPath, linkPath, 'dir');
+
+			const db = new RocksDatabase(linkPath);
+			try {
+				db.open();
+				db.close();
+				rmSync(linkPath);
+				symlinkSync(replacementPath, linkPath, 'dir');
+
+				db.destroy();
+				expect(existsSync(dbPath)).toBe(false);
+				expect(existsSync(join(replacementPath, 'sentinel.txt'))).toBe(true);
+				expect(existsSync(linkPath)).toBe(true);
+			} finally {
+				db.close();
+				rmSync(linkPath, { force: true });
+				rmSync(dbPath, { force: true, recursive: true });
+				rmSync(replacementPath, { force: true, recursive: true });
+			}
+		}
+	);
+
+	it('should refuse destroy after a read-only handle closes', () =>
+		dbRunner({ dbOptions: [{}, { readOnly: true }] }, async ({ db, dbPath }, { db: readOnly }) => {
+			readOnly.close();
+			expect(() => readOnly.destroy()).toThrow('Unsupported operation in read-only mode');
+			expect(existsSync(dbPath)).toBe(true);
+			expect(db.isOpen()).toBe(true);
 		}));
 
 	it('should destroy an open database', () =>
