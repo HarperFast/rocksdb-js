@@ -546,6 +546,7 @@ describe('Secondary Instances', () => {
 		const primary = new RocksDatabase(dbPath);
 		try {
 			primary.open();
+			primary.putSync('sentinel', 'preserved');
 			// a path under a regular file cannot be created as a directory
 			const blocker = `${dbPath}.blocker`;
 			writeFileSync(blocker, 'not a directory');
@@ -553,6 +554,8 @@ describe('Secondary Instances', () => {
 				secondaryPath: join(blocker, 'nested'),
 			});
 			expect(() => secondary.open()).toThrow('Failed to create secondary path');
+			expect(() => secondary.destroy()).toThrow('Unsupported operation in read-only mode');
+			expect(primary.getSync('sentinel')).toBe('preserved');
 			cleanup(blocker);
 		} finally {
 			primary.close();

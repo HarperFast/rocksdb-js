@@ -699,9 +699,7 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		try {
-			// The identity this handle resolved at open, which it keeps after
-			// close: re-deriving it from the caller's spelling would follow a
-			// mapping that may have moved since and name a different database.
+			// Opened handles retain this immutable identity; see DBHandle::identityPath.
 			const std::string identityPath = (*dbHandle)->identityPath.empty()
 				? rocksdb_js::resolveIdentityPath((*dbHandle)->path).string()
 				: (*dbHandle)->identityPath;

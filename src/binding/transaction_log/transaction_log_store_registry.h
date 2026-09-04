@@ -130,19 +130,12 @@ public:
 	 */
 	static void Shutdown();
 
-	// Every `dbPath` below is `DBDescriptor::identityPath` — the database path
-	// resolved to filesystem identity ONCE at open — never raw caller text. The
-	// entries map is what makes the read-only/writable store guards meet, so two
-	// spellings of one directory must land on one entry; and resolving here
-	// instead would consult the process CWD on every call, so a `process.chdir()`
-	// would remap a live handle's key (a writable `ResolveStore` would then create
-	// a second store outside the database, and `Unregister` would leak the first
-	// entry's stores). See DBDescriptor::identityPath.
-
 	/**
 	 * Registers a DBDescriptor for the given database path. Increments the
 	 * reference count for the path. If this is the first descriptor for the
-	 * path, creates a new entry with the given configuration.
+	 * path, creates a new entry with the given configuration. `dbPath` and every
+	 * path accepted below must be the immutable `DBDescriptor::identityPath` so
+	 * alternate spellings and CWD changes cannot split the registry.
 	 *
 	 * @param dbPath The database path.
 	 * @param config The transaction log store configuration.

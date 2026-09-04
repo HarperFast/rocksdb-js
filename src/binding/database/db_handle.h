@@ -54,7 +54,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	std::string identityPath;
 
 	/**
-	 * The mode of the last successful open, retained after close so destructive
+	 * The mode of the last requested open, retained after close or open failure so destructive
 	 * operations cannot bypass a read-only handle's guard.
 	 */
 	bool readOnly = false;

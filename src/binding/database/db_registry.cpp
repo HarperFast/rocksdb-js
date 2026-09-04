@@ -203,6 +203,23 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		}
 	}
 
+	auto erasePathEntries = [&]() {
+		for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
+			if (it->first.path == identityPath) {
+				it = instance->databases.erase(it);
+			} else {
+				++it;
+			}
+		}
+	};
+	auto notifyClaimed = [&]() {
+		for (auto& [descriptor, condition] : claimed) {
+			if (condition) {
+				condition->notify_all();
+			}
+		}
+	};
+
 	if (!claimed.empty()) {
 		// Close all closables (iterators, transactions, handles) attached to
 		// each descriptor; this should release all DBHandle references. A throw
@@ -223,60 +240,56 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 		}
 
-		{
-			std::lock_guard<std::mutex> lock(instance->databasesMutex);
-			for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
-				if (it->first.path == identityPath) {
-					it = instance->databases.erase(it);
-				} else {
-					++it;
-				}
-			}
-		}
-		for (auto& [descriptor, condition] : claimed) {
-			if (condition) {
-				condition->notify_all();
-			}
-		}
 		if (closeError) {
+			{
+				std::lock_guard<std::mutex> lock(instance->databasesMutex);
+				erasePathEntries();
+			}
+			notifyClaimed();
 			std::rethrow_exception(closeError);
 		}
 
-		// Each descriptor should hold only our local claim by now.
+		// Each descriptor should hold only the registry and our local claim.
 		for (auto& [descriptor, condition] : claimed) {
 			size_t refCountAfterClose = descriptor.use_count();
-			if (refCountAfterClose > 1) {
-				std::string errorMsg = "Cannot destroy database: " + std::to_string(refCountAfterClose - 1) +
+			if (refCountAfterClose > 2) {
+				std::string errorMsg = "Cannot destroy database: " + std::to_string(refCountAfterClose - 2) +
 					" reference(s) still held after closing all handles. This may indicate handles not properly closed or JavaScript objects not yet garbage collected.";
 				DEBUG_LOG("%p DBRegistry::DestroyDB Error: %s\n", instance.get(), errorMsg.c_str());
+				{
+					std::lock_guard<std::mutex> lock(instance->databasesMutex);
+					erasePathEntries();
+				}
+				notifyClaimed();
 				throw rocksdb_js::DBException(errorMsg);
 			}
 		}
+	}
 
-		DEBUG_LOG("%p DBRegistry::DestroyDB Releasing descriptor references\n", instance.get());
-		claimed.clear();
-	} else {
-		// No open descriptor claimed; remove any placeholder entries for the path.
+	std::exception_ptr destroyError;
+	{
+		// Keep every closing entry visible, and exclude registry opens, until the
+		// physical deletion completes. Only then erase and wake OpenDB waiters.
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
-			if (it->first.path == identityPath && !it->second.descriptor) {
-				it = instance->databases.erase(it);
-			} else {
-				++it;
+		try {
+			DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), identityPath.c_str());
+			rocksdb::Status status = rocksdb::DestroyDB(identityPath, rocksdb::Options());
+			if (!status.ok()) {
+				throw rocksdb_js::DBException(status.ToString());
 			}
+			std::filesystem::remove_all(identityPath);
+		} catch (...) {
+			destroyError = std::current_exception();
 		}
+		erasePathEntries();
 	}
+	notifyClaimed();
 
-	// Now the database lock should be released, safe to destroy. Use the same
-	// immutable identity that was claimed above (see DBHandle::identityPath).
-	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), identityPath.c_str());
-	rocksdb::Status status = rocksdb::DestroyDB(identityPath, rocksdb::Options());
-	if (!status.ok()) {
-		throw rocksdb_js::DBException(status.ToString());
+	DEBUG_LOG("%p DBRegistry::DestroyDB Releasing descriptor references\n", instance.get());
+	claimed.clear();
+	if (destroyError) {
+		std::rethrow_exception(destroyError);
 	}
-
-	// remove the database directory including transaction logs
-	std::filesystem::remove_all(identityPath);
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), identityPath.c_str());
 }

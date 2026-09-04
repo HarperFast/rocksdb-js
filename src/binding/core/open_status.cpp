@@ -104,12 +104,7 @@ bool isMissingSstOpenRace(
 		return true;
 	}
 
-	// RocksDB sometimes replaces the original PathNotFound status with a fresh
-	// Corruption status, losing the structured subcode. OS error prose is
-	// localized, but RocksDB's numbered data filename is stable: if the named
-	// file is absent from the captured database directory, this is the same
-	// missing-file shape regardless of locale. An existing file keeps genuine
-	// corruption classified as corruption.
+	// A localized Corruption wrapper can lose the original PathNotFound subcode.
 	if (!databasePath.empty()) {
 		for (const char* extension : { ".sst", ".blob", ".log" }) {
 			std::string filename = namedRocksFile(message, extension);
