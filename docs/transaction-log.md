@@ -279,8 +279,8 @@ clock time point and a larger value overflows its resolution and wraps into the 
 A database opened without `timestampFloorLog` pays none of it.
 
 The seed is best effort, and says so when it falls short: a segment that cannot be opened or scanned
-emits a `log.warn` global event, as does a mid-file framing break (the entries past it are durable
-and `query()` resyncs to them, but this walk stops there), a budget that runs out, and a
+emits a `log.warn` global event, as does a framing break (the entries past it can still be durable —
+`query()` resyncs to them — but this walk stops there), a budget that runs out, and a
 `timestampFloorLog` naming a log the database does not have. A key more than ten years ahead of the
 wall clock is left out of the floor as corruption rather than a rollback to recover from, per entry
 rather than per segment so it does not take the real keys beside it with it, and it warns too.
