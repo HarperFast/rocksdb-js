@@ -121,8 +121,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	#columnFamilies = new Map<string, WeakRef<RocksDatabase>>();
 	#columnFamilyRegistry = new FinalizationRegistry<string>((name) => {
 		// Only drop the entry if it still holds the collected ref — a later
-		// `use()` may have replaced it with a live view under the same name.
-		if (this.#columnFamilies.get(name)?.deref() === undefined) {
+		// `use()` may have replaced it with a live view under the same name (in
+		// which case `deref()` is non-undefined), or already removed it.
+		const ref = this.#columnFamilies.get(name);
+		if (ref !== undefined && ref.deref() === undefined) {
 			this.#columnFamilies.delete(name);
 		}
 	});
@@ -1306,7 +1308,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			return cached;
 		}
 
-		const columnFamily = new RocksDatabase(this.path, { ...this.#options, ...options, name });
+		// Build the view's store from the parent store's class, not the base
+		// `Store`, so a custom `Store` subclass's overridden behavior carries over.
+		// `mergedOptions` is also passed to the view so a nested `use()` inherits.
+		const mergedOptions = { ...this.#options, ...options, name };
+		const StoreClass = this.store.constructor as typeof Store;
+		const columnFamily = new RocksDatabase(new StoreClass(this.path, mergedOptions), mergedOptions);
 		columnFamily.open();
 		this.#columnFamilies.set(name, new WeakRef(columnFamily));
 		this.#columnFamilyRegistry.register(columnFamily, name);

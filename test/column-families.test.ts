@@ -86,6 +86,24 @@ describe('Column Family Views (use)', () => {
 			expect(db.get('k')).toBe('v');
 		}));
 
+	it('should preserve a custom Store subclass for views', () => {
+		class TaggedStore extends Store {
+			tag = 'custom';
+		}
+		const path = generateDBPath();
+		const db = new RocksDatabase(new TaggedStore(path)).open();
+		try {
+			const events = db.use('events');
+			// The view's store is the same subclass, not the base Store.
+			expect(events.store).toBeInstanceOf(TaggedStore);
+			expect((events.store as TaggedStore).tag).toBe('custom');
+			events.close();
+		} finally {
+			db.close();
+			rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+		}
+	});
+
 	it('should derive the bound name from a custom Store', () => {
 		const path = generateDBPath();
 		const db = new RocksDatabase(new Store(path, { name: 'audit' })).open();
