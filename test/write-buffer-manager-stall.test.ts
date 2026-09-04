@@ -259,7 +259,11 @@ describe('WriteBufferManager stall — reopen (#821)', () => {
 		expect(code, stderr).toBe(0);
 		// Read after the child exits: RocksDB's info logger is buffered, so the newest family's
 		// options block only reaches the file when the database closes.
-		expect(maintainFromLog(join(dbPath, 'db', 'LOG'))).toEqual({ default: 1, late: 1 });
+		expect(maintainFromLog(join(dbPath, 'db', 'LOG'))).toEqual({
+			default: 1,
+			late: 1,
+			explicit: 256 * 1024 * 1024,
+		});
 	}, 90_000);
 
 	// An explicit 0 reads as "retain no history", and the wrappers turn exactly that value into the

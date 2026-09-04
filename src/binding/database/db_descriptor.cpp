@@ -9,6 +9,7 @@
 #include "rocksdb/convenience.h"
 #include "rocksdb/env.h"
 #include "rocksdb/listener.h"
+#include "rocksdb/write_buffer_manager.h"
 #include "rocksdb/utilities/options_util.h"
 #include <algorithm>
 #include <cctype>
@@ -142,7 +143,7 @@ static int64_t resolveMaxWriteBufferSizeToMaintain(
 }
 
 /**
- * Reports a database whose retained-history floors already reach the WriteBufferManager's budget,
+ * Reports a database whose retained-history floors already reach its WriteBufferManager's budget,
  * which is memory the manager can never reclaim — and, under `allowStall`, a permanent write stall
  * rather than backpressure (see `resolveMaxWriteBufferSizeToMaintain`).
  *
@@ -155,17 +156,22 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 	int64_t historyTarget,
 	size_t familyCount,
 	bool readOnly,
+	const std::shared_ptr<rocksdb::WriteBufferManager>& writeBufferManager,
 	const std::shared_ptr<rocksdb::Logger>& infoLog
 ) {
-	if (readOnly || historyTarget <= 0 || familyCount == 0) {
+	if (readOnly || historyTarget <= 0 || familyCount == 0 || !writeBufferManager) {
 		return;
 	}
-	DBSettings& settings = DBSettings::getInstance();
-	const uint64_t budget = static_cast<uint64_t>(settings.getWriteBufferManagerSize());
+	// The budget comes from the manager this database holds, not `DBSettings`: a runtime
+	// `writeBufferManagerSize: 0` does not resize the live manager, so the global would read 0 while
+	// this database is still charged against the real budget. `allowStall` does come from the
+	// settings, which mirror the single manager's live value — `DBSettings::Config` pushes every
+	// change through `SetAllowStall`, and RocksDB exposes no getter for it.
+	const uint64_t budget = static_cast<uint64_t>(writeBufferManager->buffer_size());
 	if (budget == 0) {
 		return;
 	}
-	const bool stalls = settings.getWriteBufferManagerAllowStall();
+	const bool stalls = DBSettings::getInstance().getWriteBufferManagerAllowStall();
 
 	// `familyCount * historyTarget >= budget`, by division: the caller's target is an unvalidated
 	// int64 (see database.cpp), so the product can overflow. RocksDB stalls at
@@ -1505,6 +1511,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 		cfOptions.max_write_buffer_size_to_maintain,
 		columns.size(),
 		options.readOnly,
+		dbOptions.write_buffer_manager,
 		db->GetDBOptions().info_log
 	);
 
