@@ -390,9 +390,11 @@ struct TransactionLogFile final {
 		/** Largest key above it, kept apart so one bad key does not discard the rest. */
 		double maxImplausibleTimestamp = 0;
 		/**
-		 * The walk stopped at a mid-file framing break, so entries after it — which
-		 * are durable, and which `query()` resyncs past (AGENTS.md invariant 11) —
-		 * are not in `maxTimestamp`.
+		 * The walk stopped at a framing break rather than at the end of the entries,
+		 * so any key after it is missing from `maxTimestamp`. Both classifications
+		 * count: entries after a mid-file break are durable and `query()` resyncs
+		 * past them (AGENTS.md invariant 11), and a torn tail whose break sits
+		 * inside the flushed prefix leaves the file at full extent too.
 		 */
 		bool stoppedAtBreak = false;
 	};

@@ -203,6 +203,18 @@ TEST(TransactionLogRecovery, MaxTimestampStopsAtAMidFileBreak) {
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
 }
 
+TEST(TransactionLogRecovery, MaxTimestampStopsAtATornTailToo) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	// A torn tail stops the walk at the same place a mid-file break does. When the
+	// break sits inside a flushed prefix, recoverTail() leaves the file whole, so
+	// the keys after it stay durable and unread.
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 4000.0);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
 TEST(TransactionLogRecovery, BrokenFrameThenFewEntriesReachingEofIsNotTruncated) {
 	// Regression for the resync false-negative: a mid-file break followed by
 	// fewer than RESYNC_MIN_FRAMES valid entries that nonetheless reach EOF must

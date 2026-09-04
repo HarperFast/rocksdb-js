@@ -354,8 +354,6 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 		files.reserve(this->sequenceFiles.size());
-		// Newest first: a partial walk keeps the segments a rollback left the
-		// highest keys in.
 		for (auto it = this->sequenceFiles.rbegin(); it != this->sequenceFiles.rend(); ++it) {
 			files.push_back(it->second);
 		}

@@ -292,8 +292,9 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		}
 		if (scan.stoppedAtBreak) {
 			reasons.emplace_back(
-				"a segment's framing breaks mid-file, so the entries after the break — which a"
-				" query resyncs past and reports as a corrupt frame — were not read");
+				"a segment's framing breaks partway through, so any entry after the break — which"
+				" stays durable, and which a query resyncs past and reports as a corrupt frame —"
+				" was not read");
 		}
 		if (scan.readFailed || reasons.empty()) {
 			reasons.emplace_back("a segment could not be read at open");

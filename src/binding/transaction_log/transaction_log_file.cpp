@@ -331,7 +331,11 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(doubl
 
 	result.maxTimestamp = scan.maxTimestamp;
 	result.maxImplausibleTimestamp = scan.maxImplausibleTimestamp;
-	result.stoppedAtBreak = scan.kind == RecoveryScan::Kind::MidFileCorruption;
+	// Any classification but Clean stopped the walk before the end of the entries.
+	// A torn tail counts: recoverTail() leaves the file at full extent when the
+	// break sits inside the flushed prefix, so entries past it stay durable and
+	// unread — the same hole a mid-file break leaves.
+	result.stoppedAtBreak = scan.kind != RecoveryScan::Kind::Clean;
 	return result;
 }
 
