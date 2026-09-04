@@ -73,11 +73,18 @@ describe('WriteBufferManager stall watchdog', () => {
 		try {
 			result = await runStallChild(join(dir, 'db'), 120_000);
 		} finally {
-			rmSync(dir, { recursive: true, force: true });
+			if (!process.env.KEEP_FILES) {
+				// The child was SIGKILLed a moment ago; on Windows its handles can
+				// outlive it briefly, and an EPERM thrown here would mask the real
+				// assertion result.
+				rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+			}
 		}
 
 		expect(result.timedOut, `child never finished:\n${result.stderr}`).toBe(false);
-		expect(result.stdout, `child stderr:\n${result.stderr}`).toContain('STALLED');
+		// Anchored: 'NEVER_STALLED' also contains 'STALLED', and a run that never
+		// reached a stall must fail here rather than in the warn-count assertion.
+		expect(result.stdout.split('\n'), `child stderr:\n${result.stderr}`).toContain('STALLED');
 
 		const warnings = result.stderr
 			.split('\n')
@@ -120,6 +127,15 @@ describe('WriteBufferManager stall watchdog', () => {
 		expect(last.getStat.stallActive).toBe(1);
 		expect(last.getStat.bufferSize).toBe(last.stats.bufferSize);
 		expect(last.getStat.stallActiveMs).toBe(last.getStats.stallActiveMs);
+
+		// The `'log.warn'` event is the programmatic half of the warn line: same
+		// payload, same once-per-episode cadence.
+		const warned = result.stdout
+			.split('\n')
+			.filter((line) => line.startsWith('WARNED '))
+			.map((line) => line.slice('WARNED '.length));
+		expect(warned).toHaveLength(1);
+		expect(warned[0]).toBe(warning);
 
 		// stallActiveMs is a duration, not a flag: it has to climb across samples.
 		expect(stalled.at(-1)!.stats.stallActiveMs).toBeGreaterThan(stalled[0].stats.stallActiveMs);

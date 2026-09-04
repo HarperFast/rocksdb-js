@@ -24,7 +24,19 @@ uint64_t generateSeed() {
 // there is not safe against a concurrent process.env write on any JS thread
 // (same reasoning as ROCKSDB_JS_PARK_TIMEOUT_MS).
 uint64_t writeBufferManagerStallWarnMs() {
-	static const uint64_t value = resolveWbmStallWarnMs(::getenv("ROCKSDB_JS_WBM_STALL_WARN_MS"));
+	static const uint64_t value = [] {
+		const char* raw = ::getenv("ROCKSDB_JS_WBM_STALL_WARN_MS");
+		bool rejected = false;
+		uint64_t resolved = resolveWbmStallWarnMs(raw, &rejected);
+		if (rejected) {
+			::fprintf(stderr,
+				"[rocksdb-js] ignoring ROCKSDB_JS_WBM_STALL_WARN_MS=\"%s\" (not an integer in "
+				"[0, %llu] ms); using %llu\n",
+				raw, static_cast<unsigned long long>(WBM_STALL_WARN_MS_MAX),
+				static_cast<unsigned long long>(resolved));
+		}
+		return resolved;
+	}();
 	return value;
 }
 
@@ -152,8 +164,10 @@ void DBSettings::ensureWriteBufferManagerWatchdog() {
 		return;
 	}
 	this->watchdogStopRequested = false;
+	const uint64_t generation = ++this->watchdogGeneration;
 	try {
-		this->watchdogThread = std::thread([this]() { this->runWriteBufferManagerWatchdog(); });
+		this->watchdogThread =
+			std::thread([this, generation]() { this->runWriteBufferManagerWatchdog(generation); });
 		this->watchdogStarted = true;
 	} catch (...) {
 		this->watchdogStarted = false;
@@ -185,15 +199,18 @@ void DBSettings::joinWriteBufferManagerWatchdog() {
 	}
 }
 
-void DBSettings::runWriteBufferManagerWatchdog() {
+void DBSettings::runWriteBufferManagerWatchdog(uint64_t generation) {
 	setThreadName("rocksdb-wbm-watchdog");
 	this->writeBufferManagerWatchdogRunning.store(true, std::memory_order_relaxed);
 	const uint64_t thresholdMs = writeBufferManagerStallWarnMs();
 	WbmStallWatchdogState state;
 	std::unique_lock<std::mutex> lock(this->watchdogMutex);
-	while (!this->watchdogStopRequested) {
+	auto retired = [&] {
+		return this->watchdogStopRequested || this->watchdogGeneration != generation;
+	};
+	while (!retired()) {
 		this->watchdogCv.wait_for(lock, std::chrono::milliseconds(WBM_STALL_SAMPLE_INTERVAL_MS));
-		if (this->watchdogStopRequested) {
+		if (retired()) {
 			break;
 		}
 		lock.unlock();
@@ -205,8 +222,10 @@ void DBSettings::runWriteBufferManagerWatchdog() {
 		}
 		lock.lock();
 	}
-	this->writeBufferManagerStallActiveMs.store(0, std::memory_order_relaxed);
-	this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+	if (this->watchdogGeneration == generation) {
+		this->writeBufferManagerStallActiveMs.store(0, std::memory_order_relaxed);
+		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+	}
 }
 
 void DBSettings::sampleWriteBufferManagerStall(WbmStallWatchdogState& state, uint64_t thresholdMs) {
@@ -229,19 +248,23 @@ void DBSettings::sampleWriteBufferManagerStall(WbmStallWatchdogState& state, uin
 	report.mutableMemoryUsage = wbm->mutable_memtable_memory_usage();
 	report.allowStall = this->writeBufferManagerAllowStall.load(std::memory_order_relaxed);
 	report.costToCache = this->writeBufferManagerCostToCache.load(std::memory_order_relaxed);
-	DBRegistry::CollectWriteBufferManagerInventory(
+	report.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
 		wbm, report.columnFamilies, report.maxWriteBufferSizeToMaintain
 	);
 
-	// Formatting and delivery happen after every registry lock is released.
 	std::string line = formatWriteBufferManagerStallReport(report);
-	// stderr is the channel that does not depend on an application having
-	// registered a listener; the event below is the one an application can route.
-	if (::fprintf(stderr, "%s\n", line.c_str()) >= 0) {
+	// stderr does not depend on an application having registered a listener; the
+	// event is the one an application can route. The episode is retired once
+	// either has carried it — gating on stderr alone would re-report every second
+	// for the whole stall when fd 2 is closed but a listener is attached.
+	const bool wroteToStderr = ::fprintf(stderr, "%s\n", line.c_str()) >= 0;
+	if (wroteToStderr) {
 		::fflush(stderr);
+	}
+	const bool emitted = emitGlobalEvent("log.warn", ListenerData::fromStrings({ line }));
+	if (wroteToStderr || emitted) {
 		state.markReported();
 	}
-	emitGlobalEvent("log.warn", ListenerData::fromStrings({ line }));
 }
 
 WriteBufferManagerStats DBSettings::getWriteBufferManagerStats(bool includeColumnFamilies) {
@@ -261,11 +284,15 @@ WriteBufferManagerStats DBSettings::getWriteBufferManagerStats(bool includeColum
 	stats.stallActive = wbm->IsStallActive();
 	stats.stallActiveMs = this->writeBufferManagerStallActiveMs.load(std::memory_order_relaxed);
 	if (includeColumnFamilies) {
-		DBRegistry::CollectWriteBufferManagerInventory(
+		stats.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
 			wbm, stats.columnFamilies, stats.maxWriteBufferSizeToMaintain
 		);
 	}
 	return stats;
+}
+
+DBSettings::~DBSettings() {
+	this->joinWriteBufferManagerWatchdog();
 }
 
 /**
@@ -430,6 +457,7 @@ napi_value DBSettings::GetWriteBufferManagerStats(napi_env env, napi_callback_in
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "costToCache", stats.costToCache));
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "stallActive", stats.stallActive));
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "watchdogRunning", stats.watchdogRunning));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "inventoryAvailable", stats.inventoryAvailable));
 
 	napi_value targets;
 	NAPI_STATUS_THROWS(::napi_create_object(env, &targets));
