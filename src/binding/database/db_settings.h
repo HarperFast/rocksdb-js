@@ -89,7 +89,6 @@ private:
 	// or a database open.
 	std::atomic<rocksdb::WriteBufferManager*> writeBufferManagerPtr{nullptr};
 
-	// Published by the watchdog thread each sample; 0 when no stall is active.
 	std::atomic<uint64_t> writeBufferManagerStallActiveMs{0};
 	std::atomic<bool> writeBufferManagerWatchdogRunning{false};
 

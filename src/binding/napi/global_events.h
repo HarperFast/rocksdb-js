@@ -23,10 +23,18 @@ public:
 	 * Uses C++11 magic-static initialization, mirroring `DBSettings::getInstance`,
 	 * so concurrent first-callers from worker threads don't race during
 	 * construction.
+	 *
+	 * Deliberately leaked. Block-scope statics are destroyed in reverse order of
+	 * construction, and this one is normally constructed *after* `DBSettings` (it
+	 * takes a listener registration or an emit; `DBSettings` takes the first
+	 * `config()`), so it would be destroyed *first* — while `~DBSettings` is still
+	 * joining the WriteBufferManager stall watchdog, whose report path emits here.
+	 * On the `process.exit()` path that skips the module's cleanup hook, that is a
+	 * lock on a destroyed mutex during exactly the stall this exists to report.
 	 */
 	static EventEmitter& getInstance() {
-		static EventEmitter instance;
-		return instance;
+		static EventEmitter* instance = new EventEmitter();
+		return *instance;
 	}
 
 	GlobalEvents() = delete;

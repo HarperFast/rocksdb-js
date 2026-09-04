@@ -53,9 +53,8 @@ public:
 	using Clock = std::chrono::steady_clock;
 
 	struct Sample {
-		/** The threshold was crossed and this episode has not been reported yet. */
 		bool reportNow = false;
-		/** How long the current stall has been active; 0 when not stalled. */
+		/** 0 when not stalled, and for the first sample of a stall. */
 		uint64_t stallActiveMs = 0;
 	};
 

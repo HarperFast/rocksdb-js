@@ -51,6 +51,7 @@ await new Promise<void>((resolve, reject) => {
 const OBSERVE_AFTER_REPORT_MS = 6000;
 const deadline = Date.now() + 90_000;
 let sawStall = false;
+let cleared = false;
 let stalledSince = 0;
 while (Date.now() < deadline) {
 	const stats = RocksDatabase.getWriteBufferManagerStats();
@@ -78,9 +79,10 @@ while (Date.now() < deadline) {
 			stalledSince = Date.now();
 		}
 	} else if (sawStall) {
-		// The stall cleared before the observation window closed; this run cannot
-		// prove the one-line property, so say so rather than assert on it.
-		console.log('CLEARED');
+		// A stall that cleared mid-window could produce a second episode, and with
+		// it a second warn line, so this run cannot prove the once-per-episode
+		// property. Report it as its own outcome instead of as a reached stall.
+		cleared = true;
 		break;
 	}
 	if (sawStall && Date.now() - stalledSince > OBSERVE_AFTER_REPORT_MS) {
@@ -89,7 +91,7 @@ while (Date.now() < deadline) {
 	await delay(250);
 }
 
-console.log(sawStall ? 'STALLED' : 'NEVER_STALLED');
+console.log(cleared ? 'CLEARED' : sawStall ? 'STALLED' : 'NEVER_STALLED');
 
 // The parent owns the deadline and kills this process. It cannot exit on its own:
 // the writer thread is parked inside RocksDB, so teardown would wedge in close()

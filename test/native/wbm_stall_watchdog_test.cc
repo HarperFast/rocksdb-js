@@ -70,8 +70,8 @@ TEST(WbmStallWatchdogState, KeepsReportingDurationAfterTheReport) {
 	state.onSample(true, at(0), kThreshold);
 	state.onSample(true, at(5000), kThreshold);
 	state.markReported();
-	// stallActiveMs is the live gauge behind writeBufferManager.stallActiveMs, so
-	// it must keep climbing after the one-shot line has been emitted.
+	// It backs the live writeBufferManager.stallActiveMs gauge, so it must keep
+	// climbing after the one-shot line has been emitted.
 	EXPECT_EQ(state.onSample(true, at(42000), kThreshold).stallActiveMs, 42000u);
 }
 
