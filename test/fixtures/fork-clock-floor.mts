@@ -26,8 +26,8 @@ if (mode === 'warn' || mode === 'reopen-warn') {
 }
 
 const rotating = mode === 'write-rotate';
-/** Payload size of every entry `write-frames` appends; the parent needs it to find frame N. */
-export const FRAME_PAYLOAD = 32;
+/** Payload size of every `write-frames` entry; reported on stdout so the parent can find frame N. */
+const FRAME_PAYLOAD = 32;
 const db = RocksDatabase.open(dbPath, {
 	...(mode === 'write-unseeded' || mode === 'reopen-warn' ? {} : { timestampFloorLog: log }),
 	// Small enough that the next batch cannot share a segment with the last one.

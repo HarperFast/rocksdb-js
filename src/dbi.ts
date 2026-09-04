@@ -451,7 +451,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				localTime = first;
 				version = first;
 			}
-			if (end >= 12) {
+			if (localTime !== undefined && end >= 12) {
 				const metadata = raw.readUInt32BE(8);
 				if (
 					metadata >>> 24 === VERSION_HEADER_TAG &&

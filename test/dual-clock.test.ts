@@ -172,6 +172,30 @@ describe('getEntry() / getEntrySync()', () => {
 			expect(db.getEntrySync('k')).toMatchObject({ localTime, version });
 		}));
 
+	it("returns a localTime that finds the record's own transaction-log entry", () =>
+		dbRunner(rawDB, async ({ db }) => {
+			// The claim the first word exists for: it is the key of the batch that
+			// wrote the record, so a consumer can seek the log at exactly that value.
+			// Every other case here hand-assembles a header; this one round-trips a
+			// real transaction's timestamp through both the record and the log.
+			let claimed = 0;
+			await db.transaction(async (txn) => {
+				claimed = txn.getTimestamp();
+				await txn.put('k', headerValue(claimed));
+				db.useLog('audit').addEntry(Buffer.from('entry-for-k'), txn.id);
+			});
+
+			const entry = db.getEntrySync('k') as any;
+			expect(entry.localTime).toBe(claimed);
+
+			const found = Array.from(
+				db.useLog('audit').query({ start: entry.localTime, exactStart: true })
+			);
+			expect(found.length).toBeGreaterThan(0);
+			expect(found[0].timestamp).toBe(entry.localTime);
+			expect(Buffer.from(found[0].data).toString()).toBe('entry-for-k');
+		}));
+
 	it('passes the fresh-version sentinel through unchanged', () => {
 		const dbPath = generateDBPath();
 		const db = new RocksDatabase(dbPath, { encoding: 'binary', verificationTable: true });
