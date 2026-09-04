@@ -248,7 +248,7 @@ describe('monotonic clock floor', () => {
 		expect(warned.code).toBe(0);
 
 		const { warnings, clock } = JSON.parse(warned.stdout);
-		expect(warnings.join(' ')).toContain('framing breaks mid-file');
+		expect(warnings.join(' ')).toContain('framing breaks partway through');
 		// The floor stops at the key before the break rather than silently claiming
 		// to have covered the ones after it.
 		expect(clock).toBeLessThan(key);
