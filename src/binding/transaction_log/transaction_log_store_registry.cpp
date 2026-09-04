@@ -271,9 +271,9 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 			<< " holds a batch key more than "
 			<< static_cast<long long>(MAX_CLOCK_FLOOR_SKEW_MS / 86400000.0)
 			<< " days ahead of the wall clock (" << std::fixed << scan.refusedKey
-			<< "); that key was left out of the monotonic timestamp floor as corruption rather"
-			   " than a rollback to recover from. The keys around it were not: the floor is"
-			   " seeded from every other key in the log.";
+			<< "); it was left out of the monotonic timestamp floor as corruption rather than a"
+			   " rollback to recover from. This check excludes such keys one at a time, not the"
+			   " segments holding them.";
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	}
