@@ -1,6 +1,7 @@
 #include <chrono>
 #include <optional>
 #include <cstdlib>
+#include <sstream>
 #include <vector>
 #include "database/db_registry.h"
 #include "transaction/transaction_handle.h"
