@@ -1,6 +1,7 @@
 #ifndef __CORE_OPEN_STATUS_H__
 #define __CORE_OPEN_STATUS_H__
 
+#include <filesystem>
 #include "rocksdb/status.h"
 
 namespace rocksdb_js {
@@ -23,7 +24,10 @@ namespace rocksdb_js {
  * CURRENT, the database-does-not-exist shape). Neither may be classified as
  * the race.
  */
-bool isMissingSstOpenRace(const rocksdb::Status& status);
+bool isMissingSstOpenRace(
+	const rocksdb::Status& status,
+	const std::filesystem::path& databasePath = {}
+);
 
 } // namespace rocksdb_js
 

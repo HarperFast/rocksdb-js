@@ -95,6 +95,7 @@ struct DBOptions final {
 	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB
 	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	std::string transactionLogsPath;
+	std::string transactionLogsDisplayPath;
 	// Per-CF memtable size at which the memtable is sealed and flushed. Smaller
 	// values produce more frequent, faster flushes; larger values batch more
 	// writes per SST file.

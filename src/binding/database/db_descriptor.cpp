@@ -1424,7 +1424,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 			// it fall back to the last fully-present version rather than fail —
 			// covered in test/secondary.test.ts), so this classification is a
 			// safety net for shapes that still error, not the expected path.
-			if (rocksdb_js::isMissingSstOpenRace(status)) {
+			if (rocksdb_js::isMissingSstOpenRace(status, identityPath)) {
 				throw rocksdb_js::DBException(
 					"ERR_CONCURRENT_COMPACTION",
 					"Secondary open failed: a file this open needed was already gone when it tried to "
@@ -1452,7 +1452,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 			// process actively writing this database can unlink an input file
 			// between those steps. Report the race as itself — never as MANIFEST
 			// corruption, and never as the database not existing.
-			if (rocksdb_js::isMissingSstOpenRace(status)) {
+			if (rocksdb_js::isMissingSstOpenRace(status, identityPath)) {
 				throw rocksdb_js::DBException(
 					"ERR_CONCURRENT_COMPACTION",
 					"Read-only open failed: a file this open needed was already gone when it tried to "
@@ -1538,6 +1538,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	// Register with the transaction log store registry
 	TransactionLogStoreConfig logConfig;
 	logConfig.transactionLogsPath = options.transactionLogsPath;
+	logConfig.transactionLogsDisplayPath = options.transactionLogsDisplayPath;
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);

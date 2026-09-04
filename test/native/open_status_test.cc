@@ -1,4 +1,7 @@
 #include <gtest/gtest.h>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include "core/open_status.h"
 #include "rocksdb/status.h"
@@ -34,6 +37,39 @@ TEST(OpenStatus, WindowsNotFoundTextNamingSstIsTheRace) {
 		"While open a file for random read: C:\\data\\db\\000046.sst",
 		"The system cannot find the file specified.");
 	EXPECT_TRUE(isMissingSstOpenRace(status));
+}
+
+TEST(OpenStatus, LocalizedCorruptionUsesNamedFileAbsence) {
+	auto root = std::filesystem::temp_directory_path() /
+		("rocksdb-js-open-status-" + std::to_string(
+			std::chrono::steady_clock::now().time_since_epoch().count()
+		));
+	std::filesystem::create_directories(root);
+	rocksdb::Status status = rocksdb::Status::Corruption(
+		"E/A-Fehler: Datei nicht gefunden: /data/db/000046.sst",
+		"Die Manifestdatei ist möglicherweise beschädigt"
+	);
+	EXPECT_TRUE(isMissingSstOpenRace(status, root));
+
+	{
+		std::ofstream existing(root / "000046.sst");
+		existing << "present";
+	}
+	EXPECT_FALSE(isMissingSstOpenRace(status, root));
+	std::filesystem::remove_all(root);
+}
+
+TEST(OpenStatus, LocalizedCorruptionRequiresNumberedRocksFilename) {
+	auto root = std::filesystem::temp_directory_path() /
+		("rocksdb-js-open-status-" + std::to_string(
+			std::chrono::steady_clock::now().time_since_epoch().count()
+		));
+	std::filesystem::create_directories(root);
+	rocksdb::Status status = rocksdb::Status::Corruption(
+		"E/A-Fehler: Datei nicht gefunden: /data/db/archive123.sst"
+	);
+	EXPECT_FALSE(isMissingSstOpenRace(status, root));
+	std::filesystem::remove_all(root);
 }
 
 // A Windows status can end the line right after the filename (FormatMessage

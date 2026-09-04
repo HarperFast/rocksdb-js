@@ -702,11 +702,10 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 			// The identity this handle resolved at open, which it keeps after
 			// close: re-deriving it from the caller's spelling would follow a
 			// mapping that may have moved since and name a different database.
-			DBRegistry::DestroyDB(
-				(*dbHandle)->identityPath.empty()
-					? (*dbHandle)->path
-					: (*dbHandle)->identityPath
-			);
+			const std::string identityPath = (*dbHandle)->identityPath.empty()
+				? rocksdb_js::resolveIdentityPath((*dbHandle)->path).string()
+				: (*dbHandle)->identityPath;
+			DBRegistry::DestroyDB(identityPath);
 		} catch (const std::exception& e) {
 			DEBUG_LOG("%p Database::Destroy Error: %s\n", dbHandle->get(), e.what());
 			::napi_throw_error(env, nullptr, e.what());
@@ -2369,7 +2368,14 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 
 	std::string transactionLogsPath = (std::filesystem::path(path) / "transaction_logs").string();
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogsPath", transactionLogsPath));
-	dbHandleOptions.transactionLogsPath = transactionLogsPath;
+	dbHandleOptions.transactionLogsDisplayPath = transactionLogsPath;
+	// Capture a custom path at the same open boundary as the database identity.
+	// Re-resolving its relative/symlinked spelling later could split a commit's
+	// RocksDB data from its transaction-log entry after chdir() or a symlink
+	// repoint. Empty still disables transaction-log discovery.
+	dbHandleOptions.transactionLogsPath = transactionLogsPath.empty()
+		? std::string()
+		: rocksdb_js::resolveIdentityPath(transactionLogsPath).string();
 
 	if (dbHandleOptions.transactionLogMaxAgeThreshold < 0.0f || dbHandleOptions.transactionLogMaxAgeThreshold > 1.0f) {
 		::napi_throw_error(env, nullptr, "transactionLogMaxAgeThreshold must be between 0.0 and 1.0");

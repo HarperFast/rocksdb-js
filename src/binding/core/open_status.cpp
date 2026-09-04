@@ -1,6 +1,7 @@
 #include "open_status.h"
 
 #include <cctype>
+#include <filesystem>
 #include <string>
 
 namespace rocksdb_js {
@@ -32,7 +33,46 @@ static bool namesFileWithExtension(const std::string& message, const char* exten
 	return false;
 }
 
-bool isMissingSstOpenRace(const rocksdb::Status& status) {
+static std::string namedRocksFile(const std::string& message, const char* extension) {
+	const size_t extensionLength = std::char_traits<char>::length(extension);
+	size_t offset = 0;
+	while ((offset = message.find(extension, offset)) != std::string::npos) {
+		const size_t end = offset + extensionLength;
+		if (end < message.size()) {
+			const char next = message[end];
+			if (next != ':' && next != ' ' && next != '\'' && next != '"' &&
+				next != ')' && next != ',' && next != ';' &&
+				next != '\n' && next != '\r' && next != '\t'
+			) {
+				offset = end;
+				continue;
+			}
+		}
+		size_t start = offset;
+		while (start > 0 && std::isdigit(static_cast<unsigned char>(message[start - 1]))) {
+			--start;
+		}
+		// RocksDB data files are a run of digits, not merely any filename
+		// ending in digits. Require a token/path boundary before the run so
+		// `archive123.sst` cannot be misread as the missing `123.sst`.
+		const bool hasStartBoundary = start == 0 ||
+			message[start - 1] == '/' || message[start - 1] == '\\' ||
+			message[start - 1] == ':' || message[start - 1] == ' ' ||
+			message[start - 1] == '\'' || message[start - 1] == '"' ||
+			message[start - 1] == '(' || message[start - 1] == '\n' ||
+			message[start - 1] == '\r' || message[start - 1] == '\t';
+		if (start < offset && hasStartBoundary) {
+			return message.substr(start, end - start);
+		}
+		offset += extensionLength;
+	}
+	return {};
+}
+
+bool isMissingSstOpenRace(
+	const rocksdb::Status& status,
+	const std::filesystem::path& databasePath
+) {
 	if (status.ok()) {
 		return false;
 	}
@@ -57,9 +97,33 @@ bool isMissingSstOpenRace(const rocksdb::Status& status) {
 	// POSIX strerror text, Windows FormatMessage text ("The system cannot find
 	// the file specified" / "... the path specified"), and RocksDB's own
 	// subcode name as printed by Status::ToString.
-	return message.find("No such file or directory") != std::string::npos ||
+	if (message.find("No such file or directory") != std::string::npos ||
 		message.find("The system cannot find") != std::string::npos ||
-		message.find("PathNotFound") != std::string::npos;
+		message.find("PathNotFound") != std::string::npos
+	) {
+		return true;
+	}
+
+	// RocksDB sometimes replaces the original PathNotFound status with a fresh
+	// Corruption status, losing the structured subcode. OS error prose is
+	// localized, but RocksDB's numbered data filename is stable: if the named
+	// file is absent from the captured database directory, this is the same
+	// missing-file shape regardless of locale. An existing file keeps genuine
+	// corruption classified as corruption.
+	if (!databasePath.empty()) {
+		for (const char* extension : { ".sst", ".blob", ".log" }) {
+			std::string filename = namedRocksFile(message, extension);
+			if (filename.empty()) {
+				continue;
+			}
+			std::error_code error;
+			bool exists = std::filesystem::exists(databasePath / filename, error);
+			if (!error && !exists) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 } // namespace rocksdb_js

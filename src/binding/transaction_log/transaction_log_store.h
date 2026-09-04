@@ -218,6 +218,12 @@ struct TransactionLogStore final {
 	std::filesystem::path path;
 
 	/**
+	 * The store path spelling returned to callers. `path` remains the immutable
+	 * filesystem target used for all I/O.
+	 */
+	std::filesystem::path displayPath;
+
+	/**
 	 * The maximum size of a transaction log file in bytes before it is rotated
 	 * to the next sequence number. A max size of 0 means no limit.
 	 */

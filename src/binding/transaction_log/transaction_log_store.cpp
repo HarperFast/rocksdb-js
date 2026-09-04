@@ -38,6 +38,7 @@ TransactionLogStore::TransactionLogStore(
 ) :
 	name(name),
 	path(path),
+	displayPath(path),
 	maxFileSize(maxFileSize),
 	retentionMs(retentionMs),
 	maxAgeThreshold(maxAgeThreshold)
@@ -515,7 +516,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	// identity
 	out.name = this->name;
-	out.path = this->path.string();
+	out.path = this->displayPath.string();
 
 	// lifetime counters and config are lock-free / immutable
 	out.transactionsWritten = this->transactionsWritten.load(std::memory_order_relaxed);
@@ -761,7 +762,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		this->filesPurged.fetch_add(1, std::memory_order_relaxed);
 		this->bytesPurged.fetch_add(removedSize, std::memory_order_relaxed);
 		if (visitor) {
-			visitor(logFile->path, entryCount);
+			visitor(this->displayPath / logFile->path.filename(), entryCount);
 		}
 
 		// collect sequence number for removal

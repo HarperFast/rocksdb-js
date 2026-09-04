@@ -21,6 +21,12 @@ struct TransactionLogStoreConfig final {
 	std::string transactionLogsPath;
 
 	/**
+	 * The caller's spelling used only in API results. Filesystem access uses the
+	 * captured identity above so a later symlink/CWD change cannot redirect it.
+	 */
+	std::string transactionLogsDisplayPath;
+
+	/**
 	 * The threshold for the transaction log file's last modified time to be
 	 * older than the retention period before it is rotated to the next sequence
 	 * number. A threshold of 0 means ignore age check.

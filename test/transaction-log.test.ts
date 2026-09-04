@@ -2219,6 +2219,41 @@ describe('Transaction Log', () => {
 				})
 		);
 
+		it.skipIf(process.platform === 'win32')(
+			'should keep a custom transaction-log target after its symlink is repointed',
+			async () => {
+				const dbPath = generateDBPath();
+				const firstTarget = `${dbPath}-logs-first`;
+				const secondTarget = `${dbPath}-logs-second`;
+				const linkPath = `${dbPath}-logs-current`;
+				await mkdir(firstTarget, { recursive: true });
+				await mkdir(secondTarget, { recursive: true });
+				symlinkSync(firstTarget, linkPath, 'dir');
+
+				const db = new RocksDatabase(dbPath, { transactionLogsPath: linkPath });
+				try {
+					db.open();
+					rmSync(linkPath);
+					symlinkSync(secondTarget, linkPath, 'dir');
+
+					const log = db.useLog('captured');
+					await db.transaction(async (txn) => {
+						await txn.put('key', 'value');
+						log.addEntry(Buffer.from('entry'), txn.id);
+					});
+
+					expect(existsSync(join(firstTarget, 'captured'))).toBe(true);
+					expect(existsSync(join(secondTarget, 'captured'))).toBe(false);
+				} finally {
+					db.close();
+					rmSync(linkPath, { force: true });
+					rmSync(dbPath, { force: true, recursive: true });
+					rmSync(firstTarget, { force: true, recursive: true });
+					rmSync(secondTarget, { force: true, recursive: true });
+				}
+			}
+		);
+
 		it('should destroy a specific transaction log file', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const fooLogDirectory = join(dbPath, 'transaction_logs', 'foo');

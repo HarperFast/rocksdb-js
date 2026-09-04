@@ -150,11 +150,11 @@ void DBRegistry::DestroyDB(const std::string& path) {
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
 
-	// Entries are keyed by resolved identity, so a raw spelling has to be
-	// resolved the same way or destroy would walk past this path's descriptors
-	// and delete their files out from under them. An open handle passes its
-	// descriptor's identity, for which this is a no-op.
-	const std::string identityPath = rocksdb_js::resolveIdentityPath(path).string();
+	// The caller resolves a never-opened handle's spelling at the N-API boundary;
+	// an opened handle passes the immutable identity captured at open. Resolving
+	// either one again here would consult a filesystem mapping that may have
+	// changed and could redirect this destructive operation.
+	const std::string& identityPath = path;
 	if (identityPath.empty()) {
 		// This function ends in remove_all(), so an empty target is never a
 		// no-op worth risking: it is a caller bug, and on a libc++ platform an
@@ -330,7 +330,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// does not enforce this itself — see db_descriptor.h::secondaryLockToken).
 	// Same primary + same workspace shares the descriptor via the registry key;
 	// a different primary on the same workspace is rejected.
-	if (!options.secondaryPath.empty()) {
+	auto rejectConflictingSecondaryWorkspace = [&]() {
+		if (options.secondaryPath.empty()) {
+			return;
+		}
 		for (const auto& [existingKey, existingEntry] : instance->databases) {
 			// Both sides are resolved identities, so this compares databases, not
 			// spellings: the same database + workspace shares this descriptor via
@@ -348,15 +351,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				);
 			}
 		}
-	}
+	};
 
 	DBKey key{identityPath, options.readOnly, options.secondaryPath};
-	auto entryIterator = instance->databases.find(key);
-	if (entryIterator == instance->databases.end()) {
-		// create entry with empty descriptor and new condition variable
-		auto [it, inserted] = instance->databases.emplace(key, DBRegistryEntry());
-		entryIterator = it;
-	}
+	auto entryIterator = instance->databases.end();
 
 	// Wait for any closing database on this path to be fully removed. The map
 	// node must not be held across the wait: DestroyDB erases every entry for
@@ -366,6 +364,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// an entry erased and re-created while we waited carries a new condition,
 	// and staying on the old one would miss its notify.
 	while (true) {
+		rejectConflictingSecondaryWorkspace();
 		entryIterator = instance->databases.find(key);
 		if (entryIterator == instance->databases.end()) {
 			entryIterator = instance->databases.emplace(key, DBRegistryEntry()).first;
@@ -379,9 +378,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			break; // database exists and is not closing
 		}
 		DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str());
-		// Drop the registry's reference so the closer can finish, then own the
-		// condition across the wait: the closer notifies it after erasing.
-		current.descriptor.reset();
+		// Own the condition across the wait: the closer erases this map node before
+		// notifying. Keep the descriptor in the entry so a spurious wake still sees
+		// isClosing() and cannot treat a null slot as permission to reopen early.
 		std::shared_ptr<std::condition_variable> condition = current.condition;
 		condition->wait(lock);
 	}
