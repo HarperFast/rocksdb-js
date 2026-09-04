@@ -392,8 +392,9 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 				result.refusedKey = fileScan.maxImplausibleTimestamp;
 			}
 			if (fileScan.stoppedAtBreak) {
-				// Entries past a mid-file break are durable and are served by
-				// query()'s resync (AGENTS.md invariant 11); this walk cannot reach
+				// A break can have durable entries behind it — served by query()'s
+				// resync (AGENTS.md invariant 11), or left whole by recoverTail() when
+				// the break is inside a flushed prefix — and this walk cannot reach
 				// them, so the floor may sit below one of their keys.
 				result.stoppedAtBreak = true;
 				result.complete = false;

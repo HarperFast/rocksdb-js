@@ -3,10 +3,12 @@
 // leave a mid-file corruption intact, or do nothing.
 
 #include <gtest/gtest.h>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -632,3 +634,59 @@ TEST(TransactionLogRecoveryFile, ReadsAHeaderPastTwoGiBOnASparseFile) {
 }
 #endif
 
+
+namespace {
+
+std::filesystem::path uniqueMaxEntryScanPath() {
+	auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+	return std::filesystem::temp_directory_path() /
+		("rocksdb-js-max-entry-scan-" + std::to_string(nonce) + ".txnlog");
+}
+
+} // namespace
+
+// Over a real TransactionLogFile, not the buffer adapter: the propagation from
+// the scan's classification to MaxEntryScan::stoppedAtBreak is what decides
+// whether the clock floor reports an incomplete answer, and a torn tail reaches
+// it by a different classification than a mid-file break.
+TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
+	auto path = uniqueMaxEntryScanPath();
+	{
+		LogImage img;
+		img.entry(10, 1, 500.0);
+		// Declares far more than it wrote, with nothing valid behind it.
+		img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 4000.0);
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out.write(img.data(), img.size());
+	}
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	file.open(1770000000000.0);
+	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
+	file.close();
+	std::error_code error;
+	std::filesystem::remove(path, error);
+
+	EXPECT_TRUE(scan.stoppedAtBreak);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
+TEST(TransactionLogMaxEntryScan, ACleanFileIsNotReportedAsStoppedShort) {
+	auto path = uniqueMaxEntryScanPath();
+	{
+		LogImage img;
+		img.entry(10, 1, 500.0).entry(10, 1, 900.0);
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out.write(img.data(), img.size());
+	}
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	file.open(1770000000000.0);
+	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
+	file.close();
+	std::error_code error;
+	std::filesystem::remove(path, error);
+
+	EXPECT_FALSE(scan.stoppedAtBreak);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 900.0);
+}
