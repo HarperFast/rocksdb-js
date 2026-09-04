@@ -19,12 +19,12 @@ afterAll(() => {
 });
 
 /**
- * The WriteBufferManager is a process-wide singleton built on first use, and its size and
- * `costToCache` are fixed from then on, so this scenario needs a WBM nothing else in the process has
- * built yet — hence its own file (Vitest isolates each test file in its own worker/process).
- * `allowStall` itself is not in that set: `config()` propagates it to a live manager through
- * `SetAllowStall` (see db_settings.cpp), which is why enabling it late is only a warning and not a
- * safeguard (#821).
+ * The WriteBufferManager is a native process-wide singleton built on first open, and `costToCache`
+ * is fixed from then on, so this scenario needs a manager nothing else has built yet. Vitest's
+ * `threads` pool gives each file its own worker but shares one process, so that is a whole-process
+ * constraint, not a per-file one: whichever of this file and write-buffer-manager.test.ts runs first
+ * builds the singleton for both, which is why they agree on `costToCache` and why this file resets
+ * the manager when it finishes.
  */
 describe('WriteBufferManager stall', () => {
 	beforeAll(() => {

@@ -207,8 +207,10 @@ Sets global database settings.
     back into the reclaimed space. Defaults to `false`.
   - `writeBufferManagerSize: number` Total memtable memory limit (bytes) shared across every
     database opened in this process. When set, RocksDB uses a single `WriteBufferManager` so write
-    buffers are bounded process-wide rather than per database. A value of `0` disables the manager.
-    Defaults to `0`.
+    buffers are bounded process-wide rather than per database. Defaults to `0`, which means no
+    manager. Setting `0` later stops _new_ opens from attaching one, but does not detach or resize
+    the manager a database already holds — `write_buffer_manager` is fixed for the life of an open
+    database, so its memtables stay charged against that budget.
 
 ```typescript
 RocksDatabase.config({
