@@ -173,6 +173,16 @@ void DBSettings::ensureWriteBufferManagerWatchdog() {
 		// Set here, not on the new thread: a caller that enables stalling and reads
 		// back immediately must not be told the watchdog is absent.
 		this->writeBufferManagerWatchdogRunning.store(true, std::memory_order_relaxed);
+		if (!this->watchdogAtexitRegistered) {
+			// Registered while the thread starts, so on the process.exit() path
+			// (which skips the module cleanup hook) the join runs ahead of every
+			// static destructor registered earlier — DBRegistry's among them, since
+			// its instance is a class static registered before main while this
+			// object is first touched by config(). ~DBSettings stays as the
+			// backstop; both calls are idempotent.
+			this->watchdogAtexitRegistered =
+				::atexit([]() { DBSettings::getInstance().joinWriteBufferManagerWatchdog(); }) == 0;
+		}
 	} catch (...) {
 		this->watchdogStarted = false;
 		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);

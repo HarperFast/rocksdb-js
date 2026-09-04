@@ -113,6 +113,7 @@ private:
 	// watchdogMutex before `join()`, so without this the retiring thread can
 	// observe the reset flag and loop forever with its joiner blocked on it.
 	uint64_t watchdogGeneration = 0;
+	bool watchdogAtexitRegistered = false;
 
 	void ensureWriteBufferManagerWatchdog();
 	void runWriteBufferManagerWatchdog(uint64_t generation);
@@ -193,10 +194,11 @@ public:
 	void joinWriteBufferManagerWatchdog();
 
 	/**
-	 * Joins the watchdog if the module's cleanup hook never ran. `process.exit()`
-	 * skips N-API env cleanup, and destroying a joinable `std::thread` calls
-	 * `std::terminate()` — an observability feature must not turn a clean exit
-	 * into SIGABRT. Mirrors `~CommitWorker`.
+	 * Joins the watchdog if neither the module's cleanup hook nor the `atexit`
+	 * handler registered at watchdog start ran. `process.exit()` skips N-API env
+	 * cleanup, and destroying a joinable `std::thread` calls `std::terminate()` —
+	 * an observability feature must not turn a clean exit into SIGABRT. Mirrors
+	 * `~CommitWorker`.
 	 */
 	~DBSettings();
 
