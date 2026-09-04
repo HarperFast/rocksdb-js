@@ -277,17 +277,29 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 	}
 
 	if (!scan.complete) {
+		// Every reason, not the first: a budget that runs out while a segment also
+		// has a framing break would otherwise send the operator after the wrong one.
+		std::vector<std::string> reasons;
+		if (scan.budgetExhausted) {
+			reasons.emplace_back(
+				"the timestamp floor scan budget ran out (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS)");
+		}
+		if (scan.stoppedAtBreak) {
+			reasons.emplace_back(
+				"a segment's framing breaks mid-file, so the entries after the break — which a"
+				" query resyncs past and reports as a corrupt frame — were not read");
+		}
+		if (reasons.empty()) {
+			reasons.emplace_back("a segment could not be read at open");
+		}
+
 		std::ostringstream msg;
 		msg << "Transaction log \"" << logName << "\" of database " << dbPath
-			<< (scan.budgetExhausted
-				? " was still being scanned when the timestamp floor scan budget ran out"
-				  " (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS)"
-				: scan.stoppedAtBreak
-					? " has a segment whose framing breaks mid-file, so the entries after the"
-					  " break — which a query resyncs past and reports as a corrupt frame — were"
-					  " not read"
-					: " has a segment that could not be read at open")
-			<< "; the monotonic timestamp floor may sit below a batch key already durable in it.";
+			<< " was not fully scanned: ";
+		for (size_t i = 0; i < reasons.size(); ++i) {
+			msg << (i == 0 ? "" : "; and ") << reasons[i];
+		}
+		msg << ". The monotonic timestamp floor may sit below a batch key already durable in it.";
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	}

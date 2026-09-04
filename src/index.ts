@@ -30,7 +30,6 @@ export {
 	type BackgroundErrorOptions,
 	constants,
 	coolTransactionLogs,
-	HAS_DISTINCT_VERSION_FLAG,
 	currentThreadId,
 	fileLockRelease,
 	tryFileLock,
