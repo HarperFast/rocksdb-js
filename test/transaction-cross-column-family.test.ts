@@ -178,4 +178,23 @@ describe('transaction reads across column families', () => {
 			db.close();
 		}
 	});
+
+	it("getRange uses the caller's column family with another column family's transaction", async () => {
+		const { db, other, third } = await seedAndReopen();
+		try {
+			await db.transaction(async (txn: Transaction) => {
+				await other.put('staged-other', 'staged-value', { transaction: txn });
+				const entries = other.getRange({ transaction: txn }).asArray;
+
+				expect(entries).toHaveLength(26);
+				expect(entries).toContainEqual({ key: 'key-0', value: 'value-0' });
+				expect(entries).toContainEqual({ key: 'staged-other', value: 'staged-value' });
+				expect(entries).not.toContainEqual({ key: 'anchor', value: 'anchor-value' });
+			});
+		} finally {
+			third.close();
+			other.close();
+			db.close();
+		}
+	});
 });

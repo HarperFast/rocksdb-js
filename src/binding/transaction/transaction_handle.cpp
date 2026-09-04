@@ -250,15 +250,53 @@ void TransactionHandle::onWrapperCollected() {
 	this->closeOrphanIfUnused();
 }
 
-void TransactionHandle::registerIterator() {
+std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
+	DBIteratorOptions& options,
+	std::shared_ptr<DBHandle> dbHandleOverride
+) {
+	std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+	if (this->closed.load() || !this->txn || this->state != TransactionState::Pending) {
+		throw std::runtime_error("Transaction is not in pending state");
+	}
+	std::shared_ptr<DBIteratorHandle> iterator = std::make_shared<DBIteratorHandle>(
+		this->shared_from_this(),
+		options,
+		dbHandleOverride
+	);
+	iterator->transactionRegistered = true;
+	const bool inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
+	assert(inserted && "Transaction iterator registered twice");
 	this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
+	return iterator;
 }
 
-void TransactionHandle::unregisterIterator() {
+void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
+	{
+		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+		if (this->activeIterators.erase(iterator) == 0) {
+			return;
+		}
+	}
 	const uint32_t previous = this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
 	assert(previous > 0 && "Transaction iterator count underflow");
 	if (previous == 1) {
 		this->closeOrphanIfUnused();
+	}
+}
+
+void TransactionHandle::closeIterators() {
+	std::vector<std::shared_ptr<DBIteratorHandle>> iterators;
+	{
+		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+		iterators.reserve(this->activeIterators.size());
+		for (const auto& [_iterator, weakIterator] : this->activeIterators) {
+			if (auto pinnedIterator = weakIterator.lock()) {
+				iterators.push_back(std::move(pinnedIterator));
+			}
+		}
+	}
+	for (const auto& iterator : iterators) {
+		iterator->close();
 	}
 }
 
@@ -302,6 +340,7 @@ void TransactionHandle::close() {
 	if (this->closed.exchange(true)) {
 		return;
 	}
+	this->closeIterators();
 
 	if (this->dbHandle && this->dbHandle->descriptor) {
 		this->dbHandle->descriptor->transactionRemove(shared_from_this());
@@ -602,8 +641,8 @@ void TransactionHandle::getCount(
 
 	std::unique_ptr<DBIteratorHandle> itHandle =
 		std::make_unique<DBIteratorHandle>(this->shared_from_this(), itOptions, dbHandleOverride);
-	for (count = 0; itHandle->iterator->Valid(); ++count) {
-		itHandle->iterator->Next();
+	for (count = 0; itHandle->valid(); ++count) {
+		itHandle->advance();
 	}
 }
 

@@ -780,11 +780,15 @@ for (const { name, options, txnOptions } of testOptions) {
 				await expect(db.get('foo', { transaction: 'bar' as any })).rejects.toThrow(
 					'Invalid transaction'
 				);
+				expect(() => db.getRange({ transaction: 'bar' as any })).toThrow('Invalid transaction');
 			}));
 
 		it('should error if transaction is not found', () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow(
+					'Transaction not found'
+				);
+				expect(() => db.getRange({ transaction: { id: 9926 } as any })).toThrow(
 					'Transaction not found'
 				);
 			}));
