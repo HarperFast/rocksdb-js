@@ -31,11 +31,8 @@ describe('WriteBufferManager stall', () => {
 		// Budget deliberately far below the derived history target
 		// (`maxWriteBufferNumber` 16 * `writeBufferSize` 16MB = 256MB).
 		//
-		// `costToCache` matches write-buffer-manager.test.ts because the manager is a native
-		// process-global and Vitest's `threads` pool runs every file in one process, so whichever of
-		// the two files runs first creates the singleton for both — and `costToCache` is the one
-		// setting `config()` refuses to change afterwards. Disagreeing here makes the other file
-		// throw in its `beforeAll` whenever the file order puts this one first.
+		// `costToCache` matches write-buffer-manager.test.ts: it is the one setting `config()` refuses
+		// to change after the singleton exists, so disagreeing throws in whichever file runs second.
 		RocksDatabase.config({
 			blockCacheSize: 8 * 1024 * 1024,
 			writeBufferManagerSize: 4 * 1024 * 1024,
