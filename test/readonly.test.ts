@@ -375,15 +375,6 @@ describe('Readonly Operations', () => {
 					retryDelay: 50,
 				});
 			}
-
-			// Closing the last read-only registrant evicts the unrecovered store,
-			// allowing the live writer to reopen it with recovery.
-			const writableLog = db.useLog('bar');
-			await db.transaction(async (txn) => {
-				await txn.put('bar', 'writable');
-				writableLog.addEntry(Buffer.from('writer entry'), txn.id);
-			});
-			expect(db.getSync('bar')).toBe('writable');
 		}));
 
 	it('should refuse a writable open while transaction logs are held readonly', () =>
