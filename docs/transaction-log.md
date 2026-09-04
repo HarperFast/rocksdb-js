@@ -272,8 +272,10 @@ newest segment first, and a walk that runs out of budget warns and leaves the fl
 The budget is checked between segments, so it can overshoot by one segment's walk: with the 13-byte
 entry header a default 16 MB segment holds up to roughly 1.2 million entries, and both a larger
 `transactionLogMaxSize` and a single batch too big for one segment raise that.
-The value is honored literally, `0` included, and there is no unbounded setting — the failure it
-bounds is an `open()` that does not return, so a deployment that would rather wait raises the number.
+The value is honored literally between `0` (scan nothing, and warn) and one day, and there is no
+unbounded setting — the failure it bounds is an `open()` that does not return, so a deployment that
+would rather wait raises the number. Above a day it is clamped, because the deadline is a monotonic
+clock time point and a larger value overflows its resolution and wraps into the past.
 A database opened without `timestampFloorLog` pays none of it.
 
 The seed is best effort, and says so when it falls short: a segment that cannot be opened or scanned
