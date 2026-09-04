@@ -283,6 +283,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    use the marked logical prefix and never expose the orphaned physical tail. The marker is not copied
    into backups: the copied prefix is already a clean canonical `.txnlog`.
    A known-zero-byte failure leaves the segment and its zero marker reusable.
+   Only the **active** segment may have a marker _created_ for it (a retired segment keeps the one it
+   already earned), and startup discovery cannot know which segment that is until the whole directory
+   has been scanned — directory iteration order is unspecified, so any segment can briefly hold the
+   highest sequence. `registerLogFile()` therefore registers without opening, and `load()`
+   marker-enables and opens the surviving current file after discovery. Promoting eagerly minted a
+   marker for a segment that is never appended to and, on Windows (where the handle is opened without
+   `FILE_SHARE_DELETE`), left every superseded segment undeletable by anything outside the process for
+   the life of the store.
    **The physical extent tracks `size` on POSIX only.** There the fd is `O_APPEND`,
    so writes go to physical EOF, not to `size`, and leaving orphaned bytes makes every later
    append land after a partial entry: a mid-file framing break that `recoverTail()` deliberately
@@ -637,6 +645,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     leaker repro still faults in Node's second-pass napi finalizer drain even with the fix; it
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
+
+18. **A transaction timestamp freezes when native state captures it**: `setTimestamp()` may adopt an
+    origin timestamp for replication or replay only while the transaction is pending and before any
+    database write or transaction-log entry is staged. The log batch snapshots the timestamp at the
+    first `addLogEntry`; `committedPosition` survives coordinated-retry resets, so a batch already
+    written remains frozen across retries, though reapplying the same timestamp is idempotent while
+    the transaction remains pending. rocksdb-js does not define record value layouts: a producer
+    that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
 
 ## Debugging native heap corruption
 

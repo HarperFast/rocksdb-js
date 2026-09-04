@@ -546,12 +546,12 @@ private:
 	 * Resolves `file->size` — the written extent — for a file that was
 	 * registered but never opened, by borrowing its handle briefly.
 	 *
-	 * registerLogFile() opens the current file eagerly but leaves older ones
-	 * lazy, and a lazy file reads `size == 0`, which is indistinguishable from
-	 * "empty" to every consumer of the field. Two of them act on that: the
-	 * backup snapshot would omit the segment, and doPurge()'s flushed-position
-	 * guard would delete a segment whose tail never reached RocksDB. Anything
-	 * that makes a decision from `size` must call this first.
+	 * Discovery leaves every registered file closed (load() opens only the
+	 * surviving current one), and a closed file reads `size == 0`, which is
+	 * indistinguishable from "empty" to every consumer of the field. Two of them
+	 * act on that: the backup snapshot would omit the segment, and doPurge()'s
+	 * flushed-position guard would delete a segment whose tail never reached
+	 * RocksDB. Anything that makes a decision from `size` must call this first.
 	 *
 	 * A bare stat is not equivalent: on Windows an active segment is
 	 * pre-extended to maxFileSize, so only openFile()'s index scan finds the

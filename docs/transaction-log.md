@@ -198,7 +198,9 @@ await db.transaction((txn) => {
 - Log files are automatically rotated when either the index or data file reaches their configured
   maximum sizes
 - Rotation happens on the next write after the size limit is exceeded
-- Old log files can be automatically purged based on retention policy
+- Old log files can be automatically purged based on retention policy. The sequence file named by
+  `txn.state` and every newer file form the live store's retention floor, so an idle store can keep
+  one bounded file past the cutoff until a later write rotates and flushes it.
 
 ### Error Handling
 
@@ -218,10 +220,21 @@ The CLI exposes the same check as `verify-logs [name]`.
 
 ## Reading The Transaction Log
 
-Log entries are not guaranteed to be in order, but are guaranteed to have a monotonic timestamp.
-When reading the transaction log file, each transaction entry header must be read, then sorted and
-indexed. Using this index, queries can find all entries within a time range using a binary search
-and seek to get the associated entry data.
+Log entries are not in timestamp order. A transaction claims its timestamp from the process-wide
+monotonic clock when it is constructed but is appended when it commits, so under concurrency a later
+entry can carry a smaller timestamp; an entry that adopted an origin timestamp with
+`txn.setTimestamp()` carries that origin's clock instead. Timestamps are not unique: the monotonic
+clock never issues the same value twice within a process, but a restart after the wall clock moved
+backwards can reissue one, and `txn.setTimestamp()` can assign any value — including one already
+in the log — to as many transactions as the caller likes. Deduplicating on the timestamp alone is
+therefore never safe; a consumer that needs identity has to supply it (Harper pairs the timestamp
+with the originating node).
+
+When reading the transaction log file, each transaction entry header must be read and indexed. The
+index records only the entries whose timestamp is greater than every earlier one in the file — a
+running maxima — and a query seeks to the lower bound of that index, which is guaranteed to sit at
+or before every entry in the requested range. Reading forward from there and filtering is what makes
+range queries correct on an unordered file.
 
 ### Sequential Read
 

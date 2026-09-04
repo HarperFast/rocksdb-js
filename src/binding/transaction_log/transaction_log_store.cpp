@@ -366,11 +366,11 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 	}
 
 	// Never borrow the active segment's handle. Its lifecycle belongs to the
-	// write path — registerLogFile()/getLogFile() open it before the first
-	// append — so the only way it reads size 0 and closed is the window between
-	// getLogFile() creating it and the first append, where 0 is the truth. A
-	// close() here would drop a handle (and, on Windows, the mapping) the next
-	// append expects to still hold.
+	// write path — load()'s post-discovery activation and getLogFile() open it
+	// before the first append — so the only way it reads size 0 and closed is the
+	// window between getLogFile() creating it and the first append, where 0 is
+	// the truth. A close() here would drop a handle (and, on Windows, the mapping)
+	// the next append expects to still hold.
 	if (file->sequenceNumber == this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 		return;
 	}
@@ -556,6 +556,12 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	}
 
 	const bool retentionEnabled = this->retentionMs.count() > 0;
+	uint32_t retentionFloorSequence = this->sequenceFiles.empty()
+		? 0
+		: this->sequenceFiles.rbegin()->first;
+	if (this->sequenceFiles.find(flushedPosition.logSequenceNumber) != this->sequenceFiles.end()) {
+		retentionFloorSequence = flushedPosition.logSequenceNumber;
+	}
 
 	for (const auto& [seq, logFile] : this->sequenceFiles) {
 		// A registered-but-never-opened older file still reads 0 here (see
@@ -615,9 +621,9 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 				// extent — would retain it. Gauge-only skew; nothing acts on it.
 				bool fullyFlushed = !(seq > flushedPosition.logSequenceNumber ||
 					(seq == flushedPosition.logSequenceNumber && fileSize > flushedPosition.positionInLogFile));
-				if (fullyFlushed) {
+				if (fullyFlushed && seq != retentionFloorSequence) {
 					out.purgeableFiles++;
-				} else {
+				} else if (!fullyFlushed) {
 					out.retainedUnflushedFiles++;
 				}
 			}
@@ -649,10 +655,18 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
+	auto lastFlushedPosition = this->getLastFlushedPosition();
+	uint32_t retentionFloorSequence = this->sequenceFiles.rbegin()->first;
+	if (this->sequenceFiles.find(lastFlushedPosition.logSequenceNumber) != this->sequenceFiles.end()) {
+		retentionFloorSequence = lastFlushedPosition.logSequenceNumber;
+	}
 
 	for (const auto& entry : this->sequenceFiles) {
 		auto& sequenceNumber = entry.first;
 		auto& logFile = entry.second;
+		if (!all && sequenceNumber == retentionFloorSequence) {
+			break;
+		}
 		bool shouldPurge = all;
 
 		if (!shouldPurge && (before > 0 || this->retentionMs.count() > 0)) {
@@ -669,30 +683,36 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 					shouldPurge = fileAgeMs > this->retentionMs;
 				}
 			} catch (const std::filesystem::filesystem_error& e) {
-				// file was deleted or doesn't exist
-				DEBUG_LOG("%p TransactionLogStore::purge File no longer exists: %s\n", this, logFile->path.string().c_str());
-				continue;
+				if (e.code() == std::errc::no_such_file_or_directory) {
+					DEBUG_LOG("%p TransactionLogStore::purge Forgetting missing file: %s\n", this, logFile->path.string().c_str());
+					sequenceNumbersToRemove.push_back(sequenceNumber);
+					continue;
+				}
+				DEBUG_LOG("%p TransactionLogStore::purge Failed to get last write time for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
+				break;
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p TransactionLogStore::purge Failed to get last write time for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
-				continue;
+				break;
 			} catch (...) {
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::purge Unknown error getting last write time for file %s: %s\n",
 					this, logFile->path.string().c_str(), errorMsg.c_str());
-				continue;
+				break;
 			}
 		}
 
 		if (!shouldPurge) {
-			continue;
+			break;
 		}
 
 		// only purge files that are entirely before the last flushed position,
 		// guaranteeing all their transactions have been committed to RocksDB
-		auto lastFlushedPosition = this->getLastFlushedPosition();
 		if (sequenceNumber > lastFlushedPosition.logSequenceNumber) {
-			continue;
+			if (all) {
+				continue;
+			}
+			break;
 		}
 		if (sequenceNumber == lastFlushedPosition.logSequenceNumber) {
 			// The only comparison here that reads `size`, and the only file whose
@@ -705,13 +725,22 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 				// Unresolvable extent — refuse to purge rather than delete a
 				// segment we cannot prove is flushed.
 				DEBUG_LOG("%p TransactionLogStore::purge Failed to resolve extent for file %s: %s\n", this, logFile->path.string().c_str(), e.what());
-				continue;
+				if (all) {
+					continue;
+				}
+				break;
 			} catch (...) {
 				DEBUG_LOG("%p TransactionLogStore::purge Failed to resolve extent for file %s\n", this, logFile->path.string().c_str());
-				continue;
+				if (all) {
+					continue;
+				}
+				break;
 			}
 			if (logFile->size > lastFlushedPosition.positionInLogFile) {
-				continue;
+				if (all) {
+					continue;
+				}
+				break;
 			}
 		}
 
@@ -723,7 +752,10 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		uint32_t removedSize = logFile->size.load(std::memory_order_relaxed);
 		auto removed = logFile->removeFile();
 		if (!removed) {
-			continue;
+			if (all) {
+				continue;
+			}
+			break;
 		}
 		this->filesPurged.fetch_add(1, std::memory_order_relaxed);
 		this->bytesPurged.fetch_add(removedSize, std::memory_order_relaxed);
@@ -759,7 +791,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 	// if all log files have been removed, clean up the empty directory
 	// only try to remove if we actually removed at least one file from this store
-	if (this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
+	if (all && this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		try {
 			if (std::filesystem::exists(this->path)) {
 				DEBUG_LOG("%p TransactionLogStore::purge Removing log store directory: %s\n", this, this->path.string().c_str());
@@ -813,12 +845,10 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	if (retiredBoundary == 0 &&
 		sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
-		logFile->appendBoundaryMarkerEnabled = true;
-		if (!logFile->isOpen()) {
-			logFile->open(this->latestTimestamp);
-		}
+		// Record the candidate only; load() opens and marker-enables whichever file
+		// is still current once the whole directory has been scanned.
 		this->currentSequenceNumber.store(sequenceNumber, std::memory_order_relaxed);
-		this->nextLogPosition = { logFile->size, sequenceNumber };
+		this->nextLogPosition = { 0, sequenceNumber };
 	} else if (retiredBoundary > 0 &&
 		sequenceNumber >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 		uint32_t nextWritableSequence = sequenceNumber + 1;
@@ -1156,39 +1186,6 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 					sequenceNumber = std::stoul(sequenceNumberStr);
 
-					// check if the file is too old
-					if (retentionMs.count() > 0) {
-						auto mtime = std::filesystem::last_write_time(filePath);
-						auto mtime_sys = convertFileTimeToSystemTime(mtime);
-						auto now = std::chrono::system_clock::now();
-						auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime_sys);
-						auto delta = fileAgeMs - retentionMs;
-
-						if (delta.count() > 0) {
-							// file is too old, remove it
-							DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, expired %lldms ago, purging\n",
-								store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count());
-							try {
-								DEBUG_LOG("%p TransactionLogStore::load Removing expired file: %s\n", store.get(), filePath.string().c_str());
-								if (std::filesystem::remove(filePath)) {
-									std::error_code markerError;
-									auto markerPath = transactionLogAppendBoundaryMarkerPath(filePath);
-									std::filesystem::remove(markerPath, markerError);
-									std::filesystem::remove(markerPath.parent_path(), markerError);
-									std::filesystem::remove(
-										markerPath.parent_path().parent_path(), markerError);
-								}
-							} catch (const std::filesystem::filesystem_error& e) {
-								DEBUG_LOG("%p TransactionLogStore::load Failed to remove expired file %s: %s\n",
-									store.get(), filePath.string().c_str(), e.what());
-							}
-							continue;
-						} else {
-							DEBUG_LOG("%p TransactionLogStore::load File \"%s\" age=%lldms, not expired, %lldms left\n",
-								store.get(), filePath.filename().string().c_str(), fileAgeMs.count(), delta.count() * -1);
-						}
-					}
-
 					store->registerLogFile(filePath, sequenceNumber);
 				}
 			} catch (const TransactionLogAppendBoundaryException&) {
@@ -1222,14 +1219,40 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		auto currentIt = store->sequenceFiles.find(storeCurrentSeq);
 		if (currentIt != store->sequenceFiles.end()) {
 			auto& currentFile = currentIt->second;
-			if (!currentFile->isOpen()) {
-				currentFile->open(store->latestTimestamp);
+			currentFile->appendBoundaryMarkerEnabled = true;
+			bool activated = true;
+			try {
+				if (!currentFile->isOpen()) {
+					currentFile->open(store->latestTimestamp);
+				}
+			} catch (const TransactionLogAppendBoundaryException&) {
+				// The marker is authoritative; a segment we cannot reconcile with it
+				// must fail the load rather than expose orphaned bytes.
+				throw;
+			} catch (const std::exception& e) {
+				// A newest segment we cannot open is not fatal: leave it registered
+				// (readers still see whatever a later ensureExtent() can resolve) and
+				// start appending at a fresh sequence instead of failing the open.
+				DEBUG_LOG("%p TransactionLogStore::load Failed to open current log file %s: %s\n",
+					store.get(), currentFile->path.string().c_str(), e.what());
+				currentFile->appendBoundaryMarkerEnabled = false;
+				activated = false;
 			}
-			uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
-				? flushedPosition.positionInLogFile
-				: 0;
-			currentFile->recoverTail(protectedPosition);
-			store->nextLogPosition = { currentFile->size, storeCurrentSeq };
+			if (activated) {
+				uint32_t protectedPosition = flushedPosition.logSequenceNumber == storeCurrentSeq
+					? flushedPosition.positionInLogFile
+					: 0;
+				currentFile->recoverTail(protectedPosition);
+				store->nextLogPosition = { currentFile->size, storeCurrentSeq };
+			} else {
+				uint32_t nextWritableSequence = storeCurrentSeq + 1;
+				store->currentSequenceNumber.store(nextWritableSequence, std::memory_order_relaxed);
+				store->nextLogPosition = { 0, nextWritableSequence };
+				if (store->nextSequenceNumber <= nextWritableSequence) {
+					store->nextSequenceNumber = nextWritableSequence + 1;
+				}
+				storeCurrentSeq = nextWritableSequence;
+			}
 		}
 	}
 
@@ -1284,6 +1307,15 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		}
 	}
 	*store->lastCommittedPosition = recoveredPosition < flushedPosition ? flushedPosition : recoveredPosition;
+	if (retentionMs.count() > 0) {
+		try {
+			store->purge(nullptr, false, 0, false);
+		} catch (const std::exception& e) {
+			DEBUG_LOG("%p TransactionLogStore::load Failed to purge expired files: %s\n", store.get(), e.what());
+		} catch (...) {
+			DEBUG_LOG("%p TransactionLogStore::load Failed to purge expired files\n", store.get());
+		}
+	}
 
 	return store;
 }

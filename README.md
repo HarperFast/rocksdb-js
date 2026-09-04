@@ -606,7 +606,7 @@ const range = db.getKeysCount({ start: 'a', end: 'z' }); // exact number of keys
 ### `db.getMonotonicTimestamp(): number`
 
 Returns the current timestamp as a monotonically increasing timestamp in milliseconds represented as
-a decimal number.
+a decimal number. This process-wide clock also supplies each transaction's initial timestamp.
 
 ```typescript
 const ts = db.getMonotonicTimestamp();
@@ -902,13 +902,14 @@ operations methods as the `RocksDatabase` instance plus:
   no further transaction operations are permitted. Calling this method multiple times has no effect.
 - `txn.commit(): Promise<void>` Asynchronously commits the transaction and closes the transaction.
 - `txn.commitSync()` Synchronously commits and closes the transaction.
-- `txn.getTimestamp(): number` Retrieves the transaction start timestamp in seconds as a decimal. It
-  defaults to the time at which the transaction was created.
+- `txn.getTimestamp(): number` Retrieves the transaction timestamp in milliseconds as a decimal. It
+  defaults to a process-wide monotonic value assigned when the transaction was created.
 - `txn.id: number` The read-only transaction ID. Transaction IDs are unique to the RocksDB database
   path, regardless the database name/column family.
-- `txn.setTimestamp(ts?: number): void` Overrides the transaction start timestamp. If called without
-  a timestamp, it will set the timestamp to the current time. The value must be in seconds with
-  higher precision in the decimal.
+- `txn.setTimestamp(ts?: number): void` Overrides the transaction timestamp in milliseconds. If
+  called without a timestamp, it claims a fresh monotonic value. It must be called before staging
+  any write or transaction-log entry, and a supplied value must be finite, positive, and below
+  `8.64e15`.
 
 #### `txn.abandonWrites(): void`
 
@@ -944,8 +945,9 @@ Once called, no further transaction operations are permitted.
 
 #### `txn.getTimestamp(): number`
 
-Retrieves the transaction start timestamp in seconds as a decimal. It defaults to the time at which
-the transaction was created.
+Retrieves the transaction timestamp in milliseconds since the Unix epoch as a decimal. It defaults
+to a process-wide monotonic value assigned when the transaction was created. The transaction log
+uses this timestamp as the batch key; producers may also encode it into their own record format.
 
 #### `txn.id`
 
@@ -954,14 +956,24 @@ Type: `number`
 The transaction ID represented as a 32-bit unsigned integer. Transaction IDs are unique to the
 RocksDB database path, regardless the database name/column family.
 
-#### `txn.setTimestamp(ts: number?): void`
+#### `txn.setTimestamp(ts?: number): void`
 
-Overrides the transaction start timestamp. If called without a timestamp, it will set the timestamp
-to the current time. The value must be in seconds with higher precision in the decimal.
+Overrides the transaction timestamp in milliseconds since the Unix epoch. Replication receivers and
+crash replay can use this to adopt an origin transaction's log key. If called without a timestamp,
+it claims a fresh monotonic value.
+
+The override must happen while the transaction is pending and before any database write or
+transaction-log entry is staged. A log batch that has already been written keeps its timestamp
+across a coordinated retry; reapplying that same timestamp remains idempotent while pending. A
+supplied value must be finite, positive, and below `8.64e15`.
+
+rocksdb-js does not define a record's value layout or version metadata. A producer that copies the
+transaction timestamp into record bytes is responsible for calling `setTimestamp()` before reading
+and encoding it.
 
 ```typescript
 await db.transaction(async (txn) => {
-	txn.setTimestamp(Date.now() / 1000);
+	txn.setTimestamp(Date.now());
 });
 ```
 
@@ -1589,6 +1601,14 @@ holds the last-known version for that key. Because slots are addressed by a hash
 share a slot; a collision only ever causes a conservative miss (a real read), never a stale value to
 be treated as fresh.
 
+This first word is the only version the table derives on its own: it is what a read with
+`populateVersion: true` publishes and what a transaction write invalidates against. A producer whose
+record format also carries a separately assigned version elsewhere in the value must keep using the
+first word on both sides of the check — as `expectedVersion`, and as the argument to any explicit
+[`db.populateVersion()`](#dbpopulateversionkey-key-version-number-void) call, which publishes
+whatever it is given. Comparing against the other value would miss the fast path, and publishing it
+would make the slot disagree with what the next write invalidates.
+
 The freshness check works as follows:
 
 1. Pass `{ expectedVersion }` to `get()` / `getSync()`. If the slot currently records that version,
@@ -1706,9 +1726,19 @@ const names = db.listLogs();
 ### `db.purgeLogs({ includeEntryCounts: true, ...options }): { path: string; entries: number }[]`
 
 Deletes transaction log files older than the `transactionLogRetention` (defaults to 3 days).
+Ordinary retention keeps the sequence file named by `txn.state` and every newer file as the live
+store's retention floor, or the highest sequence file when there is no persisted flush position. It
+removes only an eligible contiguous prefix below that floor. An idle store can therefore retain one
+file past the cutoff until a later write rotates and flushes it; that extra file is bounded by the
+store's `transactionLogMaxSize` (except when a single transaction exceeds the target). That bound
+covers only the floor file: when the flush position lags — `txn.state` stuck at an old sequence
+because RocksDB flushing is behind — every file above the floor is retained too, which
+`transactionLogMaxSize` does not bound. `purge.retainedUnflushedFiles` reports that case. Use
+`destroy: true` only to remove the store itself.
 
 - `options: object`
-  - `before?: number` Remove all transaction log files older than the specified timestamp.
+  - `before?: number` Remove transaction log files older than the specified timestamp, subject to
+    the retention floor and contiguous-prefix rules above.
   - `destroy?: boolean` When `true`, deletes transaction log stores including all log sequence files
     on disk.
   - `includeEntryCounts?: boolean` When `true`, counts the entries in each deleted log file and
@@ -1882,7 +1912,9 @@ stats.totals.transactionsWritten; // lifetime count of transactions written
 
 The `purge.retainedUnflushedFiles` gauge is useful for diagnosing why logs are not being cleaned
 up: a file can be older than the retention period but still retained because its transactions have
-not yet been flushed to RocksDB (purging it would be unsafe for crash recovery).
+not yet been flushed to RocksDB (purging it would be unsafe for crash recovery). The retention
+floor — the sequence named by `txn.state`, or the highest sequence when there is no persisted flush
+position — is not counted as purgeable even when it is old and fully flushed.
 
 ### Transaction Log Initialization
 
