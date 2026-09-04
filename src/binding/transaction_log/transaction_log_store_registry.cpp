@@ -256,8 +256,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			if (!callerReadOnly && storeIt->second->readOnly) {
 				throw rocksdb_js::DBException(
 					"Transaction log \"" + name + "\" for \"" + dbPath + "\" is open read-only in this "
-					"process (loaded without tail recovery, which appends must not skip). Close the "
-					"read-only or secondary handle and reopen this one to write to it."
+					"process (loaded without tail recovery, which appends must not skip). It becomes "
+					"writable only after every handle for this database in this process closes and a "
+					"writable handle reopens it."
 				);
 			}
 			DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Found store \"%s\" for \"%s\"\n",
