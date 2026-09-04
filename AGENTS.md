@@ -698,6 +698,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `Register` (a throw there would run the half-built descriptor's close and decrement a refcount
     it never incremented) — rejects the writable open while read-only-loaded stores are live,
     deciding on each live store's own `TransactionLogStore::readOnly` for the same reason.
+    If writable descriptors keep the path entry alive after the last read-only descriptor closes,
+    `Unregister` closes and evicts only those read-only-loaded stores before allowing the writer to
+    resolve them again; leaving them resident would make "close the reader and retry" ineffective.
     A cross-process log reader also inherits a mapping hazard the same-process case does not
     have: a read-only file's `MAP_SHARED` overlay covers `[0, size)` including an unrecovered
     torn tail, so if the primary process restarts and its `recoverTail()` truncates below a
@@ -712,7 +715,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     writer, so the log leads the database view by construction and every log consumer already has
     to tolerate it.
     Transaction-log paths follow the database identity rule too: the first opener captures the physical
-    `transactionLogsPath` once at open and use that immutable identity for discovery, appends,
+    `transactionLogsPath` once at open and uses that immutable identity for discovery, appends,
     purge, and backup. It keeps that opener's original spelling separately for stats and returned purge
     paths. Re-resolving a symlinked or relative path after open can redirect the log half of a
     transaction to a different directory; returning only the resolved identity breaks callers
@@ -720,7 +723,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     And **`DBRegistry::DestroyDB` must claim and close EVERY descriptor for the path** (read-write,
     read-only, each secondary): erasing an entry unclosed leaks its resources for the life of the
     process — for a secondary, the workspace `.secondary.lock` is only released by `finishClose()`,
-    so a leaked one wedges its workspace permanently.
+    so a leaked one wedges its workspace permanently. While any key for that physical path is
+    closing, `OpenDB` must wait before opening every other key too; otherwise a fresh read-only or
+    secondary key can appear after destroy's claim and be deleted and erased without being closed.
 
 ## Debugging native heap corruption
 

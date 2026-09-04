@@ -46,7 +46,11 @@ void TransactionLogStoreRegistry::Shutdown() {
 /**
  * Registers a DBDescriptor for the given database path.
  */
-void TransactionLogStoreRegistry::Register(const std::string& dbPath, const TransactionLogStoreConfig& config) {
+void TransactionLogStoreRegistry::Register(
+	const std::string& dbPath,
+	const TransactionLogStoreConfig& config,
+	bool readOnly
+) {
 	if (!instance) {
 		DEBUG_LOG("TransactionLogStoreRegistry::Register Registry not initialized\n");
 		return;
@@ -57,13 +61,16 @@ void TransactionLogStoreRegistry::Register(const std::string& dbPath, const Tran
 	auto it = instance->entries.find(dbPath);
 	if (it == instance->entries.end()) {
 		// Create new entry
-		auto entry = std::make_shared<TransactionLogStoreRegistryEntry>(config);
+		auto entry = std::make_shared<TransactionLogStoreRegistryEntry>(config, readOnly);
 		DEBUG_LOG("%p TransactionLogStoreRegistry::Register Created entry for \"%s\" (refCount=1)\n",
 			instance.get(), dbPath.c_str());
 		instance->entries.emplace(dbPath, entry);
 	} else {
 		// Increment reference count
 		it->second->refCount++;
+		if (readOnly) {
+			it->second->readOnlyRefCount++;
+		}
 		DEBUG_LOG("%p TransactionLogStoreRegistry::Register Incremented refCount for \"%s\" (refCount=%zu)\n",
 			instance.get(), dbPath.c_str(), it->second->refCount);
 	}
@@ -98,7 +105,7 @@ void TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(const std::stri
 /**
  * Unregisters a DBDescriptor for the given database path.
  */
-void TransactionLogStoreRegistry::Unregister(const std::string& dbPath) {
+void TransactionLogStoreRegistry::Unregister(const std::string& dbPath, bool readOnly) {
 	if (!instance) {
 		DEBUG_LOG("TransactionLogStoreRegistry::Unregister Registry not initialized\n");
 		return;
@@ -118,6 +125,9 @@ void TransactionLogStoreRegistry::Unregister(const std::string& dbPath) {
 
 		auto& entry = it->second;
 		entry->refCount--;
+		if (readOnly && entry->readOnlyRefCount > 0) {
+			entry->readOnlyRefCount--;
+		}
 		DEBUG_LOG("%p TransactionLogStoreRegistry::Unregister Decremented refCount for \"%s\" (refCount=%zu)\n",
 			instance.get(), dbPath.c_str(), entry->refCount);
 
@@ -135,6 +145,21 @@ void TransactionLogStoreRegistry::Unregister(const std::string& dbPath) {
 			}
 
 			instance->entries.erase(it);
+		} else if (readOnly && entry->readOnlyRefCount == 0) {
+			// A writer may keep the path entry alive after the last reader closes.
+			// Drop stores that reader loaded without recovery so the writer's next
+			// resolution can reopen them safely in writable mode. Close each store
+			// before releasing storesMutex so no resolver can overlap the old and
+			// new instances on the same files.
+			std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+			for (auto storeIt = entry->stores.begin(); storeIt != entry->stores.end(); ) {
+				if (storeIt->second->readOnly) {
+					storeIt->second->close();
+					storeIt = entry->stores.erase(storeIt);
+				} else {
+					++storeIt;
+				}
+			}
 		}
 	}
 

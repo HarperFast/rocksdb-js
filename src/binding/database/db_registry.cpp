@@ -384,6 +384,22 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// an entry erased and re-created while we waited carries a new condition,
 	// and staying on the old one would miss its notify.
 	while (true) {
+		// Destroy closes every handle kind for one physical path. A new key (for
+		// example, a fresh secondary workspace) must wait too, or it can open
+		// during finishClose() and be deleted before it ever joined the claim.
+		std::shared_ptr<std::condition_variable> pathClosingCondition;
+		for (const auto& [existingKey, existingEntry] : instance->databases) {
+			if (existingKey.path == identityPath && existingEntry.descriptor &&
+				existingEntry.descriptor->isClosing()
+			) {
+				pathClosingCondition = existingEntry.condition;
+				break;
+			}
+		}
+		if (pathClosingCondition) {
+			pathClosingCondition->wait(lock);
+			continue;
+		}
 		rejectConflictingSecondaryWorkspace();
 		entryIterator = instance->databases.find(key);
 		if (entryIterator == instance->databases.end()) {

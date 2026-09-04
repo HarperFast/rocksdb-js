@@ -69,11 +69,12 @@ struct TransactionLogStoreRegistryEntry final {
 	 * Reference count tracking how many DBDescriptors are using this entry.
 	 */
 	size_t refCount = 0;
+	size_t readOnlyRefCount = 0;
 
 	TransactionLogStoreRegistryEntry() = default;
 
-	TransactionLogStoreRegistryEntry(const TransactionLogStoreConfig& cfg)
-		: config(cfg), refCount(1) {}
+	TransactionLogStoreRegistryEntry(const TransactionLogStoreConfig& cfg, bool readOnly)
+		: config(cfg), refCount(1), readOnlyRefCount(readOnly ? 1 : 0) {}
 };
 
 /**
@@ -140,7 +141,11 @@ public:
 	 * @param dbPath The database path.
 	 * @param config The transaction log store configuration.
 	 */
-	static void Register(const std::string& dbPath, const TransactionLogStoreConfig& config);
+	static void Register(
+		const std::string& dbPath,
+		const TransactionLogStoreConfig& config,
+		bool readOnly
+	);
 
 	/**
 	 * Throws when a writable open would reuse transaction log stores that were
@@ -162,7 +167,7 @@ public:
 	 *
 	 * @param dbPath The database path.
 	 */
-	static void Unregister(const std::string& dbPath);
+	static void Unregister(const std::string& dbPath, bool readOnly);
 
 	/**
 	 * Discovers existing transaction log stores in the transaction logs

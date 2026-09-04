@@ -527,7 +527,7 @@ void DBDescriptor::finishClose() {
 
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
-	TransactionLogStoreRegistry::Unregister(this->identityPath);
+	TransactionLogStoreRegistry::Unregister(this->identityPath, this->readOnly);
 
 	this->transactions.clear();
 	{
@@ -1542,7 +1542,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	logConfig.transactionLogMaxAgeThreshold = options.transactionLogMaxAgeThreshold;
 	logConfig.transactionLogMaxSize = options.transactionLogMaxSize;
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
-	TransactionLogStoreRegistry::Register(descriptor->identityPath, logConfig);
+	TransactionLogStoreRegistry::Register(descriptor->identityPath, logConfig, options.readOnly);
 	TransactionLogStoreRegistry::DiscoverStores(descriptor->identityPath, options.readOnly);
 
 	return descriptor;
