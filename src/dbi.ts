@@ -407,6 +407,11 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * behavior applies: `undefined` for a missing key, and the
 	 * `FRESH_VERSION_FLAG` sentinel — not an entry — when `expectedVersion` was
 	 * passed and the verification table confirmed the caller's cached copy.
+	 * `skipDecode` likewise behaves as it does on `get()`: on a store whose
+	 * decoder copies, `value` is then the reusable read buffer `getBinaryFast()`
+	 * returns, whose `length` is the buffer's capacity rather than the value's
+	 * size and whose contents are only valid until the next read. Copy
+	 * `value.subarray(0, entry.value.end)` to keep it.
 	 */
 	getEntry(key: Key, options?: GetOptions & T): MaybePromise<Entry | number | undefined> {
 		const raw = this.store.decoderCopies
@@ -429,9 +434,8 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		return this.#toEntry(raw, options);
 	}
 
-	// Reads the header words before decoding: with a copying decoder `raw` is the
-	// shared read buffer, whose `length` is the buffer's capacity and `end` the
-	// value's size, and which is only valid until the next read.
+	// `raw` may be the shared read buffer, whose `length` is the buffer's capacity
+	// and `end` the value's size.
 	#toEntry(raw: Buffer | number | undefined, options?: GetOptions & T): Entry | number | undefined {
 		if (raw === undefined || typeof raw === 'number') {
 			return raw;

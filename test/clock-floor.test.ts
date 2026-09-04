@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'fork-clock-floor.mts');
 const LOG = 'clock';
+const TXNLOG_FILE_HEADER = 13;
+const TXNLOG_ENTRY_HEADER = 13;
 
 const paths: string[] = [];
 
@@ -216,6 +218,41 @@ describe('monotonic clock floor', () => {
 		expect(warned.code).toBe(0);
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('was ignored');
 	}, 60000);
+
+	it('reports the keys a mid-file framing break hides, and does not claim them', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		const wrote = await runFixture('write-frames', dbPath, key);
+		expect(wrote.code).toBe(0);
+		const { payload } = JSON.parse(wrote.stdout);
+
+		// Overrun frame 1's declared length. Entries keep resyncing after it, so the
+		// scan classifies a mid-file break — and the entries past it, which stay
+		// durable and which a query resyncs to, are the ones carrying the high keys.
+		const logDir = join(dbPath, 'transaction_logs', LOG);
+		const segment = readdirSync(logDir).find((name) => name.endsWith('.txnlog'))!;
+		const frameStride = TXNLOG_ENTRY_HEADER + payload;
+		const lengthField = TXNLOG_FILE_HEADER + frameStride + 8;
+		const fd = openSync(join(logDir, segment), 'r+');
+		try {
+			const overrun = Buffer.alloc(4);
+			overrun.writeUInt32BE(0xfffffff0, 0);
+			writeSync(fd, overrun, 0, 4, lengthField);
+		} finally {
+			closeSync(fd);
+		}
+
+		const warned = await runFixture('warn', dbPath, key);
+		expect(warned.stderr).toBe('');
+		expect(warned.code).toBe(0);
+
+		const { warnings, clock } = JSON.parse(warned.stdout);
+		expect(warnings.join(' ')).toContain('framing breaks mid-file');
+		// The floor stops at the key before the break rather than silently claiming
+		// to have covered the ones after it.
+		expect(clock).toBeLessThan(key);
+	}, 120000);
 
 	it('leaves the clock alone when no log is named', async () => {
 		const dbPath = newDBPath();

@@ -26,6 +26,8 @@ if (mode === 'warn' || mode === 'reopen-warn') {
 }
 
 const rotating = mode === 'write-rotate';
+/** Payload size of every entry `write-frames` appends; the parent needs it to find frame N. */
+export const FRAME_PAYLOAD = 32;
 const db = RocksDatabase.open(dbPath, {
 	...(mode === 'write-unseeded' || mode === 'reopen-warn' ? {} : { timestampFloorLog: log }),
 	// Small enough that the next batch cannot share a segment with the last one.
@@ -39,7 +41,20 @@ function segmentCount(): number {
 }
 
 try {
-	if (mode === 'write' || mode === 'write-unseeded' || rotating) {
+	if (mode === 'write-frames') {
+		// Fixed-size entries at known offsets, so the parent can break one frame's
+		// declared length. The first batch's key is low and the rest are high, so a
+		// walk that stops at the break seeds the floor from the low one only.
+		const txnLog = db.useLog(log);
+		for (let i = 0; i < 14; i++) {
+			await db.transaction(async (txn) => {
+				txn.setTimestamp(i === 0 ? key! - 60 * 60 * 1000 : key!);
+				await txn.put(`k${i}`, 'v');
+				txnLog.addEntry(Buffer.alloc(FRAME_PAYLOAD, i), txn.id);
+			});
+		}
+		console.log(JSON.stringify({ wrote: key, entries: 14, payload: FRAME_PAYLOAD }));
+	} else if (mode === 'write' || mode === 'write-unseeded' || rotating) {
 		await db.transaction(async (txn) => {
 			txn.setTimestamp(key!);
 			await txn.put('k', 'v');
