@@ -1,12 +1,13 @@
 import { RocksDatabase } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const reopenFixturePath = join(__dirname, 'fixtures', 'fork-wbm-reopen-stall.mts');
+const lateColumnFamilyFixturePath = join(__dirname, 'fixtures', 'fork-wbm-late-column-family.mts');
 
 // The manager is a native process-global and Vitest's `threads` pool runs every file in one
 // process, so a stalling manager left behind here follows later files into their own databases —
@@ -174,6 +175,16 @@ function runReopenFixture(
 	return runFixture(reopenFixturePath, args);
 }
 
+function maintainFromLog(logPath: string): Record<string, number> {
+	const out: Record<string, number> = {};
+	for (const match of readFileSync(logPath, 'utf8').matchAll(
+		/Options for column family \[([^\]]+)\][\s\S]*?max_write_buffer_size_to_maintain: (-?\d+)/g
+	)) {
+		out[match[1]] = Number(match[2]);
+	}
+	return out;
+}
+
 function maintainValues(stdout: string): number[] {
 	const line = /^MAINTAIN (.*)$/m.exec(stdout);
 	if (!line) throw new Error(`fixture printed no MAINTAIN line; stdout was:\n${stdout}`);
@@ -237,6 +248,19 @@ describe('WriteBufferManager stall — reopen (#821)', () => {
 		expect(reopened.code, reopened.stderr).toBe(0);
 		expect(maintainValues(reopened.stdout)).toEqual([1, 1, 1, 1]);
 	}, 150_000);
+
+	// The clamp reads the manager this database actually holds, not the current global setting: a
+	// database keeps whichever manager it was opened with, so a later `writeBufferManagerSize: 0`
+	// must not hand a newly created family the unclamped derived target while its history is still
+	// charged to that manager.
+	it('clamps a column family created after the global budget was cleared', async () => {
+		const dbPath = freshPath();
+		const { code, stderr } = await runFixture(lateColumnFamilyFixturePath, [dbPath]);
+		expect(code, stderr).toBe(0);
+		// Read after the child exits: RocksDB's info logger is buffered, so the newest family's
+		// options block only reaches the file when the database closes.
+		expect(maintainFromLog(join(dbPath, 'db', 'LOG'))).toEqual({ default: 1, late: 1 });
+	}, 90_000);
 
 	// An explicit 0 reads as "retain no history", and the wrappers turn exactly that value into the
 	// largest history there is, so it cannot be passed through either.

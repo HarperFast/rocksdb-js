@@ -87,6 +87,13 @@ constexpr int64_t kMinRetainedHistoryTarget = 1;
  * on it would leave every family created before the switch permanently unprotected — and a
  * non-stalling manager still needs the bound (HarperFast/rocksdb-js#821).
  *
+ * For the same reason `writeBufferManagerAttached` describes the database this family belongs to
+ * rather than the current global setting. `writeBufferManagerSize` is mutable too, and dropping it
+ * to 0 is documented as "no new attachments" rather than a teardown, so a database opened earlier
+ * keeps its manager (`write_buffer_manager` is an immutable `DBOptions` field). Reading the global
+ * here would hand a family created after that change the unsafe derived target while its history is
+ * still charged to the manager the database is holding.
+ *
  * **The safeguard cannot be 0, and 0 is the worst value to pass.** Every writable open here goes
  * through a transaction wrapper, and both of them rewrite a 0 target to -1 before `DB::Open` sees
  * it (`OptimisticTransactionDB::Open`, `TransactionDB::PrepareWrap`); `SanitizeOptions` then
@@ -118,14 +125,17 @@ constexpr int64_t kMinRetainedHistoryTarget = 1;
  * column-family count is then the caller's job. An explicit 0 is normalized for the same reason the
  * safeguard is: passing it through would hand the caller who asked for the least history the most.
  */
-static int64_t resolveMaxWriteBufferSizeToMaintain(const DBOptions& options) {
+static int64_t resolveMaxWriteBufferSizeToMaintain(
+	const DBOptions& options,
+	bool writeBufferManagerAttached
+) {
 	if (options.maxWriteBufferSizeToMaintain > 0) {
 		return options.maxWriteBufferSizeToMaintain;
 	}
 	if (options.maxWriteBufferSizeToMaintain == 0) {
 		return kMinRetainedHistoryTarget;
 	}
-	if (DBSettings::getInstance().getWriteBufferManagerSize() > 0) {
+	if (writeBufferManagerAttached) {
 		return kMinRetainedHistoryTarget;
 	}
 	return options.maxWriteBufferSizeToMaintain;
@@ -169,7 +179,7 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 
 	std::ostringstream msg;
 	msg << "Database \"" << path << "\" was opened with " << familyCount
-		<< " column families retaining up to " << target
+		<< " column families retaining at least " << target
 		<< " bytes of memtable history each, which already reaches the " << budget
 		<< "-byte WriteBufferManager budget. Retained history is only trimmed down to that target, "
 		<< "so that memory is never returned to the manager"
@@ -193,6 +203,7 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
+	bool writeBufferManagerAttached,
 	rocksdb::ColumnFamilyOptions cfOptions
 ) {
 	rocksdb::BlockBasedTableOptions tableOptions;
@@ -207,7 +218,8 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.enable_blob_garbage_collection = true;
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
-	cfOptions.max_write_buffer_size_to_maintain = resolveMaxWriteBufferSizeToMaintain(options);
+	cfOptions.max_write_buffer_size_to_maintain =
+		resolveMaxWriteBufferSizeToMaintain(options, writeBufferManagerAttached);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
 }
@@ -1354,7 +1366,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 
 	// Base options shared by every column family. Compression is applied per CF
 	// below so opening one family cannot restamp another's algorithm.
-	auto cfOptions = buildColumnFamilyOptions(options);
+	auto cfOptions = buildColumnFamilyOptions(options, dbOptions.write_buffer_manager != nullptr);
 
 	// Shared listener state, created BEFORE DB::Open so a background error fired
 	// during open has a valid, race-free target (the descriptor does not exist

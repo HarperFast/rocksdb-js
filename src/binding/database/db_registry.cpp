@@ -371,7 +371,14 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
 			// Preserve retained settings while applying every per-CF option from
 			// the handle creating this family.
-			auto cfOptions = buildColumnFamilyOptions(options, entry.descriptor->cfOptions);
+			// The manager this database actually holds, not the current global setting: it keeps
+			// whichever one it was opened with, so a later `writeBufferManagerSize: 0` must not hand
+			// this new family the unclamped derived history target.
+			auto cfOptions = buildColumnFamilyOptions(
+				options,
+				entry.descriptor->db->GetDBOptions().write_buffer_manager != nullptr,
+				entry.descriptor->cfOptions
+			);
 			if (options.compression) {
 				cfOptions.compression = *options.compression;
 				cfOptions.blob_compression_type = *options.compression;
