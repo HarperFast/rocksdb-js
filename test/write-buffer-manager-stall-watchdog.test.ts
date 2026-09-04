@@ -51,7 +51,7 @@ function runStallChild(dbPath: string, deadlineMs: number): Promise<ChildResult>
 
 		child.stdout?.on('data', (chunk) => {
 			stdout += chunk.toString();
-			if (/^(STALLED|NEVER_STALLED|CLEARED)$/m.test(stdout)) {
+			if (/^(STALLED|NEVER_STALLED|CLEARED)\r?$/m.test(stdout)) {
 				finish();
 			}
 		});
@@ -84,10 +84,13 @@ describe('WriteBufferManager stall watchdog', () => {
 		expect(result.timedOut, `child never finished:\n${result.stderr}`).toBe(false);
 		// Anchored: 'NEVER_STALLED' also contains 'STALLED', and a run that never
 		// reached a stall must fail here rather than in the warn-count assertion.
-		expect(result.stdout.split('\n'), `child stderr:\n${result.stderr}`).toContain('STALLED');
+		expect(result.stdout.split(/\r?\n/), `child stderr:\n${result.stderr}`).toContain('STALLED');
 
+		// Split on either line ending: the C++ warn line goes through the Windows
+		// CRT's text-mode stderr, which turns its '\n' into '\r\n', while Node's
+		// console.log on stdout does not translate.
 		const warnings = result.stderr
-			.split('\n')
+			.split(/\r?\n/)
 			.filter((line) => line.includes('WriteBufferManager write stall active for'));
 		// Not one per blocked writer and not one per poll: the stall is held for
 		// several times the threshold and still yields a single line.
@@ -104,7 +107,7 @@ describe('WriteBufferManager stall watchdog', () => {
 		expect(warning).toMatch(/maxWriteBufferSizeToMaintain=\{33554432:[1-9]\d*\}/);
 
 		const samples = result.stdout
-			.split('\n')
+			.split(/\r?\n/)
 			.filter((line) => line.startsWith('STATS '))
 			.map((line) => JSON.parse(line.slice('STATS '.length)));
 		const stalled = samples.filter((sample) => sample.stats.stallActive);
@@ -131,7 +134,7 @@ describe('WriteBufferManager stall watchdog', () => {
 		// The `'log.warn'` event is the programmatic half of the warn line: same
 		// payload, same once-per-episode cadence.
 		const warned = result.stdout
-			.split('\n')
+			.split(/\r?\n/)
 			.filter((line) => line.startsWith('WARNED '))
 			.map((line) => line.slice('WARNED '.length));
 		expect(warned).toHaveLength(1);
