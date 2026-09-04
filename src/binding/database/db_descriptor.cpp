@@ -73,58 +73,20 @@ static void applyCompression(
 constexpr int64_t kMinRetainedHistoryTarget = 1;
 
 /**
- * Resolves `max_write_buffer_size_to_maintain` for a column family.
+ * Resolves `max_write_buffer_size_to_maintain` for a column family. AGENTS.md invariant 10 is the
+ * full account; the three facts the code cannot state are:
  *
- * Retained memtable history is a floor, not a cap — RocksDB trims down to this target and never
- * below — and that memory is charged to the process-wide WriteBufferManager. A target the budget
- * cannot hold is therefore a deadlock rather than backpressure: the budget fills with history that
- * is never released, and a manager built with `allowStall` stalls every write to the database
- * permanently. Without `allowStall` the same history is simply never reclaimed, so the budget stops
- * bounding what it exists to bound.
- *
- * The derived default is therefore clamped whenever a manager is attached at all, not only when it
- * is a stalling one. `allowStall` is mutable at runtime (`DBSettings::Config` propagates it through
- * `SetAllowStall`) while this target is immutable once a column family exists, so keying the clamp
- * on it would leave every family created before the switch permanently unprotected — and a
- * non-stalling manager still needs the bound (HarperFast/rocksdb-js#821).
- *
- * For the same reason `writeBufferManagerAttached` describes the database this family belongs to
- * rather than the current global setting. `writeBufferManagerSize` is mutable too, and dropping it
- * to 0 is documented as "no new attachments" rather than a teardown, so a database opened earlier
- * keeps its manager (`write_buffer_manager` is an immutable `DBOptions` field). Reading the global
- * here would hand a family created after that change the unsafe derived target while its history is
- * still charged to the manager the database is holding.
- *
- * **The safeguard cannot be 0, and 0 is the worst value to pass.** Every writable open here goes
- * through a transaction wrapper, and both of them rewrite a 0 target to -1 before `DB::Open` sees
- * it (`OptimisticTransactionDB::Open`, `TransactionDB::PrepareWrap`); `SanitizeOptions` then
- * expands -1 to `max_write_buffer_number * write_buffer_size` — 256MB with this codebase's
- * defaults. So 0 does not request "no history", it requests the largest history there is, for every
- * column family passed to open. `DB::CreateColumnFamily` has no such rewrite, so only families
- * created after an open ever received the 0 (HarperFast/rocksdb-js#821).
- *
- * `kMinRetainedHistoryTarget` is the smallest target that survives that rewrite. It is not "no
- * history": `MemTableListVersion::TrimHistory` compares against
- * `MemoryAllocatedBytesExcludingLast()`, which excludes the entry it is about to drop, so the
- * newest flushed memtable stays until that family's next write schedules a trim. The retained bound
- * is therefore one flushed memtable per family instead of 256MB per family, and no positive target
- * does better — that residual is independent of the target's magnitude.
- *
- * It is deliberately not derived from the column-family count. Families are created lazily as
- * tables are created at runtime, so a count read here is only a lower bound, and
- * `ColumnFamilyOptions` are fixed when a family is created, so a count-derived value is already
- * wrong for every family created after it. The arithmetic does not close either: any positive
- * per-family floor times an unbounded family count exceeds any fixed budget. That is what the
- * over-budget warning in `open()` reports rather than prevents.
- *
- * The cost of the near-zero window is conflict checking reporting "cannot determine" (`kTryAgain`)
- * more often, which callers retry. #755 measured it at ~zero while flushing is organic (driven by
- * memtables filling), rising to ~1.4x attempts per commit only once flushes are forced at a cadence
- * comparable to transaction lifetime.
- *
- * An explicit positive caller value is honored untouched — sizing it against the budget and the
- * column-family count is then the caller's job. An explicit 0 is normalized for the same reason the
- * safeguard is: passing it through would hand the caller who asked for the least history the most.
+ * 1. It cannot be 0. Both transaction wrappers rewrite a 0 target to -1 before `DB::Open` sees it
+ *    (`OptimisticTransactionDB::Open`, `TransactionDB::PrepareWrap`), and `SanitizeOptions` expands
+ *    -1 to `max_write_buffer_number * write_buffer_size` — so 0 asks for the largest history there
+ *    is, not none. An explicit caller 0 is normalized for that reason (rocksdb-js#821).
+ * 2. `kMinRetainedHistoryTarget` is not "no history". `TrimHistory` measures
+ *    `MemoryAllocatedBytesExcludingLast()`, which excludes the entry it would drop, so the newest
+ *    flushed memtable survives until that family's next write schedules a trim. One memtable per
+ *    family is the floor, and no positive target beats it.
+ * 3. `writeBufferManagerAttached` is the manager this database holds, never `DBSettings`. Both the
+ *    global size and `allowStall` are mutable at runtime while this target is fixed once the family
+ *    exists, so reading them would leave families created on either side of a change unprotected.
  */
 static int64_t resolveMaxWriteBufferSizeToMaintain(
 	const DBOptions& options,

@@ -41,11 +41,8 @@ struct UserSharedBufferData;
 struct UserSharedBufferFinalizeData;
 
 /**
- * `writeBufferManagerAttached` must describe the database this column family belongs to, not the
- * current global setting: `writeBufferManagerSize` is mutable at runtime while a database keeps
- * whichever manager it was opened with (`write_buffer_manager` is an immutable `DBOptions` field),
- * and the retained-history clamp it drives is fixed when the family is created. See
- * `resolveMaxWriteBufferSizeToMaintain`.
+ * `writeBufferManagerAttached` must describe the database this column family belongs to, never the
+ * current `DBSettings` value — see `resolveMaxWriteBufferSizeToMaintain` for why they diverge.
  */
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
