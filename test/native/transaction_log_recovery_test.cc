@@ -168,6 +168,41 @@ TEST(TransactionLogRecovery, BrokenFrameThenLongValidRunIsMidFileCorruption) {
 	EXPECT_EQ(scan.validEnd, breakOffset);
 }
 
+TEST(TransactionLogRecovery, MaxTimestampIsTheLargestKeyNotTheLastOne) {
+	LogImage img;
+	img.entry(10, 1, 500.0).entry(10, 1, 900.0).entry(10, 1, 700.0);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	// Batch keys are not ordered within a file, so this is a running maximum.
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 900.0);
+	EXPECT_DOUBLE_EQ(scan.maxImplausibleTimestamp, 0.0);
+}
+
+TEST(TransactionLogRecovery, MaxTimestampSplitsAtThePlausibleBound) {
+	LogImage img;
+	img.entry(10, 1, 500.0).entry(10, 1, 9000.0).entry(10, 1, 700.0);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size(), /*plausibleBound=*/1000.0);
+	// The out-of-bound key is kept apart rather than discarding the file's real
+	// keys, which the clock floor seeds from.
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 700.0);
+	EXPECT_DOUBLE_EQ(scan.maxImplausibleTimestamp, 9000.0);
+}
+
+TEST(TransactionLogRecovery, MaxTimestampStopsAtAMidFileBreak) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	// Entries after a mid-file break are durable and query() resyncs past them,
+	// but this walk cannot reach them — so their keys are absent from maxTimestamp
+	// and the caller has to treat the answer as incomplete.
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16, 1, 4000.0);
+	}
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
 TEST(TransactionLogRecovery, BrokenFrameThenFewEntriesReachingEofIsNotTruncated) {
 	// Regression for the resync false-negative: a mid-file break followed by
 	// fewer than RESYNC_MIN_FRAMES valid entries that nonetheless reach EOF must

@@ -1411,6 +1411,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(const std::string& path, const 
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
 	TransactionLogStoreRegistry::Register(path, logConfig);
 	TransactionLogStoreRegistry::DiscoverStores(path);
+	descriptor->timestampFloorLog = options.timestampFloorLog;
 	// Before the descriptor is published, so no transaction can have taken a
 	// timestamp from the un-floored clock.
 	TransactionLogStoreRegistry::SeedTimestampFloor(path, options.timestampFloorLog);

@@ -269,14 +269,22 @@ against the same database opened without the option:
 Roughly a millisecond per thousand entries. Retention bounds a log's age, not its entry count, so
 the walk is bounded directly instead: `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` (default `2000`) caps it,
 newest segment first, and a walk that runs out of budget warns and leaves the floor where it got to.
+The budget is checked between segments, so it can overshoot by one segment's walk — up to roughly
+1.2 million entries in a default 16 MB segment.
 The value is honored literally, `0` included, and there is no unbounded setting — the failure it
 bounds is an `open()` that does not return, so a deployment that would rather wait raises the number.
 A database opened without `timestampFloorLog` pays none of it.
 
 The seed is best effort, and says so when it falls short: a segment that cannot be opened or scanned
-emits a `log.warn` global event, as does a segment holding a key more than ten years ahead of the
-wall clock, whose keys are left out of the floor as corruption rather than a rollback to recover
-from.
+emits a `log.warn` global event, as does a mid-file framing break (the entries past it are durable
+and `query()` resyncs to them, but this walk stops there), a budget that runs out, and a
+`timestampFloorLog` naming a log the database does not have. A key more than ten years ahead of the
+wall clock is left out of the floor as corruption rather than a rollback to recover from, per entry
+rather than per segment so it does not take the real keys beside it with it, and it warns too.
+
+The option is fixed at the first open of a path in the process — the database descriptor is shared
+across handles and `worker_threads` envs — so a later open of the same path that names a log cannot
+re-run the seed and warns instead of appearing to work.
 
 ### Sequential Read
 

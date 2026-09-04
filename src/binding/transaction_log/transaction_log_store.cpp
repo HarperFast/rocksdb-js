@@ -385,13 +385,18 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 				}
 				logFile->open(this->latestTimestamp);
 			}
-			double fileMax = logFile->scanMaxEntryTimestamp();
-			if (fileMax > plausibleBound) {
-				if (fileMax > result.refusedKey) {
-					result.refusedKey = fileMax;
-				}
-			} else if (fileMax > result.largestKey) {
-				result.largestKey = fileMax;
+			auto fileScan = logFile->scanMaxEntryTimestamp(plausibleBound);
+			if (fileScan.maxTimestamp > result.largestKey) {
+				result.largestKey = fileScan.maxTimestamp;
+			}
+			if (fileScan.maxImplausibleTimestamp > result.refusedKey) {
+				result.refusedKey = fileScan.maxImplausibleTimestamp;
+			}
+			if (fileScan.stoppedAtBreak) {
+				// Entries past a mid-file break are durable and are served by
+				// query()'s resync (AGENTS.md invariant 11); this walk cannot reach
+				// them, so the floor may sit below one of their keys.
+				result.complete = false;
 			}
 		} catch (const std::exception& e) {
 			result.complete = false;

@@ -496,10 +496,10 @@ struct TransactionLogStore final {
 	 * rather than correctness; the newest segment is scanned first because a
 	 * rollback leaves the highest keys in the run that was interrupted.
 	 *
-	 * A segment whose largest key is beyond `plausibleBound` was corrupted or
-	 * written by a caller that assigned an arbitrary timestamp; its keys are left
-	 * out of the maximum, so one such segment cannot mask the real keys in the
-	 * others.
+	 * Keys beyond `plausibleBound` were corrupted or written by a caller that
+	 * assigned an arbitrary timestamp. They are left out of the maximum per
+	 * *entry*, not per segment, so one bad key cannot discard the real keys
+	 * beside it, and the largest of them comes back in `refusedKey`.
 	 */
 	DurableKeyScan scanLargestDurableKey(
 		double plausibleBound,

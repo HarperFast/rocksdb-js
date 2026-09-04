@@ -6,6 +6,7 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include <limits>
 #include <string>
 #include <utility>
 #include "core/debug.h"
@@ -351,7 +352,7 @@ struct TransactionLogFile final {
 	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
 	 * this->size (append-owned written extent), not the mapped/pre-extended size.
 	 */
-	RecoveryScan scanRecoveryLocked();
+	RecoveryScan scanRecoveryLocked(double plausibleBound = std::numeric_limits<double>::infinity());
 
 	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file
@@ -383,14 +384,28 @@ struct TransactionLogFile final {
 	 */
 	uint32_t scanForLastCompleteTransactionEnd();
 
+	/** What scanMaxEntryTimestamp() found in one segment. */
+	struct MaxEntryScan final {
+		/** Largest key at or below `plausibleBound`, or 0 if the file holds none. */
+		double maxTimestamp = 0;
+		/** Largest key above it, kept apart so one bad key does not discard the rest. */
+		double maxImplausibleTimestamp = 0;
+		/**
+		 * The walk stopped at a mid-file framing break, so entries after it — which
+		 * are durable, and which `query()` resyncs past (AGENTS.md invariant 11) —
+		 * are not in `maxTimestamp`.
+		 */
+		bool stoppedAtBreak = false;
+	};
+
 	/**
-	 * The largest batch key still durable in this file, or 0 if it holds no
-	 * entries. Walks the same framing as scanForLastCompleteTransactionEnd()
-	 * over the file's current extent, so it must run *after* open-time recovery:
-	 * a key that recoverTail() truncated away is no longer durable and must not
-	 * reach the clock floor. Throws DBException on I/O failure.
+	 * The largest batch key still durable in this file. Walks the same framing as
+	 * scanForLastCompleteTransactionEnd() over the file's current extent, so it
+	 * must run *after* open-time recovery: a key that recoverTail() truncated away
+	 * is no longer durable and must not reach the clock floor. Throws DBException
+	 * on I/O failure.
 	 */
-	double scanMaxEntryTimestamp();
+	MaxEntryScan scanMaxEntryTimestamp(double plausibleBound);
 
 	/**
 	 * Closes the log file and removes it.

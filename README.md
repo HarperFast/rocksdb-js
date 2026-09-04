@@ -1672,7 +1672,7 @@ Two flags in the metadata word are named by this library:
   version is never published to a slot.
 - `constants.HAS_DISTINCT_VERSION_FLAG` (`0x20000`) — the value carries a record version distinct
   from the first word, in the second word at offset 12. Not interpreted natively; read it through
-  [`db.getEntry()`](#dbgetentrykey-key-options-getoptions-maybepromiseentry--undefined), which
+  [`db.getEntry()`](#dbgetentrykey-key-options-getoptions-maybepromiseentry--number--undefined), which
   returns both words. A value without the flag decodes as `version === localTime`, which is how a
   value written before the flag existed reads.
 

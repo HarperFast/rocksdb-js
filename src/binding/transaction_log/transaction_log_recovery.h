@@ -2,6 +2,7 @@
 #define __TRANSACTION_LOG_RECOVERY_H__
 
 #include <cstdint>
+#include <limits>
 
 namespace rocksdb_js {
 
@@ -61,12 +62,18 @@ struct RecoveryScan final {
 	 */
 	bool unclosedTailIsOneTransaction;
 	/**
-	 * The largest entry timestamp the walk saw, or 0 for a file with no entries.
-	 * Entry timestamps are batch keys, and they are not ordered within a file
-	 * (see `findPositionByTimestamp`), so this is a running maximum over every
-	 * frame the walk accepted — never the last one it read.
+	 * The largest entry timestamp at or below the caller's `plausibleBound`, or 0
+	 * for a file with no such entry. Entry timestamps are batch keys, and they
+	 * are not ordered within a file (see `findPositionByTimestamp`), so this is a
+	 * running maximum over every frame the walk accepted — never the last one it
+	 * read.
 	 */
 	double maxTimestamp;
+	/**
+	 * The largest entry timestamp *above* that bound, or 0. Kept apart so one
+	 * implausible key does not discard the real keys beside it.
+	 */
+	double maxImplausibleTimestamp;
 };
 
 /**
@@ -93,13 +100,19 @@ using TransactionLogReadFn = bool (*)(void* context, uint32_t offset, void* dest
  * @param context  Passed through to `read`.
  */
 RecoveryScan scanTransactionLogForRecovery(
-	uint32_t fileSize, TransactionLogReadFn read, void* context);
+	uint32_t fileSize,
+	TransactionLogReadFn read,
+	void* context,
+	double plausibleBound = std::numeric_limits<double>::infinity());
 
 /**
  * In-memory adapter over scanTransactionLogForRecovery(fileSize, read, context).
  * Used by validation and native tests that already hold a buffer.
  */
-RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize);
+RecoveryScan scanTransactionLogForRecovery(
+	const char* data,
+	uint32_t fileSize,
+	double plausibleBound = std::numeric_limits<double>::infinity());
 
 /**
  * File adapter: takes fileMutex, then scans via positional reads on `file`.

@@ -9,8 +9,14 @@ using rocksdb_js::MAX_CLOCK_FLOOR_SKEW_MS;
 using rocksdb_js::MAX_TIMESTAMP_MS;
 using rocksdb_js::raiseMonotonicTimestampFloor;
 
-// The floor is one process-wide value, so these cases share it and are written
-// to hold in any order: each raises it further, or asserts a refusal.
+// The floor is one process-wide value with no reset, and GoogleTest runs every
+// case in one process, in an order the caller can shuffle and repeat. So a case
+// that raises the floor takes its target from getMonotonicTimestamp() — which is
+// already at or above whatever floor is in force — and moves it by milliseconds.
+// Against the wall clock instead, a case would raise below a floor another case
+// had already set (its raise then correctly refused, its assertion wrong), and a
+// raise large enough to be convenient would leave every later case in the
+// binary, TracksTheWallClockWithoutASeed included, reading a skewed clock.
 
 TEST(MonotonicTimestamp, IssuesStrictlyIncreasingValues) {
 	double first = getMonotonicTimestamp();
@@ -42,7 +48,7 @@ TEST(MonotonicTimestamp, RefusesAFloorTooFarAheadOfTheWallClock) {
 }
 
 TEST(MonotonicTimestamp, RaisesAndThenIssuesAboveTheFloor) {
-	double floor = getWallClockTimestamp() + 60.0 * 60.0 * 1000.0;
+	double floor = getMonotonicTimestamp() + 5.0;
 	EXPECT_TRUE(raiseMonotonicTimestampFloor(floor));
 
 	double issued = getMonotonicTimestamp();
@@ -52,7 +58,7 @@ TEST(MonotonicTimestamp, RaisesAndThenIssuesAboveTheFloor) {
 }
 
 TEST(MonotonicTimestamp, IsRaiseOnly) {
-	double floor = getWallClockTimestamp() + 2.0 * 60.0 * 60.0 * 1000.0;
+	double floor = getMonotonicTimestamp() + 10.0;
 	ASSERT_TRUE(raiseMonotonicTimestampFloor(floor));
 
 	// Below the floor already in force: refused, and the clock stays above it.
@@ -61,7 +67,7 @@ TEST(MonotonicTimestamp, IsRaiseOnly) {
 }
 
 TEST(MonotonicTimestamp, HonorsACallerSuppliedPlausibleBound) {
-	double bound = getWallClockTimestamp() + 3.0 * 60.0 * 60.0 * 1000.0;
+	double bound = getMonotonicTimestamp() + 15.0;
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(bound + 1000.0, bound));
 	EXPECT_TRUE(raiseMonotonicTimestampFloor(bound, bound));
 }

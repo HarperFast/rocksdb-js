@@ -279,14 +279,15 @@ bool TransactionLogFile::readBytes(uint32_t offset, void* dest, uint32_t n) {
 	return true;
 }
 
-RecoveryScan TransactionLogFile::scanRecoveryLocked() {
+RecoveryScan TransactionLogFile::scanRecoveryLocked(double plausibleBound) {
 	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
 	return scanTransactionLogForRecovery(
 		fileSize,
 		[](void* context, uint32_t offset, void* dest, uint32_t n) {
 			return static_cast<TransactionLogFile*>(context)->readBytes(offset, dest, n);
 		},
-		this
+		this,
+		plausibleBound
 	);
 }
 
@@ -312,22 +313,26 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 	return scan.lastCompleteTransactionEnd;
 }
 
-double TransactionLogFile::scanMaxEntryTimestamp() {
+TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(double plausibleBound) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
-	if (this->version != 1) {
-		return 0;
+	MaxEntryScan result;
+	if (this->version != 1 ||
+		this->size.load(std::memory_order_relaxed) <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		return result;
 	}
 
-	if (this->size.load(std::memory_order_relaxed) <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
-		return 0;
-	}
-
+	RecoveryScan scan;
 	try {
-		return this->scanRecoveryLocked().maxTimestamp;
+		scan = this->scanRecoveryLocked(plausibleBound);
 	} catch (const DBException& error) {
 		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
+
+	result.maxTimestamp = scan.maxTimestamp;
+	result.maxImplausibleTimestamp = scan.maxImplausibleTimestamp;
+	result.stoppedAtBreak = scan.kind == RecoveryScan::Kind::MidFileCorruption;
+	return result;
 }
 
 void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
