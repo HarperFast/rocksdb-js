@@ -379,6 +379,7 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 				auto fileSize = std::filesystem::file_size(logFile->path, sizeError);
 				if (sizeError || fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
 					if (sizeError) {
+						result.readFailed = true;
 						result.complete = false;
 					}
 					continue;
@@ -400,10 +401,12 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 				result.complete = false;
 			}
 		} catch (const std::exception& e) {
+			result.readFailed = true;
 			result.complete = false;
 			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s: %s\n",
 				this, logFile->path.string().c_str(), e.what());
 		} catch (...) {
+			result.readFailed = true;
 			result.complete = false;
 			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s\n",
 				this, logFile->path.string().c_str());

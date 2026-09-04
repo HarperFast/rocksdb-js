@@ -473,6 +473,8 @@ struct TransactionLogStore final {
 		bool budgetExhausted = false;
 		/** A segment's framing broke mid-file, so the walk stopped before its end. */
 		bool stoppedAtBreak = false;
+		/** A segment could not be opened, stat'd or read. */
+		bool readFailed = false;
 	};
 
 	/**
