@@ -152,6 +152,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 	bool hadLogWrites = (*txnHandle)->committedPosition.logSequenceNumber > 0;
 
+	(*txnHandle)->closeIterators();
 	(*txnHandle)->state = TransactionState::Aborted;
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
@@ -764,6 +765,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 0, nullptr, nullptr));
 		return nullptr;
 	}
+	(*txnHandle)->closeIterators();
 
 	TransactionCommitState* state = new TransactionCommitState(env, *txnHandle);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
@@ -896,6 +898,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_RETURN_UNDEFINED();
 	}
+	(*txnHandle)->closeIterators();
 	(*txnHandle)->state = TransactionState::Committing;
 
 	std::shared_ptr<TransactionLogStore> store = nullptr;

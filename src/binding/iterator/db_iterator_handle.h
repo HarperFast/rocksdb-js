@@ -51,6 +51,8 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 * to be closed when the DBDescriptor is closed.
 	 */
 	void init(DBIteratorOptions& options);
+	bool valid() const;
+	void advance();
 
 	std::shared_ptr<DBHandle> dbHandle;
 	std::shared_ptr<TransactionHandle> txnHandle;
@@ -64,6 +66,8 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	std::string endKeyStr;
 	rocksdb::Slice startKey;
 	rocksdb::Slice endKey;
+	std::mutex closeMutex;
+	bool transactionRegistered = false;
 
 private:
 	/**

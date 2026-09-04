@@ -42,6 +42,10 @@ DBIteratorHandle::DBIteratorHandle(
 	needsStableValueBuffer(options.needsStableValueBuffer)
 {
 	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", this->txnHandle.get(), dbHandle->descriptor.get());
+	this->txnHandle->ensureSnapshot();
+	if (this->txnHandle->snapshotSet) {
+		options.readOptions.snapshot = this->txnHandle->txn->GetSnapshot();
+	}
 	this->init(options);
 
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
@@ -52,7 +56,6 @@ DBIteratorHandle::DBIteratorHandle(
 	);
 
 	this->seek(options);
-	this->txnHandle->registerIterator();
 }
 
 DBIteratorHandle::~DBIteratorHandle() {
@@ -60,14 +63,16 @@ DBIteratorHandle::~DBIteratorHandle() {
 }
 
 void DBIteratorHandle::close() {
+	std::lock_guard<std::mutex> lock(this->closeMutex);
 	DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
 	if (this->iterator) {
 		this->iterator->Reset();
 		this->iterator.reset();
 	}
-	if (this->txnHandle) {
+	if (this->txnHandle && this->transactionRegistered) {
+		this->transactionRegistered = false;
 		auto txnHandle = std::move(this->txnHandle);
-		txnHandle->unregisterIterator();
+		txnHandle->unregisterIterator(this);
 	}
 }
 
@@ -100,9 +105,21 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 
 void DBIteratorHandle::seek(DBIteratorOptions& options) {
 	if (options.reverse) {
-		this->iterator->SeekToLast();
+		if (this->endKey.size() > 0) {
+			this->iterator->SeekForPrev(this->endKey);
+			if (!options.inclusiveEnd && this->iterator->Valid()
+				&& this->iterator->key().compare(this->endKey) == 0) {
+				this->iterator->Prev();
+			}
+		} else {
+			this->iterator->SeekToLast();
+		}
 	} else {
-		this->iterator->SeekToFirst();
+		if (this->startKey.size() > 0) {
+			this->iterator->Seek(this->startKey);
+		} else {
+			this->iterator->SeekToFirst();
+		}
 	}
 
 	if (options.exclusiveStart && options.startKeyStr != nullptr && this->iterator->Valid()) {
@@ -114,6 +131,30 @@ void DBIteratorHandle::seek(DBIteratorOptions& options) {
 				this->iterator->Next();
 			}
 		}
+	}
+}
+
+bool DBIteratorHandle::valid() const {
+	if (!this->iterator || !this->iterator->Valid()) {
+		return false;
+	}
+
+	const rocksdb::Slice key = this->iterator->key();
+	if (this->reverse && this->startKey.size() > 0) {
+		const int comparison = key.compare(this->startKey);
+		return comparison > 0 || (comparison == 0 && !this->exclusiveStart);
+	}
+	if (!this->reverse && this->endKey.size() > 0) {
+		return key.compare(this->endKey) < 0;
+	}
+	return true;
+}
+
+void DBIteratorHandle::advance() {
+	if (this->reverse) {
+		this->iterator->Prev();
+	} else {
+		this->iterator->Next();
 	}
 }
 

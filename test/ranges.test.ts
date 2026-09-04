@@ -1,5 +1,6 @@
 import type { IteratorOptions } from '../src/dbi.ts';
 import type { Key } from '../src/encoding.ts';
+import { Transaction } from '../src/transaction.ts';
 import { dbRunner } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
@@ -110,6 +111,110 @@ describe('Ranges', () => {
 					expect(['b', 'c']).toEqual(returnedKeys);
 				});
 			}));
+
+		it('should honor the transaction option across range APIs', () =>
+			dbRunner(async ({ db }) => {
+				await db.put('committed', 'before');
+				const txn = new Transaction(db.store);
+				try {
+					await txn.put('staged', 'in-batch');
+					const options = { start: 'a', end: 'z', transaction: txn };
+
+					expect(await db.get('staged', { transaction: txn })).toBe('in-batch');
+					expect(db.getRange(options).asArray).toEqual([
+						{ key: 'committed', value: 'before' },
+						{ key: 'staged', value: 'in-batch' },
+					]);
+					expect(db.getKeys(options).asArray).toEqual(['committed', 'staged']);
+					expect(db.getKeysCount(options)).toBe(2);
+					expect(db.store.getCount(db._context, options)).toBe(2);
+					expect(txn.getRange({ start: 'a', end: 'z' }).asArray).toEqual([
+						{ key: 'committed', value: 'before' },
+						{ key: 'staged', value: 'in-batch' },
+					]);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('should use the transaction snapshot for routed and direct ranges', () =>
+			dbRunner(async ({ db }) => {
+				await db.put('committed', 'before');
+				const txn = new Transaction(db.store);
+				try {
+					expect(await db.get('committed', { transaction: txn })).toBe('before');
+					await db.transaction(async (writer) => {
+						await writer.put('later', 'after');
+					});
+
+					const options = { start: 'a', end: 'z', transaction: txn };
+					const expected = [{ key: 'committed', value: 'before' }];
+					expect(db.getRange(options).asArray).toEqual(expected);
+					expect(txn.getRange({ start: 'a', end: 'z' }).asArray).toEqual(expected);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('should enforce bounds and limits for staged keys in both directions', () =>
+			dbRunner(async ({ db }) => {
+				for (const key of ['b', 'd', 'f']) {
+					await db.put(key, `value ${key}`);
+				}
+
+				const txn = new Transaction(db.store);
+				try {
+					for (const key of ['a', 'c', 'e', 'g']) {
+						await txn.put(key, `value ${key}`);
+					}
+
+					const forward = {
+						start: 'a',
+						end: 'e',
+						exclusiveStart: true,
+						inclusiveEnd: true,
+					};
+					expect(db.getKeys({ ...forward, transaction: txn }).asArray).toEqual([
+						'b',
+						'c',
+						'd',
+						'e',
+					]);
+					expect(db.getKeysCount({ ...forward, transaction: txn })).toBe(4);
+					expect(db.store.getCount(db._context, { ...forward, transaction: txn })).toBe(4);
+					expect(txn.getKeys(forward).asArray).toEqual(['b', 'c', 'd', 'e']);
+
+					const reverse = { start: 'e', end: 'a', reverse: true, limit: 2 };
+					expect(db.getKeys({ ...reverse, transaction: txn }).asArray).toEqual(['e', 'd']);
+					expect(txn.getKeys(reverse).asArray).toEqual(['e', 'd']);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		for (const action of ['commit', 'abort'] as const) {
+			it(`should close routed and direct iterators on transaction ${action}`, () =>
+				dbRunner(async ({ db }) => {
+					await db.put('a', 'committed-a');
+					await db.put('b', 'committed-b');
+					const txn = new Transaction(db.store);
+					await txn.put('c', 'staged-c');
+
+					const routed = db.getRange({ transaction: txn })[Symbol.iterator]();
+					const direct = txn.getRange()[Symbol.iterator]();
+					expect(routed.next().done).toBe(false);
+					expect(direct.next().done).toBe(false);
+
+					if (action === 'commit') {
+						await txn.commit();
+					} else {
+						txn.abort();
+					}
+
+					expect(() => routed.next()).toThrow('Iterator not initialized');
+					expect(() => direct.next()).toThrow('Iterator not initialized');
+				}));
+		}
 
 		it('should iterate over a range asynchronously', () =>
 			dbRunner(async ({ db }) => {

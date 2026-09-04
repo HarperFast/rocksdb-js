@@ -653,6 +653,17 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     written remains frozen across retries, though reapplying the same timestamp is idempotent while
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
+19. **Transactional ranges keep the caller's column family and close before the transaction**:
+    `Store.getRange()` routes `options.transaction` to native by transaction ID, where the caller
+    database descriptor resolves it and supplies the caller's `DBHandle` to `DBIteratorHandle`.
+    Replacing the context with `transaction._context` is incorrect for cross-column-family scans:
+    that native transaction carries the column family on which it was created. Transaction-backed
+    iterators establish and pass the transaction snapshot, and manually enforce their encoded bounds
+    because RocksDB's write-batch delta iterator does not apply `iterate_lower_bound` /
+    `iterate_upper_bound` to staged keys. They register weakly with `TransactionHandle`; commit,
+    abort, and forced teardown close every registered iterator before committing, rolling back, or
+    deleting the RocksDB transaction, so a later `next()` deterministically reports an uninitialized
+    iterator rather than reading freed write-batch state.
 
 ## Debugging native heap corruption
 

@@ -1069,9 +1069,9 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 		txnHandle->getCount(itOptions, count, *dbHandle);
 	} else {
 		std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
-		while (itHandle->iterator->Valid()) {
+		while (itHandle->valid()) {
 			++count;
-			itHandle->iterator->Next();
+			itHandle->advance();
 		}
 	}
 
