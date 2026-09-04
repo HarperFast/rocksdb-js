@@ -294,7 +294,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    **The physical extent tracks `size` on POSIX only.** There the fd is `O_APPEND`,
    so writes go to physical EOF, not to `size`, and leaving orphaned bytes makes every later
    append land after a partial entry: a mid-file framing break that `recoverTail()` deliberately
-   will not repair, so every entry after it is unreachable (HarperFast/rocksdb-js#748). On
+   will not repair and every later read must resync past (invariant 11; HarperFast/rocksdb-js#748). On
    Windows `size` is the logical end of entries only — an active segment is pre-extended to
    `maxFileSize` with `SetEndOfFile` so it can be mapped (`getMemoryMapLocked`), its physical
    size stays `maxFileSize` for its whole life with a zero-padded tail, and end-of-entries is
@@ -431,12 +431,22 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     entries appended _after_ it; `recoverTail()` deliberately leaves such a file alone rather than
     discard them, and rotated files are never rescanned at all. `query()` therefore reports the
     break as a `CorruptFrameError` carrying `resyncPosition` (where framing resumes, per the same
-    heuristic as `validFramingResumes()`) and **leaves iteration positioned there**, so a caller
+    heuristic as `findFramingResumeOffset()`) and **leaves iteration positioned there**, so a caller
     that calls `next()` again recovers the entries past it. Treating the throw as terminal amputates
     every later entry in the file permanently — each drain restarts from the same resume cursor and
     re-throws at the same offset, which is how HarperFast/harper#2016 lost 2.2 days of acknowledged
     writes and #2063 starved a replication stream for 11 days. Keep `RESYNC_MIN_FRAMES` in
     `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
+
+    The engine owes the same discipline, or the reader's resync is moot. Every native walk of the
+    framing — the open-time recovery scan and `findPositionByTimestamp`'s index walk — resumes at
+    `findFramingResumeOffset()` instead of stopping at the break, so the committed-read watermark
+    (`lastCompleteTransactionEnd`, which may therefore exceed `validEnd` for `MidFileCorruption`)
+    and the timestamp index both cover the entries past it. Stopping at the break clamped every
+    committed read to the entries _before_ it (39 of 60 rows reached the replica) and froze the index
+    so every seek at or after the break reported "past this file". Striding through a broken frame's
+    declared length is never an in-flight append: `size` is bumped only after the bytes land, so a
+    nonzero header below `size` is a complete entry and a length overrunning it is a break.
 
     The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
     append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size).
@@ -444,7 +454,28 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
-    a per-frame call would tax every healthy read.
+    a per-frame call would tax every healthy read. The native walks run before `size` has been
+    corrected on a pre-extended (Windows) segment, so `findFramingResumeOffset()` also accepts a
+    chain landing exactly on the **end of the nonzero bytes** — a single offset, as conclusive as
+    EOF — otherwise a run shorter than `RESYNC_MIN_FRAMES` in front of the padding classifies as a
+    torn tail and recovery truncates its committed entries.
+
+    A resync that finds nothing is only conclusive over the bytes it could actually read. The index
+    walk searches the mapped region (`min(size, mapSize)`), which is short of the written extent
+    whenever one batch exceeded `transactionLogMaxSize` or the limit was lowered, so an empty result
+    there means "not in this map", not "not in this file". It must then stay at the break and report
+    an unindexed tail — the same treatment the walk already gives a header the map does not cover —
+    and only park `lastIndexedPosition` at the written extent when the whole extent was searchable
+    and the break is therefore a torn tail. A short map also disqualifies the "chain lands on the
+    written extent" signal (`endIsWrittenExtent`): the region ends on an arbitrary cut, so a chain
+    landing there proves nothing, and accepting one lets a garbage chain in the corrupt gap pass as
+    the resume — whose bogus timestamp then caps this running-maxima index and hides every real
+    entry behind it. The frame-run signal is the only one left. Skipping to the extent is permanent: a later, larger map
+    resumes from `lastIndexedPosition` and never looks below it, so those entries stay unindexed and
+    every seek into them reports "past this file". Staying at the break costs nothing per seek: the
+    extent that failed is remembered (`resyncSearchedExtent`), since only a larger map can change
+    the answer and the byte-wise search spans the whole corrupt gap under the store's
+    `dataSetsMutex`.
 
 12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
     commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —

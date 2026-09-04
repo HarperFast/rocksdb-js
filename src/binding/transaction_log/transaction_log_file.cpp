@@ -470,6 +470,7 @@ void TransactionLogFile::resetTimestampIndex() {
 	std::lock_guard<std::mutex> indexLock(this->indexMutex);
 	this->positionByTimestampIndex.clear();
 	this->lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
+	this->resyncSearchedExtent = 0;
 }
 
 uint32_t TransactionLogFile::countEntries() const {
@@ -713,8 +714,11 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	// Set when indexing stops early at a committed-but-not-yet-visible tail (a concurrent append we
 	// couldn't read this pass); used below to start the scan at lastIndexedPosition rather than EOF.
 	bool stoppedAtUnindexedTail = false;
-	while (this->lastIndexedPosition < this->size) {
-		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
+	while (true) {
+		uint32_t writtenExtent = this->size.load(std::memory_order_relaxed);
+		if (this->lastIndexedPosition >= writtenExtent) {
+			break;
+		}
 		// The header's own timestamp slot is not an entry, so a legitimate value of exactly
 		// zero there (e.g. an unset/epoch file timestamp) must not be mistaken for the
 		// zero-padding end-of-data marker below — that heuristic only applies once we're
@@ -723,10 +727,15 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		// back into the header itself.
 		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
 			// specifically record the log file timestamp as the first entry with a position of zero
-			positionByTimestampIndex.insert({entryTimestamp, 0});
+			positionByTimestampIndex.insert({readDoubleBE(mappedFile + this->lastIndexedPosition), 0});
 			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
 			continue;
 		}
+		if (static_cast<uint64_t>(this->lastIndexedPosition) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > memoryMap->mapSize) {
+			stoppedAtUnindexedTail = true;
+			break;
+		}
+		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
 		if (entryTimestamp == 0) {
 			// A zero timestamp marks the end of the written data. Only correct this->size down to the
 			// true written extent when no entries have been appended since (re)open — i.e. during
@@ -745,6 +754,49 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			}
 			break;
 		}
+		uint32_t entryLength = readUint32BE(mappedFile + this->lastIndexedPosition + 8);
+		if (entryLength == 0 ||
+			static_cast<uint64_t>(this->lastIndexedPosition) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength > writtenExtent) {
+			// A framing break, not an in-flight append: size is bumped only after the bytes
+			// land, so a nonzero header below the written extent is a complete entry.
+			uint32_t searchable = std::min(writtenExtent, static_cast<uint32_t>(memoryMap->mapSize));
+			bool searchedWholeExtent = searchable == writtenExtent;
+			if (searchable <= this->resyncSearchedExtent) {
+				// These bytes already failed to yield a resume for this same break; only a larger
+				// map can change the answer, and the search spans the whole corrupt gap under the
+				// store's dataSetsMutex, so repeating it per seek would stall the store.
+				stoppedAtUnindexedTail = true;
+				break;
+			}
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+			++this->resyncSearchCountForTests;
+#endif
+			// A chain landing on the end of a short map lands on an arbitrary cut, not on the
+			// end of the data, so only the frame-run signal is trustworthy there.
+			uint32_t resume = findFramingResumeOffset(
+				mappedFile, searchable, this->lastIndexedPosition + 1, searchedWholeExtent);
+			if (resume != 0) {
+				this->lastIndexedPosition = resume;
+				this->resyncSearchedExtent = 0;
+				continue;
+			}
+			if (!searchedWholeExtent) {
+				// The map stops short of the written extent, so "nothing resumes" only rules out
+				// the bytes we could read. Parking at the written extent would strand the rest
+				// permanently — a later, larger map resumes from lastIndexedPosition and would
+				// never look below it, so entries there stay unindexed and seeks past them report
+				// past-file. Stop at the break instead (the same treatment the header bound-check
+				// above gives a tail the map doesn't cover) and re-search once the map grows.
+				this->resyncSearchedExtent = searchable;
+				stoppedAtUnindexedTail = true;
+				break;
+			}
+			// The whole written extent was searchable and nothing resumes: a torn tail. Park at
+			// the written extent so later appends are still indexed; the torn bytes never are.
+			this->lastIndexedPosition = writtenExtent;
+			this->resyncSearchedExtent = 0;
+			continue;
+		}
 		// check that the timestamp is greater than any previously indexed timestamp,
 		// otherwise we don't record it, because we want to start at the first position with a timestamp that
 		// is greater than the requested timestamp:
@@ -752,8 +804,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			// insert with a hint to go at the end (constant time?)
 			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, this->lastIndexedPosition});
 		}
-		// read size of the entry and move on
-		this->lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(mappedFile + this->lastIndexedPosition + 8);
+		this->lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength;
 	}
 	// now do the actual search: just a search for the lower bound
 	auto it = this->positionByTimestampIndex.lower_bound(timestamp);

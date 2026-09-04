@@ -239,6 +239,17 @@ struct TransactionLogFile final {
 
 	std::map<double, uint32_t> positionByTimestampIndex;
 	uint32_t lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
+	/**
+	 * How far findPositionByTimestamp() has already searched, without success, for the point
+	 * where framing resumes after the break now sitting at lastIndexedPosition. The byte-wise
+	 * search spans the whole corrupt gap and runs under the store's dataSetsMutex, so repeating
+	 * it on every seek would stall writers and readers alike; a search is only worth redoing once
+	 * the mapped region has grown past what it already covered. Zero whenever lastIndexedPosition
+	 * is not parked at an unresolved break: both paths that leave a break clear it, as does
+	 * resetTimestampIndex(), and the paths that advance through a well-framed entry cannot run
+	 * while parked (the walk re-detects the break before reaching them).
+	 */
+	uint32_t resyncSearchedExtent = 0;
 	std::mutex indexMutex;
 
 	/**
@@ -537,6 +548,13 @@ struct TransactionLogFile final {
 	 * can be exercised on POSIX. INT64_MIN disables the override. Test-only.
 	 */
 	static std::atomic<int64_t> forcedBytesLandedForTests;
+
+	/**
+	 * Counts the byte-wise resync searches the index walk has run, so a test can prove the
+	 * failed-extent memo (resyncSearchedExtent) elides a repeat search rather than only
+	 * returning the same position. Guarded by indexMutex like the memo itself. Test-only.
+	 */
+	uint32_t resyncSearchCountForTests = 0;
 #endif
 
 private:
