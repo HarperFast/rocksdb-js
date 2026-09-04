@@ -91,6 +91,11 @@ private:
 
 	std::atomic<uint64_t> writeBufferManagerStallActiveMs{0};
 	std::atomic<bool> writeBufferManagerWatchdogRunning{false};
+	// Lock-free mirror of watchdogStopRequested, so the sample path can abandon a
+	// report before writing it. The report's stderr write is unbounded on a full
+	// pipe and a joiner waits behind it; this bounds that wait to a write already
+	// in progress rather than one about to start.
+	std::atomic<bool> writeBufferManagerWatchdogStopping{false};
 
 	// Watchdog lifecycle. The start path runs under databasesMutex ->
 	// writeBufferManagerMutex (DBRegistry::OpenDB holds the former across

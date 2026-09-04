@@ -164,6 +164,7 @@ void DBSettings::ensureWriteBufferManagerWatchdog() {
 		return;
 	}
 	this->watchdogStopRequested = false;
+	this->writeBufferManagerWatchdogStopping.store(false, std::memory_order_relaxed);
 	const uint64_t generation = ++this->watchdogGeneration;
 	try {
 		this->watchdogThread =
@@ -182,6 +183,7 @@ void DBSettings::requestWriteBufferManagerWatchdogStop() {
 	{
 		std::lock_guard<std::mutex> lock(this->watchdogMutex);
 		this->watchdogStopRequested = true;
+		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
 	}
 	this->watchdogCv.notify_all();
 }
@@ -191,6 +193,7 @@ void DBSettings::joinWriteBufferManagerWatchdog() {
 	{
 		std::lock_guard<std::mutex> lock(this->watchdogMutex);
 		this->watchdogStopRequested = true;
+		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
 		if (this->watchdogStarted) {
 			toJoin = std::move(this->watchdogThread);
 			this->watchdogStarted = false;
@@ -239,7 +242,8 @@ void DBSettings::sampleWriteBufferManagerStall(WbmStallWatchdogState& state, uin
 		wbm->IsStallActive(), WbmStallWatchdogState::Clock::now(), thresholdMs
 	);
 	this->writeBufferManagerStallActiveMs.store(sample.stallActiveMs, std::memory_order_relaxed);
-	if (!sample.reportNow) {
+	if (!sample.reportNow ||
+		this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed)) {
 		return;
 	}
 
@@ -428,6 +432,15 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	// path in binding.cpp.
 	if (retireWatchdog) {
 		settings.joinWriteBufferManagerWatchdog();
+		// Reconcile against the state that is actually current, not this call's
+		// own argument: another env re-enabling stalling in the unlocked window
+		// above would have found the thread still started and declined to start
+		// one, leaving allowStall on with no alarm behind it.
+		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
+		if (settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed) &&
+			settings.writeBufferManager) {
+			settings.ensureWriteBufferManagerWatchdog();
+		}
 	}
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
