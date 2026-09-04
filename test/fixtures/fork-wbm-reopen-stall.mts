@@ -2,7 +2,7 @@ import { RocksDatabase } from '../../src/index.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// Usage: fork-wbm-reopen-stall.mts <dbPath> <create|reopen> <mode> [maintain]
+// Usage: fork-wbm-reopen-stall.mts <dbPath> <create|reopen> <mode> <stall|nostall> [maintain]
 //
 // `create` builds the column families and exits; `reopen` opens the same families again — the
 // restart this regression is about — reports the per-family `max_write_buffer_size_to_maintain`
@@ -11,10 +11,12 @@ import { join } from 'node:path';
 // It runs as a child process because the failure mode is a HANG, not an exception: `put()` calls
 // `store.putSync()` before returning its promise, so a stalled write blocks the JS thread and no
 // in-process timer can fire. Only the parent's kill is a deadline that survives that.
-const [dbPath, phase, mode, maintainArg] = process.argv.slice(2);
+const [dbPath, phase, mode, stallArg, maintainArg] = process.argv.slice(2);
 
 if (!dbPath || (phase !== 'create' && phase !== 'reopen')) {
-	console.error('Usage: fork-wbm-reopen-stall.mts <dbPath> <create|reopen> <mode> [maintain]');
+	console.error(
+		'Usage: fork-wbm-reopen-stall.mts <dbPath> <create|reopen> <mode> <stall|nostall> [maintain]'
+	);
 	process.exit(1);
 }
 
@@ -29,7 +31,7 @@ const value = Buffer.alloc(8 * 1024, 1);
 
 RocksDatabase.config({
 	writeBufferManagerSize: BUDGET,
-	writeBufferManagerAllowStall: true,
+	writeBufferManagerAllowStall: stallArg !== 'nostall',
 	writeBufferManagerCostToCache: true,
 });
 

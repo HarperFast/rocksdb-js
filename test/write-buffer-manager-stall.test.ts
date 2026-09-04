@@ -7,7 +7,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const reopenFixturePath = join(__dirname, 'fixtures', 'fork-wbm-reopen-stall.mts');
-const lateAllowStallFixturePath = join(__dirname, 'fixtures', 'fork-wbm-late-allow-stall.mts');
 
 // The manager is a native process-global and Vitest's `threads` pool runs every file in one
 // process, so a stalling manager left behind here follows later files into their own databases —
@@ -167,9 +166,10 @@ function runReopenFixture(
 	dbPath: string,
 	phase: 'create' | 'reopen',
 	mode: 'optimistic' | 'pessimistic',
+	stall: 'stall' | 'nostall' = 'stall',
 	maintain?: number
 ) {
-	const args = [dbPath, phase, mode];
+	const args = [dbPath, phase, mode, stall];
 	if (maintain !== undefined) args.push(String(maintain));
 	return runFixture(reopenFixturePath, args);
 }
@@ -223,14 +223,29 @@ describe('WriteBufferManager stall — reopen (#821)', () => {
 		}, 150_000);
 	}
 
+	// The clamp keys off a WriteBufferManager being attached, not off it being a stalling one:
+	// `allowStall` is mutable at runtime while this target is fixed when a family is created, and a
+	// non-stalling manager still never reclaims the history it is charged for.
+	it('clamps under a non-stalling manager too', async () => {
+		const dbPath = freshPath();
+		const created = await runReopenFixture(dbPath, 'create', 'optimistic', 'nostall');
+		expect(created.code, created.stderr).toBe(0);
+
+		const reopened = await runReopenFixture(dbPath, 'reopen', 'optimistic', 'nostall');
+		expect(reopened.signal, reopened.stderr).toBeNull();
+		expect(reopened.stdout, reopened.stderr).toContain('WROTE');
+		expect(reopened.code, reopened.stderr).toBe(0);
+		expect(maintainValues(reopened.stdout)).toEqual([1, 1, 1, 1]);
+	}, 150_000);
+
 	// An explicit 0 reads as "retain no history", and the wrappers turn exactly that value into the
 	// largest history there is, so it cannot be passed through either.
 	it('normalizes an explicitly requested 0 rather than passing it to the wrappers', async () => {
 		const dbPath = freshPath();
-		const created = await runReopenFixture(dbPath, 'create', 'optimistic', 0);
+		const created = await runReopenFixture(dbPath, 'create', 'optimistic', 'stall', 0);
 		expect(created.code, created.stderr).toBe(0);
 
-		const reopened = await runReopenFixture(dbPath, 'reopen', 'optimistic', 0);
+		const reopened = await runReopenFixture(dbPath, 'reopen', 'optimistic', 'stall', 0);
 		expect(reopened.signal, reopened.stderr).toBeNull();
 		expect(reopened.stdout, reopened.stderr).toContain('WROTE');
 		expect(reopened.code, reopened.stderr).toBe(0);
@@ -301,35 +316,4 @@ describe('WriteBufferManager stall — over-budget warning (#821)', () => {
 	it("stays quiet for the resolved safeguard target, which is the guard's blind spot", async () => {
 		expect(await warningsFromOpen(-1)).toHaveLength(0);
 	});
-});
-
-/**
- * The safeguard is applied when a column family is created, so enabling the stall afterwards cannot
- * reach families that already exist. Each arm runs in its own process because the manager is a
- * native process-global and only a live false -> true transition warns.
- */
-describe('WriteBufferManager stall — allowStall enabled after open (#821)', () => {
-	async function warningCount(arm: 'late' | 'upfront'): Promise<number> {
-		const dbPath = generateDBPath();
-		mkdirSync(dbPath, { recursive: true });
-		try {
-			const { code, stdout, stderr } = await runFixture(lateAllowStallFixturePath, [dbPath, arm]);
-			expect(code, stderr).toBe(0);
-			const match = /^WARNINGS (\d+)$/m.exec(stdout);
-			if (!match) throw new Error(`fixture printed no WARNINGS line; stdout was:\n${stdout}`);
-			return Number(match[1]);
-		} finally {
-			if (!process.env.KEEP_FILES) {
-				rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
-			}
-		}
-	}
-
-	it('warns when the stall is turned on after a database is already open', async () => {
-		expect(await warningCount('late')).toBe(1);
-	}, 90_000);
-
-	it('stays quiet when the stall was configured before the first open', async () => {
-		expect(await warningCount('upfront')).toBe(0);
-	}, 90_000);
 });

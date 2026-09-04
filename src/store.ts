@@ -446,10 +446,13 @@ export class Store {
 	/**
 	 * The bytes of recent memtable history to retain in memory for transaction
 	 * conflict checking. `-1` derives the value from
-	 * `maxWriteBufferNumber * writeBufferSize`, except under a stalling
-	 * `writeBufferManager`, where it derives `1`: retained history is charged to
-	 * that manager and is only trimmable down to this target, so a target the
-	 * budget cannot hold stalls writes permanently. `1`, not `0`, because
+	 * `maxWriteBufferNumber * writeBufferSize`, except when a
+	 * `writeBufferManager` is configured, where it derives `1`: retained history
+	 * is charged to that manager and is only trimmable down to this target, so a
+	 * target the budget cannot hold is memory the manager never reclaims, and
+	 * stalls writes permanently when `writeBufferManagerAllowStall` is on. Any
+	 * configured manager, not only a stalling one — that flag is mutable at
+	 * runtime while this value is fixed when the family is created. `1`, not `0`, because
 	 * RocksDB's transaction wrappers rewrite a `0` target to the derived value —
 	 * so `0` asks for the largest history rather than none, and an explicit `0`
 	 * is normalized to `1` for that reason. Set a positive number to size it

@@ -78,7 +78,14 @@ constexpr int64_t kMinRetainedHistoryTarget = 1;
  * below — and that memory is charged to the process-wide WriteBufferManager. A target the budget
  * cannot hold is therefore a deadlock rather than backpressure: the budget fills with history that
  * is never released, and a manager built with `allowStall` stalls every write to the database
- * permanently.
+ * permanently. Without `allowStall` the same history is simply never reclaimed, so the budget stops
+ * bounding what it exists to bound.
+ *
+ * The derived default is therefore clamped whenever a manager is attached at all, not only when it
+ * is a stalling one. `allowStall` is mutable at runtime (`DBSettings::Config` propagates it through
+ * `SetAllowStall`) while this target is immutable once a column family exists, so keying the clamp
+ * on it would leave every family created before the switch permanently unprotected — and a
+ * non-stalling manager still needs the bound (HarperFast/rocksdb-js#821).
  *
  * **The safeguard cannot be 0, and 0 is the worst value to pass.** Every writable open here goes
  * through a transaction wrapper, and both of them rewrite a 0 target to -1 before `DB::Open` sees
@@ -118,17 +125,16 @@ static int64_t resolveMaxWriteBufferSizeToMaintain(const DBOptions& options) {
 	if (options.maxWriteBufferSizeToMaintain == 0) {
 		return kMinRetainedHistoryTarget;
 	}
-	DBSettings& settings = DBSettings::getInstance();
-	if (settings.getWriteBufferManagerSize() > 0 && settings.getWriteBufferManagerAllowStall()) {
+	if (DBSettings::getInstance().getWriteBufferManagerSize() > 0) {
 		return kMinRetainedHistoryTarget;
 	}
 	return options.maxWriteBufferSizeToMaintain;
 }
 
 /**
- * Reports a database whose retained-history floors already reach the stalling WriteBufferManager's
- * budget, which is a permanent write stall rather than backpressure (see
- * `resolveMaxWriteBufferSizeToMaintain`).
+ * Reports a database whose retained-history floors already reach the WriteBufferManager's budget,
+ * which is memory the manager can never reclaim — and, under `allowStall`, a permanent write stall
+ * rather than backpressure (see `resolveMaxWriteBufferSizeToMaintain`).
  *
  * This is a report, never a guarantee, and it must not be read as one: only the families known at
  * this open are counted, and families created later add to the same budget. Read-only opens are
@@ -146,9 +152,10 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 	}
 	DBSettings& settings = DBSettings::getInstance();
 	const uint64_t budget = static_cast<uint64_t>(settings.getWriteBufferManagerSize());
-	if (budget == 0 || !settings.getWriteBufferManagerAllowStall()) {
+	if (budget == 0) {
 		return;
 	}
+	const bool stalls = settings.getWriteBufferManagerAllowStall();
 
 	// `familyCount * historyTarget >= budget`, by division: the caller's target is an unvalidated
 	// int64 (see database.cpp), so the product can overflow. RocksDB stalls at
@@ -164,11 +171,14 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 	msg << "Database \"" << path << "\" was opened with " << familyCount
 		<< " column families retaining up to " << target
 		<< " bytes of memtable history each, which already reaches the " << budget
-		<< "-byte WriteBufferManager budget, and the manager is configured to stall writers. "
-		<< "Retained history is only trimmed down to that target, so writes to this database can "
-		<< "stall permanently. Only the column families known at this open are counted; families "
-		<< "created later add to the same budget, so a database that does not warn is not proven "
-		<< "safe.";
+		<< "-byte WriteBufferManager budget. Retained history is only trimmed down to that target, "
+		<< "so that memory is never returned to the manager"
+		<< (stalls
+			? ", and because the manager is configured to stall writers, writes to this database "
+			  "can stall permanently. "
+			: ". ")
+		<< "Only the column families known at this open are counted; families created later add to "
+		<< "the same budget, so a database that does not warn is not proven safe.";
 	const std::string text = msg.str();
 	DEBUG_LOG("DBDescriptor::open WARNING: %s\n", text.c_str());
 	// Also to the database's own LOG: a deployment that registers no JS listener still needs a

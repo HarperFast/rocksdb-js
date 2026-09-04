@@ -417,9 +417,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     is a floor, not a cap — RocksDB trims history back down to it and never below — and that memory is
     charged to the process-wide WriteBufferManager. A target above the manager's budget therefore fills
     the budget with memory that is never released, and a manager built with `allowStall` stalls every
-    write to that database permanently rather than until a flush catches up. `buildColumnFamilyOptions`
-    resolves the derived (`-1`) default to **1** whenever a stalling manager is configured for exactly
-    this reason (`resolveMaxWriteBufferSizeToMaintain`).
+    write to that database permanently rather than until a flush catches up; without `allowStall` the
+    same history is simply never reclaimed, so the budget stops bounding what it exists to bound.
+    `buildColumnFamilyOptions` resolves the derived (`-1`) default to **1** whenever a manager is
+    configured at all (`resolveMaxWriteBufferSizeToMaintain`) — deliberately not only when it is a
+    stalling one, because `allowStall` is mutable at runtime (`DBSettings::Config` propagates it
+    through `SetAllowStall`) while this target is immutable once the family exists, so keying the
+    clamp on it would leave every family created before the switch permanently unprotected.
 
     **It must never be 0, which is the value that reads as safe and behaves as the worst case.** Every
     writable open here goes through a transaction wrapper, and both of them rewrite a 0 target to `-1`
@@ -439,13 +443,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     The bound is one flushed memtable per family instead of 256MB per family, and no positive target
     does better — the residual is independent of the target's magnitude, so a budget smaller than
     `familyCount * writeBufferSize` can still wedge. `DBDescriptor::open` reports a configuration whose
-    known families' targets already reach the budget on the `log.warn` channel; that is a report, not a
-    guarantee, because families are created lazily and only the ones present at that open are counted.
-
-    The safeguard is applied when a family is created and `max_write_buffer_size_to_maintain` is an
-    immutable `ColumnFamilyOptions` field, so turning `writeBufferManagerAllowStall` on at runtime
-    (`DBSettings::Config` propagates it through `SetAllowStall`) cannot retro-fit already-open families;
-    that transition warns and nothing more.
+    known families' targets already reach the budget on the `log.warn` channel and in the database's own
+    `LOG`; that is a report, not a guarantee, because families are created lazily and only the ones
+    present at that open are counted.
 
     The general trap: `DBOptions` defaults that derive a large value were sized when they reached one
     column family, so widening where an option applies means re-checking its default against every

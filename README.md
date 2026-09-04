@@ -95,9 +95,12 @@ Creates a new database instance.
   - `maxWriteBufferSizeToMaintain: number` The number of bytes of recent memtable history to keep in
     memory for transaction conflict checking. `-1` (the default) derives the value from
     `maxWriteBufferNumber * writeBufferSize` (the RocksDB-recommended default for optimistic
-    transactions) — except when a stalling [`writeBufferManager`](#dbconfigoptions) is configured
-    (`writeBufferManagerSize > 0` with `writeBufferManagerAllowStall`), in which case it resolves to
-    `1` so the manager is not filled with history it will never release. That is the smallest target
+    transactions) — except when a [`writeBufferManager`](#dbconfigoptions) is configured
+    (`writeBufferManagerSize > 0`), in which case it resolves to `1` so the manager is not filled
+    with history it will never release. That applies to any configured manager, not only a stalling
+    one: `writeBufferManagerAllowStall` can be changed at runtime while this value is fixed when a
+    column family is created, and history the budget cannot reclaim is a problem either way. `1` is
+    the smallest target
     a transactional database can be given: RocksDB's transaction wrappers rewrite a `0` target to
     the derived value, so `0` requests the _largest_ history rather than none, and an explicitly
     requested `0` is normalized to `1` for the same reason. A positive target still retains the most
