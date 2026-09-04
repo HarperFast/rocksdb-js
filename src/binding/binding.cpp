@@ -21,6 +21,7 @@
 #include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include <algorithm>
 #include <atomic>
 
 namespace rocksdb_js {
@@ -58,6 +59,39 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 	forceTryAgainCounter().store(count, std::memory_order_relaxed);
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
+/**
+ * Test-only: arm the column-family drop latch for up to 5 seconds (0 disarms).
+ * See core/test_seam.h.
+ */
+napi_value DelayDropColumnFamilyForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t ms = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &ms));
+	dropColumnFamilyDelayMs().store(std::clamp(ms, 0, 5000), std::memory_order_relaxed);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
+/**
+ * Test-only: `{ entered, observedOpen }` for that latch — how many drops have parked in it, and
+ * how many of those saw an open reach the registry mutex. See core/test_seam.h.
+ */
+napi_value DropColumnFamilyLatchStatsForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result, entered, observedOpen;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	NAPI_STATUS_THROWS(::napi_create_uint32(
+		env, dropColumnFamilyLatchEntered().load(std::memory_order_relaxed), &entered
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "entered", entered));
+	NAPI_STATUS_THROWS(::napi_create_uint32(
+		env, dropColumnFamilyLatchObservedOpen().load(std::memory_order_relaxed), &observedOpen
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "observedOpen", observedOpen));
 	return result;
 }
 
@@ -264,6 +298,15 @@ NAPI_MODULE_INIT() {
 	napi_value forceTryAgainFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
+
+	// test-only column-family drop latch (see core/test_seam.h)
+	napi_value delayDropCfFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "delayDropColumnFamilyForTesting", NAPI_AUTO_LENGTH, DelayDropColumnFamilyForTesting, nullptr, &delayDropCfFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "delayDropColumnFamilyForTesting", delayDropCfFn));
+
+	napi_value dropCfLatchStatsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "dropColumnFamilyLatchStatsForTesting", NAPI_AUTO_LENGTH, DropColumnFamilyLatchStatsForTesting, nullptr, &dropCfLatchStatsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "dropColumnFamilyLatchStatsForTesting", dropCfLatchStatsFn));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;

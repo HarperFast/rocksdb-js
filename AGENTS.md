@@ -604,8 +604,135 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     is the descriptor's single `CommitWorker` thread (see "Commit execution" above), which dispatches
     every `Transaction.commit()` in order — so opting a flush into a stall queues up every commit
     behind it, including ones from callers that never touched flush.
+17. **File placement is recorded two different ways, and only one survives a config change**: `paths`
+    (RocksDB `db_paths`) records a _path index_ per SST file in the MANIFEST, so entries may only be
+    appended — reordering or removing one points existing files at the wrong directory. `blobs.dir`
+    records nothing: a blob file's directory is re-derived from the option on every open, delete, and
+    report, so changing it strands the existing blob files and makes every value >= `min_blob_size`
+    unreadable. An unset `blob_dir` is not the database directory, it is `cf_paths.front()` falling
+    back to `db_paths.front()` — so on a database that also sets `paths` the flat blob files sit on
+    `paths[0]`, and every rule that resolves "no directory" to a real one
+    (`BlobRelocationInput::defaultBlobDir`) has to resolve it there or check a directory the files
+    were never in. `DBDescriptor::open` enforces the blob half by comparing the request against the
+    `blob_dir` persisted in the OPTIONS file (`loadPersistedCFOptions`), which is why that struct
+    carries more than compression; `blobs.allowDirChange` is the acknowledgement for a completed
+    offline relocation, and it is the **one blob setting that reaches past the open's target family**:
+    blob files sitting in one directory move together, so every family that shared the target's
+    persisted directory is repointed with it; an omitted `dir` (the whole database flattened, as a
+    backup restore produces) repoints every family. Scoped to the target, untargeted families keep
+    the source database's `blob_dir` after a restore; independent file-number allocation then lets
+    each database's obsolete-file scan delete the other's live blobs, and a multi-table migration is
+    unreachable because the second family opens warm and cannot move a live directory. Applying the
+    change to every family unconditionally strands families whose files did not move — the usual
+    layout is heterogeneous (`default` flat and a named table on its own volume). Flattening
+    (`allowDirChange` with no `dir`) is checked rather than trusted: a family whose recorded
+    directory still holds `.blob` files refuses the open, avoiding an erroneous path that targets
+    the live original. Grouping is by persisted directory string, so two spellings form two groups.
+    The source scan is tri-state and memoized per resolved directory: successful enumeration proves
+    clear/populated; a failed enumeration is clear only when a separate metadata probe proves the
+    path absent; every other result refuses the relocation. `GetChildren` alone is insufficient
+    because RocksDB maps POSIX `EACCES` and `ENOENT` to the same status. An accepted relocation is
+    written to RocksDB's info LOG with the old and new directories after a successful open when
+    the configured logger is available. A read-only open may carry a leftover acknowledgement when
+    nothing changes, but cannot perform a relocation because it cannot persist the new directory in
+    OPTIONS.
+    No source-side scan can distinguish a genuinely empty directory from an empty mount point whose
+    volume failed to mount, so operators must verify mounts before acknowledging a move.
+    A restored copy opened without acknowledgement whose target family has no external blob directory remains a
+    documented procedure: OPTIONS cannot distinguish copy from original. A missing persisted
+    `blob_dir` is caught at open for every family, rather than when a flush makes the whole database
+    read-only. The `paths` half is **documented but not enforced** — `db_paths`/`cf_paths`
+    sit in RocksDB's "not yet supported" serialization block, so there is nothing persisted to
+    compare against without inventing a rocksdb-js-owned marker file. The zero-to-one transition is
+    caught before open because it is detectable from the files themselves. Removing or reordering
+    an entry cannot be detected up front; `explainOpenFailure` conditionally appends guidance to a
+    `Corruption` naming an `.sst` file because genuine corruption reports the same status. With no
+    `db_paths`, RocksDB sanitizes it to `[{dbname, ...}]`, so existing SST files sit at index 0 = the
+    database directory, and supplying `paths`
+    redefines that index. `assertStoragePathsUsable` rejects it by asking whether the database
+    directory's SST files are reachable under `paths[0]`, rather than comparing directory strings,
+    so RocksDB does not report the MANIFEST as corrupt and send an operator to backup restore. Two
+    RocksDB behaviours routinely surprise people here: flush output is hardcoded to `path_id` 0
+    (`FlushJob`), and manual `CompactRange` defaults to `target_path_id` 0, so only _automatic_
+    compaction distributes across paths. `blobs.dir` needs a RocksDB carrying the downstream
+    `blob_dir` patch (`ROCKSDB_HAS_CF_BLOB_DIR`, in `HarperFast/rocksdb-prebuilds`); every use must
+    stay compilable without it. Setting `paths` at all disables `db.backup()` and
+    `db.createCheckpoint()`: `GetLiveFilesStorageInfo`, which both use, returns
+    `Status::NotSupported` whenever `db_paths`/`cf_paths` is non-empty, so a tiered database has no
+    in-process copy path, only a volume snapshot. `destroy()` has to receive the real layout
+    (`db_paths` from the retained record, per-CF `blob_dir`) — a default `rocksdb::Options` means
+    "everything under the database directory", which orphans exactly the files tiering moved away.
+    The layout must survive the descriptor: `destroy()` accepts a closed handle, and closing the last
+    one purges the registry entry, so `DBDescriptor::recordColumnFamilyLayout` mirrors a
+    `DBFileLayout` into the path-keyed `DBRegistry::knownLayouts`; `DestroyDB` uses that canonical
+    record rather than a live descriptor snapshot, which may belong to a stale read-only open.
+    Empty path lists and empty `blob_dir` values are authoritative default placements, not absent
+    state, so default layouts remain in the registry until `destroy()` too. `blob_dir` can be
+    recovered from OPTIONS and is replaced as given on each successful open, including by an empty
+    value; `db_paths` cannot be recovered, so only a writable cold open may establish or extend the
+    retained list. It takes a new list only when it EXTENDS the retained one (`extendsDbPaths`) and
+    keeps the retained one otherwise. Both halves are load-bearing: a shorter list must not shorten
+    the record, since it is the only trace of omitted volumes; a divergent list must not extend it,
+    since `destroy()` deletes every SST it finds in each recorded directory and one mistyped
+    `paths` would then take another database's files down with this one. Keeping the record is only
+    half the answer, though: a writable open the record refuses would leave RocksDB and `destroy()`
+    disagreeing about where the files are — compaction writing SSTs to a volume nothing sweeps, and
+    `destroy()` still sweeping a volume this open disowned. Neither is repairable afterwards, so
+    such an open **fails** (`DBRegistry::AssertDbPathsExtendRetained`), and it fails _before_
+    `DB::Open`, because one compaction under the refused list is already the divergence. The
+    post-open `RecordLayout` refusal throws too, but only as the assertion that the record did not
+    move underneath an open database. That check preempts `explainOpenFailure`'s guidance for the
+    removed/reordered case whenever the same process opened the database earlier; a fresh process
+    still reaches RocksDB's `Corruption` and that guidance, which is why the coverage for it is a
+    spawned child (`test/fixtures/paths-removed-list.mts`). Read-only and read-write opens of one
+    path are separate registry entries, and a reader may successfully pass a shorter,
+    longer, or divergent list while every file it needs still sits at path index 0; it may refresh
+    OPTIONS-derived blob placement but must never expand the destroy targets. A reader that opens
+    before any writer seeds an empty path record. Retaining default markers across `PurgeAll` grows
+    this cold-path map by one small entry per opened database until it is destroyed; that bounded
+    per-path cost is deliberate because dropping the marker reopens the cross-database deletion.
+    A successful column-family drop removes that family
+    from every live descriptor layout for the path and from `knownLayouts` before its by-name handle
+    is unregistered, so a concurrent same-name recreation cannot be removed from the destroy layout.
+    That ordering only holds because the drop is atomic: `DBRegistry::DropColumnFamily` holds
+    `databasesMutex` across `DB::DropColumnFamily`, both layout erasures, and the `columns` erase,
+    which is the same mutex `OpenDB` takes before `columnsMutex` to decide warm reuse. Release it
+    anywhere in between and a warm open lands in the gap and hands back a descriptor for a family
+    RocksDB has already dropped — the open succeeds and every later write fails with "Invalid column
+    family specified in write batch". An already-dropped stale handle must not repeat either
+    mutation: the name may now identify a newly created family.
+    See [docs/tiered-storage.md](docs/tiered-storage.md).
+18. **Every per-column-family option belongs in `buildColumnFamilyOptions`**: families listed on disk
+    are opened by `DBDescriptor::open`, but a _new_ family is created by `createRocksDBColumnFamily`,
+    reached from both the cold path and `DBRegistry::OpenDB`'s warm reuse. Both must pass options
+    built by that one function — an option set only on the open path silently keeps its default on
+    every named family, and Harper maps every table to a named family, so that is the normal path
+    rather than an edge. A test for a per-CF option must therefore cover a named family, not just
+    `default`.
 
-17. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
+    Reaching every family is only half of it: a per-CF option must also NOT reach families this open
+    is not targeting. RocksDB requires opening all of them at once and restores none of their per-CF
+    options, so whatever `buildColumnFamilyOptions` puts on the base options restamps every family
+    unless the cold-open loop restores the persisted value (`loadPersistedCFOptions` →
+    `restorePersistedBlobOptions`, alongside the compression fields). `BlobOptions` is a struct of
+    `std::optional`s so an omitted field means "leave this family alone"; only supplied fields apply
+    to `options.name` (`applyExplicitBlobOptions`). Add a per-CF option in the builder's create-time
+    default, persisted struct, and explicit-apply, or whichever table opens first silently decides it
+    for all tables on restart.
+
+    A field inert in the current process is still unsafe to drop on restore. RocksDB rewrites the
+    OPTIONS file on every open, so a value `restorePersistedBlobOptions` skips is erased, not merely
+    unused. `prepopulate_blob_cache` was gated on an attached blob cache and therefore turned itself
+    off permanently when a CLI tool or `noBlockCache` script opened the database. Restore persisted
+    fields unconditionally; gate on the live resource only where the field is used.
+
+    Every field the builder sets must also be assigned in both directions, never only when requested
+    is truthy. On `DBRegistry::OpenDB`'s warm path its base is the descriptor's retained
+    `cfOptions`, so a one-sided assignment leaves the first opener's value in later families and then
+    persists it. `value_or(default)` with an explicit else branch prevents this leak; test persisted
+    OPTIONS rather than behavior after a reopen, which otherwise rewrites the correct default.
+
+19. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
     `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer drops
     the JS-side ref and, per invariant 13, `onWrapperCollected()` reaps a transaction whose
@@ -646,7 +773,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
 
-18. **A transaction timestamp freezes when native state captures it**: `setTimestamp()` may adopt an
+20. **A transaction timestamp freezes when native state captures it**: `setTimestamp()` may adopt an
     origin timestamp for replication or replay only while the transaction is pending and before any
     database write or transaction-log entry is staged. The log batch snapshots the timestamp at the
     first `addLogEntry`; `committedPosition` survives coordinated-retry resets, so a batch already

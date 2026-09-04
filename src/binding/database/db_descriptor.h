@@ -23,6 +23,7 @@
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
+#include "core/destroy_layout.h"
 #include "core/platform.h"
 #include "core/write_stall_debounce.h"
 #include "napi/event_emitter.h"
@@ -44,6 +45,20 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
 	rocksdb::ColumnFamilyOptions cfOptions = {}
 );
+
+/**
+ * Creates a column family's blob directory if it does not exist, throwing a
+ * `DBException` naming the option when it cannot be created.
+ *
+ * RocksDB creates its own `db_paths` directories (`Directories::SetDirectories`)
+ * but never the blob directory, and a missing one does not fail anything
+ * synchronously: writes are acknowledged into the memtable and the FIRST FLUSH
+ * fails, flipping the whole database read-only on a background error with
+ * nothing pointing at the config line. Both the cold open and warm column-family
+ * creation must call this — a family created on an already-open database reaches
+ * RocksDB through `createRocksDBColumnFamily`, not `DB::Open`.
+ */
+void ensureBlobDirExists(rocksdb::Env* env, const std::string& blobDir);
 
 /**
  * Custom deleter for RocksDB that waits for any background compaction to
@@ -231,6 +246,26 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Map of column family name to column family handle.
 	 */
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
+
+	/**
+	 * Where this database's files actually live: the `db_paths` it was opened
+	 * with and each column family's `blob_dir`.
+	 *
+	 * Captured here under its own mutex and mirrored into
+	 * `DBRegistry::knownLayouts`, which is the canonical record `destroy()` uses
+	 * after this descriptor is gone.
+	 */
+	std::vector<rocksdb::DbPath> layoutDbPaths;
+	std::unordered_map<std::string, std::string> layoutBlobDirs;
+	std::mutex layoutMutex;
+
+	void recordColumnFamilyLayout(const std::string& name, const std::string& blobDir);
+	void removeColumnFamilyLayout(const std::string& name);
+
+	DBFileLayout captureLayout() {
+		std::lock_guard<std::mutex> lock(this->layoutMutex);
+		return DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs };
+	}
 
 	/**
 	 * Mutex to protect the columns map. Column families can be unregistered on
@@ -551,6 +586,9 @@ public:
 	 * instead of reusing the dangling dropped handle. DBHandles still holding
 	 * the descriptor keep it alive via their shared_ptr; only the by-name
 	 * lookup is removed.
+	 *
+	 * Requires `DBRegistry::databasesMutex`; call `DBRegistry::DropColumnFamily`
+	 * rather than this directly.
 	 *
 	 * @param columnName The name of the dropped column family.
 	 */

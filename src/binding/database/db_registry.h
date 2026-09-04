@@ -80,6 +80,27 @@ private:
 	std::mutex databasesMutex;
 
 	/**
+	 * Where every database this process has opened keeps its files: the latest
+	 * blob directory per column family, and the canonical `db_paths` established
+	 * by writable opens (`DBRegistry::RecordLayout`).
+	 *
+	 * `destroy()` accepts a CLOSED handle, and closing the last handle to a
+	 * path takes the descriptor — and the registry entry the layout would be
+	 * read from — with it. `db_paths` is written nowhere (RocksDB serializes it
+	 * in its "not yet supported" block), so nothing on disk can put it back.
+	 *
+	 * Keyed by path rather than by handle and retained across `PurgeAll`, which is
+	 * reached from the public `shutdown()`. Authority, default-marker lifetime,
+	 * and column-family drop rules are AGENTS invariant 17.
+	 *
+	 * Its own mutex, deliberately a leaf: `DropColumnFamily` reaches a descriptor's
+	 * `layoutMutex` while holding `databasesMutex`, so anything recording a
+	 * layout from under `layoutMutex` must not reach back for a registry lock.
+	 */
+	std::unordered_map<std::string, DBFileLayout> knownLayouts;
+	std::mutex knownLayoutsMutex;
+
+	/**
 	 * The singleton instance of the registry.
 	 */
 	static std::unique_ptr<DBRegistry> instance;
@@ -90,6 +111,16 @@ public:
 	static void DebugLogDescriptorRefs();
 #endif
 	static void DestroyDB(const std::string& path);
+	static rocksdb::Status DropColumnFamily(
+		const std::shared_ptr<DBDescriptor>& descriptor,
+		const std::string& columnName,
+		rocksdb::ColumnFamilyHandle* column
+	);
+	static void AssertDbPathsExtendRetained(
+		const std::string& path,
+		const std::vector<rocksdb::DbPath>& requested
+	);
+	static void RecordLayout(const std::string& path, DBFileLayout layout, bool writableOpen);
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
 	static void PurgeAll();

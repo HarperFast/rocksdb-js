@@ -1,5 +1,9 @@
+#include <limits>
 #include <chrono>
+#include <thread>
 #include <vector>
+#include "core/destroy_layout.h"
+#include "core/test_seam.h"
 #include "database/db_registry.h"
 #include "transaction/transaction_handle.h"
 #include "napi/macros.h"
@@ -8,6 +12,7 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "rocksdb/table.h"
+#include "rocksdb/utilities/options_util.h"
 
 namespace rocksdb_js {
 
@@ -154,6 +159,31 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
 
+	// A default `rocksdb::Options` describes "everything under `path`", which
+	// orphans every tiered SST and blob file. See DBRegistry::knownLayouts.
+	rocksdb::Options destroyOptions;
+	std::vector<rocksdb::ColumnFamilyDescriptor> destroyColumnFamilies;
+	bool capturedLayout = false;
+
+	// The retained record is canonical, including empty values.
+	std::unordered_map<std::string, std::string> destroyBlobDirs;
+	auto applyLayout = [&](const DBFileLayout& layout) {
+		destroyOptions.db_paths = layout.dbPaths;
+		destroyBlobDirs = layout.blobDirs;
+		capturedLayout = true;
+	};
+	auto materializeBlobDirs = [&]() {
+		for (const auto& [cfName, blobDir] : destroyBlobDirs) {
+			rocksdb::ColumnFamilyOptions cfOptions;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			cfOptions.blob_dir = blobDir;
+#else
+			(void)blobDir;
+#endif
+			destroyColumnFamilies.emplace_back(cfName, cfOptions);
+		}
+	};
+
 	// Claim the descriptor under the lock but leave the entry in the map until
 	// the close completes (same discipline as CloseDB): the entry is how the
 	// env-cleanup hooks (RemoveListenersByEnv / ReleaseCommitCompletionsByEnv)
@@ -173,6 +203,40 @@ void DBRegistry::DestroyDB(const std::string& path) {
 						instance.get(), descriptor.use_count());
 				}
 				break;
+			}
+		}
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+		if (auto it = instance->knownLayouts.find(path); it != instance->knownLayouts.end()) {
+			applyLayout(it->second);
+		}
+	}
+	materializeBlobDirs();
+
+	// Nothing live and nothing remembered — a path this process never opened.
+	// `blob_dir` is per-column-family and persisted, so it can still be
+	// recovered from the OPTIONS file; `db_paths` cannot be recovered from
+	// anywhere, so a `paths` database reached this way would keep its tiered SST
+	// files. `Database::Destroy` needs a handle, and opening one records a
+	// layout, so that is not reachable from the public API.
+	if (!capturedLayout) {
+		rocksdb::ConfigOptions configOptions;
+		configOptions.ignore_unknown_options = true;
+		configOptions.ignore_unsupported_options = true;
+		rocksdb::DBOptions loadedDbOptions;
+		std::vector<rocksdb::ColumnFamilyDescriptor> loadedCfDescriptors;
+		if (rocksdb::LoadLatestOptions(configOptions, path, &loadedDbOptions, &loadedCfDescriptors)
+				.ok()
+		) {
+			for (const auto& loaded : loadedCfDescriptors) {
+				rocksdb::ColumnFamilyOptions cfOptions;
+				cfOptions.cf_paths = loaded.options.cf_paths;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+				cfOptions.blob_dir = loaded.options.blob_dir;
+#endif
+				destroyColumnFamilies.emplace_back(loaded.name, cfOptions);
 			}
 		}
 	}
@@ -229,7 +293,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 
 	// Now the database lock should be released, safe to destroy
 	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), path.c_str());
-	rocksdb::Status status = rocksdb::DestroyDB(path, rocksdb::Options());
+	rocksdb::Status status = rocksdb::DestroyDB(path, destroyOptions, destroyColumnFamilies);
 	if (!status.ok()) {
 		throw rocksdb_js::DBException(status.ToString());
 	}
@@ -237,7 +301,188 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// remove the database directory including transaction logs
 	std::filesystem::remove_all(path);
 
+	{
+		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+		instance->knownLayouts.erase(path);
+	}
+
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), path.c_str());
+}
+
+/**
+ * Renders a `db_paths` list the way the caller spelled it in `paths`.
+ */
+static std::string describeDbPaths(const std::vector<rocksdb::DbPath>& paths) {
+	if (paths.empty()) {
+		return "no paths (the database directory alone)";
+	}
+	std::string text;
+	for (const auto& entry : paths) {
+		text += text.empty() ? "[\"" : "\", \"";
+		text += entry.path;
+	}
+	return text + "\"]";
+}
+
+/**
+ * Explains a writable open the retained destroy layout cannot accept.
+ */
+static std::string refusedDbPathsMessage(
+	const std::string& path,
+	const std::vector<rocksdb::DbPath>& retained,
+	const std::vector<rocksdb::DbPath>& requested
+) {
+	return "Cannot open \"" + path + "\" with " + describeDbPaths(requested) +
+		": this process has already recorded " + describeDbPaths(retained) +
+		" as where this database keeps its SST files, and destroy() deletes them from that "
+		"record. The requested list neither matches it nor appends to it, so RocksDB would "
+		"place new files on a volume destroy() never sweeps, and look for existing ones on a "
+		"volume they were never written to. Storage paths are append-only: reopen with the "
+		"recorded list, adding any new volume to the end of it.";
+}
+
+/**
+ * Rejects a writable open the retained list refuses (AGENTS invariant 17), which
+ * the message below explains, BEFORE `DB::Open`: past that point one compaction
+ * placing one SST is already the divergence `destroy()` cannot repair.
+ *
+ * Read-only opens are exempt, per the same invariant.
+ */
+void DBRegistry::AssertDbPathsExtendRetained(
+	const std::string& path,
+	const std::vector<rocksdb::DbPath>& requested
+) {
+	if (!instance) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+	auto known = instance->knownLayouts.find(path);
+	if (known == instance->knownLayouts.end() ||
+		extendsDbPaths(known->second.dbPaths, requested)
+	) {
+		return;
+	}
+	throw rocksdb_js::DBException(refusedDbPathsMessage(path, known->second.dbPaths, requested));
+}
+
+/**
+ * Records where a database's files live, so `destroy()` can still find them
+ * after the descriptor is gone. See `DBRegistry::knownLayouts`.
+ *
+ * Path authority and default-marker retention are AGENTS invariant 17. Throwing
+ * on a refused writable open is an assertion rather than the enforcement:
+ * `AssertDbPathsExtendRetained` has already rejected that list before the open,
+ * so reaching it here means the record moved underneath an open database.
+ */
+void DBRegistry::RecordLayout(
+	const std::string& path,
+	DBFileLayout layout,
+	bool writableOpen
+) {
+	if (!instance) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+	auto known = instance->knownLayouts.try_emplace(path).first;
+	const std::vector<rocksdb::DbPath> requested = layout.dbPaths;
+	if (updateRetainedDestroyLayout(known->second, std::move(layout), writableOpen)) {
+		return;
+	}
+	if (writableOpen) {
+		throw rocksdb_js::DBException(refusedDbPathsMessage(path, known->second.dbPaths, requested));
+	}
+	DEBUG_LOG(
+		"%p DBRegistry::RecordLayout Refused read-only db_paths change for \"%s\"\n",
+		instance.get(),
+		path.c_str()
+	);
+}
+
+/**
+ * Drops a column family and retires every registry trace of it as ONE operation
+ * under `databasesMutex` — the same mutex `OpenDB` takes before `columnsMutex`
+ * to decide whether a warm open reuses a family or creates a fresh one. Release
+ * it anywhere in here and a warm open lands in the gap, finds the name still in
+ * `columns`, and is handed a `ColumnFamilyDescriptor` for a family RocksDB has
+ * already dropped: the open succeeds and every later write fails with "Invalid
+ * column family specified in write batch". `DropColumnFamily` itself is inside
+ * the section, not just the cleanup, so an open sees the family wholly present
+ * or wholly gone.
+ *
+ * Layouts are erased by family name because several families may share one blob
+ * directory. Nothing is retired unless this call performed the drop — on
+ * an already-dropped status the name may belong to a freshly created family, so
+ * the status is returned for the caller's idempotence rule
+ * (`isColumnFamilyAlreadyDropped`).
+ */
+rocksdb::Status DBRegistry::DropColumnFamily(
+	const std::shared_ptr<DBDescriptor>& descriptor,
+	const std::string& columnName,
+	rocksdb::ColumnFamilyHandle* column
+) {
+	if (!instance) {
+		return descriptor->db->DropColumnFamily(column);
+	}
+
+	std::lock_guard<std::mutex> databasesLock(instance->databasesMutex);
+
+	rocksdb::Status status = descriptor->db->DropColumnFamily(column);
+	if (!status.ok()) {
+		return status;
+	}
+
+	// Test-only latch; inert unless armed. See core/test_seam.h.
+	if (const int delayMs = dropColumnFamilyDelayMs().load(std::memory_order_relaxed); delayMs > 0) {
+		const uint32_t opensBefore = openDbMutexAttempts().load(std::memory_order_relaxed);
+		{
+			std::lock_guard<std::mutex> pathLock(dropColumnFamilyLatchPathMutex());
+			dropColumnFamilyLatchPath() = descriptor->path;
+		}
+		dropColumnFamilyLatchEntered().fetch_add(1, std::memory_order_relaxed);
+		const auto barrierDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (openDbMutexAttempts().load(std::memory_order_relaxed) == opensBefore &&
+			std::chrono::steady_clock::now() < barrierDeadline
+		) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		{
+			std::lock_guard<std::mutex> pathLock(dropColumnFamilyLatchPathMutex());
+			dropColumnFamilyLatchPath().clear();
+		}
+		if (openDbMutexAttempts().load(std::memory_order_relaxed) != opensBefore) {
+			dropColumnFamilyLatchObservedOpen().fetch_add(1, std::memory_order_relaxed);
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+	}
+
+	// Every registry entry for the path, so the read-only and read-write
+	// descriptors of one database are both retired. A closing descriptor is
+	// still in the map (PurgeIfUnreferenced leaves it there until finishClose()
+	// returns), so this covers it too.
+	const std::string& path = descriptor->path;
+	for (auto& [key, entry] : instance->databases) {
+		if (key.path == path && entry.descriptor) {
+			entry.descriptor->removeColumnFamilyLayout(columnName);
+		}
+	}
+
+	{
+		std::lock_guard<std::mutex> layoutsLock(instance->knownLayoutsMutex);
+		auto layout = instance->knownLayouts.find(path);
+		if (layout != instance->knownLayouts.end()) {
+			layout->second.blobDirs.erase(columnName);
+		}
+	}
+
+	// Only the descriptor that performed the drop. A read-only entry for the same
+	// path is a separate `DB::OpenForReadOnly` instance whose column-family
+	// handles this drop does not invalidate, and which by design never observes
+	// later changes; unregistering the name there would make the next read-only
+	// open throw "cannot create column family in read-only mode" for a family its
+	// own frozen manifest view still contains. Layouts differ because deleted
+	// files are path-global, while column registration is per-DB-instance.
+	descriptor->unregisterColumnFamily(columnName);
+	return status;
 }
 
 /**
@@ -275,6 +520,14 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
 	std::shared_ptr<DBDescriptor> descriptor;
+	// Test-only: lets a parked drop know an open on ITS database has reached this mutex. See
+	// core/test_seam.h.
+	if (dropColumnFamilyDelayMs().load(std::memory_order_relaxed) > 0) {
+		std::lock_guard<std::mutex> pathLock(dropColumnFamilyLatchPathMutex());
+		if (dropColumnFamilyLatchPath() == path) {
+			openDbMutexAttempts().fetch_add(1, std::memory_order_relaxed);
+		}
+	}
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
 	// get or create entry for this path + mode + readOnly combination
@@ -348,6 +601,45 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			}
 		}
 
+		// db_paths is fixed for the life of the open database, so a second open
+		// asking for different volumes cannot take effect on the reused handle.
+		// Reject rather than let the caller believe SST files are being tiered.
+		if (options.pathsExplicit) {
+			const rocksdb::DBOptions currentOptions = entry.descriptor->db->GetDBOptions();
+			const auto& currentPaths = currentOptions.db_paths;
+			// An untiered database does not report an EMPTY list: SanitizeOptions
+			// rewrites it to `[{dbname, UINT64_MAX}]`. So "already open untiered"
+			// arrives here looking like an ordinary mismatch, and it is the case
+			// worth naming — it is what Harper does when a plain startup open
+			// precedes the table open that carries the migration.
+			const bool currentIsUntiered = currentPaths.size() == 1 &&
+				currentPaths[0].path == path &&
+				currentPaths[0].target_size == std::numeric_limits<uint64_t>::max();
+			bool differs = false;
+			if (options.paths.empty()) {
+				differs = !currentIsUntiered;
+			} else {
+				differs = currentPaths.size() != options.paths.size();
+				for (size_t i = 0; !differs && i < currentPaths.size(); i++) {
+					differs = currentPaths[i].path != options.paths[i].path ||
+						currentPaths[i].target_size != options.paths[i].targetSize;
+				}
+			}
+			if (differs && currentIsUntiered) {
+				throw rocksdb_js::DBException(
+					"Database \"" + path + "\" is already open in this process without storage "
+					"paths, and db_paths is fixed for the life of an open database; cannot add "
+					"paths to it now. Close every handle to it first — the change needs a cold open."
+				);
+			}
+			if (differs) {
+				throw rocksdb_js::DBException(
+					"Database \"" + path + "\" is already open with a different set of storage paths; "
+					"cannot reopen it with the requested paths"
+				);
+			}
+		}
+
 		DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());
 		DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str());
 
@@ -379,12 +671,23 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					? *options.compressionLevel
 					: rocksdb::CompressionOptions::kDefaultCompressionLevel;
 			}
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			// The cold open creates this directory; a family created on an
+			// already-open database never goes through DB::Open, so without this
+			// the first flush of the new family errors the whole database
+			// read-only. Harper reaches it on the normal path: a plain open at
+			// startup, then a table opened with its own blobs.dir.
+			ensureBlobDirExists(entry.descriptor->db->GetEnv(), cfOptions.blob_dir);
+#endif
 			auto column = rocksdb_js::createRocksDBColumnFamily(
 				entry.descriptor->db, name, cfOptions
 			);
 			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
 			columns[name] = columnDescriptor;
 			entry.descriptor->columns[name] = columnDescriptor;
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			entry.descriptor->recordColumnFamilyLayout(name, cfOptions.blob_dir);
+#endif
 		} else if (options.compressionExplicit && options.compression) {
 			// The column family is already open in this process (the DBDescriptor
 			// is process-global and shared across handles/envs). Compression is
@@ -421,6 +724,90 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					std::to_string(current.compression_opts.level) + ")\"; cannot reopen it with \"" +
 					requested + "\""
 				);
+			}
+		}
+
+		// Same reasoning as the compression check above, for the blob settings:
+		// they are fixed on the live column family and this open cannot change
+		// them, so silently accepting a different request would leave the caller
+		// believing large values are extracted at another threshold — or living on
+		// another volume — until the next restart. Only fields the caller actually
+		// supplied are compared; a plain reopen inherits the live settings.
+		if (columnExists) {
+			rocksdb::ColumnFamilyHandle* cf = columns[name]->column.get();
+			rocksdb::Options current = entry.descriptor->db->GetOptions(cf);
+
+#ifdef ROCKSDB_HAS_CF_BLOB_DIR
+			if (current.blob_dir != options.blobs.dir) {
+				throw rocksdb_js::DBException(
+					"Column family \"" + name + "\" is already open with blobs.dir \"" +
+					current.blob_dir + "\"; cannot reopen it with \"" + options.blobs.dir + "\""
+				);
+			}
+#endif
+
+			auto boolText = [](bool value) { return value ? "true" : "false"; };
+			std::vector<std::string> conflicts;
+			if (options.blobs.enabled && current.enable_blob_files != *options.blobs.enabled) {
+				conflicts.push_back(
+					std::string("enabled ") + boolText(current.enable_blob_files) + " -> " +
+					boolText(*options.blobs.enabled)
+				);
+			}
+			if (options.blobs.minSize && current.min_blob_size != *options.blobs.minSize) {
+				conflicts.push_back(
+					"minSize " + std::to_string(current.min_blob_size) + " -> " +
+					std::to_string(*options.blobs.minSize)
+				);
+			}
+			if (options.blobs.garbageCollection &&
+				current.enable_blob_garbage_collection != *options.blobs.garbageCollection
+			) {
+				conflicts.push_back(
+					std::string("garbageCollection ") + boolText(current.enable_blob_garbage_collection) +
+					" -> " + boolText(*options.blobs.garbageCollection)
+				);
+			}
+			if (options.blobs.garbageCollectionAgeCutoff &&
+				current.blob_garbage_collection_age_cutoff != *options.blobs.garbageCollectionAgeCutoff
+			) {
+				conflicts.push_back(
+					"garbageCollectionAgeCutoff " +
+					std::to_string(current.blob_garbage_collection_age_cutoff) + " -> " +
+					std::to_string(*options.blobs.garbageCollectionAgeCutoff)
+				);
+			}
+			if (options.blobs.garbageCollectionForceThreshold &&
+				current.blob_garbage_collection_force_threshold !=
+					*options.blobs.garbageCollectionForceThreshold
+			) {
+				conflicts.push_back(
+					"garbageCollectionForceThreshold " +
+					std::to_string(current.blob_garbage_collection_force_threshold) + " -> " +
+					std::to_string(*options.blobs.garbageCollectionForceThreshold)
+				);
+			}
+			if (options.blobs.prepopulateCache) {
+				const bool currentPrepopulate =
+					current.prepopulate_blob_cache != rocksdb::PrepopulateBlobCache::kDisable;
+				if (currentPrepopulate != *options.blobs.prepopulateCache) {
+					conflicts.push_back(
+						std::string("prepopulateCache ") + boolText(currentPrepopulate) + " -> " +
+						boolText(*options.blobs.prepopulateCache)
+					);
+				}
+			}
+			if (!conflicts.empty()) {
+				std::string message =
+					"Column family \"" + name + "\" is already open with different blob settings; "
+					"cannot reopen it with the requested ones (";
+				for (size_t i = 0; i < conflicts.size(); i++) {
+					if (i > 0) {
+						message += ", ";
+					}
+					message += conflicts[i];
+				}
+				throw rocksdb_js::DBException(message + ")");
 			}
 		}
 	} else {

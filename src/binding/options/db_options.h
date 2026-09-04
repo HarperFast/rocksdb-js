@@ -5,7 +5,9 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 #include "rocksdb/compression_type.h"
+#include "rocksdb/statistics.h"
 
 namespace rocksdb_js {
 
@@ -16,6 +18,77 @@ enum class DBMode {
 	Optimistic,
 	Pessimistic,
 };
+
+// Maps to `rocksdb::DbPath`.
+struct StoragePath final {
+	std::string path;
+	uint64_t targetSize = 0;
+};
+
+/**
+ * Blob-file (large value) settings. Values at or above `minSize` are stored in
+ * separate blob files rather than inline in SST files, which keeps compaction
+ * from rewriting them at every level.
+ *
+ * These are PER-COLUMN-FAMILY options, and RocksDB does not restore them on
+ * open, so — exactly like compression — every field is `std::optional` and an
+ * omitted field means "leave this column family's persisted value alone". Plain
+ * defaults would restamp every other family in the database with the settings of
+ * whichever family happened to open it. The default named in each comment
+ * applies only to a column family being CREATED.
+ */
+struct BlobOptions final {
+	// enable_blob_files (default true).
+	std::optional<bool> enabled;
+	// min_blob_size (default 2048).
+	std::optional<uint64_t> minSize;
+	// blob_dir: the directory blob files live in. Empty = alongside the SST
+	// files (`cf_paths.front()`), which is RocksDB's stock behavior. Requires a
+	// RocksDB built with the downstream blob_dir patch — see
+	// ROCKSDB_HAS_CF_BLOB_DIR. Changing it on an existing database orphans the
+	// blob files already written, so a mismatch on reopen is rejected unless
+	// `allowDirChange` says the files have been moved.
+	//
+	// Deliberately NOT optional: unlike the other fields, "omitted" here has to
+	// mean "alongside the SST files" rather than "inherit", so that dropping the
+	// option from a config is rejected instead of silently continuing to read
+	// blob files from a directory the configuration no longer mentions.
+	std::string dir;
+	// Acknowledges that the existing blob files have been relocated to `dir`,
+	// permitting an open that would otherwise be rejected as a mismatch against
+	// the directory recorded in the database's OPTIONS file. Nothing is moved on
+	// the caller's behalf; this only records where they went.
+	//
+	// Reaches past the open's target family, unlike every other field here: blob
+	// files sitting in one directory move together, so the families that shared
+	// the target's old directory are re-pointed with it. A family whose blobs
+	// were somewhere else keeps its own — re-pointing it would strand files that
+	// never moved. An empty `dir` means the whole database was flattened into its
+	// own directory (what restoring a backup produces), so every family goes
+	// flat. One open therefore describes one move; a database with several
+	// distinct blob directories needs one per directory.
+	bool allowDirChange = false;
+	// enable_blob_garbage_collection (default true).
+	std::optional<bool> garbageCollection;
+	// blob_garbage_collection_age_cutoff (0..1, default 0.25).
+	std::optional<double> garbageCollectionAgeCutoff;
+	// blob_garbage_collection_force_threshold (0..1, default 1.0 = never forced).
+	std::optional<double> garbageCollectionForceThreshold;
+	// prepopulate_blob_cache (default false). Inert without a blob cache
+	// (`RocksDatabase.config({ blobCacheSize })`), but still recorded: RocksDB
+	// rewrites the OPTIONS file on every open, so a cache-less process that
+	// dropped it would persist "off" over the serving process's request.
+	std::optional<bool> prepopulateCache;
+};
+
+// Defaults applied to a column family that is being CREATED. An EXISTING family
+// keeps whatever it persisted for any field the caller omitted.
+inline constexpr bool kDefaultBlobEnabled = true;
+inline constexpr uint64_t kDefaultBlobMinSize = 2048;
+inline constexpr bool kDefaultBlobGarbageCollection = true;
+inline constexpr double kDefaultBlobGarbageCollectionAgeCutoff = 0.25;
+inline constexpr double kDefaultBlobGarbageCollectionForceThreshold = 1.0;
+inline constexpr bool kDefaultBlobPrepopulateCache = false;
 
 /**
  * Options for opening a RocksDB database. It holds the processed napi argument
@@ -128,6 +201,33 @@ struct DBOptions final {
 	// explicit `compression`, and only on the open that actually creates the
 	// database handle (later opens reuse it).
 	bool compressionForAllColumnFamilies = false;
+	// Volumes SST files may be placed on, mapped to `DBOptions::db_paths`. When
+	// empty (the default) everything lives under the database directory.
+	//
+	// RocksDB fills these in order — newer/smaller levels go to earlier entries,
+	// and a level spills to the next entry once the running total of estimated
+	// level sizes exceeds an entry's `targetSize`. Placement is a static function
+	// of the target sizes and the level-size options; it does not react to actual
+	// disk usage. Two caveats worth knowing:
+	//
+	//  - A path's index is what gets recorded per SST file in the MANIFEST, so
+	//    paths may only be APPENDED across reopens. Reordering or removing an
+	//    entry makes RocksDB look for existing files in the wrong directory. A
+	//    writable open is refused outright once this process has recorded a list
+	//    for the path (`DBRegistry::AssertDbPathsExtendRetained`); across a
+	//    restart the record is gone and RocksDB reports the MANIFEST as corrupt
+	//    instead (`explainOpenFailure` annotates it).
+	//  - More than one entry disables `level_compaction_dynamic_level_bytes`
+	//    (RocksDB's SanitizeCfOptions logs a warning and turns it off), so level
+	//    sizing becomes static.
+	//
+	// Blob files do NOT follow these paths — see `blobs.dir`.
+	std::vector<StoragePath> paths;
+	// Whether `paths` was an array in the caller's request. Empty is a meaningful
+	// explicit request on a warm open: it asks for the untiered layout rather than
+	// inheriting a live non-empty `db_paths` list.
+	bool pathsExplicit = false;
+	BlobOptions blobs;
 };
 
 } // namespace rocksdb_js

@@ -150,7 +150,6 @@ void DBHandle::close() {
 		// before committing). Env-owned transactions are closed by
 		// DBRegistry::CloseTransactionsByEnv from the env cleanup hook
 		// (HarperFast/rocksdb-js#741).
-
 		// release our reference to the descriptor
 		this->descriptor.reset();
 	}

@@ -65,6 +65,38 @@ Creates a new database instance.
     [`writeBufferManagerSize`](#dbconfigoptions) config option. Database-wide, so it binds when the
     path is first opened in this process: a later open of the same path — including from another
     worker thread — keeps the first opener's value rather than overriding or rejecting it.
+  - `blobs: object` Blob-file (large value) settings, applied to the column family being opened.
+    Values at or above `blobs.minSize` are stored in separate blob files rather than inline in SST
+    files, so compaction does not rewrite them at every level. Like `compression`, these are
+    per-column-family: opening one family never changes another's, and a setting you omit keeps
+    whatever that family persisted rather than reverting to the default below (the defaults apply
+    to a family being created). `dir` is the exception — omitting it means "alongside the SST
+    files", so a family with an external blob directory must keep supplying it on every open. See
+    [Tiered Storage](docs/tiered-storage.md).
+    - `enabled: boolean` Whether large values are written to blob files. Defaults to `true`.
+    - `minSize: number` The smallest value stored in a blob file rather than inline. Defaults to
+      `2048`.
+    - `dir: string` The directory blob files are written to and read from. Defaults to alongside
+      the SST files — the database directory, or `paths[0]` when `paths` is set. This is the only
+      way to place large values on a different volume than the LSM
+      tree — `paths` does not affect blob files. Requires a native build carrying the `blob_dir`
+      patch, and cannot be changed once blob files exist (`open()` rejects a mismatch rather than
+      stranding them — see `allowDirChange`).
+    - `allowDirChange: boolean` Acknowledges that the existing blob files have already been moved
+      to `dir`, permitting an open that would otherwise be rejected. Nothing is moved for you.
+      Reaches past the column family the open names, unlike the other blob settings: every family
+      that shared the target's old directory is re-pointed with it, since blob files in one
+      directory move together. Omitting `dir` means the whole database was flattened (what a backup
+      restore produces) and re-points every family. Defaults to `false`.
+    - `garbageCollection: boolean` Whether compaction relocates live values out of the oldest blob
+      files so those files can be deleted. Defaults to `true`.
+    - `garbageCollectionAgeCutoff: number` The fraction (`0.0`–`1.0`) of the oldest blob files
+      eligible for relocation. Defaults to `0.25`.
+    - `garbageCollectionForceThreshold: number` The garbage ratio (`0.0`–`1.0`) above which RocksDB
+      schedules targeted compactions to reclaim the oldest blob files. Defaults to `1.0`, which
+      never forces one.
+    - `prepopulateCache: boolean` Whether values written by a flush are inserted into the blob
+      cache immediately. Only has an effect when `blobCacheSize` is configured. Defaults to `false`.
   - `disableWAL: boolean` Whether to disable the RocksDB write ahead log. Defaults to `false`.
   - `enableStats: boolean` When `true` and the database is open, RocksDB will captures stats that
     are retrieved by calling `db.getStats()`. Enabling statistics imposes 5-10% in overhead.
@@ -100,10 +132,23 @@ Creates a new database instance.
     `0` to avoid retaining memtable history the manager will never release. An explicit non-negative
     value is always honored as-is.
   - `name: string` The column family name. Defaults to `"default"`.
-  - `noBlockCache: boolean` When `true`, disables the block cache. Block caching is enabled by
-    default and the cache is shared across all database instances.
+  - `noBlockCache: boolean` When `true`, disables both process-wide caches for this database — the
+    block cache and the blob cache (see [`blobCacheSize`](#dbconfigoptions)) — so it cannot evict
+    another database's cached data, and reads of its own blocks and large values are always disk
+    I/O. Both caches are enabled by default and shared across all database instances.
   - `parallelismThreads: number` The number of background threads to use for flush and compaction.
     Defaults to `1`.
+  - `paths: { path: string, targetSize: number }[]` The volumes SST files may be placed on, mapped
+    to RocksDB's `db_paths`. Newer/smaller levels go to earlier entries and spill to the next once
+    a path's `targetSize` is exhausted; the last entry is the fallback. Defaults to everything
+    under the database directory. Entries may only ever be **appended** across reopens — a file's
+    path _index_ is what is recorded in the MANIFEST — and supplying more than one disables
+    `level_compaction_dynamic_level_bytes`. Adding `paths` to a database that does not already
+    have it requires listing the database directory itself as the first entry, since its existing
+    files are recorded at index 0; `open()` rejects the alternative rather than letting RocksDB
+    report the MANIFEST as corrupt. **Setting this disables `db.backup()` and
+    `db.createCheckpoint()`** — RocksDB does not support either with `db_paths` set. Blob files do
+    not follow these paths; see [Tiered Storage](docs/tiered-storage.md).
   - `pessimistic: boolean` When `true`, throws conflict errors when they occur instead of waiting
     until commit. Defaults to `false`.
   - `readOnly: boolean` When `true`, the database is opened in read-only mode. Read operations are
@@ -182,6 +227,19 @@ Sets global database settings.
   - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
+  - `blobCacheSize: number` The amount of memory in bytes to cache blob (large value) contents.
+    Its initial default is `0` (disabled), matching RocksDB, but while it has never been set
+    explicitly a call that supplies `blockCacheSize` derives `Math.floor(blockCacheSize / 10)` for
+    it. That capacity is **additional** to the block-cache capacity, so an existing
+    `config({ blockCacheSize })` call raises this process's memory ceiling by 10% with no code
+    change. Setting it explicitly (including to `0`) latches: later calls that supply only
+    `blockCacheSize` then leave it alone. RocksDB does **not** put blob values in the block cache,
+    so with the cache disabled every blob read is real I/O — which matters most when blob files
+    live on slower storage than the SST files (see [`blobs.dir`](docs/tiered-storage.md)). Kept
+    separate from the block cache so large values cannot evict index/filter/data blocks. Must be
+    set before a database is opened to affect it — the cache is attached to a column family at
+    open — after which changing it resizes the cache for databases that already have it. Negative
+    values throw an error.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
   - `verificationTableEntries: number` The number of slots in the process-global
     [Verification Table](#verification-table). Each slot is 8 bytes, so the default of `131072`
@@ -203,7 +261,7 @@ Sets global database settings.
 
 ```typescript
 RocksDatabase.config({
-	blockCacheSize: 100 * 1024 * 1024, // 100MB
+	blockCacheSize: 100 * 1024 * 1024, // 100MB; blob cache defaults to 10MB
 	compactOnClose: true,
 	writeBufferManagerAllowStall: false,
 	writeBufferManagerCostToCache: false,

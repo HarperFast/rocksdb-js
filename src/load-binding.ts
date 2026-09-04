@@ -269,6 +269,166 @@ export declare class NativeIteratorCls {
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
+/**
+ * One volume RocksDB may place SST files on.
+ *
+ * RocksDB fills paths in order: newer/smaller levels go to earlier entries and
+ * spill to the next once the running total of estimated level sizes exceeds an
+ * entry's `targetSize`. Placement is a static function of the target sizes and
+ * the level-size options — it does not react to actual disk usage.
+ *
+ * Two constraints are worth knowing before using this:
+ *
+ * - A path's **index** is what gets recorded per SST file in the MANIFEST, so
+ *   entries may only ever be **appended** across reopens. Reordering or
+ *   removing one makes RocksDB look for existing files in the wrong directory.
+ * - Supplying more than one entry disables
+ *   `level_compaction_dynamic_level_bytes`, so level sizing becomes static.
+ * - A directory must not be shared with another **database** — SST file
+ *   numbers come from a per-database counter, so each would delete the other's
+ *   live files during obsolete-file scanning.
+ *
+ * Blob files do **not** follow these paths — every blob file goes to
+ * `blobs.dir` (or alongside the first path when unset).
+ */
+export type NativeStoragePath = {
+	/**
+	 * Directory SST files may be written to. Resolved to an absolute path
+	 * against the process working directory when the database is opened, so the
+	 * stored value cannot resolve to a different volume in a process started
+	 * from somewhere else.
+	 */
+	path: string;
+	/**
+	 * Bytes this path should try to hold. Best-effort: RocksDB places a file
+	 * here while the running total of estimated level sizes fits, then moves on
+	 * to the next path. The last path is the fallback and takes everything that
+	 * doesn't fit earlier, regardless of its target.
+	 */
+	targetSize: number;
+};
+
+/**
+ * Blob-file settings for ONE column family.
+ *
+ * These are per-column-family in RocksDB and it does not restore them on open,
+ * so — exactly like `compression` — they are applied to the family being opened
+ * and to no other, and a field left out keeps whatever that family persisted
+ * rather than reverting to the documented default. The defaults below describe a
+ * family being CREATED.
+ */
+export type NativeBlobOptions = {
+	/**
+	 * Whether values at or above `minSize` are written to blob files.
+	 *
+	 * Turning this off does not make existing blob files unreadable, and with
+	 * `garbageCollection` enabled compaction gradually pulls their values back
+	 * inline into SST files. That costs write amplification — rewriting large
+	 * values at every level is exactly what blob separation avoids.
+	 *
+	 * @default true
+	 */
+	enabled?: boolean;
+	/**
+	 * Smallest value stored in a blob file rather than inline in an SST file.
+	 *
+	 * @default 2048
+	 */
+	minSize?: number;
+	/**
+	 * Directory blob files are written to and read from. When unset they live
+	 * alongside the SST files in the first entry of `paths`. Resolved to an
+	 * absolute path against the process working directory when the database is
+	 * opened.
+	 *
+	 * Unlike the other fields here, omitting this means "alongside the SST
+	 * files" rather than "inherit": dropping it from a configuration is rejected
+	 * at open rather than silently continuing to read blob files from a
+	 * directory the configuration no longer mentions.
+	 *
+	 * Setting this decouples blob placement from SST placement, which is the
+	 * only way to put large values on a different volume than the LSM tree
+	 * (`paths` does not affect blob files).
+	 *
+	 * Must not be shared with another **database**: blob file numbers come from
+	 * a per-database counter, so two databases pointed at one directory mint
+	 * colliding names and each deletes the other's live files during
+	 * obsolete-file scanning. Column families of the *same* database draw from
+	 * one counter and may share. The same rule applies to `paths` entries.
+	 *
+	 * Requires a native build linked against a RocksDB carrying the `blob_dir`
+	 * patch; opening with this set otherwise throws.
+	 *
+	 * A blob file's directory is derived from this option every time the file
+	 * is opened — it is **not** recorded per file the way an SST's path index
+	 * is. Reopening with a different directory therefore strands the existing
+	 * blob files rather than moving them, so a mismatch against what the
+	 * database was last opened with is rejected at open — see
+	 * {@link NativeBlobOptions.allowDirChange} for the migration path.
+	 */
+	dir?: string;
+	/**
+	 * Acknowledges that the existing blob files have already been moved to
+	 * `dir`, permitting an open that would otherwise be rejected as a mismatch
+	 * against the directory recorded in the database's `OPTIONS` file.
+	 *
+	 * Nothing is moved for you — this only records where they went, so opening
+	 * with it set before actually relocating the `.blob` files makes every value
+	 * at or above `minSize` unreadable.
+	 *
+	 * Unlike every other blob setting, this one reaches past the column family
+	 * the open names, because blob files sitting in one directory move together:
+	 * every family that shared the target's old directory is re-pointed with it.
+	 * A family whose blobs were somewhere else keeps its own directory, since
+	 * re-pointing it would strand files that never moved.
+	 *
+	 * Omitting `dir` means the whole database has been flattened into its own
+	 * directory — what restoring a backup produces — so every family goes flat.
+	 * That is what keeps a restored copy off the source database's live blob
+	 * directory, where the two would otherwise allocate colliding file numbers.
+	 *
+	 * One open describes one move, so a database with several distinct blob
+	 * directories needs one open per directory.
+	 *
+	 * A read-only open accepts a leftover acknowledgement when every directory
+	 * already matches, but performing a relocation requires a writable open so
+	 * RocksDB can persist the new location.
+	 *
+	 * @default false
+	 */
+	allowDirChange?: boolean;
+	/**
+	 * Whether compaction relocates live values out of the oldest blob files so
+	 * those files can be deleted. Required for blob files to ever shrink.
+	 *
+	 * @default true
+	 */
+	garbageCollection?: boolean;
+	/**
+	 * Fraction (0–1) of the oldest blob files eligible for relocation. The
+	 * RocksDB default of 0.25 leaves three quarters of the blob files
+	 * untouched by any given compaction; raise it toward 1 to drain them.
+	 *
+	 * @default 0.25
+	 */
+	garbageCollectionAgeCutoff?: number;
+	/**
+	 * Garbage ratio (0–1) above which RocksDB schedules targeted compactions
+	 * to reclaim the oldest blob files. The default of 1.0 never forces one.
+	 *
+	 * @default 1
+	 */
+	garbageCollectionForceThreshold?: number;
+	/**
+	 * Whether values written by a flush are inserted into the blob cache
+	 * immediately instead of waiting to be read back. Only has an effect when
+	 * a blob cache is configured via `RocksDatabase.config({ blobCacheSize })`.
+	 *
+	 * @default false
+	 */
+	prepopulateCache?: boolean;
+};
+
 export type NativeDatabaseOptions = {
 	/**
 	 * The friendly name of a compression algorithm compiled into this RocksDB
@@ -289,6 +449,21 @@ export type NativeDatabaseOptions = {
 	compressionForAllColumnFamilies?: boolean;
 	dbWriteBufferSize?: number;
 	disableWAL?: boolean;
+	/**
+	 * Blob-file (large value) settings. Values at or above `blobs.minSize` are
+	 * stored in separate blob files rather than inline in SST files, so
+	 * compaction does not rewrite them at every level.
+	 */
+	blobs?: NativeBlobOptions;
+	/**
+	 * Volumes SST files may be placed on, mapped to RocksDB's `db_paths`.
+	 * The first open of a path fixes this list for that database's in-process
+	 * lifetime. Later opens that omit it inherit the live list; an explicitly
+	 * different list is rejected.
+	 *
+	 * See {@link NativeStoragePath}.
+	 */
+	paths?: NativeStoragePath[];
 	enableStats?: boolean;
 	/**
 	 * Verbosity of RocksDB's informational logging (`info_log_level`): `0`
@@ -501,6 +676,30 @@ export type NativeDatabase = {
 
 export type RocksDatabaseConfig = {
 	blockCacheSize?: number;
+	/**
+	 * Capacity (bytes) of the process-wide cache for blob (large value)
+	 * contents. RocksDB does **not** put blob values in the block cache, so
+	 * with the default of 0 every blob read is real I/O — which matters a lot
+	 * when blob files live on slower storage than the SST files
+	 * (see `blobs.dir`).
+	 *
+	 * Kept separate from the block cache so large values cannot evict
+	 * index/filter/data blocks. While this has never been set explicitly, a
+	 * `config()` call that supplies `blockCacheSize` derives
+	 * `Math.floor(blockCacheSize / 10)` for it — capacity that is **additional**
+	 * to the block-cache capacity, so an existing `config({ blockCacheSize })`
+	 * call raises the process memory ceiling by 10% with no code change. Setting
+	 * this explicitly (including to `0`) latches: later calls that supply only
+	 * `blockCacheSize` leave it alone.
+	 *
+	 * Must be set **before** a database is opened to affect it: the cache is
+	 * attached to a column family at open, so a database opened while this was
+	 * `0` keeps uncached blob reads for its lifetime. Changing it later resizes
+	 * the cache for databases that already have it attached.
+	 *
+	 * @default 0, or 10% of `blockCacheSize` until set explicitly
+	 */
+	blobCacheSize?: number;
 	/**
 	 * Number of slots in the process-global verification table. Each slot is
 	 * 8 bytes; the default of 128K slots is 1 MB. Set to 0 to disable.
@@ -760,6 +959,23 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
  * disarm. Used by the ERR_TRY_AGAIN retry regression test.
  */
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
+
+/**
+ * Test-only: arm the column-family drop latch for `ms` milliseconds (0 disarms), so another
+ * thread can race a warm open against the drop's critical section.
+ */
+export const delayDropColumnFamilyForTesting: (ms: number) => void =
+	binding.delayDropColumnFamilyForTesting;
+
+/**
+ * Test-only: how many drops have parked in that latch (`entered`), and how many of those saw an
+ * open reach the registry mutex (`observedOpen`). Both are monotonic and process-wide, so a
+ * waiter compares against baselines it read before arming.
+ */
+export const dropColumnFamilyLatchStatsForTesting: () => {
+	entered: number;
+	observedOpen: number;
+} = binding.dropColumnFamilyLatchStatsForTesting;
 
 /**
  * Creates a native file lock using the specified file path (`flock` on POSIX,
