@@ -26,10 +26,13 @@ import type { StatsAll, StatsDefault, StatsValue } from './stats.ts';
 import {
 	type ArrayBufferWithNotify,
 	type CompactOptions,
+	type CompressionAlgorithm,
 	type CompressionInfo,
+	type CompressionOption,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
 	type LogOptions,
+	normalizeCompression,
 	Store,
 	type StoreOptions,
 	type UserSharedBufferOptions,
@@ -307,6 +310,44 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	get compression(): CompressionInfo {
 		return this.store.db.getCompression() as CompressionInfo;
+	}
+
+	/**
+	 * Dynamically changes the compression algorithm (and optional level) for
+	 * this database's column family on an already-open database — no close,
+	 * no reopen, and no conflict with other handles that already have this
+	 * column family open. Backed by RocksDB's `DB::SetOptions()`, which
+	 * documents both `compression` and `blob_compression_type` as mutable
+	 * column family options.
+	 *
+	 * This governs only *newly written* files (the next flush and any future
+	 * compaction output) going forward; SST and blob files already on disk
+	 * keep their existing compression until they are rewritten by a later
+	 * compaction. `compact()`'s default options can skip already-bottommost
+	 * files; use `compact({ bottommost: true })` to rewrite them under the new
+	 * codec. This is the live-mutation counterpart to the open-time
+	 * `compression` option — see the README's Compression section for when to
+	 * use each.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/db', { compression: 'none' });
+	 * db.setCompression({ algorithm: 'zstd', level: 19 });
+	 * // new writes are now compressed with zstd; existing SSTs are untouched
+	 * // until compacted.
+	 * ```
+	 */
+	setCompression(compression: CompressionOption): void {
+		const { compression: algorithm, compressionLevel } = normalizeCompression(compression);
+		if (algorithm === undefined) {
+			throw new TypeError('setCompression requires a compression algorithm');
+		}
+		this.store.db.setCompression(algorithm, compressionLevel);
+		const appliedAlgorithm = algorithm as CompressionAlgorithm;
+		this.store.compression =
+			compressionLevel === undefined
+				? appliedAlgorithm
+				: { algorithm: appliedAlgorithm, level: compressionLevel };
 	}
 
 	/**
