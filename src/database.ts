@@ -99,9 +99,29 @@ function backgroundErrorSeverityName(severity: number): string {
  */
 export class RocksDatabase extends DBI<DBITransactional> {
 	/**
-	 * The name of the database.
+	 * The name of the database's column family.
 	 */
 	#name: string;
+
+	/**
+	 * Weak cache of column-family views opened via `use()`, keyed by column
+	 * family name — mirroring `useLog`'s get-or-create semantics. The reference
+	 * is weak so a view is never pinned for this database's lifetime: an
+	 * unreferenced view can be collected (closing its own `DBHandle`), and the
+	 * next `use()` transparently recreates it. `#columnFamilyRegistry` deletes an
+	 * entry once its view is collected so a churn of distinct names (e.g.
+	 * `use(uuid())`) does not grow the map without bound.
+	 */
+	#columnFamilies = new Map<string, WeakRef<RocksDatabase>>();
+	#columnFamilyRegistry = new FinalizationRegistry<string>((name) => {
+		// Only drop the entry if it still holds the collected ref — a later
+		// `use()` may have replaced it with a live view under the same name (in
+		// which case `deref()` is non-undefined), or already removed it.
+		const ref = this.#columnFamilies.get(name);
+		if (ref !== undefined && ref.deref() === undefined) {
+			this.#columnFamilies.delete(name);
+		}
+	});
 
 	constructor(pathOrStore: string | Store, options?: RocksDatabaseOptions) {
 		// A store is bound to a single RocksDatabase instance. Each database claims
@@ -117,7 +137,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 		store.claim();
 		super(store);
-		this.#name = options?.name ?? 'default';
+		// Derive from the store, not `options`: a `Store`-based construction passes
+		// its column family via the store (the `options` arg is absent), so the
+		// store's name is authoritative for both paths.
+		this.#name = this.store.name;
 	}
 
 	/**
@@ -816,7 +839,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * The name of the database.
+	 * The name of the database's column family.
 	 */
 	get name(): string {
 		return this.#name;
@@ -1223,6 +1246,72 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	unlock(key: Key): void {
 		return this.store.unlock(key);
+	}
+
+	/**
+	 * Returns a `RocksDatabase` bound to the `name` column family of this same
+	 * database, opening (and creating, if missing) the column family on first
+	 * use. This is a factory — create-and-open sugar — not a stateful switch: the
+	 * returned view is an independent instance whose own reads/writes target its
+	 * column family, while sharing the underlying database (so a transaction,
+	 * backup, or checkpoint still spans every column family). Because the view
+	 * opens its own handle, this database need not itself be open — a discarded
+	 * parent (`new RocksDatabase(path).use('events')`) still yields a valid,
+	 * opened view.
+	 *
+	 * Get-or-create, backed by a weak cache: `db.use('events') === db.use('events')`
+	 * while the view is still referenced **and open**, and calling with this
+	 * database's own column-family name returns `this`. A view that has been
+	 * closed (or garbage-collected — the cache does not pin it) is transparently
+	 * recreated on the next `use()`. Views are independent handles: closing this
+	 * database does not close them, and vice versa — the underlying database
+	 * stays open until every handle is closed or collected.
+	 *
+	 * The view's store is derived by {@link Store#createColumnFamilyStore}, which
+	 * builds an independent store of the same class with its own codec state (so
+	 * views never share a mutable encoder/decoder) and inherits the options this
+	 * store was constructed with; pass `options` to override them for this column
+	 * family. A database configured with a pre-constructed encoder/decoder
+	 * instance cannot derive views (its state would be shared) — use an encoder
+	 * factory (`{ Encoder }`) or a named `encoding`, or override
+	 * `createColumnFamilyStore` on a custom `Store`.
+	 *
+	 * @param name - The column family name.
+	 * @param options - Options for the column family, overriding inherited ones.
+	 * @returns A `RocksDatabase` bound to the column family.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/database');
+	 * const events = db.use('events');
+	 * await events.put('e1', payload);
+	 * await db.put('k', 'v'); // default column family, unaffected
+	 * ```
+	 */
+	use(name: string, options?: RocksDatabaseOptions): RocksDatabase {
+		if (typeof name !== 'string' || name === '') {
+			throw new TypeError('Column family name must be a non-empty string');
+		}
+		// This database is already bound to its own column family; return it
+		// (opened, honoring the create-and-open contract). `options` are ignored
+		// here — a bound column family cannot be reconfigured through `use()`.
+		if (name === this.#name) {
+			return this.open();
+		}
+
+		const cached = this.#columnFamilies.get(name)?.deref();
+		if (cached !== undefined && cached.isOpen()) {
+			return cached;
+		}
+
+		// The store owns view derivation (`createColumnFamilyStore`): it builds an
+		// independent store of the right class with its own codec state, so views
+		// never share a mutable encoder/decoder. See Store#createColumnFamilyStore.
+		const columnFamily = new RocksDatabase(this.store.createColumnFamilyStore(name, options));
+		columnFamily.open();
+		this.#columnFamilies.set(name, new WeakRef(columnFamily));
+		this.#columnFamilyRegistry.register(columnFamily, name);
+		return columnFamily;
 	}
 
 	/**

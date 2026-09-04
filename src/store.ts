@@ -315,6 +315,21 @@ export type ArrayBufferWithNotify = ArrayBuffer & {
 };
 
 /**
+ * Whether `codec` is a pre-constructed encoder/decoder instance that `open()`
+ * would reuse as-is (rather than instantiate fresh from an `Encoder` factory).
+ * Such an instance carries per-column-family mutable state (its `name`, msgpack
+ * `structures`), so it cannot be shared across column families.
+ */
+function sharesMutableCodec(codec: Encoder | null | undefined): boolean {
+	return (
+		codec != null &&
+		typeof codec === 'object' &&
+		typeof (codec as { Encoder?: unknown }).Encoder !== 'function' &&
+		(typeof codec.encode === 'function' || typeof codec.decode === 'function')
+	);
+}
+
+/**
  * A store wraps the `NativeDatabase` binding and database settings so that a
  * single database instance can be shared between the main `RocksDatabase`
  * instance and the `Transaction` instance.
@@ -332,6 +347,14 @@ export class Store {
 	 * owner temporarily closed is still recognized as in-use. See `claim()`.
 	 */
 	#claimed: boolean = false;
+
+	/**
+	 * Shallow snapshot of the options this store was constructed with, used by
+	 * `createColumnFamilyStore()` to derive sibling column-family stores. Snapshot
+	 * (not the caller's object) so later mutations of the caller's options don't
+	 * leak into derived views.
+	 */
+	#columnFamilyOptions?: StoreOptions;
 
 	/**
 	 * The database instance.
@@ -626,6 +649,47 @@ export class Store {
 		this.verificationTable = options?.verificationTable;
 		this.writeBufferSize = options?.writeBufferSize;
 		this.writeKey = writeKey;
+		this.#columnFamilyOptions = options ? { ...options } : undefined;
+	}
+
+	/**
+	 * Creates an independent `Store` for another column family of the same
+	 * database, used by {@link RocksDatabase#use}. The returned store shares the
+	 * underlying database but must have its own codec state: a mutable
+	 * encoder/decoder instance cannot be shared across column families (opening a
+	 * view mutates the encoder's `name`, and clearing a view resets its
+	 * `structures`), so a pre-constructed instance is rejected here — supply an
+	 * encoder factory (`{ Encoder }`) or a named `encoding` instead.
+	 *
+	 * Override this in a `Store` subclass whose constructor cannot be recreated
+	 * from `(path, options)` (e.g. it takes injected dependencies) or that needs
+	 * to control how a view's codec state is built.
+	 *
+	 * @param name - The column family name for the derived store.
+	 * @param options - Options overriding this store's, for the derived store.
+	 * @returns A new, independent `Store` bound to `name`.
+	 */
+	createColumnFamilyStore(name: string, options?: StoreOptions): Store {
+		const derived: StoreOptions = { ...this.#columnFamilyOptions, ...options, name };
+
+		if (sharesMutableCodec(derived.encoder) || sharesMutableCodec(derived.decoder)) {
+			throw new Error(
+				'Cannot derive a column family view from a Store configured with a ' +
+					'pre-constructed encoder/decoder instance — its mutable state would be ' +
+					'shared across column families. Provide an encoder factory (`{ Encoder }`) ' +
+					'or a named `encoding`, or override `Store#createColumnFamilyStore`.'
+			);
+		}
+
+		const StoreClass = this.constructor as new (path: string, options?: StoreOptions) => Store;
+		const store = new StoreClass(this.path, derived);
+		if (store.name !== name) {
+			throw new Error(
+				`Store#createColumnFamilyStore produced a store bound to "${store.name}" instead ` +
+					`of "${name}"; a custom Store must forward options to super() or override this method.`
+			);
+		}
+		return store;
 	}
 
 	/**
