@@ -203,6 +203,20 @@ describe('monotonic clock floor', () => {
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('does not have');
 	}, 60000);
 
+	it('warns when a later open of the same path names a log', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		// The first open in the process fixes the option; a second one that names a
+		// log cannot re-run the seed, so it must not look applied.
+		const warned = await runFixture('reopen-warn', dbPath, key);
+		expect(warned.stderr).toBe('');
+		expect(warned.code).toBe(0);
+		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('was ignored');
+	}, 60000);
+
 	it('leaves the clock alone when no log is named', async () => {
 		const dbPath = newDBPath();
 		const key = aheadOfNow();

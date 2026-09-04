@@ -21,13 +21,13 @@ function fail(message: string): never {
 }
 
 const warnings: string[] = [];
-if (mode === 'warn') {
+if (mode === 'warn' || mode === 'reopen-warn') {
 	RocksDatabase.on('log.warn', (...args: unknown[]) => warnings.push(JSON.stringify(args)));
 }
 
 const rotating = mode === 'write-rotate';
 const db = RocksDatabase.open(dbPath, {
-	...(mode === 'write-unseeded' ? {} : { timestampFloorLog: log }),
+	...(mode === 'write-unseeded' || mode === 'reopen-warn' ? {} : { timestampFloorLog: log }),
 	// Small enough that the next batch cannot share a segment with the last one.
 	...(rotating ? { transactionLogMaxSize: 64 * 1024 } : {}),
 });
@@ -74,6 +74,19 @@ try {
 		}
 		if (!(clock >= now - 60000 && clock <= now + 60000)) {
 			fail(`clock ${clock} is not tracking the wall clock ${now}`);
+		}
+	} else if (mode === 'reopen-warn') {
+		// A second open of the same path cannot re-run the seed; it must say so
+		// rather than look applied.
+		const second = RocksDatabase.open(dbPath, { name: 'other', timestampFloorLog: log });
+		const until = Date.now() + 5000;
+		while (Date.now() < until && warnings.length === 0) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+		second.close();
+		console.log(JSON.stringify({ warnings, clock: db.getMonotonicTimestamp(), key }));
+		if (!warnings.some((warning) => warning.includes('was ignored'))) {
+			fail('a second open with timestampFloorLog did not warn');
 		}
 	} else if (mode === 'warn') {
 		const until = Date.now() + 5000;
