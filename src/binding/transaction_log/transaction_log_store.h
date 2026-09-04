@@ -343,6 +343,8 @@ struct TransactionLogStore final {
 	 */
 	LogPosition lastWrittenFlushedPosition = { 0, 0 };
 
+	std::atomic<bool> flushedStateWarningEmitted = false;
+
 	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
@@ -570,6 +572,9 @@ private:
 	 * resurrect a header-only ghost segment.
 	 */
 	void ensureExtent(const std::shared_ptr<TransactionLogFile>& file);
+
+	void recordFlushedPosition(rocksdb::SequenceNumber rocksSequenceNumber);
+	void warnFlushedStateFailure(const char* what, const char* detail) noexcept;
 
 	void doPurge(
 		std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor = nullptr,

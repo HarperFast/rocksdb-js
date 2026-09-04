@@ -473,14 +473,26 @@ bool TransactionLogFile::removeFileLocked() {
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::removeFile Removing file: %s\n", this, this->path.string().c_str());
-	auto removed = std::filesystem::remove(this->path);
+	std::error_code removeError;
+	auto removed = std::filesystem::remove(this->path, removeError);
+	this->lastRemoveError = removeError;
+	if (removeError) {
+		// Reported as "not removed" so the purge skips the segment: on Windows a
+		// live reader mapping makes this a sharing violation, which must not
+		// escape the purge call.
+		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s: %s\n",
+			this, this->path.string().c_str(), removeError.message().c_str());
+		return false;
+	}
 	if (!removed) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile File does not exist: %s\n",
 			this, this->path.string().c_str());
 		return false;
 	}
 
-	if (std::filesystem::exists(this->path)) {
+	std::error_code existsError;
+	if (std::filesystem::exists(this->path, existsError) || existsError) {
+		this->lastRemoveError = existsError ? existsError : std::make_error_code(std::errc::device_or_resource_busy);
 		DEBUG_LOG("%p TransactionLogFile::removeFile File still exists: %s\n", this, this->path.string().c_str());
 		return false;
 	}

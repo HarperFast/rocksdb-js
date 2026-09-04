@@ -492,7 +492,14 @@ bool TransactionLogFile::removeFileLocked() {
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::removeFile Removing file: %s\n", this, this->path.string().c_str());
-	auto removed = std::filesystem::remove(this->path);
+	std::error_code removeError;
+	auto removed = std::filesystem::remove(this->path, removeError);
+	this->lastRemoveError = removeError;
+	if (removeError) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s: %s\n",
+			this, this->path.string().c_str(), removeError.message().c_str());
+		return false;
+	}
 	if (!removed) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s\n",
 			this, this->path.string().c_str());

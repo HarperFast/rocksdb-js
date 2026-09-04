@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <chrono>
 #include <exception>
 #include <sstream>
@@ -10,6 +11,12 @@
 #include "fstream"
 
 namespace rocksdb_js {
+
+// iostreams do not promise to set errno, so an untouched value must not read as a cause.
+static std::string lastSystemError() {
+	int error = errno;
+	return error ? std::error_code(error, std::system_category()).message() : std::string("stream error");
+}
 
 // Helper function to extract exception message from exception_ptr
 static std::string getExceptionMessage(std::exception_ptr eptr) {
@@ -655,6 +662,9 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
+	// Per run, not per process: a directory that stays unwritable stalls the retention
+	// floor, and one line ever would leave every later purge silent about it.
+	bool removeWarned = false;
 	auto lastFlushedPosition = this->getLastFlushedPosition();
 	uint32_t retentionFloorSequence = this->sequenceFiles.rbegin()->first;
 	if (this->sequenceFiles.find(lastFlushedPosition.logSequenceNumber) != this->sequenceFiles.end()) {
@@ -752,6 +762,27 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		uint32_t removedSize = logFile->size.load(std::memory_order_relaxed);
 		auto removed = logFile->removeFile();
 		if (!removed) {
+			// Gone underneath us (another process unlinked it after the scan above):
+			// forget it like the scan does, rather than leaving a segment registered
+			// that retention would keep tripping over.
+			std::error_code existsError;
+			if (!std::filesystem::exists(logFile->path, existsError) && !existsError) {
+				DEBUG_LOG("%p TransactionLogStore::purge Forgetting file removed underneath us: %s\n", this, logFile->path.string().c_str());
+				sequenceNumbersToRemove.push_back(sequenceNumber);
+				continue;
+			}
+			if (!removeWarned) {
+				removeWarned = true;
+				try {
+					std::ostringstream msg;
+					msg << "Transaction log segment " << logFile->path.string() << " could not be deleted ("
+						<< logFile->lastRemoveError.message() << "); retention cannot advance past it.";
+					DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
+					emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				} catch (...) {
+					// reporting is best-effort
+				}
+			}
 			if (all) {
 				continue;
 			}
@@ -1113,6 +1144,17 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
  * after restart or crash
  */
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
+	// Runs on RocksDB's flush thread, where an escaping exception ends the process.
+	try {
+		this->recordFlushedPosition(rocksSequenceNumber);
+	} catch (const std::exception& e) {
+		this->warnFlushedStateFailure("could not be updated", e.what());
+	} catch (...) {
+		this->warnFlushedStateFailure("could not be updated", "unknown error");
+	}
+}
+
+void TransactionLogStore::recordFlushedPosition(rocksdb::SequenceNumber rocksSequenceNumber) {
 	if (this->isClosing.load(std::memory_order_relaxed)) {
 		return;
 	}
@@ -1137,24 +1179,98 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 	// can safely read txn.state from doPurge() without risk of deadlock.
 	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 
-	// Only write if the position has changed
-	if (latestSequencePosition.fullPosition == lastWrittenFlushedPosition.fullPosition) {
+	// An open stream describes a descriptor, not a pathname: once txn.state (or
+	// the whole store directory) is unlinked, writes land in the orphaned inode
+	// while getLastFlushedPosition() reads {0,0} by path and retention stops.
+	auto flushedStateFilePath = this->path / "txn.state";
+	if (this->flushedStateFile.is_open()) {
+		std::error_code existsError;
+		bool exists = std::filesystem::exists(flushedStateFilePath, existsError);
+		if (existsError) {
+			// Unknowable whether a write would be visible: leave the position
+			// unrecorded so the next flush retries rather than trusting the stream.
+			this->warnFlushedStateFailure("could not be checked", existsError.message().c_str());
+			return;
+		}
+		if (!exists) {
+			this->flushedStateFile.close();
+		}
+	}
+
+	bool positionChanged = latestSequencePosition.fullPosition != lastWrittenFlushedPosition.fullPosition;
+	if (!positionChanged && (this->flushedStateFile.is_open() || lastWrittenFlushedPosition.fullPosition == 0)) {
+		if (this->flushedStateFile.is_open()) {
+			// the file is present and current: a later failure must warn again
+			this->flushedStateWarningEmitted.store(false, std::memory_order_relaxed);
+		}
 		return;
 	}
 
-	// open the state file if it isn't open yet
 	if (!this->flushedStateFile.is_open()) {
-		auto flushedStateFilePath = this->path / "txn.state";
-		this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
+		// A destroy's final directory removal happens after doClose() closes this
+		// stream, and doClose() sets isClosing before taking flushedStateMutex, so
+		// a reopen that sees it clear is ordered before that removal. (doPurge's
+		// own remove_all of an emptied directory runs earlier, with isClosing still
+		// clear; a directory recreated in that window is removed again by the
+		// destroy, and a destroy that fails to close leaves a live store that
+		// legitimately wants its directory.)
+		if (this->isClosing.load(std::memory_order_relaxed)) {
+			return;
+		}
+		try {
+			rocksdb_js::tryCreateDirectory(this->path);
+		} catch (const std::exception& e) {
+			this->warnFlushedStateFailure("could not recreate its directory", e.what());
+			return;
+		}
+		this->flushedStateFile.clear();
+		errno = 0;
+		// In place, never truncating: the 8-byte record is overwritten whole, and a
+		// truncating reopen after a failed write would erase the last durable
+		// position before the retry that may fail again (ENOSPC).
+		this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::in | std::ios::out);
+		if (!this->flushedStateFile.is_open()) {
+			// Create only when verifiably absent: the creating mode truncates, and an
+			// existing file that merely refused read/write must keep its record.
+			std::error_code absentError;
+			if (!std::filesystem::exists(flushedStateFilePath, absentError) && !absentError) {
+				this->flushedStateFile.clear();
+				this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
+			}
+		}
+		if (!this->flushedStateFile.is_open()) {
+			this->warnFlushedStateFailure("could not be opened", lastSystemError().c_str());
+			return;
+		}
 	}
 
-	// write the position to the file
-	if (this->flushedStateFile.is_open()) {
-		this->flushedStateFile.seekp(0);
-		this->flushedStateFile.write(reinterpret_cast<const char*>(&latestSequencePosition), sizeof(latestSequencePosition));
-		this->flushedStateFile.flush();
-		lastWrittenFlushedPosition = latestSequencePosition;
-		this->databaseFlushes.fetch_add(1, std::memory_order_relaxed);
+	errno = 0;
+	this->flushedStateFile.seekp(0);
+	this->flushedStateFile.write(reinterpret_cast<const char*>(&latestSequencePosition), sizeof(latestSequencePosition));
+	this->flushedStateFile.flush();
+	if (!this->flushedStateFile.good()) {
+		// Leave lastWrittenFlushedPosition alone so the next flush retries the write.
+		this->warnFlushedStateFailure("could not be written", lastSystemError().c_str());
+		this->flushedStateFile.close();
+		return;
+	}
+	lastWrittenFlushedPosition = latestSequencePosition;
+	this->flushedStateWarningEmitted.store(false, std::memory_order_relaxed);
+	this->databaseFlushes.fetch_add(1, std::memory_order_relaxed);
+}
+
+void TransactionLogStore::warnFlushedStateFailure(const char* what, const char* detail) noexcept {
+	if (this->flushedStateWarningEmitted.exchange(true, std::memory_order_relaxed)) {
+		return;
+	}
+	try {
+		std::ostringstream msg;
+		msg << "Transaction log flushed-state file " << (this->path / "txn.state").string()
+			<< " " << what << " (" << detail << "); retention cannot advance until a later flush succeeds.";
+		DEBUG_LOG("%p TransactionLogStore::databaseFlushed WARNING: %s\n", this, msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	} catch (...) {
+		// reporting is best-effort on the flush thread
 	}
 }
 

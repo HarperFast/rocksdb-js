@@ -277,6 +277,9 @@ struct TransactionLogFile final {
 	 */
 	std::atomic<bool> malformedBackupWarningEmitted = false;
 
+	/** Empty when the last removeFile() succeeded or the file was already gone. */
+	std::error_code lastRemoveError;
+
 	TransactionLogFile(
 		const std::filesystem::path& p,
 		const uint32_t seq,

@@ -129,7 +129,8 @@ function corruptFrame(
 	if (readUncommitted) {
 		try {
 			const writtenExtent = transactionLog.getLogFileSize(logBuffer.logId);
-			dataEnd = writtenExtent > 0 ? Math.min(logBuffer.length, writtenExtent) : 0;
+			// A purged segment has no store extent; its own mapping bounds the scan (readableExtent).
+			dataEnd = writtenExtent > 0 ? Math.min(logBuffer.length, writtenExtent) : logBuffer.length;
 		} catch {
 			dataEnd = 0;
 		}
@@ -180,7 +181,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let logId = latestLogId;
 		let position = 0;
 		let dataView: DataView;
-		let logBuffer: LogBuffer | undefined = this._currentLogBuffer; // try the current one first
+		// weak: this is a fast path over the `_logBuffers` cache, and a strong reference here
+		// outlives every retention purge, keeping the unlinked segment's mapping resident for the
+		// life of the process (HarperFast/harper#2337)
+		let logBuffer: LogBuffer | undefined = this._currentLogBuffer?.deref(); // try the current one first
 		let foundExactStart = false;
 
 		if (start === undefined && !startFromLastFlushed) {
@@ -221,8 +225,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			// if this is the latest, cache for easy access, unless...
 			// if we are reading uncommitted, we might be a log file ahead of the committed transaction
 			// also, it is pointless to cache the latest log file in a memory map on Windows, because it is not growable
-			if (logBuffer && latestLogId === logId && !readUncommitted) {
-				this._currentLogBuffer = logBuffer;
+			if (
+				logBuffer &&
+				latestLogId === logId &&
+				!readUncommitted &&
+				this._currentLogBuffer?.deref() !== logBuffer
+			) {
+				// only re-wrap on a change: a WeakRef per query() is an allocation on the hot path
+				this._currentLogBuffer = new WeakRef(logBuffer);
 			}
 
 			if (logBuffer === undefined) {
@@ -247,7 +257,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		if (latestLogId !== logId) {
 			size = logBuffer.size;
 			if (size === undefined) {
-				size = logBuffer.size = this.getLogFileSize(logId);
+				size = logBuffer.size = readableExtent(this, logBuffer);
 			}
 		}
 
@@ -268,11 +278,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
 						size =
-							logBuffer!.size ??
-							(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+							logBuffer!.size ?? (logBuffer!.size = readableExtent(transactionLog, logBuffer!));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
-							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
+							const nextLogBuffer = nextReadableLogBuffer(
+								transactionLog,
+								logBuffer!.logId,
+								latestLogId
+							);
 							if (nextLogBuffer) {
 								dataView = nextLogBuffer.dataView;
 								logBuffer = nextLogBuffer;
@@ -280,7 +293,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 									// it is non-current log file, we can safely use or cache the size
 									size =
 										logBuffer!.size ??
-										(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+										(logBuffer!.size = readableExtent(transactionLog, logBuffer!));
 								} else {
 									size = latestSize; // use the latest position from loadLastPosition
 								}
@@ -395,18 +408,22 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
-							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1);
+							const nextLogBuffer = nextReadableLogBuffer(
+								transactionLog,
+								logBuffer!.logId,
+								latestLogId
+							);
 							if (!nextLogBuffer) {
-								// the next log file can't be mapped (purged, mid-rotation,
-								// 0-byte at mmap time, FS race); stop cleanly rather than
-								// dereferencing an undefined buffer
+								// nothing past this segment is mappable yet (mid-rotation, 0-byte at
+								// mmap time, FS race); stop cleanly rather than dereferencing an
+								// undefined buffer, and pick it up on the next poll
 								return { done: true, value: undefined };
 							}
 							logBuffer = nextLogBuffer;
 							dataView = logBuffer.dataView;
 							size = logBuffer.size;
 							if (size == undefined) {
-								size = transactionLog.getLogFileSize(logBuffer.logId);
+								size = readableExtent(transactionLog, logBuffer);
 								if (!readUncommitted) {
 									logBuffer.size = size;
 								}
@@ -420,6 +437,77 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		};
 	},
 });
+
+/**
+ * Maps the next readable segment after `fromLogId`, skipping a run that retention has deleted.
+ * Without the skip an iterator that fell behind the retention floor stops at the hole and every
+ * later poll stops in the same place, so it never sees another entry: the segments past the hole
+ * are still on disk and still its own history.
+ *
+ * Only a segment the store has no bytes for is skipped: one it still knows is merely unmappable
+ * for the moment (mid-rotation, 0 bytes at mmap time, a transient resource failure), so iteration
+ * stops and picks it up on the next poll rather than stepping over durable history. That check is
+ * the segment's own extent rather than `_findPosition(0)`, which resolves the start of the
+ * contiguous run below the current segment and so can name a segment past a *second* hole.
+ * `_findPosition(0)` then jumps to the oldest survivor in one native call rather than a probe per
+ * deleted segment.
+ */
+function nextReadableLogBuffer(
+	transactionLog: TransactionLog,
+	fromLogId: number,
+	latestLogId: number
+): LogBuffer | undefined {
+	const nextLogId = fromLogId + 1;
+	const logBuffer = getLogMemoryMap(transactionLog, nextLogId);
+	if (logBuffer) {
+		return logBuffer;
+	}
+	if (transactionLog.getLogFileSize(nextLogId) > 0) {
+		return;
+	}
+	FLOAT_TO_UINT32[0] = transactionLog._findPosition(0);
+	const oldestLogId = UINT32_FROM_FLOAT[1];
+	if (oldestLogId > nextLogId && oldestLogId <= latestLogId) {
+		return getLogMemoryMap(transactionLog, oldestLogId);
+	}
+}
+
+/**
+ * The bound for reading `logBuffer`. Normally the segment's written extent, from the store. Once
+ * retention has purged the segment the store reports nothing for it, and the mapping itself is
+ * the only remaining description of the file: the unlink removed one link to an inode a retired
+ * segment never changes again, and this mapping is the other, so its bytes are still exactly the
+ * committed history. Taking the store's 0 as the bound would silently drop every entry the reader
+ * had not reached before the purge — including entries appended after it last polled, which the
+ * writer's overlay made visible in this very mapping.
+ */
+function readableExtent(transactionLog: TransactionLog, logBuffer: LogBuffer): number {
+	const writtenExtent = transactionLog.getLogFileSize(logBuffer.logId);
+	return writtenExtent > 0 ? writtenExtent : endOfEntries(logBuffer);
+}
+
+/**
+ * Walks a purged segment's mapping to where its entries end, so iteration advances to the next
+ * segment there rather than stopping on the zero fill. Broken framing returns the whole mapping
+ * instead, leaving the break for the read path to report with a resync point (invariant 11) —
+ * this scan must not be the thing that decides a corrupt frame ends the log. Costs one pass over
+ * the segment's frame headers, once: the caller caches it on the buffer.
+ */
+function endOfEntries(logBuffer: LogBuffer): number {
+	const { dataView, length } = logBuffer;
+	let position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	while (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= length) {
+		if (dataView.getFloat64(position) === 0) {
+			return position;
+		}
+		const entryLength = dataView.getUint32(position + 8);
+		if (entryLength === 0 || position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength > length) {
+			return length;
+		}
+		position += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength;
+	}
+	return length;
+}
 
 function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {
 	if (logId <= 0) {
