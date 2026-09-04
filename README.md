@@ -156,7 +156,7 @@ Returns the list of column families in the RocksDB database.
 const db = RocksDatabase.open('path/to/db');
 console.log(db.columns); // ['default']
 
-const db2 = new RocksDatabase('path/to/db', { name: 'users' });
+db.use('users');
 console.log(db.columns); // ['default', 'users']
 ```
 
@@ -266,6 +266,41 @@ Returns a string `'opened'` or `'closed'` indicating if the database is opened o
 
 ```typescript
 console.log(db.status);
+```
+
+### `db.use(name, options?): RocksDatabase`
+
+Returns a `RocksDatabase` bound to the `name` column family of this same database, opening — and
+creating, if it does not exist — the column family on first use. This is a factory (like
+[`useLog`](#dbuselogname-transactionlog)), not a stateful switch: the returned view is an
+independent instance whose own reads and writes target its column family, while sharing the same
+underlying database. Because a single RocksDB database backs every column family, a transaction,
+backup, or checkpoint still spans all of them.
+
+- `name: string` The column family name.
+- `options?: object` Options for the column family (same shape as the constructor's, minus `name`),
+  overriding the options inherited from this database. Options only take effect when the view is
+  (re)opened.
+
+`use()` is get-or-create, backed by a weak cache: `db.use('events') === db.use('events')` while the
+view is still referenced **and open**, and calling with this database's own column-family name
+returns `this`. A view that has been closed (or garbage-collected — the cache does not pin it) is
+transparently recreated on the next `use()`. Views are independent handles: closing this database
+does not close them (and vice versa); the underlying database stays open until every handle is closed
+or collected.
+
+```typescript
+const db = RocksDatabase.open('path/to/db');
+
+const events = db.use('events');
+await events.put('e1', payload);
+
+await db.put('k', 'v'); // default column family, unaffected
+console.log(events.get('e1')); // payload
+console.log(db.get('e1')); // undefined — different column family
+
+events.close();
+db.close();
 ```
 
 ## Data Operations
