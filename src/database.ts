@@ -104,12 +104,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	#name: string;
 
 	/**
-	 * The options this database was constructed with, re-fed to `use()` so a
-	 * column-family view inherits the parent's encoding/config by default.
-	 */
-	#options?: RocksDatabaseOptions;
-
-	/**
 	 * Weak cache of column-family views opened via `use()`, keyed by column
 	 * family name — mirroring `useLog`'s get-or-create semantics. The reference
 	 * is weak so a view is never pinned for this database's lifetime: an
@@ -147,7 +141,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		// its column family via the store (the `options` arg is absent), so the
 		// store's name is authoritative for both paths.
 		this.#name = this.store.name;
-		this.#options = options;
 	}
 
 	/**
@@ -1274,11 +1267,14 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * database does not close them, and vice versa — the underlying database
 	 * stays open until every handle is closed or collected.
 	 *
-	 * Views inherit the options this database was constructed with (encoding,
-	 * compression, etc.); pass `options` to override them for this column family.
-	 * Options only take effect when the view is (re)opened. (When this database
-	 * was itself constructed from a custom `Store`, those options are not
-	 * captured — pass any needed options to `use()` explicitly.)
+	 * The view's store is derived by {@link Store#createColumnFamilyStore}, which
+	 * builds an independent store of the same class with its own codec state (so
+	 * views never share a mutable encoder/decoder) and inherits the options this
+	 * store was constructed with; pass `options` to override them for this column
+	 * family. A database configured with a pre-constructed encoder/decoder
+	 * instance cannot derive views (its state would be shared) — use an encoder
+	 * factory (`{ Encoder }`) or a named `encoding`, or override
+	 * `createColumnFamilyStore` on a custom `Store`.
 	 *
 	 * @param name - The column family name.
 	 * @param options - Options for the column family, overriding inherited ones.
@@ -1308,12 +1304,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			return cached;
 		}
 
-		// Build the view's store from the parent store's class, not the base
-		// `Store`, so a custom `Store` subclass's overridden behavior carries over.
-		// `mergedOptions` is also passed to the view so a nested `use()` inherits.
-		const mergedOptions = { ...this.#options, ...options, name };
-		const StoreClass = this.store.constructor as typeof Store;
-		const columnFamily = new RocksDatabase(new StoreClass(this.path, mergedOptions), mergedOptions);
+		// The store owns view derivation (`createColumnFamilyStore`): it builds an
+		// independent store of the right class with its own codec state, so views
+		// never share a mutable encoder/decoder. See Store#createColumnFamilyStore.
+		const columnFamily = new RocksDatabase(this.store.createColumnFamilyStore(name, options));
 		columnFamily.open();
 		this.#columnFamilies.set(name, new WeakRef(columnFamily));
 		this.#columnFamilyRegistry.register(columnFamily, name);

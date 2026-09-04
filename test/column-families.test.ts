@@ -122,6 +122,75 @@ describe('Column Family Views (use)', () => {
 		}
 	});
 
+	it('should give each view its own codec state', () =>
+		dbRunner(async ({ db }) => {
+			const events = db.use('events');
+			// Independent encoder instances — not a shared, mutable one.
+			expect(events.store.encoder).not.toBe(db.store.encoder);
+			expect(events.store.encoder?.name).toBe('events');
+			expect(db.store.encoder?.name).toBe('default');
+		}));
+
+	it('should reject deriving a view from a pre-built encoder instance', () => {
+		const path = generateDBPath();
+		const encoder = {
+			encode: (v: any) => Buffer.from(String(v)),
+			decode: (b: Buffer) => b.toString(),
+		};
+		const db = RocksDatabase.open(path, { encoder });
+		try {
+			expect(() => db.use('events')).toThrow(/pre-constructed encoder\/decoder instance/);
+		} finally {
+			db.close();
+			rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+		}
+	});
+
+	it('should let a custom Store override view derivation (injected dependency)', () => {
+		class DepStore extends Store {
+			dep: string;
+			constructor(path: string, dep: string, options?: ConstructorParameters<typeof Store>[1]) {
+				super(path, options);
+				this.dep = dep;
+			}
+			createColumnFamilyStore(name: string, options?: ConstructorParameters<typeof Store>[1]) {
+				return new DepStore(this.path, this.dep, { ...options, name });
+			}
+		}
+		const path = generateDBPath();
+		const db = new RocksDatabase(new DepStore(path, 'injected')).open();
+		try {
+			const events = db.use('events');
+			expect(events.store).toBeInstanceOf(DepStore);
+			expect((events.store as DepStore).dep).toBe('injected');
+			expect(events.name).toBe('events');
+			// Data isolation between the derived view and the parent.
+			events.putSync('k', 'v');
+			expect(events.get('k')).toBe('v');
+			expect(db.get('k')).toBeUndefined();
+			events.close();
+		} finally {
+			db.close();
+			rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+		}
+	});
+
+	it('should reject a custom Store that does not forward options to super', () => {
+		class BadStore extends Store {
+			constructor(path: string, _options?: ConstructorParameters<typeof Store>[1]) {
+				super(path); // drops options → derived store name stays 'default'
+			}
+		}
+		const path = generateDBPath();
+		const db = new RocksDatabase(new BadStore(path)).open();
+		try {
+			expect(() => db.use('events')).toThrow(/instead of "events"/);
+		} finally {
+			db.close();
+			rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+		}
+	});
+
 	it('should share underlying data with a separately-opened handle', () => {
 		const path = generateDBPath();
 		const db = RocksDatabase.open(path);

@@ -289,6 +289,14 @@ transparently recreated on the next `use()`. Views are independent handles: clos
 does not close them (and vice versa); the underlying database stays open until every handle is closed
 or collected.
 
+The view's store is derived by `Store#createColumnFamilyStore(name, options)`, which builds an
+independent store of the same class with **its own codec state** — views never share a mutable
+encoder/decoder. Consequently a database configured with a _pre-constructed_ encoder/decoder instance
+cannot derive views (its `name`/`structures` would be shared and corrupt both column families); use an
+encoder factory (`{ Encoder }`) or a named `encoding` instead. A custom `Store` whose constructor
+can't be recreated from `(path, options)` (e.g. it takes injected dependencies) should override
+`createColumnFamilyStore` to build its views.
+
 ```typescript
 const db = RocksDatabase.open('path/to/db');
 
