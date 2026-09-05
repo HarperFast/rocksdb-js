@@ -169,7 +169,6 @@ describe('Ranges', () => {
 
 					const txn = new Transaction(db.store);
 					try {
-						// staged keys sit on and beyond both bounds of every range below
 						for (const key of ['a', 'c', 'e', 'g']) {
 							await txn.put(key, `value ${key}`);
 						}
@@ -376,14 +375,24 @@ describe('Ranges', () => {
 				expect(db.getKeys().asArray).toEqual(['a']);
 			}));
 
-		it("should not resolve a transaction through another database's registry", () =>
+		it('should reject a transaction that belongs to another database', () =>
 			dbRunner({ dbOptions: [{}, { path: generateDBPath() }] }, async ({ db }, { db: other }) => {
 				const txn = new Transaction(db.store);
+				const otherTxn = new Transaction(other.store);
 				try {
+					// ids are allocated per database, so the first transaction of each shares an id
+					expect(otherTxn.id).toBe(txn.id);
 					await txn.put('staged', 'in-batch');
-					expect(() => other.getRange({ transaction: txn })).toThrow('Transaction not found');
-					expect(() => other.getKeysCount({ transaction: txn })).toThrow('Transaction not found');
+					await otherTxn.put('other-staged', 'other-batch');
+
+					const rejected = 'Transaction belongs to a different database';
+					expect(() => other.getRange({ transaction: txn })).toThrow(rejected);
+					expect(() => other.getKeysCount({ transaction: txn })).toThrow(rejected);
+					expect(() => other.getSync('other-staged', { transaction: txn })).toThrow(rejected);
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['staged']);
+					expect(other.getKeys({ transaction: otherTxn }).asArray).toEqual(['other-staged']);
 				} finally {
+					otherTxn.abort();
 					txn.abort();
 				}
 			}));
@@ -398,8 +407,12 @@ describe('Ranges', () => {
 
 					const routed = db.getRange({ transaction: txn })[Symbol.iterator]();
 					const direct = txn.getRange()[Symbol.iterator]();
+					const limited = db.getRange({ transaction: txn, limit: 1 })[Symbol.iterator]();
+					const thrown = txn.getRange()[Symbol.iterator]();
 					expect(routed.next().done).toBe(false);
 					expect(direct.next().done).toBe(false);
+					expect(limited.next().done).toBe(false);
+					expect(thrown.next().done).toBe(false);
 
 					if (action === 'commit') {
 						await txn.commit();
@@ -411,6 +424,12 @@ describe('Ranges', () => {
 
 					expect(() => routed.next()).toThrow('Iterator not initialized');
 					expect(() => direct.next()).toThrow('Iterator not initialized');
+					// cleanup after the transaction closed the iterator must not throw: a loop that
+					// breaks, reaches its limit, or unwinds an error still calls return()/throw()
+					expect(routed.return!().done).toBe(true);
+					expect(direct.return!().done).toBe(true);
+					expect(limited.next().done).toBe(true);
+					expect(() => thrown.throw!(new Error('consumer error'))).toThrow('consumer error');
 				}));
 		}
 

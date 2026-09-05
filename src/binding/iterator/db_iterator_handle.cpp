@@ -1,8 +1,23 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_descriptor.h"
+#include <rocksdb/version.h>
 #include <thread>
 
 namespace rocksdb_js {
+
+namespace {
+
+// A transaction's write batch ignored ReadOptions bounds before RocksDB 8.10.0
+// (facebook/rocksdb#11680). Either way `iterate_lower_bound` is inclusive, so
+// an exclusive lower bound reached by a reverse scan is the handle's to apply.
+constexpr bool WRITE_BATCH_HONORS_BOUNDS = ROCKSDB_MAJOR > 8 || (ROCKSDB_MAJOR == 8 && ROCKSDB_MINOR >= 10);
+
+bool needsBoundCheck(const DBIteratorOptions& options, bool writeBatch) {
+	return (writeBatch && !WRITE_BATCH_HONORS_BOUNDS)
+		|| (options.reverse && options.exclusiveStart && options.startKeyStr != nullptr);
+}
+
+}
 
 DBIteratorHandle::DBIteratorHandle(
 	std::shared_ptr<DBHandle> dbHandle,
@@ -14,7 +29,7 @@ DBIteratorHandle::DBIteratorHandle(
 	reverse(options.reverse),
 	values(options.values),
 	needsStableValueBuffer(options.needsStableValueBuffer),
-	enforceBounds(options.reverse && options.exclusiveStart && options.startKeyStr != nullptr)
+	enforceBounds(needsBoundCheck(options, false))
 {
 	DEBUG_LOG("%p DBIteratorHandle::Constructor dbHandle=%p\n", this, dbHandle.get());
 	this->init(options);
@@ -41,7 +56,7 @@ DBIteratorHandle::DBIteratorHandle(
 	reverse(options.reverse),
 	values(options.values),
 	needsStableValueBuffer(options.needsStableValueBuffer),
-	enforceBounds(true)
+	enforceBounds(needsBoundCheck(options, true))
 {
 	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", this->txnHandle.get(), dbHandle->descriptor.get());
 	this->txnHandle->ensureSnapshot();

@@ -54,10 +54,8 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 
 	/**
 	 * Whether the iterator is positioned on a key inside the requested range.
-	 * RocksDB applies `iterate_lower_bound` inclusively, so a reverse range
-	 * with `exclusiveStart` has to stop at that key itself; transaction-backed
-	 * iterators also check both bounds so the write-batch side of the iterator
-	 * obeys them on every RocksDB release.
+	 * Only compares keys when RocksDB's own bounds cannot express the range
+	 * (`enforceBounds`); otherwise it is just `Valid()`.
 	 */
 	bool valid() const;
 

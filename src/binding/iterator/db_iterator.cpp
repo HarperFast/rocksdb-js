@@ -237,6 +237,18 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 		} \
 	} while (0)
 
+// Cleanup stays idempotent: a transaction commit or abort may already have
+// closed the iterator underneath the consumer.
+#define CLOSE_ITERATOR_HANDLE(fnName) \
+	do { \
+		std::shared_ptr<DBIteratorHandle>* itHandle = nullptr; \
+		NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&itHandle))); \
+		if (itHandle && *itHandle) { \
+			DEBUG_LOG("%p DBIterator::" fnName " Closing iterator handle\n", (*itHandle).get()); \
+			(*itHandle)->close(); \
+		} \
+	} while (0)
+
 /**
  * Builds a slow-path object `{ key: Buffer, value?: Buffer }` for the rare case
  * where the shared key/value buffers cannot be used (oversized data or stable
@@ -343,11 +355,7 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
  */
 napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
-	UNWRAP_ITERATOR_HANDLE("Return");
-
-	DEBUG_LOG("%p DBIterator::Return Closing iterator handle\n", (*itHandle).get());
-	(*itHandle)->close();
-
+	CLOSE_ITERATOR_HANDLE("Return");
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -357,11 +365,7 @@ napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
  */
 napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
-	UNWRAP_ITERATOR_HANDLE("Throw");
-
-	DEBUG_LOG("%p DBIterator::Throw Closing iterator handle\n", (*itHandle).get());
-	(*itHandle)->close();
-
+	CLOSE_ITERATOR_HANDLE("Throw");
 	NAPI_RETURN_UNDEFINED();
 }
 
