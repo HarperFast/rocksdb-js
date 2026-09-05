@@ -264,8 +264,6 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 		options,
 		dbHandleOverride
 	);
-	// Registered only after the insert: a handle unwinding from a failed insert
-	// would otherwise unregister from its destructor under iteratorsMutex.
 	const bool inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
 	assert(inserted && "Transaction iterator registered twice");
 	(void)inserted;

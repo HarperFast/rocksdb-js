@@ -205,8 +205,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void onWrapperCollected();
 
 	/**
-	 * Registers/releases a transaction-backed iterator dependency. The final
-	 * release retries a deferred orphan close.
+	 * Builds a transaction-backed iterator and registers it while the
+	 * transaction is still pending. The handle is marked registered only after
+	 * the insert, so a failed insert unwinds without re-entering
+	 * `iteratorsMutex` from its destructor. `unregisterIterator` releases the
+	 * dependency (the final release retries a deferred orphan close);
+	 * `closeIterators` closes every registered handle before `txn` is consumed,
+	 * reset, or deleted.
 	 */
 	std::shared_ptr<DBIteratorHandle> createIterator(
 		DBIteratorOptions& options,

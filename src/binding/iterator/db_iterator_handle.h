@@ -47,8 +47,8 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	void close() override;
 
 	/**
-	 * Initializes the iterator start and end key, then registers this handle
-	 * to be closed when the DBDescriptor is closed.
+	 * Resolves the encoded start and end keys and installs them as the RocksDB
+	 * read bounds.
 	 */
 	void init(DBIteratorOptions& options);
 

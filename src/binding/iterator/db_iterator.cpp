@@ -237,8 +237,6 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 		} \
 	} while (0)
 
-// Cleanup stays idempotent: a transaction commit or abort may already have
-// closed the iterator underneath the consumer.
 #define CLOSE_ITERATOR_HANDLE(fnName) \
 	do { \
 		std::shared_ptr<DBIteratorHandle>* itHandle = nullptr; \
