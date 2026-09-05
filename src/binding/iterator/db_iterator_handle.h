@@ -47,10 +47,23 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	void close() override;
 
 	/**
-	 * Initializes the iterator start and end key, then registers this handle
-	 * to be closed when the DBDescriptor is closed.
+	 * Resolves the encoded start and end keys and installs them as the RocksDB
+	 * read bounds.
 	 */
 	void init(DBIteratorOptions& options);
+
+	/**
+	 * Whether the iterator is positioned on a key inside the requested range.
+	 */
+	bool valid() const;
+
+	void advance() {
+		if (this->reverse) {
+			this->iterator->Prev();
+		} else {
+			this->iterator->Next();
+		}
+	}
 
 	std::shared_ptr<DBHandle> dbHandle;
 	std::shared_ptr<TransactionHandle> txnHandle;
@@ -59,11 +72,14 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	bool reverse;
 	bool values;
 	bool needsStableValueBuffer;
+	bool enforceBounds;
 	std::unique_ptr<rocksdb::Iterator> iterator;
 	std::string startKeyStr;
 	std::string endKeyStr;
 	rocksdb::Slice startKey;
 	rocksdb::Slice endKey;
+	std::mutex closeMutex;
+	bool transactionRegistered = false;
 
 private:
 	/**

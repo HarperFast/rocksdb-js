@@ -76,9 +76,10 @@ napi_status DBIteratorOptions::initFromNapiObject(napi_env env, napi_value optio
  *   argv[4] - endKeyEnd (uint32) - end position of end key; if equal to
  *             endKeyStart there is no end key
  *   argv[5] - optional advanced ReadOptions object (rare path)
+ *   argv[6] - optional transaction ID for a Database context
  */
 napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
-	NAPI_CONSTRUCTOR_ARGV("Iterator", 6);
+	NAPI_CONSTRUCTOR_ARGV("Iterator", 7);
 
 	uint32_t flags = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &flags));
@@ -117,6 +118,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	// napi_get_reference_value + napi_get_named_property + napi_instanceof
 	// per iterator construction.
 	const bool isTransaction = (flags & ITERATOR_CONTEXT_IS_TRANSACTION_FLAG) != 0;
+	const bool hasTransactionId = (flags & ITERATOR_HAS_TRANSACTION_ID_FLAG) != 0;
 
 	std::shared_ptr<DBIteratorHandle>* itHandle = nullptr;
 	std::shared_ptr<DBHandle>* dbHandle = nullptr;
@@ -130,6 +132,14 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		txnHandle = *wrappedTxnHandle;
+		if (!txnHandle->dbHandle) {
+			::napi_throw_error(env, nullptr, "Transaction is not in pending state");
+			return nullptr;
+		}
+		if (!txnHandle->dbHandle->opened()) {
+			::napi_throw_error(env, nullptr, "Database not open");
+			return nullptr;
+		}
 		dbHandle = &txnHandle->dbHandle;
 		DEBUG_LOG("DBIterator::Constructor txnHandle=%p dbHandle=%p\n", txnHandle.get(), dbHandle->get());
 	} else {
@@ -139,6 +149,21 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		DEBUG_LOG("DBIterator::Constructor Initializing iterator handle with Database instance (dbHandle=%p)\n", (*dbHandle).get());
+
+		if (hasTransactionId) {
+			if (argc <= 6) {
+				::napi_throw_type_error(env, nullptr, "Invalid transaction");
+				return nullptr;
+			}
+			uint32_t txnId = 0;
+			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[6], &txnId));
+			txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+			if (!txnHandle) {
+				std::string errorMsg = "Iterator failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
+				::napi_throw_error(env, nullptr, errorMsg.c_str());
+				return nullptr;
+			}
+		}
 	}
 
 	// Resolve start/end key pointers from the shared default key buffer
@@ -163,11 +188,13 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	}
 
 	try {
+		std::shared_ptr<DBIteratorHandle> iteratorHandle;
 		if (txnHandle) {
-			itHandle = new std::shared_ptr<DBIteratorHandle>(std::make_shared<DBIteratorHandle>(txnHandle, itOptions));
+			iteratorHandle = txnHandle->createIterator(itOptions, isTransaction ? nullptr : *dbHandle);
 		} else {
-			itHandle = new std::shared_ptr<DBIteratorHandle>(std::make_shared<DBIteratorHandle>(*dbHandle, itOptions));
+			iteratorHandle = std::make_shared<DBIteratorHandle>(*dbHandle, itOptions);
 		}
+		itHandle = new std::shared_ptr<DBIteratorHandle>(std::move(iteratorHandle));
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
@@ -215,6 +242,16 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 		if (!itHandle || (*itHandle)->iterator == nullptr) { \
 			::napi_throw_error(env, nullptr, fnName " failed: Iterator not initialized"); \
 			return nullptr; \
+		} \
+	} while (0)
+
+#define CLOSE_ITERATOR_HANDLE(fnName) \
+	do { \
+		std::shared_ptr<DBIteratorHandle>* itHandle = nullptr; \
+		NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&itHandle))); \
+		if (itHandle && *itHandle) { \
+			DEBUG_LOG("%p DBIterator::" fnName " Closing iterator handle\n", (*itHandle).get()); \
+			(*itHandle)->close(); \
 		} \
 	} while (0)
 
@@ -266,8 +303,8 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 	auto& it = *itHandle;
 	napi_value result;
 
-	if (!it->iterator->Valid()) {
-		if (!it->iterator->status().ok()) {
+	if (!it->valid()) {
+		if (it->iterator && !it->iterator->status().ok()) {
 			DEBUG_LOG("%p DBIterator::Next iterator not valid/ok: %s\n", itHandle, it->iterator->status().ToString().c_str());
 		} else {
 			DEBUG_LOG("%p DBIterator::Next iterator no keys found in range\n", it.get());
@@ -277,21 +314,6 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 	}
 
 	rocksdb::Slice keySlice = it->iterator->key();
-
-	// Edge case: reverse + exclusiveStart and we just landed on the start key
-	// (which is the lower bound for reverse iteration). We need to peek ahead
-	// to determine whether this is the last item.
-	if (it->reverse && it->exclusiveStart &&
-	    it->startKey.size() > 0 && keySlice.compare(it->startKey) == 0) {
-		it->iterator->Prev();
-		if (!it->iterator->Valid()) {
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_DONE, &result));
-			return result;
-		}
-		// not the last item; restore position and continue normally below
-		it->iterator->Next();
-		keySlice = it->iterator->key();
-	}
 
 	// Try the fast path: copy key (and optionally value) into the shared
 	// default buffers and write lengths to the iterator state buffer.
@@ -321,22 +343,14 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 			::memcpy(valueBuffer, valueSlice.data(), valueSlice.size());
 			state[1] = static_cast<uint32_t>(valueSlice.size());
 		}
-		if (it->reverse) {
-			it->iterator->Prev();
-		} else {
-			it->iterator->Next();
-		}
+		it->advance();
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_FAST, &result));
 		return result;
 	}
 
 	// Slow path: at least one of key or value can't go in the shared buffer.
 	napi_value slowResult = buildSlowResult(env, keySlice, it->values, valueSlice);
-	if (it->reverse) {
-		it->iterator->Prev();
-	} else {
-		it->iterator->Next();
-	}
+	it->advance();
 	return slowResult;
 }
 
@@ -347,11 +361,7 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
  */
 napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
-	UNWRAP_ITERATOR_HANDLE("Return");
-
-	DEBUG_LOG("%p DBIterator::Return Closing iterator handle\n", (*itHandle).get());
-	(*itHandle)->close();
-
+	CLOSE_ITERATOR_HANDLE("Return");
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -361,11 +371,7 @@ napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
  */
 napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
-	UNWRAP_ITERATOR_HANDLE("Throw");
-
-	DEBUG_LOG("%p DBIterator::Throw Closing iterator handle\n", (*itHandle).get());
-	(*itHandle)->close();
-
+	CLOSE_ITERATOR_HANDLE("Throw");
 	NAPI_RETURN_UNDEFINED();
 }
 

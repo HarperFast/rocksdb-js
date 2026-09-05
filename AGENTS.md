@@ -653,6 +653,30 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     written remains frozen across retries, though reapplying the same timestamp is idempotent while
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
+19. **Transactional ranges keep the caller's column family and close before the transaction**:
+    `Store.getRange()` routes `options.transaction` to native by transaction ID, where the caller
+    database descriptor resolves it and supplies the caller's `DBHandle` to `DBIteratorHandle`.
+    Replacing the context with `transaction._context` is incorrect for cross-column-family scans:
+    that native transaction carries the column family on which it was created. Transaction-backed
+    iterators establish and pass the transaction snapshot, seek explicitly, and enforce their encoded
+    bounds in `valid()` rather than trusting RocksDB alone: `iterate_lower_bound` is inclusive, so the
+    exclusive lower bound of a reverse range (`exclusiveStart`) has to be applied by the handle when
+    the iterator reaches it, and a transaction's write batch ignored the read-option bounds before
+    RocksDB 8.10.0, so a build linked against an older release (`ROCKSDB_VERSION` / `ROCKSDB_PATH`)
+    checks both bounds on transaction iterators (a compile-time `ROCKSDB_MAJOR`/`ROCKSDB_MINOR`
+    check); the pinned 11.8.1 only pays the reverse `exclusiveStart` compare, like a plain iterator.
+    `closeIterators()` waits for a handle that is mid-destruction on another thread to reset its
+    RocksDB iterator before the transaction is freed; it does not serialize a cross-environment
+    close against a `next()` in flight on the owning thread (the descriptor's closables sweep never
+    did either). They register weakly with `TransactionHandle`; commit,
+    abort, the coordinated-retry reset (`resetTransaction`), and forced teardown close every
+    registered iterator before committing, rolling back, resetting, or deleting the RocksDB
+    transaction, so a later `next()` deterministically reports an uninitialized iterator rather than
+    reading freed write-batch state (`return()`/`throw()` stay idempotent so loop cleanup after that
+    close cannot throw), and `createIterator` rejects a range or count once the transaction is no
+    longer pending. The reverse seek always steps off a key equal to the encoded end
+    bound: `inclusiveEnd` appends a NUL to that bound, so the bound itself is exclusive in both
+    directions and a staged key that lands exactly on it must be excluded like a committed one.
 
 ## Debugging native heap corruption
 

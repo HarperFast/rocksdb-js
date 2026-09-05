@@ -45,6 +45,7 @@ const {
 	ITERATOR_INCLUDE_VALUES_FLAG,
 	ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG,
 	ITERATOR_CONTEXT_IS_TRANSACTION_FLAG,
+	ITERATOR_HAS_TRANSACTION_ID_FLAG,
 } = constants;
 const KEY_BUFFER_SIZE = 4096;
 
@@ -989,6 +990,7 @@ export class Store {
 
 		const includeValues = options?.values ?? true;
 		const reverse = options?.reverse ?? false;
+		const txnId = this.getTxnId(options);
 
 		let exclusiveStart = options?.exclusiveStart ?? false;
 		let inclusiveEnd = options?.inclusiveEnd ?? false;
@@ -1049,6 +1051,9 @@ export class Store {
 		if (context !== this.db) {
 			flags |= ITERATOR_CONTEXT_IS_TRANSACTION_FLAG;
 		}
+		if (txnId !== undefined) {
+			flags |= ITERATOR_HAS_TRANSACTION_ID_FLAG;
+		}
 
 		// Only pass the advanced ReadOptions object on the rare path where any
 		// of the underlying RocksDB iterator options are actually overridden.
@@ -1067,7 +1072,15 @@ export class Store {
 		return new ExtendedIterable(
 			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect
 			new DBIterator(
-				new NativeIterator(context, flags, startKeyEnd, endKeyStart, endKeyEnd, advancedOptions),
+				new NativeIterator(
+					context,
+					flags,
+					startKeyEnd,
+					endKeyStart,
+					endKeyEnd,
+					advancedOptions,
+					txnId
+				),
 				this,
 				includeValues,
 				options?.limit
@@ -1113,10 +1126,18 @@ export class Store {
 	 */
 	getTxnId(options?: DBITransactional | unknown): number | undefined {
 		let txnId: number | undefined;
-		if (!this.readOnly && (options as DBITransactional)?.transaction) {
-			txnId = (options as DBITransactional).transaction!.id;
+		const transaction = (options as DBITransactional)?.transaction;
+		if (!this.readOnly && transaction) {
+			txnId = transaction.id;
 			if (txnId === undefined) {
 				throw new TypeError('Invalid transaction');
+			}
+			// ids are per database; column families of one database share its path
+			if (transaction.store === undefined) {
+				throw new TypeError('Invalid transaction');
+			}
+			if (transaction.store.path !== this.path) {
+				throw new TypeError('Transaction belongs to a different database');
 			}
 		}
 		return txnId;

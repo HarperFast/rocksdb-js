@@ -714,6 +714,23 @@ for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
 }
 ```
 
+Pass `transaction: txn` to iterate this column family through that transaction, exactly as
+`get()` does with the same option: the iterator sees the transaction's staged writes and reads on its
+snapshot, and range bounds apply to staged keys too. `getKeys()` and `getKeysCount()` accept it as
+well. On a transaction (`txn.getRange()`) the transaction itself is the context and takes precedence
+over a `transaction` option, as it does for `txn.get()`. Such an iterator is closed when the
+transaction commits or aborts: a later `next()` throws, while `return()` stays a no-op. Opening a
+range or counting through a transaction that has already started committing throws as well.
+
+```typescript
+await db.transaction(async (txn) => {
+	await txn.put('c', 'staged');
+	for (const { key, value } of db.getRange({ start: 'a', end: 'z', transaction: txn })) {
+		console.log({ key, value }); // includes { key: "c", value: "staged" }
+	}
+});
+```
+
 ### `db.getUserSharedBuffer(key: Key, defaultBuffer: ArrayBuffer, options?)`
 
 Creates a new buffer with the contents of `defaultBuffer` that can be accessed across threads. This
@@ -2401,7 +2418,9 @@ Options for `get()`, `getSync()`, and the `getBinary*` methods.
   - `tailing: boolean` When `true`, creates a "tailing iterator" which is a special iterator that
     has a view of the complete database including newly added data and is optimized for sequential
     reads. This will return records that were inserted into the database after the creation of the
-    iterator. Defaults to `false`.
+    iterator. Defaults to `false`. A tailing iterator ignores a transaction's snapshot: through a
+    transaction it still reads the latest committed state, merged with that transaction's staged
+    writes.
 
 ### `RangeOptions`
 

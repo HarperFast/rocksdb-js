@@ -19,6 +19,7 @@ namespace rocksdb_js {
 // constructor relies on this flag to skip the expensive
 // napi_get_named_property + napi_instanceof type checks.
 #define ITERATOR_CONTEXT_IS_TRANSACTION_FLAG     0x20
+#define ITERATOR_HAS_TRANSACTION_ID_FLAG          0x40
 
 // Iterator Next() return signals
 #define ITERATOR_RESULT_DONE 0
