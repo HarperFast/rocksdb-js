@@ -380,7 +380,7 @@ describe('Ranges', () => {
 				const txn = new Transaction(db.store);
 				const otherTxn = new Transaction(other.store);
 				try {
-					// ids are allocated per database, so the first transaction of each shares an id
+					// ids are per database: the first transaction of each shares one
 					expect(otherTxn.id).toBe(txn.id);
 					await txn.put('staged', 'in-batch');
 					await otherTxn.put('other-staged', 'other-batch');
@@ -424,8 +424,7 @@ describe('Ranges', () => {
 
 					expect(() => routed.next()).toThrow('Iterator not initialized');
 					expect(() => direct.next()).toThrow('Iterator not initialized');
-					// cleanup after the transaction closed the iterator must not throw: a loop that
-					// breaks, reaches its limit, or unwinds an error still calls return()/throw()
+					// loop cleanup (break, limit, error) must not throw after the transaction closed it
 					expect(routed.return!().done).toBe(true);
 					expect(direct.return!().done).toBe(true);
 					expect(limited.next().done).toBe(true);

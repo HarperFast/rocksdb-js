@@ -666,7 +666,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     checks both bounds on transaction iterators (a compile-time `ROCKSDB_MAJOR`/`ROCKSDB_MINOR`
     check); the pinned 11.8.1 only pays the reverse `exclusiveStart` compare, like a plain iterator.
     `closeIterators()` waits for a handle that is mid-destruction on another thread to reset its
-    RocksDB iterator before the transaction is freed. They register weakly with `TransactionHandle`; commit,
+    RocksDB iterator before the transaction is freed; it does not serialize a cross-environment
+    close against a `next()` in flight on the owning thread (the descriptor's closables sweep never
+    did either). They register weakly with `TransactionHandle`; commit,
     abort, the coordinated-retry reset (`resetTransaction`), and forced teardown close every
     registered iterator before committing, rolling back, resetting, or deleting the RocksDB
     transaction, so a later `next()` deterministically reports an uninitialized iterator rather than

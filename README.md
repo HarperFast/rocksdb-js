@@ -717,9 +717,10 @@ for (const { key, value } of db.getRange({ start: 'a', end: 'z' })) {
 Pass `transaction: txn` to iterate this column family through that transaction, exactly as
 `get()` does with the same option: the iterator sees the transaction's staged writes and reads on its
 snapshot, and range bounds apply to staged keys too. `getKeys()` and `getKeysCount()` accept it as
-well. Such an iterator is closed when the transaction commits or aborts: a later `next()` throws, while
-`return()` stays a no-op. Opening a range or counting through a transaction that has already started
-committing throws as well.
+well. On a transaction (`txn.getRange()`) the transaction itself is the context and takes precedence
+over a `transaction` option, as it does for `txn.get()`. Such an iterator is closed when the
+transaction commits or aborts: a later `next()` throws, while `return()` stays a no-op. Opening a
+range or counting through a transaction that has already started committing throws as well.
 
 ```typescript
 await db.transaction(async (txn) => {

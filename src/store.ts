@@ -1132,8 +1132,7 @@ export class Store {
 			if (txnId === undefined) {
 				throw new TypeError('Invalid transaction');
 			}
-			// ids are allocated per database, so another database's id could resolve to an
-			// unrelated transaction; column families of one database share the path
+			// ids are per database; column families of one database share its path
 			if (transaction.store !== undefined && transaction.store.path !== this.path) {
 				throw new TypeError('Transaction belongs to a different database');
 			}
