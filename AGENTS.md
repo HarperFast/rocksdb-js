@@ -658,12 +658,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     database descriptor resolves it and supplies the caller's `DBHandle` to `DBIteratorHandle`.
     Replacing the context with `transaction._context` is incorrect for cross-column-family scans:
     that native transaction carries the column family on which it was created. Transaction-backed
-    iterators establish and pass the transaction snapshot, and manually enforce their encoded bounds
-    because RocksDB's write-batch delta iterator does not apply `iterate_lower_bound` /
-    `iterate_upper_bound` to staged keys. They register weakly with `TransactionHandle`; commit,
-    abort, and forced teardown close every registered iterator before committing, rolling back, or
-    deleting the RocksDB transaction, so a later `next()` deterministically reports an uninitialized
-    iterator rather than reading freed write-batch state.
+    iterators establish and pass the transaction snapshot, seek explicitly, and enforce their encoded
+    bounds in `valid()` rather than trusting RocksDB alone: `iterate_lower_bound` is inclusive, so the
+    exclusive lower bound of a reverse range (`exclusiveStart`) has to be applied by the handle when
+    the iterator reaches it, and the write-batch side of a transaction iterator only honors the
+    read-option bounds at all since RocksDB 8.10.0 (this package pins 11.8.1, but `ROCKSDB_VERSION` /
+    `ROCKSDB_PATH` builds can link older releases). They register weakly with `TransactionHandle`; commit,
+    abort, the coordinated-retry reset (`resetTransaction`), and forced teardown close every
+    registered iterator before committing, rolling back, resetting, or deleting the RocksDB
+    transaction, so a later `next()` deterministically reports an uninitialized iterator rather than
+    reading freed write-batch state. The reverse seek always steps off a key equal to the encoded end
+    bound: `inclusiveEnd` appends a NUL to that bound, so the bound itself is exclusive in both
+    directions and a staged key that lands exactly on it must be excluded like a committed one.
 
 ## Debugging native heap corruption
 

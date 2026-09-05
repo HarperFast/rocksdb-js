@@ -13,7 +13,8 @@ DBIteratorHandle::DBIteratorHandle(
 	inclusiveEnd(options.inclusiveEnd),
 	reverse(options.reverse),
 	values(options.values),
-	needsStableValueBuffer(options.needsStableValueBuffer)
+	needsStableValueBuffer(options.needsStableValueBuffer),
+	enforceBounds(options.reverse && options.exclusiveStart && options.startKeyStr != nullptr)
 {
 	DEBUG_LOG("%p DBIteratorHandle::Constructor dbHandle=%p\n", this, dbHandle.get());
 	this->init(options);
@@ -39,7 +40,8 @@ DBIteratorHandle::DBIteratorHandle(
 	inclusiveEnd(options.inclusiveEnd),
 	reverse(options.reverse),
 	values(options.values),
-	needsStableValueBuffer(options.needsStableValueBuffer)
+	needsStableValueBuffer(options.needsStableValueBuffer),
+	enforceBounds(true)
 {
 	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", this->txnHandle.get(), dbHandle->descriptor.get());
 	this->txnHandle->ensureSnapshot();
@@ -107,8 +109,7 @@ void DBIteratorHandle::seek(DBIteratorOptions& options) {
 	if (options.reverse) {
 		if (this->endKey.size() > 0) {
 			this->iterator->SeekForPrev(this->endKey);
-			if (!options.inclusiveEnd && this->iterator->Valid()
-				&& this->iterator->key().compare(this->endKey) == 0) {
+			if (this->iterator->Valid() && this->iterator->key().compare(this->endKey) == 0) {
 				this->iterator->Prev();
 			}
 		} else {
@@ -138,24 +139,19 @@ bool DBIteratorHandle::valid() const {
 	if (!this->iterator || !this->iterator->Valid()) {
 		return false;
 	}
+	if (!this->enforceBounds) {
+		return true;
+	}
 
 	const rocksdb::Slice key = this->iterator->key();
-	if (this->reverse && this->startKey.size() > 0) {
+	if (this->reverse) {
+		if (this->startKey.size() == 0) {
+			return true;
+		}
 		const int comparison = key.compare(this->startKey);
 		return comparison > 0 || (comparison == 0 && !this->exclusiveStart);
 	}
-	if (!this->reverse && this->endKey.size() > 0) {
-		return key.compare(this->endKey) < 0;
-	}
-	return true;
-}
-
-void DBIteratorHandle::advance() {
-	if (this->reverse) {
-		this->iterator->Prev();
-	} else {
-		this->iterator->Next();
-	}
+	return this->endKey.size() == 0 || key.compare(this->endKey) < 0;
 }
 
 }

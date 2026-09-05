@@ -39,7 +39,7 @@ const itWithGC = it.skipIf(!forceGC);
 const itWithNodeGC = it.skipIf(Boolean(process.versions.bun || process.versions.deno));
 
 function runDependentFixture(
-	mode: 'async-get' | 'iterator',
+	mode: 'async-get' | 'iterator' | 'routed-iterator',
 	dbPath: string
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -58,7 +58,9 @@ function runDependentFixture(
 	});
 }
 
-async function expectDependentFixtureSurvives(mode: 'async-get' | 'iterator'): Promise<void> {
+async function expectDependentFixtureSurvives(
+	mode: 'async-get' | 'iterator' | 'routed-iterator'
+): Promise<void> {
 	const dbPath = join(process.cwd(), `.transaction-orphan-${mode}-${process.pid}-${Date.now()}`);
 	try {
 		const { code, signal, stderr } = await runDependentFixture(mode, dbPath);
@@ -94,6 +96,12 @@ describe('orphaned transactions', () => {
 	itWithNodeGC(
 		'should keep a transaction alive until its iterator closes',
 		() => expectDependentFixtureSurvives('iterator'),
+		15_000
+	);
+
+	itWithNodeGC(
+		'should keep a transaction alive until a routed iterator closes',
+		() => expectDependentFixtureSurvives('routed-iterator'),
 		15_000
 	);
 
