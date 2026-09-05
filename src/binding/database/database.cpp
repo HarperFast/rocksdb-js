@@ -1073,10 +1073,15 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 			NAPI_RETURN_UNDEFINED();
 		}
 	} else {
-		std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
-		while (itHandle->valid()) {
-			++count;
-			itHandle->advance();
+		try {
+			std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
+			while (itHandle->valid()) {
+				++count;
+				itHandle->advance();
+			}
+		} catch (const std::exception& e) {
+			::napi_throw_error(env, nullptr, e.what());
+			NAPI_RETURN_UNDEFINED();
 		}
 	}
 
