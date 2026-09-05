@@ -1133,7 +1133,10 @@ export class Store {
 				throw new TypeError('Invalid transaction');
 			}
 			// ids are per database; column families of one database share its path
-			if (transaction.store !== undefined && transaction.store.path !== this.path) {
+			if (transaction.store === undefined) {
+				throw new TypeError('Invalid transaction');
+			}
+			if (transaction.store.path !== this.path) {
 				throw new TypeError('Transaction belongs to a different database');
 			}
 		}

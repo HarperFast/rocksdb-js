@@ -785,11 +785,14 @@ for (const { name, options, txnOptions } of testOptions) {
 
 		it('should error if transaction is not found', () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				const txn = new Transaction(db.store, txnOptions);
+				await txn.put('foo', 'bar');
+				await txn.commit();
+				await expect(db.get('foo', { transaction: txn })).rejects.toThrow('Transaction not found');
+				expect(() => db.getRange({ transaction: txn })).toThrow('Transaction not found');
+				// a bare id is not a transaction: only a Transaction carries the store that owns it
 				await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow(
-					'Transaction not found'
-				);
-				expect(() => db.getRange({ transaction: { id: 9926 } as any })).toThrow(
-					'Transaction not found'
+					'Invalid transaction'
 				);
 			}));
 	});

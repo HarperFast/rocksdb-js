@@ -390,6 +390,20 @@ describe('Ranges', () => {
 				expect(() => committed.getKeysCount()).toThrow('not in pending state');
 			}));
 
+		it('should reject direct ranges and counts once the transaction database handle closes', () =>
+			dbRunner(async ({ db }, { db: other }) => {
+				const txn = new Transaction(db.store);
+				await txn.put('a', 'staged');
+				db.close();
+				try {
+					expect(() => txn.getRange({ start: 'a' })).toThrow('Database not open');
+					expect(() => txn.getKeysCount()).toThrow('Database not open');
+					expect(other.getKeys({ transaction: txn }).asArray).toEqual(['a']);
+				} finally {
+					txn.abort();
+				}
+			}));
+
 		it('should reject a transaction that belongs to another database', () =>
 			dbRunner({ dbOptions: [{}, { path: generateDBPath() }] }, async ({ db }, { db: other }) => {
 				const txn = new Transaction(db.store);
