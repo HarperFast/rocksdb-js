@@ -54,8 +54,6 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 
 	/**
 	 * Whether the iterator is positioned on a key inside the requested range.
-	 * Only compares keys when RocksDB's own bounds cannot express the range
-	 * (`enforceBounds`); otherwise it is just `Valid()`.
 	 */
 	bool valid() const;
 
