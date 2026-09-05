@@ -1126,10 +1126,16 @@ export class Store {
 	 */
 	getTxnId(options?: DBITransactional | unknown): number | undefined {
 		let txnId: number | undefined;
-		if (!this.readOnly && (options as DBITransactional)?.transaction) {
-			txnId = (options as DBITransactional).transaction!.id;
+		const transaction = (options as DBITransactional)?.transaction;
+		if (!this.readOnly && transaction) {
+			txnId = transaction.id;
 			if (txnId === undefined) {
 				throw new TypeError('Invalid transaction');
+			}
+			// ids are allocated per database, so another database's id could resolve to an
+			// unrelated transaction; column families of one database share the path
+			if (transaction.store !== undefined && transaction.store.path !== this.path) {
+				throw new TypeError('Transaction belongs to a different database');
 			}
 		}
 		return txnId;
