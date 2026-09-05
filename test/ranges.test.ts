@@ -375,6 +375,21 @@ describe('Ranges', () => {
 				expect(db.getKeys().asArray).toEqual(['a']);
 			}));
 
+		it('should reject direct ranges and counts on a finished transaction', () =>
+			dbRunner(async ({ db }) => {
+				const aborted = new Transaction(db.store);
+				await aborted.put('a', 'staged');
+				aborted.abort();
+				expect(() => aborted.getRange({ start: 'a' })).toThrow('not in pending state');
+				expect(() => aborted.getKeysCount()).toThrow('not in pending state');
+
+				const committed = new Transaction(db.store);
+				await committed.put('b', 'staged');
+				await committed.commit();
+				expect(() => committed.getRange({ start: 'a' })).toThrow('not in pending state');
+				expect(() => committed.getKeysCount()).toThrow('not in pending state');
+			}));
+
 		it('should reject a transaction that belongs to another database', () =>
 			dbRunner({ dbOptions: [{}, { path: generateDBPath() }] }, async ({ db }, { db: other }) => {
 				const txn = new Transaction(db.store);

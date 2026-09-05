@@ -132,6 +132,10 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		txnHandle = *wrappedTxnHandle;
+		if (!txnHandle->dbHandle) {
+			::napi_throw_error(env, nullptr, "Transaction is not in pending state");
+			return nullptr;
+		}
 		dbHandle = &txnHandle->dbHandle;
 		DEBUG_LOG("DBIterator::Constructor txnHandle=%p dbHandle=%p\n", txnHandle.get(), dbHandle->get());
 	} else {
