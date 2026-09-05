@@ -259,6 +259,10 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 	if (this->closed.load() || !this->txn || this->state != TransactionState::Pending) {
 		throw std::runtime_error("Transaction is not in pending state");
 	}
+	const std::shared_ptr<DBHandle>& targetHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	if (!targetHandle || !targetHandle->opened()) {
+		throw std::runtime_error("Database not open");
+	}
 	std::shared_ptr<DBIteratorHandle> iterator = std::make_shared<DBIteratorHandle>(
 		this->shared_from_this(),
 		options,
