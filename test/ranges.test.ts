@@ -1,7 +1,7 @@
 import type { IteratorOptions } from '../src/dbi.ts';
 import type { Key } from '../src/encoding.ts';
 import { Transaction } from '../src/transaction.ts';
-import { dbRunner } from './lib/util.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('Ranges', () => {
@@ -157,42 +157,238 @@ describe('Ranges', () => {
 			}));
 
 		it('should enforce bounds and limits for staged keys in both directions', () =>
-			dbRunner(async ({ db }) => {
-				for (const key of ['b', 'd', 'f']) {
-					await db.put(key, `value ${key}`);
-				}
-
-				const txn = new Transaction(db.store);
-				try {
-					for (const key of ['a', 'c', 'e', 'g']) {
-						await txn.put(key, `value ${key}`);
+			dbRunner(
+				{ dbOptions: [{}, { path: generateDBPath() }] },
+				async ({ db }, { db: reference }) => {
+					for (const key of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
+						await reference.put(key, `value ${key}`);
+					}
+					for (const key of ['b', 'd', 'f']) {
+						await db.put(key, `value ${key}`);
 					}
 
-					const forward = {
-						start: 'a',
-						end: 'e',
-						exclusiveStart: true,
-						inclusiveEnd: true,
-					};
-					expect(db.getKeys({ ...forward, transaction: txn }).asArray).toEqual([
-						'b',
-						'c',
-						'd',
-						'e',
-					]);
-					expect(db.getKeysCount({ ...forward, transaction: txn })).toBe(4);
-					expect(db.store.getCount(db._context, { ...forward, transaction: txn })).toBe(4);
-					expect(txn.getKeys(forward).asArray).toEqual(['b', 'c', 'd', 'e']);
+					const txn = new Transaction(db.store);
+					try {
+						// staged keys sit on and beyond both bounds of every range below
+						for (const key of ['a', 'c', 'e', 'g']) {
+							await txn.put(key, `value ${key}`);
+						}
 
-					const reverse = { start: 'e', end: 'a', reverse: true, limit: 2 };
-					expect(db.getKeys({ ...reverse, transaction: txn }).asArray).toEqual(['e', 'd']);
-					expect(txn.getKeys(reverse).asArray).toEqual(['e', 'd']);
+						const forward = { start: 'a', end: 'e', exclusiveStart: true, inclusiveEnd: true };
+						const reverse = { start: 'e', end: 'a', reverse: true };
+						const reverseOpen = { ...reverse, exclusiveStart: false, inclusiveEnd: false };
+						expect(reference.getKeys(forward).asArray).toEqual(['b', 'c', 'd', 'e']);
+						expect(reference.getKeys(reverse).asArray).toEqual(['e', 'd', 'c', 'b']);
+						expect(reference.getKeys(reverseOpen).asArray).toEqual(['d', 'c', 'b', 'a']);
+
+						const variants: IteratorOptions[] = [
+							{ start: 'a', end: 'e' },
+							forward,
+							{ start: 'a', end: 'e', limit: 2 },
+							{ end: 'c' },
+							{ key: 'c' },
+							{ key: 'e' },
+							reverse,
+							reverseOpen,
+							{ ...reverse, limit: 2 },
+							{ start: 'g', reverse: true },
+						];
+						for (const variant of variants) {
+							const expected = reference.getKeys(variant).asArray;
+							expect(expected.length).toBeGreaterThan(0);
+							expect(db.getKeys({ ...variant, transaction: txn }).asArray).toEqual(expected);
+							expect(txn.getKeys(variant).asArray).toEqual(expected);
+							if (!variant.reverse && variant.limit === undefined && variant.key === undefined) {
+								expect(db.getKeysCount({ ...variant, transaction: txn })).toBe(expected.length);
+								expect(db.store.getCount(db._context, { ...variant, transaction: txn })).toBe(
+									expected.length
+								);
+							}
+						}
+					} finally {
+						txn.abort();
+					}
+				}
+			));
+
+		it('should exclude a staged key that lands exactly on the encoded end bound', () =>
+			dbRunner(
+				{
+					dbOptions: [{ keyEncoding: 'binary' }, { keyEncoding: 'binary', path: generateDBPath() }],
+				},
+				async ({ db }, { db: reference }) => {
+					// `inclusiveEnd` makes the native bound `b\0`, so a key equal to `b\0` sits on it
+					const [a, b, bNul, c] = ['a', 'b', 'b\0', 'c'].map((key) => Buffer.from(key, 'latin1'));
+					for (const key of [a, b, bNul, c]) {
+						await reference.put(key, key.toString('latin1'));
+					}
+					await db.put(a, 'a');
+					await db.put(c, 'c');
+
+					const txn = new Transaction(db.store);
+					try {
+						await txn.put(b, 'b');
+						await txn.put(bNul, 'b\0');
+
+						const decode = (keys: Uint8Array[]) =>
+							keys.map((key) => Buffer.from(key).toString('latin1'));
+						const variants: IteratorOptions[] = [
+							{ start: b, end: a, reverse: true },
+							{ start: a, end: b, inclusiveEnd: true },
+						];
+						for (const variant of variants) {
+							const expected = decode(reference.getKeys(variant).asArray);
+							expect(expected).toEqual(variant.reverse ? ['b'] : ['a', 'b']);
+							expect(decode(db.getKeys({ ...variant, transaction: txn }).asArray)).toEqual(
+								expected
+							);
+							expect(decode(txn.getKeys(variant).asArray)).toEqual(expected);
+						}
+					} finally {
+						txn.abort();
+					}
+				}
+			));
+
+		it('should reflect staged overwrites and deletes in routed ranges', () =>
+			dbRunner(async ({ db }) => {
+				await db.put('a', 'committed-a');
+				await db.put('b', 'committed-b');
+				const txn = new Transaction(db.store);
+				try {
+					await txn.put('a', 'staged-a');
+					await txn.remove('b');
+					await txn.put('c', 'staged-c');
+
+					const expected = [
+						{ key: 'a', value: 'staged-a' },
+						{ key: 'c', value: 'staged-c' },
+					];
+					expect(db.getRange({ transaction: txn }).asArray).toEqual(expected);
+					expect(db.getKeysCount({ transaction: txn })).toBe(2);
+					expect(txn.getRange().asArray).toEqual(expected);
+					expect(db.getRange().asArray).toEqual([
+						{ key: 'a', value: 'committed-a' },
+						{ key: 'b', value: 'committed-b' },
+					]);
 				} finally {
 					txn.abort();
 				}
 			}));
 
-		for (const action of ['commit', 'abort'] as const) {
+		it('should iterate staged keys over an empty database', () =>
+			dbRunner(async ({ db }) => {
+				const txn = new Transaction(db.store);
+				try {
+					await txn.put('b', 'staged-b');
+					await txn.put('a', 'staged-a');
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['a', 'b']);
+					expect(db.getKeys({ transaction: txn, reverse: true }).asArray).toEqual(['b', 'a']);
+					expect(db.getKeysCount({ transaction: txn })).toBe(2);
+					expect(db.getKeys().asArray).toEqual([]);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('should establish the transaction snapshot on a first routed range read', () =>
+			dbRunner(async ({ db }) => {
+				await db.put('committed', 'before');
+				const txn = new Transaction(db.store);
+				try {
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['committed']);
+					await db.transaction(async (writer) => {
+						await writer.put('later', 'after');
+					});
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['committed']);
+					expect(db.getKeysCount({ transaction: txn })).toBe(1);
+					expect(await db.get('later', { transaction: txn })).toBeUndefined();
+					expect(db.getKeys().asArray).toEqual(['committed', 'later']);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('should read the latest committed state through a disableSnapshot transaction', () =>
+			dbRunner(async ({ db }) => {
+				await db.put('committed', 'before');
+				const txn = new Transaction(db.store, { disableSnapshot: true });
+				try {
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['committed']);
+					await db.transaction(async (writer) => {
+						await writer.put('later', 'after');
+					});
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['committed', 'later']);
+					expect(db.getKeysCount({ transaction: txn })).toBe(2);
+					expect(txn.getKeys().asArray).toEqual(['committed', 'later']);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('should read the latest committed state through a tailing transactional range', () =>
+			dbRunner(async ({ db }) => {
+				await db.put('committed', 'before');
+				const txn = new Transaction(db.store);
+				try {
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['committed']);
+					await db.transaction(async (writer) => {
+						await writer.put('later', 'after');
+					});
+					expect(db.getKeys({ transaction: txn, tailing: true }).asArray).toEqual([
+						'committed',
+						'later',
+					]);
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['committed']);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('should honor the transaction option on a pessimistic database', () =>
+			dbRunner({ dbOptions: [{ pessimistic: true }] }, async ({ db }) => {
+				await db.put('committed', 'before');
+				const txn = new Transaction(db.store);
+				try {
+					await txn.put('staged', 'in-batch');
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['committed', 'staged']);
+					expect(db.getKeysCount({ transaction: txn })).toBe(2);
+					await db.transaction(async (writer) => {
+						await writer.put('later', 'after');
+					});
+					expect(db.getKeys({ transaction: txn }).asArray).toEqual(['committed', 'staged']);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		it('should reject routed ranges and counts once the transaction starts committing', () =>
+			dbRunner(async ({ db }) => {
+				const txn = new Transaction(db.store);
+				await txn.put('a', 'staged');
+				const committing = txn.commit();
+				expect(() => db.getRange({ transaction: txn })).toThrow('not in pending state');
+				expect(() => db.getKeysCount({ transaction: txn })).toThrow('not in pending state');
+				expect(() => txn.getRange()).toThrow('not in pending state');
+				expect(() => txn.getKeysCount()).toThrow('not in pending state');
+				await committing;
+				expect(() => db.getRange({ transaction: txn })).toThrow('Transaction not found');
+				expect(db.getKeys().asArray).toEqual(['a']);
+			}));
+
+		it("should not resolve a transaction through another database's registry", () =>
+			dbRunner({ dbOptions: [{}, { path: generateDBPath() }] }, async ({ db }, { db: other }) => {
+				const txn = new Transaction(db.store);
+				try {
+					await txn.put('staged', 'in-batch');
+					expect(() => other.getRange({ transaction: txn })).toThrow('Transaction not found');
+					expect(() => other.getKeysCount({ transaction: txn })).toThrow('Transaction not found');
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		for (const action of ['commit', 'commitSync', 'abort'] as const) {
 			it(`should close routed and direct iterators on transaction ${action}`, () =>
 				dbRunner(async ({ db }) => {
 					await db.put('a', 'committed-a');
@@ -207,6 +403,8 @@ describe('Ranges', () => {
 
 					if (action === 'commit') {
 						await txn.commit();
+					} else if (action === 'commitSync') {
+						txn.commitSync();
 					} else {
 						txn.abort();
 					}

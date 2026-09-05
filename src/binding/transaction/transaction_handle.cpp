@@ -96,6 +96,7 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 
 void TransactionHandle::resetTransaction(){
 	// clear/delete the previous transaction and create a new transaction so that it can be retried
+	this->closeIterators();
 	if (this->txn) {
 		this->txn->ClearSnapshot();
 		delete this->txn;
@@ -263,9 +264,13 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 		options,
 		dbHandleOverride
 	);
-	iterator->transactionRegistered = true;
+	// Mark it registered only once the insert has succeeded: a handle that
+	// unwinds from here unregistered must not re-enter iteratorsMutex from its
+	// destructor.
 	const bool inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
 	assert(inserted && "Transaction iterator registered twice");
+	(void)inserted;
+	iterator->transactionRegistered = true;
 	this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 	return iterator;
 }
@@ -285,17 +290,24 @@ void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
 }
 
 void TransactionHandle::closeIterators() {
-	std::vector<std::shared_ptr<DBIteratorHandle>> iterators;
-	{
-		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-		iterators.reserve(this->activeIterators.size());
-		for (const auto& [_iterator, weakIterator] : this->activeIterators) {
-			if (auto pinnedIterator = weakIterator.lock()) {
-				iterators.push_back(std::move(pinnedIterator));
+	// One at a time and without allocating: this runs from abort, commit, the
+	// retry reset, and teardown, where an exception has nowhere to go. Each
+	// close() erases its own entry, so the loop drains the registry; an entry
+	// whose handle is already being destroyed erases itself on that path.
+	for (;;) {
+		std::shared_ptr<DBIteratorHandle> iterator;
+		{
+			std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+			for (const auto& [_iterator, weakIterator] : this->activeIterators) {
+				iterator = weakIterator.lock();
+				if (iterator) {
+					break;
+				}
 			}
 		}
-	}
-	for (const auto& iterator : iterators) {
+		if (!iterator) {
+			return;
+		}
 		iterator->close();
 	}
 }
@@ -634,16 +646,13 @@ void TransactionHandle::getCount(
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
-	this->ensureSnapshot();
-	if (this->snapshotSet) {
-		itOptions.readOptions.snapshot = this->txn->GetSnapshot();
-	}
-
-	std::unique_ptr<DBIteratorHandle> itHandle =
-		std::make_unique<DBIteratorHandle>(this->shared_from_this(), itOptions, dbHandleOverride);
+	// Admitted like a range iterator so a count cannot read a write batch that a
+	// commit already started consuming.
+	std::shared_ptr<DBIteratorHandle> itHandle = this->createIterator(itOptions, std::move(dbHandleOverride));
 	for (count = 0; itHandle->valid(); ++count) {
 		itHandle->advance();
 	}
+	itHandle->close();
 }
 
 /**
