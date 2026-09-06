@@ -654,16 +654,17 @@ TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
 	{
 		LogImage img;
 		img.entry(10, 1, 500.0);
-		// Declares far more than it wrote, with nothing valid behind it.
-		img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 4000.0);
+		img.entryRaw(
+			/*declaredLength=*/std::numeric_limits<uint32_t>::max() - 12,
+			/*actualDataLen=*/8, 1, 4000.0);
 		std::ofstream out(path, std::ios::binary | std::ios::trunc);
 		out.write(img.data(), img.size());
 	}
 
 	rocksdb_js::TransactionLogFile file(path, 1);
-	file.open(1770000000000.0);
+	EXPECT_FALSE(file.isOpen());
 	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
-	file.close();
+	EXPECT_FALSE(file.isOpen());
 	std::error_code error;
 	std::filesystem::remove(path, error);
 
@@ -681,9 +682,9 @@ TEST(TransactionLogMaxEntryScan, ACleanFileIsNotReportedAsStoppedShort) {
 	}
 
 	rocksdb_js::TransactionLogFile file(path, 1);
-	file.open(1770000000000.0);
+	EXPECT_FALSE(file.isOpen());
 	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
-	file.close();
+	EXPECT_FALSE(file.isOpen());
 	std::error_code error;
 	std::filesystem::remove(path, error);
 

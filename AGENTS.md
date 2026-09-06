@@ -223,7 +223,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   the calling thread inside `RocksDatabase.open()`, and a log's retention window bounds its age
   rather than its entry count, so without a bound a large log is an open that does not return. It
   goes newest segment first and, on running out, warns and keeps the floor it reached — losing
-  coverage, never correctness. Honored literally, `0` included (scan nothing, warn); there is no
+  coverage, never correctness. Historical segments are scanned through a private read-only stream;
+  the floor walk must not open, close, map, or index the shared `TransactionLogFile`, since the same
+  store can concurrently serve another database descriptor. Honored literally, `0` included (scan
+  nothing, warn); there is no
   unbounded setting, so a deployment that would rather wait raises the value (capped at a day: the
   deadline is a `steady_clock` time point, and a larger value overflows its resolution and wraps
   into the past, scanning nothing). Read once per process

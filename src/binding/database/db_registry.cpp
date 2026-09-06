@@ -484,13 +484,6 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			);
 		}
 
-		// max_log_file_size and info_log_level are DB-wide (`DBOptions`) settings
-		// fixed at first open; the process-global descriptor is reused across
-		// handles/envs, so a second open can't change them. Reject an explicitly
-		// different request rather than silently ignore it — but let a plain
-		// reopen (non-explicit default / unset) inherit the live value, so a
-		// default-carrying reopen after a custom first open does NOT falsely
-		// reject (mirrors the compression discipline below).
 		if (!options.timestampFloorLog.empty() &&
 			options.timestampFloorLog != entry.descriptor->timestampFloorLog
 		) {
@@ -509,6 +502,13 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 		}
 
+		// max_log_file_size and info_log_level are DB-wide (`DBOptions`) settings
+		// fixed at first open; the process-global descriptor is reused across
+		// handles/envs, so a second open can't change them. Reject an explicitly
+		// different request rather than silently ignore it — but let a plain
+		// reopen (non-explicit default / unset) inherit the live value, so a
+		// default-carrying reopen after a custom first open does NOT falsely
+		// reject (mirrors the compression discipline below).
 		{
 			rocksdb::DBOptions current = entry.descriptor->db->GetDBOptions();
 			// Widen the live size_t to uint64_t rather than narrowing the request to

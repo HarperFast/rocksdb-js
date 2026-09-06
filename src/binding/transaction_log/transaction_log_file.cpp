@@ -344,24 +344,27 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(doubl
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
 	MaxEntryScan result;
-	if (this->version != 1 ||
-		this->size.load(std::memory_order_relaxed) <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+	uint64_t fileSize = this->retiredAppendBoundary.load(std::memory_order_relaxed);
+	if (fileSize == 0) {
+		fileSize = std::filesystem::file_size(this->path);
+	}
+	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		return result;
+	}
+	if (fileSize > std::numeric_limits<uint32_t>::max()) {
+		throw DBException("Transaction log is too large to scan: " + this->path.string());
 	}
 
 	RecoveryScan scan;
 	try {
-		scan = this->scanRecoveryLocked(plausibleBound);
+		scan = scanTransactionLogForRecovery(
+			this->path, static_cast<uint32_t>(fileSize), plausibleBound);
 	} catch (const DBException& error) {
 		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
 
 	result.maxTimestamp = scan.maxTimestamp;
 	result.maxImplausibleTimestamp = scan.maxImplausibleTimestamp;
-	// Any classification but Clean stopped the walk before the end of the entries.
-	// A torn tail counts: recoverTail() leaves the file at full extent when the
-	// break sits inside the flushed prefix, so entries past it stay durable and
-	// unread — the same hole a mid-file break leaves.
 	result.stoppedAtBreak = scan.kind != RecoveryScan::Kind::Clean;
 	return result;
 }

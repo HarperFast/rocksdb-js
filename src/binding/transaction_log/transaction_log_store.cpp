@@ -371,21 +371,7 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 			break;
 		}
 
-		const bool openedForScan = !logFile->isOpen();
 		try {
-			if (openedForScan) {
-				// open() would initialize a zero-length file by writing a header.
-				std::error_code sizeError;
-				auto fileSize = std::filesystem::file_size(logFile->path, sizeError);
-				if (sizeError || fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
-					if (sizeError) {
-						result.readFailed = true;
-						result.complete = false;
-					}
-					continue;
-				}
-				logFile->open(this->latestTimestamp);
-			}
 			auto fileScan = logFile->scanMaxEntryTimestamp(plausibleBound);
 			if (fileScan.maxTimestamp > result.largestKey) {
 				result.largestKey = fileScan.maxTimestamp;
@@ -394,10 +380,6 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 				result.refusedKey = fileScan.maxImplausibleTimestamp;
 			}
 			if (fileScan.stoppedAtBreak) {
-				// A break can have durable entries behind it — served by query()'s
-				// resync (AGENTS.md invariant 11), or left whole by recoverTail() when
-				// the break is inside a flushed prefix — and this walk cannot reach
-				// them, so the floor may sit below one of their keys.
 				result.stoppedAtBreak = true;
 				result.complete = false;
 			}
@@ -411,9 +393,6 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 			result.complete = false;
 			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s\n",
 				this, logFile->path.string().c_str());
-		}
-		if (openedForScan && logFile->isOpen()) {
-			logFile->close();
 		}
 	}
 

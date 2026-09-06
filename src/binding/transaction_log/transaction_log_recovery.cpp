@@ -4,6 +4,7 @@
 #include "core/exception.h"
 #include <algorithm>
 #include <cstring>
+#include <fstream>
 #include <mutex>
 #include <vector>
 
@@ -207,6 +208,17 @@ bool readFromBuffer(void* context, uint32_t offset, void* dest, uint32_t n) {
 	return true;
 }
 
+bool readFromStream(void* context, uint32_t offset, void* dest, uint32_t n) {
+	auto& input = *static_cast<std::ifstream*>(context);
+	input.clear();
+	input.seekg(offset, std::ios::beg);
+	if (!input) {
+		return false;
+	}
+	input.read(static_cast<char*>(dest), n);
+	return input.gcount() == static_cast<std::streamsize>(n);
+}
+
 } // namespace
 
 RecoveryScan scanTransactionLogForRecovery(
@@ -214,6 +226,32 @@ RecoveryScan scanTransactionLogForRecovery(
 ) {
 	return scanTransactionLogForRecovery(
 		fileSize, readFromBuffer, const_cast<char*>(data), plausibleBound);
+}
+
+RecoveryScan scanTransactionLogForRecovery(
+	const std::filesystem::path& path, uint32_t fileSize, double plausibleBound
+) {
+	std::ifstream input(path, std::ios::binary | std::ios::in);
+	if (!input.is_open()) {
+		throw DBException("Failed to open transaction log for recovery scan: " + path.string());
+	}
+
+	char header[TRANSACTION_LOG_FILE_HEADER_SIZE];
+	if (fileSize < TRANSACTION_LOG_FILE_HEADER_SIZE ||
+		!readFromStream(&input, 0, header, TRANSACTION_LOG_FILE_HEADER_SIZE)) {
+		throw DBException("Failed to read transaction log header: " + path.string());
+	}
+	if (readUint32BE(header) != TRANSACTION_LOG_TOKEN) {
+		throw TransactionLogFormatException("Invalid transaction log file: " + path.string());
+	}
+	uint8_t version = readUint8(header + 4);
+	if (version != 1) {
+		throw TransactionLogFormatException(
+			"Unsupported transaction log file version: " + std::to_string(version));
+	}
+
+	return scanTransactionLogForRecovery(
+		fileSize, readFromStream, &input, plausibleBound);
 }
 
 RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file) {

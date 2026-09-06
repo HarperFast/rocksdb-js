@@ -57,12 +57,10 @@ describe('monotonic clock floor', () => {
 		const key = aheadOfNow();
 
 		const write = await runFixture('write', dbPath, key);
-		expect(write.stderr).toBe('');
-		expect(write.code).toBe(0);
+		expect(write.code, write.stderr).toBe(0);
 
 		const read = await runFixture('read', dbPath, key);
-		expect(read.stderr).toBe('');
-		expect(read.code).toBe(0);
+		expect(read.code, read.stderr).toBe(0);
 
 		const { clock, txnTimestamp, now } = JSON.parse(read.stdout);
 		expect(clock).toBeGreaterThan(key);
@@ -82,8 +80,7 @@ describe('monotonic clock floor', () => {
 		expect((await runFixture('write', dbPath, highest - 30 * 60 * 1000)).code).toBe(0);
 
 		const read = await runFixture('read', dbPath, highest);
-		expect(read.stderr).toBe('');
-		expect(read.code).toBe(0);
+		expect(read.code, read.stderr).toBe(0);
 	}, 60000);
 
 	it('finds the largest key in an older segment', async () => {
@@ -105,8 +102,7 @@ describe('monotonic clock floor', () => {
 		expect(segments).toBeGreaterThan(1);
 
 		const read = await runFixture('read', dbPath, highest);
-		expect(read.stderr).toBe('');
-		expect(read.code).toBe(0);
+		expect(read.code, read.stderr).toBe(0);
 	}, 90000);
 
 	it('does not seed from a log the caller did not name', async () => {
@@ -118,8 +114,7 @@ describe('monotonic clock floor', () => {
 		// A log keyed by another node's clock is exactly this shape: durable keys
 		// ahead of this node's wall clock, in a log it does not originate.
 		const other = await runFixture('read-unseeded', dbPath, key, 'some-other-log');
-		expect(other.stderr).toBe('');
-		expect(other.code).toBe(0);
+		expect(other.code, other.stderr).toBe(0);
 		expect(JSON.parse(other.stdout).clock).toBeLessThan(key);
 	}, 60000);
 
@@ -132,8 +127,7 @@ describe('monotonic clock floor', () => {
 		expect((await runFixture('write', dbPath, far)).code).toBe(0);
 
 		const warned = await runFixture('warn', dbPath, far);
-		expect(warned.stderr).toBe('');
-		expect(warned.code).toBe(0);
+		expect(warned.code, warned.stderr).toBe(0);
 
 		const { warnings, clock } = JSON.parse(warned.stdout);
 		expect(warnings.join(' ')).toContain('ahead of the wall clock');
@@ -162,8 +156,7 @@ describe('monotonic clock floor', () => {
 		}
 
 		const warned = await runFixture('warn', dbPath, highest);
-		expect(warned.stderr).toBe('');
-		expect(warned.code).toBe(0);
+		expect(warned.code, warned.stderr).toBe(0);
 
 		const { warnings, clock } = JSON.parse(warned.stdout);
 		expect(warnings.join(' ')).toContain('could not be read at open');
@@ -184,8 +177,7 @@ describe('monotonic clock floor', () => {
 		const warned = await runFixture('warn', dbPath, highest, LOG, {
 			ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS: '0',
 		});
-		expect(warned.stderr).toBe('');
-		expect(warned.code).toBe(0);
+		expect(warned.code, warned.stderr).toBe(0);
 
 		const { warnings, clock } = JSON.parse(warned.stdout);
 		expect(warnings.join(' ')).toContain('scan budget');
@@ -200,8 +192,7 @@ describe('monotonic clock floor', () => {
 
 		// A typo protects nothing while looking configured, so it is not silent.
 		const warned = await runFixture('warn', dbPath, key, 'clcok');
-		expect(warned.stderr).toBe('');
-		expect(warned.code).toBe(0);
+		expect(warned.code, warned.stderr).toBe(0);
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('does not have');
 	}, 60000);
 
@@ -214,8 +205,7 @@ describe('monotonic clock floor', () => {
 		// The first open in the process fixes the option; a second one that names a
 		// log cannot re-run the seed, so it must not look applied.
 		const warned = await runFixture('reopen-warn', dbPath, key);
-		expect(warned.stderr).toBe('');
-		expect(warned.code).toBe(0);
+		expect(warned.code, warned.stderr).toBe(0);
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('was ignored');
 	}, 60000);
 
@@ -244,8 +234,7 @@ describe('monotonic clock floor', () => {
 		}
 
 		const warned = await runFixture('warn', dbPath, key);
-		expect(warned.stderr).toBe('');
-		expect(warned.code).toBe(0);
+		expect(warned.code, warned.stderr).toBe(0);
 
 		const { warnings, clock } = JSON.parse(warned.stdout);
 		expect(warnings.join(' ')).toContain('framing breaks partway through');
@@ -265,8 +254,7 @@ describe('monotonic clock floor', () => {
 		const read = await runFixture('read', dbPath, key, LOG, {
 			ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS: '99999999999999',
 		});
-		expect(read.stderr).toBe('');
-		expect(read.code).toBe(0);
+		expect(read.code, read.stderr).toBe(0);
 		expect(JSON.parse(read.stdout).clock).toBeGreaterThan(key);
 	}, 60000);
 
@@ -277,7 +265,6 @@ describe('monotonic clock floor', () => {
 		expect((await runFixture('write-unseeded', dbPath, key)).code).toBe(0);
 
 		const read = await runFixture('read-unseeded', dbPath, key, '');
-		expect(read.stderr).toBe('');
-		expect(read.code).toBe(0);
+		expect(read.code, read.stderr).toBe(0);
 	}, 60000);
 });

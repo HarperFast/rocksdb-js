@@ -2,6 +2,7 @@
 #define __TRANSACTION_LOG_RECOVERY_H__
 
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 
 namespace rocksdb_js {
@@ -111,6 +112,16 @@ RecoveryScan scanTransactionLogForRecovery(
  */
 RecoveryScan scanTransactionLogForRecovery(
 	const char* data,
+	uint32_t fileSize,
+	double plausibleBound = std::numeric_limits<double>::infinity());
+
+/**
+ * File adapter backed by a private read-only stream. It does not use or mutate
+ * a shared TransactionLogFile's handle, mapping, index, or open state. The file
+ * header is validated before its entries are scanned.
+ */
+RecoveryScan scanTransactionLogForRecovery(
+	const std::filesystem::path& path,
 	uint32_t fileSize,
 	double plausibleBound = std::numeric_limits<double>::infinity());
 
