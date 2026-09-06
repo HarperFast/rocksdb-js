@@ -53,7 +53,6 @@ TEST(MonotonicTimestamp, RaisesAndThenIssuesAboveTheFloor) {
 
 	double issued = getMonotonicTimestamp();
 	EXPECT_GT(issued, floor);
-	// The floor is the seed, not an open-ended jump past it.
 	EXPECT_LT(issued, floor + 1000.0);
 }
 
@@ -61,7 +60,6 @@ TEST(MonotonicTimestamp, IsRaiseOnly) {
 	double floor = getMonotonicTimestamp() + 10.0;
 	ASSERT_TRUE(raiseMonotonicTimestampFloor(floor));
 
-	// Below the floor already in force: refused, and the clock stays above it.
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(floor - 60000.0));
 	EXPECT_GT(getMonotonicTimestamp(), floor);
 }
