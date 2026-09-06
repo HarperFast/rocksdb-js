@@ -7,11 +7,9 @@ import { describe, expect, it } from 'vitest';
 /**
  * The WriteBufferManager stall watchdog, against a real stall.
  *
- * Two constraints force the child-process shape. `allowStall` is fixed when the
- * manager singleton is constructed, so this needs a process no other manager has
- * run in; and a real stall blocks the thread that writes, so the runner's own
- * timeout cannot fire (HarperFast/rocksdb-js#781 item 2) — the deadline has to be
- * the parent's, and the child is killed rather than asked to exit.
+ * A real stall blocks the thread that writes, so the runner's own timeout cannot
+ * fire (HarperFast/rocksdb-js#781 item 2). The deadline belongs to a parent process
+ * that can kill the deliberately wedged child.
  *
  * The decision logic itself is unit-tested deterministically in
  * `test/native/wbm_stall_watchdog_test.cc`; this proves the wiring: that a stall
@@ -77,7 +75,9 @@ function runExitChild(
 	stderr: string;
 }> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [exitFixturePath, dbPath, listenerOrder]);
+		const child = spawn(process.execPath, [exitFixturePath, dbPath, listenerOrder], {
+			env: { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: String(WARN_MS) },
+		});
 		let stderr = '';
 		let timedOut = false;
 		const deadline = setTimeout(() => {
@@ -173,7 +173,7 @@ describe('WriteBufferManager stall watchdog', () => {
 		expect(last.stats.columnFamilies).toBeGreaterThan(0);
 
 		// getStats()/getStat() are the scrape surfaces and must agree with the
-		// static accessor — an operator reading only one of them must not be told
+		// process-wide accessor — an operator reading only one of them must not be told
 		// the process is healthy.
 		expect(last.getStats.stallActive).toBe(1);
 		expect(last.getStats.bufferSize).toBe(last.stats.bufferSize);

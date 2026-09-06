@@ -150,9 +150,7 @@ void DBStats::runWriteBufferManagerWatchdog(uint64_t generation) {
 		lock.unlock();
 		try {
 			this->sampleWriteBufferManagerStall(state, thresholdMs);
-		} catch (...) {
-			// A failed diagnostic must not take down the process; the next sample retries.
-		}
+		} catch (...) {}
 		lock.lock();
 	}
 	if (this->watchdogGeneration == generation) {
@@ -219,8 +217,10 @@ WriteBufferManagerStats DBStats::getWriteBufferManagerStats(bool includeColumnFa
 	stats.memoryUsage = writeBufferManager->memory_usage();
 	stats.mutableMemoryUsage = writeBufferManager->mutable_memtable_memory_usage();
 	stats.stallActive = writeBufferManager->IsStallActive();
-	stats.stallActiveMs =
-		this->writeBufferManagerStallActiveMs.load(std::memory_order_relaxed);
+	if (stats.stallActive) {
+		stats.stallActiveMs =
+			this->writeBufferManagerStallActiveMs.load(std::memory_order_relaxed);
+	}
 	if (includeColumnFamilies) {
 		stats.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
 			writeBufferManager, stats.columnFamilies, stats.maxWriteBufferSizeToMaintain

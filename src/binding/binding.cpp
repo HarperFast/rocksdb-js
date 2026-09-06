@@ -223,8 +223,6 @@ NAPI_MODULE_INIT() {
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
-			// Same split as the shutdown() export: request the stall watchdog's
-			// stop up front, join it only after the flush path has run.
 			rocksdb_js::DBStats::getInstance().requestWriteBufferManagerWatchdogStop();
 			rocksdb_js::GlobalEvents::Shutdown();
 			rocksdb_js::TransactionLogStoreRegistry::Shutdown();

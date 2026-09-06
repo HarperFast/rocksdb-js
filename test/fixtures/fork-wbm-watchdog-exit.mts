@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.ts';
+import { getWriteBufferManagerStats, RocksDatabase } from '../../src/index.ts';
 
 const dbPath = process.argv[2];
 const listenerOrder = process.argv[3];
@@ -22,4 +22,7 @@ if (listenerOrder === 'after') {
 	addListener();
 }
 
-process.exit(db.isOpen() ? 0 : 1);
+if (!db.isOpen()) {
+	process.exit(1);
+}
+process.exit(getWriteBufferManagerStats().watchdogRunning ? 0 : 2);

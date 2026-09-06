@@ -787,8 +787,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     a genuinely new episode, which is the one that matters. The decision FSM is Node-free in
     `core/wbm_stall_watchdog.h` and GoogleTest-covered; a test that reaches a real stall must run in
     a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
-    and the runner's own timeout cannot fire (#781 item 2), and because `allowStall` is fixed when
-    the manager singleton is constructed.
+    and the runner's own timeout cannot fire (#781 item 2).
 
 ## Debugging native heap corruption
 
