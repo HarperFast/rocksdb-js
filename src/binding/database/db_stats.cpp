@@ -89,30 +89,47 @@ void DBStats::ensureWriteBufferManagerWatchdog() {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(this->watchdogMutex);
-	// This path can run under databasesMutex -> writeBufferManagerMutex. Joining
-	// here would deadlock against a retiring sample collecting registry inventory.
-	if (this->watchdogStarted) {
+	if (this->watchdogStopRequested || this->watchdogArmed) {
 		return;
 	}
-	this->watchdogStopRequested = false;
+	this->watchdogArmed = true;
 	this->writeBufferManagerWatchdogStopping.store(false, std::memory_order_relaxed);
-	const uint64_t generation = ++this->watchdogGeneration;
+	this->watchdogGeneration.fetch_add(1, std::memory_order_relaxed);
+	if (this->watchdogStarted) {
+		this->writeBufferManagerWatchdogRunning.store(true, std::memory_order_relaxed);
+		this->watchdogCv.notify_all();
+		return;
+	}
 	try {
-		this->watchdogThread =
-			std::thread([this, generation]() { this->runWriteBufferManagerWatchdog(generation); });
+		this->watchdogThread = std::thread([this]() { this->runWriteBufferManagerWatchdog(); });
 		this->watchdogStarted = true;
 		this->writeBufferManagerWatchdogRunning.store(true, std::memory_order_relaxed);
 	} catch (...) {
+		this->watchdogArmed = false;
 		this->watchdogStarted = false;
+		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
 		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
 	}
+}
+
+void DBStats::disableWriteBufferManagerWatchdog() {
+	{
+		std::lock_guard<std::mutex> lock(this->watchdogMutex);
+		this->watchdogArmed = false;
+		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
+		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+		this->writeBufferManagerStallActiveMs.store(0, std::memory_order_relaxed);
+	}
+	this->watchdogCv.notify_all();
 }
 
 void DBStats::requestWriteBufferManagerWatchdogStop() {
 	{
 		std::lock_guard<std::mutex> lock(this->watchdogMutex);
+		this->watchdogArmed = false;
 		this->watchdogStopRequested = true;
 		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
+		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
 	}
 	this->watchdogCv.notify_all();
 }
@@ -121,8 +138,10 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 	std::thread toJoin;
 	{
 		std::lock_guard<std::mutex> lock(this->watchdogMutex);
+		this->watchdogArmed = false;
 		this->watchdogStopRequested = true;
 		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
+		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
 		if (this->watchdogStarted) {
 			toJoin = std::move(this->watchdogThread);
 			this->watchdogStarted = false;
@@ -134,34 +153,48 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 	}
 }
 
-void DBStats::runWriteBufferManagerWatchdog(uint64_t generation) {
+void DBStats::runWriteBufferManagerWatchdog() {
 	setThreadName("rocksdb-wbm-watchdog");
 	const uint64_t thresholdMs = writeBufferManagerStallWarnMs();
 	WbmStallWatchdogState state;
+	uint64_t activeGeneration = 0;
 	std::unique_lock<std::mutex> lock(this->watchdogMutex);
-	auto retired = [&] {
-		return this->watchdogStopRequested || this->watchdogGeneration != generation;
-	};
-	while (!retired()) {
-		this->watchdogCv.wait_for(lock, std::chrono::milliseconds(WBM_STALL_SAMPLE_INTERVAL_MS));
-		if (retired()) {
+	while (!this->watchdogStopRequested) {
+		this->watchdogCv.wait(lock, [this]() {
+			return this->watchdogStopRequested || this->watchdogArmed;
+		});
+		if (this->watchdogStopRequested) {
 			break;
+		}
+		const uint64_t generation = this->watchdogGeneration.load(std::memory_order_relaxed);
+		if (activeGeneration != generation) {
+			state = WbmStallWatchdogState();
+			activeGeneration = generation;
+		}
+		if (this->watchdogCv.wait_for(
+				lock,
+				std::chrono::milliseconds(WBM_STALL_SAMPLE_INTERVAL_MS),
+				[this, activeGeneration]() {
+					return this->watchdogStopRequested || !this->watchdogArmed ||
+						this->watchdogGeneration.load(std::memory_order_relaxed) != activeGeneration;
+				}
+		)) {
+			continue;
 		}
 		lock.unlock();
 		try {
-			this->sampleWriteBufferManagerStall(state, thresholdMs);
+			this->sampleWriteBufferManagerStall(state, thresholdMs, activeGeneration);
 		} catch (...) {}
 		lock.lock();
 	}
-	if (this->watchdogGeneration == generation) {
-		this->writeBufferManagerStallActiveMs.store(0, std::memory_order_relaxed);
-		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
-	}
+	this->writeBufferManagerStallActiveMs.store(0, std::memory_order_relaxed);
+	this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
 }
 
 void DBStats::sampleWriteBufferManagerStall(
 	WbmStallWatchdogState& state,
-	uint64_t thresholdMs
+	uint64_t thresholdMs,
+	uint64_t generation
 ) {
 	rocksdb::WriteBufferManager* writeBufferManager =
 		this->writeBufferManager.load(std::memory_order_acquire);
@@ -171,9 +204,12 @@ void DBStats::sampleWriteBufferManagerStall(
 	WbmStallWatchdogState::Sample sample = state.onSample(
 		writeBufferManager->IsStallActive(), WbmStallWatchdogState::Clock::now(), thresholdMs
 	);
+	if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
+		this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
+		return;
+	}
 	this->writeBufferManagerStallActiveMs.store(sample.stallActiveMs, std::memory_order_relaxed);
-	if (!sample.reportNow ||
-		this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed)) {
+	if (!sample.reportNow) {
 		return;
 	}
 
@@ -188,6 +224,10 @@ void DBStats::sampleWriteBufferManagerStall(
 	report.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
 		writeBufferManager, report.columnFamilies, report.maxWriteBufferSizeToMaintain
 	);
+	if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
+		this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
+		return;
+	}
 
 	std::string line = formatWriteBufferManagerStallReport(report);
 	const bool wroteToStderr = ::fprintf(stderr, "%s\n", line.c_str()) >= 0;

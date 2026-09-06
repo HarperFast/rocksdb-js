@@ -189,7 +189,6 @@ napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
 		return jsValue;
 	}
 
-	// Unknown writeBufferManager.* keys must not fall through to RocksDB statistics.
 	if (statName.rfind("writeBufferManager.", 0) == 0) {
 		double value = 0;
 		napi_value jsValue;
@@ -308,7 +307,6 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 		setTxnlogSummaryStatsOnObject(env, result, total, logCount);
 	}
 
-	// Omit the column-family inventory from this scrape path because it walks the registry.
 	DBStats::getInstance().setWriteBufferManagerStatsOnObject(env, result);
 
 	// commit-pipeline queue depths

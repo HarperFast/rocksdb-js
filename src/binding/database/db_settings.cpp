@@ -179,7 +179,6 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	// consistent view of the manager. Throwing happens before any state
 	// mutation, so a rejected costToCache change leaves the live manager
 	// untouched.
-	bool retireWatchdog = false;
 	{
 		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
 		const bool wbmAlreadyCreated = (settings.writeBufferManager != nullptr);
@@ -216,25 +215,8 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			if (newAllowStall) {
 				DBStats::getInstance().ensureWriteBufferManagerWatchdog();
 			} else {
-				retireWatchdog = true;
+				DBStats::getInstance().disableWriteBufferManagerWatchdog();
 			}
-		}
-	}
-
-	// Joined outside the critical section: the watchdog's report path writes to
-	// stderr, which blocks on a full pipe, and every DBDescriptor::open needs
-	// writeBufferManagerMutex. Same split, and the same reason, as the teardown
-	// path in binding.cpp.
-	if (retireWatchdog) {
-		DBStats::getInstance().joinWriteBufferManagerWatchdog();
-		// Reconcile against the state that is actually current, not this call's
-		// own argument: another env re-enabling stalling in the unlocked window
-		// above would have found the thread still started and declined to start
-		// one, leaving allowStall on with no alarm behind it.
-		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
-		if (settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed) &&
-			settings.writeBufferManager) {
-			DBStats::getInstance().ensureWriteBufferManagerWatchdog();
 		}
 	}
 

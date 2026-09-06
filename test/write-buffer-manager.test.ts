@@ -114,20 +114,24 @@ describe('WriteBufferManager', () => {
 					expect(db.getStat('writeBufferManager.nope')).toBeUndefined();
 				}));
 
-			it('should start and stop the watchdog on the allowStall edges', () => {
-				expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
-				try {
-					// allowStall is the only thing that makes a stall reachable, and it
-					// is mutable at runtime, so the watchdog has to follow both edges
-					// rather than only the manager's construction.
-					RocksDatabase.config({ writeBufferManagerAllowStall: true });
-					expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
-					RocksDatabase.config({ writeBufferManagerAllowStall: false });
+			it.skipIf(process.env.ROCKSDB_JS_WBM_STALL_WARN_MS === '0')(
+				'should start and stop the watchdog on the allowStall edges',
+				() => {
 					expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
-				} finally {
-					RocksDatabase.config({ writeBufferManagerAllowStall: false });
+					try {
+						RocksDatabase.config({ writeBufferManagerAllowStall: true });
+						expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
+						RocksDatabase.config({ writeBufferManagerAllowStall: false });
+						expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
+						RocksDatabase.config({ writeBufferManagerAllowStall: true });
+						expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
+						RocksDatabase.config({ writeBufferManagerAllowStall: false });
+						expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
+					} finally {
+						RocksDatabase.config({ writeBufferManagerAllowStall: false });
+					}
 				}
-			});
+			);
 
 			it('should count only column families attached to this manager', () => {
 				const detachedPath = generateDBPath();

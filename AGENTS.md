@@ -754,19 +754,19 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     #822's backtrace); `logWorker` is event-driven off commits the stall prevents;
     `ParkTimeoutRegistry`'s thread is per-descriptor and only exists after a VT conflict; RocksDB's
     stall callbacks never fire; and a JS timer cannot run on a thread parked in `store.putSync()`.
-    So `DBStats` owns one process-wide thread, started lazily only while a manager exists **with**
-    `allowStall` (`ShouldStall()` short-circuits otherwise, so no stall is reachable and no thread is
-    started), sampling one relaxed atomic per second. Plain `std::thread`, not `uv_timer_t`, for
-    invariant 12's reason.
+    So `DBStats` owns one process-wide thread, created lazily the first time a manager exists **with**
+    `allowStall` (`ShouldStall()` short-circuits otherwise, so no stall is reachable). Runtime disable
+    parks that thread and re-enable arms it with a fresh episode state; only final teardown joins it.
+    It samples one relaxed atomic per second. Plain `std::thread`, not `uv_timer_t`, for invariant
+    12's reason.
 
     Three constraints on that thread, each of which has a failure mode:
     - **Lock order is `databasesMutex -> writeBufferManagerMutex -> watchdogMutex`**, because
       `DBRegistry::OpenDB` holds `databasesMutex` across `DBDescriptor::open`, which calls
-      `getWriteBufferManager()`. The watchdog drops `watchdogMutex` before every sample and takes
-      `databasesMutex` only inside `CollectWriteBufferManagerInventory`, so there is no cycle — but
-      that is why `ensureWriteBufferManagerWatchdog()` must never **join** a retiring thread: it runs
-      under `databasesMutex`, and the thread it would join may be waiting for exactly that lock.
-      Joining is `DBStats::joinWriteBufferManagerWatchdog()`'s job alone. `DBStats::Init()`
+      `getWriteBufferManager()`. The watchdog drops `watchdogMutex` before every sample and only
+      try-locks the registry and column inventories, so there is no cycle. `ensure` and `disable`
+      only arm or park it because they run under higher-order locks and its stderr write may block;
+      joining is `DBStats::joinWriteBufferManagerWatchdog()`'s final-teardown job alone. `DBStats::Init()`
       materializes the watchdog owner after `DBRegistry`, while its constructor first materializes
       `DBSettings` and `GlobalEvents`; reverse static destruction therefore joins the watchdog before
       any dependency it reads is destroyed.

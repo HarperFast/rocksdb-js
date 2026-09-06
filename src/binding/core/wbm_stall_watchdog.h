@@ -104,10 +104,9 @@ struct WriteBufferManagerStallReport final {
 	/** Effective `max_write_buffer_size_to_maintain` -> number of column families with it. */
 	std::map<int64_t, uint64_t> maxWriteBufferSizeToMaintain;
 	/**
-	 * False when the registry was locked by a close that is itself wedged on this
-	 * stall, so the two fields above are empty rather than measured. The line is
-	 * still emitted: an alarm that waits for the inventory would go silent in
-	 * exactly the incident it exists for.
+	 * False when registry or column-family inventory locks are busy, so the two
+	 * fields above are empty rather than measured. The alarm must not wait for
+	 * database work that may itself be stalled.
 	 */
 	bool inventoryAvailable = true;
 };

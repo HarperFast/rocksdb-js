@@ -41,11 +41,16 @@ private:
 	std::mutex watchdogMutex;
 	std::condition_variable watchdogCv;
 	bool watchdogStarted = false;
+	bool watchdogArmed = false;
 	bool watchdogStopRequested = false;
-	uint64_t watchdogGeneration = 0;
+	std::atomic<uint64_t> watchdogGeneration{0};
 
-	void runWriteBufferManagerWatchdog(uint64_t generation);
-	void sampleWriteBufferManagerStall(WbmStallWatchdogState& state, uint64_t thresholdMs);
+	void runWriteBufferManagerWatchdog();
+	void sampleWriteBufferManagerStall(
+		WbmStallWatchdogState& state,
+		uint64_t thresholdMs,
+		uint64_t generation
+	);
 	WriteBufferManagerStats getWriteBufferManagerStats(bool includeColumnFamilies);
 
 	static napi_value GetWriteBufferManagerStats(napi_env env, napi_callback_info info);
@@ -58,6 +63,7 @@ public:
 
 	void publishWriteBufferManager(rocksdb::WriteBufferManager* writeBufferManager);
 	void ensureWriteBufferManagerWatchdog();
+	void disableWriteBufferManagerWatchdog();
 	void requestWriteBufferManagerWatchdogStop();
 	void joinWriteBufferManagerWatchdog();
 
