@@ -678,7 +678,7 @@ export const BackgroundError: new (
 
 /**
  * Live state of the process-wide `WriteBufferManager` singleton — see
- * {@link RocksDatabase.getWriteBufferManagerStats}.
+ * {@link getWriteBufferManagerStats}.
  */
 export type WriteBufferManagerStats = {
 	/** Whether a manager has been created in this process. All other values are 0/false when not. */
@@ -723,6 +723,25 @@ export type WriteBufferManagerStats = {
 };
 
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
+/**
+ * Reads the live state of the process-wide `WriteBufferManager`: its budget,
+ * charged memory, mutable share, stall state, and attached column-family
+ * inventory. The manager is shared by every database and worker thread in the
+ * process.
+ *
+ * A WriteBufferManager stall does not pass through RocksDB's `WriteController`,
+ * so it is not reflected by `rocksdb.stall.micros`, `db.isWriteStalled()`, or
+ * the `'writeStall'` event. Use `stallActive` to distinguish this condition from
+ * an idle database.
+ *
+ * @example
+ * ```typescript
+ * const wbm = getWriteBufferManagerStats();
+ * if (wbm.stallActive) {
+ * 	log.warn(`writes stalled for ${wbm.stallActiveMs}ms`);
+ * }
+ * ```
+ */
 export const getWriteBufferManagerStats: () => WriteBufferManagerStats =
 	binding.getWriteBufferManagerStats;
 export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;

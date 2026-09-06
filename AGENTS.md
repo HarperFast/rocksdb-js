@@ -747,14 +747,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Eight hours of wedged production read `0` on every one of them (HarperFast/rocksdb-js#822).
     `WriteBufferManager::IsStallActive()` against `memory_usage()`/`buffer_size()` is the only
     distinguishing signal, surfaced as `writeBufferManager.*` in `db.getStats()`/`getStat()` and
-    `RocksDatabase.getWriteBufferManagerStats()`.
+    `getWriteBufferManagerStats()`.
 
     **The watchdog owns a thread because every other tick in this process is blocked by the
     condition it reports.** `CommitWorker` parks in `db->Write()` (it is one of the wedged threads in
     #822's backtrace); `logWorker` is event-driven off commits the stall prevents;
     `ParkTimeoutRegistry`'s thread is per-descriptor and only exists after a VT conflict; RocksDB's
     stall callbacks never fire; and a JS timer cannot run on a thread parked in `store.putSync()`.
-    So `DBSettings` owns one process-wide thread, started lazily only while a manager exists **with**
+    So `DBStats` owns one process-wide thread, started lazily only while a manager exists **with**
     `allowStall` (`ShouldStall()` short-circuits otherwise, so no stall is reachable and no thread is
     started), sampling one relaxed atomic per second. Plain `std::thread`, not `uv_timer_t`, for
     invariant 12's reason.
@@ -766,7 +766,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       `databasesMutex` only inside `CollectWriteBufferManagerInventory`, so there is no cycle — but
       that is why `ensureWriteBufferManagerWatchdog()` must never **join** a retiring thread: it runs
       under `databasesMutex`, and the thread it would join may be waiting for exactly that lock.
-      Joining is `joinWriteBufferManagerWatchdog()`'s job alone.
+      Joining is `DBStats::joinWriteBufferManagerWatchdog()`'s job alone. `DBStats::Init()`
+      materializes the watchdog owner after `DBRegistry`, while its constructor first materializes
+      `DBSettings` and `GlobalEvents`; reverse static destruction therefore joins the watchdog before
+      any dependency it reads is destroyed.
     - **Stop and join are split** (`binding.cpp`, both the `shutdown()` export and the last-env
       cleanup hook): request the stop first, run `DBRegistry::Shutdown()` (the flush path), and join
       _after_. The warn line goes to `stderr`, which can block on a full pipe, and joining first

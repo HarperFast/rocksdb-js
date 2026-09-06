@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.ts';
+import { getWriteBufferManagerStats, RocksDatabase } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -54,7 +54,7 @@ let sawStall = false;
 let cleared = false;
 let stalledSince = 0;
 while (performance.now() < deadline) {
-	const stats = RocksDatabase.getWriteBufferManagerStats();
+	const stats = getWriteBufferManagerStats();
 	const fromGetStats = db.getStats();
 	console.log(
 		`STATS ${JSON.stringify({

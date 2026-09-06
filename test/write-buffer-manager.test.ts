@@ -1,12 +1,12 @@
-import { RocksDatabase } from '../src/index.ts';
+import { getWriteBufferManagerStats, RocksDatabase } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { rmSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
  * The WriteBufferManager is a process-global singleton. Once created, its
- * `costToCache` and `allowStall` settings are fixed for the life of the
- * process — only `bufferSize` is mutable at runtime (via `SetBufferSize`).
+ * `costToCache` is fixed for the life of the process, while `allowStall` and
+ * `bufferSize` are mutable at runtime.
  *
  * So we initialize it ONCE for the whole file with the most informative
  * configuration (`costToCache: true`, room for resizing) and write each test
@@ -34,7 +34,7 @@ describe('WriteBufferManager', () => {
 		// place the "no manager in this process" shape is observable.
 		it('should report an unconfigured manager as disabled rather than absent', () =>
 			dbRunner(async ({ db }) => {
-				const stats = RocksDatabase.getWriteBufferManagerStats();
+				const stats = getWriteBufferManagerStats();
 				expect(stats.enabled).toBe(false);
 				expect(stats.bufferSize).toBe(0);
 				expect(stats.memoryUsage).toBe(0);
@@ -80,7 +80,7 @@ describe('WriteBufferManager', () => {
 						await db.put(`obs-${i.toString().padStart(6, '0')}`, value);
 					}
 
-					const stats = RocksDatabase.getWriteBufferManagerStats();
+					const stats = getWriteBufferManagerStats();
 					expect(stats.enabled).toBe(true);
 					expect(stats.bufferSize).toBe(64 * 1024 * 1024);
 					expect(stats.costToCache).toBe(true);
@@ -115,15 +115,15 @@ describe('WriteBufferManager', () => {
 				}));
 
 			it('should start and stop the watchdog on the allowStall edges', () => {
-				expect(RocksDatabase.getWriteBufferManagerStats().watchdogRunning).toBe(false);
+				expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
 				try {
 					// allowStall is the only thing that makes a stall reachable, and it
 					// is mutable at runtime, so the watchdog has to follow both edges
 					// rather than only the manager's construction.
 					RocksDatabase.config({ writeBufferManagerAllowStall: true });
-					expect(RocksDatabase.getWriteBufferManagerStats().watchdogRunning).toBe(true);
+					expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
 					RocksDatabase.config({ writeBufferManagerAllowStall: false });
-					expect(RocksDatabase.getWriteBufferManagerStats().watchdogRunning).toBe(false);
+					expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
 				} finally {
 					RocksDatabase.config({ writeBufferManagerAllowStall: false });
 				}
@@ -133,12 +133,11 @@ describe('WriteBufferManager', () => {
 				const detachedPath = generateDBPath();
 				const readOnlyPath = generateDBPath();
 				const attachedPath = generateDBPath();
-				const columnFamilies = (): number =>
-					RocksDatabase.getWriteBufferManagerStats().columnFamilies;
+				const columnFamilies = (): number => getWriteBufferManagerStats().columnFamilies;
 
 				const opened: RocksDatabase[] = [];
 				try {
-					expect(RocksDatabase.getWriteBufferManagerStats().inventoryAvailable).toBe(true);
+					expect(getWriteBufferManagerStats().inventoryAvailable).toBe(true);
 					const baseline = columnFamilies();
 
 					const attached = new RocksDatabase(attachedPath, { name: 'attached' });

@@ -20,6 +20,7 @@ import { describe, expect, it } from 'vitest';
  */
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-wbm-stall-watchdog.mts');
+const exitFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-exit.mts');
 const WARN_MS = 2000;
 
 type ChildResult = { stdout: string; stderr: string; timedOut: boolean };
@@ -66,7 +67,56 @@ function runStallChild(dbPath: string, deadlineMs: number): Promise<ChildResult>
 	});
 }
 
+function runExitChild(
+	dbPath: string,
+	listenerOrder: 'before' | 'after'
+): Promise<{
+	code: number | null;
+	signal: NodeJS.Signals | null;
+	timedOut: boolean;
+	stderr: string;
+}> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [exitFixturePath, dbPath, listenerOrder]);
+		let stderr = '';
+		let timedOut = false;
+		const deadline = setTimeout(() => {
+			timedOut = true;
+			child.kill('SIGKILL');
+		}, 15_000);
+
+		child.stderr?.on('data', (chunk) => {
+			stderr += chunk.toString();
+		});
+		child.on('error', (error) => {
+			clearTimeout(deadline);
+			reject(error);
+		});
+		child.on('close', (code, signal) => {
+			clearTimeout(deadline);
+			resolve({ code, signal, timedOut, stderr });
+		});
+	});
+}
+
 describe('WriteBufferManager stall watchdog', () => {
+	it.each(['before', 'after'] as const)(
+		'exits cleanly when the global listener is registered %s watchdog construction',
+		async (listenerOrder) => {
+			const dir = mkdtempSync(join(tmpdir(), 'rocksdb-wbm-exit-'));
+			try {
+				const result = await runExitChild(join(dir, 'db'), listenerOrder);
+				expect(result.timedOut, result.stderr).toBe(false);
+				expect(result.signal, result.stderr).toBeNull();
+				expect(result.code, result.stderr).toBe(0);
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+				}
+			}
+		}
+	);
+
 	it('reports a sustained stall exactly once, and both read surfaces see it', async () => {
 		const dir = mkdtempSync(join(tmpdir(), 'rocksdb-wbm-stall-'));
 		let result: ChildResult;

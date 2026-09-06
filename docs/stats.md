@@ -86,7 +86,7 @@ The `WriteBufferManager` is a **singleton shared by every database opened in thi
 database's `getStats()` returned them — two databases in one process always report identical
 values, and the numbers do not attribute memory to the database you asked. They appear regardless
 of `enableStats`, like the `txnlog.*` and `commitPipeline.*` keys.
-`RocksDatabase.getWriteBufferManagerStats()` returns the same values plus the manager's
+`getWriteBufferManagerStats()` returns the same values plus the manager's
 configuration and its live column-family inventory.
 
 `writeBufferManager.stallActive` is the only signal that distinguishes a `WriteBufferManager`

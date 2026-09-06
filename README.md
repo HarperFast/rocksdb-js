@@ -228,7 +228,7 @@ Sets global database settings.
     default to favor write throughput over hard memory bounding. Defaults to `false`. A stall here
     is invisible to RocksDB's own stall counters and to
     [`db.isWriteStalled()`](#dbiswritestalled-boolean) — see
-    [`RocksDatabase.getWriteBufferManagerStats()`](#rocksdatabasegetwritebuffermanagerstats-writebuffermanagerstats),
+    [`getWriteBufferManagerStats()`](#getwritebuffermanagerstats-writebuffermanagerstats),
     which also describes the watchdog that logs a sustained stall.
   - `writeBufferManagerCostToCache: boolean` When `true`, memtable memory is "charged" against the
     shared block cache so the block cache and write buffers draw from a single pool. During write
@@ -249,7 +249,7 @@ RocksDatabase.config({
 });
 ```
 
-### `RocksDatabase.getWriteBufferManagerStats(): WriteBufferManagerStats`
+### `getWriteBufferManagerStats(): WriteBufferManagerStats`
 
 Reads the live state of the `WriteBufferManager`.
 
@@ -309,7 +309,7 @@ ignore `stderr` if you would rather have it in your own log.
 ```typescript
 RocksDatabase.on('log.warn', (message) => logger.warn(message));
 
-const wbm = RocksDatabase.getWriteBufferManagerStats();
+const wbm = getWriteBufferManagerStats();
 if (wbm.stallActive) {
 	logger.warn(`writes stalled for ${wbm.stallActiveMs}ms: ${wbm.memoryUsage}/${wbm.bufferSize}`);
 }
@@ -1465,7 +1465,7 @@ Column family and ticker stat values are 64-bit unsigned integers and histogram 
 The result also always includes a summarized, aggregate set of `txnlog.*` keys covering all of
 the database's transaction logs, and a set of `writeBufferManager.*` keys describing the
 process-wide `WriteBufferManager`
-([`RocksDatabase.getWriteBufferManagerStats()`](#rocksdatabasegetwritebuffermanagerstats-writebuffermanagerstats)
+([`getWriteBufferManagerStats()`](#getwritebuffermanagerstats-writebuffermanagerstats)
 carries the same values plus its column-family inventory). Both sets are present regardless of
 whether statistics are enabled and can be fetched individually with `db.getStat()`. For detailed, per-log statistics —
 including memory-map usage — use [`log.getStats()`](#loggetstats-transactionlogstats). All stat

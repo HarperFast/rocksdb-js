@@ -3,7 +3,7 @@
  *
  * The `writeBufferManager.*` keys are the exception to "database-level": the
  * WriteBufferManager is a process-wide singleton, so those values describe every
- * database in the process. See `RocksDatabase.getWriteBufferManagerStats()`.
+ * database in the process. See `getWriteBufferManagerStats()`.
  */
 
 export type StatsHistogramData = {

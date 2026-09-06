@@ -1,6 +1,7 @@
 #include "napi/binding.h"
 #include "database/backup.h"
 #include "database/database.h"
+#include "database/db_stats.h"
 #include "iterator/db_iterator.h"
 #include "iterator/db_iterator_handle.h"
 #include "database/db_registry.h"
@@ -43,10 +44,10 @@ napi_value Shutdown(napi_env env, napi_callback_info info) {
 	// the databases have been shut down: its warn line goes to stderr, which can
 	// block on a full pipe, and a logging stall must never sit in front of the
 	// flush path.
-	DBSettings::getInstance().requestWriteBufferManagerWatchdogStop();
+	DBStats::getInstance().requestWriteBufferManagerWatchdogStop();
 	GlobalEvents::Shutdown();
 	DBRegistry::Shutdown();
-	DBSettings::getInstance().joinWriteBufferManagerWatchdog();
+	DBStats::getInstance().joinWriteBufferManagerWatchdog();
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
@@ -224,11 +225,11 @@ NAPI_MODULE_INIT() {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
 			// Same split as the shutdown() export: request the stall watchdog's
 			// stop up front, join it only after the flush path has run.
-			rocksdb_js::DBSettings::getInstance().requestWriteBufferManagerWatchdogStop();
+			rocksdb_js::DBStats::getInstance().requestWriteBufferManagerWatchdogStop();
 			rocksdb_js::GlobalEvents::Shutdown();
 			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
 			rocksdb_js::DBRegistry::Shutdown();
-			rocksdb_js::DBSettings::getInstance().joinWriteBufferManagerWatchdog();
+			rocksdb_js::DBStats::getInstance().joinWriteBufferManagerWatchdog();
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");
@@ -261,6 +262,7 @@ NAPI_MODULE_INIT() {
 
 	// db settings
 	rocksdb_js::DBSettings::Init(env, exports);
+	rocksdb_js::DBStats::Init(env, exports);
 
 	// global event emitter (addListener / removeListener / listenerCount)
 	rocksdb_js::GlobalEvents::Init(env, exports);
