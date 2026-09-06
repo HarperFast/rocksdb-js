@@ -161,6 +161,12 @@ RecoveryScan scanTransactionLogForRecovery(
 			return scan(RecoveryScan::Kind::Clean, fileSize);
 		}
 		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
+			char padding[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+			uint32_t remaining = fileSize - pos;
+			source.readExact(pos, padding, remaining);
+			if (std::all_of(padding, padding + remaining, [](char byte) { return byte == 0; })) {
+				return scan(RecoveryScan::Kind::Clean, pos);
+			}
 			return scan(RecoveryScan::Kind::TruncateTail, pos);
 		}
 		source.readHeaderAt(pos, header);

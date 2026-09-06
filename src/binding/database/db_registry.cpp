@@ -487,10 +487,6 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		if (!options.timestampFloorLog.empty() &&
 			options.timestampFloorLog != entry.descriptor->timestampFloorLog
 		) {
-			// The seed runs once, inside DBDescriptor::open, before any transaction
-			// on this path can exist; a later open of the same path cannot re-run it.
-			// Warn rather than throw: unlike the options below, this one only ever
-			// raises a floor, so refusing the open would cost more than it protects.
 			std::ostringstream msg;
 			msg << "Database \"" << path << "\" is already open"
 				<< (entry.descriptor->timestampFloorLog.empty()

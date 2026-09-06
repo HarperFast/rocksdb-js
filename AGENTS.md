@@ -226,10 +226,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   coverage, never correctness. Historical segments are scanned through a private read-only stream;
   the floor walk must not open, close, map, or index the shared `TransactionLogFile`, since the same
   store can concurrently serve another database descriptor. Honored literally, `0` included (scan
-  nothing, warn); there is no
-  unbounded setting, so a deployment that would rather wait raises the value (capped at a day: the
-  deadline is a `steady_clock` time point, and a larger value overflows its resolution and wraps
-  into the past, scanning nothing). Read once per process
+  nothing, warn); there is no unbounded setting, so a deployment that would rather wait raises the
+  value (capped at a day: the deadline is a `steady_clock` time point, and a larger value overflows
+  its resolution and wraps into the past, scanning nothing). Read once per process
   (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
   `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is started with
 - `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` - Rate-limit window (default `1000`) for the

@@ -275,10 +275,6 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		std::lock_guard<std::mutex> storeLock(it->second->storesMutex);
 		auto storeIt = it->second->stores.find(logName);
 		if (storeIt == it->second->stores.end()) {
-			// Nothing durable to resume above; a log created later this session only
-			// ever receives keys this process has already issued. Other stores being
-			// present makes this a misnamed option rather than a first open, and a
-			// misnamed one protects nothing while looking configured.
 			otherStores = !it->second->stores.empty();
 			namedStoreMissing = true;
 		} else {
@@ -297,8 +293,6 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		return;
 	}
 
-	// Below MAX_TIMESTAMP_MS, which raiseMonotonicTimestampFloor() refuses outright:
-	// a key at the domain edge is reported as refused rather than dropped in silence.
 	const double plausibleBound = std::min(
 		getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS,
 		std::nextafter(MAX_TIMESTAMP_MS, 0.0));
@@ -323,8 +317,6 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 	}
 
 	if (!scan.complete) {
-		// Every reason, not the first: a budget that runs out while a segment also
-		// has a framing break would otherwise send the operator after the wrong one.
 		std::vector<std::string> reasons;
 		if (scan.budgetExhausted) {
 			reasons.emplace_back(

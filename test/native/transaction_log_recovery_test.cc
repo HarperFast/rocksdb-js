@@ -123,6 +123,17 @@ TEST(TransactionLogRecovery, ZeroPaddedTailIsCleanAtPadStart) {
 	EXPECT_EQ(scan.validEnd, entriesEnd);
 }
 
+TEST(TransactionLogRecovery, SubHeaderZeroPaddingIsCleanAtPadStart) {
+	LogImage img;
+	img.entry(10);
+	uint32_t entriesEnd = img.size();
+	img.zeros(TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1);
+
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_EQ(scan.validEnd, entriesEnd);
+}
+
 TEST(TransactionLogRecovery, TornTailDeclaredLengthOverruns) {
 	LogImage img;
 	img.entry(10).entry(20);
@@ -645,10 +656,7 @@ std::filesystem::path uniqueMaxEntryScanPath() {
 
 } // namespace
 
-// Over a real TransactionLogFile, not the buffer adapter: the propagation from
-// the scan's classification to MaxEntryScan::stoppedAtBreak is what decides
-// whether the clock floor reports an incomplete answer, and a torn tail reaches
-// it by a different classification than a mid-file break.
+// Exercise MaxEntryScan's propagation of the recovery classification.
 TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
 	auto path = uniqueMaxEntryScanPath();
 	{
@@ -690,4 +698,36 @@ TEST(TransactionLogMaxEntryScan, ACleanFileIsNotReportedAsStoppedShort) {
 
 	EXPECT_FALSE(scan.stoppedAtBreak);
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 900.0);
+}
+
+TEST(TransactionLogMaxEntryScan, RetiredBoundaryExcludesThePhysicalTail) {
+	auto path = uniqueMaxEntryScanPath();
+	uint32_t retiredBoundary;
+	{
+		LogImage img;
+		img.entry(10, 1, 500.0);
+		retiredBoundary = img.size();
+		img.entry(10, 1, 9000.0);
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out.write(img.data(), img.size());
+	}
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	file.retiredAppendBoundary.store(retiredBoundary, std::memory_order_relaxed);
+	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
+	std::error_code error;
+	std::filesystem::remove(path, error);
+
+	EXPECT_FALSE(scan.stoppedAtBreak);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
+TEST(TransactionLogMaxEntryScan, MissingSegmentIsNotCreated) {
+	auto path = uniqueMaxEntryScanPath();
+	std::error_code error;
+	std::filesystem::remove(path, error);
+	rocksdb_js::TransactionLogFile file(path, 1);
+
+	EXPECT_ANY_THROW(file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity()));
+	EXPECT_FALSE(std::filesystem::exists(path));
 }

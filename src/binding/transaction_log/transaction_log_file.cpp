@@ -341,12 +341,17 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 }
 
 TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(double plausibleBound) {
-	std::lock_guard<std::mutex> fileLock(this->fileMutex);
-
 	MaxEntryScan result;
-	uint64_t fileSize = this->retiredAppendBoundary.load(std::memory_order_relaxed);
-	if (fileSize == 0) {
-		fileSize = std::filesystem::file_size(this->path);
+	uint64_t fileSize;
+	{
+		std::lock_guard<std::mutex> fileLock(this->fileMutex);
+		fileSize = this->retiredAppendBoundary.load(std::memory_order_relaxed);
+		if (fileSize == 0) {
+			fileSize = this->size.load(std::memory_order_relaxed);
+		}
+		if (fileSize == 0) {
+			fileSize = std::filesystem::file_size(this->path);
+		}
 	}
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		return result;
