@@ -1,4 +1,9 @@
-import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
+import {
+	getWriteBufferManagerStats,
+	RocksDatabase,
+	registryStatus,
+	shutdown,
+} from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { spawn } from 'node:child_process';
@@ -38,6 +43,32 @@ describe('Shutdown', () => {
 			status = registryStatus();
 			expect(status.length).toBe(0);
 		}));
+
+	it.skipIf(process.env.ROCKSDB_JS_WBM_STALL_WARN_MS === '0')(
+		'should restart the WriteBufferManager watchdog after shutdown',
+		() => {
+			const path = generateDBPath();
+			const db = new RocksDatabase(path);
+			RocksDatabase.config({
+				writeBufferManagerSize: 64 * 1024 * 1024,
+				writeBufferManagerAllowStall: true,
+			});
+			try {
+				db.open();
+				expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
+				shutdown();
+				expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
+				db.open();
+				expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
+			} finally {
+				RocksDatabase.config({
+					writeBufferManagerSize: 0,
+					writeBufferManagerAllowStall: false,
+				});
+				db.close();
+			}
+		}
+	);
 
 	it('should open 10 databases, shutdown, and open them again', async () =>
 		dbRunner(

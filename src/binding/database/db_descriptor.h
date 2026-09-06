@@ -284,6 +284,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Map of column family name to column family handle.
 	 */
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
+	// A dropped family can remain charged through a live handle after leaving `columns`.
+	bool writeBufferManagerInventoryComplete = true;
 
 	/**
 	 * Mutex to protect the columns map. Column families can be unregistered on

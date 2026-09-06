@@ -756,9 +756,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     stall callbacks never fire; and a JS timer cannot run on a thread parked in `store.putSync()`.
     So `DBStats` owns one process-wide thread, created lazily the first time a manager exists **with**
     `allowStall` (`ShouldStall()` short-circuits otherwise, so no stall is reachable). Runtime disable
-    parks that thread and re-enable arms it with a fresh episode state; only final teardown joins it.
-    It samples one relaxed atomic per second. Plain `std::thread`, not `uv_timer_t`, for invariant
-    12's reason.
+    parks that thread and re-enable arms it with a fresh episode state; explicit shutdown and final
+    teardown join it. Since `shutdown()` supports reopening databases, the stop latch resets only
+    after the old thread has joined. It samples one relaxed atomic per second. Plain `std::thread`,
+    not `uv_timer_t`, for invariant 12's reason.
 
     Three constraints on that thread, each of which has a failure mode:
     - **Lock order is `databasesMutex -> writeBufferManagerMutex -> watchdogMutex`**, because
@@ -776,11 +777,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       would put a logging stall in front of durability.
     - **The inventory counts only column families that can explain the budget** — descriptors that
       attached _this_ manager (attachment is decided per open, so a database opened before the
-      manager was configured, or while its size was 0, has not) and are not read-only. The retention
-      value it reports is the **effective** `max_write_buffer_size_to_maintain` read from
-      `db->GetOptions(cf)` at creation, never the requested one: #821's whole finding is that
-      `TransactionDB::Open` rewrites a requested `0` into 256 MiB per CF, so the requested value
-      hides the fact the report exists to expose.
+      manager was configured, or while its size was 0, has not). Read-only opens are included because
+      WAL recovery can retain charged memtables. A dropped family can remain charged through a live
+      handle after leaving the by-name map, so that descriptor makes the inventory unavailable rather
+      than incomplete. The retention value it reports is the **effective**
+      `max_write_buffer_size_to_maintain` read from `db->GetOptions(cf)` at creation, never the
+      requested one: #821's whole finding is that `TransactionDB::Open` rewrites a requested `0` into
+      256 MiB per CF, so the requested value hides the fact the report exists to expose.
 
     The report is one line per _episode_ (a stall must be continuously active past the threshold),
     with deliberately no second rate-limit window on top — a window would suppress the first line of

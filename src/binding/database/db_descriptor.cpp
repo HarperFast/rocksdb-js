@@ -1646,6 +1646,7 @@ uint32_t DBDescriptor::transactionGetNextId() {
  */
 void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
 	std::lock_guard<std::mutex> lock(this->columnsMutex);
+	this->writeBufferManagerInventoryComplete = false;
 	// Retire debounce state so the map stays bounded and a recreated CF of the
 	// same name starts fresh rather than inheriting a stale reported-stalled bit.
 	this->writeStallDebounce.forget(columnName);

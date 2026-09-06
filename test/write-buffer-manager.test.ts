@@ -85,15 +85,12 @@ describe('WriteBufferManager', () => {
 					expect(stats.bufferSize).toBe(64 * 1024 * 1024);
 					expect(stats.costToCache).toBe(true);
 					expect(stats.allowStall).toBe(false);
-					// Nothing can stall a manager built without allowStall.
 					expect(stats.stallActive).toBe(false);
 					expect(stats.watchdogRunning).toBe(false);
 					expect(stats.memoryUsage).toBeGreaterThan(1024 * 1024);
 					expect(stats.mutableMemoryUsage).toBeGreaterThan(0);
 					expect(stats.mutableMemoryUsage).toBeLessThanOrEqual(stats.memoryUsage);
 
-					// `db.getStats()` reports the same process-wide manager, and is
-					// not gated on `enableStats` (this database has statistics off).
 					const dbStats = db.getStats();
 					expect(dbStats['writeBufferManager.bufferSize']).toBe(stats.bufferSize);
 					expect(dbStats['writeBufferManager.stallActive']).toBe(0);
@@ -108,9 +105,6 @@ describe('WriteBufferManager', () => {
 					expect(typeof db.getStat('writeBufferManager.mutableMemoryUsage')).toBe('number');
 					expect(db.getStat('writeBufferManager.stallActive')).toBe(0);
 					expect(db.getStat('writeBufferManager.stallActiveMs')).toBe(0);
-					// An unknown key here must not fall through to the statistics path,
-					// which throws when statistics are disabled — i.e. exactly when an
-					// operator is reaching for this during an incident.
 					expect(db.getStat('writeBufferManager.nope')).toBeUndefined();
 				}));
 
@@ -133,8 +127,9 @@ describe('WriteBufferManager', () => {
 				}
 			);
 
-			it('should count only column families attached to this manager', () => {
+			it('should inventory column families attached to this manager', () => {
 				const detachedPath = generateDBPath();
+				const droppedPath = generateDBPath();
 				const readOnlyPath = generateDBPath();
 				const attachedPath = generateDBPath();
 				const columnFamilies = (): number => getWriteBufferManagerStats().columnFamilies;
@@ -160,9 +155,6 @@ describe('WriteBufferManager', () => {
 					RocksDatabase.config({ writeBufferManagerSize: 64 * 1024 * 1024 });
 					expect(columnFamilies()).toBe(withAttached);
 
-					// A read-only database attaches the manager but writes nothing to
-					// it, so counting it would inflate the retention distribution the
-					// stall report is meant to explain.
 					const seed = new RocksDatabase(readOnlyPath);
 					seed.open();
 					seed.putSync('seed', 'value');
@@ -170,13 +162,22 @@ describe('WriteBufferManager', () => {
 					const readOnly = new RocksDatabase(readOnlyPath, { readOnly: true });
 					readOnly.open();
 					opened.push(readOnly);
-					expect(columnFamilies()).toBe(withAttached);
+					expect(columnFamilies()).toBe(withAttached + 1);
+
+					const dropped = new RocksDatabase(droppedPath, { name: 'dropped' });
+					dropped.open();
+					opened.push(dropped);
+					dropped.dropSync();
+					const incomplete = getWriteBufferManagerStats();
+					expect(incomplete.inventoryAvailable).toBe(false);
+					expect(incomplete.columnFamilies).toBe(0);
+					expect(incomplete.maxWriteBufferSizeToMaintain).toEqual({});
 				} finally {
 					for (const db of opened) {
 						db.close();
 					}
 					if (!process.env.KEEP_FILES) {
-						for (const path of [attachedPath, detachedPath, readOnlyPath]) {
+						for (const path of [attachedPath, detachedPath, droppedPath, readOnlyPath]) {
 							rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
 						}
 					}

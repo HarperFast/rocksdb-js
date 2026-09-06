@@ -132,8 +132,6 @@ describe('WriteBufferManager stall watchdog', () => {
 		}
 
 		expect(result.timedOut, `child never finished:\n${result.stderr}`).toBe(false);
-		// Anchored: 'NEVER_STALLED' also contains 'STALLED', and a run that never
-		// reached a stall must fail here rather than in the warn-count assertion.
 		expect(result.stdout.split(/\r?\n/), `child stderr:\n${result.stderr}`).toContain('STALLED');
 
 		// Split on either line ending: the C++ warn line goes through the Windows
@@ -142,8 +140,6 @@ describe('WriteBufferManager stall watchdog', () => {
 		const warnings = result.stderr
 			.split(/\r?\n/)
 			.filter((line) => line.includes('WriteBufferManager write stall active for'));
-		// Not one per blocked writer and not one per poll: the stall is held for
-		// several times the threshold and still yields a single line.
 		expect(warnings).toHaveLength(1);
 
 		const [warning] = warnings;
@@ -151,8 +147,6 @@ describe('WriteBufferManager stall watchdog', () => {
 		expect(warning).toMatch(/usage=\d[\d.]*[KMGT]?B \(\d/);
 		expect(warning).toMatch(/mutable=\d[\d.]*[KMGT]?B \(\d/);
 		expect(warning).toContain('allowStall=true');
-		// The retention target that filled the budget, grouped by how many column
-		// families carry it — the value that explained the production wedge.
 		expect(warning).toMatch(/columnFamilies=[1-9]\d*/);
 		expect(warning).toMatch(/maxWriteBufferSizeToMaintain=\{33554432:[1-9]\d*\}/);
 
@@ -172,17 +166,12 @@ describe('WriteBufferManager stall watchdog', () => {
 		expect(last.stats.stallActiveMs).toBeGreaterThanOrEqual(WARN_MS);
 		expect(last.stats.columnFamilies).toBeGreaterThan(0);
 
-		// getStats()/getStat() are the scrape surfaces and must agree with the
-		// process-wide accessor — an operator reading only one of them must not be told
-		// the process is healthy.
 		expect(last.getStats.stallActive).toBe(1);
 		expect(last.getStats.bufferSize).toBe(last.stats.bufferSize);
 		expect(last.getStat.stallActive).toBe(1);
 		expect(last.getStat.bufferSize).toBe(last.stats.bufferSize);
 		expect(last.getStat.stallActiveMs).toBe(last.getStats.stallActiveMs);
 
-		// The `'log.warn'` event is the programmatic half of the warn line: same
-		// payload, same once-per-episode cadence.
 		const warned = result.stdout
 			.split(/\r?\n/)
 			.filter((line) => line.startsWith('WARNED '))
@@ -190,7 +179,6 @@ describe('WriteBufferManager stall watchdog', () => {
 		expect(warned).toHaveLength(1);
 		expect(warned[0]).toBe(warning);
 
-		// stallActiveMs is a duration, not a flag: it has to climb across samples.
 		expect(stalled.at(-1)!.stats.stallActiveMs).toBeGreaterThan(stalled[0].stats.stallActiveMs);
 	}, 150_000);
 });

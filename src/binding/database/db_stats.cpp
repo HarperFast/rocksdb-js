@@ -151,6 +151,10 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 	if (toJoin.joinable()) {
 		toJoin.join();
 	}
+	{
+		std::lock_guard<std::mutex> lock(this->watchdogMutex);
+		this->watchdogStopRequested = false;
+	}
 }
 
 void DBStats::runWriteBufferManagerWatchdog() {

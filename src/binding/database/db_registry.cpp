@@ -312,11 +312,14 @@ bool DBRegistry::CollectWriteBufferManagerInventory(
 	std::map<int64_t, uint64_t> collectedMaxWriteBufferSizeToMaintain;
 	for (const auto& [key, entry] : instance->databases) {
 		const auto& descriptor = entry.descriptor;
-		if (!descriptor || descriptor->readOnly || descriptor->attachedWriteBufferManager != wbm) {
+		if (!descriptor || descriptor->attachedWriteBufferManager != wbm) {
 			continue;
 		}
 		std::unique_lock<std::mutex> columnsLock(descriptor->columnsMutex, std::try_to_lock);
 		if (!columnsLock.owns_lock()) {
+			return false;
+		}
+		if (!descriptor->writeBufferManagerInventoryComplete) {
 			return false;
 		}
 		for (const auto& [name, columnDescriptor] : descriptor->columns) {
