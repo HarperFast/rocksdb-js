@@ -53,6 +53,7 @@ typedef struct rocksdb_js_byte_span {
 	uint64_t length;
 } rocksdb_js_byte_span;
 
+/* Providers write status text into data and never replace the data pointer. */
 typedef struct rocksdb_js_status_buffer {
 	uint32_t struct_size;
 	uint32_t reserved;
@@ -61,6 +62,7 @@ typedef struct rocksdb_js_status_buffer {
 	uint64_t length;
 } rocksdb_js_status_buffer;
 
+/* A valid result is cleared before every operation, including non-OK returns. */
 typedef struct rocksdb_js_owned_bytes {
 	uint32_t struct_size;
 	uint32_t reserved;
@@ -120,6 +122,7 @@ typedef struct rocksdb_js_storage_lease_v1 {
 		void* context,
 		const rocksdb_js_storage_mutation* mutations,
 		uint64_t mutation_count,
+		uint64_t mutation_stride,
 		uint32_t policy,
 		rocksdb_js_status_buffer* status
 	);

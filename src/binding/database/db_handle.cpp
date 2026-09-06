@@ -347,12 +347,16 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->disableWAL = options.disableWAL;
 	this->enableVerificationTable = options.verificationTable;
 	if (this->enableVerificationTable) {
-		if (!this->columnDescriptor->registerVerificationTableHandle()) {
+		auto registration = this->columnDescriptor->registerVerificationTableHandle();
+		if (registration != VerificationTableRegistration::Registered) {
 			bool readOnly = this->descriptor->readOnly;
 			this->columnDescriptor.reset();
 			this->descriptor.reset();
 			this->enableVerificationTable = false;
 			DBRegistry::PurgeIfUnreferenced(this->path, readOnly);
+			if (registration == VerificationTableRegistration::Revoked) {
+				throw DBException("Column family was dropped");
+			}
 			throw DBException("Column family has an active native storage lease");
 		}
 		this->verificationTableHandleRegistered = true;

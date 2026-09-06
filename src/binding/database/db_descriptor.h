@@ -743,6 +743,12 @@ struct UserSharedBufferFinalizeData final {
 	) : key(k), dbHandle(d), columnDescriptor(c), sharedData(std::move(data)), listener(std::move(listener)) {}
 };
 
+enum class VerificationTableRegistration {
+	Registered,
+	Revoked,
+	NativeStorageLeaseActive,
+};
+
 /**
  * Contains the column family handle and map of user shared buffers.
  */
@@ -779,11 +785,12 @@ struct ColumnFamilyDescriptor final {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);
 	}
 
-	bool registerVerificationTableHandle() {
+	VerificationTableRegistration registerVerificationTableHandle() {
 		std::lock_guard lock(this->nativeUsageMutex);
-		if (this->revoked.load() || this->nativeStorageLeases != 0) return false;
+		if (this->revoked.load()) return VerificationTableRegistration::Revoked;
+		if (this->nativeStorageLeases != 0) return VerificationTableRegistration::NativeStorageLeaseActive;
 		++this->verificationTableHandles;
-		return true;
+		return VerificationTableRegistration::Registered;
 	}
 
 	void unregisterVerificationTableHandle() {

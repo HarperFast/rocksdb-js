@@ -130,6 +130,8 @@ N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in
      prebuild then emits the compression libs to link as **whitespace-free** `-l` flags / `.lib`
      names (never absolute paths), resolved via a single `library_dirs` entry — so a repo checked
      out under a path with spaces still links (gyp `<!@()` splits output on whitespace).
+7. **Operation admission**: `OperationGate` uses sequentially consistent acquire/close ordering.
+   Every RocksDB access must hold a claim, and no RocksDB-owned pointer or slice may outlive it.
 
 ### Transaction Architecture
 

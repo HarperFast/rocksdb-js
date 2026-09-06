@@ -42,6 +42,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
+      - name: Build native storage lease
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ROCKSDB_JS_NATIVE_STORAGE_LEASE: '1'
+        run: pnpm rebuild
+
       - name: Check
         run: pnpm check
 

@@ -66,6 +66,7 @@ struct StorageLeaseState final : Closable {
 			liveColumn->unregisterNativeStorageLease();
 		}
 
+		// Close rejects this claim before its closable sweep can release the last state reference.
 		auto claim = OperationClaim::acquireShared(this->gate);
 		DBDescriptor* liveDescriptor = this->descriptor.load(std::memory_order_acquire);
 		if (claim && liveDescriptor) {
@@ -88,6 +89,7 @@ struct LeaseContext {
 };
 
 struct Admission {
+	// claim must outlive column so the RocksDB handle is released before close drains.
 	OperationClaim claim;
 	std::shared_ptr<ColumnFamilyDescriptor> column;
 	DBDescriptor* descriptor = nullptr;
@@ -122,7 +124,10 @@ uint32_t fail(StorageLeaseState* state, uint32_t code, rocksdb_js_status_buffer*
 }
 
 uint32_t mapStatus(StorageLeaseState* state, const rocksdb::Status& status, rocksdb_js_status_buffer* out) noexcept {
-	if (status.ok()) return ROCKSDB_JS_STORAGE_OK;
+	if (status.ok()) {
+		writeStatus(out, nullptr);
+		return ROCKSDB_JS_STORAGE_OK;
+	}
 	if (status.IsNotFound()) return fail(state, ROCKSDB_JS_STORAGE_NOT_FOUND, out, "not found");
 	if (status.IsBusy() || status.IsIncomplete() || status.IsTryAgain() || status.IsTimedOut()) {
 		return fail(state, ROCKSDB_JS_STORAGE_BUSY, out, "storage is busy");
@@ -131,6 +136,9 @@ uint32_t mapStatus(StorageLeaseState* state, const rocksdb::Status& status, rock
 		return fail(state, ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, out, "invalid RocksDB operation");
 	}
 	if (status.IsIOError()) return fail(state, ROCKSDB_JS_STORAGE_IO_ERROR, out, "RocksDB I/O error");
+	if (status.IsNotSupported()) {
+		return fail(state, ROCKSDB_JS_STORAGE_UNSUPPORTED, out, "RocksDB operation is unsupported");
+	}
 	return fail(state, ROCKSDB_JS_STORAGE_INTERNAL, out, "RocksDB operation failed");
 }
 
@@ -188,6 +196,26 @@ void releaseOwned(void* rawAllocation) noexcept {
 	releaseContext(context);
 }
 
+bool prepareOwned(
+	LeaseContext* context,
+	rocksdb_js_owned_bytes* result,
+	rocksdb_js_status_buffer* status
+) noexcept {
+	if (!result || result->struct_size < sizeof(rocksdb_js_owned_bytes)) {
+		fail(context ? context->state.get() : nullptr, ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, status, "invalid owned-bytes result");
+		return false;
+	}
+	if (result->reserved != 0) {
+		fail(context ? context->state.get() : nullptr, ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, status, "owned-bytes reserved field must be zero");
+		return false;
+	}
+	result->data = nullptr;
+	result->length = 0;
+	result->release_context = nullptr;
+	result->release = nullptr;
+	return true;
+}
+
 uint32_t setOwned(
 	LeaseContext* context,
 	const uint8_t* source,
@@ -195,16 +223,6 @@ uint32_t setOwned(
 	rocksdb_js_owned_bytes* result,
 	rocksdb_js_status_buffer* status
 ) noexcept {
-	if (!result || result->struct_size < sizeof(rocksdb_js_owned_bytes)) {
-		return fail(context->state.get(), ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, status, "invalid owned-bytes result");
-	}
-	if (result->reserved != 0) {
-		return fail(context->state.get(), ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, status, "owned-bytes reserved field must be zero");
-	}
-	result->data = nullptr;
-	result->length = 0;
-	result->release_context = nullptr;
-	result->release = nullptr;
 	if (length > kMaxOwnedBytes) {
 		return fail(context->state.get(), ROCKSDB_JS_STORAGE_LIMIT, status, "owned value exceeds limit");
 	}
@@ -267,6 +285,7 @@ uint32_t getOwned(
 ) noexcept {
 	auto* context = static_cast<LeaseContext*>(rawContext);
 	try {
+		if (!prepareOwned(context, result, status)) return ROCKSDB_JS_STORAGE_INVALID_ARGUMENT;
 		if (!context || !context->state || key.length == 0 || (key.length != 0 && key.data == nullptr)) {
 			return fail(context ? context->state.get() : nullptr, ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, status, "invalid key");
 		}
@@ -295,12 +314,15 @@ uint32_t writeBatch(
 	void* rawContext,
 	const rocksdb_js_storage_mutation* mutations,
 	uint64_t mutationCount,
+	uint64_t mutationStride,
 	uint32_t policy,
 	rocksdb_js_status_buffer* status
 ) noexcept {
 	auto* context = static_cast<LeaseContext*>(rawContext);
 	try {
-		if (!context || !context->state || mutationCount == 0 || mutationCount > kMaxBatchMutations || !mutations) {
+		if (!context || !context->state || mutationCount == 0 || mutationCount > kMaxBatchMutations || !mutations ||
+			mutationStride != sizeof(rocksdb_js_storage_mutation)
+		) {
 			return fail(context ? context->state.get() : nullptr, ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, status, "invalid mutation batch");
 		}
 		rocksdb::WriteOptions options;
@@ -314,9 +336,14 @@ uint32_t writeBatch(
 				return fail(context->state.get(), ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, status, "invalid write policy");
 		}
 
+		Admission admission;
+		uint32_t admitted = acquire(context, admission, status);
+		if (admitted != ROCKSDB_JS_STORAGE_OK) return admitted;
+
 		uint64_t totalBytes = 0;
+		rocksdb::WriteBatch batch;
 		for (uint64_t i = 0; i < mutationCount; ++i) {
-			const auto& mutation = mutations[i];
+			const auto mutation = mutations[i];
 			if (mutation.struct_size < sizeof(rocksdb_js_storage_mutation) || mutation.key.length == 0 ||
 				(mutation.key.length != 0 && mutation.key.data == nullptr) ||
 				(mutation.value.length != 0 && mutation.value.data == nullptr) ||
@@ -332,21 +359,15 @@ uint32_t writeBatch(
 				return fail(context->state.get(), ROCKSDB_JS_STORAGE_LIMIT, status, "mutation batch exceeds limits");
 			}
 			totalBytes += mutation.key.length + mutation.value.length;
-		}
-
-		Admission admission;
-		uint32_t admitted = acquire(context, admission, status);
-		if (admitted != ROCKSDB_JS_STORAGE_OK) return admitted;
-		rocksdb::WriteBatch batch;
-		for (uint64_t i = 0; i < mutationCount; ++i) {
-			const auto& mutation = mutations[i];
 			rocksdb::Slice key(reinterpret_cast<const char*>(mutation.key.data), static_cast<size_t>(mutation.key.length));
+			rocksdb::Status batchStatus;
 			if (mutation.kind == ROCKSDB_JS_STORAGE_PUT) {
 				rocksdb::Slice value(reinterpret_cast<const char*>(mutation.value.data), static_cast<size_t>(mutation.value.length));
-				batch.Put(admission.column->column.get(), key, value);
+				batchStatus = batch.Put(admission.column->column.get(), key, value);
 			} else {
-				batch.Delete(admission.column->column.get(), key);
+				batchStatus = batch.Delete(admission.column->column.get(), key);
 			}
+			if (!batchStatus.ok()) return mapStatus(context->state.get(), batchStatus, status);
 		}
 		context->state->batchOperations.fetch_add(1, std::memory_order_relaxed);
 		context->state->requestedBytes.fetch_add(totalBytes, std::memory_order_relaxed);
@@ -375,6 +396,7 @@ uint32_t scanPage(
 ) noexcept {
 	auto* context = static_cast<LeaseContext*>(rawContext);
 	try {
+		if (!prepareOwned(context, page, status)) return ROCKSDB_JS_STORAGE_INVALID_ARGUMENT;
 		if (!context || !context->state || (prefix.length != 0 && prefix.data == nullptr) ||
 			(startAfter.length != 0 && startAfter.data == nullptr) || entryLimit == 0 ||
 			byteLimit < sizeof(uint32_t)
@@ -432,9 +454,12 @@ uint32_t scanPage(
 			if ((entries & 63) == 0 && context->state->gate->isClosing()) {
 				return fail(context->state.get(), ROCKSDB_JS_STORAGE_CLOSED, status, "database is closing");
 			}
+			if (entries == entryLimit) break;
 			iterator->Next();
 		}
-		if (!iterator->status().ok()) return mapStatus(context->state.get(), iterator->status(), status);
+		if (!iterator->status().ok() && !(entries != 0 && iterator->status().IsTimedOut())) {
+			return mapStatus(context->state.get(), iterator->status(), status);
+		}
 		for (unsigned shift = 0; shift < 32; shift += 8) bytes[shift / 8] = static_cast<uint8_t>(entries >> shift);
 		return setOwned(context, bytes.data(), bytes.size(), page, status);
 	} catch (...) {
@@ -508,6 +533,14 @@ napi_value Database::NativeStorageLease(napi_env env, napi_callback_info info) {
 	auto operation = descriptor->acquireOperation();
 	if (!operation) {
 		::napi_throw_error(env, nullptr, "Database is closing");
+		return nullptr;
+	}
+	if (descriptor->readOnly) {
+		::napi_throw_error(env, nullptr, "Native storage leases require a writable database");
+		return nullptr;
+	}
+	if (descriptor->mode == DBMode::Pessimistic) {
+		::napi_throw_error(env, nullptr, "Native storage leases do not support pessimistic databases");
 		return nullptr;
 	}
 	auto column = (*dbHandle)->columnDescriptor;

@@ -284,8 +284,8 @@ typedef struct {
   uint32_t (*get_owned)(void* context, ByteSpan key,
                         OwnedBytes* result, StatusBuffer* status);
   uint32_t (*write_batch)(void* context, const StorageMutation* mutations,
-                          uint64_t mutation_count, uint32_t policy,
-                          StatusBuffer* status);
+                          uint64_t mutation_count, uint64_t mutation_stride,
+                          uint32_t policy, StatusBuffer* status);
   uint32_t (*scan_page)(void* context, ByteSpan prefix,
                         ByteSpan start_after, uint64_t entry_limit,
                         uint64_t byte_limit, OwnedBytes* page,
@@ -302,8 +302,11 @@ locking, target-CF flush, and `multi_get` are omitted rather than implemented sp
 The shared header is valid C and does not spell C++ `noexcept`; every C++ implementation function
 is nevertheless declared `noexcept`. Functions return only a fixed-width status code. Optional
 details go into caller-owned fixed storage described by `StatusBuffer`, whose size the caller
-provides. Catch-all paths write a constant bounded message without allocation. Result structs also
-carry caller-declared sizes so an older provider never writes a field it does not know exists.
+provides. ABI v1 requires the exact v1 status size; the provider fills the supplied buffer and never
+replaces its data pointer. Catch-all paths write a constant bounded message without allocation.
+Result structs also carry caller-declared sizes so an older provider never writes a field it does
+not know exists. A valid owned-result struct is cleared before every operation, including non-OK
+returns.
 Every function accepts a null status pointer or a zero-capacity message buffer and returns its code
 without writing. The provider validates all outer struct sizes before reading later fields.
 
@@ -349,8 +352,10 @@ consumer benchmark records allocation count and copied bytes.
 ### Atomic batch
 
 `write_batch` accepts an ordered array of puts and deletes and builds one RocksDB `WriteBatch` for
-the leased column family. It validates all counts and lengths before constructing slices. The batch
-uses the shared database's normal RocksDB write path and returns only after that call finishes.
+the leased column family. The caller supplies the element stride; ABI v1 requires it to match the v1
+mutation layout exactly. The provider reads and validates each element once while constructing the
+batch. The batch uses the shared database's normal RocksDB write path and returns only after that
+call finishes.
 
 Write policy is explicit:
 
@@ -368,8 +373,11 @@ Full-text bytes belong in a dedicated column family and are not Harper record va
 handle's verification-table write-intent protocol on a record CF could let a reader publish stale
 data as fresh. The provider also fixes `ignore_missing_column_families=false` for every lease batch.
 
-`no_slowdown` moves waiting out of RocksDB; it does not make index writes harmless to other column
-families. On `Busy`/`Incomplete`, fulltext backs off and throttles its bounded ingest queue rather
+Lease creation rejects read-only and pessimistic database descriptors. Pessimistic
+`TransactionDB::Write` can wait on key locks independently of `no_slowdown`, which would let a
+foreign writer hold synchronous close behind the database lock timeout. On supported optimistic
+databases, `no_slowdown` moves write-stall waiting out of RocksDB; it does not make index writes
+harmless to other column families. On `Busy`/`Incomplete`, fulltext backs off and throttles its bounded ingest queue rather
 than immediately spinning. Phase 0 records per-CF flush-job frequency, L0 file count, pending
 compaction bytes, `rocksdb.stall.micros`, write-stop events, and foreground write latency while
 sweeping index load. A load level that causes record-path stalls fails even if every lease batch
@@ -378,7 +386,9 @@ returned quickly.
 ### Prefix scan
 
 `scan_page` creates an iterator, copies at most the negotiated entry/byte bounds into one
-provider-owned encoded page, and destroys the iterator before releasing admission. The next call
+provider-owned encoded page, and destroys the iterator before releasing admission. A completed
+entry-count page does not advance the iterator again, and a non-empty partial page is returned if
+the read deadline expires after making progress. The next call
 uses the last returned key as `start_after`. There is no callback into Rust and no RocksDB iterator
 or slice crossing the admission boundary. Phase 0 uses scans for reopen/recovery and
 garbage-collection experiments, not query posting reads.
