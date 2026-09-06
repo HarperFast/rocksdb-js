@@ -774,8 +774,6 @@ export const config: (options: RocksDatabaseConfig) => void = binding.config;
 export const getWriteBufferManagerStats: () => WriteBufferManagerStats =
 	binding.getWriteBufferManagerStats;
 export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;
-export const HAS_DISTINCT_VERSION_FLAG: number = binding.constants.HAS_DISTINCT_VERSION_FLAG;
-export const VERSION_HEADER_TAG: number = binding.constants.VERSION_HEADER_TAG;
 export const addGlobalListener: (event: string, callback: (...args: any[]) => void) => void =
 	binding.addListener;
 export const removeGlobalListener: (event: string, callback: (...args: any[]) => void) => boolean =
@@ -803,23 +801,6 @@ export const constants: {
 	 * cannot enforce this flag.
 	 */
 	VERSION_NOT_UNIQUE_FLAG: number;
-	/**
-	 * Producer flag in the same metadata word: the value carries a record version distinct from its
-	 * first word, as an 8-byte big-endian float64 at offset 12, immediately after that word.
-	 *
-	 * The first word stays the transaction timestamp — the write identity the VerificationTable
-	 * keys on and the transaction-log batch key it was written under — while the second is the
-	 * version a source or origin supplied. When the flag is absent the two are equal, which is how
-	 * a value written before this flag existed decodes. Not interpreted natively; read it through
-	 * `getEntry()` / `getEntrySync()`, which return both words.
-	 */
-	HAS_DISTINCT_VERSION_FLAG: number;
-	/**
-	 * Top byte of a value's metadata word (offset 8), marking the remaining 24 bits as producer
-	 * flags. A word whose top byte is anything else is not a metadata word and its flag bits are
-	 * not read.
-	 */
-	VERSION_HEADER_TAG: number;
 	/**
 	 * Sentinel value resolved (not rejected) by `commit()` when
 	 * `coordinatedRetry: true` and the transaction encountered an IsBusy
