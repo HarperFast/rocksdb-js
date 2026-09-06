@@ -41,8 +41,6 @@ jobs:
     # review trusted-author PRs; unset → opt-in via the gemini-review
     # label. The reusable's authorize job still owns WHO is admitted
     # (CODEOWNERS trust set; the labeler, not the author, on `labeled`).
-    # The caller prefilters the `gemini-review` label gesture; the reusable's
-    # authorize job still owns admission.
     if: ${{ (github.event.action == 'labeled' && github.event.label.name == 'gemini-review') || (github.event.action != 'labeled' && vars.GEMINI_ALWAYS_ON == 'true') || (github.event.action == 'ready_for_review' && contains(github.event.pull_request.labels.*.name, 'gemini-review')) }}
     uses: HarperFast/ai-review-prompts/.github/workflows/_gemini-review.yml@af81872e56dd63da1160adb5eae82d359a456dde # main 2026-09-01 (#94 freshness-gated admission; #91 job-level cancellation; #90 cost gates; #89 defaults; #88 lenses; #72 native-addon layer)
     # Caller-side permissions at the calling-job level (NOT workflow-
