@@ -299,6 +299,8 @@ bool DBRegistry::CollectWriteBufferManagerInventory(
 	uint64_t& columnFamilies,
 	std::map<int64_t, uint64_t>& maxWriteBufferSizeToMaintain
 ) {
+	columnFamilies = 0;
+	maxWriteBufferSizeToMaintain.clear();
 	if (!instance || wbm == nullptr) {
 		return false;
 	}
@@ -306,20 +308,27 @@ bool DBRegistry::CollectWriteBufferManagerInventory(
 	if (!lock.owns_lock()) {
 		return false;
 	}
+	uint64_t collectedColumnFamilies = 0;
+	std::map<int64_t, uint64_t> collectedMaxWriteBufferSizeToMaintain;
 	for (const auto& [key, entry] : instance->databases) {
 		const auto& descriptor = entry.descriptor;
 		if (!descriptor || descriptor->readOnly || descriptor->attachedWriteBufferManager != wbm) {
 			continue;
 		}
-		std::lock_guard<std::mutex> columnsLock(descriptor->columnsMutex);
+		std::unique_lock<std::mutex> columnsLock(descriptor->columnsMutex, std::try_to_lock);
+		if (!columnsLock.owns_lock()) {
+			return false;
+		}
 		for (const auto& [name, columnDescriptor] : descriptor->columns) {
 			if (!columnDescriptor) {
 				continue;
 			}
-			columnFamilies++;
-			maxWriteBufferSizeToMaintain[columnDescriptor->maxWriteBufferSizeToMaintain]++;
+			collectedColumnFamilies++;
+			collectedMaxWriteBufferSizeToMaintain[columnDescriptor->maxWriteBufferSizeToMaintain]++;
 		}
 	}
+	columnFamilies = collectedColumnFamilies;
+	maxWriteBufferSizeToMaintain = std::move(collectedMaxWriteBufferSizeToMaintain);
 	return true;
 }
 

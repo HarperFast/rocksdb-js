@@ -128,11 +128,10 @@ public:
 	 * cannot inflate a descriptor's use count and make a racing close skip its
 	 * purge. Safe to call from a non-JS thread.
 	 *
-	 * `databasesMutex` is acquired with `try_lock`, returning false rather than
-	 * waiting: `PurgeAll` holds it across `descriptor->close()`, whose flush waits
-	 * out a write stall (AGENTS.md note 16), so blocking here would silence the
-	 * stall alarm and hang `getWriteBufferManagerStats()` during exactly the
-	 * incident both exist to report.
+	 * Both mutex levels are acquired with `try_lock`, returning false rather than
+	 * waiting: registry teardown or column-family creation can hold them across
+	 * RocksDB work that waits out a write stall, so blocking here would silence
+	 * the stall alarm during exactly the incident it exists to report.
 	 */
 	static bool CollectWriteBufferManagerInventory(
 		const rocksdb::WriteBufferManager* wbm,
