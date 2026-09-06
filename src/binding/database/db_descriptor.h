@@ -23,6 +23,7 @@
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
+#include "core/operation_gate.h"
 #include "core/platform.h"
 #include "core/write_stall_debounce.h"
 #include "napi/event_emitter.h"
@@ -281,18 +282,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	std::unordered_map<std::string, std::shared_ptr<LockHandle>> locks;
 
-	/**
-	 * A flag used by the `DBRegistry` to indicate the database is being closed,
-	 * this descriptor should not be used, and it should create a new
-	 * descriptor.
-	 */
-	std::atomic<bool> closing{false};
-
-	/**
-	 * Counter tracking in-flight database operations. close() uses
-	 * atomic::wait() to block until this reaches zero.
-	 */
-	std::atomic<uint32_t> operationsInFlight{0};
+	/** Close/drain fence shared by JavaScript operations and native leases. */
+	std::shared_ptr<OperationGate> operationGate = std::make_shared<OperationGate>();
 
 	/**
 	 * Mutex to prevent concurrent compaction operations.
@@ -457,7 +448,8 @@ public:
 	~DBDescriptor();
 
 	void close();
-	bool isClosing() const { return this->closing.load(); }
+	bool isClosing() const { return this->operationGate->isClosing(); }
+	OperationClaim acquireOperation() { return OperationClaim::acquireBorrowed(*this->operationGate); }
 
 	/**
 	 * Atomically transitions the descriptor into the closing state. Returns
@@ -469,7 +461,7 @@ public:
 	 * under the same lock) waits instead of handing the descriptor to a new
 	 * handle that would then be closed out from under it.
 	 */
-	bool beginClose() { return !this->closing.exchange(true); }
+	bool beginClose() { return this->operationGate->beginClose(); }
 
 	/**
 	 * Performs the actual close work (flush, close handles, release resources).
@@ -478,8 +470,9 @@ public:
 	 */
 	void finishClose();
 
-	void attach(std::shared_ptr<Closable> closable);
+	bool attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
+	void detach(Closable* closable);
 
 	/**
 	 * Gets a single statistic value.
@@ -759,6 +752,12 @@ struct ColumnFamilyDescriptor final {
 	 */
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 
+	/** Process-lifetime identity; never reused after a drop/recreate. */
+	const uint64_t incarnation;
+
+	/** Set after a successful RocksDB drop. Existing admitted users may finish. */
+	std::atomic<bool> revoked{false};
+
 	/**
 	 * Map of user shared buffers by key.
 	 */
@@ -769,11 +768,42 @@ struct ColumnFamilyDescriptor final {
 	 */
 	std::mutex userSharedBuffersMutex;
 
-	ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column) : column(column) {}
+	/** Cold-path exclusion between VT record handles and native storage leases. */
+	std::mutex nativeUsageMutex;
+	uint32_t verificationTableHandles = 0;
+	uint32_t nativeStorageLeases = 0;
+
+	ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column);
 
 	~ColumnFamilyDescriptor() {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);
 	}
+
+	bool registerVerificationTableHandle() {
+		std::lock_guard lock(this->nativeUsageMutex);
+		if (this->revoked.load() || this->nativeStorageLeases != 0) return false;
+		++this->verificationTableHandles;
+		return true;
+	}
+
+	void unregisterVerificationTableHandle() {
+		std::lock_guard lock(this->nativeUsageMutex);
+		if (this->verificationTableHandles != 0) --this->verificationTableHandles;
+	}
+
+	bool registerNativeStorageLease() {
+		std::lock_guard lock(this->nativeUsageMutex);
+		if (this->revoked.load() || this->verificationTableHandles != 0) return false;
+		++this->nativeStorageLeases;
+		return true;
+	}
+
+	void unregisterNativeStorageLease() {
+		std::lock_guard lock(this->nativeUsageMutex);
+		if (this->nativeStorageLeases != 0) --this->nativeStorageLeases;
+	}
+
+	void revoke() { this->revoked.store(true); }
 
 	void releaseUserSharedBuffer(const std::string& key, const std::shared_ptr<UserSharedBufferData>& sharedData) {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::releaseUserSharedBuffer releasing user shared buffer (use_count: %ld) for key:", this, sharedData.use_count());

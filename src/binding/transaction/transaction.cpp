@@ -75,7 +75,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	if ((*dbHandle)->descriptor->closing.load()) {
+	if ((*dbHandle)->descriptor->isClosing()) {
 		::napi_throw_error(env, nullptr, "Database is closing!");
 		return nullptr;
 	}

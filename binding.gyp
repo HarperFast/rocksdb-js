@@ -6,6 +6,7 @@
 	#   ROCKSDB_ASAN=1 node-gyp rebuild
 	'variables': {
 		"rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")",
+		"native_storage_lease%": "<!(node -p \"process.env.ROCKSDB_JS_NATIVE_STORAGE_LEASE==='1'?1:0\")",
 		# RocksDB link libraries — the core `librocksdb` archive plus the compression
 		# libs the resolved prebuild actually ships — emitted as `-l` flags / `.lib`
 		# names (not absolute paths — see configure-rocksdb.mjs for why), resolved
@@ -62,6 +63,7 @@
 				'src/binding/napi/event_emitter.cpp',
 				'src/binding/napi/global_events.cpp',
 				'src/binding/napi/helpers.cpp',
+				'src/binding/native_storage/native_storage_lease.cpp',
 				'src/binding/database/backup.cpp',
 				'src/binding/database/backup_disk_space.cpp',
 				'src/binding/database/backup_stream.cpp',
@@ -102,6 +104,9 @@
 				'-fexceptions'
 			],
 			'conditions': [
+				['native_storage_lease==1', {
+					'defines': ['ROCKSDB_JS_NATIVE_STORAGE_LEASE'],
+				}],
 				['OS=="win"', {
 					'link_settings': {
 						'libraries': [
@@ -248,6 +253,7 @@
 				'test/native/encoding_test.cc',
 				'test/native/file_lock_test.cc',
 				'test/native/json_test.cc',
+				'test/native/operation_gate_test.cc',
 				'test/native/platform_fd_limit_test.cc',
 				'test/native/transaction_log_madvise_test.cc',
 				'test/native/transaction_log_erase_tail_test.cc',

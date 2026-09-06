@@ -79,11 +79,12 @@ std::string readJsString(napi_env env, napi_value value) {
  * producer/consumer backpressure handshake: the worker thread emits one event
  * then blocks until the JS `emit` promise settles and a continuation flips
  * `ackReady`. Lifetime handling mirrors `AsyncCheckpointState` — the descriptor
- * is pinned and registered in `operationsInFlight` so a concurrent `close()` /
+ * is pinned and holds an operation-gate claim so a concurrent `close()` /
  * teardown waits for the (potentially long-running) stream to finish.
  */
 struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	std::shared_ptr<DBDescriptor> descriptor;
+	OperationClaim operationClaim;
 	napi_threadsafe_function tsfn = nullptr;
 	bool flushBeforeBackup = false;
 	// When true, append the transaction log snapshot as tar entries under
@@ -130,6 +131,7 @@ struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> 
 	// registry purge (use_count() > 1), so on release we must retry the purge or
 	// the registry entry — and the open RocksDB — would linger forever.
 	~AsyncBackupStreamState() override {
+		this->operationClaim = {};
 		if (this->descriptor) {
 			std::string path = this->descriptor->path;
 			bool readOnly = this->descriptor->readOnly;
@@ -179,7 +181,7 @@ struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> 
 
 		std::unique_lock<std::mutex> lock(this->ackMutex);
 		// Wait for the ack, but wake periodically to check for teardown. A closing
-		// database blocks the JS thread (finishClose() waits on operationsInFlight;
+		// database blocks the JS thread (finishClose() waits on the operation gate;
 		// close() on the async-work tracker), and that same JS thread is what would
 		// deliver our ack — so an unconditional wait would deadlock. Polling
 		// isClosing()/isCancelled() lets the worker abandon and release its DB pin
@@ -558,11 +560,8 @@ void backupStreamExecute(napi_env, void* data) {
 	auto* state = static_cast<AsyncBackupStreamState*>(data);
 	rocksdb::Status s = doBackupStream(state);
 
-	// Release the in-flight claim (the worker owns it once the work was queued).
-	// Wake a finishClose() that may be waiting before it tears down the DB.
-	if (--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
-		state->descriptor->operationsInFlight.notify_all();
-	}
+	// Let close proceed before the JS-thread completion callback runs.
+	state->operationClaim = {};
 
 	state->status = s;
 	state->signalExecuteCompleted();
@@ -647,20 +646,8 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 	// PurgeAll() teardown paths wait for this (potentially long) stream. Mirrors
 	// Database::CreateCheckpoint.
 	auto descriptor = (*dbHandle)->descriptor;
-	++descriptor->operationsInFlight;
-
-	bool handedOff = false;
-	struct InFlightClaim {
-		DBDescriptor* descriptor;
-		const bool& handedOff;
-		~InFlightClaim() {
-			if (!handedOff && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
-				descriptor->operationsInFlight.notify_all();
-			}
-		}
-	} claim{ descriptor.get(), handedOff };
-
-	if (descriptor->isClosing()) {
+	auto claim = descriptor->acquireOperation();
+	if (!claim) {
 		::napi_throw_error(env, nullptr, "Database is closing");
 		NAPI_RETURN_UNDEFINED();
 	}
@@ -707,14 +694,15 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 	));
 
 	(*dbHandle)->registerAsyncWork();
+	state->operationClaim = std::move(claim);
 
-	// On a queue failure the claim rolls the counter back (execute never runs).
-	// The state/tsfn leak on this rare N-API failure path matches the existing
-	// async methods (e.g. Database::Backup).
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
-
-	// The worker now owns the in-flight decrement (end of execute).
-	handedOff = true;
+	// On queue failure the worker never runs, so release both registrations here.
+	napi_status queueStatus = ::napi_queue_async_work(env, state->asyncWork);
+	if (queueStatus != napi_ok) {
+		state->operationClaim = {};
+		(*dbHandle)->unregisterAsyncWork();
+		NAPI_STATUS_THROWS(queueStatus);
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }

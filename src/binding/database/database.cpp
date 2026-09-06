@@ -483,6 +483,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	if ((*dbHandle)->getColumnFamilyName() == "default") {
 		return doClear(env, info, "Drop failed");
 	}
+	ACQUIRE_OPERATIONS_LOCK();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -501,6 +502,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	}
 
 	if (status.ok()) {
+		(*dbHandle)->columnDescriptor->revoke();
 		// We performed the drop; remove its by-name registry entry so a later
 		// open with the same name creates a fresh column family instead of
 		// reusing this dangling handle (which poisons write batches with
@@ -555,6 +557,7 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (status.ok()) {
+		(*dbHandle)->columnDescriptor->revoke();
 		// We performed the drop; remove its by-name registry entry so a later
 		// open with the same name creates a fresh column family instead of
 		// reusing this dangling handle (which poisons write batches with
@@ -2050,7 +2053,10 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		// now that the database is open and the dbHandle has a reference to
 		// the descriptor, we can attach the database instance's smart_ptr to
 		// the descriptor so it gets cleaned up when the descriptor is closed
-		(*dbHandle)->descriptor->attach(*dbHandle);
+		if (!(*dbHandle)->descriptor->attach(*dbHandle)) {
+			DBRegistry::CloseDB(*dbHandle);
+			throw DBException("Database is closing");
+		}
 	} catch (const std::exception& e) {
 		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what());
 		::napi_throw_error(env, nullptr, e.what());
@@ -2357,6 +2363,9 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "compact", nullptr, Compact, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "compactSync", nullptr, CompactSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "createCheckpoint", nullptr, CreateCheckpoint, nullptr, nullptr, nullptr, napi_default, nullptr },
+#ifdef ROCKSDB_JS_NATIVE_STORAGE_LEASE
+		{ "__nativeStorageLease", nullptr, NativeStorageLease, nullptr, nullptr, nullptr, napi_default, nullptr },
+#endif
 		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },

@@ -19,12 +19,12 @@ namespace rocksdb_js {
  * after a bounded wait, so relying on `handle->descriptor` from the worker
  * thread is unsafe. This mirrors `AsyncBackupState`.
  *
- * The checkpoint also registers in the descriptor's `operationsInFlight`
- * counter (see `Database::CreateCheckpoint`). Unlike `close()`, the
+ * The checkpoint also holds a claim on the descriptor's operation gate (see
+ * `Database::CreateCheckpoint`). Unlike `close()`, the
  * `destroy()` / `shutdown()` / `PurgeAll()` teardown paths call
  * `DBDescriptor::finishClose()` directly without waiting on the async-work
- * tracker, and `finishClose()` resets `descriptor->db`. Registering in
- * `operationsInFlight` makes `finishClose()` wait for the copy to finish
+ * tracker, and `finishClose()` resets `descriptor->db`. The operation gate
+ * makes `finishClose()` wait for the copy to finish
  * before tearing down the database, so the worker never dereferences a
  * freed `rocksdb::DB`.
  *
@@ -35,6 +35,7 @@ namespace rocksdb_js {
  */
 struct AsyncCheckpointState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	std::shared_ptr<DBDescriptor> descriptor;
+	OperationClaim operationClaim;
 	std::string targetPath;
 
 	AsyncCheckpointState(
@@ -48,28 +49,12 @@ struct AsyncCheckpointState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		targetPath(std::move(targetPath)) {}
 
 	~AsyncCheckpointState() override {
+		this->operationClaim = {};
 		if (this->descriptor) {
 			std::string path = this->descriptor->path;
 			bool readOnly = this->descriptor->readOnly;
 			this->descriptor.reset();
 			DBRegistry::PurgeIfUnreferenced(path, readOnly);
-		}
-	}
-};
-
-/**
- * RAII release for a descriptor `operationsInFlight` claim made on the JS
- * thread. Decrements the counter (and wakes a waiting `finishClose()`) on any
- * early return, unless the claim was handed off to the async worker — which
- * then owns the matching decrement at the end of its execute callback.
- */
-struct CheckpointInFlightClaim {
-	DBDescriptor* descriptor;
-	const bool& handedOff;
-
-	~CheckpointInFlightClaim() {
-		if (!handedOff && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
-			descriptor->operationsInFlight.notify_all();
 		}
 	}
 };
@@ -98,20 +83,11 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 	// Claim an in-flight operation on the descriptor BEFORE queuing so the
 	// destroy()/shutdown()/PurgeAll() teardown paths — which call
 	// DBDescriptor::finishClose() directly, bypassing the async-work tracker, and
-	// reset descriptor->db — wait for this copy first. Incrementing before
-	// checking isClosing() mirrors OperationGuard: close() publishes the closing
-	// flag (beginClose()) before finishClose() waits on this counter, so if we
-	// still observe isClosing() after our increment the teardown may already be
-	// past its wait and about to free the DB — bail rather than start the copy.
+	// reset descriptor->db — wait for this copy first. The shared gate either
+	// admits this work or rejects it after close starts.
 	auto descriptor = (*dbHandle)->descriptor;
-	++descriptor->operationsInFlight;
-
-	// Releases the claim on any early return below; cleared once the worker takes
-	// ownership of the decrement (at the end of execute) after a successful queue.
-	bool handedOff = false;
-	CheckpointInFlightClaim claim{descriptor.get(), handedOff};
-
-	if (descriptor->isClosing()) {
+	auto claim = descriptor->acquireOperation();
+	if (!claim) {
 		::napi_throw_error(env, nullptr, "Database is closing");
 		NAPI_RETURN_UNDEFINED();
 	}
@@ -136,7 +112,7 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		[](napi_env, void* data) { // execute
 			auto state = reinterpret_cast<AsyncCheckpointState*>(data);
 			// state->descriptor is a strong reference held for the whole copy, so it
-			// is always valid here; the operationsInFlight registration keeps
+			// is always valid here; the operation-gate claim keeps
 			// finishClose() from resetting descriptor->db until this work completes,
 			// so the database stays valid even if close() runs concurrently.
 			// isCancelled() lets us skip starting a checkpoint once close() has been
@@ -155,13 +131,8 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 				}
 				state->status = s;
 			}
-			// Release the in-flight claim made on the JS thread (the worker owns
-			// this decrement once the work was queued). Wake any finishClose()
-			// waiting for this copy before it tears down descriptor->db. Mirrors
-			// OperationGuard's destructor.
-			if (--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
-				state->descriptor->operationsInFlight.notify_all();
-			}
+			// Let close proceed before the JS-thread completion callback runs.
+			state->operationClaim = {};
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
@@ -185,15 +156,15 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 	));
 
 	(*dbHandle)->registerAsyncWork();
+	state->operationClaim = std::move(claim);
 
-	// On a queue failure the claim above rolls the counter back (execute never
-	// runs); the state leak on this rare N-API failure path matches the existing
-	// async methods (e.g. Database::Backup).
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
-
-	// The worker now owns the in-flight decrement (end of execute); stop the
-	// claim from releasing it here.
-	handedOff = true;
+	// On queue failure the worker never runs, so release both registrations here.
+	napi_status queueStatus = ::napi_queue_async_work(env, state->asyncWork);
+	if (queueStatus != napi_ok) {
+		state->operationClaim = {};
+		(*dbHandle)->unregisterAsyncWork();
+		NAPI_STATUS_THROWS(queueStatus);
+	}
 
 	NAPI_RETURN_UNDEFINED();
 }
