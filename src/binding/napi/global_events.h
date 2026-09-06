@@ -23,9 +23,6 @@ public:
 	 * Uses C++11 magic-static initialization, mirroring `DBSettings::getInstance`,
 	 * so concurrent first-callers from worker threads don't race during
 	 * construction.
-	 *
-	 * `DBStats` constructs this before its watchdog-owning singleton completes,
-	 * so the emitter outlives the watchdog during static destruction.
 	 */
 	static EventEmitter& getInstance() {
 		static EventEmitter instance;

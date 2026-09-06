@@ -32,8 +32,6 @@ class DBStats final {
 private:
 	DBStats();
 
-	// DBSettings owns the manager and outlives this singleton. The raw pointer is
-	// published once so scrape paths never contend with config() or database open.
 	std::atomic<rocksdb::WriteBufferManager*> writeBufferManager{nullptr};
 	std::atomic<uint64_t> writeBufferManagerStallActiveMs{0};
 	std::atomic<bool> writeBufferManagerWatchdogRunning{false};
