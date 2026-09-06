@@ -123,14 +123,14 @@ TEST(TransactionLogRecovery, ZeroPaddedTailIsCleanAtPadStart) {
 	EXPECT_EQ(scan.validEnd, entriesEnd);
 }
 
-TEST(TransactionLogRecovery, SubHeaderZeroPaddingIsCleanAtPadStart) {
+TEST(TransactionLogRecovery, SubHeaderZeroPaddingRemainsATornTailForRecovery) {
 	LogImage img;
 	img.entry(10);
 	uint32_t entriesEnd = img.size();
 	img.zeros(TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1);
 
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
-	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
 	EXPECT_EQ(scan.validEnd, entriesEnd);
 }
 
@@ -656,7 +656,6 @@ std::filesystem::path uniqueMaxEntryScanPath() {
 
 } // namespace
 
-// Exercise MaxEntryScan's propagation of the recovery classification.
 TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
 	auto path = uniqueMaxEntryScanPath();
 	{
@@ -730,4 +729,22 @@ TEST(TransactionLogMaxEntryScan, MissingSegmentIsNotCreated) {
 
 	EXPECT_ANY_THROW(file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity()));
 	EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+TEST(TransactionLogMaxEntryScan, SubHeaderZeroPaddingIsCleanForFloorScanning) {
+	auto path = uniqueMaxEntryScanPath();
+	{
+		LogImage img;
+		img.entry(10, 1, 500.0).zeros(TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1);
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out.write(img.data(), img.size());
+	}
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
+	std::error_code error;
+	std::filesystem::remove(path, error);
+
+	EXPECT_FALSE(scan.stoppedAtBreak);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
 }

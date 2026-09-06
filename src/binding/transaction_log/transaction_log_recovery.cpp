@@ -161,12 +161,6 @@ RecoveryScan scanTransactionLogForRecovery(
 			return scan(RecoveryScan::Kind::Clean, fileSize);
 		}
 		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
-			char padding[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
-			uint32_t remaining = fileSize - pos;
-			source.readExact(pos, padding, remaining);
-			if (std::all_of(padding, padding + remaining, [](char byte) { return byte == 0; })) {
-				return scan(RecoveryScan::Kind::Clean, pos);
-			}
 			return scan(RecoveryScan::Kind::TruncateTail, pos);
 		}
 		source.readHeaderAt(pos, header);
@@ -256,8 +250,21 @@ RecoveryScan scanTransactionLogForRecovery(
 			"Unsupported transaction log file version: " + std::to_string(version));
 	}
 
-	return scanTransactionLogForRecovery(
+	auto scan = scanTransactionLogForRecovery(
 		fileSize, readFromStream, &input, plausibleBound);
+	uint32_t remaining = fileSize - scan.validEnd;
+	if (scan.kind == RecoveryScan::Kind::TruncateTail &&
+		remaining > 0 && remaining < TRANSACTION_LOG_ENTRY_HEADER_SIZE
+	) {
+		char padding[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+		if (!readFromStream(&input, scan.validEnd, padding, remaining)) {
+			throw DBException("Failed to read transaction log padding: " + path.string());
+		}
+		if (std::all_of(padding, padding + remaining, [](char byte) { return byte == 0; })) {
+			scan.kind = RecoveryScan::Kind::Clean;
+		}
+	}
+	return scan;
 }
 
 RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file) {
