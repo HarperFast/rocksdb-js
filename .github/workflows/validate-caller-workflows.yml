@@ -27,7 +27,7 @@ on:
 
 jobs:
   validate:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@af81872e56dd63da1160adb5eae82d359a456dde # main 2026-09-01 (#94 freshness-gated admission; #91 job-level cancellation)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@af81872e56dd63da1160adb5eae82d359a456dde # main 2026-09-01
     with:
       # Same SHA as the `uses:` ref above — the reusable uses this
       # to check out the validator script at the matching version.
