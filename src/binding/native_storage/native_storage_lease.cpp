@@ -226,15 +226,20 @@ uint32_t setOwned(
 	if (length > kMaxOwnedBytes) {
 		return fail(context->state.get(), ROCKSDB_JS_STORAGE_LIMIT, status, "owned value exceeds limit");
 	}
+	if (length == 0) {
+		result->release = releaseOwned;
+		writeStatus(status, nullptr);
+		return ROCKSDB_JS_STORAGE_OK;
+	}
 	if (!retainContext(context)) {
 		return fail(context->state.get(), ROCKSDB_JS_STORAGE_CLOSED, status, "storage lease is closed");
 	}
 	uint8_t* copy = new (std::nothrow) uint8_t[static_cast<size_t>(length)];
-	if (length != 0 && !copy) {
+	if (!copy) {
 		releaseContext(context);
 		return fail(context->state.get(), ROCKSDB_JS_STORAGE_LIMIT, status, "owned value allocation failed");
 	}
-	if (length != 0) std::memcpy(copy, source, static_cast<size_t>(length));
+	std::memcpy(copy, source, static_cast<size_t>(length));
 	auto* allocation = new (std::nothrow) OwnedAllocation{context, copy};
 	if (!allocation) {
 		delete[] copy;

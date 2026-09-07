@@ -125,7 +125,8 @@ inline OperationClaim OperationClaim::acquireShared(std::shared_ptr<OperationGat
 	if (!gate || !gate->tryAcquire()) {
 		return {};
 	}
-	return OperationClaim(gate.get(), std::move(gate));
+	auto* borrowedGate = gate.get();
+	return OperationClaim(borrowedGate, std::move(gate));
 }
 
 inline void OperationClaim::reset() {
