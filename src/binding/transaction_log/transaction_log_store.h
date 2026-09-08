@@ -481,7 +481,6 @@ struct TransactionLogStore final {
 	 */
 	LogPosition getLastFlushedPosition();
 
-	/** `complete` false means the floor may sit below a key that is still durable. */
 	struct DurableKeyScan final {
 		double largestKey = 0;
 		double refusedKey = 0;
@@ -493,11 +492,6 @@ struct TransactionLogStore final {
 		bool discoveryIncomplete = false;
 	};
 
-	/**
-	 * Finds the largest durable batch key across every segment after open-time
-	 * recovery. The walk is newest-first and bounded by `budget`; keys above
-	 * `plausibleBound` are excluded and reported separately in `refusedKey`.
-	 */
 	DurableKeyScan scanLargestDurableKey(
 		double plausibleBound,
 		std::chrono::milliseconds budget);

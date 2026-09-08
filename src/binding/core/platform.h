@@ -70,7 +70,6 @@ std::filesystem::path resolveIdentityPath(const std::string& path);
  */
 bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child);
 
-/** Raises the monotonic floor when `floor` is plausible; returns whether it moved. */
 bool raiseMonotonicTimestampFloor(double floor);
 
 bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
