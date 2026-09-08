@@ -102,6 +102,7 @@ void TransactionHandle::resetTransaction(){
 	}
 
 	this->logEntryBatch.reset();
+	this->stagedColumns.clear();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
 	auto dbHandle = this->dbHandle;
@@ -378,6 +379,8 @@ void TransactionHandle::close() {
 	if (!this->lockedVTSlots.empty()) {
 		this->releaseIntent();
 	}
+
+	this->stagedColumns.clear();
 
 	// destroy the RocksDB transaction
 	this->txn->ClearSnapshot();
@@ -671,13 +674,16 @@ rocksdb::Status TransactionHandle::putSync(
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Put(column, key, value);
 
-	// Lock the VT slot for this key immediately on write. This ensures that
-	// any cached version of the key is invalidated as soon as it enters the
-	// transaction's write buffer — not deferred to commit time. This upholds
-	// the invariant that a cached version is only trusted when there is a
-	// single visible version of the record across all transactions.
-	if (status.ok() && dbHandle->enableVerificationTable) {
-		this->lockVTSlot(dbHandle, key);
+	if (status.ok()) {
+		this->stagedColumns.note(dbHandle->columnDescriptor->gate);
+		// Lock the VT slot for this key immediately on write. This ensures that
+		// any cached version of the key is invalidated as soon as it enters the
+		// transaction's write buffer — not deferred to commit time. This upholds
+		// the invariant that a cached version is only trusted when there is a
+		// single visible version of the record across all transactions.
+		if (dbHandle->enableVerificationTable) {
+			this->lockVTSlot(dbHandle, key);
+		}
 	}
 
 	return status;
@@ -708,11 +714,79 @@ rocksdb::Status TransactionHandle::removeSync(
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Delete(column, key);
 
-	if (status.ok() && dbHandle->enableVerificationTable) {
-		this->lockVTSlot(dbHandle, key);
+	if (status.ok()) {
+		this->stagedColumns.note(dbHandle->columnDescriptor->gate);
+		if (dbHandle->enableVerificationTable) {
+			this->lockVTSlot(dbHandle, key);
+		}
 	}
 
 	return status;
+}
+
+namespace {
+
+rocksdb::Status columnFamilyDroppedStatus(const ColumnFamilyGate& gate) {
+	return rocksdb::Status::ColumnFamilyDropped(
+		"column family \"" + gate.name + (gate.isDropped() ? "\" was dropped" : "\" is being dropped")
+	);
+}
+
+} // namespace
+
+rocksdb::Status TransactionHandle::admitColumnFamilies(ColumnFamilyAdmission& admission, DBDescriptor& descriptor) {
+	if (!this->txn) {
+		return rocksdb::Status::Aborted("Transaction is closed");
+	}
+
+	if (!this->stagedColumns.overflowed()) {
+		for (size_t i = 0; i < this->stagedColumns.size(); ++i) {
+			ColumnFamilyGate& gate = this->stagedColumns.at(i);
+			if (!admission.admit(gate)) {
+				return columnFamilyDroppedStatus(gate);
+			}
+		}
+		return rocksdb::Status::OK();
+	}
+
+	// More distinct families than the inline set tracks: derive the exact set
+	// from the batch and resolve each id to its live gate. Resolution is by id,
+	// never by name, so an id whose family was dropped (and unregistered) is
+	// refused even if a same-name family has since been created.
+	std::vector<uint32_t> ids;
+	rocksdb::Status status = collectColumnFamilyIds(*this->txn->GetWriteBatch()->GetWriteBatch(), ids);
+	if (!status.ok()) {
+		return status;
+	}
+	std::vector<std::shared_ptr<ColumnFamilyGate>> gates;
+	gates.reserve(ids.size());
+	{
+		std::lock_guard<std::mutex> lock(descriptor.columnsMutex);
+		for (uint32_t id : ids) {
+			if (id == 0) {
+				continue; // the default family is cleared, never dropped
+			}
+			std::shared_ptr<ColumnFamilyGate> gate;
+			for (const auto& [name, column] : descriptor.columns) {
+				if (column && column->gate && column->gate->id == id) {
+					gate = column->gate;
+					break;
+				}
+			}
+			if (!gate) {
+				return rocksdb::Status::ColumnFamilyDropped("column family " + std::to_string(id) + " was dropped");
+			}
+			gates.push_back(std::move(gate));
+		}
+	}
+	admission.reserve(gates.size());
+	for (const auto& gate : gates) {
+		if (!admission.admit(*gate)) {
+			return columnFamilyDroppedStatus(*gate);
+		}
+	}
+	admission.keepAlive = std::move(gates);
+	return rocksdb::Status::OK();
 }
 
 } // namespace rocksdb_js

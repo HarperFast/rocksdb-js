@@ -326,6 +326,24 @@ static void rejectRetryNowSetupFailure(
 }
 
 /**
+ * Column-family admission for a commit (AGENTS.md invariant 20), with the
+ * exception boundary the commit lane lacks: a throw (allocation on the
+ * overflow path, the status string) becomes a rejected commit and RAII drops
+ * any partial admission.
+ */
+static rocksdb::Status admitStagedColumnFamilies(
+	TransactionHandle& txnHandle,
+	DBDescriptor& descriptor,
+	ColumnFamilyAdmission& admission
+) {
+	try {
+		return txnHandle.admitColumnFamilies(admission, descriptor);
+	} catch (const std::exception& e) {
+		return rocksdb::Status::Aborted(std::string("Column family admission failed: ") + e.what());
+	}
+}
+
+/**
  * Log-lane stage of the commit: validates the handle and writes the
  * transaction-log batch (recording the committed position). Runs off the JS
  * thread — on the database's log lane, or on a libuv threadpool thread in the
@@ -404,17 +422,27 @@ static void executeCommitWork(TransactionCommitState* state) {
 					? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
 					: rollbackStatus;
 			} else {
-				// Test seam: stall immediately before the RocksDB commit, with the
-				// async work still registered and `txn` about to be dereferenced.
-				// This is the window TransactionHandle::close()'s bounded drain is
-				// supposed to protect: if close() gives up and destroys `txn`, this
-				// thread then commits through a destroyed transaction. Distinct from
-				// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
-				// therefore cannot exercise the drain at all. Noop in production.
-				if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
-					std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
+				// Admission is scoped to the RocksDB commit alone: released the
+				// moment Commit() returns, before the log publish, the VT release
+				// and the completion dispatch, so a waiting drop is held only for
+				// the write itself.
+				ColumnFamilyAdmission admission;
+				state->status = admitStagedColumnFamilies(*txnHandle, *descriptor, admission);
+				if (state->status.ok()) {
+					commitAdmittedCounter().fetch_add(1, std::memory_order_acq_rel);
+					testHoldAdmittedCommit();
+					// Test seam: stall immediately before the RocksDB commit, with the
+					// async work still registered and `txn` about to be dereferenced.
+					// This is the window TransactionHandle::close()'s bounded drain is
+					// supposed to protect: if close() gives up and destroys `txn`, this
+					// thread then commits through a destroyed transaction. Distinct from
+					// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
+					// therefore cannot exercise the drain at all. Noop in production.
+					if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
+						std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
+					}
+					state->status = txnHandle->txn->Commit();
 				}
-				state->status = txnHandle->txn->Commit();
 			}
 
 			// For coordinated retry: save slot pointers before
@@ -921,7 +949,22 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	rocksdb::Status status = (*txnHandle)->txn->Commit();
+	rocksdb::Status status;
+	{
+		auto descriptor = (*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr;
+		if (!descriptor) {
+			status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+		} else {
+			// Same scoping as the async commit stage: admission covers only Commit().
+			ColumnFamilyAdmission admission;
+			status = admitStagedColumnFamilies(**txnHandle, *descriptor, admission);
+			if (status.ok()) {
+				commitAdmittedCounter().fetch_add(1, std::memory_order_acq_rel);
+				testHoldAdmittedCommit();
+				status = (*txnHandle)->txn->Commit();
+			}
+		}
+	}
 
 	if (!(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();

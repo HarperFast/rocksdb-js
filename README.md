@@ -502,6 +502,16 @@ await db.drop();
 db.close();
 ```
 
+Dropping a named column family is interlocked with transaction commits on it. Commits that RocksDB
+is already applying finish first (the drop waits for them, on the calling thread — `drop()` too),
+and any transaction commit that reaches the column family after the drop has begun, including one
+staged before it, is rejected whole with `code: 'ERR_COLUMN_FAMILY_DROPPED'` (`column family "users"
+is being dropped` / `was dropped`) rather than poisoning the database: unrelated column families keep
+writing and `db.getLastError()` stays `null`. The rejected transaction is left for the caller to
+abort; `db.transaction()` does not retry it, and a transaction that had already written to a
+transaction log surfaces the rejection as the `cause` of its `TransactionAbandonedError`. Dropping a
+column family that another handle already dropped is a no-op.
+
 ### `db.dropSync(): void`
 
 Synchronous version of `db.drop()`.

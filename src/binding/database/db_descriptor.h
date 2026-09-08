@@ -23,6 +23,7 @@
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
+#include "core/column_family_gate.h"
 #include "core/platform.h"
 #include "core/write_stall_debounce.h"
 #include "napi/event_emitter.h"
@@ -606,9 +607,14 @@ public:
 	 * the descriptor keep it alive via their shared_ptr; only the by-name
 	 * lookup is removed.
 	 *
-	 * @param columnName The name of the dropped column family.
+	 * Identity-checked: the entry is erased only while it still points at
+	 * `dropped`, so a stale handle's tolerated re-drop cannot erase a fresh
+	 * same-name family, while a retry after a drop that RocksDB completed but
+	 * reported as failed (OPTIONS persistence) does retire the stale entry.
+	 *
+	 * @returns Whether an entry was erased.
 	 */
-	void unregisterColumnFamily(const std::string& columnName);
+	bool unregisterColumnFamily(const std::string& columnName, const std::shared_ptr<ColumnFamilyDescriptor>& dropped);
 
 	/**
 	 * Creates a new user shared buffer or returns an existing one.
@@ -832,7 +838,20 @@ struct ColumnFamilyDescriptor final {
 	 */
 	std::mutex userSharedBuffersMutex;
 
-	ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column) : column(column) {}
+	/**
+	 * Commit/drop admission gate for this family, shared by every handle and
+	 * env on the descriptor (AGENTS.md invariant 20). Null for the default
+	 * family, which is cleared rather than dropped and so never needs one.
+	 * Transactions hold the token, not this descriptor, so a token outliving
+	 * the family (or the database) touches no RocksDB state on release.
+	 */
+	const std::shared_ptr<ColumnFamilyGate> gate;
+
+	ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column) :
+		column(column),
+		gate(column->GetID() == 0
+			? nullptr
+			: std::make_shared<ColumnFamilyGate>(column->GetID(), column->GetName())) {}
 
 	~ColumnFamilyDescriptor() {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);

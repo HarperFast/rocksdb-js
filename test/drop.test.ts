@@ -156,11 +156,11 @@ describe('Drop', () => {
 			}
 		));
 
-	// Transactions deliberately do NOT get `ignore_missing_column_families`. In
-	// optimistic mode - the default -
-	// conflict validation rejects a commit naming a dropped family early, with an
-	// error that names the family, so the transaction is lost whole rather than
-	// discarded in part.
+	// Transactions deliberately do NOT get `ignore_missing_column_families`: the
+	// binding's per-family commit gate refuses a commit naming a dropped family
+	// before it reaches RocksDB, with an error that names the family, so the
+	// transaction is lost whole rather than discarded in part (see
+	// test/drop-commit-gate.test.ts for the racing orderings).
 	it('should reject only the dropped-family commit when transactions race a drop', () =>
 		dbRunner(
 			{ dbOptions: [{ name: 'victim' }, { name: 'doomed' }, { name: 'doomed' }] },
@@ -187,8 +187,11 @@ describe('Drop', () => {
 				// the rejection identifies the column family it could not reach,
 				// instead of the unattributable environment-wide message
 				const [staleResult] = results;
+				expect(staleResult.status === 'rejected' && staleResult.reason.code).toBe(
+					'ERR_COLUMN_FAMILY_DROPPED'
+				);
 				expect(staleResult.status === 'rejected' && staleResult.reason.message).toMatch(
-					/Could not access column family \d+/
+					/column family "doomed" was dropped/
 				);
 
 				expect(victim.getSync('b')).toBe('2');
@@ -208,12 +211,9 @@ describe('Drop', () => {
 	// a silent partial commit reported as success, which the transaction log
 	// would then mark committed.
 	//
-	// Losing the whole transaction is the correct outcome. (In this mode the
-	// commit also poisons the environment on its way out; that is a separate,
-	// pre-existing bug tracked as
-	// https://github.com/HarperFast/rocksdb-js/issues/726 (needs the drop
-	// interlocked against in-flight transactions), so this test asserts only
-	// atomicity and leaves the handles to dbRunner's per-test database.)
+	// Losing the whole transaction is the correct outcome, and the commit gate
+	// keeps it contained: the batch is refused before RocksDB sees it, so the
+	// environment stays writable (the #726 poisoning this test used to tolerate).
 	it('should not partially apply a pessimistic transaction spanning a dropped column family', () =>
 		dbRunner(
 			{
@@ -231,10 +231,15 @@ describe('Drop', () => {
 						// the drop lands after both writes are staged
 						doomed.dropSync();
 					})
-				).rejects.toThrow();
+				).rejects.toMatchObject({ code: 'ERR_COLUMN_FAMILY_DROPPED' });
 
 				// the live half must NOT have been applied
 				expect(victim.getSync('live')).toBeUndefined();
+
+				// and the environment is still writable afterwards
+				victim.putSync('d', '4');
+				expect(victim.getSync('d')).toBe('4');
+				expect(victim.getLastError()).toBeNull();
 			}
 		));
 

@@ -13,6 +13,7 @@
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "transaction_log/transaction_log_entry.h"
+#include "core/column_family_gate.h"
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -160,10 +161,31 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	LogPosition committedPosition;
 
+	/**
+	 * The droppable column families this transaction has successfully staged
+	 * writes into (home and override handles alike), noted at putSync/removeSync
+	 * time so the commit can take per-family admission without a lock or an
+	 * allocation on the staging path. Reset with the transaction; released when
+	 * the handle closes. Only gate tokens are held — never a column-family
+	 * descriptor or RocksDB handle — so releasing them is safe from any thread
+	 * and any teardown phase.
+	 */
+	StagedColumnFamilies stagedColumns;
+
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
 	void resetTransaction();
+
+	/**
+	 * Takes all-or-nothing admission on every column family this transaction's
+	 * batch names (AGENTS.md invariant 20). Call immediately before
+	 * `txn->Commit()` with `admission` scoped to end right after it; a refusal
+	 * returns `ColumnFamilyDropped` naming the family and leaves nothing held.
+	 * `descriptor` is the caller's already-pinned descriptor (never re-read from
+	 * `dbHandle` off the JS thread).
+	 */
+	rocksdb::Status admitColumnFamilies(ColumnFamilyAdmission& admission, DBDescriptor& descriptor);
 
 	/**
 	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),

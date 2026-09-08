@@ -17,6 +17,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "core/test_seam.h"
 #include "core/verification_table.h"
 #include "core/compression.h"
 
@@ -728,6 +729,47 @@ static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
 }
 
 /**
+ * Drops a non-default column family through its admission gate (AGENTS.md
+ * invariant 20): admission closes first, so a commit submitted from here on is
+ * refused before it reaches RocksDB; already-admitted commits then drain; only
+ * then does RocksDB remove the family. The already-dropped case is success
+ * (Harper broadcasts drops to every worker). Any other failure leaves the gate
+ * closed: RocksDB may have removed the family before reporting the error (a
+ * failed OPTIONS persistence follows a completed drop), and the caller's retry
+ * lands on the already-dropped path, whose identity-checked retirement then
+ * frees the name.
+ */
+static rocksdb::Status dropColumnFamilyGated(DBHandle& dbHandle) {
+	// unregisterColumnFamily erases the registry's reference below; keep ours.
+	std::shared_ptr<ColumnFamilyDescriptor> column = dbHandle.columnDescriptor;
+	std::shared_ptr<DBDescriptor> descriptor = dbHandle.descriptor;
+	ColumnFamilyGate& gate = *column->gate;
+
+	gate.beginDrop();
+	dropBeginCounter().fetch_add(1, std::memory_order_acq_rel);
+	gate.waitForAdmitted();
+
+	rocksdb::Status status = descriptor->db->DropColumnFamily(column->column.get());
+	if (status.ok() && testForceDropFailure()) {
+		status = rocksdb::Status::IOError("forced post-drop failure (test seam)");
+	}
+	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
+		return status;
+	}
+
+	gate.markDropped();
+	// Free the name so a later open creates a fresh family instead of reusing
+	// this dangling handle. Dropping bulk-deletes the data exactly like clear();
+	// the VT sweep belongs to whichever call actually retired the entry (see
+	// DBHandle::clear), never to a stale handle's tolerated re-drop.
+	if (descriptor->unregisterColumnFamily(column->column->GetName(), column) && dbHandle.enableVerificationTable) {
+		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+		if (vt) vt->settleAllSlots();
+	}
+	return rocksdb::Status::OK();
+}
+
+/**
  * Drops the RocksDB database column family asynchronously. If the column family
  * is the default, it will clear the database instead.
  *
@@ -751,33 +793,17 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	napi_value global;
 	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
 
+	// The gate wait can outlast a concurrent close's attempt to begin; hold the
+	// descriptor open across it like DropSync does.
+	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
-	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
+	rocksdb::Status status = dropColumnFamilyGated(**dbHandle);
+	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Drop failed");
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 			env, global, reject, 1, &error, nullptr
 		), "Failed to call reject function");
 		return nullptr;
-	}
-
-	if (status.ok()) {
-		// We performed the drop; remove its by-name registry entry so a later
-		// open with the same name creates a fresh column family instead of
-		// reusing this dangling handle (which poisons write batches with
-		// "Invalid column family specified in write batch"). On the
-		// already-dropped path another handle already dropped this family and
-		// owns the unregister; the name may now point to a freshly-created
-		// family, so unregistering here would corrupt the registry.
-		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
-		// Dropping a column family bulk-deletes its data exactly like clear();
-		// sweep the VT so pre-drop versions can no longer verify FRESH (see
-		// DBHandle::clear). Only on the ok path — on already-dropped, the
-		// handle that performed the drop owns the sweep.
-		if ((*dbHandle)->enableVerificationTable) {
-			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-			if (vt) vt->settleAllSlots();
-		}
 	}
 
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
@@ -807,31 +833,12 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 
 	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
-	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
+	rocksdb::Status status = dropColumnFamilyGated(**dbHandle);
+	if (!status.ok()) {
 		napi_value error;
 		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
 		::napi_throw(env, error);
 		return nullptr;
-	}
-
-	if (status.ok()) {
-		// We performed the drop; remove its by-name registry entry so a later
-		// open with the same name creates a fresh column family instead of
-		// reusing this dangling handle (which poisons write batches with
-		// "Invalid column family specified in write batch"). On the
-		// already-dropped path another handle already dropped this family and
-		// owns the unregister; the name may now point to a freshly-created
-		// family, so unregistering here would corrupt the registry.
-		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
-		// Dropping a column family bulk-deletes its data exactly like clear();
-		// sweep the VT so pre-drop versions can no longer verify FRESH (see
-		// DBHandle::clear). Only on the ok path — on already-dropped, the
-		// handle that performed the drop owns the sweep.
-		if ((*dbHandle)->enableVerificationTable) {
-			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-			if (vt) vt->settleAllSlots();
-		}
 	}
 
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
