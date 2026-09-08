@@ -202,8 +202,9 @@ The archive contains the standard RocksDB files for the snapshot (`CURRENT`, a `
   consumer therefore lets obsolete SST files accumulate (transient disk pressure) until the stream
   finishes. This is the cost of streaming with no scratch copy; a fast consumer is unaffected.
 - **The database must stay open for the whole stream.** Closing or destroying the database while a
-  stream is in flight aborts it: the backup promise rejects, and `destroy()` throws rather than
-  tearing the database down underneath the copy.
+  stream is in flight aborts the stream and makes the backup promise reject. `destroy()` waits for
+  the native producer to release its in-flight claim, then closes every handle for the path and
+  removes the database; it never tears the native database down underneath the copy.
 - **A consumer error aborts the backup.** If `stream.write()` rejects (or the stream is aborted), the
   backup promise rejects and the native producer stops.
 

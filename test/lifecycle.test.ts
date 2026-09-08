@@ -67,4 +67,24 @@ describe('Lifecycle', () => {
 				await expect(db3.get('foo')).rejects.toThrow('Database not open');
 			}
 		));
+
+	// close() publishes async-work cancellation on the handle, and every async
+	// admission (get, flush, compact, clear, backup, checkpoint) is refused while
+	// it stands. Reopening the same instance has to clear it, or a documented
+	// reopen would come back with every async operation permanently rejected as
+	// "Database is closing".
+	it('accepts async work again after a close/open cycle on the same instance', () =>
+		dbRunner(async ({ db }) => {
+			db.putSync('before', 'close');
+			await db.flush();
+			db.close();
+
+			db.open();
+			expect(db.isOpen()).toBe(true);
+			db.putSync('after', 'reopen');
+			await expect(db.flush()).resolves.toBeUndefined();
+			await expect(db.compact()).resolves.toBeUndefined();
+			expect(await db.get('before')).toBe('close');
+			expect(await db.get('after')).toBe('reopen');
+		}));
 });

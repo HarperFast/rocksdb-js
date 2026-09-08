@@ -21,5 +21,6 @@ parentPort?.on('message', (event) => {
 			db.close();
 		}
 		parentPort?.postMessage({ closed: true });
+		parentPort?.close();
 	}
 });
