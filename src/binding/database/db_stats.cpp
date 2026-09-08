@@ -1,5 +1,6 @@
 #include "database/db_stats.h"
 #include <cstdio>
+#include <system_error>
 #include "core/platform.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
@@ -128,6 +129,11 @@ void DBStats::disableWriteBufferManagerWatchdog() {
 	{
 		std::lock_guard<std::mutex> lock(this->watchdogMutex);
 		this->watchdogArmed = false;
+		// An explicit disable is the most recent intent and must win over an
+		// ensure() that raced an in-flight stop and is still waiting to replay
+		// once that stop resolves — otherwise the replay re-arms a watchdog
+		// this call was just told to turn off.
+		this->watchdogArmPendingAfterStop = false;
 		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
 		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
 		this->writeBufferManagerStallActiveMs.store(0, std::memory_order_relaxed);
@@ -166,11 +172,11 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 	}
 	this->watchdogCv.notify_all();
 
-	// Reset-and-notify runs on scope exit, not just after a normal join: join()
-	// can throw std::system_error, and without this a throw here would leave
-	// watchdogRetiring stuck true forever, permanently wedging a concurrent
-	// joiner parked in the wait above (and dropping an ensure() call that
-	// arrived mid-stop, leaving its database with no watchdog for good).
+	// Reset-and-notify runs on scope exit rather than only after the join
+	// below, so any future fallible step added between here and the end of
+	// the function still releases a concurrent joiner parked in the wait
+	// above (and still replays an ensure() call that arrived mid-stop)
+	// instead of leaving watchdogRetiring stuck true forever.
 	struct RetireGuard {
 		DBStats* self;
 		~RetireGuard() {
@@ -188,7 +194,18 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 	} retireGuard{this};
 
 	if (toJoin.joinable()) {
-		toJoin.join();
+		try {
+			toJoin.join();
+		} catch (const std::system_error&) {
+			// A join() failure (e.g. the deadlock/invalid-argument error
+			// conditions) can leave the thread object still joinable; letting
+			// it destruct in that state calls std::terminate(). Detach so the
+			// object destructs safely — RetireGuard above has already reset
+			// the flags, so no other caller stays wedged on this attempt.
+			if (toJoin.joinable()) {
+				toJoin.detach();
+			}
+		}
 	}
 }
 
