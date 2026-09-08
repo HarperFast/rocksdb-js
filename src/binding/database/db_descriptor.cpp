@@ -22,6 +22,23 @@
 
 namespace rocksdb_js {
 
+namespace {
+
+uint64_t nextColumnFamilyIncarnation() {
+	static std::atomic<uint64_t> next{1};
+	uint64_t current = next.load();
+	while (current != UINT64_MAX) {
+		if (next.compare_exchange_weak(current, current + 1)) return current;
+	}
+	throw DBException("Column-family incarnation space exhausted");
+}
+
+} // namespace
+
+ColumnFamilyDescriptor::ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column) :
+	column(std::move(column)),
+	incarnation(nextColumnFamilyIncarnation()) {}
+
 // forward declarations
 static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data);
 
@@ -423,12 +440,9 @@ void DBDescriptor::finishClose() {
 
 	// Wait for all in-flight operations to complete before cleanup.
 	// The closing flag is already set, so new operations will fail with "Database is closing".
-	// Existing operations will decrement operationsInFlight and notify us when done.
-	DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
-	uint32_t current;
-	while ((current = this->operationsInFlight.load()) != 0) {
-		this->operationsInFlight.wait(current);
-	}
+	// Existing operations release their gate claims and notify us when done.
+	DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationGate->activeCount(), this->path.c_str());
+	this->operationGate->waitForDrain();
 	DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
 
 	// Drain the commit pipeline before flushing so its data is included in
@@ -798,12 +812,14 @@ ParkTimeoutRegistry::~ParkTimeoutRegistry() {
 /**
  * Registers a database resource to be closed when the descriptor is closed.
  *
- * Important: The closable must be same smart_ptr that is napi-wrapped and
- * bound to the JavaScript class counterpart.
+ * Important: the closable must be the same shared object retained by its
+ * JavaScript or native lease counterpart.
  */
-void DBDescriptor::attach(std::shared_ptr<Closable> closable) {
+bool DBDescriptor::attach(std::shared_ptr<Closable> closable) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
+	if (this->isClosing()) return false;
 	this->closables[closable.get()] = std::weak_ptr<Closable>(closable);
+	return true;
 }
 
 /**
@@ -811,8 +827,12 @@ void DBDescriptor::attach(std::shared_ptr<Closable> closable) {
  * closed.
  */
 void DBDescriptor::detach(std::shared_ptr<Closable> closable) {
+	this->detach(closable.get());
+}
+
+void DBDescriptor::detach(Closable* closable) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	this->closables.erase(closable.get());
+	this->closables.erase(closable);
 }
 
 #define SET_DOUBLE_PROP(obj, name, value) \

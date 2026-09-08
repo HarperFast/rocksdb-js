@@ -74,6 +74,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 * leave this false to avoid unnecessary VT contention.
 	 */
 	bool enableVerificationTable = false;
+	bool verificationTableHandleRegistered = false;
 
 	/**
 	 * The node environment.

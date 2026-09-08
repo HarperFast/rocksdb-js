@@ -175,7 +175,12 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 
 	// attach this iterator to the descriptor so it gets cleaned up when the descriptor is closed
 	if ((*itHandle)->dbHandle && (*itHandle)->dbHandle->descriptor) {
-		(*itHandle)->dbHandle->descriptor->attach(*itHandle);
+		if (!(*itHandle)->dbHandle->descriptor->attach(*itHandle)) {
+			(*itHandle)->close();
+			delete itHandle;
+			::napi_throw_error(env, nullptr, "Database is closing");
+			return nullptr;
+		}
 	}
 
 	DEBUG_LOG("DBIterator::Constructor itHandle=%p\n", itHandle);

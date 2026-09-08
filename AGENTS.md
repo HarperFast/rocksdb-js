@@ -723,6 +723,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     so a leaked one wedges its workspace permanently. While any key for that physical path is
     closing, `OpenDB` must wait before opening every other key too; otherwise a fresh read-only or
     secondary key can appear after destroy's claim and be deleted and erased without being closed.
+
 19. **A transaction timestamp freezes when native state captures it**: `setTimestamp()` may adopt an
     origin timestamp for replication or replay only while the transaction is pending and before any
     database write or transaction-log entry is staged. The log batch snapshots the timestamp at the
@@ -730,6 +731,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     written remains frozen across retries, though reapplying the same timestamp is idempotent while
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
+
+20. **Operation admission**: `OperationGate` uses sequentially consistent acquire/close ordering.
+    Every RocksDB access must hold a claim, and no RocksDB-owned pointer or slice may outlive it.
+    Borrowed claims require their caller to retain the owning descriptor until claim destruction;
+    async and foreign-thread work uses a shared claim so the gate survives its final release and
+    notification without affecting `DBRegistry` descriptor reference counts.
 
 ## Debugging native heap corruption
 

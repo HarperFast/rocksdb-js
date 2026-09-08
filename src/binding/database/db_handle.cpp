@@ -136,6 +136,10 @@ void DBHandle::close() {
 
 	// decrement the reference count on the column and descriptor
 	if (this->columnDescriptor) {
+		if (this->verificationTableHandleRegistered) {
+			this->columnDescriptor->unregisterVerificationTableHandle();
+			this->verificationTableHandleRegistered = false;
+		}
 		this->columnDescriptor.reset();
 	}
 
@@ -344,6 +348,21 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->identityPath = this->descriptor->identityPath;
 	this->disableWAL = options.disableWAL;
 	this->enableVerificationTable = options.verificationTable;
+	if (this->enableVerificationTable) {
+		auto registration = this->columnDescriptor->registerVerificationTableHandle();
+		if (registration != VerificationTableRegistration::Registered) {
+			DBKey key = descriptorKey(*this->descriptor);
+			this->columnDescriptor.reset();
+			this->descriptor.reset();
+			this->enableVerificationTable = false;
+			DBRegistry::PurgeIfUnreferenced(key);
+			if (registration == VerificationTableRegistration::Revoked) {
+				throw DBException("Column family was dropped");
+			}
+			throw DBException("Column family has an active native storage lease");
+		}
+		this->verificationTableHandleRegistered = true;
+	}
 
 	// Note: We cannot attach this handle to the descriptor because we don't
 	// have the smart pointer to the dbHandle instance, so the caller needs to

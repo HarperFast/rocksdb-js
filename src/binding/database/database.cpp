@@ -436,15 +436,7 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
  */
 struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	std::shared_ptr<DBDescriptor> descriptor;
-
-	/**
-	 * Guards the `operationsInFlight` claim this state inherited when the work
-	 * was queued, so exactly one of the execute callback and the destructor
-	 * releases it. Queued work that is cancelled never runs execute, and a
-	 * claim left standing there makes `finishClose()` — which waits on the
-	 * counter unbounded — wedge close and destroy.
-	 */
-	std::atomic<bool> inFlightReleased{false};
+	OperationClaim operationClaim;
 
 	AsyncCatchUpState(
 		napi_env env,
@@ -454,17 +446,8 @@ struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
 		descriptor(std::move(descriptor)) {}
 
-	void releaseInFlight() {
-		if (this->inFlightReleased.exchange(true)) {
-			return;
-		}
-		if (--this->descriptor->operationsInFlight == 0 && this->descriptor->isClosing()) {
-			this->descriptor->operationsInFlight.notify_all();
-		}
-	}
-
 	~AsyncCatchUpState() override {
-		this->releaseInFlight();
+		this->operationClaim = {};
 		if (this->descriptor) {
 			DBKey key = descriptorKey(*this->descriptor);
 			this->descriptor.reset();
@@ -484,26 +467,6 @@ static bool throwIfNotSecondary(napi_env env, const std::shared_ptr<DBHandle>& d
 	}
 	return true;
 }
-
-/**
- * RAII release for a descriptor `operationsInFlight` claim made on the JS
- * thread, mirroring CheckpointInFlightClaim: decrements (and wakes a waiting
- * `finishClose()`) on any early return before the claim is handed off. Handoff
- * happens the moment `AsyncCatchUpState` is allocated, because that object
- * releases the claim itself — from the worker when it runs, from its destructor
- * when setup fails and it unwinds. Two owners would decrement twice and
- * underflow the counter, and `finishClose()` waits on it unbounded.
- */
-struct CatchUpInFlightClaim {
-	DBDescriptor* descriptor;
-	const bool& handedOff;
-
-	~CatchUpInFlightClaim() {
-		if (!handedOff && --descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
-			descriptor->operationsInFlight.notify_all();
-		}
-	}
-};
 
 /**
  * Advances a secondary instance to the primary's current state asynchronously
@@ -527,17 +490,14 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	}
 
 	// Claim an in-flight operation BEFORE queuing so teardown paths that call
-	// DBDescriptor::finishClose() — which waits on this counter unbounded, while
+	// DBDescriptor::finishClose() — which waits on this gate, while
 	// DBHandle::close()'s async-work drain is bounded and its failure ignored —
 	// cannot reset descriptor->db under a long replay (a follower catching up on
 	// a big backlog opens every new SST/blob eagerly and routinely exceeds the
 	// drain timeout).
 	auto descriptor = (*dbHandle)->descriptor;
-	++descriptor->operationsInFlight;
-	bool handedOff = false;
-	CatchUpInFlightClaim claim{descriptor.get(), handedOff};
-
-	if (descriptor->isClosing()) {
+	auto claim = descriptor->acquireSharedOperation();
+	if (!claim) {
 		::napi_throw_error(env, nullptr, "Database is closing");
 		NAPI_RETURN_UNDEFINED();
 	}
@@ -557,20 +517,12 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	// .lock would stay held for the life of the process, leaving that workspace
 	// unopenable by any process on the host until restart.
 	//
-	// The state takes the in-flight claim with it: from here the claim is
-	// released exactly once, by the state (its destructor when this unwinds,
-	// the worker otherwise). Leaving `handedOff` false would release it twice
-	// on a failure path and underflow the counter, wedging finishClose()'s
-	// unbounded wait forever.
-	//
 	// The async-work registration has to precede the allocation for the same
 	// reason: ~BaseAsyncState unregisters unconditionally, so a state destroyed
-	// during setup would decrement a count that was never incremented and
-	// close()'s drain would then report "nothing in flight" while a worker is
-	// still running.
+	// during setup would decrement a count that was never incremented.
 	(*dbHandle)->registerAsyncWork();
 	auto owned = std::make_unique<AsyncCatchUpState>(env, *dbHandle, descriptor);
-	handedOff = true;
+	owned->operationClaim = std::move(claim);
 	AsyncCatchUpState* state = owned.get();
 
 	// ~BaseAsyncState drops the resolve/reject refs without deleting them (the
@@ -611,7 +563,7 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 			} else {
 				state->status = state->descriptor->catchUpWithPrimary();
 			}
-			state->releaseInFlight();
+			state->operationClaim = {};
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
@@ -744,6 +696,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	if ((*dbHandle)->getColumnFamilyName() == "default") {
 		return doClear(env, info, "Drop failed");
 	}
+	ACQUIRE_OPERATIONS_LOCK();
 
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
@@ -762,6 +715,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	}
 
 	if (status.ok()) {
+		(*dbHandle)->columnDescriptor->revoke();
 		// We performed the drop; remove its by-name registry entry so a later
 		// open with the same name creates a fresh column family instead of
 		// reusing this dangling handle (which poisons write batches with
@@ -816,6 +770,7 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (status.ok()) {
+		(*dbHandle)->columnDescriptor->revoke();
 		// We performed the drop; remove its by-name registry entry so a later
 		// open with the same name creates a fresh column family instead of
 		// reusing this dangling handle (which poisons write batches with
@@ -2392,7 +2347,10 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		// now that the database is open and the dbHandle has a reference to
 		// the descriptor, we can attach the database instance's smart_ptr to
 		// the descriptor so it gets cleaned up when the descriptor is closed
-		(*dbHandle)->descriptor->attach(*dbHandle);
+		if (!(*dbHandle)->descriptor->attach(*dbHandle)) {
+			DBRegistry::CloseDB(*dbHandle);
+			throw DBException("Database is closing");
+		}
 	} catch (const rocksdb_js::DBException& e) {
 		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what());
 		::napi_throw_error(env, e.code(), e.what());
@@ -2705,6 +2663,9 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "compact", nullptr, Compact, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "compactSync", nullptr, CompactSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "createCheckpoint", nullptr, CreateCheckpoint, nullptr, nullptr, nullptr, napi_default, nullptr },
+#ifdef ROCKSDB_JS_NATIVE_STORAGE_LEASE
+		{ "__nativeStorageLease", nullptr, NativeStorageLease, nullptr, nullptr, nullptr, napi_default, nullptr },
+#endif
 		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },

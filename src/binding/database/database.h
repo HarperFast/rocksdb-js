@@ -233,26 +233,17 @@ inline void vtPopulateIfSettled(
 	} while (0)
 
 /**
- * RAII guard that tracks in-flight operations on a DBDescriptor.
- * Increments counter on construction, decrements on destruction.
- * Notifies waiters via atomic::notify_all() when count reaches zero.
+ * Pins a DBDescriptor and holds an operation-gate claim for one native call.
  */
 struct OperationGuard {
 	std::shared_ptr<DBDescriptor> descriptor;
+	OperationClaim claim;
 
-	explicit OperationGuard(std::shared_ptr<DBDescriptor> desc) : descriptor(std::move(desc)) {
-		if (descriptor) {
-			++descriptor->operationsInFlight;
-		}
-	}
+	explicit OperationGuard(std::shared_ptr<DBDescriptor> desc) :
+		descriptor(std::move(desc)),
+		claim(descriptor ? descriptor->acquireOperation() : OperationClaim()) {}
 
-	~OperationGuard() {
-		if (descriptor) {
-			if (--descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
-				descriptor->operationsInFlight.notify_all();
-			}
-		}
-	}
+	explicit operator bool() const { return static_cast<bool>(this->claim); }
 
 	// Non-copyable, non-movable
 	OperationGuard(const OperationGuard&) = delete;
@@ -278,7 +269,7 @@ struct OperationGuard {
 	} \
 	OperationGuard __operationGuard((*dbHandle)->descriptor); \
 	do { \
-		if ((*dbHandle)->descriptor->isClosing()) { \
+		if (!__operationGuard) { \
 			::napi_throw_error(env, nullptr, "Database is closing"); \
 			NAPI_RETURN_UNDEFINED(); \
 		} \
@@ -311,6 +302,9 @@ struct Database final {
 	static napi_value Compact(napi_env env, napi_callback_info info);
 	static napi_value CompactSync(napi_env env, napi_callback_info info);
 	static napi_value CreateCheckpoint(napi_env env, napi_callback_info info);
+#ifdef ROCKSDB_JS_NATIVE_STORAGE_LEASE
+	static napi_value NativeStorageLease(napi_env env, napi_callback_info info);
+#endif
 	static napi_value Flush(napi_env env, napi_callback_info info);
 	static napi_value FlushSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
