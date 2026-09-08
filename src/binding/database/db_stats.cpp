@@ -16,10 +16,12 @@ constexpr const char* WBM_MUTABLE_MEMORY_USAGE_KEY = "writeBufferManager.mutable
 constexpr const char* WBM_STALL_ACTIVE_KEY = "writeBufferManager.stallActive";
 constexpr const char* WBM_STALL_ACTIVE_MS_KEY = "writeBufferManager.stallActiveMs";
 
-/** Bounds how long a degraded (`inventoryAvailable: false`) stall report retries
- *  before giving up: see the call site in `sampleWriteBufferManagerStall`. */
-constexpr int WBM_STALL_INVENTORY_COLLECT_ATTEMPTS = 5;
-constexpr int WBM_STALL_INVENTORY_RETRY_DELAY_MS = 20;
+// See the call site in sampleWriteBufferManagerStall() for why this retries at all.
+// A WAL-recovery-sized hold on databasesMutex/columnsMutex runs to the hundreds of
+// milliseconds; ~450ms of total budget covers that without meaningfully delaying
+// the once-per-episode alarm against a 5s+ threshold.
+constexpr int WBM_STALL_INVENTORY_COLLECT_ATTEMPTS = 10;
+constexpr int WBM_STALL_INVENTORY_RETRY_DELAY_MS = 50;
 
 uint64_t writeBufferManagerStallWarnMs() {
 	static const uint64_t value = [] {
