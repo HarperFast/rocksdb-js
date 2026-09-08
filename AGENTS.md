@@ -34,10 +34,12 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 - `pnpm type-check` - TypeScript type checking only
 
 **Run `pnpm fmt` before every commit** (or `pnpm check` to also type-check and lint) — CI runs
-`pnpm fmt:check` and fails the build on unformatted code. Note the scope: oxfmt formats **TS/JS/JSON
-only**. It does **not** touch C++ or Markdown, so changes to `src/binding/**` and to docs like this
-file (`AGENTS.md`) are not auto-formatted and must be checked by hand — a mis-numbered invariant or a
-stray C++ indent will pass `fmt:check` untouched.
+`pnpm fmt:check` and fails the build on unformatted code. Note the scope: oxfmt formats TS/JS/JSON
+**and Markdown**, but **not C++**, so a stray indent under `src/binding/**` passes `fmt:check`
+untouched and must be checked by hand. Markdown is checked, which includes the ordered list of
+invariants below: a branch that adds an invariant while `main` adds another **renumbers cleanly in
+git and still fails `fmt:check` on the merge ref**, because both sides claim the same number. Rebase
+onto `main` and renumber before pushing rather than reading the red check as unrelated.
 
 ### Development Workflow
 
@@ -739,7 +741,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     written remains frozen across retries, though reapplying the same timestamp is idempotent while
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
-19. **Transactional ranges keep the caller's column family and close before the transaction**:
+20. **Transactional ranges keep the caller's column family and close before the transaction**:
     `Store.getRange()` routes `options.transaction` to native by transaction ID, where the caller
     database descriptor resolves it and supplies the caller's `DBHandle` to `DBIteratorHandle`.
     Replacing the context with `transaction._context` is incorrect for cross-column-family scans:
@@ -764,7 +766,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     bound: `inclusiveEnd` appends a NUL to that bound, so the bound itself is exclusive in both
     directions and a staged key that lands exactly on it must be excluded like a committed one.
 
-20. **A WriteBufferManager stall is a second, entirely separate stall mechanism, and nothing in
+21. **A WriteBufferManager stall is a second, entirely separate stall mechanism, and nothing in
     RocksDB reports it**: `DBImpl::WriteBufferManagerStallWrites` parks writers on the manager's own
     queue (`WBMStallInterface::Block`) without touching the `WriteController`, so `rocksdb.stall.micros`,
     the `WRITE_STALL` histogram, `OnStallConditionsChanged` — and therefore the `'writeStall'` event
