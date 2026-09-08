@@ -33,6 +33,7 @@ constexpr uint64_t kMaxOwnedBytes = 64 * 1024 * 1024;
 constexpr uint64_t kMaxBatchMutations = 65'536;
 constexpr uint64_t kMaxBatchBytes = 64 * 1024 * 1024;
 constexpr uint64_t kMaxScanEntries = 4'096;
+constexpr uint64_t kMaxScanEntryPayloadBytes = kMaxOwnedBytes - sizeof(uint32_t) - 2 * sizeof(uint64_t);
 constexpr uint64_t kReadTimeoutMicros = 100'000;
 constexpr char kProviderBuildIdentity[] = "rocksdb-js/2.8.0-phase0";
 const uint8_t imageIdentity = 0;
@@ -358,6 +359,8 @@ uint32_t writeBatch(
 				return fail(context->state.get(), ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, status, "invalid mutation");
 			}
 			if (mutation.key.length > kMaxKeyBytes || mutation.value.length > kMaxOwnedBytes ||
+				mutation.key.length > kMaxScanEntryPayloadBytes ||
+				mutation.value.length > kMaxScanEntryPayloadBytes - mutation.key.length ||
 				mutation.key.length > kMaxBatchBytes - totalBytes ||
 				mutation.value.length > kMaxBatchBytes - totalBytes - mutation.key.length
 			) {
