@@ -5,7 +5,6 @@
 #include <thread>
 #include <vector>
 #include "core/column_family_gate.h"
-#include "rocksdb/write_batch.h"
 
 using rocksdb_js::ColumnFamilyAdmission;
 using rocksdb_js::ColumnFamilyGate;
@@ -15,6 +14,12 @@ namespace {
 
 std::shared_ptr<ColumnFamilyGate> gate(uint32_t id) {
 	return std::make_shared<ColumnFamilyGate>(id, "cf" + std::to_string(id));
+}
+
+void waitUntil(const std::atomic<bool>& flag) {
+	while (!flag.load(std::memory_order_acquire)) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
 }
 
 } // namespace
@@ -33,13 +38,15 @@ TEST(ColumnFamilyGate, AdmitsAndReleasesWhileLive) {
 TEST(ColumnFamilyGate, BeginDropRefusesLaterAdmissionsAndIsIdempotent) {
 	ColumnFamilyGate g(1, "cf1");
 	EXPECT_TRUE(g.beginDrop());
-	EXPECT_FALSE(g.beginDrop()); // second dropper: already flipped
+	EXPECT_FALSE(g.beginDrop());
 	EXPECT_TRUE(g.isDropping());
 	EXPECT_FALSE(g.tryAdmit());
-	EXPECT_EQ(g.admitted(), 0u); // the refused attempt left no count behind
+	EXPECT_EQ(g.admitted(), 0u);
 	EXPECT_FALSE(g.isDropped());
 	g.markDropped();
 	EXPECT_TRUE(g.isDropped());
+	EXPECT_EQ(rocksdb_js::columnFamilyDroppedStatus(g).ToString(),
+		"Column family dropped: column family \"cf1\" was dropped");
 }
 
 TEST(ColumnFamilyGate, DropWaitsForAdmittedCommitsThenProceeds) {
@@ -47,22 +54,26 @@ TEST(ColumnFamilyGate, DropWaitsForAdmittedCommitsThenProceeds) {
 	ASSERT_TRUE(g.tryAdmit());
 	ASSERT_TRUE(g.tryAdmit());
 
+	std::atomic<bool> dropBegan{false};
 	std::atomic<bool> dropPassed{false};
 	std::thread dropper([&] {
 		g.beginDrop();
+		dropBegan.store(true, std::memory_order_release);
 		g.waitForAdmitted();
-		dropPassed.store(true);
+		dropPassed.store(true, std::memory_order_release);
 	});
+	waitUntil(dropBegan);
 
-	// The drop cannot pass while two admissions are outstanding, and once it
-	// has begun no new admission may land.
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	EXPECT_FALSE(dropPassed.load());
-	EXPECT_FALSE(g.tryAdmit());
+	if (g.tryAdmit()) {
+		ADD_FAILURE() << "admitted after beginDrop";
+		g.release();
+	}
 
 	g.release();
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
-	EXPECT_FALSE(dropPassed.load()); // one still admitted
+	EXPECT_FALSE(dropPassed.load());
 	g.release();
 	dropper.join();
 	EXPECT_TRUE(dropPassed.load());
@@ -71,13 +82,12 @@ TEST(ColumnFamilyGate, DropWaitsForAdmittedCommitsThenProceeds) {
 TEST(ColumnFamilyGate, WaitReturnsImmediatelyWithNothingAdmitted) {
 	ColumnFamilyGate g(1, "cf1");
 	g.beginDrop();
-	g.waitForAdmitted(); // must not block
+	g.waitForAdmitted();
 	EXPECT_TRUE(g.isDropping());
 }
 
-// Concurrent admitters against a dropper: once the dropper is past its wait,
-// no admitter may still be inside its admitted window, and no admitter is
-// admitted afterwards.
+// Once the dropper is past its wait, no admitter may still be inside its
+// admitted window and none may be admitted afterwards.
 TEST(ColumnFamilyGate, NoAdmissionOverlapsACompletedDrop) {
 	ColumnFamilyGate g(7, "cf7");
 	std::atomic<bool> stop{false};
@@ -104,7 +114,6 @@ TEST(ColumnFamilyGate, NoAdmissionOverlapsACompletedDrop) {
 	g.beginDrop();
 	g.waitForAdmitted();
 	dropDone.store(true, std::memory_order_release);
-	// Anything admitted from here on would be the poison this gate exists to prevent.
 	std::this_thread::sleep_for(std::chrono::milliseconds(20));
 	stop.store(true, std::memory_order_release);
 	for (auto& t : admitters) t.join();
@@ -123,7 +132,6 @@ TEST(ColumnFamilyAdmission, AllOrNothingUnwindsOnRefusal) {
 		EXPECT_EQ(a.admitted(), 1u);
 		EXPECT_FALSE(admission.admit(b));
 		EXPECT_EQ(admission.refused(), &b);
-		// the refusal released what was already admitted
 		EXPECT_EQ(a.admitted(), 0u);
 		EXPECT_EQ(admission.size(), 0u);
 		EXPECT_EQ(c.admitted(), 0u);
@@ -156,59 +164,47 @@ TEST(StagedColumnFamilies, DeduplicatesIgnoresNullAndClears) {
 	StagedColumnFamilies staged;
 	auto g1 = gate(1);
 	auto g2 = gate(2);
-	staged.note(nullptr); // the default family carries no gate
+	staged.note(nullptr);
 	staged.note(g1);
 	staged.note(g1);
 	staged.note(g2);
 	staged.note(g1);
 	EXPECT_EQ(staged.size(), 2u);
-	EXPECT_FALSE(staged.overflowed());
 	EXPECT_EQ(&staged.at(0), g1.get());
 	EXPECT_EQ(&staged.at(1), g2.get());
-	EXPECT_EQ(g1.use_count(), 2); // one pin per distinct family
+	EXPECT_EQ(g1.use_count(), 2);
+	EXPECT_EQ(staged.firstDropping(), nullptr);
+	g2->beginDrop();
+	EXPECT_EQ(staged.firstDropping(), g2.get());
 	staged.clear();
 	EXPECT_EQ(staged.size(), 0u);
 	EXPECT_EQ(g1.use_count(), 1);
 }
 
-TEST(StagedColumnFamilies, OverflowFlagsWithoutGrowing) {
+TEST(StagedColumnFamilies, OverflowKeepsEveryDistinctFamily) {
 	StagedColumnFamilies staged;
 	std::vector<std::shared_ptr<ColumnFamilyGate>> gates;
-	for (uint32_t i = 1; i <= StagedColumnFamilies::kInline; ++i) {
+	for (uint32_t i = 1; i <= StagedColumnFamilies::kInline + 4; ++i) {
 		gates.push_back(gate(i));
 		staged.note(gates.back());
+		staged.note(gates.back());
 	}
-	EXPECT_EQ(staged.size(), StagedColumnFamilies::kInline);
-	EXPECT_FALSE(staged.overflowed());
-	auto extra = gate(100);
-	staged.note(extra);
-	EXPECT_TRUE(staged.overflowed());
-	EXPECT_EQ(staged.size(), StagedColumnFamilies::kInline);
-	EXPECT_EQ(extra.use_count(), 1); // the overflowing family is not pinned
+	EXPECT_EQ(staged.size(), gates.size());
+	for (size_t i = 0; i < gates.size(); ++i) {
+		EXPECT_EQ(&staged.at(i), gates[i].get());
+		EXPECT_EQ(gates[i].use_count(), 2);
+	}
+	gates.back()->beginDrop();
+	EXPECT_EQ(staged.firstDropping(), gates.back().get());
 	staged.clear();
-	EXPECT_FALSE(staged.overflowed());
+	EXPECT_EQ(staged.size(), 0u);
+	for (auto& g : gates) {
+		EXPECT_EQ(g.use_count(), 1);
+	}
 }
 
-TEST(CollectColumnFamilyIds, DistinctIdsInFirstAppearanceOrder) {
-	rocksdb::WriteBatch batch;
-	ASSERT_TRUE(batch.Put("k0", "v").ok()); // default family (id 0)
-	ASSERT_TRUE(batch.Delete("k1").ok());
-	std::vector<uint32_t> ids;
-	ASSERT_TRUE(rocksdb_js::collectColumnFamilyIds(batch, ids).ok());
-	ASSERT_EQ(ids.size(), 1u);
-	EXPECT_EQ(ids[0], 0u);
-}
-
-TEST(CollectColumnFamilyIds, EmptyBatchYieldsNothing) {
-	rocksdb::WriteBatch batch;
-	std::vector<uint32_t> ids;
-	ASSERT_TRUE(rocksdb_js::collectColumnFamilyIds(batch, ids).ok());
-	EXPECT_TRUE(ids.empty());
-}
-
-// A fresh gate for a recreated same-name family starts open: generations are
-// distinct objects, so a dropped generation's closed gate cannot leak into the
-// next one.
+// Generations are distinct objects: a dropped generation's closed gate cannot
+// leak into a recreated same-name family.
 TEST(ColumnFamilyGate, RecreatedGenerationStartsOpen) {
 	auto old = gate(5);
 	old->beginDrop();

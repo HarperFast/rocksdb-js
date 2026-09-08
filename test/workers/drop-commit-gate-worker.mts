@@ -92,6 +92,11 @@ parentPort?.on('message', async (msg: Record<string, any>) => {
 				});
 				break;
 			}
+			case 'open': {
+				open(msg.family);
+				parentPort?.postMessage({ type: 'opened', id: msg.id });
+				break;
+			}
 			case 'drop': {
 				let error: ErrorInfo | undefined;
 				try {

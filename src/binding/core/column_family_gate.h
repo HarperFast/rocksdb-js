@@ -9,13 +9,14 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "rocksdb/write_batch.h"
+#include "rocksdb/status.h"
 
 namespace rocksdb_js {
 
 /**
  * Per-column-family admission gate that serializes `DropColumnFamily` against
- * transaction commits naming the family (HarperFast/rocksdb-js#806, #726).
+ * transaction commits naming the family (HarperFast/rocksdb-js#806, #726;
+ * AGENTS.md invariant 20).
  *
  * A commit admitted past optimistic validation (or any pessimistic commit)
  * that reaches the memtable inserter after the family was dropped fails with
@@ -91,7 +92,6 @@ public:
 		}
 	}
 
-	/** Drop side: records that RocksDB has removed the family (message accuracy only). */
 	void markDropped() {
 		this->state.fetch_or(kDropped, std::memory_order_acq_rel);
 	}
@@ -116,50 +116,74 @@ private:
 	std::atomic<uint64_t> state{0};
 };
 
+/** The status a commit is refused with; the wording is part of the public error contract. */
+inline rocksdb::Status columnFamilyDroppedStatus(const ColumnFamilyGate& gate) {
+	return rocksdb::Status::ColumnFamilyDropped(
+		"column family \"" + gate.name + (gate.isDropped() ? "\" was dropped" : "\" is being dropped")
+	);
+}
+
 /**
- * The distinct column families a transaction has staged writes into, recorded
- * at `Put`/`Delete` time without locks or heap allocation: an inline array of
- * gate tokens, deduplicated by pointer. Past `kInline` distinct families it
- * only sets `overflowed()`; the commit then derives the exact set from the
- * write batch instead (`collectColumnFamilyIds`).
+ * The distinct droppable column families a transaction has staged writes
+ * into, recorded at `Put`/`Delete` time: gate tokens deduplicated by pointer in
+ * an inline array, with a heap vector allocated only once a transaction touches
+ * a ninth distinct family.
  */
 class StagedColumnFamilies final {
 public:
 	static constexpr size_t kInline = 8;
 
-	/** Records a successful write into `gate`'s family. A null gate (the undroppable default family) is ignored. */
+	/** Records a successful write into `gate`'s family; the default family carries no gate and is ignored. */
 	void note(const std::shared_ptr<ColumnFamilyGate>& gate) {
-		if (!gate || this->overflow) {
+		if (!gate) {
 			return;
 		}
-		for (size_t i = 0; i < this->count; ++i) {
-			if (this->gates[i].get() == gate.get()) {
+		for (size_t i = 0; i < this->inlineCount; ++i) {
+			if (this->inlineGates[i].get() == gate.get()) {
 				return;
 			}
 		}
-		if (this->count == kInline) {
-			this->overflow = true;
+		if (this->inlineCount < kInline) {
+			this->inlineGates[this->inlineCount++] = gate;
 			return;
 		}
-		this->gates[this->count++] = gate;
+		for (const auto& held : this->overflow) {
+			if (held.get() == gate.get()) {
+				return;
+			}
+		}
+		this->overflow.push_back(gate);
 	}
 
 	void clear() {
-		for (size_t i = 0; i < this->count; ++i) {
-			this->gates[i].reset();
+		for (size_t i = 0; i < this->inlineCount; ++i) {
+			this->inlineGates[i].reset();
 		}
-		this->count = 0;
-		this->overflow = false;
+		this->inlineCount = 0;
+		this->overflow.clear();
 	}
 
-	bool overflowed() const { return this->overflow; }
-	size_t size() const { return this->count; }
-	ColumnFamilyGate& at(size_t index) const { return *this->gates[index]; }
+	size_t size() const { return this->inlineCount + this->overflow.size(); }
+
+	ColumnFamilyGate& at(size_t index) const {
+		return index < kInline ? *this->inlineGates[index] : *this->overflow[index - kInline];
+	}
+
+	/** A staged family whose drop has already begun, or null. Advisory: only admission is authoritative. */
+	ColumnFamilyGate* firstDropping() const {
+		for (size_t i = 0; i < this->size(); ++i) {
+			ColumnFamilyGate& gate = this->at(i);
+			if (gate.isDropping()) {
+				return &gate;
+			}
+		}
+		return nullptr;
+	}
 
 private:
-	std::array<std::shared_ptr<ColumnFamilyGate>, kInline> gates{};
-	size_t count = 0;
-	bool overflow = false;
+	std::array<std::shared_ptr<ColumnFamilyGate>, kInline> inlineGates{};
+	size_t inlineCount = 0;
+	std::vector<std::shared_ptr<ColumnFamilyGate>> overflow;
 };
 
 /**
@@ -167,8 +191,7 @@ private:
  * the batch names, released together at scope exit (or immediately by the
  * first refusal). Non-blocking, so no acquisition order is needed to stay
  * deadlock-free. Holds raw gate pointers: the caller keeps every admitted
- * gate alive for the holder's lifetime (`keepAlive` covers gates the caller
- * resolved only for this commit).
+ * gate alive for the holder's lifetime.
  */
 class ColumnFamilyAdmission final {
 public:
@@ -211,13 +234,9 @@ public:
 		this->overflow.clear();
 	}
 
-	/** The gate that refused the last `admit()`, or null. */
 	ColumnFamilyGate* refused() const { return this->refusedGate; }
 
 	size_t size() const { return this->inlineCount + this->overflow.size(); }
-
-	/** Gate tokens resolved for this commit only; released with the admission. */
-	std::vector<std::shared_ptr<ColumnFamilyGate>> keepAlive;
 
 private:
 	static constexpr size_t kInline = StagedColumnFamilies::kInline;
@@ -227,12 +246,6 @@ private:
 	std::vector<ColumnFamilyGate*> overflow;
 	ColumnFamilyGate* refusedGate = nullptr;
 };
-
-/**
- * Appends the distinct column family ids named by `batch` to `ids` (in first-
- * appearance order). Used only for an overflowed `StagedColumnFamilies`.
- */
-rocksdb::Status collectColumnFamilyIds(const rocksdb::WriteBatch& batch, std::vector<uint32_t>& ids);
 
 } // namespace rocksdb_js
 

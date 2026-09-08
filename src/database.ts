@@ -1246,8 +1246,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			txn.abort();
 		} catch (abortErr) {
 			if (abortErr instanceof TransactionAbandonedError) {
-				// The abandonment supersedes the commit failure the caller would otherwise
-				// see; keep that failure reachable (e.g. ERR_COLUMN_FAMILY_DROPPED).
 				abortErr.cause ??= commitErr;
 				throw abortErr;
 			}

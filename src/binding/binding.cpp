@@ -90,6 +90,9 @@ napi_value SetCommitHoldForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	bool hold = false;
 	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &hold));
+	if (hold) {
+		commitGateSeamsArmed().store(true, std::memory_order_release);
+	}
 	commitHoldFlag().store(hold, std::memory_order_release);
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
@@ -98,9 +101,11 @@ napi_value SetCommitHoldForTesting(napi_env env, napi_callback_info info) {
 
 /**
  * Test-only: `{ commitsAdmitted, dropsBegun }` — monotonic process-wide counters of commits that
- * passed the column-family gate and drops that closed it. See core/test_seam.h.
+ * passed the column-family gate and drops that closed it. The first read arms them; until then a
+ * production commit pays no read-modify-write. See core/test_seam.h.
  */
 napi_value GetCommitGateCountersForTesting(napi_env env, napi_callback_info info) {
+	commitGateSeamsArmed().store(true, std::memory_order_release);
 	napi_value result;
 	napi_value commitsAdmitted;
 	napi_value dropsBegun;
