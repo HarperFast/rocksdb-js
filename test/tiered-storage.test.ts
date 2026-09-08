@@ -11,7 +11,7 @@ import {
 	renameSync,
 	rmSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, relative as relativePath } from 'node:path';
+import { dirname, isAbsolute, join, relative as relativePath, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -414,6 +414,42 @@ describe('paths', () => {
 		db.destroy();
 		expect(filesWithExt(fast, '.sst')).toHaveLength(0);
 		expect(existsSync(dbPath)).toBe(false);
+	});
+
+	it('should retain tiered layout through a non-canonical database path', () => {
+		const dbPath = tempPath();
+		const fast = tempDir();
+		const db = openDb(`${dbPath}${sep}`, {
+			paths: [{ path: fast, targetSize: 1 << 30 }],
+		});
+		for (let i = 0; i < 200; i++) {
+			db.putSync(`key-${i}`, `value-${i}`);
+		}
+		db.flushSync();
+		expect(filesWithExt(fast, '.sst').length).toBeGreaterThan(0);
+
+		db.close();
+		db.destroy();
+		expect(filesWithExt(fast, '.sst')).toHaveLength(0);
+	});
+
+	it('should not apply a retired layout to a replacement database', () => {
+		const dbPath = tempPath();
+		const fast = tempDir();
+		const replacementPath = tempPath();
+		const tiered = openDb(dbPath, { paths: [{ path: fast, targetSize: 1 << 30 }] });
+		tiered.putSync('tiered', 'value');
+		tiered.flushSync();
+		tiered.close();
+
+		const replacement = openDb(replacementPath);
+		replacement.putSync('flat', 'value');
+		replacement.flushSync();
+		replacement.close();
+		rmSync(dbPath, { recursive: true, force: true });
+		renameSync(replacementPath, dbPath);
+
+		expect(() => openDb(dbPath, { paths: [] })).not.toThrow();
 	});
 
 	it('should delete tiered SST files a later open added, not the first handle’s list', async () => {

@@ -11,6 +11,7 @@ namespace rocksdb_js {
 struct DBFileLayout {
 	std::vector<rocksdb::DbPath> dbPaths;
 	std::unordered_map<std::string, std::string> blobDirs;
+	std::string databaseIdentity;
 };
 
 bool extendsDbPaths(

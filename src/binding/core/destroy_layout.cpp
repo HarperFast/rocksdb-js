@@ -42,6 +42,9 @@ bool updateRetainedDestroyLayout(
 		pathsAccepted = false;
 	}
 	retained.blobDirs = std::move(observed.blobDirs);
+	if (writableOpen && pathsAccepted && !observed.databaseIdentity.empty()) {
+		retained.databaseIdentity = std::move(observed.databaseIdentity);
+	}
 	return pathsAccepted;
 }
 

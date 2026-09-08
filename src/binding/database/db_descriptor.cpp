@@ -1565,11 +1565,6 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	for (const auto& storagePath : options.paths) {
 		dbOptions.db_paths.emplace_back(storagePath.path, storagePath.targetSize);
 	}
-	// A writable open may only extend the retained destroy layout, and is refused
-	// here rather than after the open — see AssertDbPathsExtendRetained.
-	if (!options.readOnly) {
-		DBRegistry::AssertDbPathsExtendRetained(path, dbOptions.db_paths);
-	}
 	// Explicit narrowing: RocksDB's field is size_t; the value is validated
 	// <= MAX_SAFE_INTEGER at parse time, and a >4GB info-log cap (only reachable
 	// on a 32-bit build) is nonsensical, so the cast is safe and silences
@@ -1616,6 +1611,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	bool createRequestedBlobDirForNewColumn = false;
 #endif
 	if (listStatus.ok() && !columnFamilyNames.empty()) {
+		// A writable reopen may only extend the retained destroy layout, and is
+		// refused here rather than after the open — see AssertDbPathsExtendRetained.
+		if (!options.readOnly) {
+			DBRegistry::AssertDbPathsExtendRetained(identityPath, dbOptions.db_paths, dbOptions.env);
+		}
 		assertStoragePathsUsable(dbOptions.env, path, options.paths);
 #ifndef ROCKSDB_HAS_CF_BLOB_DIR
 		assertNoPersistedBlobDir(dbOptions.env, path);
@@ -1733,6 +1733,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		}
 #endif
 	} else {
+		if (!options.readOnly && listStatus.IsNotFound()) {
+			DBRegistry::ForgetLayout(identityPath);
+		}
 		// Database doesn't exist or no column families found. Create the default
 		// column family; apply the requested compression to it only when it is the
 		// target (a freshly-created CF gets the request — default or explicit).
@@ -1991,7 +1994,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	secondaryLock.token = 0;
 	descriptor->layoutDbPaths = dbOptions.db_paths;
 	descriptor->layoutBlobDirs = std::move(layoutBlobDirs);
-	DBRegistry::RecordLayout(path, descriptor->captureLayout(), !options.readOnly);
+	rocksdb::ReadFileToString(
+		dbOptions.env, identityPath + "/IDENTITY", &descriptor->layoutDatabaseIdentity
+	);
+	DBRegistry::RecordLayout(identityPath, descriptor->captureLayout(), !options.readOnly);
 
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is
@@ -2875,9 +2881,9 @@ void DBDescriptor::recordColumnFamilyLayout(const std::string& name, const std::
 	{
 		std::lock_guard<std::mutex> lock(this->layoutMutex);
 		this->layoutBlobDirs[name] = blobDir;
-		layout = DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs };
+		layout = DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs, this->layoutDatabaseIdentity };
 	}
-	DBRegistry::RecordLayout(this->path, std::move(layout), !this->readOnly);
+	DBRegistry::RecordLayout(this->identityPath, std::move(layout), !this->readOnly);
 }
 
 void DBDescriptor::removeColumnFamilyLayout(const std::string& name) {

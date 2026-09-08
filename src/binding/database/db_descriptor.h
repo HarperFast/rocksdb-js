@@ -214,7 +214,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * read-only-loaded store, letting a writer truncate a segment a reader had
 	 * mapped; in the database registry it would build a second descriptor for one
 	 * directory and open a second secondary instance on one workspace — the
-	 * in-process half of the exclusivity contract (invariant 18), which the
+	 * in-process half of the exclusivity contract (invariant 20), which the
 	 * `.secondary.lock` cannot cover where that lock degrades to a no-op.
 	 *
 	 * Resolving is not safe to repeat: `weakly_canonical`/`absolute` consult the
@@ -331,6 +331,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	std::vector<rocksdb::DbPath> layoutDbPaths;
 	std::unordered_map<std::string, std::string> layoutBlobDirs;
+	std::string layoutDatabaseIdentity;
 	std::mutex layoutMutex;
 
 	void recordColumnFamilyLayout(const std::string& name, const std::string& blobDir);
@@ -338,7 +339,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	DBFileLayout captureLayout() {
 		std::lock_guard<std::mutex> lock(this->layoutMutex);
-		return DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs };
+		return DBFileLayout{ this->layoutDbPaths, this->layoutBlobDirs, this->layoutDatabaseIdentity };
 	}
 
 	/**

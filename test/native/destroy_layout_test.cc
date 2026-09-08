@@ -30,7 +30,7 @@ std::vector<std::string> pathNames(const DBFileLayout& layout) {
 
 TEST(DestroyLayout, ReadOnlyOpenCannotEstablishExternalPaths) {
 	DBFileLayout retained;
-	DBFileLayout reader{ paths({ "/data/db", "/data/neighbor" }), { { "default", "" } } };
+	DBFileLayout reader{ paths({ "/data/db", "/data/neighbor" }), { { "default", "" } }, "" };
 
 	EXPECT_FALSE(updateRetainedDestroyLayout(retained, std::move(reader), false));
 	EXPECT_TRUE(retained.dbPaths.empty());
@@ -41,36 +41,36 @@ TEST(DestroyLayout, WritableOpenEstablishesAndAppendsPaths) {
 	DBFileLayout retained;
 	EXPECT_TRUE(updateRetainedDestroyLayout(
 		retained,
-		DBFileLayout{ paths({ "/data/db" }), {} },
+		DBFileLayout{ paths({ "/data/db" }), {}, "" },
 		true
 	));
 	EXPECT_TRUE(updateRetainedDestroyLayout(
 		retained,
-		DBFileLayout{ paths({ "/data/db", "/data/cold" }), {} },
+		DBFileLayout{ paths({ "/data/db", "/data/cold" }), {}, "" },
 		true
 	));
 	EXPECT_EQ(pathNames(retained), (std::vector<std::string>{ "/data/db", "/data/cold" }));
 }
 
 TEST(DestroyLayout, ShorterAndDivergentWritableListsDoNotReplaceTheRecord) {
-	DBFileLayout retained{ paths({ "/data/db", "/data/cold" }), {} };
+	DBFileLayout retained{ paths({ "/data/db", "/data/cold" }), {}, "" };
 
 	EXPECT_FALSE(updateRetainedDestroyLayout(
 		retained,
-		DBFileLayout{ paths({ "/data/db" }), {} },
+		DBFileLayout{ paths({ "/data/db" }), {}, "" },
 		true
 	));
 	EXPECT_FALSE(updateRetainedDestroyLayout(
 		retained,
-		DBFileLayout{ paths({ "/data/db", "/data/neighbor" }), {} },
+		DBFileLayout{ paths({ "/data/db", "/data/neighbor" }), {}, "" },
 		true
 	));
 	EXPECT_EQ(pathNames(retained), (std::vector<std::string>{ "/data/db", "/data/cold" }));
 }
 
 TEST(DestroyLayout, EmptyBlobDirectoryIsAnAuthoritativeReplacement) {
-	DBFileLayout retained{ {}, { { "default", "/data/old-blobs" } } };
-	DBFileLayout relocated{ {}, { { "default", "" } } };
+	DBFileLayout retained{ {}, { { "default", "/data/old-blobs" } }, "" };
+	DBFileLayout relocated{ {}, { { "default", "" } }, "" };
 
 	EXPECT_TRUE(updateRetainedDestroyLayout(retained, std::move(relocated), true));
 	ASSERT_TRUE(retained.blobDirs.contains("default"));

@@ -31,7 +31,7 @@ struct DBKey {
 	 * The database's resolved filesystem identity (`DBDescriptor::identityPath`),
 	 * never a caller's raw spelling: two spellings of one directory would
 	 * otherwise hold two descriptors for it, and a second secondary instance
-	 * would open one workspace twice (invariant 18).
+	 * would open one workspace twice (invariant 20).
 	 */
 	std::string path;
 	bool readOnly;
@@ -169,8 +169,10 @@ public:
 	);
 	static void AssertDbPathsExtendRetained(
 		const std::string& path,
-		const std::vector<rocksdb::DbPath>& requested
+		const std::vector<rocksdb::DbPath>& requested,
+		rocksdb::Env* env
 	);
+	static void ForgetLayout(const std::string& path);
 	static void RecordLayout(const std::string& path, DBFileLayout layout, bool writableOpen);
 	static void Init(napi_env env, napi_value exports);
 	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);

@@ -379,6 +379,10 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		} catch (...) {
 			destroyError = std::current_exception();
 		}
+		if (!destroyError) {
+			std::lock_guard<std::mutex> layoutsLock(instance->knownLayoutsMutex);
+			instance->knownLayouts.erase(identityPath);
+		}
 		erasePathEntries();
 	}
 	notifyClaimed();
@@ -388,11 +392,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	if (destroyError) {
 		std::rethrow_exception(destroyError);
 	}
-	{
-		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
-		instance->knownLayouts.erase(identityPath);
-	}
-
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), identityPath.c_str());
 }
 
@@ -483,19 +482,37 @@ static std::string refusedDbPathsMessage(
  */
 void DBRegistry::AssertDbPathsExtendRetained(
 	const std::string& path,
-	const std::vector<rocksdb::DbPath>& requested
+	const std::vector<rocksdb::DbPath>& requested,
+	rocksdb::Env* env
 ) {
 	if (!instance) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
 	auto known = instance->knownLayouts.find(path);
-	if (known == instance->knownLayouts.end() ||
-		extendsDbPaths(known->second.dbPaths, requested)
+	if (known == instance->knownLayouts.end()) {
+		return;
+	}
+	std::string currentIdentity;
+	if (!known->second.databaseIdentity.empty() &&
+		rocksdb::ReadFileToString(env, path + "/IDENTITY", &currentIdentity).ok() &&
+		currentIdentity != known->second.databaseIdentity
 	) {
+		instance->knownLayouts.erase(known);
+		return;
+	}
+	if (extendsDbPaths(known->second.dbPaths, requested)) {
 		return;
 	}
 	throw rocksdb_js::DBException(refusedDbPathsMessage(path, known->second.dbPaths, requested));
+}
+
+void DBRegistry::ForgetLayout(const std::string& path) {
+	if (!instance) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
+	instance->knownLayouts.erase(path);
 }
 
 /**
@@ -592,7 +609,7 @@ rocksdb::Status DBRegistry::DropColumnFamily(
 	// descriptors of one database are both retired. A closing descriptor is
 	// still in the map (PurgeIfUnreferenced leaves it there until finishClose()
 	// returns), so this covers it too.
-	const std::string& path = descriptor->path;
+	const std::string& path = descriptor->identityPath;
 	for (auto& [key, entry] : instance->databases) {
 		if (key.path == path && entry.descriptor) {
 			entry.descriptor->removeColumnFamilyLayout(columnName);
@@ -810,7 +827,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// worth naming — it is what Harper does when a plain startup open
 			// precedes the table open that carries the migration.
 			const bool currentIsUntiered = currentPaths.size() == 1 &&
-				currentPaths[0].path == path &&
+				currentPaths[0].path == identityPath &&
 				currentPaths[0].target_size == std::numeric_limits<uint64_t>::max();
 			bool differs = false;
 			if (options.paths.empty()) {

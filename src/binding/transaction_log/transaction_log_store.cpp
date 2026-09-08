@@ -1248,7 +1248,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				activated = false;
 			}
 			// Recovery and retirement both write into the primary's log tree, so
-			// they belong to a writable load only (invariant 18). A read-only
+			// they belong to a writable load only (invariant 20). A read-only
 			// load keeps the segment as opened: `open()` already clamped `size`
 			// to any marker it found, which is the reader's view of it.
 			if (activated && !readOnly) {

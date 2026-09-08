@@ -191,7 +191,7 @@ void TransactionLogFile::openFile() {
 
 	DEBUG_LOG("%p TransactionLogFile::openFile Opening file: %s\n", this, this->path.string().c_str());
 
-	// A reader creates neither the file nor its parent directory (invariant 18:
+	// A reader creates neither the file nor its parent directory (invariant 20:
 	// the tree belongs to the writer, which may be live in another process), and
 	// never restamps permissions — the `exists()` check below races a segment
 	// the primary is creating right now, and the follower would rewrite its DACL.
