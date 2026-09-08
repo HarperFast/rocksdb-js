@@ -1,7 +1,11 @@
 import { getWriteBufferManagerStats, RocksDatabase } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
+import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+const unconfiguredFixturePath = join(__dirname, 'fixtures', 'fork-wbm-unconfigured.mts');
 
 /**
  * The WriteBufferManager is a process-global singleton. Once created, its
@@ -30,11 +34,18 @@ describe('WriteBufferManager', () => {
 				expect(await db.get('foo')).toBe('bar');
 			}));
 
-		// Runs before this file's beforeAll creates the manager, so it is the only
-		// place the "no manager in this process" shape is observable.
-		it('should report an unconfigured manager as disabled rather than absent', () =>
-			dbRunner(async ({ db }) => {
-				const stats = getWriteBufferManagerStats();
+		// In a child process: the manager is a process-wide singleton shared by
+		// every vitest worker thread, so any other file that configures one makes
+		// the unconfigured shape unobservable here.
+		it('should report an unconfigured manager as disabled rather than absent', () => {
+			const dbPath = generateDBPath();
+			try {
+				const child = spawnSync(process.execPath, [unconfiguredFixturePath, dbPath], {
+					encoding: 'utf8',
+				});
+				expect(child.status, child.stderr).toBe(0);
+
+				const { stats, dbStats } = JSON.parse(child.stdout.trim().split(/\r?\n/).at(-1)!);
 				expect(stats.enabled).toBe(false);
 				expect(stats.bufferSize).toBe(0);
 				expect(stats.memoryUsage).toBe(0);
@@ -47,10 +58,14 @@ describe('WriteBufferManager', () => {
 
 				// The scrape keys keep their shape so a dashboard reading them does
 				// not have to special-case "manager not configured".
-				const dbStats = db.getStats();
 				expect(dbStats['writeBufferManager.bufferSize']).toBe(0);
 				expect(dbStats['writeBufferManager.stallActive']).toBe(0);
-			}));
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+				}
+			}
+		});
 	});
 
 	describe('with costToCache enabled', () => {
