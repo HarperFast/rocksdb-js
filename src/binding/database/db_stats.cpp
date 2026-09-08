@@ -1,6 +1,5 @@
 #include "database/db_stats.h"
 #include <cstdio>
-#include <system_error>
 #include "core/platform.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
@@ -16,6 +15,11 @@ constexpr const char* WBM_MEMORY_USAGE_KEY = "writeBufferManager.memoryUsage";
 constexpr const char* WBM_MUTABLE_MEMORY_USAGE_KEY = "writeBufferManager.mutableMemoryUsage";
 constexpr const char* WBM_STALL_ACTIVE_KEY = "writeBufferManager.stallActive";
 constexpr const char* WBM_STALL_ACTIVE_MS_KEY = "writeBufferManager.stallActiveMs";
+
+/** Bounds how long a degraded (`inventoryAvailable: false`) stall report retries
+ *  before giving up: see the call site in `sampleWriteBufferManagerStall`. */
+constexpr int WBM_STALL_INVENTORY_COLLECT_ATTEMPTS = 5;
+constexpr int WBM_STALL_INVENTORY_RETRY_DELAY_MS = 20;
 
 uint64_t writeBufferManagerStallWarnMs() {
 	static const uint64_t value = [] {
@@ -198,18 +202,7 @@ void DBStats::joinWriteBufferManagerWatchdog(bool allowRearm) {
 	} retireGuard{this, allowRearm};
 
 	if (toJoin.joinable()) {
-		try {
-			toJoin.join();
-		} catch (const std::system_error&) {
-			// A join() failure (e.g. the deadlock/invalid-argument error
-			// conditions) can leave the thread object still joinable; letting
-			// it destruct in that state calls std::terminate(). Detach so the
-			// object destructs safely; RetireGuard still resets the flags on
-			// scope exit below, so no other caller stays wedged on this attempt.
-			if (toJoin.joinable()) {
-				toJoin.detach();
-			}
-		}
+		toJoin.join();
 	}
 }
 
@@ -289,9 +282,27 @@ void DBStats::sampleWriteBufferManagerStall(
 	report.mutableMemoryUsage = writeBufferManager->mutable_memtable_memory_usage();
 	report.allowStall = settings.getWriteBufferManagerAllowStall();
 	report.costToCache = settings.getWriteBufferManagerCostToCache();
+	// This is the one report an episode ever gets, so a `databasesMutex`/
+	// `columnsMutex` holder that is merely busy (e.g. `DBRegistry::OpenDB`
+	// running WAL recovery, typically sub-second) shouldn't leave it
+	// permanently missing the retention histogram that is the entire point
+	// of #821. Retries stay non-blocking (still a `try_lock` each attempt)
+	// and are bounded and brief so a holder that never lets go still gets a
+	// degraded-but-timely alarm rather than delaying it.
 	report.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
 		writeBufferManager, report.columnFamilies, report.maxWriteBufferSizeToMaintain
 	);
+	for (int attempt = 1; !report.inventoryAvailable && attempt < WBM_STALL_INVENTORY_COLLECT_ATTEMPTS;
+		 attempt++) {
+		if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
+			this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
+			return;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(WBM_STALL_INVENTORY_RETRY_DELAY_MS));
+		report.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
+			writeBufferManager, report.columnFamilies, report.maxWriteBufferSizeToMaintain
+		);
+	}
 	if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
 		this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
 		return;
@@ -345,23 +356,11 @@ bool DBStats::getWriteBufferManagerStat(const std::string& statName, double& val
 
 void DBStats::setWriteBufferManagerStatsOnObject(napi_env env, napi_value result) {
 	WriteBufferManagerStats stats = this->getWriteBufferManagerStats(false);
-	static constexpr const char* keys[] = {
-		WBM_BUFFER_SIZE_KEY,
-		WBM_MEMORY_USAGE_KEY,
-		WBM_MUTABLE_MEMORY_USAGE_KEY,
-		WBM_STALL_ACTIVE_KEY,
-		WBM_STALL_ACTIVE_MS_KEY,
-	};
-	for (const char* key : keys) {
-		double value = 0;
-		if (!lookupWriteBufferManagerStat(key, stats, value)) {
-			continue;
-		}
-		napi_value jsValue;
-		if (::napi_create_double(env, value, &jsValue) == napi_ok) {
-			::napi_set_named_property(env, result, key, jsValue);
-		}
-	}
+	setNumberProperty(env, result, WBM_BUFFER_SIZE_KEY, stats.bufferSize);
+	setNumberProperty(env, result, WBM_MEMORY_USAGE_KEY, stats.memoryUsage);
+	setNumberProperty(env, result, WBM_MUTABLE_MEMORY_USAGE_KEY, stats.mutableMemoryUsage);
+	setNumberProperty(env, result, WBM_STALL_ACTIVE_KEY, stats.stallActive ? 1 : 0);
+	setNumberProperty(env, result, WBM_STALL_ACTIVE_MS_KEY, stats.stallActiveMs);
 }
 
 napi_value DBStats::GetWriteBufferManagerStats(napi_env env, napi_callback_info info) {
