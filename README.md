@@ -190,7 +190,7 @@ Returns the list of column families in the RocksDB database.
 const db = RocksDatabase.open('path/to/db');
 console.log(db.columns); // ['default']
 
-const db2 = new RocksDatabase('path/to/db', { name: 'users' });
+db.use('users');
 console.log(db.columns); // ['default', 'users']
 ```
 
@@ -314,6 +314,49 @@ Returns a string `'opened'` or `'closed'` indicating if the database is opened o
 
 ```typescript
 console.log(db.status);
+```
+
+### `db.use(name, options?): RocksDatabase`
+
+Returns a `RocksDatabase` bound to the `name` column family of this same database, opening — and
+creating, if it does not exist — the column family on first use. This is a factory (like
+[`useLog`](#dbuselogname-transactionlog)), not a stateful switch: the returned view is an
+independent instance whose own reads and writes target its column family, while sharing the same
+underlying database. Because a single RocksDB database backs every column family, a transaction,
+backup, or checkpoint still spans all of them.
+
+- `name: string` The column family name.
+- `options?: object` Options for the column family (same shape as the constructor's, minus `name`),
+  overriding the options inherited from this database. Options only take effect when the view is
+  (re)opened.
+
+`use()` is get-or-create, backed by a weak cache: `db.use('events') === db.use('events')` while the
+view is still referenced **and open**, and calling with this database's own column-family name
+returns `this`. A view that has been closed (or garbage-collected — the cache does not pin it) is
+transparently recreated on the next `use()`. Views are independent handles: closing this database
+does not close them (and vice versa); the underlying database stays open until every handle is closed
+or collected.
+
+The view's store is derived by `Store#createColumnFamilyStore(name, options)`, which builds an
+independent store of the same class with **its own codec state** — views never share a mutable
+encoder/decoder. Consequently a database configured with a _pre-constructed_ encoder/decoder instance
+cannot derive views (its `name`/`structures` would be shared and corrupt both column families); use an
+encoder factory (`{ Encoder }`) or a named `encoding` instead. A custom `Store` whose constructor
+can't be recreated from `(path, options)` (e.g. it takes injected dependencies) should override
+`createColumnFamilyStore` to build its views.
+
+```typescript
+const db = RocksDatabase.open('path/to/db');
+
+const events = db.use('events');
+await events.put('e1', payload);
+
+await db.put('k', 'v'); // default column family, unaffected
+console.log(events.get('e1')); // payload
+console.log(db.get('e1')); // undefined — different column family
+
+events.close();
+db.close();
 ```
 
 ## Data Operations
@@ -663,7 +706,7 @@ const range = db.getKeysCount({ start: 'a', end: 'z' }); // exact number of keys
 ### `db.getMonotonicTimestamp(): number`
 
 Returns the current timestamp as a monotonically increasing timestamp in milliseconds represented as
-a decimal number.
+a decimal number. This process-wide clock also supplies each transaction's initial timestamp.
 
 ```typescript
 const ts = db.getMonotonicTimestamp();
@@ -959,13 +1002,14 @@ operations methods as the `RocksDatabase` instance plus:
   no further transaction operations are permitted. Calling this method multiple times has no effect.
 - `txn.commit(): Promise<void>` Asynchronously commits the transaction and closes the transaction.
 - `txn.commitSync()` Synchronously commits and closes the transaction.
-- `txn.getTimestamp(): number` Retrieves the transaction start timestamp in seconds as a decimal. It
-  defaults to the time at which the transaction was created.
+- `txn.getTimestamp(): number` Retrieves the transaction timestamp in milliseconds as a decimal. It
+  defaults to a process-wide monotonic value assigned when the transaction was created.
 - `txn.id: number` The read-only transaction ID. Transaction IDs are unique to the RocksDB database
   path, regardless the database name/column family.
-- `txn.setTimestamp(ts?: number): void` Overrides the transaction start timestamp. If called without
-  a timestamp, it will set the timestamp to the current time. The value must be in seconds with
-  higher precision in the decimal.
+- `txn.setTimestamp(ts?: number): void` Overrides the transaction timestamp in milliseconds. If
+  called without a timestamp, it claims a fresh monotonic value. It must be called before staging
+  any write or transaction-log entry, and a supplied value must be finite, positive, and below
+  `8.64e15`.
 
 #### `txn.abandonWrites(): void`
 
@@ -1001,8 +1045,9 @@ Once called, no further transaction operations are permitted.
 
 #### `txn.getTimestamp(): number`
 
-Retrieves the transaction start timestamp in seconds as a decimal. It defaults to the time at which
-the transaction was created.
+Retrieves the transaction timestamp in milliseconds since the Unix epoch as a decimal. It defaults
+to a process-wide monotonic value assigned when the transaction was created. The transaction log
+uses this timestamp as the batch key; producers may also encode it into their own record format.
 
 #### `txn.id`
 
@@ -1011,14 +1056,24 @@ Type: `number`
 The transaction ID represented as a 32-bit unsigned integer. Transaction IDs are unique to the
 RocksDB database path, regardless the database name/column family.
 
-#### `txn.setTimestamp(ts: number?): void`
+#### `txn.setTimestamp(ts?: number): void`
 
-Overrides the transaction start timestamp. If called without a timestamp, it will set the timestamp
-to the current time. The value must be in seconds with higher precision in the decimal.
+Overrides the transaction timestamp in milliseconds since the Unix epoch. Replication receivers and
+crash replay can use this to adopt an origin transaction's log key. If called without a timestamp,
+it claims a fresh monotonic value.
+
+The override must happen while the transaction is pending and before any database write or
+transaction-log entry is staged. A log batch that has already been written keeps its timestamp
+across a coordinated retry; reapplying that same timestamp remains idempotent while pending. A
+supplied value must be finite, positive, and below `8.64e15`.
+
+rocksdb-js does not define a record's value layout or version metadata. A producer that copies the
+transaction timestamp into record bytes is responsible for calling `setTimestamp()` before reading
+and encoding it.
 
 ```typescript
 await db.transaction(async (txn) => {
-	txn.setTimestamp(Date.now() / 1000);
+	txn.setTimestamp(Date.now());
 });
 ```
 
@@ -1645,6 +1700,14 @@ a big-endian float64). The table maps `(database, column family, key)` to a sing
 holds the last-known version for that key. Because slots are addressed by a hash, distinct keys may
 share a slot; a collision only ever causes a conservative miss (a real read), never a stale value to
 be treated as fresh.
+
+This first word is the only version the table derives on its own: it is what a read with
+`populateVersion: true` publishes and what a transaction write invalidates against. A producer whose
+record format also carries a separately assigned version elsewhere in the value must keep using the
+first word on both sides of the check — as `expectedVersion`, and as the argument to any explicit
+[`db.populateVersion()`](#dbpopulateversionkey-key-version-number-void) call, which publishes
+whatever it is given. Comparing against the other value would miss the fast path, and publishing it
+would make the slot disagree with what the next write invalidates.
 
 The freshness check works as follows:
 
