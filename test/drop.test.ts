@@ -211,9 +211,8 @@ describe('Drop', () => {
 	// a silent partial commit reported as success, which the transaction log
 	// would then mark committed.
 	//
-	// Losing the whole transaction is the correct outcome, and the commit gate
-	// keeps it contained: the batch is refused before RocksDB sees it, so the
-	// environment stays writable (the #726 poisoning this test used to tolerate).
+	// Losing the whole transaction is the correct outcome; the commit gate refuses
+	// the batch before RocksDB sees it (the #726 poisoning this test used to tolerate).
 	it('should not partially apply a pessimistic transaction spanning a dropped column family', () =>
 		dbRunner(
 			{
@@ -236,7 +235,6 @@ describe('Drop', () => {
 				// the live half must NOT have been applied
 				expect(victim.getSync('live')).toBeUndefined();
 
-				// and the environment is still writable afterwards
 				victim.putSync('d', '4');
 				expect(victim.getSync('d')).toBe('4');
 				expect(victim.getLastError()).toBeNull();

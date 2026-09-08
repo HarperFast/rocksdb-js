@@ -85,15 +85,14 @@ const victim = RocksDatabase.open(dbPath, { name: 'victim', pessimistic });
 let doomed = RocksDatabase.open(dbPath, { name: 'doomed', pessimistic });
 
 try {
-	// Round 1: commit wins, drop waits (same thread).
+	// Round 1: commit wins, drop waits, on this thread.
 	const before = getCommitGateCountersForTesting();
 	setCommitHoldForTesting(true);
 	const commit = doomed.transaction((txn: Transaction) => {
 		txn.putSync('won', 1);
 	});
 	commit.catch(() => {});
-	// One macrotask lets db.transaction() reach the native commit call; the spin
-	// below then waits for the lane to admit it.
+	// db.transaction() reaches the native commit call one macrotask later.
 	await macrotask();
 	spinUntilAdmitted(before.commitsAdmitted + 1);
 	helper.postMessage({
@@ -120,7 +119,7 @@ try {
 		afterRound1.dropsBegun === before.dropsBegun + 1 &&
 		afterRound1.commitsAdmitted === before.commitsAdmitted + 1;
 
-	// Round 2: drop wins, the staged commit is refused.
+	// Round 2: drop wins.
 	doomed = RocksDatabase.open(dbPath, { name: 'doomed', pessimistic });
 	try {
 		await doomed.transaction(async (txn: Transaction) => {
@@ -130,6 +129,65 @@ try {
 		result.dropWins = 'fulfilled';
 	} catch (err) {
 		result.dropWins = describeError(err);
+	}
+
+	// Round 3 (two-lane mode only): the authoritative refusal after the log batch
+	// is already persisted. The commit lane is parked on an unrelated held commit
+	// while the log lane writes a later multi-family transaction's batch; that
+	// transaction's family is then dropped (nothing admitted yet), and releasing
+	// the hold lets it reach admission, where it must be refused whole.
+	if (process.env.ROCKSDB_JS_COMMIT_THREAD === '2') {
+		const held = RocksDatabase.open(dbPath, { name: 'held', pessimistic });
+		const live = RocksDatabase.open(dbPath, { name: 'live', pessimistic });
+		const logged = RocksDatabase.open(dbPath, { name: 'logged', pessimistic });
+		const log = logged.useLog('audit');
+		const writtenBefore = log.getStats().totals.transactionsWritten;
+		const counters = getCommitGateCountersForTesting();
+		setCommitHoldForTesting(true);
+		const heldCommit = held.transaction((txn: Transaction) => {
+			txn.putSync('h', 1);
+		});
+		heldCommit.catch(() => {});
+		await macrotask();
+		spinUntilAdmitted(counters.commitsAdmitted + 1);
+		let loggedError: unknown;
+		const loggedCommit = logged
+			.transaction(async (txn: Transaction) => {
+				log.addEntry(Buffer.from('entry'), txn.id);
+				await live.put('l', 1, { transaction: txn });
+				await logged.put('d', 1, { transaction: txn });
+			})
+			.catch((err: unknown) => {
+				loggedError = err;
+			});
+		const logDeadline = Date.now() + 10_000;
+		while (
+			log.getStats().totals.transactionsWritten <= writtenBefore &&
+			log.getStats().uncommittedTransactions === 0
+		) {
+			if (Date.now() > logDeadline) {
+				throw new Error('log batch was never written while the commit lane was held');
+			}
+			await new Promise((r) => setTimeout(r, 1));
+		}
+		logged.dropSync();
+		setCommitHoldForTesting(false);
+		await heldCommit;
+		await loggedCommit;
+		const logStats = log.getStats();
+		result.afterLog = {
+			error: describeError(loggedError),
+			cause: describeError((loggedError as { cause?: unknown } | undefined)?.cause),
+			liveApplied: live.getSync('l'),
+			heldApplied: held.getSync('h'),
+			// the abandoned position no longer pins the committed-read watermark
+			watermarkReleased:
+				logStats.lastCommittedPosition?.sequence === logStats.nextLogPosition.sequence &&
+				logStats.lastCommittedPosition?.offset === logStats.nextLogPosition.offset,
+		};
+		logged.close();
+		live.close();
+		held.close();
 	}
 
 	// Health after both races.
@@ -149,7 +207,7 @@ try {
 } finally {
 	setCommitHoldForTesting(false);
 	helper.postMessage({ type: 'close', id: 2 });
-	await Promise.race([helperMessage('closed', 2), new Promise((r) => setTimeout(r, 5000))]);
+	await Promise.race([helperMessage('closed', 2), new Promise((r) => setTimeout(r, 5000).unref())]);
 	await helper.terminate();
 	victim.close();
 }

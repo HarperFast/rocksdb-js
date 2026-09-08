@@ -81,11 +81,7 @@ napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_
 	NAPI_RETURN_UNDEFINED();
 }
 
-/**
- * Test-only: while `true`, every commit admitted through the column-family gate parks (bounded)
- * before its RocksDB commit, so a test can hold a commit inside the admitted window and observe a
- * concurrent drop waiting on it. See core/test_seam.h.
- */
+/** Test-only: park every admitted commit (bounded) inside its admitted window; see core/test_seam.h. */
 napi_value SetCommitHoldForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	bool hold = false;
@@ -99,11 +95,7 @@ napi_value SetCommitHoldForTesting(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-/**
- * Test-only: `{ commitsAdmitted, dropsBegun }` — monotonic process-wide counters of commits that
- * passed the column-family gate and drops that closed it. The first read arms them; until then a
- * production commit pays no read-modify-write. See core/test_seam.h.
- */
+/** Test-only: `{ commitsAdmitted, dropsBegun }`; the first read arms the counting (see core/test_seam.h). */
 napi_value GetCommitGateCountersForTesting(napi_env env, napi_callback_info info) {
 	commitGateSeamsArmed().store(true, std::memory_order_release);
 	napi_value result;
@@ -119,10 +111,7 @@ napi_value GetCommitGateCountersForTesting(napi_env env, napi_callback_info info
 	return result;
 }
 
-/**
- * Test-only: report the next `n` successful drops as failed after RocksDB has already removed the
- * family (the OPTIONS-persistence failure shape). See core/test_seam.h.
- */
+/** Test-only: report the next `n` completed drops as failed (the OPTIONS-persistence shape); see core/test_seam.h. */
 napi_value ForceDropFailureForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	int32_t count = 0;
