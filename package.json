@@ -35,7 +35,7 @@
     "bench": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs bench --passWithNoTests --outputJson benchmark-results.json",
     "bench:bun": "cross-env CI=1 bun --bun bench",
     "bench:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports ./node_modules/vitest/vitest.mjs bench",
-    "build": "pnpm build:bundle && pnpm rebuild",
+    "build": "pnpm build:bundle && pnpm run rebuild",
     "build:binding": "node-gyp build",
     "build:binding:debug": "node-gyp build --coverage --debug --verbose",
     "build:bundle": "node scripts/clean-dist.mjs && tsdown -c tsdown.config.ts",

@@ -2588,7 +2588,7 @@ built to be debug friendly.
 | Production build (minified + native binding) | `pnpm build`                             |
 | TypeScript only (minified)                   | `pnpm build:bundle`                      |
 | TypeScript only (unminified)                 | `pnpm build:debug`                       |
-| Native binding only (prod)                   | `pnpm rebuild`                           |
+| Native binding only (prod)                   | `pnpm run rebuild`                       |
 | Native binding only (with debug logging)     | `pnpm rebuild:debug`                     |
 | Debug build everything                       | `pnpm build:debug && pnpm rebuild:debug` |
 
@@ -2621,7 +2621,7 @@ When you compile `rocksdb-js`, you can specify the `ROCKSDB_LIBC` environment va
 either `glibc` (default) or `musl`.
 
 ```bash
-ROCKSDB_LIBC=musl pnpm rebuild
+ROCKSDB_LIBC=musl pnpm run rebuild
 ```
 
 ### Windows C runtime versions
@@ -2637,7 +2637,7 @@ local `rocksdb` repo:
 ```bash
 git clone https://github.com/facebook/rocksdb.git /path/to/rocksdb
 echo "ROCKSDB_PATH=/path/to/rocksdb" >> .env
-pnpm rebuild
+pnpm run rebuild
 ```
 
 ### Debugging

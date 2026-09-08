@@ -67,7 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           ROCKSDB_ASAN: '1'
-        run: pnpm rebuild
+        run: pnpm run rebuild
 
       - name: Loop worker benchmarks under ASan
         id: asan
