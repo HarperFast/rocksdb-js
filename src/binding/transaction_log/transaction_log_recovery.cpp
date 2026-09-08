@@ -229,19 +229,17 @@ RecoveryScan scanTransactionLogForRecovery(
 			source.readHeaderAt(pos, header);
 			double timestamp = readDoubleBE(header);
 			if (timestamp == 0) {
-				// End-of-entries marker, including the zero padding of a pre-extended file.
+			// A zero timestamp also marks the padding of a pre-extended file.
 				return scan(RecoveryScan::Kind::Clean, pos);
 			}
 			uint32_t length = readUint32BE(header + 8);
 			if (length == 0 ||
 				static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
-				// Intact frames after the break are mid-file corruption; truncating would
-				// discard them, and the committed watermark must still reach them, so the
-				// walk resumes where framing does. A torn tail has nothing valid behind it.
-				uint32_t resume = findFramingResumeOffset(source, pos + 1, /*endIsWrittenExtent=*/true);
-				if (resume == 0) {
-					return scan(RecoveryScan::Kind::TruncateTail, pos);
-				}
+			// Framed entries after the break must remain intact.
+			uint32_t resume = findFramingResumeOffset(source, pos + 1, /*endIsWrittenExtent=*/true);
+			if (resume == 0) {
+				return scan(RecoveryScan::Kind::TruncateTail, pos);
+			}
 				if (firstBreak == 0) {
 					firstBreak = pos;
 				}

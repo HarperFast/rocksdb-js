@@ -167,8 +167,6 @@ describe('monotonic clock floor', () => {
 
 		expect((await runFixture('write', dbPath, highest)).code).toBe(0);
 
-		// A budget of zero is honored literally, which is what makes this
-		// deterministic: nothing is scanned, so nothing seeds the floor.
 		const warned = await runFixture('warn', dbPath, highest, LOG, {
 			ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS: '0',
 		});
