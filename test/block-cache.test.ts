@@ -1,6 +1,10 @@
 import { RocksDatabase } from '../src/index.ts';
 import { dbRunner } from './lib/util.ts';
-import { assert, describe, expect, it } from 'vitest';
+import { afterEach, assert, describe, expect, it } from 'vitest';
+
+afterEach(() => {
+	RocksDatabase.config({ blobCacheSize: 0 });
+});
 
 describe('Block Cache', () => {
 	it('should disable block cache', () =>

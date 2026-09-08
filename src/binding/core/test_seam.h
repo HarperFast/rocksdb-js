@@ -3,6 +3,8 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <mutex>
+#include <string>
 
 // Deterministic test seams that widen a race window are gated on a millisecond
 // delay read from an environment variable (0 = disabled). They are inert in
@@ -28,6 +30,54 @@ inline int testDelayMs(const char* envName) {
 inline std::atomic<int>& forceTryAgainCounter() {
 	static std::atomic<int> counter{0};
 	return counter;
+}
+
+// Test-only latch for DBRegistry::DropColumnFamily, armed from JS rather than an env var for the
+// same reason as forceTryAgainCounter() above. When armed, a successful drop parks between the
+// RocksDB drop and the registry cleanup — exactly where a warm DBRegistry::OpenDB would slip in
+// if that section ever released databasesMutex early — until an open has reached that mutex, and
+// then for this many further milliseconds. Anchoring the hold to the opener's arrival rather than
+// to a timer is what makes the interleaving a fact instead of an assumption. 0 = inert, and the
+// counters below are then maintained by neither side.
+inline std::atomic<int>& dropColumnFamilyDelayMs() {
+	static std::atomic<int> ms{0};
+	return ms;
+}
+
+// Incremented as an armed drop enters the latch, so a test thread knows when the drop is provably
+// inside the critical section, and again once that drop has seen an opener reach the registry
+// mutex, so the test can assert the interleaving happened rather than hoping it did.
+inline std::atomic<uint32_t>& dropColumnFamilyLatchEntered() {
+	static std::atomic<uint32_t> count{0};
+	return count;
+}
+
+inline std::atomic<uint32_t>& dropColumnFamilyLatchObservedOpen() {
+	static std::atomic<uint32_t> count{0};
+	return count;
+}
+
+// Incremented by DBRegistry::OpenDB immediately before it acquires databasesMutex, but only while
+// the latch is armed and only for the database a drop is currently parked on — production pays one
+// relaxed load per open. Keyed by path because this is a process-global singleton and Vitest's
+// thread pool shares it: an unrelated test opening some other database must not be credited as the
+// opener the parked drop is waiting for.
+inline std::atomic<uint32_t>& openDbMutexAttempts() {
+	static std::atomic<uint32_t> count{0};
+	return count;
+}
+
+// Lock order: DBRegistry::databasesMutex BEFORE this one (the parked drop already holds it);
+// OpenDB releases this before acquiring databasesMutex, so there is no inversion.
+inline std::mutex& dropColumnFamilyLatchPathMutex() {
+	static std::mutex mutex;
+	return mutex;
+}
+
+// Path of the drop currently parked in the latch; empty when none is. Guarded by the mutex above.
+inline std::string& dropColumnFamilyLatchPath() {
+	static std::string path;
+	return path;
 }
 
 // Consumes one forced failure if any remain. Returns true when the caller should treat this

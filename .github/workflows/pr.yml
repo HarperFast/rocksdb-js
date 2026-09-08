@@ -77,6 +77,8 @@ jobs:
 
       - name: Run tests on Node.js ${{ matrix.node }}
         shell: bash
+        env:
+          ROCKSDB_JS_REQUIRE_BLOB_DIR: '1'
         run: pnpm coverage || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm coverage)
 
   native-test:

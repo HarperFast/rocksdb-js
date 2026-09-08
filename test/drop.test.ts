@@ -1,6 +1,12 @@
 import { RocksDatabase } from '../src/index.ts';
+import {
+	delayDropColumnFamilyForTesting,
+	dropColumnFamilyLatchStatsForTesting,
+} from '../src/load-binding.ts';
 import type { Transaction } from '../src/transaction.ts';
-import { dbRunner } from './lib/util.ts';
+import { dbRunner, terminateWorker } from './lib/util.ts';
+import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
+import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 
 describe('Drop', () => {
@@ -290,4 +296,95 @@ describe('Drop', () => {
 				}
 			}
 		));
+
+	// A drop is only safe if it is atomic against `DBRegistry::OpenDB`. The drop
+	// used to retire its registry state in two lock acquisitions - the destroy
+	// layouts under `databasesMutex`, then the by-name column entry under
+	// `columnsMutex` - and the warm open path takes those same two locks in that
+	// order to decide whether to reuse a family or create a fresh one. A thread
+	// opening the family in that gap still found its name in `columns` and was
+	// handed the already-dropped RocksDB column family: the open succeeded and
+	// every write through it was silently discarded.
+	//
+	// The latch makes the interleaving a fact rather than a timing assumption:
+	// the worker opens only once the drop has parked mid-section, and the drop
+	// holds on only once that open has reached the registry mutex. `observedOpen`
+	// is what proves the two actually met, so a starved worker fails the test
+	// instead of quietly passing it.
+	it('should not hand a concurrent warm open the column family it is dropping', () =>
+		dbRunner({ dbOptions: [{ name: 'racy' }] }, async ({ db, dbPath }) => {
+			db.putSync('before-drop', 'value');
+			// The latch counters are process-wide and monotonic, so a rerun in this
+			// process must compare against a baseline rather than against zero.
+			const baseline = dropColumnFamilyLatchStatsForTesting();
+
+			const worker = new Worker(
+				createWorkerBootstrapScript('./test/workers/drop-warm-open-worker.mts'),
+				{
+					eval: true,
+					workerData: {
+						dbPath,
+						columnName: 'racy',
+						baselineEntered: baseline.entered,
+						waitTimeoutMs: 10_000,
+					},
+				}
+			);
+
+			let markReady: () => void;
+			let failWorker: (err: Error) => void;
+			const workerReady = new Promise<void>((resolve, reject) => {
+				markReady = resolve;
+				failWorker = reject;
+			});
+			let reported = false;
+			const result = new Promise<Record<string, unknown>>((resolve, reject) => {
+				const fail = (err: Error) => {
+					failWorker(err);
+					reject(err);
+				};
+				worker.on('error', fail);
+				worker.on('exit', () => {
+					// A message posted just before exit can still be in flight, so only
+					// treat the exit as a failure once it has had a turn to land.
+					setTimeout(() => {
+						if (!reported) {
+							fail(new Error('worker exited without reporting'));
+						}
+					}, 50);
+				});
+				worker.on('message', (event) => {
+					if (event.ready) {
+						markReady();
+					} else {
+						reported = true;
+						resolve(event);
+					}
+				});
+			});
+
+			try {
+				// The worker is spinning on the latch counter by the time it reports
+				// ready, so arming now cannot be missed.
+				await workerReady;
+				delayDropColumnFamilyForTesting(250);
+				db.dropSync();
+
+				const stats = dropColumnFamilyLatchStatsForTesting();
+				expect(stats.entered).toBe(baseline.entered + 1);
+				// The worker's open really did reach the registry mutex while the drop
+				// was mid-section...
+				expect(stats.observedOpen).toBe(baseline.observedOpen + 1);
+
+				const event = await result;
+				expect(event.error).toBeUndefined();
+				// ...and it still came back with a fresh family whose writes land,
+				// not the dropped one whose writes RocksDB discards.
+				expect(event.readBack).toBe('value');
+				expect(event.columns).toContain('racy');
+			} finally {
+				delayDropColumnFamilyForTesting(0);
+				await terminateWorker(worker);
+			}
+		}));
 });

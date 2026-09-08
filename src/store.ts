@@ -22,8 +22,10 @@ import {
 import {
 	constants,
 	NativeDatabase,
+	type NativeBlobOptions,
 	type NativeDatabaseOptions,
 	NativeIterator,
+	type NativeStoragePath,
 	NativeTransaction,
 	stats,
 	supportedCompression,
@@ -32,6 +34,7 @@ import {
 } from './load-binding.ts';
 import { parseDuration } from './util.ts';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
+import { resolve } from 'node:path';
 
 const {
 	ONLY_IF_IN_MEMORY_CACHE_FLAG,
@@ -547,7 +550,8 @@ export class Store {
 	name: string;
 
 	/**
-	 * Whether to disable the block cache.
+	 * Whether to disable the process-wide caches for this database — both the
+	 * block cache and the blob cache.
 	 */
 	noBlockCache?: boolean;
 
@@ -562,6 +566,10 @@ export class Store {
 	 * The path to the database.
 	 */
 	path: string;
+
+	paths?: NativeStoragePath[];
+
+	blobs?: NativeBlobOptions;
 
 	/**
 	 * Whether to use pessimistic locking for transactions. When `true`,
@@ -692,6 +700,27 @@ export class Store {
 		this.noBlockCache = options?.noBlockCache;
 		this.parallelismThreads = options?.parallelismThreads;
 		this.path = path;
+		// Resolved here rather than natively: `std::filesystem::path` is
+		// `wchar_t`-based on Windows, so converting a UTF-8 path through it
+		// re-encodes via the active code page and corrupts non-ASCII names. The
+		// native layer rejects a relative path instead of resolving one.
+		//
+		// Anything that is not a resolvable path is passed through untouched so
+		// the native layer still produces its own validation message.
+		if (Array.isArray(options?.paths) && options.paths.length > 64) {
+			throw new Error('paths must have no more than 64 entries');
+		}
+		this.paths = Array.isArray(options?.paths)
+			? options.paths.map((entry) =>
+					entry && typeof entry.path === 'string' && entry.path
+						? { ...entry, path: resolve(entry.path) }
+						: entry
+				)
+			: options?.paths;
+		this.blobs =
+			options?.blobs && typeof options.blobs.dir === 'string' && options.blobs.dir
+				? { ...options.blobs, dir: resolve(options.blobs.dir) }
+				: options?.blobs;
 		this.pessimistic = options?.pessimistic ?? false;
 		// null (the natural absent value from JSON/env-derived config) must mean
 		// absent exactly like the native layer treats napi_null — a null that
@@ -1286,6 +1315,8 @@ export class Store {
 			name: this.name,
 			noBlockCache: this.noBlockCache,
 			parallelismThreads: this.parallelismThreads,
+			paths: this.paths,
+			blobs: this.blobs,
 			readOnly: this.readOnly,
 			secondaryPath: this.secondaryPath,
 			statsLevel: this.statsLevel,
