@@ -459,8 +459,9 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 				// back up. Other open failures propagate: the segment may be healthy,
 				// and reporting success would publish an incomplete backup.
 				if (!file->malformedBackupWarningEmitted.exchange(true, std::memory_order_relaxed)) {
+					const auto displayFilePath = this->displayPath / file->path.filename();
 					std::ostringstream msg;
-					msg << "Transaction log segment " << file->path.string()
+					msg << "Transaction log segment " << displayFilePath.string()
 						<< " could not be opened to measure its extent (" << e.what()
 						<< "); it is excluded from this backup.";
 					DEBUG_LOG("%p TransactionLogStore::snapshotForBackup WARNING: %s\n", this, msg.str().c_str());
