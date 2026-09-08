@@ -535,8 +535,8 @@ void DBDescriptor::finishClose() {
 	{
 		std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
 		this->columns.clear();
-		// The entry stays in the registry until the purge tail finishes, so stop
-		// reporting this database's dropped families the moment its live ones go.
+		// The registry entry outlives this, so drop both or the inventory keeps
+		// reporting families of a closed database.
 		this->droppedColumns.clear();
 	}
 

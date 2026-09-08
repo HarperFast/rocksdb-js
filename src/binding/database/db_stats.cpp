@@ -109,6 +109,13 @@ void DBStats::ensureWriteBufferManagerWatchdog() {
 		this->watchdogStarted = false;
 		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
 		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+		// An alarm that failed to arm must not be silent — that is the failure this
+		// whole feature exists to remove. Reported, not thrown: a diagnostic thread
+		// the OS refused is no reason to fail the database open that asked for it,
+		// and the next open retries.
+		::fprintf(stderr,
+			"[rocksdb-js] could not start the WriteBufferManager stall watchdog; a write "
+			"stall will not be reported until it starts\n");
 	}
 }
 
