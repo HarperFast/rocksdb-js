@@ -222,7 +222,6 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath, bool
 
 namespace {
 
-/** Returns the process-wide open-time floor-scan budget. */
 std::chrono::milliseconds timestampFloorScanBudget() {
 	static const std::chrono::milliseconds budget = [] {
 		const char* raw = ::getenv("ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS");
@@ -306,6 +305,15 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	}
 
+	if (scan.tornTail) {
+		std::ostringstream msg;
+		msg << "Transaction log \"" << logName << "\" of database " << dbPath
+			<< " has an unrecovered torn tail; entries before the tail were scanned, and no "
+			   "framed entry follows it.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	}
+
 	if (!scan.complete) {
 		std::vector<std::string> reasons;
 		if (scan.budgetExhausted) {
@@ -317,6 +325,9 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 				"a segment's framing breaks partway through, so any entry after the break — durable"
 				" when the break sits inside a flushed prefix, and reported by a query as a corrupt"
 				" frame — was not read");
+		}
+		if (scan.discoveryIncomplete) {
+			reasons.emplace_back("transaction-log discovery skipped a segment at open");
 		}
 		if (scan.readFailed || reasons.empty()) {
 			reasons.emplace_back("a segment could not be read at open");

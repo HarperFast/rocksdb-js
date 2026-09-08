@@ -1,7 +1,3 @@
-// Unit tests for scanTransactionLogForRecovery — the pure framing scan that
-// open-time crash recovery uses to decide whether to truncate a torn tail,
-// leave a mid-file corruption intact, or do nothing.
-
 #include <gtest/gtest.h>
 #include <chrono>
 #include <cstdint>
@@ -226,6 +222,20 @@ TEST(TransactionLogRecovery, MaxTimestampStopsAtATornTailToo) {
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
+TEST(TransactionLogRecovery, DeadlineLeavesTheImageIntact) {
+	LogImage img;
+	img.entry(10, 1, 500.0).entry(10, 1, 900.0);
+	auto deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
+	auto incomplete = scanTransactionLogForRecovery(
+		img.data(), img.size(), std::numeric_limits<double>::infinity(), deadline);
+	EXPECT_EQ(incomplete.kind, RecoveryScan::Kind::Incomplete);
+	EXPECT_DOUBLE_EQ(incomplete.maxTimestamp, 0.0);
+
+	auto complete = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(complete.kind, RecoveryScan::Kind::Clean);
+	EXPECT_DOUBLE_EQ(complete.maxTimestamp, 900.0);
 }
 
 TEST(TransactionLogRecovery, BrokenFrameThenFewEntriesReachingEofIsNotTruncated) {
@@ -675,7 +685,7 @@ TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
 	std::error_code error;
 	std::filesystem::remove(path, error);
 
-	EXPECT_TRUE(scan.stoppedAtBreak);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
 }
 
@@ -695,7 +705,7 @@ TEST(TransactionLogMaxEntryScan, ACleanFileIsNotReportedAsStoppedShort) {
 	std::error_code error;
 	std::filesystem::remove(path, error);
 
-	EXPECT_FALSE(scan.stoppedAtBreak);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 900.0);
 }
 
@@ -717,7 +727,7 @@ TEST(TransactionLogMaxEntryScan, RetiredBoundaryExcludesThePhysicalTail) {
 	std::error_code error;
 	std::filesystem::remove(path, error);
 
-	EXPECT_FALSE(scan.stoppedAtBreak);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
 }
 
@@ -745,6 +755,6 @@ TEST(TransactionLogMaxEntryScan, SubHeaderZeroPaddingIsCleanForFloorScanning) {
 	std::error_code error;
 	std::filesystem::remove(path, error);
 
-	EXPECT_FALSE(scan.stoppedAtBreak);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
 }

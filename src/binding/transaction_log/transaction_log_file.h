@@ -408,18 +408,9 @@ struct TransactionLogFile final {
 	uint32_t scanForLastCompleteTransactionEnd();
 
 	struct MaxEntryScan final {
-		/** Largest key at or below `plausibleBound`, or 0 if the file holds none. */
 		double maxTimestamp = 0;
-		/** Largest key above it, kept apart so one bad key does not discard the rest. */
 		double maxImplausibleTimestamp = 0;
-		/**
-		 * The walk stopped at a framing break rather than at the end of the entries,
-		 * so any key after it is missing from `maxTimestamp`. Both classifications
-		 * count: entries after a mid-file break are durable and `query()` resyncs
-		 * past them (AGENTS.md invariant 11), and a torn tail whose break sits
-		 * inside the flushed prefix leaves the file at full extent too.
-		 */
-		bool stoppedAtBreak = false;
+		RecoveryScan::Kind kind = RecoveryScan::Kind::Clean;
 	};
 
 	/**
@@ -429,7 +420,9 @@ struct TransactionLogFile final {
 	 * is no longer durable and must not reach the clock floor. Throws DBException
 	 * on I/O failure.
 	 */
-	MaxEntryScan scanMaxEntryTimestamp(double plausibleBound);
+	MaxEntryScan scanMaxEntryTimestamp(
+		double plausibleBound,
+		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
 
 	/**
 	 * Closes the log file and removes it.

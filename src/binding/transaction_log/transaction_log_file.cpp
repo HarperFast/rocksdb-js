@@ -340,7 +340,10 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 	return scan.lastCompleteTransactionEnd;
 }
 
-TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(double plausibleBound) {
+TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline
+) {
 	MaxEntryScan result;
 	uint64_t fileSize;
 	{
@@ -363,14 +366,14 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(doubl
 	RecoveryScan scan;
 	try {
 		scan = scanTransactionLogForRecovery(
-			this->path, static_cast<uint32_t>(fileSize), plausibleBound);
+			this->path, static_cast<uint32_t>(fileSize), plausibleBound, deadline);
 	} catch (const DBException& error) {
 		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
 
 	result.maxTimestamp = scan.maxTimestamp;
 	result.maxImplausibleTimestamp = scan.maxImplausibleTimestamp;
-	result.stoppedAtBreak = scan.kind != RecoveryScan::Kind::Clean;
+	result.kind = scan.kind;
 	return result;
 }
 
@@ -419,6 +422,9 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 
 			return;
 		}
+
+		case RecoveryScan::Kind::Incomplete:
+			return;
 
 		case RecoveryScan::Kind::TruncateTail:
 			if (scan.validEnd >= fileSize) {

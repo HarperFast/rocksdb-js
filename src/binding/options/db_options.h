@@ -96,7 +96,6 @@ struct DBOptions final {
 	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	std::string transactionLogsPath;
 	std::string transactionLogsDisplayPath;
-	// Locally originated log used to seed the timestamp floor; empty disables it.
 	std::string timestampFloorLog;
 	// Per-CF memtable size at which the memtable is sealed and flushed. Smaller
 	// values produce more frequent, faster flushes; larger values batch more

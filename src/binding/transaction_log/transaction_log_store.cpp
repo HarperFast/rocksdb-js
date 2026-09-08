@@ -363,6 +363,8 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 
 	const auto deadline = std::chrono::steady_clock::now() + budget;
 	DurableKeyScan result;
+	result.discoveryIncomplete = this->discoveryIncomplete;
+	result.complete = !result.discoveryIncomplete;
 
 	for (const auto& logFile : files) {
 		if (std::chrono::steady_clock::now() >= deadline) {
@@ -372,16 +374,30 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 		}
 
 		try {
-			auto fileScan = logFile->scanMaxEntryTimestamp(plausibleBound);
+			auto fileScan = logFile->scanMaxEntryTimestamp(plausibleBound, deadline);
 			if (fileScan.maxTimestamp > result.largestKey) {
 				result.largestKey = fileScan.maxTimestamp;
 			}
 			if (fileScan.maxImplausibleTimestamp > result.refusedKey) {
 				result.refusedKey = fileScan.maxImplausibleTimestamp;
 			}
-			if (fileScan.stoppedAtBreak) {
-				result.stoppedAtBreak = true;
-				result.complete = false;
+			switch (fileScan.kind) {
+				case RecoveryScan::Kind::Clean:
+					break;
+				case RecoveryScan::Kind::MidFileCorruption:
+					result.stoppedAtBreak = true;
+					result.complete = false;
+					break;
+				case RecoveryScan::Kind::TruncateTail:
+					result.tornTail = true;
+					break;
+				case RecoveryScan::Kind::Incomplete:
+					result.budgetExhausted = true;
+					result.complete = false;
+					break;
+			}
+			if (fileScan.kind == RecoveryScan::Kind::Incomplete) {
+				break;
 			}
 		} catch (const std::exception& e) {
 			result.readFailed = true;
@@ -1249,12 +1265,15 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				// logical end. Ignoring it could expose orphaned bytes after restart.
 				throw;
 			} catch (const std::filesystem::filesystem_error& e) {
+				store->discoveryIncomplete = true;
 				DEBUG_LOG("%p TransactionLogStore::load Failed to process file (filesystem error): %s\n",
 					store.get(), e.what());
 			} catch (const std::exception& e) {
+				store->discoveryIncomplete = true;
 				DEBUG_LOG("%p TransactionLogStore::load Failed to load file: %s\n",
 					store.get(), e.what());
 			} catch (...) {
+				store->discoveryIncomplete = true;
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::load Unknown error processing file: %s\n",
@@ -1262,6 +1281,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			}
 		}
 	} catch (const std::filesystem::filesystem_error& e) {
+		store->discoveryIncomplete = true;
 		DEBUG_LOG("%p TransactionLogStore::load Failed to iterate directory: %s\n",
 			store.get(), e.what());
 	}

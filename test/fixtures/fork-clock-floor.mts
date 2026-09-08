@@ -11,7 +11,7 @@ import { RocksDatabase } from '../../src/index.ts';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const [mode, dbPath, keyArg, logArg] = process.argv.slice(2);
+const [mode, dbPath, keyArg, logArg, expectedWarning] = process.argv.slice(2);
 const key = keyArg ? Number(keyArg) : undefined;
 const log = logArg ?? 'local';
 
@@ -21,7 +21,7 @@ function fail(message: string): never {
 }
 
 const warnings: string[] = [];
-if (mode === 'warn' || mode === 'reopen-warn') {
+if (mode === 'warn' || mode === 'warn-read-only' || mode === 'reopen-warn') {
 	RocksDatabase.on('log.warn', (...args: unknown[]) => warnings.push(JSON.stringify(args)));
 }
 
@@ -30,6 +30,7 @@ const rotating = mode === 'write-rotate';
 const FRAME_PAYLOAD = 32;
 const db = RocksDatabase.open(dbPath, {
 	...(mode === 'write-unseeded' || mode === 'reopen-warn' ? {} : { timestampFloorLog: log }),
+	...(mode === 'warn-read-only' ? { readOnly: true } : {}),
 	// Small enough that the next batch cannot share a segment with the last one.
 	...(rotating ? { transactionLogMaxSize: 64 * 1024 } : {}),
 });
@@ -103,14 +104,17 @@ try {
 		if (!warnings.some((warning) => warning.includes('was ignored'))) {
 			fail('a second open with timestampFloorLog did not warn');
 		}
-	} else if (mode === 'warn') {
+	} else if (mode === 'warn' || mode === 'warn-read-only') {
 		const until = Date.now() + 5000;
-		while (Date.now() < until && warnings.length === 0) {
+		while (
+			Date.now() < until &&
+			!warnings.some((warning) => (expectedWarning ? warning.includes(expectedWarning) : true))
+		) {
 			await new Promise((resolve) => setTimeout(resolve, 20));
 		}
 		const clock = db.getMonotonicTimestamp();
 		console.log(JSON.stringify({ warnings, clock, key }));
-		if (warnings.length === 0) {
+		if (!warnings.some((warning) => (expectedWarning ? warning.includes(expectedWarning) : true))) {
 			fail('no clock-floor warning was emitted');
 		}
 	} else {

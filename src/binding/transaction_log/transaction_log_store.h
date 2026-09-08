@@ -250,6 +250,7 @@ struct TransactionLogStore final {
 	 * (EnsureWritableRegistrationSafe).
 	 */
 	bool readOnly = false;
+	bool discoveryIncomplete = false;
 
 	/**
 	 * The current sequence number of the transaction log file. Atomic because it
@@ -487,10 +488,10 @@ struct TransactionLogStore final {
 		double refusedKey = 0;
 		bool complete = true;
 		bool budgetExhausted = false;
-		/** A segment's framing broke mid-file, so the walk stopped before its end. */
 		bool stoppedAtBreak = false;
-		/** A segment could not be opened, stat'd or read. */
+		bool tornTail = false;
 		bool readFailed = false;
+		bool discoveryIncomplete = false;
 	};
 
 	/**
