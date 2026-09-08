@@ -32,6 +32,16 @@ class DBStats final {
 private:
 	DBStats();
 
+	/**
+	 * Resolved once, in the constructor (`DBStats::Init` materializes the
+	 * singleton at module load, on the JS thread, with no locks held) —
+	 * never lazily from `ensureWriteBufferManagerWatchdog()`, which callers
+	 * reach under `databasesMutex -> writeBufferManagerMutex`. A malformed
+	 * env var's warning is a blocking stderr write, and resolving lazily
+	 * would risk making that first, one-time write run under those locks.
+	 */
+	const uint64_t stallWarnMs;
+
 	std::atomic<rocksdb::WriteBufferManager*> writeBufferManager{nullptr};
 	std::atomic<uint64_t> writeBufferManagerStallActiveMs{0};
 	std::atomic<bool> writeBufferManagerWatchdogRunning{false};

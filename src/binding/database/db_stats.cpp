@@ -23,21 +23,18 @@ constexpr const char* WBM_STALL_ACTIVE_MS_KEY = "writeBufferManager.stallActiveM
 constexpr int WBM_STALL_INVENTORY_COLLECT_ATTEMPTS = 10;
 constexpr int WBM_STALL_INVENTORY_RETRY_DELAY_MS = 50;
 
-uint64_t writeBufferManagerStallWarnMs() {
-	static const uint64_t value = [] {
-		const char* raw = ::getenv("ROCKSDB_JS_WBM_STALL_WARN_MS");
-		bool rejected = false;
-		uint64_t resolved = resolveWbmStallWarnMs(raw, &rejected);
-		if (rejected) {
-			::fprintf(stderr,
-				"[rocksdb-js] ignoring ROCKSDB_JS_WBM_STALL_WARN_MS=\"%s\" (not an integer in "
-				"[0, %llu] ms); using %llu\n",
-				raw, static_cast<unsigned long long>(WBM_STALL_WARN_MS_MAX),
-				static_cast<unsigned long long>(resolved));
-		}
-		return resolved;
-	}();
-	return value;
+uint64_t resolveWbmStallWarnMsAndWarn() {
+	const char* raw = ::getenv("ROCKSDB_JS_WBM_STALL_WARN_MS");
+	bool rejected = false;
+	uint64_t resolved = resolveWbmStallWarnMs(raw, &rejected);
+	if (rejected) {
+		::fprintf(stderr,
+			"[rocksdb-js] ignoring ROCKSDB_JS_WBM_STALL_WARN_MS=\"%s\" (not an integer in "
+			"[0, %llu] ms); using %llu\n",
+			raw, static_cast<unsigned long long>(WBM_STALL_WARN_MS_MAX),
+			static_cast<unsigned long long>(resolved));
+	}
+	return resolved;
 }
 
 bool lookupWriteBufferManagerStat(
@@ -81,7 +78,7 @@ napi_status setBoolProperty(napi_env env, napi_value target, const char* key, bo
 
 } // namespace
 
-DBStats::DBStats() {
+DBStats::DBStats() : stallWarnMs(resolveWbmStallWarnMsAndWarn()) {
 	// These dependencies must be destroyed after the watchdog owner.
 	(void)DBSettings::getInstance();
 	(void)GlobalEvents::getInstance();
@@ -92,7 +89,7 @@ void DBStats::publishWriteBufferManager(rocksdb::WriteBufferManager* writeBuffer
 }
 
 void DBStats::ensureWriteBufferManagerWatchdog() {
-	if (writeBufferManagerStallWarnMs() == 0) {
+	if (this->stallWarnMs == 0) {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(this->watchdogMutex);
@@ -210,7 +207,7 @@ void DBStats::joinWriteBufferManagerWatchdog(bool allowRearm) {
 
 void DBStats::runWriteBufferManagerWatchdog() {
 	setThreadName("rocksdb-wbm-watchdog");
-	const uint64_t thresholdMs = writeBufferManagerStallWarnMs();
+	const uint64_t thresholdMs = this->stallWarnMs;
 	WbmStallWatchdogState state;
 	uint64_t activeGeneration = 0;
 	std::unique_lock<std::mutex> lock(this->watchdogMutex);
@@ -284,13 +281,7 @@ void DBStats::sampleWriteBufferManagerStall(
 	report.mutableMemoryUsage = writeBufferManager->mutable_memtable_memory_usage();
 	report.allowStall = settings.getWriteBufferManagerAllowStall();
 	report.costToCache = settings.getWriteBufferManagerCostToCache();
-	// This is the one report an episode ever gets, so a `databasesMutex`/
-	// `columnsMutex` holder that is merely busy (e.g. `DBRegistry::OpenDB`
-	// running WAL recovery, typically sub-second) shouldn't leave it
-	// permanently missing the retention histogram that is the entire point
-	// of #821. Retries stay non-blocking (still a `try_lock` each attempt)
-	// and are bounded and brief so a holder that never lets go still gets a
-	// degraded-but-timely alarm rather than delaying it.
+	// This is the one report an episode ever gets; see the retry constants above.
 	report.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
 		writeBufferManager, report.columnFamilies, report.maxWriteBufferSizeToMaintain
 	);
