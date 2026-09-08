@@ -1336,7 +1336,7 @@ export class Store {
 
 	putSync(context: StoreContext, key: Key, value: any, options?: StorePutOptions): void {
 		if (!this.db.opened) {
-			throw new Error('Database not open');
+			throw new Error(this.db.closing ? 'Database is closing' : 'Database not open');
 		}
 
 		// IMPORTANT!
@@ -1351,7 +1351,7 @@ export class Store {
 
 	removeSync(context: StoreContext, key: Key, options?: StoreRemoveOptions): void {
 		if (!this.db.opened) {
-			throw new Error('Database not open');
+			throw new Error(this.db.closing ? 'Database is closing' : 'Database not open');
 		}
 
 		context.removeSync(this.encodeKey(key), this.getTxnId(options));

@@ -2,14 +2,119 @@
 #include <vector>
 #include "database/db_registry.h"
 #include "transaction/transaction_handle.h"
+#include "database/db_settings.h"
+#include "core/test_seam.h"
 #include "napi/macros.h"
 #include "core/platform.h"
 #include "core/compression.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "napi/global_events.h"
 #include "rocksdb/table.h"
+#include <exception>
+#include <thread>
 
 namespace rocksdb_js {
+
+namespace {
+
+struct ClosingDescriptor final {
+	DBKey key;
+	std::shared_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<std::condition_variable> condition;
+	bool closed = false;
+	std::string closeError;
+
+	ClosingDescriptor(
+		const DBKey& key,
+		std::shared_ptr<DBDescriptor> descriptor,
+		std::shared_ptr<std::condition_variable> condition
+	) : key(key), descriptor(std::move(descriptor)), condition(std::move(condition)) {}
+};
+
+void emitCloseFailure(const std::string& path, const std::string& error) {
+	if (!error.empty() && GlobalEvents::hasListeners()) {
+		emitGlobalEvent("database:closeFailed", ListenerData::fromStrings({path, error}));
+	}
+}
+
+void emitCloseFailures(const std::vector<ClosingDescriptor>& descriptors) {
+	for (const auto& closing : descriptors) {
+		emitCloseFailure(closing.key.path, closing.closeError);
+	}
+}
+
+struct ClaimedCloseOptions final {
+	// destroy() is deleting the data, so it forces teardown and does not treat a
+	// close that finished but reported an error (a failed close-time flush) as
+	// fatal. Every other caller does: dropping that error silently would hide
+	// possible data loss. The entry is erased either way, so the failure is
+	// reported once rather than wedging the path.
+	bool destroying = false;
+	bool failOnCompletedWithError = true;
+};
+
+/**
+ * Runs finishClose() over descriptors already claimed by the caller, then
+ * erases each entry or quarantines it with its close error, notifies that
+ * path's waiters, and emits `database:closeFailed`.
+ *
+ * Returns the first exception the caller should rethrow, or null. Claiming
+ * differs per caller (one path, every path, or a single unreferenced
+ * descriptor); everything after the claim is this one policy.
+ */
+std::exception_ptr closeClaimedDescriptors(
+	std::vector<ClosingDescriptor>& claimed,
+	const ClaimedCloseOptions& options,
+	std::unordered_map<DBKey, DBRegistryEntry, DBKeyHash>& databases,
+	std::mutex& databasesMutex
+) {
+	std::exception_ptr closeError;
+
+	for (auto& closing : claimed) {
+		DEBUG_LOG("DBRegistry::closeClaimedDescriptors Closing descriptor %p for \"%s\" (ref count = %ld)\n",
+			closing.descriptor.get(), closing.key.path.c_str(), closing.descriptor.use_count());
+
+		std::exception_ptr thrown;
+		try {
+			closing.descriptor->finishClose(options.destroying);
+			closing.closed = true;
+		} catch (const std::exception& error) {
+			closing.closed = closing.descriptor->isClosed();
+			closing.closeError = error.what();
+			thrown = std::current_exception();
+		} catch (...) {
+			closing.closed = closing.descriptor->isClosed();
+			closing.closeError = "unknown native close failure";
+			thrown = std::current_exception();
+		}
+
+		if (thrown && !closeError && (!closing.closed || options.failOnCompletedWithError)) {
+			closeError = thrown;
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(databasesMutex);
+			auto entry = databases.find(closing.key);
+			if (entry != databases.end() && entry->second.descriptor == closing.descriptor) {
+				if (closing.closed) {
+					databases.erase(entry);
+				} else {
+					entry->second.closeError = closing.closeError;
+					entry->second.closeRetrying = false;
+					DEBUG_LOG("DBRegistry::closeClaimedDescriptors Quarantined \"%s\": %s\n",
+						closing.key.path.c_str(), closing.closeError.c_str());
+				}
+			}
+		}
+		closing.condition->notify_all();
+	}
+
+	emitCloseFailures(claimed);
+	return closeError;
+}
+
+} // namespace
 
 // Initialize the static instance
 std::unique_ptr<DBRegistry> DBRegistry::instance;
@@ -17,15 +122,15 @@ std::unique_ptr<DBRegistry> DBRegistry::instance;
 /**
  * Close a RocksDB database handle.
  */
-void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
+CloseResult DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	if (!instance) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Registry not initialized\n", instance.get());
-		return;
+		return {};
 	}
 
 	if (!handle) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Invalid handle\n", instance.get());
-		return;
+		return {};
 	}
 
 #ifdef DEBUG
@@ -34,7 +139,7 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 
 	if (!handle->descriptor) {
 		DEBUG_LOG("%p DBRegistry::CloseDB Database not opened\n", instance.get());
-		return;
+		return {};
 	}
 
 	DBKey key = descriptorKey(*handle->descriptor);
@@ -44,11 +149,11 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	// close the handle, decrements the descriptor ref count
 	handle->close();
 
-	DBRegistry::PurgeIfUnreferenced(key);
+	return DBRegistry::PurgeIfUnreferenced(key);
 }
 
 /**
- * Purges (closes and erases) the registry entry for `path` if no DBHandle
+ * Purges (closes and erases) the registry entry for `key` if no DBHandle
  * references its descriptor anymore; a no-op otherwise. This is the tail of
  * every close: CloseDB calls it after detaching the handle, and the async
  * operations that hold their own `shared_ptr<DBDescriptor>` for the duration
@@ -79,9 +184,9 @@ void DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
  *     the duration of finishClose(), so a concurrent OpenDB keeps waiting on
  *     the condition rather than re-opening the path mid-close.
  */
-void DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
+CloseResult DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 	if (!instance) {
-		return;
+		return CloseResult{};
 	}
 
 	std::shared_ptr<DBDescriptor> descriptor;
@@ -102,26 +207,22 @@ void DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 		}
 	}
 
-	if (descriptor) {
-		// We claimed the close under the lock via beginClose(); run the actual
-		// teardown now. The local copy keeps the descriptor alive throughout.
-		descriptor->finishClose();
-
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		auto eraseIt = instance->databases.find(key);
-		// Only erase the entry we claimed. OpenDB's wait predicate may have
-		// reset the map's descriptor ref to null while we closed; a brand-new
-		// descriptor cannot appear because OpenDB blocks until we notify below.
-		if (eraseIt != instance->databases.end()
-			&& (!eraseIt->second.descriptor || eraseIt->second.descriptor == descriptor)) {
-			instance->databases.erase(eraseIt);
-		}
+	if (!descriptor) {
+		return CloseResult{};
 	}
 
-	// notify only waiters for this specific path
-	if (condition) {
-		condition->notify_all();
-	}
+	// We claimed the close under the lock via beginClose(); run the actual
+	// teardown now. The local copy keeps the descriptor alive throughout.
+	// Only the entry we claimed is erased -- a brand-new descriptor cannot
+	// appear because OpenDB blocks until the helper notifies.
+	std::vector<ClosingDescriptor> claimed;
+	claimed.emplace_back(key, descriptor, condition);
+	// The close error is reported through CloseResult, not thrown.
+	closeClaimedDescriptors(
+		claimed, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex);
+	const std::string& closeError = claimed.front().closeError;
+	const bool quarantined = !closeError.empty() && !claimed.front().closed;
+	return CloseResult{closeError, quarantined};
 }
 
 /**
@@ -140,8 +241,40 @@ void DBRegistry::DebugLogDescriptorRefs() {
 /**
  * Destroy a RocksDB database.
  *
- * @param path - The path to the database to destroy.
+ * @param path - The (already resolved-identity) path to the database to destroy.
  */
+namespace {
+
+/**
+ * RAII release for a path claimed in `destroyingPaths`. Always removes and
+ * notifies on scope exit -- success, a claim/close failure, or a physical
+ * deletion failure -- so a failed destroy() never leaves the path
+ * permanently unopenable (registry-level quarantine, when it applies, is
+ * carried by the entry's `closeError` instead; see DestroyDB).
+ */
+class DestroyPathGuard final {
+public:
+	DestroyPathGuard(std::mutex& mutex, std::condition_variable& condition,
+		std::unordered_set<std::string>& destroyingPaths, const std::string& path)
+		: mutex(mutex), condition(condition), destroyingPaths(destroyingPaths), path(path) {}
+
+	~DestroyPathGuard() {
+		{
+			std::lock_guard<std::mutex> lock(this->mutex);
+			this->destroyingPaths.erase(this->path);
+		}
+		this->condition.notify_all();
+	}
+
+private:
+	std::mutex& mutex;
+	std::condition_variable& condition;
+	std::unordered_set<std::string>& destroyingPaths;
+	const std::string& path;
+};
+
+} // namespace
+
 void DBRegistry::DestroyDB(const std::string& path) {
 	if (!instance) {
 		DEBUG_LOG("%p DBRegistry::DestroyDB Registry not initialized\n", instance.get());
@@ -158,6 +291,30 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		throw rocksdb_js::DBException("Cannot destroy database: no database path");
 	}
 
+	// Each wait below gets its own budget rather than sharing one deadline
+	// across the whole call: a slow earlier wait would otherwise eat into a
+	// later one's budget and report a timeout with work still legitimately in
+	// progress.
+	const auto waitBudget =
+		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
+
+	// Claim the path-level gate before touching any entry. This is what keeps
+	// a brand-new key on this path (one this destroy never saw in the registry
+	// scan below, e.g. a first-ever secondary open, or ANY open once every
+	// entry has already been erased) from racing the physical deletion further
+	// down -- that deletion runs without databasesMutex held, so the registry
+	// alone cannot gate it once the entries are gone.
+	{
+		std::unique_lock<std::mutex> lock(instance->databasesMutex);
+		if (!instance->lifecycleCondition.wait_until(lock, std::chrono::steady_clock::now() + waitBudget, [&]() {
+			return instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
+		})) {
+			throw rocksdb_js::DBException("Timed out waiting to destroy database \"" + path + "\": another lifecycle operation is still in progress");
+		}
+		instance->destroyingPaths.insert(identityPath);
+	}
+	DestroyPathGuard pathGuard(instance->databasesMutex, instance->lifecycleCondition, instance->destroyingPaths, identityPath);
+
 	// One path can hold several descriptors — read-write, read-only, and any
 	// number of secondaries (the registry key is {path, readOnly,
 	// secondaryPath}) — and destroy deletes the files under all of them, so
@@ -165,130 +322,123 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// erased unclosed leaks its resources for the life of the process (a
 	// secondary's workspace `.secondary.lock` is only released by
 	// finishClose(), so a leaked secondary wedges its workspace permanently).
-	std::vector<std::pair<std::shared_ptr<DBDescriptor>, std::shared_ptr<std::condition_variable>>> claimed;
-
-	// Claim the descriptors under the lock but leave the entries in the map
-	// until the closes complete (same discipline as CloseDB): the entry is how
-	// the env-cleanup hooks (RemoveListenersByEnv / ReleaseCommitCompletionsByEnv)
-	// find shared descriptors, so erasing before close would let a worker env
-	// tear down in that window without scrubbing its tsfns from this
-	// descriptor — the close's own release pass would then touch freed tsfns.
-	// It also keeps a concurrent OpenDB waiting on the entry's condition
-	// instead of re-opening the path while its files are being destroyed.
-	{
-		std::unique_lock<std::mutex> lock(instance->databasesMutex);
-		// A normal close may already own one descriptor for this path. Wait for
-		// every such close to remove its entry before claiming the survivors; a
-		// read-only/secondary descriptor has no database LOCK to stop deletion
-		// while finishClose() is still using its files.
-		while (true) {
-			std::shared_ptr<std::condition_variable> closingCondition;
-			for (const auto& [key, entry] : instance->databases) {
-				if (key.path == identityPath && entry.descriptor && entry.descriptor->isClosing()) {
-					closingCondition = entry.condition;
-					break;
+	// A quarantined entry (a prior close/destroy left `closeError` set) is
+	// retried here too, rather than skipped, so destroy() is the caller's
+	// recovery path for a wedged path even when no handle survived to retry it.
+	while (true) {
+		std::vector<ClosingDescriptor> claimed;
+		std::vector<ClosingDescriptor> alreadyClosing;
+		{
+			std::unique_lock<std::mutex> lock(instance->databasesMutex);
+			claimed.reserve(instance->databases.size());
+			alreadyClosing.reserve(instance->databases.size());
+			for (auto& [key, entry] : instance->databases) {
+				if (key.path != identityPath || !entry.descriptor) {
+					continue;
+				}
+				ClosingDescriptor closing{key, entry.descriptor, entry.condition};
+				if (!entry.closeError.empty() && !entry.closeRetrying) {
+					entry.closeRetrying = true;
+					claimed.push_back(std::move(closing));
+				} else if (entry.descriptor->beginClose()) {
+					claimed.push_back(std::move(closing));
+				} else {
+					alreadyClosing.push_back(std::move(closing));
 				}
 			}
-			if (!closingCondition) {
-				break;
-			}
-			closingCondition->wait(lock);
 		}
-		for (auto& [key, entry] : instance->databases) {
-			if (key.path == identityPath && entry.descriptor && entry.descriptor->beginClose()) {
-				DEBUG_LOG("%p DBRegistry::DestroyDB Claimed descriptor close (ref count = %ld)\n",
-					instance.get(), entry.descriptor.use_count());
-				claimed.emplace_back(entry.descriptor, entry.condition);
+
+		// Each entry stays discoverable until its own close finishes: env
+		// cleanup uses the registry to remove callbacks owned by a worker that
+		// exits mid-close.
+		std::exception_ptr closeError = closeClaimedDescriptors(
+			claimed,
+			ClaimedCloseOptions{.destroying = true, .failOnCompletedWithError = false},
+			instance->databases,
+			instance->databasesMutex
+		);
+		if (alreadyClosing.empty()) {
+			if (closeError) std::rethrow_exception(closeError);
+			break;
+		}
+		for (const auto& closing : alreadyClosing) {
+			std::unique_lock<std::mutex> lock(instance->databasesMutex);
+			const auto drainDeadline = std::chrono::steady_clock::now() + waitBudget;
+			if (!closing.condition->wait_until(lock, drainDeadline, [&]() {
+				auto entry = instance->databases.find(closing.key);
+				return entry == instance->databases.end() ||
+					entry->second.descriptor != closing.descriptor ||
+					(!entry->second.closeError.empty() && !entry->second.closeRetrying);
+			})) {
+				throw rocksdb_js::DBException("Timed out waiting to destroy database \"" + path + "\": an open descriptor is still closing");
 			}
 		}
+		if (closeError) std::rethrow_exception(closeError);
 	}
 
-	auto erasePathEntries = [&]() {
+	// Every descriptor for this path is now closed and erased from the
+	// registry. From here the `destroyingPaths` gate above is the only thing
+	// keeping a concurrent OpenDB from recreating this path while physical
+	// deletion (potentially slow: a large directory, a slow disk, or the test
+	// seam below) is still in flight -- so this runs WITHOUT databasesMutex.
+	const int destroyDelayMs = testDelayMs("ROCKSDB_JS_DESTROY_DELAY_MS");
+	if (destroyDelayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(destroyDelayMs));
+	}
+	if (destroyFailureFlag().load(std::memory_order_relaxed)) {
+		// Nothing was touched -- neither rocksdb::DestroyDB nor remove_all ran
+		// -- so this leaves no tombstone: the path is exactly as it was, and a
+		// caller can retry destroy() or just reopen it.
+		throw rocksdb_js::DBException("Injected database destruction failure");
+	}
+
+	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), identityPath.c_str());
+	rocksdb::Status status = rocksdb::DestroyDB(identityPath, rocksdb::Options());
+	std::string destroyError;
+	if (!status.ok()) {
+		destroyError = status.ToString();
+	} else {
+		std::error_code cleanupError;
+		std::filesystem::remove_all(identityPath, cleanupError);
+		if (cleanupError) {
+			destroyError = "Failed to remove database directory: " + cleanupError.message();
+		}
+	}
+	if (!destroyError.empty()) {
+		// rocksdb::DestroyDB (if it ran) already dropped RocksDB's own view of
+		// this path, so reopening now would silently create a fresh, empty
+		// database over whatever the filesystem failure left behind. Leave a
+		// tombstone -- surfaced by registryStatus().destroyCleanupPending and
+		// rejected by OpenDB's quarantine check -- so only an explicit destroy()
+		// retry (not a plain reopen, and not shutdown(), which is deliberately
+		// non-destructive) can clear it.
+		{
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
+			instance->databases[DBKey{identityPath, false, ""}].closeError = destroyError;
+		}
+		emitCloseFailure(identityPath, destroyError);
+		throw rocksdb_js::DBException(destroyError);
+	}
+
+	// A retried destroy() can find a tombstone (descriptor already null) left by
+	// an earlier failed attempt at this same path: the claim/close loop above
+	// skips it (there is no descriptor to close), so nothing else erases it.
+	// Physical deletion just succeeded, so nothing legitimately belongs at this
+	// path anymore -- clear every remaining entry, tombstone or otherwise.
+	std::vector<std::shared_ptr<std::condition_variable>> staleConditions;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
 			if (it->first.path == identityPath) {
+				staleConditions.push_back(it->second.condition);
 				it = instance->databases.erase(it);
 			} else {
 				++it;
 			}
 		}
-	};
-	auto notifyClaimed = [&]() {
-		for (auto& [descriptor, condition] : claimed) {
-			if (condition) {
-				condition->notify_all();
-			}
-		}
-	};
-
-	if (!claimed.empty()) {
-		// Close all closables (iterators, transactions, handles) attached to
-		// each descriptor; this should release all DBHandle references. A throw
-		// from one close must not strand the remaining claimed descriptors —
-		// they hold isClosing() and their entries would sit in the map with
-		// conditions never notified, wedging every later OpenDB on those keys —
-		// so close them all and rethrow the first failure afterward.
-		std::exception_ptr closeError;
-		for (auto& [descriptor, condition] : claimed) {
-			DEBUG_LOG("%p DBRegistry::DestroyDB Closing descriptor and all attached resources (ref count = %zu)\n",
-				instance.get(), descriptor.use_count());
-			try {
-				descriptor->finishClose();
-			} catch (...) {
-				if (!closeError) {
-					closeError = std::current_exception();
-				}
-			}
-		}
-
-		if (closeError) {
-			{
-				std::lock_guard<std::mutex> lock(instance->databasesMutex);
-				erasePathEntries();
-			}
-			notifyClaimed();
-			std::rethrow_exception(closeError);
-		}
-
-		// Each descriptor should hold only the registry and our local claim.
-		for (auto& [descriptor, condition] : claimed) {
-			size_t refCountAfterClose = descriptor.use_count();
-			if (refCountAfterClose > 2) {
-				std::string errorMsg = "Cannot destroy database: " + std::to_string(refCountAfterClose - 2) +
-					" reference(s) still held after closing all handles. This may indicate handles not properly closed or JavaScript objects not yet garbage collected.";
-				DEBUG_LOG("%p DBRegistry::DestroyDB Error: %s\n", instance.get(), errorMsg.c_str());
-				{
-					std::lock_guard<std::mutex> lock(instance->databasesMutex);
-					erasePathEntries();
-				}
-				notifyClaimed();
-				throw rocksdb_js::DBException(errorMsg);
-			}
-		}
 	}
-
-	std::exception_ptr destroyError;
-	{
-		// Keep every closing entry visible, and exclude registry opens, until the
-		// physical deletion completes. Only then erase and wake OpenDB waiters.
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		try {
-			DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), identityPath.c_str());
-			rocksdb::Status status = rocksdb::DestroyDB(identityPath, rocksdb::Options());
-			if (!status.ok()) {
-				throw rocksdb_js::DBException(status.ToString());
-			}
-			std::filesystem::remove_all(identityPath);
-		} catch (...) {
-			destroyError = std::current_exception();
-		}
-		erasePathEntries();
-	}
-	notifyClaimed();
-
-	DEBUG_LOG("%p DBRegistry::DestroyDB Releasing descriptor references\n", instance.get());
-	claimed.clear();
-	if (destroyError) {
-		std::rethrow_exception(destroyError);
+	for (const auto& condition : staleConditions) {
+		condition->notify_all();
 	}
 
 	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), identityPath.c_str());
@@ -356,18 +506,24 @@ void DBRegistry::Init(napi_env env, napi_value exports) {
 
 /**
  * Open a RocksDB database with column family, caches it in the registry, and
- * return a handle to it.
+ * attaches the provided handle to it.
  *
+ * @param handle - The handle that will own the selected database and column family.
  * @param path - The filesystem path to the database.
  * @param options - The options for the database.
- * @return A handle to the RocksDB database including the transaction db and
- * column family handle.
  */
-std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, const DBOptions& options) {
+void DBRegistry::OpenDB(
+	const std::shared_ptr<DBHandle>& handle,
+	const std::string& path,
+	const DBOptions& options
+) {
 	// ensure the registry has already been initialized
 	if (!instance) {
 		DEBUG_LOG("DBRegistry::OpenDB Registry not initialized!\n");
 		throw rocksdb_js::DBException("DBRegistry not initialized!");
+	}
+	if (!handle) {
+		throw rocksdb_js::DBException("Cannot open a database with an invalid handle");
 	}
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Opening database \"%s\" (mode=%s read-only=%s column family=\"%s\")\n", instance.get(), path.c_str(), options.mode == DBMode::Optimistic ? "optimistic" : "pessimistic", options.readOnly ? "true" : "false", options.name.empty() ? "default" : options.name.c_str());
@@ -381,7 +537,6 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
-	std::shared_ptr<DBDescriptor> descriptor;
 
 	// The single identity for this open: the registry key, the workspace scan
 	// and (via the descriptor) every transaction-log registry call all use this
@@ -389,6 +544,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// descriptors. Resolved before the lock — it touches the filesystem, and
 	// databasesMutex serializes every open and close in the process.
 	const std::string identityPath = rocksdb_js::resolveIdentityPath(path).string();
+
+	const auto deadline = std::chrono::steady_clock::now() +
+		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
 
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
@@ -430,22 +588,107 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// an entry erased and re-created while we waited carries a new condition,
 	// and staying on the old one would miss its notify.
 	while (true) {
+		// DestroyDB erases every entry for this path before its (potentially
+		// slow) physical deletion runs, to avoid holding databasesMutex across
+		// that I/O -- so once physical deletion starts, no registry entry is
+		// left to gate a concurrent open on. `destroyingPaths` is the gate for
+		// that window: wait for it to clear before trusting the registry scan
+		// below, since an empty scan at this instant could mean "free" or
+		// "mid-deletion" and only this check tells them apart.
+		if (instance->destroyingPaths.find(identityPath) != instance->destroyingPaths.end()) {
+			DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is being destroyed, waiting\n", instance.get(), path.c_str());
+			if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
+				return instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
+			})) {
+				throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": destruction is still in progress");
+			}
+			continue;
+		}
+
 		// Destroy closes every handle kind for one physical path. A new key (for
 		// example, a fresh secondary workspace) must wait too, or it can open
 		// during finishClose() and be deleted before it ever joined the claim.
+		//
+		// A quarantined entry (closeError set, not currently retrying) is
+		// EXCLUDED here even though isClosing() is still true for it -- that flag
+		// never resets once set, so a quarantined entry would otherwise satisfy
+		// this predicate forever and this wait would never observe "no longer
+		// closing", timing out instead of the quarantine check below ever
+		// getting a chance to reject with its more helpful message. A retry in
+		// flight (closeRetrying) is a distinct, still-transient state handled by
+		// its own wait further down.
 		std::shared_ptr<std::condition_variable> pathClosingCondition;
 		for (const auto& [existingKey, existingEntry] : instance->databases) {
 			if (existingKey.path == identityPath && existingEntry.descriptor &&
-				existingEntry.descriptor->isClosing()
+				existingEntry.descriptor->isClosing() &&
+				(existingEntry.closeError.empty() || existingEntry.closeRetrying)
 			) {
 				pathClosingCondition = existingEntry.condition;
 				break;
 			}
 		}
 		if (pathClosingCondition) {
-			pathClosingCondition->wait(lock);
+			if (!pathClosingCondition->wait_until(lock, deadline, [&]() {
+				for (const auto& [existingKey, existingEntry] : instance->databases) {
+					if (existingKey.path == identityPath && existingEntry.descriptor &&
+						existingEntry.descriptor->isClosing() &&
+						(existingEntry.closeError.empty() || existingEntry.closeRetrying)
+					) {
+						return false;
+					}
+				}
+				return true;
+			})) {
+				throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": another instance on this path is still closing");
+			}
 			continue;
 		}
+
+		// A quarantined entry (a prior close/destroy left `closeError` set) means
+		// the path's last known state was not cleanly reached; opening over it
+		// would silently accept whatever unflushed/partial state that close left
+		// behind. Reject until an explicit shutdown()/destroy() clears it -- the
+		// same guard OpenDB always applied to a still-closing descriptor, just
+		// for a descriptor that stopped retrying instead of one mid-retry.
+		for (const auto& [existingKey, existingEntry] : instance->databases) {
+			if (existingKey.path == identityPath &&
+				!existingEntry.closeError.empty() && !existingEntry.closeRetrying
+			) {
+				const bool destroyCleanupFailed = !existingEntry.descriptor;
+				throw rocksdb_js::DBException(
+					"Cannot open database \"" + path + "\": previous " +
+					(destroyCleanupFailed ? "destroy cleanup" : "close") + " failed: " +
+					existingEntry.closeError +
+					(destroyCleanupFailed
+						? ". Call destroy() to retry cleanup"
+						: ". Call shutdown() to retry close, or destroy() to delete the database")
+				);
+			}
+		}
+		// A retry in flight (closeRetrying) is a transient state a fresh open
+		// should wait out rather than reject, since the retry may still succeed
+		// and leave the path openable.
+		std::shared_ptr<std::condition_variable> retryCondition;
+		for (const auto& [existingKey, existingEntry] : instance->databases) {
+			if (existingKey.path == identityPath && existingEntry.closeRetrying) {
+				retryCondition = existingEntry.condition;
+				break;
+			}
+		}
+		if (retryCondition) {
+			if (!retryCondition->wait_until(lock, deadline, [&]() {
+				for (const auto& [existingKey, existingEntry] : instance->databases) {
+					if (existingKey.path == identityPath && existingEntry.closeRetrying) {
+						return false;
+					}
+				}
+				return true;
+			})) {
+				throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": close retry is still in progress");
+			}
+			continue;
+		}
+
 		rejectConflictingSecondaryWorkspace();
 		entryIterator = instance->databases.find(key);
 		if (entryIterator == instance->databases.end()) {
@@ -461,8 +704,19 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		}
 		DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str());
 		// Keep the descriptor visible so a spurious wake cannot reopen early.
+		// Also wake (and re-loop from the top) the moment this entry quarantines
+		// -- isClosing() never resets on its own, so without the closeError
+		// check this predicate would otherwise wait out the full deadline
+		// instead of immediately re-entering the quarantine check above.
 		std::shared_ptr<std::condition_variable> condition = current.condition;
-		condition->wait(lock);
+		if (!condition->wait_until(lock, deadline, [&]() {
+			auto found = instance->databases.find(key);
+			return found == instance->databases.end() ||
+				!found->second.descriptor || !found->second.descriptor->isClosing() ||
+				!found->second.closeError.empty();
+		})) {
+			throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": the previous instance is still closing");
+		}
 	}
 
 	auto& entry = entryIterator->second;
@@ -619,9 +873,25 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	std::unique_ptr<DBHandleParams> handle = std::make_unique<DBHandleParams>(entry.descriptor, columnDescriptor);
-	DEBUG_LOG("%p DBRegistry::OpenDB Created DBHandleParams %p for \"%s\" (ref count = %ld)\n", instance.get(), handle.get(), path.c_str(), entry.descriptor.use_count());
-	return handle;
+	const uint64_t verificationTableDbId = entry.descriptor->vtEpoch;
+	const uint32_t verificationTableColumnFamilyId = columnDescriptor->column->GetID();
+
+	// The registry lock is the lifecycle linearization point: reset is ordered
+	// after every wait above, and teardown cannot claim this descriptor between
+	// publishing the handle's native state and making it visible in closables.
+	handle->resetCancelled();
+	handle->compactCancelRequested.store(false);
+	entry.descriptor->attach(handle);
+
+	handle->columnDescriptor = std::move(columnDescriptor);
+	handle->descriptor = entry.descriptor;
+	handle->verificationTableDbId = verificationTableDbId;
+	handle->verificationTableColumnFamilyId = verificationTableColumnFamilyId;
+	handle->disableWAL = options.disableWAL;
+	handle->enableVerificationTable = options.verificationTable;
+
+	DEBUG_LOG("%p DBRegistry::OpenDB Attached DBHandle %p for \"%s\" (ref count = %ld)\n",
+		instance.get(), handle.get(), path.c_str(), entry.descriptor.use_count());
 }
 
 /**
@@ -629,32 +899,51 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
  */
 void DBRegistry::PurgeAll() {
 	if (instance) {
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		std::vector<ClosingDescriptor> descriptorsToClose;
+		std::vector<std::shared_ptr<std::condition_variable>> removedConditions;
+		std::exception_ptr closeError;
+		{
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 #ifdef DEBUG
-		size_t initialSize = instance->databases.size();
-		DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", instance.get(), instance->databases.size());
-		uint32_t i = 0;
+			size_t initialSize = instance->databases.size();
+			DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", instance.get(), initialSize);
 #endif
-		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
-			auto descriptor = it->second.descriptor;
-			if (descriptor) {
-				DEBUG_LOG("%p DBRegistry::PurgeAll %u) Purging \"%s\" (ref count = %ld)\n", instance.get(), i, it->first.path.c_str(), descriptor.use_count());
-				descriptor->close();
+			descriptorsToClose.reserve(instance->databases.size());
+			for (auto it = instance->databases.begin(); it != instance->databases.end();) {
+				if (!it->second.closeError.empty()) {
+					// Quarantined: leave it for shutdown()/destroy() to retry.
+					++it;
+					continue;
+				}
+				auto descriptor = it->second.descriptor;
+				if (descriptor) {
+					if (!descriptor->beginClose()) {
+						++it;
+						continue;
+					}
+					DEBUG_LOG("%p DBRegistry::PurgeAll Claiming \"%s\" (ref count = %ld)\n",
+						instance.get(), it->first.path.c_str(), descriptor.use_count());
+					descriptorsToClose.emplace_back(it->first, descriptor, it->second.condition);
+					++it;
+					continue;
+				}
+				removedConditions.push_back(it->second.condition);
+				it = instance->databases.erase(it);
 			}
-			it = instance->databases.erase(it);
 #ifdef DEBUG
-			++i;
+			DEBUG_LOG("%p DBRegistry::PurgeAll Claimed %zu of %zu descriptors\n",
+				instance.get(), descriptorsToClose.size(), initialSize);
 #endif
 		}
-#ifdef DEBUG
-		size_t currentSize = instance->databases.size();
-		DEBUG_LOG(
-			"%p DBRegistry::PurgeAll Purged %zu unused descriptors (size=%zu)\n",
-			instance.get(),
-			initialSize - currentSize,
-			currentSize
-		);
-#endif
+		for (const auto& condition : removedConditions) {
+			condition->notify_all();
+		}
+
+		closeError = closeClaimedDescriptors(
+			descriptorsToClose, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex);
+		if (closeError) {
+			std::rethrow_exception(closeError);
+		}
 	}
 }
 
@@ -675,18 +964,42 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 
 		size_t i = 0;
 		for (auto& [key, entry] : instance->databases) {
-			if (!entry.descriptor) {
-				continue;
-			}
 			napi_value database;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &database));
 			napi_value pathValue;
-			// The descriptor's path, not the key's: the key is resolved identity,
-			// and a caller matching this against the path it opened would miss
-			// wherever the two spell the same directory differently.
-			const std::string& reportedPath = entry.descriptor->path;
+			// The descriptor's path, not the key's, when we have one: the key is
+			// resolved identity, and a caller matching this against the path it
+			// opened would miss wherever the two spell the same directory
+			// differently. A tombstoned entry (destroy cleanup failed) has no
+			// descriptor, so fall back to the key's resolved identity.
+			const std::string& reportedPath = entry.descriptor ? entry.descriptor->path : key.path;
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, reportedPath.c_str(), reportedPath.size(), &pathValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "path", pathValue));
+			if (!entry.closeError.empty()) {
+				napi_value closeErrorValue;
+				NAPI_STATUS_THROWS(::napi_create_string_utf8(
+					env,
+					entry.closeError.c_str(),
+					entry.closeError.size(),
+					&closeErrorValue
+				));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closeError", closeErrorValue));
+			}
+			if (!entry.descriptor) {
+				napi_value pending;
+				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &pending));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "destroyCleanupPending", pending));
+				napi_value zero;
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &zero));
+				for (const char* property : {"refCount", "transactions", "closables", "locks", "listenerCallbacks"}) {
+					NAPI_STATUS_THROWS(::napi_set_named_property(env, database, property, zero));
+				}
+				napi_value columnFamilies;
+				NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
+				NAPI_STATUS_THROWS(::napi_set_element(env, result, i++, database));
+				continue;
+			}
 			napi_value modeValue;
 			std::string mode = entry.descriptor->mode == DBMode::Optimistic ? "optimistic" : "pessimistic";
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, mode.c_str(), mode.size(), &modeValue));
@@ -892,31 +1205,113 @@ void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
  */
 void DBRegistry::Shutdown() {
 	if (instance) {
-		std::vector<std::shared_ptr<DBDescriptor>> descriptorsToClose;
+		// One budget per wait, not one for the whole shutdown; see DestroyDB.
+		const auto waitBudget =
+			std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
+		std::unique_lock<std::timed_mutex> shutdownLock(instance->shutdownMutex, std::defer_lock);
+		if (!shutdownLock.try_lock_until(std::chrono::steady_clock::now() + waitBudget)) {
+			throw rocksdb_js::DBException("Timed out waiting for another database shutdown to finish");
+		}
 
-		{
-			std::lock_guard<std::mutex> lock(instance->databasesMutex);
-			DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", instance.get(), instance->databases.size());
+		while (true) {
+			std::vector<ClosingDescriptor> descriptorsToClose;
+			std::vector<ClosingDescriptor> descriptorsToWaitFor;
+			bool destroysInFlight;
+			{
+				std::unique_lock<std::mutex> lock(instance->databasesMutex);
+				// A path mid-DestroyDB's physical deletion has no registry entry
+				// left (DestroyDB erases them before that runs) for the scan below
+				// to find, so it would otherwise look identical to "nothing left to
+				// do" and let shutdown() return while files are still being
+				// removed. Wait it out here instead.
+				destroysInFlight = !instance->destroyingPaths.empty();
+				DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", instance.get(), instance->databases.size());
+				descriptorsToClose.reserve(instance->databases.size());
+				descriptorsToWaitFor.reserve(instance->databases.size());
 
-			// Collect all descriptors to close
-			for (auto& [_key, entry] : instance->databases) {
-				if (entry.descriptor) {
-					descriptorsToClose.push_back(entry.descriptor);
+				for (auto& [key, entry] : instance->databases) {
+					if (!entry.descriptor) {
+						// A prior destroy() left a tombstone (descriptor cleared,
+						// closeError set) after its physical cleanup failed. That
+						// failure was already surfaced via database:closeFailed and
+						// stays visible in registryStatus().destroyCleanupPending.
+						// shutdown() is deliberately non-destructive -- only an
+						// explicit destroy() retries path deletion -- so skip it
+						// here rather than re-throwing the same error forever.
+						continue;
+					}
+					ClosingDescriptor closing{key, entry.descriptor, entry.condition};
+					if (!entry.closeError.empty() && !entry.closeRetrying) {
+						entry.closeRetrying = true;
+						descriptorsToClose.push_back(std::move(closing));
+					} else if (entry.closeError.empty() && entry.descriptor->beginClose()) {
+						descriptorsToClose.push_back(std::move(closing));
+					} else {
+						descriptorsToWaitFor.push_back(std::move(closing));
+					}
 				}
 			}
+
+			std::exception_ptr closeError = closeClaimedDescriptors(
+				descriptorsToClose, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex);
+
+			for (const auto& closing : descriptorsToWaitFor) {
+				std::unique_lock<std::mutex> lock(instance->databasesMutex);
+				const auto drainDeadline = std::chrono::steady_clock::now() + waitBudget;
+				if (!closing.condition->wait_until(lock, drainDeadline, [&]() {
+					auto entry = instance->databases.find(closing.key);
+					return entry == instance->databases.end() ||
+						entry->second.descriptor != closing.descriptor ||
+						(!entry->second.closeError.empty() && !entry->second.closeRetrying);
+				})) {
+					throw rocksdb_js::DBException("Timed out waiting for database close to finish during shutdown");
+				}
+			}
+
+			if (destroysInFlight) {
+				std::unique_lock<std::mutex> lock(instance->databasesMutex);
+				const auto destroyDeadline = std::chrono::steady_clock::now() + waitBudget;
+				if (!instance->lifecycleCondition.wait_until(lock, destroyDeadline, [&]() {
+					return instance->destroyingPaths.empty();
+				})) {
+					throw rocksdb_js::DBException("Timed out waiting for database destruction to finish during shutdown");
+				}
+				if (closeError) std::rethrow_exception(closeError);
+				continue;
+			}
+			if (closeError) std::rethrow_exception(closeError);
+			if (descriptorsToClose.empty() && descriptorsToWaitFor.empty()) break;
 		}
 
-		// Close all descriptors without holding the lock
-		for (auto& descriptor : descriptorsToClose) {
-			DEBUG_LOG("%p DBRegistry::Shutdown Closing database: %s\n", instance.get(), descriptor->path.c_str());
-			descriptor->close();
-		}
-
-		// Purge the registry
+		// Purge any remaining unreferenced-but-untouched entries (e.g. one whose
+		// last handle detached between two passes above).
 		PurgeAll();
 
 		DEBUG_LOG("%p DBRegistry::Shutdown Shutdown complete\n", instance.get());
 	}
+}
+
+/**
+ * Release every remaining registry entry (see the header for why this cannot be
+ * left to the singleton's static destructor).
+ */
+void DBRegistry::Teardown() {
+	if (!instance) {
+		return;
+	}
+
+	std::unordered_map<DBKey, DBRegistryEntry, DBKeyHash> entries;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		entries.swap(instance->databases);
+	}
+
+	// Destroy outside the lock: ~DBDescriptor closes the RocksDB database and
+	// joins its worker threads. A descriptor already claimed by a failed close
+	// short-circuits its own close() and is simply released here.
+	DEBUG_LOG("%p DBRegistry::Teardown Releasing %zu remaining descriptor(s)\n",
+		instance.get(), entries.size());
+	entries.clear();
 }
 
 /**
