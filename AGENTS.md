@@ -731,6 +731,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     so a leaked one wedges its workspace permanently. While any key for that physical path is
     closing, `OpenDB` must wait before opening every other key too; otherwise a fresh read-only or
     secondary key can appear after destroy's claim and be deleted and erased without being closed.
+
 19. **A transaction timestamp freezes when native state captures it**: `setTimestamp()` may adopt an
     origin timestamp for replication or replay only while the transaction is pending and before any
     database write or transaction-log entry is staged. The log batch snapshots the timestamp at the
@@ -739,7 +740,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
 
-19. **A WriteBufferManager stall is a second, entirely separate stall mechanism, and nothing in
+20. **A WriteBufferManager stall is a second, entirely separate stall mechanism, and nothing in
     RocksDB reports it**: `DBImpl::WriteBufferManagerStallWrites` parks writers on the manager's own
     queue (`WBMStallInterface::Block`) without touching the `WriteController`, so `rocksdb.stall.micros`,
     the `WRITE_STALL` histogram, `OnStallConditionsChanged` — and therefore the `'writeStall'` event
