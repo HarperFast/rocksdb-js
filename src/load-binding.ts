@@ -681,7 +681,13 @@ export const BackgroundError: new (
  * {@link getWriteBufferManagerStats}.
  */
 export type WriteBufferManagerStats = {
-	/** Whether a manager has been created in this process. All other values are 0/false when not. */
+	/**
+	 * Whether a manager has been created in this process. `bufferSize`,
+	 * `memoryUsage`, `mutableMemoryUsage`, `stallActive`, `stallActiveMs`,
+	 * `watchdogRunning` and `columnFamilies` are 0/false when not; `allowStall`
+	 * and `costToCache` still reflect the configured setting, and
+	 * `inventoryAvailable` is `true`.
+	 */
 	enabled: boolean;
 	/** The manager's budget in bytes (`writeBufferManagerSize`, live). */
 	bufferSize: number;
