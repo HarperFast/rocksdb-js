@@ -326,6 +326,27 @@ static void rejectRetryNowSetupFailure(
 }
 
 /**
+ * The commit lane has no exception boundary of its own; the fallback status
+ * carries no message so it cannot throw either.
+ */
+static rocksdb::Status admitStagedColumnFamilies(
+	TransactionHandle& txnHandle,
+	ColumnFamilyAdmission& admission
+) {
+	try {
+		return txnHandle.admitColumnFamilies(admission);
+	} catch (const std::exception& e) {
+		try {
+			return rocksdb::Status::Aborted(std::string("Column family admission failed: ") + e.what());
+		} catch (...) {
+			return rocksdb::Status::Aborted();
+		}
+	} catch (...) {
+		return rocksdb::Status::Aborted();
+	}
+}
+
+/**
  * Log-lane stage of the commit: validates the handle and writes the
  * transaction-log batch (recording the committed position). Runs off the JS
  * thread — on the database's log lane, or on a libuv threadpool thread in the
@@ -347,6 +368,12 @@ static void executeLogWork(TransactionCommitState* state) {
 	} else if (!txnHandle->dbHandle->opened()) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	} else if (ColumnFamilyGate* dropping = txnHandle->stagedColumns.firstDropping()) {
+		// Advisory pre-check: a drop already under way will refuse this commit
+		// at admission anyway; failing here keeps the doomed batch out of the
+		// transaction log, so the caller sees the refusal rather than an
+		// abandonment. Admission remains the authoritative check.
+		state->status = columnFamilyDroppedStatus(*dropping);
 	} else if (txnHandle->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
 			txnHandle.get(), txnHandle->id);
@@ -404,17 +431,22 @@ static void executeCommitWork(TransactionCommitState* state) {
 					? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
 					: rollbackStatus;
 			} else {
-				// Test seam: stall immediately before the RocksDB commit, with the
-				// async work still registered and `txn` about to be dereferenced.
-				// This is the window TransactionHandle::close()'s bounded drain is
-				// supposed to protect: if close() gives up and destroys `txn`, this
-				// thread then commits through a destroyed transaction. Distinct from
-				// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
-				// therefore cannot exercise the drain at all. Noop in production.
-				if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
-					std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
+				ColumnFamilyAdmission admission;
+				state->status = admitStagedColumnFamilies(*txnHandle, admission);
+				if (state->status.ok()) {
+					testObserveAdmittedCommit();
+					// Test seam: stall immediately before the RocksDB commit, with the
+					// async work still registered and `txn` about to be dereferenced.
+					// This is the window TransactionHandle::close()'s bounded drain is
+					// supposed to protect: if close() gives up and destroys `txn`, this
+					// thread then commits through a destroyed transaction. Distinct from
+					// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
+					// therefore cannot exercise the drain at all. Noop in production.
+					if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
+						std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
+					}
+					state->status = txnHandle->txn->Commit();
 				}
-				state->status = txnHandle->txn->Commit();
 			}
 
 			// For coordinated retry: save slot pointers before
@@ -901,6 +933,19 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	std::shared_ptr<TransactionLogStore> store = nullptr;
 	bool hasLog = false;
 
+	// Same advisory pre-check as executeLogWork: keep a batch a drop is already
+	// refusing out of the transaction log.
+	if (ColumnFamilyGate* dropping = (*txnHandle)->stagedColumns.firstDropping()) {
+		(*txnHandle)->state = TransactionState::Pending;
+		napi_value error;
+		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, columnFamilyDroppedStatus(*dropping), "Transaction commit failed");
+		napi_value hasLogValue;
+		NAPI_STATUS_THROWS(::napi_get_boolean(env, (*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
+		NAPI_STATUS_THROWS(::napi_throw(env, error));
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
@@ -921,7 +966,15 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	rocksdb::Status status = (*txnHandle)->txn->Commit();
+	rocksdb::Status status;
+	{
+		ColumnFamilyAdmission admission;
+		status = admitStagedColumnFamilies(**txnHandle, admission);
+		if (status.ok()) {
+			testObserveAdmittedCommit();
+			status = (*txnHandle)->txn->Commit();
+		}
+	}
 
 	if (!(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();

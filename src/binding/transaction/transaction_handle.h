@@ -13,6 +13,7 @@
 #include "rocksdb/utilities/transaction_db.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "transaction_log/transaction_log_entry.h"
+#include "core/column_family_gate.h"
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -160,10 +161,23 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	LogPosition committedPosition;
 
+	/**
+	 * Gate tokens of the droppable families this transaction wrote (AGENTS.md
+	 * invariant 20). Reset with the transaction; released on close.
+	 */
+	StagedColumnFamilies stagedColumns;
+
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
 	void resetTransaction();
+
+	/**
+	 * All-or-nothing admission on every family in `stagedColumns`, taken
+	 * immediately before `txn->Commit()` with `admission` scoped to end right
+	 * after it. A refusal returns `ColumnFamilyDropped` and leaves nothing held.
+	 */
+	rocksdb::Status admitColumnFamilies(ColumnFamilyAdmission& admission);
 
 	/**
 	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),

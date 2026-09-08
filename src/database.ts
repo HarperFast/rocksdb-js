@@ -1246,6 +1246,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			txn.abort();
 		} catch (abortErr) {
 			if (abortErr instanceof TransactionAbandonedError) {
+				abortErr.cause ??= commitErr;
 				throw abortErr;
 			}
 		}

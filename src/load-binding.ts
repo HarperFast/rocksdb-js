@@ -773,6 +773,31 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
 
 /**
+ * Test-only: while `true`, every transaction commit admitted through the column-family gate parks
+ * (bounded) before its RocksDB commit, holding it inside the window a concurrent drop must wait on.
+ * Process-global (shared across worker threads); always reset to `false`.
+ */
+export const setCommitHoldForTesting: (hold: boolean) => void = binding.setCommitHoldForTesting;
+
+/**
+ * Test-only: monotonic process-wide counters of commits admitted through the column-family gate
+ * and of drops that closed one, so a test can assert the commit/drop ordering it constructed. The
+ * first read arms the counting (they are inert in production); take the baseline reading before
+ * the action under test.
+ */
+export const getCommitGateCountersForTesting: () => {
+	commitsAdmitted: number;
+	dropsBegun: number;
+} = binding.getCommitGateCountersForTesting;
+
+/**
+ * Test-only: report the next `count` successful drops as failed after RocksDB has already removed
+ * the family (the shape of an OPTIONS-file persistence error). Pass 0 to disarm.
+ */
+export const forceDropFailureForTesting: (count: number) => void =
+	binding.forceDropFailureForTesting;
+
+/**
  * Creates a native file lock using the specified file path (`flock` on POSIX,
  * `LockFileEx` on Windows), creating the file and any missing parent
  * directories. Exclusive by default; pass `shared` for a shared (reader) lock

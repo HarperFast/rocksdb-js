@@ -1636,18 +1636,24 @@ uint32_t DBDescriptor::transactionGetNextId() {
  * shared_ptr and can continue reading until they close; only the by-name
  * lookup is removed.
  */
-void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
+bool DBDescriptor::unregisterColumnFamily(
+	const std::string& columnName,
+	const std::shared_ptr<ColumnFamilyDescriptor>& dropped
+) {
 	std::lock_guard<std::mutex> lock(this->columnsMutex);
+	auto it = this->columns.find(columnName);
+	if (it == this->columns.end() || it->second != dropped) {
+		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" %s\n",
+			this, columnName.c_str(), it == this->columns.end() ? "not found" : "already replaced");
+		return false;
+	}
 	// Retire debounce state so the map stays bounded and a recreated CF of the
 	// same name starts fresh rather than inheriting a stale reported-stalled bit.
 	this->writeStallDebounce.forget(columnName);
-	if (this->columns.erase(columnName)) {
-		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
-			this, columnName.c_str());
-	} else {
-		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" not found\n",
-			this, columnName.c_str());
-	}
+	this->columns.erase(it);
+	DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
+		this, columnName.c_str());
+	return true;
 }
 
 /**

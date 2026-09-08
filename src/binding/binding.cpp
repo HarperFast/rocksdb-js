@@ -61,6 +61,47 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/** Test-only: park every admitted commit (bounded) inside its admitted window; see core/test_seam.h. */
+napi_value SetCommitHoldForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	bool hold = false;
+	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &hold));
+	if (hold) {
+		commitGateSeamsArmed().store(true, std::memory_order_release);
+	}
+	commitHoldFlag().store(hold, std::memory_order_release);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
+/** Test-only: `{ commitsAdmitted, dropsBegun }`; the first read arms the counting (see core/test_seam.h). */
+napi_value GetCommitGateCountersForTesting(napi_env env, napi_callback_info info) {
+	commitGateSeamsArmed().store(true, std::memory_order_release);
+	napi_value result;
+	napi_value commitsAdmitted;
+	napi_value dropsBegun;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	NAPI_STATUS_THROWS(::napi_create_double(
+		env, static_cast<double>(commitAdmittedCounter().load(std::memory_order_acquire)), &commitsAdmitted));
+	NAPI_STATUS_THROWS(::napi_create_double(
+		env, static_cast<double>(dropBeginCounter().load(std::memory_order_acquire)), &dropsBegun));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "commitsAdmitted", commitsAdmitted));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "dropsBegun", dropsBegun));
+	return result;
+}
+
+/** Test-only: report the next `n` completed drops as failed (the OPTIONS-persistence shape); see core/test_seam.h. */
+napi_value ForceDropFailureForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t count = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &count));
+	forceDropFailureCounter().store(count, std::memory_order_relaxed);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
 /**
  * Returns the current thread id.
  */
@@ -264,6 +305,16 @@ NAPI_MODULE_INIT() {
 	napi_value forceTryAgainFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
+
+	napi_value setCommitHoldFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "setCommitHoldForTesting", NAPI_AUTO_LENGTH, SetCommitHoldForTesting, nullptr, &setCommitHoldFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setCommitHoldForTesting", setCommitHoldFn));
+	napi_value commitGateCountersFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "getCommitGateCountersForTesting", NAPI_AUTO_LENGTH, GetCommitGateCountersForTesting, nullptr, &commitGateCountersFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "getCommitGateCountersForTesting", commitGateCountersFn));
+	napi_value forceDropFailureFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "forceDropFailureForTesting", NAPI_AUTO_LENGTH, ForceDropFailureForTesting, nullptr, &forceDropFailureFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceDropFailureForTesting", forceDropFailureFn));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;

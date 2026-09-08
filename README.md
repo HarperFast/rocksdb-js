@@ -502,6 +502,16 @@ await db.drop();
 db.close();
 ```
 
+Dropping a named column family is interlocked with transaction commits on it. Commits that RocksDB
+is already applying finish first (the drop waits for them, on the calling thread — `drop()` too),
+and any transaction commit that reaches the column family after the drop has begun, including one
+staged before it, is rejected whole with `code: 'ERR_COLUMN_FAMILY_DROPPED'` (`column family "users"
+is being dropped` / `was dropped`) rather than poisoning the database: unrelated column families keep
+writing and `db.getLastError()` stays `null`. The rejected transaction is left for the caller to
+abort; `db.transaction()` does not retry it, and a transaction that had already written to a
+transaction log surfaces the rejection as the `cause` of its `TransactionAbandonedError`. Dropping a
+column family that another handle already dropped is a no-op.
+
 ### `db.dropSync(): void`
 
 Synchronous version of `db.drop()`.
@@ -2578,7 +2588,7 @@ built to be debug friendly.
 | Production build (minified + native binding) | `pnpm build`                             |
 | TypeScript only (minified)                   | `pnpm build:bundle`                      |
 | TypeScript only (unminified)                 | `pnpm build:debug`                       |
-| Native binding only (prod)                   | `pnpm rebuild`                           |
+| Native binding only (prod)                   | `pnpm run rebuild`                       |
 | Native binding only (with debug logging)     | `pnpm rebuild:debug`                     |
 | Debug build everything                       | `pnpm build:debug && pnpm rebuild:debug` |
 
@@ -2611,7 +2621,7 @@ When you compile `rocksdb-js`, you can specify the `ROCKSDB_LIBC` environment va
 either `glibc` (default) or `musl`.
 
 ```bash
-ROCKSDB_LIBC=musl pnpm rebuild
+ROCKSDB_LIBC=musl pnpm run rebuild
 ```
 
 ### Windows C runtime versions
@@ -2627,7 +2637,7 @@ local `rocksdb` repo:
 ```bash
 git clone https://github.com/facebook/rocksdb.git /path/to/rocksdb
 echo "ROCKSDB_PATH=/path/to/rocksdb" >> .env
-pnpm rebuild
+pnpm run rebuild
 ```
 
 ### Debugging

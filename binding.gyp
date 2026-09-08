@@ -246,6 +246,7 @@
 				'test/native/rocksdb_version_test.cc',
 				'test/native/backup_disk_space_test.cc',
 				'test/native/background_error_test.cc',
+				'test/native/column_family_gate_test.cc',
 				'test/native/compression_test.cc',
 				'test/native/encoding_test.cc',
 				'test/native/file_lock_test.cc',
