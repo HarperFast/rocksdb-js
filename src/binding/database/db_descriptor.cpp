@@ -1652,11 +1652,10 @@ void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
 	// Retire debounce state so the map stays bounded and a recreated CF of the
 	// same name starts fresh rather than inheriting a stale reported-stalled bit.
 	this->writeStallDebounce.forget(columnName);
-	// Only an attached database reaches the stall inventory, and attachment is
-	// decided once at open, so an unattached one tracks nothing.
+	// Attachment is decided once, at open, so an unattached database never reaches
+	// the stall inventory and tracks nothing.
 	const bool trackForInventory = this->attachedWriteBufferManager != nullptr;
 	if (trackForInventory) {
-		// The only place the list grows, so pruning here bounds it.
 		std::erase_if(this->droppedColumns, [](const DroppedColumnFamily& dropped) {
 			return dropped.descriptor.expired();
 		});

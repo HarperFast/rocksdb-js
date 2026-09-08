@@ -147,10 +147,6 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 			this->watchdogStarted = false;
 			this->watchdogRetiring = true;
 		} else if (this->watchdogRetiring) {
-			// Another env is already retiring the thread. Wait for it instead of
-			// clearing the stop latch out from under it: the thread may not have
-			// observed the stop yet, and clearing it would park the thread again
-			// with the owner blocked in join() forever.
 			this->watchdogCv.notify_all();
 			this->watchdogCv.wait(lock, [this]() { return !this->watchdogRetiring; });
 			return;
@@ -163,8 +159,6 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 	{
 		std::lock_guard<std::mutex> lock(this->watchdogMutex);
 		this->watchdogRetiring = false;
-		// Held until here so `ensure` cannot start a replacement alongside a
-		// thread that is still exiting.
 		this->watchdogStopRequested = false;
 	}
 	this->watchdogCv.notify_all();

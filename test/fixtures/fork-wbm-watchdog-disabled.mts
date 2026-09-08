@@ -1,5 +1,4 @@
-// In a child so `ROCKSDB_JS_WBM_STALL_WARN_MS` can be set: it is read once per
-// process, and the vitest worker's value is fixed before any test runs.
+// In a child so `ROCKSDB_JS_WBM_STALL_WARN_MS` can be set: it is read once per process.
 import { getWriteBufferManagerStats, RocksDatabase } from '../../src/index.ts';
 
 const dbPath = process.argv[2];

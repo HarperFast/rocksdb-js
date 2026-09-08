@@ -1,11 +1,8 @@
-// In a child because creating the manager is irreversible for the process: its
-// `costToCache` is fixed at construction, so doing this in the shared vitest
-// worker would decide it for every test file that runs afterwards. The parent
-// also owns the deadline — a watchdog join that deadlocks hangs this process,
-// and only a killable child turns that into a test failure.
+// In a child because creating the manager pins its `costToCache` for the process,
+// and because a join that deadlocks hangs this process — only a killable child
+// turns that into a test failure rather than a wedged run.
 import { getWriteBufferManagerStats, RocksDatabase, shutdown } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
-import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 
 const dbPath = process.argv[2];
@@ -13,7 +10,9 @@ if (!dbPath) {
 	process.exit(1);
 }
 
-const workerPath = join(import.meta.dirname, '..', 'workers', 'wbm-shutdown-worker.mts');
+// Cwd-relative, like the other worker fixtures: an absolute path here becomes a
+// drive-letter import that Node's ESM loader rejects on Windows.
+const workerPath = './test/workers/wbm-shutdown-worker.mts';
 const CONCURRENT_SHUTDOWNS = 4;
 const ROUNDS = 4;
 
@@ -61,10 +60,8 @@ watchdogRunning.push(getWriteBufferManagerStats().watchdogRunning);
 db.open();
 watchdogRunning.push(getWriteBufferManagerStats().watchdogRunning);
 
-// Only one caller may own the retiring thread; the others must wait for it
-// rather than clear the stop latch and strand the owner inside join(). The race
-// is narrow, so run several rounds — a lost one hangs here until the parent's
-// deadline rather than failing an assertion.
+// A lost race hangs here until the parent's deadline rather than failing an
+// assertion, and it is narrow, so run several rounds.
 for (let round = 0; round < ROUNDS; round++) {
 	await shutdownConcurrently();
 	watchdogRunning.push(getWriteBufferManagerStats().watchdogRunning);
