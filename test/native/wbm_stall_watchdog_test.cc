@@ -12,7 +12,6 @@ namespace {
 
 using Clock = WbmStallWatchdogState::Clock;
 
-// A fixed base so tests can express times as millisecond offsets.
 Clock::time_point at(long long ms) {
 	return Clock::time_point{} + std::chrono::milliseconds(ms);
 }
@@ -68,8 +67,6 @@ TEST(WbmStallWatchdogState, KeepsReportingDurationAfterTheReport) {
 	state.onSample(true, at(0), kThreshold);
 	state.onSample(true, at(5000), kThreshold);
 	state.markReported();
-	// It backs the live writeBufferManager.stallActiveMs gauge, so it must keep
-	// climbing after the one-shot line has been emitted.
 	EXPECT_EQ(state.onSample(true, at(42000), kThreshold).stallActiveMs, 42000u);
 }
 

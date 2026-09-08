@@ -193,7 +193,8 @@ describe('WriteBufferManager stall watchdog', () => {
 		expect(last.getStats.bufferSize).toBe(last.stats.bufferSize);
 		expect(last.getStat.stallActive).toBe(1);
 		expect(last.getStat.bufferSize).toBe(last.stats.bufferSize);
-		expect(last.getStat.stallActiveMs).toBe(last.getStats.stallActiveMs);
+		expect(last.getStats.stallActiveMs).toBeGreaterThanOrEqual(last.stats.stallActiveMs);
+		expect(last.getStat.stallActiveMs).toBeGreaterThanOrEqual(last.getStats.stallActiveMs);
 
 		const warned = result.stdout
 			.split(/\r?\n/)

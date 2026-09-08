@@ -697,7 +697,6 @@ export type WriteBufferManagerStats = {
 	mutableMemoryUsage: number;
 	allowStall: boolean;
 	costToCache: boolean;
-	/** Whether the manager is currently stalling writes. */
 	stallActive: boolean;
 	/**
 	 * How long the current stall has been active, in milliseconds; 0 when not

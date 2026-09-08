@@ -43,8 +43,6 @@ await new Promise<void>((resolve, reject) => {
 	worker.once('error', reject);
 });
 
-// Poll until the stall has been active long enough for the watchdog to have
-// reported, plus several more of its samples to prove it does not repeat.
 const OBSERVE_AFTER_REPORT_MS = 6000;
 const deadline = performance.now() + 90_000;
 let sawStall = false;
