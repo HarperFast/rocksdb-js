@@ -16,7 +16,6 @@ constexpr const char* WBM_MUTABLE_MEMORY_USAGE_KEY = "writeBufferManager.mutable
 constexpr const char* WBM_STALL_ACTIVE_KEY = "writeBufferManager.stallActive";
 constexpr const char* WBM_STALL_ACTIVE_MS_KEY = "writeBufferManager.stallActiveMs";
 
-// See the call site in sampleWriteBufferManagerStall() for why this retries at all.
 // A WAL-recovery-sized hold on databasesMutex/columnsMutex runs to the hundreds of
 // milliseconds; ~450ms of total budget covers that without meaningfully delaying
 // the once-per-episode alarm against a 5s+ threshold.
@@ -121,10 +120,8 @@ void DBStats::armWatchdogLocked() {
 		this->watchdogStarted = false;
 		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
 		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
-		// Deliberately no stderr line here: `ensure` runs under `databasesMutex` ->
-		// `writeBufferManagerMutex` -> `watchdogMutex`, so a blocked write would
-		// stall every database open and shutdown's flush. The failure is visible as
-		// `watchdogRunning: false`, and the next open retries.
+		// Same no-stderr-under-lock reasoning as `stallWarnMs` above. Visible as
+		// `watchdogRunning: false`; the next open retries.
 	}
 }
 

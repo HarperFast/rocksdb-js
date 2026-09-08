@@ -257,7 +257,11 @@ Reads the live state of the `WriteBufferManager`.
 this process, `worker_threads` included, so these values describe the whole process regardless of
 where the call was made.
 
-- `enabled: boolean` Whether a manager has been created. Every other value is `0`/`false` when not.
+- `enabled: boolean` Whether a manager has been created. `bufferSize`, `memoryUsage`,
+  `mutableMemoryUsage`, `stallActive`, `stallActiveMs`, `watchdogRunning` and `columnFamilies` are
+  `0`/`false` when not; `allowStall` and `costToCache` still reflect the configured setting (a
+  manager is only created once `writeBufferManagerSize` is also set), and `inventoryAvailable` is
+  `true` (there is nothing to fail to collect).
 - `bufferSize: number` The budget in bytes (`writeBufferManagerSize`, read live).
 - `memoryUsage: number` Total memtable memory in bytes charged against the manager.
 - `mutableMemoryUsage: number` The share of `memoryUsage` held by active (mutable) memtables; the
@@ -279,9 +283,11 @@ where the call was made.
   target (as a decimal string) to how many of those column families carry it. Effective, not
   requested: RocksDB rewrites a requested `0` for a transaction database.
 
-The first five values are also in [`db.getStats()`](#dbgetstatsall-boolean-rocksdbstats) and
-`db.getStat()` under the same `writeBufferManager.` prefix, for scraping; the column-family
-inventory is only here, because collecting it walks the database registry.
+`bufferSize`, `memoryUsage`, `mutableMemoryUsage`, `stallActive` and `stallActiveMs` are also in
+[`db.getStats()`](#dbgetstatsall-boolean-rocksdbstats) and `db.getStat()` under the same
+`writeBufferManager.` prefix, for scraping; `enabled`, `allowStall`, `costToCache`,
+`watchdogRunning`, and the column-family inventory are only here, because collecting them either
+walks the database registry or isn't scrape-shaped.
 
 `stallActive` is the signal that distinguishes a stalled process from an idle one.
 [`db.isWriteStalled()`](#dbiswritestalled-boolean), the [`'writeStall'` event](#event-writestall)
