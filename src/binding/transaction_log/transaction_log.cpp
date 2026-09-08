@@ -336,8 +336,9 @@ napi_value TransactionLog::GetPath(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetPath");
 	auto store = (*txnLogHandle)->store.lock();
 	if (store) {
+		const auto path = store->displayPath.string();
 		napi_value result;
-		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, store->path.string().c_str(), store->path.string().size(), &result));
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, path.c_str(), path.size(), &result));
 		return result;
 	}
 	NAPI_RETURN_UNDEFINED();

@@ -2220,6 +2220,43 @@ describe('Transaction Log', () => {
 		);
 
 		it.skipIf(process.platform === 'win32')(
+			'should report discovered and created log paths with the spelling the caller opened',
+			() =>
+				dbRunner({ skipOpen: true }, async ({ db: unused, dbPath }) => {
+					unused.close();
+					const linkPath = `${dbPath}-link`;
+					await mkdir(dbPath, { recursive: true });
+					symlinkSync(dbPath, linkPath, 'dir');
+					try {
+						const discoveredDirectory = join(linkPath, 'transaction_logs', 'discovered');
+						await mkdir(discoveredDirectory, { recursive: true });
+						const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+						header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+						header.writeUInt8(1, 4);
+						header.writeDoubleBE(0, 5);
+						await writeFile(join(discoveredDirectory, '1.txnlog'), header);
+						await writeFile(
+							join(discoveredDirectory, 'txn.state'),
+							Buffer.from([0, 0, 0, 0, 2, 0, 0, 0])
+						);
+
+						const linked = new RocksDatabase(linkPath);
+						try {
+							linked.open();
+							expect(linked.useLog('discovered').path).toBe(discoveredDirectory);
+							expect(linked.useLog('created').path).toBe(
+								join(linkPath, 'transaction_logs', 'created')
+							);
+						} finally {
+							linked.close();
+						}
+					} finally {
+						rmSync(linkPath, { force: true });
+					}
+				})
+		);
+
+		it.skipIf(process.platform === 'win32')(
 			'should keep a custom transaction-log target after its symlink is repointed',
 			async () => {
 				const dbPath = generateDBPath();
