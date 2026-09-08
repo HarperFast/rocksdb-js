@@ -85,7 +85,7 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 	// reset descriptor->db — wait for this copy first. The shared gate either
 	// admits this work or rejects it after close starts.
 	auto descriptor = (*dbHandle)->descriptor;
-	auto claim = descriptor->acquireOperation();
+	auto claim = descriptor->acquireSharedOperation();
 	if (!claim) {
 		::napi_throw_error(env, nullptr, "Database is closing");
 		NAPI_RETURN_UNDEFINED();

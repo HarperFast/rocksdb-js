@@ -645,7 +645,7 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 	// PurgeAll() teardown paths wait for this (potentially long) stream. Mirrors
 	// Database::CreateCheckpoint.
 	auto descriptor = (*dbHandle)->descriptor;
-	auto claim = descriptor->acquireOperation();
+	auto claim = descriptor->acquireSharedOperation();
 	if (!claim) {
 		::napi_throw_error(env, nullptr, "Database is closing");
 		NAPI_RETURN_UNDEFINED();

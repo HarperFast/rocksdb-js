@@ -130,8 +130,6 @@ N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in
      prebuild then emits the compression libs to link as **whitespace-free** `-l` flags / `.lib`
      names (never absolute paths), resolved via a single `library_dirs` entry — so a repo checked
      out under a path with spaces still links (gyp `<!@()` splits output on whitespace).
-7. **Operation admission**: `OperationGate` uses sequentially consistent acquire/close ordering.
-   Every RocksDB access must hold a claim, and no RocksDB-owned pointer or slice may outlive it.
 
 ### Transaction Architecture
 
@@ -733,6 +731,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     written remains frozen across retries, though reapplying the same timestamp is idempotent while
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
+
+20. **Operation admission**: `OperationGate` uses sequentially consistent acquire/close ordering.
+    Every RocksDB access must hold a claim, and no RocksDB-owned pointer or slice may outlive it.
+    Borrowed claims require their caller to retain the owning descriptor until claim destruction;
+    async and foreign-thread work uses a shared claim so the gate survives its final release and
+    notification without affecting `DBRegistry` descriptor reference counts.
 
 ## Debugging native heap corruption
 

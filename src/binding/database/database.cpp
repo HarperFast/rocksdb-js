@@ -496,7 +496,7 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	// a big backlog opens every new SST/blob eagerly and routinely exceeds the
 	// drain timeout).
 	auto descriptor = (*dbHandle)->descriptor;
-	auto claim = descriptor->acquireOperation();
+	auto claim = descriptor->acquireSharedOperation();
 	if (!claim) {
 		::napi_throw_error(env, nullptr, "Database is closing");
 		NAPI_RETURN_UNDEFINED();

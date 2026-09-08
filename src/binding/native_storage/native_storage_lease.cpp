@@ -413,7 +413,7 @@ uint32_t scanPage(
 		) {
 			return fail(context->state.get(), ROCKSDB_JS_STORAGE_LIMIT, status, "scan request exceeds limits");
 		}
-		if (startAfter.length != 0 &&
+		if (startAfter.length != 0 && prefix.length != 0 &&
 			(startAfter.length < prefix.length || std::memcmp(startAfter.data, prefix.data, static_cast<size_t>(prefix.length)) != 0)
 		) {
 			return fail(context->state.get(), ROCKSDB_JS_STORAGE_INVALID_ARGUMENT, status, "scan cursor is outside prefix");

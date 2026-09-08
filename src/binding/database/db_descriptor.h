@@ -504,6 +504,7 @@ public:
 	void close();
 	bool isClosing() const { return this->operationGate->isClosing(); }
 	OperationClaim acquireOperation() { return OperationClaim::acquireBorrowed(*this->operationGate); }
+	OperationClaim acquireSharedOperation() { return OperationClaim::acquireShared(this->operationGate); }
 
 	/**
 	 * Atomically transitions the descriptor into the closing state. Returns
