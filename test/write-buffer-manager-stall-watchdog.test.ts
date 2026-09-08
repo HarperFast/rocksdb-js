@@ -24,11 +24,19 @@ const WARN_MS = 2000;
 
 type ChildResult = { stdout: string; stderr: string; timedOut: boolean };
 
-function runStallChild(dbPath: string, deadlineMs: number): Promise<ChildResult> {
+function runStallChild(
+	dbPath: string,
+	deadlineMs: number,
+	shutdownWhenStalled = false
+): Promise<ChildResult> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [fixturePath, dbPath], {
-			env: { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: String(WARN_MS) },
-		});
+		const child = spawn(
+			process.execPath,
+			[fixturePath, dbPath, ...(shutdownWhenStalled ? ['shutdown'] : [])],
+			{
+				env: { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: String(WARN_MS) },
+			}
+		);
 		let stdout = '';
 		let stderr = '';
 		let timedOut = false;
@@ -51,12 +59,15 @@ function runStallChild(dbPath: string, deadlineMs: number): Promise<ChildResult>
 
 		child.stdout?.on('data', (chunk) => {
 			stdout += chunk.toString();
-			if (/^(STALLED|NEVER_STALLED|CLEARED)\r?$/m.test(stdout)) {
+			if (!shutdownWhenStalled && /^(STALLED|NEVER_STALLED|CLEARED)\r?$/m.test(stdout)) {
 				finish();
 			}
 		});
 		child.stderr?.on('data', (chunk) => {
 			stderr += chunk.toString();
+			if (shutdownWhenStalled && stderr.includes('WriteBufferManager write stall active for')) {
+				finish();
+			}
 		});
 		child.on('error', (error) => {
 			clearTimeout(deadline);
@@ -204,4 +215,20 @@ describe('WriteBufferManager stall watchdog', () => {
 
 		expect(stalled.at(-1)!.stats.stallActiveMs).toBeGreaterThan(stalled[0].stats.stallActiveMs);
 	}, 150_000);
+
+	it('keeps reporting while shutdown waits for a stalled writer', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'rocksdb-wbm-stall-shutdown-'));
+		let result: ChildResult;
+		try {
+			result = await runStallChild(join(dir, 'db'), 60_000, true);
+		} finally {
+			if (!process.env.KEEP_FILES) {
+				rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+			}
+		}
+
+		expect(result.timedOut, `child never warned:\n${result.stderr}`).toBe(false);
+		expect(result.stdout).toContain('SHUTTING_DOWN');
+		expect(result.stderr).toContain('WriteBufferManager write stall active for');
+	}, 90_000);
 });

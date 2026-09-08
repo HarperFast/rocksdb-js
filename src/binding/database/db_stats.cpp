@@ -92,6 +92,7 @@ void DBStats::ensureWriteBufferManagerWatchdog() {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(this->watchdogMutex);
+	++this->watchdogArmRequestGeneration;
 	if (this->watchdogStopRequested) {
 		this->watchdogArmPendingAfterStop = true;
 		return;
@@ -120,8 +121,6 @@ void DBStats::armWatchdogLocked() {
 		this->watchdogStarted = false;
 		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
 		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
-		// Same no-stderr-under-lock reasoning as `stallWarnMs` above. Visible as
-		// `watchdogRunning: false`; the next open retries.
 	}
 }
 
@@ -141,21 +140,21 @@ void DBStats::disableWriteBufferManagerWatchdog() {
 	this->watchdogCv.notify_all();
 }
 
-void DBStats::requestWriteBufferManagerWatchdogStop() {
-	{
-		std::lock_guard<std::mutex> lock(this->watchdogMutex);
-		this->watchdogArmed = false;
-		this->watchdogStopRequested = true;
-		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
-		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
-	}
-	this->watchdogCv.notify_all();
+uint64_t DBStats::beginWriteBufferManagerWatchdogShutdown() {
+	std::lock_guard<std::mutex> lock(this->watchdogMutex);
+	return this->watchdogArmRequestGeneration;
 }
 
-void DBStats::joinWriteBufferManagerWatchdog(bool allowRearm) {
+void DBStats::joinWriteBufferManagerWatchdog(bool allowRearm, uint64_t shutdownGeneration) {
 	std::thread toJoin;
 	{
 		std::unique_lock<std::mutex> lock(this->watchdogMutex);
+		if (this->watchdogRetiring) {
+			this->watchdogCv.wait(lock, [this]() { return !this->watchdogRetiring; });
+		}
+		if (allowRearm && shutdownGeneration != this->watchdogArmRequestGeneration) {
+			return;
+		}
 		this->watchdogArmed = false;
 		this->watchdogStopRequested = true;
 		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
@@ -164,20 +163,10 @@ void DBStats::joinWriteBufferManagerWatchdog(bool allowRearm) {
 			toJoin = std::move(this->watchdogThread);
 			this->watchdogStarted = false;
 			this->watchdogRetiring = true;
-		} else if (this->watchdogRetiring) {
-			this->watchdogCv.notify_all();
-			this->watchdogCv.wait(lock, [this]() { return !this->watchdogRetiring; });
-			return;
 		}
 	}
 	this->watchdogCv.notify_all();
 
-	// Reset-and-notify runs on scope exit rather than only after the join
-	// below, so any future fallible step added between here and the end of
-	// the function still releases a concurrent joiner parked in the wait
-	// above (and still replays an ensure() call that arrived mid-stop, when
-	// this caller allows it) instead of leaving watchdogRetiring stuck true
-	// forever.
 	struct RetireGuard {
 		DBStats* self;
 		bool allowRearm;
@@ -254,11 +243,7 @@ void DBStats::sampleWriteBufferManagerStall(
 		writeBufferManager->IsStallActive(), WbmStallWatchdogState::Clock::now(), thresholdMs
 	);
 	{
-		// Locked so this check-then-store can't interleave with
-		// disableWriteBufferManagerWatchdog()'s own locked reset of these same
-		// two fields — otherwise a disable() landing between the unlocked check
-		// and the store below could zero stallActiveMs and then have this write
-		// clobber it right back with a stale value the caller just turned off.
+		// Keep the generation check and duration write atomic against disable().
 		std::lock_guard<std::mutex> lock(this->watchdogMutex);
 		if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
 			this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
@@ -278,7 +263,6 @@ void DBStats::sampleWriteBufferManagerStall(
 	report.mutableMemoryUsage = writeBufferManager->mutable_memtable_memory_usage();
 	report.allowStall = settings.getWriteBufferManagerAllowStall();
 	report.costToCache = settings.getWriteBufferManagerCostToCache();
-	// This is the one report an episode ever gets; see the retry constants above.
 	report.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
 		writeBufferManager, report.columnFamilies, report.maxWriteBufferSizeToMaintain
 	);
@@ -404,9 +388,7 @@ void DBStats::Init(napi_env env, napi_value exports) {
 }
 
 DBStats::~DBStats() {
-	// True process exit: never spawn a replacement thread here, since nothing
-	// will join it again.
-	this->joinWriteBufferManagerWatchdog(false);
+	this->joinWriteBufferManagerWatchdog(false, 0);
 }
 
 } // namespace rocksdb_js

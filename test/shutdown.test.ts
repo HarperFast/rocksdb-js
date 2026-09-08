@@ -57,6 +57,7 @@ describe('Shutdown', () => {
 					true,
 					false,
 					true,
+					true,
 					...Array.from({ length: 4 }, () => [false, true]).flat(),
 				]);
 			} finally {

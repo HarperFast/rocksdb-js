@@ -1,9 +1,10 @@
-import { getWriteBufferManagerStats, RocksDatabase } from '../../src/index.ts';
+import { getWriteBufferManagerStats, RocksDatabase, shutdown } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 
 const dbPath = process.argv[2];
+const shutdownWhenStalled = process.argv[3] === 'shutdown';
 
 if (!dbPath) {
 	console.error('Usage: fork-wbm-stall-watchdog.mts <dbPath>');
@@ -73,6 +74,11 @@ while (performance.now() < deadline) {
 		if (!sawStall) {
 			sawStall = true;
 			stalledSince = performance.now();
+			if (shutdownWhenStalled) {
+				console.log('SHUTTING_DOWN');
+				shutdown();
+				process.exit(2);
+			}
 		}
 	} else if (sawStall) {
 		// A stall that cleared mid-window could produce a second episode, and with
@@ -88,9 +94,4 @@ while (performance.now() < deadline) {
 }
 
 console.log(cleared ? 'CLEARED' : sawStall ? 'STALLED' : 'NEVER_STALLED');
-
-// The parent owns the deadline and kills this process. It cannot exit on its own:
-// the writer thread is parked inside RocksDB, so teardown would wedge in close()
-// waiting on the same stall (see AGENTS.md note 16) — which is precisely why a
-// test that reaches a real stall has to be driven from a killable child.
 setInterval(() => {}, 1000);

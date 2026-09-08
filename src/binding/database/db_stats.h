@@ -55,6 +55,7 @@ private:
 	bool watchdogStopRequested = false;
 	/** One joiner owns the retiring thread; the rest wait for it. */
 	bool watchdogRetiring = false;
+	uint64_t watchdogArmRequestGeneration = 0;
 	/**
 	 * An `ensure` call arrived while a stop was in flight (e.g. `db.open()`
 	 * racing `shutdown()`'s `DBRegistry::Shutdown()`, which closes databases
@@ -86,17 +87,12 @@ public:
 	void publishWriteBufferManager(rocksdb::WriteBufferManager* writeBufferManager);
 	void ensureWriteBufferManagerWatchdog();
 	void disableWriteBufferManagerWatchdog();
-	void requestWriteBufferManagerWatchdogStop();
+	uint64_t beginWriteBufferManagerWatchdogShutdown();
 	/**
-	 * `allowRearm` distinguishes the two callers: the explicit, JS-callable
-	 * `shutdown()` documents that databases may reopen afterward, so an
-	 * `ensure` that raced its stop should replay once the join resolves. The
-	 * module's last-env cleanup hook and ~DBStats() cannot tell "shutdown,
-	 * may reopen" from "process is ending" — a thread spawned there could
-	 * outlive the join that is supposed to retire it — so both pass false
-	 * and simply drop a queued replay, same as before this ever tracked one.
+	 * The explicit shutdown path may rearm after a concurrent open. Its
+	 * generation prevents an older shutdown caller from retiring that replacement.
 	 */
-	void joinWriteBufferManagerWatchdog(bool allowRearm);
+	void joinWriteBufferManagerWatchdog(bool allowRearm, uint64_t shutdownGeneration);
 
 	bool getWriteBufferManagerStat(const std::string& statName, double& value);
 	void setWriteBufferManagerStatsOnObject(napi_env env, napi_value result);

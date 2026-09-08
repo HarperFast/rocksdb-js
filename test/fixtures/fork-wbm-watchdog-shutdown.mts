@@ -2,6 +2,7 @@
 // and because a join that deadlocks hangs this process — only a killable child
 // turns that into a test failure rather than a wedged run.
 import { getWriteBufferManagerStats, RocksDatabase, shutdown } from '../../src/index.ts';
+import { setWriteBufferManagerJoinDelayForTesting } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 
@@ -18,17 +19,22 @@ const ROUNDS = 4;
 
 /** Runs `shutdown()` from several envs at once, all released from one gate. */
 async function shutdownConcurrently(): Promise<void> {
+	await Promise.all(await startConcurrentShutdowns(CONCURRENT_SHUTDOWNS));
+}
+
+async function startConcurrentShutdowns(count: number): Promise<Promise<void>[]> {
 	const gate = new SharedArrayBuffer(4);
 	const released = new Int32Array(gate);
 	let ready = 0;
+	const exits: Promise<void>[] = [];
 
 	await new Promise<void>((resolve, reject) => {
-		const exits: Promise<void>[] = [];
-		for (let i = 0; i < CONCURRENT_SHUTDOWNS; i++) {
+		for (let i = 0; i < count; i++) {
 			const worker = new Worker(createWorkerBootstrapScript(workerPath), {
 				eval: true,
 				workerData: { gate },
 			});
+			worker.on('error', reject);
 			exits.push(
 				new Promise<void>((done, fail) => {
 					worker.on('error', fail);
@@ -36,14 +42,15 @@ async function shutdownConcurrently(): Promise<void> {
 				})
 			);
 			worker.on('message', () => {
-				if (++ready === CONCURRENT_SHUTDOWNS) {
+				if (++ready === count) {
 					Atomics.store(released, 0, 1);
 					Atomics.notify(released, 0);
+					resolve();
 				}
 			});
 		}
-		Promise.all(exits).then(() => resolve(), reject);
 	});
+	return exits;
 }
 
 RocksDatabase.config({
@@ -60,8 +67,17 @@ watchdogRunning.push(getWriteBufferManagerStats().watchdogRunning);
 db.open();
 watchdogRunning.push(getWriteBufferManagerStats().watchdogRunning);
 
-// A lost race hangs here until the parent's deadline rather than failing an
-// assertion, and it is narrow, so run several rounds.
+setWriteBufferManagerJoinDelayForTesting(2, 5000);
+try {
+	const delayedShutdowns = await startConcurrentShutdowns(2);
+	await Promise.race(delayedShutdowns);
+	db.open();
+	await Promise.all(delayedShutdowns);
+	watchdogRunning.push(getWriteBufferManagerStats().watchdogRunning);
+} finally {
+	setWriteBufferManagerJoinDelayForTesting(0, 0);
+}
+
 for (let round = 0; round < ROUNDS; round++) {
 	await shutdownConcurrently();
 	watchdogRunning.push(getWriteBufferManagerStats().watchdogRunning);

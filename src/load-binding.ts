@@ -849,6 +849,12 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
  */
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
 
+/** Delays one selected watchdog join in the concurrent-shutdown regression test. */
+export const setWriteBufferManagerJoinDelayForTesting: (
+	countdown: number,
+	delayMs: number
+) => void = binding.setWriteBufferManagerJoinDelayForTesting;
+
 /**
  * Creates a native file lock using the specified file path (`flock` on POSIX,
  * `LockFileEx` on Windows), creating the file and any missing parent
