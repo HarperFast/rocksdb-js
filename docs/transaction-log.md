@@ -269,14 +269,16 @@ against the same database opened without the option:
 Roughly a millisecond per thousand entries. Retention bounds a log's age, not its entry count, so
 the walk is bounded directly instead: `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` (default `2000`) caps it,
 newest segment first, and a walk that runs out of budget warns and leaves the floor where it got to.
-The budget is checked between segments, so it can overshoot by one segment's walk: with the 13-byte
-entry header a default 16 MB segment holds up to roughly 1.2 million entries, and both a larger
-`transactionLogMaxSize` and a single batch too big for one segment raise that.
+The deadline is checked before each physical read; sequential headers share a 64 KiB window, so the
+small amount of already-buffered header parsing can finish after the deadline but one large segment
+cannot run unbounded.
 The value is honored literally between `0` (scan nothing, and warn) and one day, and there is no
 unbounded setting — the failure it bounds is an `open()` that does not return, so a deployment that
 would rather wait raises the number. Above a day it is clamped, because the deadline is a monotonic
 clock time point and a larger value overflows its resolution and wraps into the past.
-A database opened without `timestampFloorLog` pays none of it.
+A database opened without `timestampFloorLog` pays none of it. The walk runs while database opens
+and closes are serialized process-wide, so increasing its budget can delay unrelated opens and
+closes too.
 
 The seed is best effort, and says so when it falls short: a segment that cannot be opened or scanned
 emits a `log.warn` global event, as does a framing break (the entries past it can still be durable —

@@ -889,7 +889,7 @@ backward step, differences between two calls understate real time. Use
 The clock is monotonic within a process, not across restarts: a new process reads the wall clock
 again, so a backward step between runs can reissue a timestamp that is already a batch key in this
 node's transaction log. Opening with
-[`timestampFloorLog`](#rocksdatabaseopenpath-string-options-object-rocksdatabase) raises the clock
+[`timestampFloorLog`](#new-rocksdatabasepath-options) raises the clock
 above every batch key still durable in the named log before the database handle is returned, so no
 transaction can be constructed below it.
 
@@ -901,7 +901,9 @@ apart on its own.
 
 The named floor is fail closed: an unreadable segment, incomplete scan, malformed framing, or a key
 more than ten years ahead of the wall clock refuses the opted-in open rather than reissuing a durable
-batch key. The floor is process-wide, so it applies to every database open in the process.
+batch key. The floor is process-wide, so it applies to every database open in the process. The scan
+runs while the process serializes database opens and closes, so increasing its budget can delay
+unrelated opens and closes too.
 
 ### `db.getOldestSnapshotTimestamp(): number`
 

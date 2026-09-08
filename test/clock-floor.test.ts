@@ -1,6 +1,6 @@
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { closeSync, openSync, readdirSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, openSync, readdirSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -32,12 +32,17 @@ function runFixture(
 	dbPath: string,
 	key: number,
 	log = LOG,
-	env: Record<string, string> = {}
+	env: Record<string, string> = {},
+	expectedWarning?: string
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [fixture, mode, dbPath, String(key), log], {
-			env: { ...process.env, ...env },
-		});
+		const child = spawn(
+			process.execPath,
+			[fixture, mode, dbPath, String(key), log, expectedWarning ?? ''],
+			{
+				env: { ...process.env, ...env },
+			}
+		);
 		let stdout = '';
 		let stderr = '';
 		child.stdout.on('data', (chunk) => (stdout += chunk));
@@ -196,6 +201,18 @@ describe('monotonic clock floor', () => {
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('does not have');
 	}, 60000);
 
+	it('warns when discovery skips a named-log segment', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+		writeFileSync(join(dbPath, 'transaction_logs', LOG, 'bad.txnlog'), 'not a log');
+
+		const warned = await runFixture('warn', dbPath, key, LOG, {}, 'discovery skipped');
+		expect(warned.code, warned.stderr).toBe(0);
+		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('discovery skipped');
+	}, 60000);
+
 	it('warns when a later open of the same path names a log', async () => {
 		const dbPath = newDBPath();
 		const key = aheadOfNow();
@@ -233,7 +250,7 @@ describe('monotonic clock floor', () => {
 			closeSync(fd);
 		}
 
-		const warned = await runFixture('warn', dbPath, key);
+		const warned = await runFixture('warn', dbPath, key, LOG, {}, 'framing breaks partway through');
 		expect(warned.code, warned.stderr).toBe(0);
 
 		const { warnings, clock } = JSON.parse(warned.stdout);
@@ -242,6 +259,35 @@ describe('monotonic clock floor', () => {
 		// to have covered the ones after it.
 		expect(clock).toBeLessThan(key);
 	}, 120000);
+
+	it('distinguishes an unrecovered read-only torn tail from a framing break', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+		const logDir = join(dbPath, 'transaction_logs', LOG);
+		const segment = readdirSync(logDir).find((name) => name.endsWith('.txnlog'))!;
+		const fd = openSync(join(logDir, segment), 'a');
+		try {
+			writeSync(fd, Buffer.from([1]));
+		} finally {
+			closeSync(fd);
+		}
+
+		const warned = await runFixture(
+			'warn-read-only',
+			dbPath,
+			key,
+			LOG,
+			{},
+			'unrecovered torn tail'
+		);
+		expect(warned.code, warned.stderr).toBe(0);
+		const { warnings, clock } = JSON.parse(warned.stdout);
+		expect(warnings.join(' ')).toContain('unrecovered torn tail');
+		expect(warnings.join(' ')).not.toContain('framing breaks partway through');
+		expect(clock).toBeGreaterThan(key);
+	}, 60000);
 
 	it('still scans under a budget too large for the clock to add', async () => {
 		const dbPath = newDBPath();
