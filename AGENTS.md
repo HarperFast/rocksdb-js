@@ -758,7 +758,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `allowStall` (`ShouldStall()` short-circuits otherwise, so no stall is reachable). Runtime disable
     parks that thread and re-enable arms it with a fresh episode state; explicit shutdown and final
     teardown join it. Since `shutdown()` supports reopening databases, the stop latch resets only
-    after the old thread has joined. It samples one relaxed atomic per second. Plain `std::thread`,
+    after the old thread has joined — and only by the joiner that actually took the thread. Two envs
+    calling `shutdown()` at once both reach the join, and letting the one that found nothing to join
+    clear the latch stranded the other inside `join()` forever: the thread had not observed the stop
+    yet, so it went back to waiting on `stopRequested || armed` with both false. `watchdogRetiring`
+    makes the non-owning joiners wait for the retirement instead
+    (`test/fixtures/fork-wbm-watchdog-shutdown.mts`, which reproduces the hang about one run in three
+    without the fix). It samples one relaxed atomic per second. Plain `std::thread`,
     not `uv_timer_t`, for invariant 12's reason.
 
     Three constraints on that thread, each of which has a failure mode:

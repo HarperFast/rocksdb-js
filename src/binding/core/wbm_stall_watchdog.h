@@ -34,8 +34,7 @@ uint64_t resolveWbmStallWarnMs(const char* raw, bool* rejected = nullptr);
 
 /**
  * Decision state for the WriteBufferManager stall watchdog. Node-free and
- * RocksDB-free so it is unit-testable without threads (see
- * test/native/wbm_stall_watchdog_test.cc).
+ * RocksDB-free so it can be exercised without threads.
  *
  * A WriteBufferManager stall exposes no edge callback — `IsStallActive()` is all
  * there is — so this is driven by a poll. It collapses that poll into one report

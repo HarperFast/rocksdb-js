@@ -326,10 +326,7 @@ bool DBRegistry::CollectWriteBufferManagerInventory(
 			collectedColumnFamilies++;
 			collectedMaxWriteBufferSizeToMaintain[columnDescriptor->maxWriteBufferSizeToMaintain]++;
 		}
-		// A dropped family still charges the manager while a handle holds it, so
-		// it is counted from the target cached at drop. Never `lock()` the weak
-		// reference: releasing that temporary could destroy the RocksDB
-		// column-family handle here, under both inventory locks.
+		// `expired()` only, never `lock()` — see `DBDescriptor::DroppedColumnFamily`.
 		for (const auto& dropped : descriptor->droppedColumns) {
 			if (dropped.descriptor.expired()) {
 				continue;

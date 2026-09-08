@@ -34,9 +34,6 @@ describe('WriteBufferManager', () => {
 				expect(await db.get('foo')).toBe('bar');
 			}));
 
-		// In a child process: the manager is a process-wide singleton shared by
-		// every vitest worker thread, so any other file that configures one makes
-		// the unconfigured shape unobservable here.
 		it('should report an unconfigured manager as disabled rather than absent', () => {
 			const dbPath = generateDBPath();
 			try {
@@ -225,7 +222,6 @@ describe('WriteBufferManager', () => {
 			// relationship between the magnitudes is claimed here or in the docs.
 			it('should record manager-pressure flushes on both flush-reason tickers', () =>
 				dbRunner({ dbOptions: [{ enableStats: true }] }, async ({ db }) => {
-					// Shrink the shared budget so ordinary test volume reaches it.
 					RocksDatabase.config({ writeBufferManagerSize: 4 * 1024 * 1024 });
 					try {
 						const value = 'x'.repeat(8192);

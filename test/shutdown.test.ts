@@ -42,20 +42,23 @@ describe('Shutdown', () => {
 			expect(status.length).toBe(0);
 		}));
 
-	// In a child: creating the manager fixes its `costToCache` for the whole
-	// process, and every test file shares one vitest worker, so doing it here
-	// would decide it for whichever file runs next.
 	it.skipIf(process.env.ROCKSDB_JS_WBM_STALL_WARN_MS === '0')(
-		'should restart the WriteBufferManager watchdog after shutdown',
+		'should restart the WriteBufferManager watchdog after shutdown, concurrent ones included',
 		() => {
 			const path = generateDBPath();
 			try {
 				const child = spawnSync(process.execPath, [watchdogShutdownFixturePath, path], {
 					encoding: 'utf8',
-					timeout: 30000,
+					timeout: 60000,
 				});
 				expect(child.status, child.stderr).toBe(0);
-				expect(JSON.parse(child.stdout.trim().split(/\r?\n/).at(-1)!)).toEqual([true, false, true]);
+				// Open, shutdown, reopen; then four rounds of concurrent shutdown + reopen.
+				expect(JSON.parse(child.stdout.trim().split(/\r?\n/).at(-1)!)).toEqual([
+					true,
+					false,
+					true,
+					...Array.from({ length: 4 }, () => [false, true]).flat(),
+				]);
 			} finally {
 				if (!process.env.KEEP_FILES) {
 					rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });

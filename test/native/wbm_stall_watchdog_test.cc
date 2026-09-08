@@ -49,7 +49,7 @@ TEST(WbmStallWatchdogState, ReportsOnceWhenTheThresholdIsCrossed) {
 	EXPECT_EQ(crossed.stallActiveMs, 5000u);
 	state.markReported();
 
-	// An eight-hour wedge is one line, not one per sample.
+	// A wedge is one line, not one per sample.
 	for (long long ms = 6000; ms <= 3600000; ms += 1000) {
 		EXPECT_FALSE(state.onSample(true, at(ms), kThreshold).reportNow);
 	}
@@ -113,8 +113,6 @@ TEST(ResolveWbmStallWarnMs, DefaultsWhenUnsetOrMalformed) {
 	EXPECT_EQ(resolveWbmStallWarnMs("abc"), 5000u);
 	EXPECT_EQ(resolveWbmStallWarnMs("5000ms"), 5000u);
 	EXPECT_EQ(resolveWbmStallWarnMs("-1"), 5000u);
-	// Out of range rather than clamped: a threshold past a day is never intended,
-	// and silently accepting one disables the alarm.
 	EXPECT_EQ(resolveWbmStallWarnMs("99999999999999999999"), 5000u);
 	EXPECT_EQ(resolveWbmStallWarnMs("86400001"), 5000u);
 }
@@ -122,11 +120,11 @@ TEST(ResolveWbmStallWarnMs, DefaultsWhenUnsetOrMalformed) {
 TEST(ResolveWbmStallWarnMs, ReportsWhichInputsItRefused) {
 	bool rejected = true;
 	EXPECT_EQ(resolveWbmStallWarnMs(nullptr, &rejected), 5000u);
-	EXPECT_FALSE(rejected); // unset is not a rejection
+	EXPECT_FALSE(rejected);
 	EXPECT_EQ(resolveWbmStallWarnMs("2500", &rejected), 2500u);
 	EXPECT_FALSE(rejected);
 	EXPECT_EQ(resolveWbmStallWarnMs("1", &rejected), 1000u);
-	EXPECT_FALSE(rejected); // clamped up, not refused
+	EXPECT_FALSE(rejected);
 	EXPECT_EQ(resolveWbmStallWarnMs("abc", &rejected), 5000u);
 	EXPECT_TRUE(rejected);
 	EXPECT_EQ(resolveWbmStallWarnMs("86400001", &rejected), 5000u);

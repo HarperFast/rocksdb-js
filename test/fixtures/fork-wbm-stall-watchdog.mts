@@ -23,12 +23,8 @@ RocksDatabase.config({
 	writeBufferManagerAllowStall: true,
 });
 
-// This thread never writes: it is the observer, and a write here would park it in
-// the same stall it is trying to report on.
 const db = RocksDatabase.open(dbPath, { maxWriteBufferSizeToMaintain: MAINTAIN });
 
-// The programmatic half of the warn line. It reaches this thread through a
-// threadsafe function, so it is only delivered because nothing here is blocked.
 RocksDatabase.on('log.warn', (message: string) => {
 	console.log(`WARNED ${message}`);
 });

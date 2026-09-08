@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-wbm-stall-watchdog.mts');
 const exitFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-exit.mts');
+const disabledFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-disabled.mts');
 const WARN_MS = 2000;
 
 type ChildResult = { stdout: string; stderr: string; timedOut: boolean };
@@ -116,6 +117,28 @@ describe('WriteBufferManager stall watchdog', () => {
 			}
 		}
 	);
+
+	it('starts no thread when the threshold is 0, with a stalling manager configured', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'rocksdb-wbm-disabled-'));
+		try {
+			const child = spawnSync(process.execPath, [disabledFixturePath, join(dir, 'db')], {
+				encoding: 'utf8',
+				timeout: 30000,
+				env: { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: '0' },
+			});
+			expect(child.status, child.stderr).toBe(0);
+
+			const stats = JSON.parse(child.stdout.trim().split(/\r?\n/).at(-1)!);
+			expect(stats.enabled).toBe(true);
+			expect(stats.allowStall).toBe(true);
+			expect(stats.watchdogRunning).toBe(false);
+			expect(stats.stallActiveMs).toBe(0);
+		} finally {
+			if (!process.env.KEEP_FILES) {
+				rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+			}
+		}
+	});
 
 	it('reports a sustained stall exactly once, and both read surfaces see it', async () => {
 		const dir = mkdtempSync(join(tmpdir(), 'rocksdb-wbm-stall-'));

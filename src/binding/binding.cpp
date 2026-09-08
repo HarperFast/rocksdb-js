@@ -40,10 +40,8 @@ namespace rocksdb_js {
  * Shutdown function to ensure that we write in-memory data from all databases.
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
-	// Ask the WriteBufferManager stall watchdog to stop, but join it only after
-	// the databases have been shut down: its warn line goes to stderr, which can
-	// block on a full pipe, and a logging stall must never sit in front of the
-	// flush path.
+	// Stop before the flush, join after: the warn line's stderr write is unbounded
+	// on a full pipe and must not sit in front of durability.
 	DBStats::getInstance().requestWriteBufferManagerWatchdogStop();
 	GlobalEvents::Shutdown();
 	DBRegistry::Shutdown();

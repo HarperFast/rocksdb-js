@@ -1652,11 +1652,15 @@ void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
 	// Retire debounce state so the map stays bounded and a recreated CF of the
 	// same name starts fresh rather than inheriting a stale reported-stalled bit.
 	this->writeStallDebounce.forget(columnName);
-	// Drop families whose last handle has since closed; this is the only place
-	// the list grows, so pruning here bounds it.
-	std::erase_if(this->droppedColumns, [](const DroppedColumnFamily& dropped) {
-		return dropped.descriptor.expired();
-	});
+	// Only an attached database reaches the stall inventory, and attachment is
+	// decided once at open, so an unattached one tracks nothing.
+	const bool trackForInventory = this->attachedWriteBufferManager != nullptr;
+	if (trackForInventory) {
+		// The only place the list grows, so pruning here bounds it.
+		std::erase_if(this->droppedColumns, [](const DroppedColumnFamily& dropped) {
+			return dropped.descriptor.expired();
+		});
+	}
 	auto it = this->columns.find(columnName);
 	if (it == this->columns.end()) {
 		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" not found\n",
@@ -1667,12 +1671,7 @@ void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
 	const int64_t maxWriteBufferSizeToMaintain =
 		it->second ? it->second->maxWriteBufferSizeToMaintain : 0;
 	this->columns.erase(it);
-	// A dropped family keeps charging the WriteBufferManager until its last
-	// handle closes, so keep counting it in the stall inventory until then —
-	// dropping it here would understate the memory a stall report has to
-	// explain, and latching the inventory unavailable would erase that report
-	// for the life of the database.
-	if (!dropped.expired()) {
+	if (trackForInventory && !dropped.expired()) {
 		this->droppedColumns.push_back({ std::move(dropped), maxWriteBufferSizeToMaintain });
 	}
 	DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",

@@ -43,6 +43,8 @@ private:
 	bool watchdogStarted = false;
 	bool watchdogArmed = false;
 	bool watchdogStopRequested = false;
+	/** One joiner owns the retiring thread; the rest wait for it. */
+	bool watchdogRetiring = false;
 	std::atomic<uint64_t> watchdogGeneration{0};
 
 	void runWriteBufferManagerWatchdog();
