@@ -10,8 +10,15 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 - `pnpm build:binding:debug` - Incremental build C++ binding only (debug)
 - `pnpm build:bundle` - TypeScript only (unminified)
 - `pnpm build:bundle:minify` - TypeScript only (minified)
-- `pnpm rebuild` - Configure and build C++ binding only (production)
-- `pnpm rebuild:debug` - Native C++ binding only (with debug logging and coverage)
+- `pnpm run rebuild` - Configure and build C++ binding only (production)
+- `pnpm run rebuild:debug` - Native C++ binding only (with debug logging and coverage)
+
+**Always spell these `pnpm run rebuild`, never bare `pnpm rebuild`.** pnpm has its own built-in
+`rebuild` command (rebuilds dependencies' native addons); as of pnpm 12 that built-in wins outright
+over a same-named package.json script instead of also running it, so `pnpm rebuild` silently skips
+this project's own binding build. `pnpm/action-setup`'s `version: latest` in CI floats onto new pnpm
+majors automatically, so this landmine can start firing with no change on this side at all — it's
+what silently produced a stale/missing `build/Release` binding in CI (HarperFast/rocksdb-js#767).
 
 ### Testing
 
@@ -42,7 +49,7 @@ stray C++ indent will pass `fmt:check` untouched.
 ### Development Workflow
 
 - `pnpm clean` - Clean native build artifacts
-- `pnpm build:bundle && pnpm rebuild:debug` - Full debug build for development
+- `pnpm build:bundle && pnpm run rebuild:debug` - Full debug build for development
 
 ## Architecture Overview
 

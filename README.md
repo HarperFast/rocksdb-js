@@ -2712,14 +2712,14 @@ This package requires Node.js 18 or higher, pnpm, and a C++ compiler.
 There are two things being built: the native binding and the TypeScript code. Each of those can be
 built to be debug friendly.
 
-| Description                                  | Command                                  |
-| -------------------------------------------- | ---------------------------------------- |
-| Production build (minified + native binding) | `pnpm build`                             |
-| TypeScript only (minified)                   | `pnpm build:bundle`                      |
-| TypeScript only (unminified)                 | `pnpm build:debug`                       |
-| Native binding only (prod)                   | `pnpm rebuild`                           |
-| Native binding only (with debug logging)     | `pnpm rebuild:debug`                     |
-| Debug build everything                       | `pnpm build:debug && pnpm rebuild:debug` |
+| Description                                  | Command                                      |
+| -------------------------------------------- | -------------------------------------------- |
+| Production build (minified + native binding) | `pnpm build`                                 |
+| TypeScript only (minified)                   | `pnpm build:bundle`                          |
+| TypeScript only (unminified)                 | `pnpm build:debug`                           |
+| Native binding only (prod)                   | `pnpm run rebuild`                           |
+| Native binding only (with debug logging)     | `pnpm run rebuild:debug`                     |
+| Debug build everything                       | `pnpm build:debug && pnpm run rebuild:debug` |
 
 When building the native binding, it will download the appropriate prebuilt RocksDB library for your
 platform and architecture from the
@@ -2750,7 +2750,7 @@ When you compile `rocksdb-js`, you can specify the `ROCKSDB_LIBC` environment va
 either `glibc` (default) or `musl`.
 
 ```bash
-ROCKSDB_LIBC=musl pnpm rebuild
+ROCKSDB_LIBC=musl pnpm run rebuild
 ```
 
 ### Windows C runtime versions
@@ -2766,7 +2766,7 @@ local `rocksdb` repo:
 ```bash
 git clone https://github.com/facebook/rocksdb.git /path/to/rocksdb
 echo "ROCKSDB_PATH=/path/to/rocksdb" >> .env
-pnpm rebuild
+pnpm run rebuild
 ```
 
 ### Debugging
@@ -2775,7 +2775,7 @@ It is often helpful to do a debug build and see the internal debug logging of th
 You can do a debug build by running:
 
 ```bash
-pnpm rebuild:debug
+pnpm run rebuild:debug
 ```
 
 Each debug log message is prefixed with the thread id. Most debug log messages include the instance
