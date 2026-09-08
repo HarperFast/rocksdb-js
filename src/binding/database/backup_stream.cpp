@@ -131,10 +131,9 @@ struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> 
 	// the registry entry — and the open RocksDB — would linger forever.
 	~AsyncBackupStreamState() override {
 		if (this->descriptor) {
-			std::string path = this->descriptor->path;
-			bool readOnly = this->descriptor->readOnly;
+			DBKey key = descriptorKey(*this->descriptor);
 			this->descriptor.reset();
-			DBRegistry::PurgeIfUnreferenced(path, readOnly);
+			DBRegistry::PurgeIfUnreferenced(key);
 		}
 	}
 

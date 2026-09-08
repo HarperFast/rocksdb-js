@@ -22,10 +22,17 @@ namespace rocksdb_js {
  */
 class DBException final : public std::exception {
 	std::string message;
+	// JS error code (e.g. "ERR_CONCURRENT_COMPACTION") forwarded to
+	// napi_throw_error by catch sites that support it; nullptr for the common
+	// uncoded case. Must point to a string literal (static storage) — the
+	// exception does not copy it.
+	const char* errorCode = nullptr;
 public:
 	explicit DBException(std::string msg) noexcept : message(std::move(msg)) {}
 	explicit DBException(const char* msg) : message(msg ? msg : "") {}
+	DBException(const char* code, std::string msg) noexcept : message(std::move(msg)), errorCode(code) {}
 	const char* what() const noexcept override { return message.c_str(); }
+	const char* code() const noexcept { return errorCode; }
 };
 
 } // namespace rocksdb_js

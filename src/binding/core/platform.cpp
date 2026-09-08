@@ -154,6 +154,66 @@ double getMonotonicTimestamp() {
 	return result;
 }
 
+std::filesystem::path resolveIdentityPath(const std::string& path) {
+	if (path.empty()) {
+		// Never resolve nothing into something: libc++ implements
+		// `absolute("")` as the standard's `current_path() / p`, which hands back
+		// the process CWD with no error, and a caller that then deletes what it
+		// resolved would delete the working directory. libstdc++ errors instead.
+		return {};
+	}
+	std::error_code error;
+	auto resolved = std::filesystem::weakly_canonical(path, error);
+	if (!error && !resolved.empty()) {
+		return resolved;
+	}
+	error.clear();
+	auto absolute = std::filesystem::absolute(path, error);
+	if (error) {
+		return std::filesystem::path(path).lexically_normal();
+	}
+	return absolute.lexically_normal();
+}
+
+bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child) {
+	// Case sensitivity is a property of the volume, not the OS (APFS can be
+	// case-sensitive, Windows directories can be), so file identity is the only
+	// comparison that is right on both kinds.
+	std::error_code error;
+	if (std::filesystem::exists(parent, error) && !error) {
+		for (auto probe = child; !probe.empty(); ) {
+			error.clear();
+			if (std::filesystem::exists(probe, error) && !error) {
+				error.clear();
+				if (std::filesystem::equivalent(parent, probe, error) && !error) {
+					return true;
+				}
+			}
+			auto next = probe.parent_path();
+			if (next == probe) {
+				break; // reached the root
+			}
+			probe = next;
+		}
+	}
+
+	// A path that does not exist (yet) has no identity to compare, so fall back
+	// to a lexical, case-preserving prefix test.
+	std::string parentStr = parent.generic_string();
+	std::string childStr = child.generic_string();
+	if (parentStr.empty() || parentStr == childStr) {
+		return parentStr == childStr;
+	}
+	if (childStr.size() <= parentStr.size() ||
+		childStr.compare(0, parentStr.size(), parentStr) != 0
+	) {
+		return false;
+	}
+	// A root ("/", "c:/") already ends in the separator, so requiring another
+	// one there would report every path on the volume as unrelated to it.
+	return parentStr.back() == '/' || childStr[parentStr.size()] == '/';
+}
+
 void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {
 	if (std::filesystem::exists(path)) {
 		return;
