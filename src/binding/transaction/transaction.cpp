@@ -433,8 +433,6 @@ static void executeCommitWork(TransactionCommitState* state) {
 					? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
 					: rollbackStatus;
 			} else {
-				// Released the moment Commit() returns, so a waiting drop is held
-				// only for the write itself.
 				ColumnFamilyAdmission admission;
 				state->status = admitStagedColumnFamilies(*txnHandle, admission);
 				if (state->status.ok()) {

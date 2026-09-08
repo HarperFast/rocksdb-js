@@ -116,24 +116,34 @@ private:
 	std::atomic<uint64_t> state{0};
 };
 
-/** The status a commit is refused with; the wording is part of the public error contract. */
-inline rocksdb::Status columnFamilyDroppedStatus(const ColumnFamilyGate& gate) {
-	return rocksdb::Status::ColumnFamilyDropped(
-		"column family \"" + gate.name + (gate.isDropped() ? "\" was dropped" : "\" is being dropped")
-	);
+/**
+ * The status a commit is refused with; the wording is part of the public error
+ * contract. Never throws: under allocation failure it degrades to the bare
+ * status code, so a refusal can be produced on the commit lane, which has no
+ * exception boundary of its own.
+ */
+inline rocksdb::Status columnFamilyDroppedStatus(const ColumnFamilyGate& gate) noexcept {
+	try {
+		return rocksdb::Status::ColumnFamilyDropped(
+			"column family \"" + gate.name + (gate.isDropped() ? "\" was dropped" : "\" is being dropped")
+		);
+	} catch (...) {
+		return rocksdb::Status::ColumnFamilyDropped();
+	}
 }
 
 /**
  * The distinct droppable column families a transaction has staged writes
- * into, recorded at `Put`/`Delete` time: gate tokens deduplicated by pointer in
- * an inline array, with a heap vector allocated only once a transaction touches
- * a ninth distinct family.
+ * into: gate tokens deduplicated by pointer in an inline array, with a heap
+ * vector allocated only once a transaction touches a ninth distinct family.
+ * `note()` must run BEFORE the corresponding `txn->Put`/`Delete`: it is the
+ * one place staging can allocate, and a throw there must leave the batch
+ * untouched rather than leave a written family untracked.
  */
 class StagedColumnFamilies final {
 public:
 	static constexpr size_t kInline = 8;
 
-	/** Records a successful write into `gate`'s family; the default family carries no gate and is ignored. */
 	void note(const std::shared_ptr<ColumnFamilyGate>& gate) {
 		if (!gate) {
 			return;
@@ -169,7 +179,7 @@ public:
 		return index < kInline ? *this->inlineGates[index] : *this->overflow[index - kInline];
 	}
 
-	/** A staged family whose drop has already begun, or null. Advisory: only admission is authoritative. */
+	/** Advisory: only admission is authoritative. */
 	ColumnFamilyGate* firstDropping() const {
 		for (size_t i = 0; i < this->size(); ++i) {
 			ColumnFamilyGate& gate = this->at(i);
@@ -201,14 +211,12 @@ public:
 	ColumnFamilyAdmission(const ColumnFamilyAdmission&) = delete;
 	ColumnFamilyAdmission& operator=(const ColumnFamilyAdmission&) = delete;
 
-	/** Pre-sizes storage so admitting `total` gates cannot allocate mid-way. */
 	void reserve(size_t total) {
 		if (total > kInline) {
 			this->overflow.reserve(total - kInline);
 		}
 	}
 
-	/** Admits `gate`, or releases everything admitted so far and records the refusal. */
 	bool admit(ColumnFamilyGate& gate) {
 		if (!gate.tryAdmit()) {
 			this->release();

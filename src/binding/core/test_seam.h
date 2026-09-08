@@ -70,8 +70,8 @@ inline std::atomic<bool>& commitHoldFlag() {
 	return flag;
 }
 
-// Call after admission, before the RocksDB commit. The hold is bounded so a test that forgets to
-// release cannot wedge the commit lane past its own timeout.
+// The hold is bounded so a test that forgets to release cannot wedge the commit lane past its
+// own timeout.
 inline void testObserveAdmittedCommit() {
 	if (!commitGateSeamsArmed().load(std::memory_order_relaxed)) {
 		return;
@@ -82,7 +82,6 @@ inline void testObserveAdmittedCommit() {
 	}
 }
 
-// Call after beginDrop(), before waiting for admitted commits.
 inline void testObserveDropBegin() {
 	if (commitGateSeamsArmed().load(std::memory_order_relaxed)) {
 		dropBeginCounter().fetch_add(1, std::memory_order_acq_rel);

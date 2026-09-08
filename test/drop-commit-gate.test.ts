@@ -16,14 +16,8 @@ import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
- * A transaction commit that races a DropColumnFamily on the same RocksDB
- * instance used to reach the memtable inserter naming the dropped family, and
- * RocksDB latches that as a FATAL background error on the whole database —
- * every later write on every family failed until reopen (#806, #726). The
- * binding now takes per-family admission around the RocksDB commit and makes a
- * drop close admission before it waits for admitted commits (AGENTS.md
- * invariant 20). These tests pin the observable contract on both sides of the
- * race, in both transaction modes.
+ * Column-family commit gate (#806, #726; AGENTS.md invariant 20): the
+ * observable contract on both sides of a commit/drop race, in both modes.
  */
 
 const modes = [
@@ -241,14 +235,12 @@ describe.each(modes)('drop before commit ($mode)', ({ pessimistic }) => {
 				],
 			},
 			async ({ db: home }, { db: other }) => {
-				// a batch that never touched its home family commits after that family is dropped
 				await home.transaction(async (txn: Transaction) => {
 					await other.put('k', 'v', { transaction: txn });
 					home.dropSync();
 				});
 				expect(other.getSync('k')).toBe('v');
 				expect(other.columns).not.toContain('home');
-				// and an empty transaction admits nothing at all
 				await home.transaction(async () => {});
 			}
 		));
@@ -256,9 +248,7 @@ describe.each(modes)('drop before commit ($mode)', ({ pessimistic }) => {
 	it('does not wait on a transaction that is staged but idle on the dropping thread', () =>
 		dbRunner({ dbOptions }, async ({ db: victim, dbPath }, { db: doomed }, { db: stale }) => {
 			// Harper's dropSync() runs inside a synchronous exclusive schema section
-			// while transactions staged on the same thread are still open: the drop
-			// must return (a staged transaction holds no admission) and the later
-			// commit is what fails.
+			// while transactions staged on that thread are still open.
 			const staged = new Promise<Transaction>((resolve) => {
 				void stale
 					.transaction(async (txn: Transaction) => {
@@ -275,14 +265,13 @@ describe.each(modes)('drop before commit ($mode)', ({ pessimistic }) => {
 			await expectHealthy(victim, dbPath, pessimistic);
 		}));
 
-	it('derives the family set from the batch when a transaction spans more families than the inline set', async () => {
+	it('tracks a transaction spanning more families than the inline set', async () => {
 		const dbPath = generateDBPath();
 		const families = Array.from({ length: 10 }, (_, i) =>
 			RocksDatabase.open(dbPath, { name: `f${i}`, pessimistic })
 		);
 		const doomed = RocksDatabase.open(dbPath, { name: 'doomed', pessimistic });
 		try {
-			// every family live: the derived set admits and the whole batch lands
 			await families[0].transaction(async (txn: Transaction) => {
 				for (const [i, family] of families.entries()) {
 					await family.put(`k${i}`, i, { transaction: txn });
@@ -291,7 +280,6 @@ describe.each(modes)('drop before commit ($mode)', ({ pessimistic }) => {
 			for (const [i, family] of families.entries()) {
 				expect(family.getSync(`k${i}`)).toBe(i);
 			}
-			// one of them dropped (and already unregistered) before the commit: refused whole
 			await rejectsWithDropped(
 				families[0].transaction(async (txn: Transaction) => {
 					for (const [i, family] of families.entries()) {
@@ -304,8 +292,6 @@ describe.each(modes)('drop before commit ($mode)', ({ pessimistic }) => {
 			for (const [i, family] of families.entries()) {
 				expect(family.getSync(`m${i}`)).toBeUndefined();
 			}
-			// a recreated same-name family is a different id: the old batch would not
-			// have been rebound to it, and it is fresh and writable
 			const fresh = RocksDatabase.open(dbPath, { name: 'doomed', pessimistic });
 			try {
 				expect(fresh.getSync('dead')).toBeUndefined();
@@ -672,6 +658,15 @@ describe('same-thread dropSync() across commit execution modes', () => {
 				expect(result.lateCommit?.message).toMatch(/is being dropped/);
 				expect(result.lateAdmittedDelta).toBe(0);
 				expect(result.unrelatedDuring).toBe('ok');
+				if (env.ROCKSDB_JS_COMMIT_THREAD === '2') {
+					// the authoritative refusal after the log batch was already persisted
+					expect(result.afterLog?.error?.code).toBe('ERR_TRANSACTION_ABANDONED');
+					expect(result.afterLog?.cause?.code).toBe('ERR_COLUMN_FAMILY_DROPPED');
+					expect(result.afterLog?.cause?.message).toMatch(DROPPED_MESSAGE);
+					expect(result.afterLog?.liveApplied).toBeUndefined();
+					expect(result.afterLog?.heldApplied).toBe(1);
+					expect(result.afterLog?.watermarkReleased).toBe(true);
+				}
 				expect(result.dropWins?.code).toBe('ERR_COLUMN_FAMILY_DROPPED');
 				expect(result.dropWins?.message).toMatch(DROPPED_MESSAGE);
 				expect(result.victimProbe).toBe(1);
