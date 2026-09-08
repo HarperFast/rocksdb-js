@@ -8,6 +8,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const reopenFixturePath = join(__dirname, 'fixtures', 'fork-wbm-reopen-stall.mts');
 const lateColumnFamilyFixturePath = join(__dirname, 'fixtures', 'fork-wbm-late-column-family.mts');
+const unconfiguredLateCfFixturePath = join(
+	__dirname,
+	'fixtures',
+	'fork-wbm-unconfigured-late-cf.mts'
+);
 
 // The manager is a native process-global and Vitest's `threads` pool runs every file in one
 // process, so a stalling manager left behind here follows later files into their own databases —
@@ -261,6 +266,20 @@ describe('WriteBufferManager stall — reopen (#821)', () => {
 			default: 1,
 			late: 1,
 			explicit: 256 * 1024 * 1024,
+		});
+	}, 90_000);
+
+	// #823 follow-up: the late-family clamp read RocksDB's post-open, sanitized manager pointer,
+	// which is never null even when no manager was ever configured (RocksDB fills the gap with a
+	// disabled one) — so every family created after a plain, unconfigured cold open was clamped to
+	// 1 byte of history it never should have lost.
+	it('does not clamp a late-created column family when no manager was ever configured', async () => {
+		const dbPath = freshPath();
+		const { code, stderr } = await runFixture(unconfiguredLateCfFixturePath, [dbPath]);
+		expect(code, stderr).toBe(0);
+		expect(maintainFromLog(join(dbPath, 'db', 'LOG'))).toEqual({
+			default: 16 * 16 * 1024 * 1024,
+			late: 16 * 16 * 1024 * 1024,
 		});
 	}, 90_000);
 

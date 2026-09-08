@@ -536,10 +536,14 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			}
 			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
 			// Preserve retained settings while applying every per-CF option from
-			// the handle creating this family.
+			// the handle creating this family. "Attached" is the descriptor's own record, not
+			// RocksDB's sanitized DBOptions: SanitizeOptions fills a missing manager with a
+			// disabled WriteBufferManager(0), so GetDBOptions().write_buffer_manager is never
+			// null post-open and would clamp every late family regardless of whether one was
+			// ever configured (#823).
 			auto cfOptions = buildColumnFamilyOptions(
 				options,
-				entry.descriptor->db->GetDBOptions().write_buffer_manager != nullptr,
+				entry.descriptor->attachedWriteBufferManager != nullptr,
 				entry.descriptor->cfOptions
 			);
 			if (options.compression) {
