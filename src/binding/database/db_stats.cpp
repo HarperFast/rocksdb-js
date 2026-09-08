@@ -200,8 +200,8 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 			// A join() failure (e.g. the deadlock/invalid-argument error
 			// conditions) can leave the thread object still joinable; letting
 			// it destruct in that state calls std::terminate(). Detach so the
-			// object destructs safely — RetireGuard above has already reset
-			// the flags, so no other caller stays wedged on this attempt.
+			// object destructs safely; RetireGuard still resets the flags on
+			// scope exit below, so no other caller stays wedged on this attempt.
 			if (toJoin.joinable()) {
 				toJoin.detach();
 			}
@@ -260,11 +260,19 @@ void DBStats::sampleWriteBufferManagerStall(
 	WbmStallWatchdogState::Sample sample = state.onSample(
 		writeBufferManager->IsStallActive(), WbmStallWatchdogState::Clock::now(), thresholdMs
 	);
-	if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
-		this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
-		return;
+	{
+		// Locked so this check-then-store can't interleave with
+		// disableWriteBufferManagerWatchdog()'s own locked reset of these same
+		// two fields — otherwise a disable() landing between the unlocked check
+		// and the store below could zero stallActiveMs and then have this write
+		// clobber it right back with a stale value the caller just turned off.
+		std::lock_guard<std::mutex> lock(this->watchdogMutex);
+		if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
+			this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
+			return;
+		}
+		this->writeBufferManagerStallActiveMs.store(sample.stallActiveMs, std::memory_order_relaxed);
 	}
-	this->writeBufferManagerStallActiveMs.store(sample.stallActiveMs, std::memory_order_relaxed);
 	if (!sample.reportNow) {
 		return;
 	}
