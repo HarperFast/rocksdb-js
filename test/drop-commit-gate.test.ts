@@ -226,6 +226,33 @@ describe.each(modes)('drop before commit ($mode)', ({ pessimistic }) => {
 			await expectHealthy(victim, dbPath, pessimistic);
 		}));
 
+	it('leaves no gate token behind for a write RocksDB refused to stage', () =>
+		dbRunner({ dbOptions }, async ({ db: victim, dbPath }, { db: doomed }, { db: stale }) => {
+			doomed.dropSync();
+			if (pessimistic) {
+				// RocksDB's lock manager refuses the staging write itself; the
+				// transaction holds no write for that family, so neither may the
+				// gate set, and the live half still commits
+				await victim.transaction(async (txn: Transaction) => {
+					await victim.put('live', 'A', { transaction: txn });
+					await expect(stale.put('dead', 'B', { transaction: txn })).rejects.toThrow(
+						/Column family id not found/
+					);
+				});
+				expect(victim.getSync('live')).toBe('A');
+			} else {
+				await rejectsWithDropped(
+					victim.transaction(async (txn: Transaction) => {
+						await victim.put('live', 'A', { transaction: txn });
+						await stale.put('dead', 'B', { transaction: txn });
+					}),
+					'doomed'
+				);
+				expect(victim.getSync('live')).toBeUndefined();
+			}
+			await expectHealthy(victim, dbPath, pessimistic);
+		}));
+
 	it('admits by the families actually written, not the handle the transaction was created on', () =>
 		dbRunner(
 			{

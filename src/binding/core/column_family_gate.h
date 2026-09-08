@@ -67,21 +67,16 @@ public:
 	}
 
 	/**
-	 * Drop side: closes admission. Idempotent — returns true only for the call
-	 * that performed the transition. Never reopened: a drop that fails after
-	 * this point leaves the family refusing commits until a later drop succeeds
-	 * (reopening would race a concurrent second dropper past `waitForAdmitted`).
+	 * Idempotent, and never reopened: a drop that fails after this point leaves
+	 * the family refusing commits until a later drop succeeds, because reopening
+	 * would race a concurrent second dropper past `waitForAdmitted`.
 	 */
 	bool beginDrop() {
 		const uint64_t previous = this->state.fetch_or(kDropping, std::memory_order_acq_rel);
 		return (previous & kDropping) == 0;
 	}
 
-	/**
-	 * Drop side: blocks until every admitted commit has released. Only
-	 * meaningful after `beginDrop()`; without the flag a new admission could
-	 * land right after this returns.
-	 */
+	/** Only meaningful after `beginDrop()`: without the flag a new admission could land right after this returns. */
 	void waitForAdmitted() {
 		for (;;) {
 			const uint64_t current = this->state.load(std::memory_order_acquire);
@@ -144,25 +139,36 @@ class StagedColumnFamilies final {
 public:
 	static constexpr size_t kInline = 8;
 
-	void note(const std::shared_ptr<ColumnFamilyGate>& gate) {
+	/** Returns whether `gate` was newly recorded (so a failed write can `forgetLast()` it). */
+	bool note(const std::shared_ptr<ColumnFamilyGate>& gate) {
 		if (!gate) {
-			return;
+			return false;
 		}
 		for (size_t i = 0; i < this->inlineCount; ++i) {
 			if (this->inlineGates[i].get() == gate.get()) {
-				return;
+				return false;
 			}
 		}
 		if (this->inlineCount < kInline) {
 			this->inlineGates[this->inlineCount++] = gate;
-			return;
+			return true;
 		}
 		for (const auto& held : this->overflow) {
 			if (held.get() == gate.get()) {
-				return;
+				return false;
 			}
 		}
 		this->overflow.push_back(gate);
+		return true;
+	}
+
+	/** Undoes the most recent `note()` that returned true; a family whose write failed holds no gate. */
+	void forgetLast() {
+		if (!this->overflow.empty()) {
+			this->overflow.pop_back();
+		} else if (this->inlineCount > 0) {
+			this->inlineGates[--this->inlineCount].reset();
+		}
 	}
 
 	void clear() {
@@ -225,8 +231,15 @@ public:
 		}
 		if (this->inlineCount < kInline) {
 			this->inlineGates[this->inlineCount++] = &gate;
-		} else {
+			return true;
+		}
+		try {
 			this->overflow.push_back(&gate);
+		} catch (...) {
+			// An admission the holder cannot remember would wedge every later drop
+			// of this family; give it back before propagating.
+			gate.release();
+			throw;
 		}
 		return true;
 	}
