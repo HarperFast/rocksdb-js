@@ -565,6 +565,14 @@ export class Store {
 	path: string;
 
 	/**
+	 * The open database's resolved filesystem identity, read from native once
+	 * per open. Two spellings of one directory — `data` and `./data`, a symlink
+	 * and its target — share it, and it does not move when a symlink is
+	 * repointed or the process changes directory. `undefined` until opened.
+	 */
+	identityPath?: string;
+
+	/**
 	 * Whether to use pessimistic locking for transactions. When `true`,
 	 * transactions will fail as soon as a conflict is detected. When `false`,
 	 * transactions will only fail when `commit()` is called.
@@ -1199,11 +1207,17 @@ export class Store {
 			if (txnId === undefined) {
 				throw new TypeError('Invalid transaction');
 			}
-			// ids are per database; column families of one database share its path
 			if (transaction.store === undefined) {
 				throw new TypeError('Invalid transaction');
 			}
-			if (transaction.store.path !== this.path) {
+			// Ids are allocated per database, so one from elsewhere would resolve
+			// to an unrelated transaction of the same number. Native identity, not
+			// the path the caller spelled: `data` and `./data` are one database
+			// (and one id space), while one relative path can name two databases
+			// across a chdir. Column families of a database share the identity, so
+			// cross-column-family reads still pass. An unopened store has no
+			// identity to compare and fails its own open check instead.
+			if (this.identityPath !== undefined && transaction.store.identityPath !== this.identityPath) {
 				throw new TypeError('Transaction belongs to a different database');
 			}
 		}
@@ -1286,6 +1300,7 @@ export class Store {
 	 */
 	open(): boolean {
 		if (this.db.opened) {
+			this.identityPath = this.db.identityPath;
 			return true;
 		}
 
@@ -1319,6 +1334,8 @@ export class Store {
 			verificationTable: this.verificationTable,
 			writeBufferSize: this.writeBufferSize,
 		});
+
+		this.identityPath = this.db.identityPath;
 
 		return false;
 	}

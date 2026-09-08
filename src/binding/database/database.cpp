@@ -238,6 +238,29 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * The database's resolved filesystem identity — the registry key that two
+ * spellings of one directory (`data` and `./data`, a symlink and its target)
+ * share and that a repointed symlink or a `chdir` cannot change afterwards.
+ * `undefined` until the handle has been opened; retained after close.
+ *
+ * Callers comparing two handles for "same database" must use this and never
+ * the path they passed to `open()`, which is a spelling, not an identity.
+ */
+napi_value Database::IdentityPath(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE();
+
+	if (dbHandle == nullptr || (*dbHandle)->identityPath.empty()) {
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	const std::string& identityPath = (*dbHandle)->identityPath;
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, identityPath.c_str(), identityPath.size(), &result));
+	return result;
+}
+
+/**
  * Compacts the entire key range of the database asynchronously.
  * This triggers manual compaction which removes tombstones and reclaims space.
  *
@@ -2736,6 +2759,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "identityPath", nullptr, nullptr, IdentityPath, nullptr, nullptr, napi_default, nullptr },
 		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "listLogs", nullptr, ListLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },

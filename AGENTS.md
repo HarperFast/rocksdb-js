@@ -745,7 +745,15 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `Store.getRange()` routes `options.transaction` to native by transaction ID, where the caller
     database descriptor resolves it and supplies the caller's `DBHandle` to `DBIteratorHandle`.
     Replacing the context with `transaction._context` is incorrect for cross-column-family scans:
-    that native transaction carries the column family on which it was created. Transaction-backed
+    that native transaction carries the column family on which it was created. Transaction ids are
+    allocated per `DBDescriptor` (`nextTransactionId`), so an id from another database resolves in
+    the caller's descriptor to an unrelated transaction of the same number; `Store.getTxnId()`
+    rejects that by comparing `NativeDatabase.identityPath`, the resolved identity the registry
+    keyed the descriptor on (`resolveIdentityPath`), cached on the `Store` at open. Never compare
+    the path a caller passed to `open()`: it is a spelling, so `data` and `./data` — one database
+    and one id space — would be rejected, while one relative path can name two databases across a
+    `chdir`. Column families of a database share the identity, so cross-column-family reads pass.
+    Transaction-backed
     iterators establish and pass the transaction snapshot, seek explicitly, and enforce their encoded
     bounds in `valid()` rather than trusting RocksDB alone: `iterate_lower_bound` is inclusive, so the
     exclusive lower bound of a reverse range (`exclusiveStart`) has to be applied by the handle when

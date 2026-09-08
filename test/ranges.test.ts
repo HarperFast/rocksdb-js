@@ -2,6 +2,7 @@ import type { IteratorOptions } from '../src/dbi.ts';
 import type { Key } from '../src/encoding.ts';
 import { Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
+import { basename, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 describe('Ranges', () => {
@@ -425,6 +426,29 @@ describe('Ranges', () => {
 					txn.abort();
 				}
 			}));
+
+		it('should accept a transaction from another spelling of the same database', () => {
+			const dbPath = generateDBPath();
+			// One database, two spellings. Identity is the resolved directory, so
+			// the ids belong to the same space and the transaction is legitimate.
+			const alias = `${dbPath}${sep}..${sep}${basename(dbPath)}`;
+			return dbRunner(
+				{ dbOptions: [{ path: dbPath }, { path: alias }] },
+				async ({ db }, { db: aliased }) => {
+					const txn = new Transaction(db.store);
+					try {
+						await txn.put('staged', 'in-batch');
+						expect(aliased.store.path).not.toBe(db.store.path);
+						expect(aliased.store.identityPath).toBe(db.store.identityPath);
+						expect(aliased.getKeys({ transaction: txn }).asArray).toEqual(['staged']);
+						expect(aliased.getKeysCount({ transaction: txn })).toBe(1);
+						expect(aliased.getSync('staged', { transaction: txn })).toBe('in-batch');
+					} finally {
+						txn.abort();
+					}
+				}
+			);
+		});
 
 		for (const action of ['commit', 'commitSync', 'abort'] as const) {
 			it(`should close routed and direct iterators on transaction ${action}`, () =>
