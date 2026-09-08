@@ -45,6 +45,21 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	std::string path;
 
 	/**
+	 * The database's resolved filesystem identity, copied from the descriptor at
+	 * open and kept after close: `destroy()` on a closed handle must delete the
+	 * database this handle actually opened, and re-resolving `path` then would
+	 * follow a mapping that may have moved since (a repointed symlink, a
+	 * relative path whose CWD changed). Empty only for a handle never opened.
+	 */
+	std::string identityPath;
+
+	/**
+	 * The mode of the last requested open, retained after close or open failure so destructive
+	 * operations cannot bypass a read-only handle's guard.
+	 */
+	bool readOnly = false;
+
+	/**
 	 * Whether to disable WAL.
 	 */
 	bool disableWAL = false;

@@ -86,12 +86,16 @@ struct DBOptions final {
 	std::string name;
 	bool noBlockCache = false;
 	bool readOnly = false;
+	// Non-empty switches the open to `DB::OpenAsSecondary`; the value is the
+	// follower's own workspace, not the database (see AGENTS invariant 18).
+	std::string secondaryPath;
 	uint32_t parallelismThreads = std::max<uint32_t>(1, std::thread::hardware_concurrency() / 2);
 	uint8_t statsLevel = rocksdb::StatsLevel::kExceptDetailedTimers;
 	float transactionLogMaxAgeThreshold = 0.75f;
 	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB
 	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	std::string transactionLogsPath;
+	std::string transactionLogsDisplayPath;
 	// Per-CF memtable size at which the memtable is sealed and flushed. Smaller
 	// values produce more frequent, faster flushes; larger values batch more
 	// writes per SST file.

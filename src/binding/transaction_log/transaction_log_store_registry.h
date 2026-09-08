@@ -21,6 +21,12 @@ struct TransactionLogStoreConfig final {
 	std::string transactionLogsPath;
 
 	/**
+	 * The caller's spelling used only in API results. Filesystem access uses the
+	 * captured identity above so a later symlink/CWD change cannot redirect it.
+	 */
+	std::string transactionLogsDisplayPath;
+
+	/**
 	 * The threshold for the transaction log file's last modified time to be
 	 * older than the retention period before it is rotated to the next sequence
 	 * number. A threshold of 0 means ignore age check.
@@ -127,12 +133,27 @@ public:
 	/**
 	 * Registers a DBDescriptor for the given database path. Increments the
 	 * reference count for the path. If this is the first descriptor for the
-	 * path, creates a new entry with the given configuration.
+	 * path, creates a new entry with the given configuration. `dbPath` and every
+	 * path accepted below must be the immutable `DBDescriptor::identityPath` so
+	 * alternate spellings and CWD changes cannot split the registry.
 	 *
 	 * @param dbPath The database path.
 	 * @param config The transaction log store configuration.
 	 */
 	static void Register(const std::string& dbPath, const TransactionLogStoreConfig& config);
+
+	/**
+	 * Throws when a writable open would reuse transaction log stores that were
+	 * loaded read-only (no tail recovery ran, so writer appends would land past
+	 * a torn tail — invariant 5); the decision is made per live store, since the
+	 * path-global entry can outlive the handle that created it. Call BEFORE
+	 * constructing the descriptor: a
+	 * throw from Register itself would run the half-built descriptor's close()
+	 * and its Unregister would decrement the read-only entry's refcount it
+	 * never incremented. Opens are serialized by DBRegistry's databasesMutex,
+	 * so check-then-register cannot interleave with another open.
+	 */
+	static void EnsureWritableRegistrationSafe(const std::string& dbPath, bool readOnly);
 
 	/**
 	 * Unregisters a DBDescriptor for the given database path. Decrements the
@@ -148,8 +169,14 @@ public:
 	 * directory for the given database path.
 	 *
 	 * @param dbPath The database path.
+	 * @param callerReadOnly Whether the OPENING handle's database is
+	 * read-only/secondary. Like ResolveStore, the caller's mode decides — the
+	 * path-global entry is shared by every handle on the path and outlives the
+	 * one that created it, so a writer that has since closed must not make this
+	 * discovery load stores writably (retention purge and recoverTail()
+	 * truncation against what may be a live primary's logs — invariant 5).
 	 */
-	static void DiscoverStores(const std::string& dbPath);
+	static void DiscoverStores(const std::string& dbPath, bool callerReadOnly);
 
 	/**
 	 * Resolves (finds or creates) a transaction log store by name for the
@@ -157,11 +184,21 @@ public:
 	 *
 	 * @param dbPath The database path.
 	 * @param name The name of the transaction log store.
-	 * @returns The transaction log store.
+	 * @param callerReadOnly Whether the resolving handle's database is
+	 * read-only/secondary. The CALLER's mode — never the path-global entry,
+	 * which is shared by every handle on the path — decides whether a missing
+	 * store may be created: a read-only caller gets only stores live in this
+	 * process and never mkdirs into what may by now be a foreign live primary's
+	 * tree. "Live in this process" includes a store an in-process writer
+	 * created after this handle opened; only a cross-process primary's new
+	 * stores are invisible until reopen.
+	 * @returns The transaction log store, or null for a read-only caller whose
+	 * store is not resident.
 	 */
 	static std::shared_ptr<TransactionLogStore> ResolveStore(
 		const std::string& dbPath,
-		const std::string& name
+		const std::string& name,
+		bool callerReadOnly
 	);
 
 	/**

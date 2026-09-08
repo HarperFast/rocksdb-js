@@ -233,9 +233,7 @@ inline void vtPopulateIfSettled(
 	} while (0)
 
 /**
- * RAII guard that tracks in-flight operations on a DBDescriptor.
- * Increments counter on construction, decrements on destruction.
- * Notifies waiters via atomic::notify_all() when count reaches zero.
+ * Pins a DBDescriptor and holds an operation-gate claim for one native call.
  */
 struct OperationGuard {
 	std::shared_ptr<DBDescriptor> descriptor;
@@ -292,6 +290,8 @@ struct Database final {
 	static napi_value AddListener(napi_env env, napi_callback_info info);
 	static napi_value Backup(napi_env env, napi_callback_info info);
 	static napi_value BackupStream(napi_env env, napi_callback_info info);
+	static napi_value CatchUpWithPrimary(napi_env env, napi_callback_info info);
+	static napi_value CatchUpWithPrimarySync(napi_env env, napi_callback_info info);
 	static napi_value Clear(napi_env env, napi_callback_info info);
 	static napi_value ClearSync(napi_env env, napi_callback_info info);
 	static napi_value Close(napi_env env, napi_callback_info info);

@@ -62,10 +62,32 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &transactionId));
 	}
 
-	std::shared_ptr<TransactionLogHandle>* txnLogHandle = new std::shared_ptr<TransactionLogHandle>(
-		std::make_shared<TransactionLogHandle>(*dbHandle, name, (*dbHandle)->descriptor->readOnly)
-	);
+	// Constructing the handle resolves the store, which throws a DBException —
+	// std::exception, not std::runtime_error. An escaped C++ exception aborts
+	// the process from an N-API callback.
+	std::shared_ptr<TransactionLogHandle>* txnLogHandle;
+	try {
+		txnLogHandle = new std::shared_ptr<TransactionLogHandle>(
+			std::make_shared<TransactionLogHandle>(*dbHandle, name, (*dbHandle)->descriptor->readOnly)
+		);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	(*txnLogHandle)->transactionId = transactionId;
+
+	// A read-only registration never creates or lazily loads a store, so an
+	// unresolved store here means the log does
+	// not exist for this handle — fail now with a clear error rather than hand
+	// back a handle whose reads would break on a null store.
+	if ((*dbHandle)->descriptor->readOnly && (*txnLogHandle)->store.expired()) {
+		(*txnLogHandle)->close();
+		txnLogHandle->reset();
+		delete txnLogHandle;
+		std::string errorMsg = "Transaction log \"" + name + "\" not found";
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
 
 	DEBUG_LOG("TransactionLog::Constructor Creating NativeTransactionLog TransactionLogHandle=%p\n", txnLogHandle->get());
 
@@ -314,8 +336,9 @@ napi_value TransactionLog::GetPath(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetPath");
 	auto store = (*txnLogHandle)->store.lock();
 	if (store) {
+		const auto path = store->displayPath.string();
 		napi_value result;
-		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, store->path.string().c_str(), store->path.string().size(), &result));
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, path.c_str(), path.size(), &result));
 		return result;
 	}
 	NAPI_RETURN_UNDEFINED();
