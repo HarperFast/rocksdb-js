@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-close-commit-uaf.mts');
+// Deno/macOS has a pre-existing worker-env teardown abort (#746); use the
+// established single-retry policy from commit-teardown.test.ts on that runner.
+const retry = process.versions.deno && process.platform === 'darwin' ? 1 : 0;
 
 /**
  * Runs the repro fixture in a child process so a SIGABRT (the harper#1370
@@ -48,7 +51,7 @@ function spawnRepro(
 describe('TransactionHandle::close() vs async-commit complete callback', () => {
 	it(
 		'should survive DBDescriptor::close() racing the commit complete callback (harper#1370)',
-		() => expectSurvives(),
-		60_000
+		{ retry, timeout: 60_000 },
+		() => expectSurvives()
 	);
 });
