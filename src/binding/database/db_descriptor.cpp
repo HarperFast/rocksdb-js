@@ -1733,7 +1733,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		}
 #endif
 	} else {
-		if (!options.readOnly && listStatus.IsNotFound()) {
+		if (!options.readOnly && listStatus.IsPathNotFound()) {
 			DBRegistry::ForgetLayout(identityPath);
 		}
 		// Database doesn't exist or no column families found. Create the default

@@ -285,8 +285,18 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	{
 		std::lock_guard<std::mutex> lock(instance->knownLayoutsMutex);
 		if (auto it = instance->knownLayouts.find(identityPath); it != instance->knownLayouts.end()) {
-			applyLayout(it->second);
-			retainedLayoutFound = true;
+			std::string currentIdentity;
+			if (it->second.databaseIdentity.empty() ||
+				!rocksdb::ReadFileToString(
+					rocksdb::Env::Default(), identityPath + "/IDENTITY", &currentIdentity
+				).ok() ||
+				currentIdentity == it->second.databaseIdentity
+			) {
+				applyLayout(it->second);
+				retainedLayoutFound = true;
+			} else {
+				instance->knownLayouts.erase(it);
+			}
 		}
 	}
 	if (!retainedLayoutFound) {

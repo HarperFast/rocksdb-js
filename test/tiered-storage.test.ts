@@ -449,7 +449,11 @@ describe('paths', () => {
 		rmSync(dbPath, { recursive: true, force: true });
 		renameSync(replacementPath, dbPath);
 
-		expect(() => openDb(dbPath, { paths: [] })).not.toThrow();
+		const reopened = openDb(dbPath, { paths: [] });
+		expect(reopened.getSync('flat')).toBe('value');
+		reopened.close();
+		tiered.destroy();
+		expect(filesWithExt(fast, '.sst').length).toBeGreaterThan(0);
 	});
 
 	it('should delete tiered SST files a later open added, not the first handle’s list', async () => {
