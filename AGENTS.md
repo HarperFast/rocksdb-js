@@ -10,7 +10,7 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 - `pnpm build:binding:debug` - Incremental build C++ binding only (debug)
 - `pnpm build:bundle` - TypeScript only (unminified)
 - `pnpm build:bundle:minify` - TypeScript only (minified)
-- `pnpm rebuild` - Configure and build C++ binding only (production)
+- `pnpm run rebuild` - Configure and build C++ binding only (production; `run` is required — pnpm 11 resolves a bare `pnpm rebuild` to its built-in dependency rebuild, which never runs node-gyp here)
 - `pnpm rebuild:debug` - Native C++ binding only (with debug logging and coverage)
 
 ### Testing
