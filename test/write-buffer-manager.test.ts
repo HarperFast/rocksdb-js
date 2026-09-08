@@ -1,11 +1,16 @@
-import { RocksDatabase } from '../src/index.ts';
-import { dbRunner } from './lib/util.ts';
+import { getWriteBufferManagerStats, RocksDatabase } from '../src/index.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
+import { spawnSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+
+const unconfiguredFixturePath = join(__dirname, 'fixtures', 'fork-wbm-unconfigured.mts');
 
 /**
  * The WriteBufferManager is a process-global singleton. Once created, its
- * `costToCache` and `allowStall` settings are fixed for the life of the
- * process — only `bufferSize` is mutable at runtime (via `SetBufferSize`).
+ * `costToCache` is fixed for the life of the process, while `allowStall` and
+ * `bufferSize` are mutable at runtime.
  *
  * So we initialize it ONCE for the whole file with the most informative
  * configuration (`costToCache: true`, room for resizing) and write each test
@@ -28,6 +33,36 @@ describe('WriteBufferManager', () => {
 				await db.put('foo', 'bar');
 				expect(await db.get('foo')).toBe('bar');
 			}));
+
+		it('should report an unconfigured manager as disabled rather than absent', () => {
+			const dbPath = generateDBPath();
+			try {
+				const child = spawnSync(process.execPath, [unconfiguredFixturePath, dbPath], {
+					encoding: 'utf8',
+				});
+				expect(child.status, child.stderr).toBe(0);
+
+				const { stats, dbStats } = JSON.parse(child.stdout.trim().split(/\r?\n/).at(-1)!);
+				expect(stats.enabled).toBe(false);
+				expect(stats.bufferSize).toBe(0);
+				expect(stats.memoryUsage).toBe(0);
+				expect(stats.mutableMemoryUsage).toBe(0);
+				expect(stats.stallActive).toBe(false);
+				expect(stats.stallActiveMs).toBe(0);
+				expect(stats.watchdogRunning).toBe(false);
+				expect(stats.columnFamilies).toBe(0);
+				expect(stats.maxWriteBufferSizeToMaintain).toEqual({});
+
+				// The scrape keys keep their shape so a dashboard reading them does
+				// not have to special-case "manager not configured".
+				expect(dbStats['writeBufferManager.bufferSize']).toBe(0);
+				expect(dbStats['writeBufferManager.stallActive']).toBe(0);
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+				}
+			}
+		});
 	});
 
 	describe('with costToCache enabled', () => {
@@ -47,6 +82,163 @@ describe('WriteBufferManager', () => {
 				blockCacheSize: 32 * 1024 * 1024,
 				writeBufferManagerSize: 0,
 			});
+		});
+
+		describe('observability', () => {
+			it('should report the live budget and usage on both surfaces', () =>
+				dbRunner(async ({ db }) => {
+					const value = 'x'.repeat(2048);
+					for (let i = 0; i < 500; i++) {
+						await db.put(`obs-${i.toString().padStart(6, '0')}`, value);
+					}
+
+					const stats = getWriteBufferManagerStats();
+					expect(stats.enabled).toBe(true);
+					expect(stats.bufferSize).toBe(64 * 1024 * 1024);
+					expect(stats.costToCache).toBe(true);
+					expect(stats.allowStall).toBe(false);
+					expect(stats.stallActive).toBe(false);
+					expect(stats.watchdogRunning).toBe(false);
+					expect(stats.memoryUsage).toBeGreaterThan(1024 * 1024);
+					expect(stats.mutableMemoryUsage).toBeGreaterThan(0);
+					expect(stats.mutableMemoryUsage).toBeLessThanOrEqual(stats.memoryUsage);
+
+					const dbStats = db.getStats();
+					expect(dbStats['writeBufferManager.bufferSize']).toBe(stats.bufferSize);
+					expect(dbStats['writeBufferManager.stallActive']).toBe(0);
+					expect(dbStats['writeBufferManager.memoryUsage']).toBeGreaterThan(1024 * 1024);
+				}));
+
+			it('should resolve each key through getStat() without requiring statistics', () =>
+				dbRunner(async ({ db }) => {
+					await db.put('stat-routing', 'value');
+					expect(db.getStat('writeBufferManager.bufferSize')).toBe(64 * 1024 * 1024);
+					expect(db.getStat('writeBufferManager.memoryUsage')).toBeGreaterThan(0);
+					expect(typeof db.getStat('writeBufferManager.mutableMemoryUsage')).toBe('number');
+					expect(db.getStat('writeBufferManager.stallActive')).toBe(0);
+					expect(db.getStat('writeBufferManager.stallActiveMs')).toBe(0);
+					expect(db.getStat('writeBufferManager.nope')).toBeUndefined();
+				}));
+
+			it.skipIf(process.env.ROCKSDB_JS_WBM_STALL_WARN_MS === '0')(
+				'should start and stop the watchdog on the allowStall edges',
+				() => {
+					expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
+					try {
+						RocksDatabase.config({ writeBufferManagerAllowStall: true });
+						expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
+						RocksDatabase.config({ writeBufferManagerAllowStall: false });
+						expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
+						RocksDatabase.config({ writeBufferManagerAllowStall: true });
+						expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
+						RocksDatabase.config({ writeBufferManagerAllowStall: false });
+						expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
+					} finally {
+						RocksDatabase.config({ writeBufferManagerAllowStall: false });
+					}
+				}
+			);
+
+			it('should inventory column families attached to this manager', () => {
+				const detachedPath = generateDBPath();
+				const droppedPath = generateDBPath();
+				const readOnlyPath = generateDBPath();
+				const attachedPath = generateDBPath();
+				const columnFamilies = (): number => getWriteBufferManagerStats().columnFamilies;
+				const sumTargets = (targets: Record<string, number>): number =>
+					Object.values(targets).reduce((total, count) => total + count, 0);
+
+				const opened: RocksDatabase[] = [];
+				try {
+					expect(getWriteBufferManagerStats().inventoryAvailable).toBe(true);
+					const baseline = columnFamilies();
+
+					const attached = new RocksDatabase(attachedPath, { name: 'attached' });
+					attached.open();
+					opened.push(attached);
+					const withAttached = columnFamilies();
+					expect(withAttached).toBeGreaterThan(baseline);
+
+					// Size 0 means "no new attachments", not a teardown: a database
+					// opened in that window draws on its own budget and cannot explain
+					// the manager's memory, so its column families must not appear.
+					RocksDatabase.config({ writeBufferManagerSize: 0 });
+					const detached = new RocksDatabase(detachedPath, { name: 'detached' });
+					detached.open();
+					opened.push(detached);
+					RocksDatabase.config({ writeBufferManagerSize: 64 * 1024 * 1024 });
+					expect(columnFamilies()).toBe(withAttached);
+
+					const seed = new RocksDatabase(readOnlyPath);
+					seed.open();
+					seed.putSync('seed', 'value');
+					seed.close();
+					const readOnly = new RocksDatabase(readOnlyPath, { readOnly: true });
+					readOnly.open();
+					opened.push(readOnly);
+					expect(columnFamilies()).toBe(withAttached + 1);
+
+					// A dropped family keeps charging the manager until its last handle
+					// closes, so it stays counted across the drop and stops being
+					// counted at that close — the inventory recovers rather than
+					// latching unavailable for the life of the database.
+					const retained = new RocksDatabase(droppedPath);
+					retained.open();
+					opened.push(retained);
+					const dropped = new RocksDatabase(droppedPath, { name: 'dropped' });
+					dropped.open();
+					opened.push(dropped);
+					const withDropped = columnFamilies();
+					expect(withDropped).toBe(withAttached + 3);
+
+					dropped.dropSync();
+					const afterDrop = getWriteBufferManagerStats();
+					expect(afterDrop.inventoryAvailable).toBe(true);
+					expect(afterDrop.columnFamilies).toBe(withDropped);
+					expect(sumTargets(afterDrop.maxWriteBufferSizeToMaintain)).toBe(withDropped);
+
+					dropped.close();
+					opened.splice(opened.indexOf(dropped), 1);
+					const afterClose = getWriteBufferManagerStats();
+					expect(afterClose.inventoryAvailable).toBe(true);
+					expect(afterClose.columnFamilies).toBe(withDropped - 1);
+					expect(sumTargets(afterClose.maxWriteBufferSizeToMaintain)).toBe(withDropped - 1);
+				} finally {
+					for (const db of opened) {
+						db.close();
+					}
+					if (!process.env.KEEP_FILES) {
+						for (const path of [attachedPath, detachedPath, droppedPath, readOnlyPath]) {
+							rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+						}
+					}
+				}
+			});
+
+			// Guards the docs/stats.md note: with `atomic_flush` (which this library
+			// always sets) manager-pressure flushes reach BOTH counters. Only their
+			// presence is asserted — the two count different events (scheduling
+			// requests vs executed flushes) and their ratio is not stable, so no
+			// relationship between the magnitudes is claimed here or in the docs.
+			it('should record manager-pressure flushes on both flush-reason tickers', () =>
+				dbRunner({ dbOptions: [{ enableStats: true }] }, async ({ db }) => {
+					RocksDatabase.config({ writeBufferManagerSize: 4 * 1024 * 1024 });
+					try {
+						const value = 'x'.repeat(8192);
+						for (let i = 0; i < 2000; i++) {
+							await db.put(`flush-${i.toString().padStart(6, '0')}`, value);
+						}
+						await new Promise((resolve) => setTimeout(resolve, 500));
+
+						const stats = db.getStats(true);
+						const requests = stats['rocksdb.atomic_flush.request.reason.write_buffer_manager'];
+						const perColumnFamily = stats['rocksdb.flush.reason.write_buffer_manager'];
+						expect(requests).toBeGreaterThan(0);
+						expect(perColumnFamily).toBeGreaterThan(0);
+					} finally {
+						RocksDatabase.config({ writeBufferManagerSize: 64 * 1024 * 1024 });
+					}
+				}));
 		});
 
 		it('should open a database with the WriteBufferManager + costToCache', () =>

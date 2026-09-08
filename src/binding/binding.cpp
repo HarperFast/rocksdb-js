@@ -1,6 +1,7 @@
 #include "napi/binding.h"
 #include "database/backup.h"
 #include "database/database.h"
+#include "database/db_stats.h"
 #include "iterator/db_iterator.h"
 #include "iterator/db_iterator_handle.h"
 #include "database/db_registry.h"
@@ -21,7 +22,10 @@
 #include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <thread>
 
 namespace rocksdb_js {
 
@@ -39,8 +43,14 @@ namespace rocksdb_js {
  * Shutdown function to ensure that we write in-memory data from all databases.
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
+	auto& stats = DBStats::getInstance();
+	const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
 	GlobalEvents::Shutdown();
 	DBRegistry::Shutdown();
+	if (const int delayMs = consumeWriteBufferManagerJoinDelayForTesting(); delayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+	}
+	stats.joinWriteBufferManagerWatchdog(true, watchdogShutdownGeneration);
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
@@ -59,6 +69,16 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
+}
+
+napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	int32_t countdown = 0;
+	int32_t delayMs = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &countdown));
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &delayMs));
+	setWriteBufferManagerJoinDelayForTesting(std::max(countdown, 0), std::max(delayMs, 0));
+	NAPI_RETURN_UNDEFINED();
 }
 
 /**
@@ -216,9 +236,12 @@ NAPI_MODULE_INIT() {
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
+			auto& stats = rocksdb_js::DBStats::getInstance();
+			const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
 			rocksdb_js::GlobalEvents::Shutdown();
 			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
 			rocksdb_js::DBRegistry::Shutdown();
+			stats.joinWriteBufferManagerWatchdog(false, watchdogShutdownGeneration);
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");
@@ -251,6 +274,7 @@ NAPI_MODULE_INIT() {
 
 	// db settings
 	rocksdb_js::DBSettings::Init(env, exports);
+	rocksdb_js::DBStats::Init(env, exports);
 
 	// global event emitter (addListener / removeListener / listenerCount)
 	rocksdb_js::GlobalEvents::Init(env, exports);
@@ -264,6 +288,22 @@ NAPI_MODULE_INIT() {
 	napi_value forceTryAgainFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
+
+	napi_value setWriteBufferManagerJoinDelayFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"setWriteBufferManagerJoinDelayForTesting",
+		NAPI_AUTO_LENGTH,
+		SetWriteBufferManagerJoinDelayForTesting,
+		nullptr,
+		&setWriteBufferManagerJoinDelayFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"setWriteBufferManagerJoinDelayForTesting",
+		setWriteBufferManagerJoinDelayFn
+	));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;

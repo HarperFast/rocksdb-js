@@ -273,9 +273,38 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::shared_ptr<rocksdb::DB> db;
 
 	/**
+	 * The process-wide `WriteBufferManager` this database attached at open, or
+	 * null. Recorded because attachment is decided per open: a database opened
+	 * before the manager was configured, or after its size was reset to 0, does
+	 * not draw on the budget and must not appear in a stall report explaining it.
+	 */
+	rocksdb::WriteBufferManager* const attachedWriteBufferManager;
+
+	/**
 	 * Map of column family name to column family handle.
 	 */
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
+
+	/**
+	 * A dropped column family whose memtables a live handle may still be
+	 * charging to the WriteBufferManager after it left `columns`.
+	 *
+	 * The retention target is copied out rather than read back through the
+	 * reference, so the stall inventory can count these without calling
+	 * `weak_ptr::lock()`: releasing that temporary could be the last reference,
+	 * destroying the RocksDB column-family handle on the sampling thread while
+	 * both `databasesMutex` and `columnsMutex` are held.
+	 */
+	struct DroppedColumnFamily final {
+		std::weak_ptr<ColumnFamilyDescriptor> descriptor;
+		int64_t maxWriteBufferSizeToMaintain = 0;
+	};
+
+	/**
+	 * Guarded by `columnsMutex`. Pruned of expired entries on every drop, so it
+	 * holds at most the families that were still live at the previous drop.
+	 */
+	std::vector<DroppedColumnFamily> droppedColumns;
 
 	/**
 	 * Mutex to protect the columns map. Column families can be unregistered on
@@ -501,6 +530,7 @@ private:
 		const DBOptions& options,
 		const rocksdb::ColumnFamilyOptions& cfOptions,
 		std::shared_ptr<rocksdb::DB> db,
+		rocksdb::WriteBufferManager* attachedWriteBufferManager,
 		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
 		std::shared_ptr<rocksdb::Statistics> statistics
 	);
@@ -832,7 +862,19 @@ struct ColumnFamilyDescriptor final {
 	 */
 	std::mutex userSharedBuffersMutex;
 
-	ColumnFamilyDescriptor(std::shared_ptr<rocksdb::ColumnFamilyHandle> column) : column(column) {}
+	/**
+	 * The column family's *effective* `max_write_buffer_size_to_maintain`, read
+	 * from RocksDB at creation. Effective, not requested: `TransactionDB::Open`
+	 * rewrites a requested `0` into a derived (large) value, so the requested one
+	 * hides the very condition the stall report exists to expose
+	 * (HarperFast/rocksdb-js#821).
+	 */
+	const int64_t maxWriteBufferSizeToMaintain;
+
+	ColumnFamilyDescriptor(
+		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,
+		int64_t maxWriteBufferSizeToMaintain
+	) : column(column), maxWriteBufferSizeToMaintain(maxWriteBufferSizeToMaintain) {}
 
 	~ColumnFamilyDescriptor() {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);

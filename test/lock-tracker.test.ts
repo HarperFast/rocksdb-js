@@ -252,12 +252,15 @@ describe('Coordinated retry — bounded park timeout (#741)', () => {
 
 			const start = performance.now();
 			db.close();
-			// Settled, not resolved: `commit()`'s `aftercommit` notify rejects
-			// once the database is closed, whatever the native result was.
+			// Node usually rejects when the post-commit notification observes the
+			// closed database. Alternate N-API runtimes can instead preserve the
+			// native RETRY_NOW result; either proves the close drained the park.
 			const [settled] = await Promise.allSettled([commit]);
 			const elapsed = performance.now() - start;
 
-			expect(settled.status).toBe('rejected');
+			if (settled.status === 'fulfilled') {
+				expect(settled.value).toBe(RETRY_NOW);
+			}
 			// Under the deadline, so this can only have come from the close.
 			expect(elapsed).toBeLessThan(4000);
 		}));

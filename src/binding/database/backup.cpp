@@ -57,12 +57,16 @@ struct AsyncBackupState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	// Our descriptor ref can be the reason a concurrent close skipped its
 	// registry purge (use_count() > 1), so on release we must retry the purge or
 	// the registry entry — and the open RocksDB — would linger forever.
-	~AsyncBackupState() override {
+	void releaseDescriptor() {
 		if (this->descriptor) {
 			DBKey key = descriptorKey(*this->descriptor);
 			this->descriptor.reset();
 			DBRegistry::PurgeIfUnreferenced(key);
 		}
+	}
+
+	~AsyncBackupState() override {
+		this->releaseDescriptor();
 	}
 };
 
@@ -365,6 +369,10 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncBackupState*>(data);
 			state->deleteAsyncWork();
+			// Promise settlement is the public completion boundary. Release the
+			// descriptor pin and retry any deferred registry purge first so an
+			// immediate registryStatus() / shutdown() cannot observe stale state.
+			state->releaseDescriptor();
 			if (status != napi_cancelled) {
 				if (state->status.ok()) {
 					napi_value result;

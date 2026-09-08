@@ -42,4 +42,31 @@ inline bool testForceTryAgain() {
 	return false;
 }
 
+inline std::atomic<int>& writeBufferManagerJoinDelayCountdown() {
+	static std::atomic<int> countdown{0};
+	return countdown;
+}
+
+inline std::atomic<int>& writeBufferManagerJoinDelayMs() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
+inline void setWriteBufferManagerJoinDelayForTesting(int countdown, int delayMs) {
+	writeBufferManagerJoinDelayMs().store(delayMs, std::memory_order_relaxed);
+	writeBufferManagerJoinDelayCountdown().store(countdown, std::memory_order_release);
+}
+
+inline int consumeWriteBufferManagerJoinDelayForTesting() {
+	int remaining = writeBufferManagerJoinDelayCountdown().load(std::memory_order_acquire);
+	while (remaining > 0) {
+		if (writeBufferManagerJoinDelayCountdown().compare_exchange_weak(
+				remaining, remaining - 1, std::memory_order_relaxed
+			)) {
+			return remaining == 1 ? writeBufferManagerJoinDelayMs().load(std::memory_order_relaxed) : 0;
+		}
+	}
+	return 0;
+}
+
 #endif

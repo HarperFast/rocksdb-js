@@ -676,7 +676,83 @@ export const BackgroundError: new (
 	> & { type?: string }
 ) => BackgroundError = binding.BackgroundError;
 
+/**
+ * Live state of the process-wide `WriteBufferManager` singleton — see
+ * {@link getWriteBufferManagerStats}.
+ */
+export type WriteBufferManagerStats = {
+	/**
+	 * Whether a manager has been created in this process. `bufferSize`,
+	 * `memoryUsage`, `mutableMemoryUsage`, `stallActive`, `stallActiveMs`,
+	 * `watchdogRunning` and `columnFamilies` are 0/false when not; `allowStall`
+	 * and `costToCache` still reflect the configured setting, and
+	 * `inventoryAvailable` is `true`.
+	 */
+	enabled: boolean;
+	/** The manager's budget in bytes (`writeBufferManagerSize`, live). */
+	bufferSize: number;
+	/** Total memtable memory charged to the manager, in bytes. */
+	memoryUsage: number;
+	/** The share of `memoryUsage` held by active (mutable) memtables, in bytes. */
+	mutableMemoryUsage: number;
+	allowStall: boolean;
+	costToCache: boolean;
+	stallActive: boolean;
+	/**
+	 * How long the current stall has been active, in milliseconds; 0 when not
+	 * stalled. Sampled once a second by the stall watchdog, so it is 0 for the
+	 * first second of a stall and whenever `watchdogRunning` is false.
+	 */
+	stallActiveMs: number;
+	/**
+	 * Whether the stall watchdog is running. It runs only while a manager exists
+	 * with `writeBufferManagerAllowStall`, and only when
+	 * `ROCKSDB_JS_WBM_STALL_WARN_MS` is not `0`.
+	 */
+	watchdogRunning: boolean;
+	/**
+	 * Live column families across every database attached to this manager. A
+	 * dropped column family keeps charging the manager until its last handle
+	 * closes, so it is counted until then.
+	 */
+	columnFamilies: number;
+	/**
+	 * `false` when the column-family inventory could not be collected because the
+	 * database registry was locked — most plausibly by a close that is itself
+	 * waiting out this stall. `columnFamilies` is then `0` and
+	 * `maxWriteBufferSizeToMaintain` empty; every other field is still live.
+	 */
+	inventoryAvailable: boolean;
+	/**
+	 * Effective per-column-family `max_write_buffer_size_to_maintain` (as a decimal
+	 * string) to the number of those column families holding it. Effective, not
+	 * requested: RocksDB rewrites a requested `0` for a transaction database.
+	 */
+	maxWriteBufferSizeToMaintain: Record<string, number>;
+};
+
 export const config: (options: RocksDatabaseConfig) => void = binding.config;
+/**
+ * Reads the live state of the process-wide `WriteBufferManager`: its budget,
+ * charged memory, mutable share, stall state, and attached column-family
+ * inventory. The manager is shared by every database and worker thread in the
+ * process.
+ *
+ * A WriteBufferManager stall does not pass through RocksDB's `WriteController`,
+ * so it is not reflected by `rocksdb.stall.micros`, `db.isWriteStalled()`, or
+ * the `'writeStall'` event. Use `stallActive` to distinguish this condition from
+ * an idle database.
+ *
+ * @example
+ * ```typescript
+ * const wbm = getWriteBufferManagerStats();
+ * if (wbm.stallActive) {
+ * 	log.warn(`writes stalled for ${wbm.stallActiveMs}ms`);
+ * }
+ * ```
+ */
+export const getWriteBufferManagerStats: () => WriteBufferManagerStats =
+	binding.getWriteBufferManagerStats;
 export const FRESH_VERSION_FLAG: number = binding.constants.FRESH_VERSION_FLAG;
 export const addGlobalListener: (event: string, callback: (...args: any[]) => void) => void =
 	binding.addListener;
@@ -771,6 +847,12 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
  * disarm. Used by the ERR_TRY_AGAIN retry regression test.
  */
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
+
+/** Delays one selected watchdog join in the concurrent-shutdown regression test. */
+export const setWriteBufferManagerJoinDelayForTesting: (
+	countdown: number,
+	delayMs: number
+) => void = binding.setWriteBufferManagerJoinDelayForTesting;
 
 /**
  * Creates a native file lock using the specified file path (`flock` on POSIX,

@@ -1,12 +1,15 @@
 import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
+
+const watchdogShutdownFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-shutdown.mts');
 
 describe('Shutdown', () => {
 	it('should shutdown rocksdb-js', () =>
@@ -38,6 +41,31 @@ describe('Shutdown', () => {
 			status = registryStatus();
 			expect(status.length).toBe(0);
 		}));
+
+	it.skipIf(process.env.ROCKSDB_JS_WBM_STALL_WARN_MS === '0')(
+		'should restart the WriteBufferManager watchdog after shutdown, concurrent ones included',
+		() => {
+			const path = generateDBPath();
+			try {
+				const child = spawnSync(process.execPath, [watchdogShutdownFixturePath, path], {
+					encoding: 'utf8',
+					timeout: 60000,
+				});
+				expect(child.status, child.stderr).toBe(0);
+				expect(JSON.parse(child.stdout.trim().split(/\r?\n/).at(-1)!)).toEqual([
+					true,
+					false,
+					true,
+					true,
+					...Array.from({ length: 4 }, () => [false, true]).flat(),
+				]);
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+				}
+			}
+		}
+	);
 
 	it('should open 10 databases, shutdown, and open them again', async () =>
 		dbRunner(
