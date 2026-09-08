@@ -821,7 +821,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
      a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
      and the runner's own timeout cannot fire (#781 item 2).
 
- 19. **A transaction timestamp is only unique within one process unless the caller names its log**:
+21. **A transaction timestamp is only unique within one process unless the caller names its log**:
     `getMonotonicTimestamp()` (`core/platform.cpp`) ratchets a file-static atomic that starts at `0`
     in every new process, then re-reads the wall clock — so a backward clock step between runs
     reissues transaction timestamps, which are transaction-log batch keys (`writeBatch`) and, for a
