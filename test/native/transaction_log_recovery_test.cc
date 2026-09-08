@@ -7,6 +7,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 #ifndef _WIN32
 #include <fcntl.h>
@@ -16,6 +17,7 @@
 #include "core/exception.h"
 #include "transaction_log/transaction_log_file.h"
 #include "transaction_log/transaction_log_recovery.h"
+#include "transaction_log/transaction_log_store.h"
 
 using rocksdb_js::countTransactionLogEntries;
 using rocksdb_js::DBException;
@@ -91,6 +93,20 @@ private:
 
 	std::vector<char> bytes;
 };
+
+struct DelayedReadContext {
+	const char* data;
+	uint32_t calls = 0;
+};
+
+bool delayAfterFirstRead(void* context, uint32_t offset, void* dest, uint32_t size) {
+	auto* reader = static_cast<DelayedReadContext*>(context);
+	std::memcpy(dest, reader->data + offset, size);
+	if (++reader->calls == 1) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+	return true;
+}
 
 } // namespace
 
@@ -182,7 +198,6 @@ TEST(TransactionLogRecovery, MaxTimestampIsTheLargestKeyNotTheLastOne) {
 	img.entry(10, 1, 500.0).entry(10, 1, 900.0).entry(10, 1, 700.0);
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
-	// Batch keys are not ordered within a file, so this is a running maximum.
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 900.0);
 	EXPECT_DOUBLE_EQ(scan.maxImplausibleTimestamp, 0.0);
 }
@@ -191,8 +206,6 @@ TEST(TransactionLogRecovery, MaxTimestampSplitsAtThePlausibleBound) {
 	LogImage img;
 	img.entry(10, 1, 500.0).entry(10, 1, 9000.0).entry(10, 1, 700.0);
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size(), /*plausibleBound=*/1000.0);
-	// The out-of-bound key is kept apart rather than discarding the file's real
-	// keys, which the clock floor seeds from.
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 700.0);
 	EXPECT_DOUBLE_EQ(scan.maxImplausibleTimestamp, 9000.0);
 }
@@ -201,9 +214,6 @@ TEST(TransactionLogRecovery, MaxTimestampStopsAtAMidFileBreak) {
 	LogImage img;
 	img.entry(10, 1, 500.0);
 	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
-	// Entries after a mid-file break are durable and query() resyncs past them,
-	// but this walk cannot reach them — so their keys are absent from maxTimestamp
-	// and the caller has to treat the answer as incomplete.
 	for (int i = 0; i < 12; ++i) {
 		img.entry(16, 1, 4000.0);
 	}
@@ -215,9 +225,6 @@ TEST(TransactionLogRecovery, MaxTimestampStopsAtAMidFileBreak) {
 TEST(TransactionLogRecovery, MaxTimestampStopsAtATornTailToo) {
 	LogImage img;
 	img.entry(10, 1, 500.0);
-	// A torn tail stops the walk at the same place a mid-file break does. When the
-	// break sits inside a flushed prefix, recoverTail() leaves the file whole, so
-	// the keys after it stay durable and unread.
 	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 4000.0);
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
@@ -236,6 +243,20 @@ TEST(TransactionLogRecovery, DeadlineLeavesTheImageIntact) {
 	auto complete = scanTransactionLogForRecovery(img.data(), img.size());
 	EXPECT_EQ(complete.kind, RecoveryScan::Kind::Clean);
 	EXPECT_DOUBLE_EQ(complete.maxTimestamp, 900.0);
+}
+
+TEST(TransactionLogRecovery, DeadlineKeepsTheScannedPrefix) {
+	LogImage img;
+	img.entry(64 * 1024 + 1, 1, 500.0).entry(64 * 1024 + 1, 1, 900.0);
+	const uint32_t afterFirst = TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 64 * 1024 + 1;
+	DelayedReadContext reader{ img.data() };
+	auto scan = scanTransactionLogForRecovery(
+		img.size(), delayAfterFirstRead, &reader, std::numeric_limits<double>::infinity(),
+		std::chrono::steady_clock::now() + std::chrono::milliseconds(10));
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Incomplete);
+	EXPECT_EQ(scan.validEnd, afterFirst);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+	EXPECT_EQ(reader.calls, 1u);
 }
 
 TEST(TransactionLogRecovery, BrokenFrameThenFewEntriesReachingEofIsNotTruncated) {
@@ -664,6 +685,12 @@ std::filesystem::path uniqueMaxEntryScanPath() {
 		("rocksdb-js-max-entry-scan-" + std::to_string(nonce) + ".txnlog");
 }
 
+std::filesystem::path uniqueFloorScanStorePath() {
+	auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+	return std::filesystem::temp_directory_path() /
+		("rocksdb-js-floor-scan-" + std::to_string(nonce));
+}
+
 } // namespace
 
 TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
@@ -757,4 +784,35 @@ TEST(TransactionLogMaxEntryScan, SubHeaderZeroPaddingIsCleanForFloorScanning) {
 
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
+TEST(TransactionLogFloorScan, ProtectedTornTailIsIncomplete) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	auto logPath = storePath / "1.txnlog";
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 700.0);
+	img.entry(10, 1, 900.0).entry(10, 1, 950.0).entry(10, 1, 1000.0);
+	rocksdb_js::LogPosition flushedPosition(img.size(), 1);
+	img.raw({ 1 });
+	{
+		std::ofstream log(logPath, std::ios::binary | std::ios::trunc);
+		log.write(img.data(), img.size());
+		std::ofstream state(storePath / "txn.state", std::ios::binary | std::ios::trunc);
+		state.write(reinterpret_cast<const char*>(&flushedPosition), sizeof(flushedPosition));
+	}
+
+	{
+		rocksdb_js::TransactionLogStore store(
+			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(logPath, 1));
+		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
+		EXPECT_FALSE(scan.complete);
+		EXPECT_TRUE(scan.stoppedAtBreak);
+		EXPECT_TRUE(scan.tornTail);
+		EXPECT_DOUBLE_EQ(scan.largestKey, 500.0);
+	}
+
+	std::filesystem::remove_all(storePath);
 }

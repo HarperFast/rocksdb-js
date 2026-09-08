@@ -374,6 +374,7 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
 	result.maxTimestamp = scan.maxTimestamp;
 	result.maxImplausibleTimestamp = scan.maxImplausibleTimestamp;
 	result.kind = scan.kind;
+	result.validEnd = scan.validEnd;
 	return result;
 }
 

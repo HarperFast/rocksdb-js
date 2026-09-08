@@ -411,6 +411,7 @@ struct TransactionLogFile final {
 		double maxTimestamp = 0;
 		double maxImplausibleTimestamp = 0;
 		RecoveryScan::Kind kind = RecoveryScan::Kind::Clean;
+		uint32_t validEnd = 0;
 	};
 
 	/**

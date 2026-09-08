@@ -26,7 +26,6 @@ function newDBPath(): string {
 	return path;
 }
 
-/** Runs one fixture mode in its own process, so it starts from a fresh process clock. */
 function runFixture(
 	mode: string,
 	dbPath: string,
@@ -53,8 +52,6 @@ function runFixture(
 }
 
 describe('monotonic clock floor', () => {
-	// The durable keys sit an hour ahead of the wall clock, which is what a
-	// backward clock step across a restart leaves behind.
 	const aheadOfNow = () => Date.now() + 60 * 60 * 1000;
 
 	it('resumes above the largest durable key in the named log', async () => {
@@ -70,7 +67,6 @@ describe('monotonic clock floor', () => {
 		const { clock, txnTimestamp, now } = JSON.parse(read.stdout);
 		expect(clock).toBeGreaterThan(key);
 		expect(txnTimestamp).toBeGreaterThan(key);
-		// The seed is the key itself, not an unbounded jump past it.
 		expect(clock).toBeLessThan(key + 60 * 1000);
 		expect(now).toBeLessThan(key);
 	}, 60000);
@@ -80,8 +76,6 @@ describe('monotonic clock floor', () => {
 		const highest = aheadOfNow();
 
 		expect((await runFixture('write', dbPath, highest)).code).toBe(0);
-		// Batch keys are not ordered within a log: a later batch can carry a
-		// smaller key, and the floor must still clear the larger one.
 		expect((await runFixture('write', dbPath, highest - 30 * 60 * 1000)).code).toBe(0);
 
 		const read = await runFixture('read', dbPath, highest);
@@ -125,8 +119,6 @@ describe('monotonic clock floor', () => {
 
 	it('refuses a key implausibly far ahead of the wall clock, and says so', async () => {
 		const dbPath = newDBPath();
-		// Twenty years ahead: inside the timestamp domain, so a caller can assign
-		// it, but far past any rollback this is meant to recover from.
 		const far = Date.now() + 20 * 365 * 24 * 60 * 60 * 1000;
 
 		expect((await runFixture('write', dbPath, far)).code).toBe(0);
@@ -195,7 +187,6 @@ describe('monotonic clock floor', () => {
 
 		expect((await runFixture('write', dbPath, key)).code).toBe(0);
 
-		// A typo protects nothing while looking configured, so it is not silent.
 		const warned = await runFixture('warn', dbPath, key, 'clcok');
 		expect(warned.code, warned.stderr).toBe(0);
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('does not have');
@@ -219,8 +210,6 @@ describe('monotonic clock floor', () => {
 
 		expect((await runFixture('write', dbPath, key)).code).toBe(0);
 
-		// The first open in the process fixes the option; a second one that names a
-		// log cannot re-run the seed, so it must not look applied.
 		const warned = await runFixture('reopen-warn', dbPath, key);
 		expect(warned.code, warned.stderr).toBe(0);
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('was ignored');
@@ -255,8 +244,6 @@ describe('monotonic clock floor', () => {
 
 		const { warnings, clock } = JSON.parse(warned.stdout);
 		expect(warnings.join(' ')).toContain('framing breaks partway through');
-		// The floor stops at the key before the break rather than silently claiming
-		// to have covered the ones after it.
 		expect(clock).toBeLessThan(key);
 	}, 120000);
 
@@ -280,11 +267,11 @@ describe('monotonic clock floor', () => {
 			key,
 			LOG,
 			{},
-			'unrecovered torn tail'
+			'partial entry this handle cannot recover'
 		);
 		expect(warned.code, warned.stderr).toBe(0);
 		const { warnings, clock } = JSON.parse(warned.stdout);
-		expect(warnings.join(' ')).toContain('unrecovered torn tail');
+		expect(warnings.join(' ')).toContain('partial entry this handle cannot recover');
 		expect(warnings.join(' ')).not.toContain('framing breaks partway through');
 		expect(clock).toBeGreaterThan(key);
 	}, 60000);
@@ -295,8 +282,6 @@ describe('monotonic clock floor', () => {
 
 		expect((await runFixture('write', dbPath, key)).code).toBe(0);
 
-		// Raising the budget is the documented way to buy a longer scan; a value
-		// this large must not overflow the deadline and scan nothing instead.
 		const read = await runFixture('read', dbPath, key, LOG, {
 			ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS: '99999999999999',
 		});

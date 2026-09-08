@@ -1,12 +1,3 @@
-/**
- * One mode per process, so each reader really starts from a fresh process-global
- * monotonic clock. Prints one JSON line; exits non-zero when its own assertions
- * fail.
- *
- * A backward wall-clock step across a restart is modelled by writing batch keys
- * *ahead* of the wall clock and then reopening: the durable keys are above the
- * clock the next process reads, which is the state a rollback leaves behind.
- */
 import { RocksDatabase } from '../../src/index.ts';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -26,12 +17,10 @@ if (mode === 'warn' || mode === 'warn-read-only' || mode === 'reopen-warn') {
 }
 
 const rotating = mode === 'write-rotate';
-/** Payload size of every `write-frames` entry; reported on stdout so the parent can find frame N. */
 const FRAME_PAYLOAD = 32;
 const db = RocksDatabase.open(dbPath, {
 	...(mode === 'write-unseeded' || mode === 'reopen-warn' ? {} : { timestampFloorLog: log }),
 	...(mode === 'warn-read-only' ? { readOnly: true } : {}),
-	// Small enough that the next batch cannot share a segment with the last one.
 	...(rotating ? { transactionLogMaxSize: 64 * 1024 } : {}),
 });
 
@@ -43,9 +32,6 @@ function segmentCount(): number {
 
 try {
 	if (mode === 'write-frames') {
-		// Fixed-size entries at known offsets, so the parent can break one frame's
-		// declared length. The first batch's key is low and the rest are high, so a
-		// walk that stops at the break seeds the floor from the low one only.
 		const txnLog = db.useLog(log);
 		for (let i = 0; i < 14; i++) {
 			await db.transaction(async (txn) => {
@@ -80,8 +66,6 @@ try {
 			fail(`transaction timestamp ${txnTimestamp} is not above the seeded clock ${clock}`);
 		}
 	} else if (mode === 'read-unseeded') {
-		// Either no option at all, or one naming a different log: the keys of a log
-		// this process does not originate must not move its clock.
 		const clock = db.getMonotonicTimestamp();
 		const now = Date.now();
 		console.log(JSON.stringify({ clock, key, now }));
@@ -92,8 +76,6 @@ try {
 			fail(`clock ${clock} is not tracking the wall clock ${now}`);
 		}
 	} else if (mode === 'reopen-warn') {
-		// A second open of the same path cannot re-run the seed; it must say so
-		// rather than look applied.
 		const second = RocksDatabase.open(dbPath, { name: 'other', timestampFloorLog: log });
 		const until = Date.now() + 5000;
 		while (Date.now() < until && warnings.length === 0) {

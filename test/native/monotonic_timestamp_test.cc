@@ -9,14 +9,7 @@ using rocksdb_js::MAX_CLOCK_FLOOR_SKEW_MS;
 using rocksdb_js::MAX_TIMESTAMP_MS;
 using rocksdb_js::raiseMonotonicTimestampFloor;
 
-// The floor is one process-wide value with no reset, and GoogleTest runs every
-// case in one process, in an order the caller can shuffle and repeat. So a case
-// that raises the floor takes its target from getMonotonicTimestamp() — which is
-// already at or above whatever floor is in force — and moves it by milliseconds.
-// Against the wall clock instead, a case would raise below a floor another case
-// had already set (its raise then correctly refused, its assertion wrong), and a
-// raise large enough to be convenient would leave every later case in the
-// binary, TracksTheWallClockWithoutASeed included, reading a skewed clock.
+// Tests share the process-global floor, so they derive targets from its current value.
 
 TEST(MonotonicTimestamp, IssuesStrictlyIncreasingValues) {
 	double first = getMonotonicTimestamp();
@@ -40,8 +33,6 @@ TEST(MonotonicTimestamp, RefusesAFloorOutsideTheDomain) {
 }
 
 TEST(MonotonicTimestamp, RefusesAFloorTooFarAheadOfTheWallClock) {
-	// A key that far ahead is corruption, not a rollback to recover from, and
-	// honoring it would move every timestamp this process issues by that much.
 	double tooFar = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS * 2;
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(tooFar));
 	EXPECT_LT(getMonotonicTimestamp(), tooFar);

@@ -68,18 +68,7 @@ struct RecoveryScan final {
 	 * assign repeated timestamps to separate transactions.
 	 */
 	bool unclosedTailIsOneTransaction;
-	/**
-	 * The largest entry timestamp at or below the caller's `plausibleBound`, or 0
-	 * for a file with no such entry. Entry timestamps are batch keys, and they
-	 * are not ordered within a file (see `findPositionByTimestamp`), so this is a
-	 * running maximum over every frame the walk accepted — never the last one it
-	 * read.
-	 */
 	double maxTimestamp;
-	/**
-	 * The largest entry timestamp *above* that bound, or 0. Kept apart so one
-	 * implausible key does not discard the real keys beside it.
-	 */
 	double maxImplausibleTimestamp;
 };
 

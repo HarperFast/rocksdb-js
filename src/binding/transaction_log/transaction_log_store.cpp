@@ -362,6 +362,7 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 	}
 
 	const auto deadline = std::chrono::steady_clock::now() + budget;
+	const LogPosition flushedPosition = this->getLastFlushedPosition();
 	DurableKeyScan result;
 	result.discoveryIncomplete = this->discoveryIncomplete;
 	result.complete = !result.discoveryIncomplete;
@@ -390,6 +391,11 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 					break;
 				case RecoveryScan::Kind::TruncateTail:
 					result.tornTail = true;
+					if (logFile->sequenceNumber == flushedPosition.logSequenceNumber &&
+						fileScan.validEnd < flushedPosition.positionInLogFile) {
+						result.stoppedAtBreak = true;
+						result.complete = false;
+					}
 					break;
 				case RecoveryScan::Kind::Incomplete:
 					result.budgetExhausted = true;
