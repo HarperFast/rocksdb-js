@@ -89,7 +89,15 @@ void DBStats::ensureWriteBufferManagerWatchdog() {
 		return;
 	}
 	std::lock_guard<std::mutex> lock(this->watchdogMutex);
-	if (this->watchdogStopRequested || this->watchdogArmed) {
+	if (this->watchdogStopRequested) {
+		this->watchdogArmPendingAfterStop = true;
+		return;
+	}
+	this->armWatchdogLocked();
+}
+
+void DBStats::armWatchdogLocked() {
+	if (this->watchdogArmed) {
 		return;
 	}
 	this->watchdogArmed = true;
@@ -157,15 +165,31 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 		}
 	}
 	this->watchdogCv.notify_all();
+
+	// Reset-and-notify runs on scope exit, not just after a normal join: join()
+	// can throw std::system_error, and without this a throw here would leave
+	// watchdogRetiring stuck true forever, permanently wedging a concurrent
+	// joiner parked in the wait above (and dropping an ensure() call that
+	// arrived mid-stop, leaving its database with no watchdog for good).
+	struct RetireGuard {
+		DBStats* self;
+		~RetireGuard() {
+			{
+				std::lock_guard<std::mutex> lock(self->watchdogMutex);
+				self->watchdogRetiring = false;
+				self->watchdogStopRequested = false;
+				if (self->watchdogArmPendingAfterStop) {
+					self->watchdogArmPendingAfterStop = false;
+					self->armWatchdogLocked();
+				}
+			}
+			self->watchdogCv.notify_all();
+		}
+	} retireGuard{this};
+
 	if (toJoin.joinable()) {
 		toJoin.join();
 	}
-	{
-		std::lock_guard<std::mutex> lock(this->watchdogMutex);
-		this->watchdogRetiring = false;
-		this->watchdogStopRequested = false;
-	}
-	this->watchdogCv.notify_all();
 }
 
 void DBStats::runWriteBufferManagerWatchdog() {

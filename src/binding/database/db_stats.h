@@ -45,8 +45,18 @@ private:
 	bool watchdogStopRequested = false;
 	/** One joiner owns the retiring thread; the rest wait for it. */
 	bool watchdogRetiring = false;
+	/**
+	 * An `ensure` call arrived while a stop was in flight (e.g. `db.open()`
+	 * racing `shutdown()`'s `DBRegistry::Shutdown()`, which closes databases
+	 * without holding `databasesMutex`). `watchdogStopRequested` is the only
+	 * signal that stop is resolved, so without this flag that reset is the
+	 * last anyone hears from the bailed call: the database it was arming for
+	 * is left with no watchdog for the rest of the process.
+	 */
+	bool watchdogArmPendingAfterStop = false;
 	std::atomic<uint64_t> watchdogGeneration{0};
 
+	void armWatchdogLocked();
 	void runWriteBufferManagerWatchdog();
 	void sampleWriteBufferManagerStall(
 		WbmStallWatchdogState& state,
