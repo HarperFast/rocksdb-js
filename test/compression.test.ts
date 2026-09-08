@@ -3,6 +3,7 @@ import { normalizeCompression } from '../src/store.ts';
 import { generateDBPath } from './lib/util.ts';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+	chmodSync,
 	cpSync,
 	existsSync,
 	mkdirSync,
@@ -635,6 +636,288 @@ describe('Compression', () => {
 				RocksDatabase.open(dbPath, { name: '__catalog__', compressionForAllColumnFamilies: true })
 			).toThrow(/requires an explicit compression option/);
 		});
+	});
+
+	describe('setCompression (live SetOptions mutation)', () => {
+		it('changes what the compression getter reports immediately, without closing the database', () => {
+			const db = RocksDatabase.open(tempPath(), { compression: 'none' });
+			try {
+				expect(db.compression.algorithm).toBe('none');
+				db.setCompression(realCompressor ?? 'none');
+				expect(db.compression.algorithm).toBe(realCompressor ?? 'none');
+				// The database is still open and usable — no reopen occurred.
+				expect(db.store.db.opened).toBe(true);
+			} finally {
+				db.close();
+			}
+		});
+
+		it.skipIf(!levelCompressor)(
+			'accepts the object form with a level, and the getter reports it back',
+			() => {
+				const db = RocksDatabase.open(tempPath(), { compression: 'none' });
+				try {
+					db.setCompression({ algorithm: levelCompressor!, level: 6 });
+					expect(db.compression).toEqual({ algorithm: levelCompressor, level: 6 });
+				} finally {
+					db.close();
+				}
+			}
+		);
+
+		it.skipIf(!levelCompressor)(
+			'omitting the level resets it to the algorithm default, not the previously-set level',
+			() => {
+				const db = RocksDatabase.open(tempPath(), { compression: 'none' });
+				try {
+					db.setCompression({ algorithm: levelCompressor!, level: 19 });
+					expect(db.compression).toEqual({ algorithm: levelCompressor, level: 19 });
+					db.setCompression(levelCompressor!);
+					expect(db.compression).toEqual({ algorithm: levelCompressor });
+				} finally {
+					db.close();
+				}
+			}
+		);
+
+		it.skipIf(!realCompressor)(
+			'governs new writes going forward: data written after setCompression compresses smaller, on the same open database',
+			() => {
+				const path = tempPath();
+				const db = RocksDatabase.open(path, { compression: 'none' });
+				try {
+					// Phase 1: written and compacted while compression is 'none'.
+					populate(db, 10_000);
+					const sizeAfterNone = dirSize(path);
+
+					// Live-mutate compression on the still-open database, then write and
+					// compact an equal volume of equally-compressible NEW data.
+					db.setCompression(realCompressor!);
+					expect(db.compression.algorithm).toBe(realCompressor);
+					const before = sizeAfterNone;
+					for (let i = 10_000; i < 20_000; ++i) {
+						db.putSync(i, {
+							id: i,
+							name: `record-${i}`,
+							note: 'the quick brown fox jumps over the lazy dog '.repeat(24),
+							tags: ['alpha', 'beta', 'gamma', 'delta'],
+						});
+					}
+					db.flushSync();
+					db.compactSync();
+					const growth = dirSize(path) - before;
+
+					// The second batch is the same volume of the same highly-compressible
+					// data as the first (uncompressed) batch, so its on-disk growth must be
+					// meaningfully smaller than the first batch's uncompressed size — proof
+					// the live SetOptions change took effect on new flush/compaction output
+					// without ever closing the database.
+					expect(growth).toBeLessThan(sizeAfterNone * 0.9);
+				} finally {
+					db.close();
+				}
+			}
+		);
+
+		it.skipIf(!realCompressor)(
+			'governs blob output too: a large value written after setCompression compresses smaller',
+			() => {
+				// Values >= 2KB are routed to blob files (min_blob_size), whose compression
+				// is a SEPARATE field (blob_compression_type) from the SST block algorithm —
+				// this must cross that threshold or it never exercises that field at all.
+				const path = tempPath();
+				const db = RocksDatabase.open(path, { compression: 'none' });
+				try {
+					const blobValue = 'the quick brown fox jumps over the lazy dog '.repeat(100); // ~4.5KB
+					for (let i = 0; i < 200; ++i) db.putSync(i, blobValue);
+					db.flushSync();
+					const sizeBeforeSet = dirSize(path);
+
+					db.setCompression(realCompressor!);
+					for (let i = 200; i < 400; ++i) db.putSync(i, blobValue);
+					db.flushSync();
+					const growth = dirSize(path) - sizeBeforeSet;
+
+					// Same volume of the same highly-compressible blob data; growth from the
+					// post-setCompression batch must be meaningfully smaller than the
+					// pre-setCompression batch's uncompressed size.
+					expect(growth).toBeLessThan(sizeBeforeSet * 0.9);
+				} finally {
+					db.close();
+				}
+			}
+		);
+
+		it.skipIf(!realCompressor)(
+			'persists across a close and cold reopen (not just a live in-memory change)',
+			() => {
+				const path = tempPath();
+				const db = RocksDatabase.open(path, { compression: 'none' });
+				try {
+					db.setCompression(realCompressor!);
+					expect(db.compression.algorithm).toBe(realCompressor);
+				} finally {
+					db.close();
+				}
+
+				// Plain reopen (no explicit `compression`) inherits whatever is persisted in
+				// the OPTIONS file -- proving setCompression wrote it, not just GetOptions().
+				const reopened = RocksDatabase.open(path);
+				try {
+					expect(reopened.compression.algorithm).toBe(realCompressor);
+				} finally {
+					reopened.close();
+				}
+			}
+		);
+
+		it.skipIf(!realCompressor)(
+			'a live change is visible to the already-open-column-family conflict check',
+			() => {
+				// DBRegistry::OpenDB compares an explicit second open against the LIVE
+				// GetOptions() value. Prove setCompression's mutation is that same live
+				// state: an explicit reopen at the OLD algorithm now conflicts, and one at
+				// the NEW algorithm succeeds.
+				const path = tempPath();
+				const dbA = RocksDatabase.open(path, { compression: 'none' });
+				let dbB: RocksDatabase | undefined;
+				try {
+					dbA.setCompression(realCompressor!);
+					expect(() => RocksDatabase.open(path, { compression: 'none' })).toThrow(
+						/already open with compression/
+					);
+					dbB = RocksDatabase.open(path, { compression: realCompressor! });
+					expect(dbB.compression.algorithm).toBe(realCompressor);
+				} finally {
+					try {
+						dbA.close();
+					} finally {
+						dbB?.close();
+					}
+				}
+			}
+		);
+
+		describe('validation', () => {
+			it('throws for an unsupported algorithm name', () => {
+				const db = RocksDatabase.open(tempPath());
+				try {
+					expect(() => db.setCompression('gzip' as never)).toThrow(
+						/Unsupported compression algorithm "gzip"/
+					);
+				} finally {
+					db.close();
+				}
+			});
+
+			it('throws when called on a closed database', () => {
+				const db = new RocksDatabase(tempPath());
+				expect(() => db.setCompression('none')).toThrow('Database not open');
+			});
+
+			it('throws when the algorithm is omitted', () => {
+				const db = RocksDatabase.open(tempPath());
+				try {
+					expect(() => db.setCompression({} as never)).toThrow(
+						'setCompression requires a compression algorithm'
+					);
+				} finally {
+					db.close();
+				}
+			});
+
+			it.skipIf(!realCompressor)(
+				'throws ERR_DATABASE_READONLY on a read-only handle and does not persist the change',
+				() => {
+					const path = tempPath();
+					const dbWrite = RocksDatabase.open(path, { compression: 'none' });
+					try {
+						dbWrite.putSync(1, 'x');
+					} finally {
+						dbWrite.close();
+					}
+
+					const dbReadOnly = RocksDatabase.open(path, { readOnly: true });
+					try {
+						let code: string | undefined;
+						try {
+							dbReadOnly.setCompression(realCompressor!);
+						} catch (err) {
+							code = (err as NodeJS.ErrnoException).code;
+						}
+						expect(code).toBe('ERR_DATABASE_READONLY');
+					} finally {
+						dbReadOnly.close();
+					}
+
+					const reopened = RocksDatabase.open(path);
+					try {
+						expect(reopened.compression.algorithm).toBe('none');
+					} finally {
+						reopened.close();
+					}
+				}
+			);
+		});
+
+		it.skipIf(!realCompressor)(
+			'reflects a live change after close()+open() on the same instance',
+			() => {
+				// setCompression() must keep the Store's own `compression` option in
+				// sync -- otherwise a later open() on this same object re-requests the
+				// option it was constructed with and silently reverts the live change.
+				const path = tempPath();
+				const db = RocksDatabase.open(path, { compression: 'none' });
+				db.setCompression(realCompressor!);
+				db.close();
+				db.open();
+				try {
+					expect(db.compression.algorithm).toBe(realCompressor);
+				} finally {
+					db.close();
+				}
+			}
+		);
+
+		it.skipIf(!realCompressor || process.platform === 'win32' || process.getuid?.() === 0)(
+			'a retry after a failed persist actually persists, instead of taking the no-op shortcut',
+			() => {
+				// SetOptions() applies the change to the live in-memory options first,
+				// then persists an OPTIONS file. Making the DB directory read-only
+				// blocks the persist step while the in-memory apply still succeeds,
+				// reproducing the live/durable split without needing real disk
+				// exhaustion.
+				const path = tempPath();
+				const db = RocksDatabase.open(path, { compression: 'none' });
+				try {
+					chmodSync(path, 0o555);
+					let message: string | undefined;
+					try {
+						db.setCompression(realCompressor!);
+					} catch (err) {
+						message = (err as Error).message;
+					} finally {
+						chmodSync(path, 0o755);
+					}
+					expect(message).toMatch(/already active in memory/);
+
+					// Retrying the SAME algorithm/level must not take the "already
+					// matches the live value" shortcut -- the live value only matches
+					// because the previous attempt's in-memory half succeeded, and the
+					// OPTIONS file on disk still has the old algorithm.
+					db.setCompression(realCompressor!);
+				} finally {
+					db.close();
+				}
+
+				const reopened = RocksDatabase.open(path);
+				try {
+					expect(reopened.compression.algorithm).toBe(realCompressor);
+				} finally {
+					reopened.close();
+				}
+			}
+		);
 	});
 
 	describe('compression getter shape', () => {

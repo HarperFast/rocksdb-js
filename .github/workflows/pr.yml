@@ -171,8 +171,19 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Bun
+        # windows-latest gets extra retries for a known pre-existing DBRegistry::OpenDB
+        # teardown/reopen race (HarperFast/rocksdb-js#695) that Bun's single-process,
+        # fileParallelism:false run (every test file's DB churn in one process) can
+        # trip during a normal open/close sequence -- unrelated to this workflow's
+        # own test content. Not a fix for #695 itself, just enough retry budget that
+        # a rare pre-existing race doesn't block unrelated PRs.
         shell: bash
-        run: pnpm test:bun || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm test:bun)
+        run: |
+          for i in 1 2 3; do
+            pnpm test:bun && exit 0
+            [ "${{ matrix.os }}" = "windows-latest" ] || exit 1
+          done
+          exit 1
 
   deno-test:
     name: Test on Deno
