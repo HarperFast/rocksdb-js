@@ -233,9 +233,7 @@ std::chrono::milliseconds timestampFloorScanBudget() {
 				if (consumed == std::strlen(raw) && parsed >= 0) {
 					return std::chrono::milliseconds(std::min(parsed, maxBudgetMs));
 				}
-			} catch (const std::exception&) {
-				// malformed: fall through to the default
-			}
+			} catch (const std::exception&) {}
 		}
 		return std::chrono::milliseconds(2000);
 	}();
@@ -308,8 +306,8 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 	if (scan.tornTail) {
 		std::ostringstream msg;
 		msg << "Transaction log \"" << logName << "\" of database " << dbPath
-			<< " has an unrecovered torn tail; entries before the tail were scanned, and no "
-			   "framed entry follows it.";
+			<< " ends in a partial entry this handle cannot recover; it may be an in-flight "
+			   "append from another writer. Its contiguous framed prefix was scanned.";
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	}
