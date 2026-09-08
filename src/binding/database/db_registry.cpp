@@ -822,6 +822,13 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 						currentPaths[i].target_size != options.paths[i].targetSize;
 				}
 			}
+			if (differs && currentIsUntiered) {
+				throw rocksdb_js::DBException(
+					"Database \"" + path + "\" is already open in this process without storage "
+					"paths, and db_paths is fixed for the life of an open database; cannot add "
+					"paths to it now. Close every handle to it first — the change needs a cold open."
+				);
+			}
 			if (differs) {
 				throw rocksdb_js::DBException(
 					"Database \"" + path + "\" is already open with a different set of storage paths; "
