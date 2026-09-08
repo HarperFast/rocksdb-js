@@ -363,6 +363,11 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 
 	const auto deadline = std::chrono::steady_clock::now() + budget;
 	const LogPosition flushedPosition = this->getLastFlushedPosition();
+	auto wasPurged = [this](const std::shared_ptr<TransactionLogFile>& logFile) {
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		auto it = this->sequenceFiles.find(logFile->sequenceNumber);
+		return it == this->sequenceFiles.end() || it->second != logFile;
+	};
 	DurableKeyScan result;
 	result.discoveryIncomplete = this->discoveryIncomplete;
 	result.complete = !result.discoveryIncomplete;
@@ -391,8 +396,9 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 					break;
 				case RecoveryScan::Kind::TruncateTail:
 					result.tornTail = true;
-					if (logFile->sequenceNumber == flushedPosition.logSequenceNumber &&
-						fileScan.validEnd < flushedPosition.positionInLogFile) {
+					if (logFile->sequenceNumber < flushedPosition.logSequenceNumber ||
+						(logFile->sequenceNumber == flushedPosition.logSequenceNumber &&
+							fileScan.validEnd < flushedPosition.positionInLogFile)) {
 						result.stoppedAtBreak = true;
 						result.complete = false;
 					}
@@ -406,11 +412,17 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 				break;
 			}
 		} catch (const std::exception& e) {
+			if (wasPurged(logFile)) {
+				continue;
+			}
 			result.readFailed = true;
 			result.complete = false;
 			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s: %s\n",
 				this, logFile->path.string().c_str(), e.what());
 		} catch (...) {
+			if (wasPurged(logFile)) {
+				continue;
+			}
 			result.readFailed = true;
 			result.complete = false;
 			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s\n",

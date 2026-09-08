@@ -73,7 +73,6 @@ bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::pa
 /** Raises the monotonic floor when `floor` is plausible; returns whether it moved. */
 bool raiseMonotonicTimestampFloor(double floor);
 
-/** Uses a caller-supplied plausible bound. */
 bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
 
 void tryCreateDirectory(

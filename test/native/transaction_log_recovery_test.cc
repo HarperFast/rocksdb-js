@@ -691,6 +691,11 @@ std::filesystem::path uniqueFloorScanStorePath() {
 		("rocksdb-js-floor-scan-" + std::to_string(nonce));
 }
 
+void writeLogImage(const std::filesystem::path& path, const LogImage& image) {
+	std::ofstream log(path, std::ios::binary | std::ios::trunc);
+	log.write(image.data(), image.size());
+}
+
 } // namespace
 
 TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
@@ -797,8 +802,7 @@ TEST(TransactionLogFloorScan, ProtectedTornTailIsIncomplete) {
 	rocksdb_js::LogPosition flushedPosition(img.size(), 1);
 	img.raw({ 1 });
 	{
-		std::ofstream log(logPath, std::ios::binary | std::ios::trunc);
-		log.write(img.data(), img.size());
+		writeLogImage(logPath, img);
 		std::ofstream state(storePath / "txn.state", std::ios::binary | std::ios::trunc);
 		state.write(reinterpret_cast<const char*>(&flushedPosition), sizeof(flushedPosition));
 	}
@@ -812,6 +816,41 @@ TEST(TransactionLogFloorScan, ProtectedTornTailIsIncomplete) {
 		EXPECT_TRUE(scan.stoppedAtBreak);
 		EXPECT_TRUE(scan.tornTail);
 		EXPECT_DOUBLE_EQ(scan.largestKey, 500.0);
+	}
+
+	std::filesystem::remove_all(storePath);
+}
+
+TEST(TransactionLogFloorScan, OlderProtectedTornTailIsIncomplete) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	auto previousPath = storePath / "1.txnlog";
+	auto currentPath = storePath / "2.txnlog";
+	LogImage previous;
+	previous.entry(10, 1, 500.0);
+	previous.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 700.0);
+	previous.entry(10, 1, 900.0).entry(10, 1, 950.0).entry(10, 1, 1000.0);
+	previous.raw({ 1 });
+	LogImage current;
+	current.entry(10, 1, 700.0);
+	rocksdb_js::LogPosition flushedPosition(current.size(), 2);
+	writeLogImage(previousPath, previous);
+	writeLogImage(currentPath, current);
+	{
+		std::ofstream state(storePath / "txn.state", std::ios::binary | std::ios::trunc);
+		state.write(reinterpret_cast<const char*>(&flushedPosition), sizeof(flushedPosition));
+	}
+
+	{
+		rocksdb_js::TransactionLogStore store(
+			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(previousPath, 1));
+		store.sequenceFiles.emplace(2, std::make_shared<TransactionLogFile>(currentPath, 2));
+		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
+		EXPECT_FALSE(scan.complete);
+		EXPECT_TRUE(scan.stoppedAtBreak);
+		EXPECT_TRUE(scan.tornTail);
+		EXPECT_DOUBLE_EQ(scan.largestKey, 700.0);
 	}
 
 	std::filesystem::remove_all(storePath);

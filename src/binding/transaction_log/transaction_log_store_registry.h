@@ -182,9 +182,6 @@ public:
 	 * Raises the process-wide monotonic timestamp floor from the caller-named,
 	 * locally originated log. Call after DiscoverStores() has completed recovery;
 	 * incomplete scans are best effort and emit `log.warn`.
-	 *
-	 * @param dbPath The database path.
-	 * @param logName The name of the locally originated transaction log store.
 	 */
 	static void SeedTimestampFloor(const std::string& dbPath, const std::string& logName);
 
