@@ -740,13 +740,12 @@ static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
  * frees the name.
  */
 static rocksdb::Status dropColumnFamilyGated(DBHandle& dbHandle) {
-	// unregisterColumnFamily erases the registry's reference below; keep ours.
 	std::shared_ptr<ColumnFamilyDescriptor> column = dbHandle.columnDescriptor;
 	std::shared_ptr<DBDescriptor> descriptor = dbHandle.descriptor;
 	ColumnFamilyGate& gate = *column->gate;
 
 	gate.beginDrop();
-	dropBeginCounter().fetch_add(1, std::memory_order_acq_rel);
+	testObserveDropBegin();
 	gate.waitForAdmitted();
 
 	rocksdb::Status status = descriptor->db->DropColumnFamily(column->column.get());
@@ -758,10 +757,8 @@ static rocksdb::Status dropColumnFamilyGated(DBHandle& dbHandle) {
 	}
 
 	gate.markDropped();
-	// Free the name so a later open creates a fresh family instead of reusing
-	// this dangling handle. Dropping bulk-deletes the data exactly like clear();
-	// the VT sweep belongs to whichever call actually retired the entry (see
-	// DBHandle::clear), never to a stale handle's tolerated re-drop.
+	// The VT sweep (see DBHandle::clear) belongs to the call that retired the
+	// entry, never to a stale handle's tolerated re-drop.
 	if (descriptor->unregisterColumnFamily(column->column->GetName(), column) && dbHandle.enableVerificationTable) {
 		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
 		if (vt) vt->settleAllSlots();

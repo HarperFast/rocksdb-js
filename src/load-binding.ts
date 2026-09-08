@@ -781,7 +781,9 @@ export const setCommitHoldForTesting: (hold: boolean) => void = binding.setCommi
 
 /**
  * Test-only: monotonic process-wide counters of commits admitted through the column-family gate
- * and of drops that closed one, so a test can assert the commit/drop ordering it constructed.
+ * and of drops that closed one, so a test can assert the commit/drop ordering it constructed. The
+ * first read arms the counting (they are inert in production); take the baseline reading before
+ * the action under test.
  */
 export const getCommitGateCountersForTesting: () => {
 	commitsAdmitted: number;

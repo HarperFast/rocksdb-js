@@ -724,68 +724,18 @@ rocksdb::Status TransactionHandle::removeSync(
 	return status;
 }
 
-namespace {
-
-rocksdb::Status columnFamilyDroppedStatus(const ColumnFamilyGate& gate) {
-	return rocksdb::Status::ColumnFamilyDropped(
-		"column family \"" + gate.name + (gate.isDropped() ? "\" was dropped" : "\" is being dropped")
-	);
-}
-
-} // namespace
-
-rocksdb::Status TransactionHandle::admitColumnFamilies(ColumnFamilyAdmission& admission, DBDescriptor& descriptor) {
+rocksdb::Status TransactionHandle::admitColumnFamilies(ColumnFamilyAdmission& admission) {
 	if (!this->txn) {
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
-
-	if (!this->stagedColumns.overflowed()) {
-		for (size_t i = 0; i < this->stagedColumns.size(); ++i) {
-			ColumnFamilyGate& gate = this->stagedColumns.at(i);
-			if (!admission.admit(gate)) {
-				return columnFamilyDroppedStatus(gate);
-			}
-		}
-		return rocksdb::Status::OK();
-	}
-
-	// More distinct families than the inline set tracks: derive the exact set
-	// from the batch and resolve each id to its live gate. Resolution is by id,
-	// never by name, so an id whose family was dropped (and unregistered) is
-	// refused even if a same-name family has since been created.
-	std::vector<uint32_t> ids;
-	rocksdb::Status status = collectColumnFamilyIds(*this->txn->GetWriteBatch()->GetWriteBatch(), ids);
-	if (!status.ok()) {
-		return status;
-	}
-	std::vector<std::shared_ptr<ColumnFamilyGate>> gates;
-	gates.reserve(ids.size());
-	{
-		std::lock_guard<std::mutex> lock(descriptor.columnsMutex);
-		for (uint32_t id : ids) {
-			if (id == 0) {
-				continue; // the default family is cleared, never dropped
-			}
-			std::shared_ptr<ColumnFamilyGate> gate;
-			for (const auto& [name, column] : descriptor.columns) {
-				if (column && column->gate && column->gate->id == id) {
-					gate = column->gate;
-					break;
-				}
-			}
-			if (!gate) {
-				return rocksdb::Status::ColumnFamilyDropped("column family " + std::to_string(id) + " was dropped");
-			}
-			gates.push_back(std::move(gate));
+	const size_t count = this->stagedColumns.size();
+	admission.reserve(count);
+	for (size_t i = 0; i < count; ++i) {
+		ColumnFamilyGate& gate = this->stagedColumns.at(i);
+		if (!admission.admit(gate)) {
+			return columnFamilyDroppedStatus(gate);
 		}
 	}
-	admission.reserve(gates.size());
-	for (const auto& gate : gates) {
-		if (!admission.admit(*gate)) {
-			return columnFamilyDroppedStatus(*gate);
-		}
-	}
-	admission.keepAlive = std::move(gates);
 	return rocksdb::Status::OK();
 }
 

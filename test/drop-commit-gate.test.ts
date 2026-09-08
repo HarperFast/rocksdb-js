@@ -1,6 +1,7 @@
 import { RocksDatabase } from '../src/index.ts';
 import {
 	forceDropFailureForTesting,
+	forceTryAgainForTesting,
 	getCommitGateCountersForTesting,
 	setCommitHoldForTesting,
 } from '../src/load-binding.ts';
@@ -209,7 +210,6 @@ describe.each(modes)('drop before commit ($mode)', ({ pessimistic }) => {
 				}),
 				'doomed'
 			);
-			// no partial apply: the live half never reached RocksDB
 			expect(victim.getSync('live')).toBeUndefined();
 			await expectHealthy(victim, dbPath, pessimistic);
 		}));
@@ -428,6 +428,10 @@ describe.each(modes)('commit admitted before the drop begins ($mode)', ({ pessim
 		const b = await startWorker(dbPath, pessimistic);
 		try {
 			doomed.putSync('k', 'v');
+			// both handles must hold the same generation before either drops
+			a.send({ type: 'open', id: 0, family: 'doomed' });
+			b.send({ type: 'open', id: 0, family: 'doomed' });
+			await Promise.all([a.waitFor('opened', 0), b.waitFor('opened', 0)]);
 			a.send({ type: 'drop', id: 1, family: 'doomed' });
 			b.send({ type: 'drop', id: 2, family: 'doomed' });
 			const [droppedA, droppedB] = await Promise.all([
@@ -520,28 +524,47 @@ describe('release paths', () => {
 			}
 		));
 
-	it('keeps the dropped-family cause reachable when a logged transaction is abandoned', () =>
+	it('refuses a logged transaction before its log batch is written when the drop already began', () =>
 		dbRunner(
 			{ dbOptions: [{ name: 'victim' }, { name: 'doomed' }, { name: 'doomed' }] },
 			async ({ db: victim, dbPath }, { db: doomed }, { db: stale }) => {
-				let caught: unknown;
-				try {
-					await stale.transaction(async (txn: Transaction) => {
+				const error = await rejectsWithDropped(
+					stale.transaction(async (txn: Transaction) => {
 						stale.useLog('audit').addEntry(Buffer.from('entry'), txn.id);
 						await stale.put('a', '1', { transaction: txn });
 						doomed.dropSync();
-					});
-				} catch (err) {
-					caught = err;
-				}
-				// the abandonment is what the caller sees (the log batch was already
-				// written), with the refusal that caused it attached
-				expect(caught).toBeInstanceOf(TransactionAbandonedError);
-				const cause = expectDroppedError((caught as CodedError).cause, 'doomed');
-				expect(cause.hasLog).toBe(true);
+					}),
+					'doomed'
+				);
+				// the pre-check kept the doomed batch out of the log, so the caller sees
+				// the refusal itself rather than an abandonment
+				expect(error.hasLog).toBe(false);
 				await expectHealthy(victim, dbPath, false);
 			}
 		));
+
+	it('keeps the commit failure reachable as the cause of an abandoned logged transaction', () =>
+		dbRunner({ dbOptions: [{ name: 'victim' }] }, async ({ db: victim }) => {
+			// a forced TryAgain after the log write, with no retry budget, is the
+			// deterministic way to abandon a logged transaction
+			forceTryAgainForTesting(1);
+			let caught: unknown;
+			try {
+				await victim.transaction(
+					async (txn: Transaction) => {
+						victim.useLog('audit').addEntry(Buffer.from('entry'), txn.id);
+						await victim.put('a', '1', { transaction: txn });
+					},
+					{ maxRetries: 1 }
+				);
+			} catch (err) {
+				caught = err;
+			} finally {
+				forceTryAgainForTesting(0);
+			}
+			expect(caught).toBeInstanceOf(TransactionAbandonedError);
+			expect((caught as CodedError).cause).toMatchObject({ code: 'ERR_TRY_AGAIN', hasLog: true });
+		}));
 
 	it('frees the name on a retry after RocksDB dropped the family but reported a failure', () =>
 		dbRunner(
@@ -598,22 +621,36 @@ describe('same-thread dropSync() across commit execution modes', () => {
 	function runFixture(mode: string, env: Record<string, string>): Promise<Record<string, any>> {
 		return new Promise((resolve, reject) => {
 			const dbPath = generateDBPath();
-			const childEnv: NodeJS.ProcessEnv = {
-				...process.env,
-				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '300',
-				...env,
-			};
+			const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env };
 			if (!('ROCKSDB_JS_COMMIT_THREAD' in env)) {
 				delete childEnv.ROCKSDB_JS_COMMIT_THREAD;
 			}
 			const child = spawn(process.execPath, [fixturePath, dbPath, mode], { env: childEnv });
 			let stdout = '';
 			let stderr = '';
+			let settled = false;
+			// A gate regression wedges the child inside dropSync(), where no in-child
+			// timer can run; reap it from here rather than leaving it orphaned.
+			const watchdog = setTimeout(() => {
+				if (settled) return;
+				settled = true;
+				child.kill('SIGKILL');
+				reject(new Error(`fixture timed out (${mode})\n${stderr}`));
+			}, 40_000);
 			child.stdout.on('data', (chunk) => (stdout += chunk));
 			child.stderr.on('data', (chunk) => (stderr += chunk));
-			child.on('error', reject);
+			child.on('error', (err) => {
+				clearTimeout(watchdog);
+				if (!settled) {
+					settled = true;
+					reject(err);
+				}
+			});
 			child.on('close', (code, signal) => {
+				clearTimeout(watchdog);
 				rmSync(dbPath, { recursive: true, force: true });
+				if (settled) return;
+				settled = true;
 				if (code !== 0 || signal) {
 					reject(new Error(`fixture exited code=${code} signal=${signal}\n${stderr}`));
 					return;
@@ -630,6 +667,11 @@ describe('same-thread dropSync() across commit execution modes', () => {
 				const result = await runFixture(mode, env);
 				expect(result.commitWins).toBe('fulfilled');
 				expect(result.dropBeganAfterAdmission).toBe(true);
+				// the helper's sync commit was refused while the drop was still waiting
+				expect(result.lateCommit?.code).toBe('ERR_COLUMN_FAMILY_DROPPED');
+				expect(result.lateCommit?.message).toMatch(/is being dropped/);
+				expect(result.lateAdmittedDelta).toBe(0);
+				expect(result.unrelatedDuring).toBe('ok');
 				expect(result.dropWins?.code).toBe('ERR_COLUMN_FAMILY_DROPPED');
 				expect(result.dropWins?.message).toMatch(DROPPED_MESSAGE);
 				expect(result.victimProbe).toBe(1);

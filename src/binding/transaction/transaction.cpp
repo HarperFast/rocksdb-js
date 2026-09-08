@@ -327,19 +327,24 @@ static void rejectRetryNowSetupFailure(
 
 /**
  * Column-family admission for a commit (AGENTS.md invariant 20), with the
- * exception boundary the commit lane lacks: a throw (allocation on the
- * overflow path, the status string) becomes a rejected commit and RAII drops
- * any partial admission.
+ * exception boundary the commit lane lacks: a throw becomes a rejected commit
+ * and RAII drops any partial admission. The fallback status carries no message
+ * so it cannot throw itself.
  */
 static rocksdb::Status admitStagedColumnFamilies(
 	TransactionHandle& txnHandle,
-	DBDescriptor& descriptor,
 	ColumnFamilyAdmission& admission
 ) {
 	try {
-		return txnHandle.admitColumnFamilies(admission, descriptor);
+		return txnHandle.admitColumnFamilies(admission);
 	} catch (const std::exception& e) {
-		return rocksdb::Status::Aborted(std::string("Column family admission failed: ") + e.what());
+		try {
+			return rocksdb::Status::Aborted(std::string("Column family admission failed: ") + e.what());
+		} catch (...) {
+			return rocksdb::Status::Aborted();
+		}
+	} catch (...) {
+		return rocksdb::Status::Aborted();
 	}
 }
 
@@ -365,6 +370,12 @@ static void executeLogWork(TransactionCommitState* state) {
 	} else if (!txnHandle->dbHandle->opened()) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	} else if (ColumnFamilyGate* dropping = txnHandle->stagedColumns.firstDropping()) {
+		// Advisory pre-check: a drop already under way will refuse this commit
+		// at admission anyway; failing here keeps the doomed batch out of the
+		// transaction log, so the caller sees the refusal rather than an
+		// abandonment. Admission remains the authoritative check.
+		state->status = columnFamilyDroppedStatus(*dropping);
 	} else if (txnHandle->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
 			txnHandle.get(), txnHandle->id);
@@ -422,15 +433,12 @@ static void executeCommitWork(TransactionCommitState* state) {
 					? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
 					: rollbackStatus;
 			} else {
-				// Admission is scoped to the RocksDB commit alone: released the
-				// moment Commit() returns, before the log publish, the VT release
-				// and the completion dispatch, so a waiting drop is held only for
-				// the write itself.
+				// Released the moment Commit() returns, so a waiting drop is held
+				// only for the write itself.
 				ColumnFamilyAdmission admission;
-				state->status = admitStagedColumnFamilies(*txnHandle, *descriptor, admission);
+				state->status = admitStagedColumnFamilies(*txnHandle, admission);
 				if (state->status.ok()) {
-					commitAdmittedCounter().fetch_add(1, std::memory_order_acq_rel);
-					testHoldAdmittedCommit();
+					testObserveAdmittedCommit();
 					// Test seam: stall immediately before the RocksDB commit, with the
 					// async work still registered and `txn` about to be dereferenced.
 					// This is the window TransactionHandle::close()'s bounded drain is
@@ -929,6 +937,19 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	std::shared_ptr<TransactionLogStore> store = nullptr;
 	bool hasLog = false;
 
+	// Same advisory pre-check as executeLogWork: keep a batch a drop is already
+	// refusing out of the transaction log.
+	if (ColumnFamilyGate* dropping = (*txnHandle)->stagedColumns.firstDropping()) {
+		(*txnHandle)->state = TransactionState::Pending;
+		napi_value error;
+		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, columnFamilyDroppedStatus(*dropping), "Transaction commit failed");
+		napi_value hasLogValue;
+		NAPI_STATUS_THROWS(::napi_get_boolean(env, (*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
+		NAPI_STATUS_THROWS(::napi_throw(env, error));
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
@@ -951,18 +972,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status;
 	{
-		auto descriptor = (*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr;
-		if (!descriptor) {
-			status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-		} else {
-			// Same scoping as the async commit stage: admission covers only Commit().
-			ColumnFamilyAdmission admission;
-			status = admitStagedColumnFamilies(**txnHandle, *descriptor, admission);
-			if (status.ok()) {
-				commitAdmittedCounter().fetch_add(1, std::memory_order_acq_rel);
-				testHoldAdmittedCommit();
-				status = (*txnHandle)->txn->Commit();
-			}
+		ColumnFamilyAdmission admission;
+		status = admitStagedColumnFamilies(**txnHandle, admission);
+		if (status.ok()) {
+			testObserveAdmittedCommit();
+			status = (*txnHandle)->txn->Commit();
 		}
 	}
 

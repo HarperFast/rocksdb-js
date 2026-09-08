@@ -752,10 +752,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     (`ColumnFamilyAdmission` releases what it already took on the first refusal). Rules that keep it
     deadlock- and leak-free:
     - **Admission is taken at commit, never at staging.** `TransactionHandle::stagedColumns` only
-      _records_ which droppable families the transaction successfully wrote — inline, without a lock
-      or an allocation, up to 8 distinct families; past that an overflow flag makes the commit derive
-      the exact set from the write batch and resolve each id under `columnsMutex` (by id, so a
-      recreated same-name family is never rebound; an unresolvable id is a dropped family). A staged,
+      _records_ which droppable families the transaction successfully wrote — gate tokens, inline
+      and without a lock or an allocation for up to 8 distinct families, then in a heap vector
+      allocated once at the ninth (deriving the set from the write batch at commit was tried
+      instead and rejected: it re-parses the whole batch on the serialized commit lane). A staged,
       idle transaction holds nothing: Harper calls `dropSync()` from inside a synchronous exclusive
       schema section while transactions staged on that thread are still open, and a staging-time hold
       would deadlock the drop against the only event loop that could release it. The commit stage on
@@ -765,7 +765,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     - **The admission is a C++ scope object around `txn->Commit()`** in both `executeCommitWork`
       and `CommitSync`: released before the log publish, the VT release and the completion dispatch,
       and on the exception path (`admitStagedColumnFamilies` turns a throw into a rejected commit). No
-      JS callback can leave a count behind, so a drop cannot wedge on a lost release.
+      JS callback can leave a count behind, so a drop cannot wedge on a lost release. The log stage
+      additionally runs an _advisory_ `firstDropping()` pre-check before `writeBatch`, so the common
+      drop-wins case refuses before any log bytes exist (a caller sees the refusal, not an
+      abandonment); only admission is authoritative.
     - **Transactions pin gate tokens, never `ColumnFamilyDescriptor`s.** A token is the atomic word
       plus the family's name, so a transaction that outlives its family — or, on the drain-timeout
       leak path in `TransactionHandle::close()`, the whole database — touches no RocksDB state when
@@ -789,7 +792,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     - Ordering tests observe rather than sleep: `setCommitHoldForTesting`,
       `getCommitGateCountersForTesting` (`commitsAdmitted`/`dropsBegun`) and
       `forceDropFailureForTesting` (core/test_seam.h, process-global like `forceTryAgainForTesting`)
-      exist for `test/drop-commit-gate.test.ts`; the `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` seam sits
+      exist for `test/drop-commit-gate.test.ts`. The counters and hold are inert until the first
+      counter read or a hold arms them, so a production commit pays one relaxed load and never a
+      read-modify-write on a shared cache line. The `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` seam sits
       inside the admitted window.
 
     Non-transactional `putSync`/`removeSync` are not gated: #725's `ignore_missing_column_families`

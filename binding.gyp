@@ -53,7 +53,6 @@
 			'sources': [
 				'src/binding/binding.cpp',
 				'src/binding/core/background_error.cpp',
-				'src/binding/core/column_family_gate.cpp',
 				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/open_status.cpp',
@@ -232,7 +231,6 @@
 			],
 			'sources': [
 				'src/binding/core/background_error.cpp',
-				'src/binding/core/column_family_gate.cpp',
 				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
 				'src/binding/core/open_status.cpp',

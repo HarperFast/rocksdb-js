@@ -45,11 +45,16 @@ inline bool testForceTryAgain() {
 	return false;
 }
 
-// Ordering seams for the column-family commit gate (test/drop-commit-gate.test.ts). A delay can
-// only widen a race window; these let a test *observe* that a commit was admitted or a drop began,
-// and park an admitted commit until released, so the commit-wins / drop-wins orderings are asserted
-// rather than hoped for. Process-global like forceTryAgainCounter (shared across worker_threads);
-// set from JS via the binding's `setCommitHoldForTesting` / `getCommitGateCountersForTesting`.
+// Ordering seams for the column-family commit gate (test/drop-commit-gate.test.ts): counters that
+// observe a commit passing admission or a drop closing it, and a hold that parks an admitted commit
+// until released. Inert until armed — the first `getCommitGateCountersForTesting()` read or a
+// `setCommitHoldForTesting(true)` arms them — so a production commit pays one relaxed load, never a
+// read-modify-write on a process-global cache line. Process-global like forceTryAgainCounter.
+inline std::atomic<bool>& commitGateSeamsArmed() {
+	static std::atomic<bool> armed{false};
+	return armed;
+}
+
 inline std::atomic<uint64_t>& commitAdmittedCounter() {
 	static std::atomic<uint64_t> counter{0};
 	return counter;
@@ -65,11 +70,22 @@ inline std::atomic<bool>& commitHoldFlag() {
 	return flag;
 }
 
-// Parks an admitted commit while the hold flag is set. Bounded so a test that forgets to release
-// cannot wedge the commit lane past its own timeout.
-inline void testHoldAdmittedCommit() {
+// Call after admission, before the RocksDB commit. The hold is bounded so a test that forgets to
+// release cannot wedge the commit lane past its own timeout.
+inline void testObserveAdmittedCommit() {
+	if (!commitGateSeamsArmed().load(std::memory_order_relaxed)) {
+		return;
+	}
+	commitAdmittedCounter().fetch_add(1, std::memory_order_acq_rel);
 	for (int i = 0; i < 30000 && commitHoldFlag().load(std::memory_order_acquire); ++i) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+}
+
+// Call after beginDrop(), before waiting for admitted commits.
+inline void testObserveDropBegin() {
+	if (commitGateSeamsArmed().load(std::memory_order_relaxed)) {
+		dropBeginCounter().fetch_add(1, std::memory_order_acq_rel);
 	}
 }
 

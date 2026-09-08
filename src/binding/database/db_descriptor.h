@@ -839,11 +839,8 @@ struct ColumnFamilyDescriptor final {
 	std::mutex userSharedBuffersMutex;
 
 	/**
-	 * Commit/drop admission gate for this family, shared by every handle and
-	 * env on the descriptor (AGENTS.md invariant 20). Null for the default
-	 * family, which is cleared rather than dropped and so never needs one.
-	 * Transactions hold the token, not this descriptor, so a token outliving
-	 * the family (or the database) touches no RocksDB state on release.
+	 * Commit/drop admission gate (AGENTS.md invariant 20); null for the default
+	 * family, which is cleared rather than dropped.
 	 */
 	const std::shared_ptr<ColumnFamilyGate> gate;
 
