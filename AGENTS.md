@@ -779,8 +779,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       attached _this_ manager (attachment is decided per open, so a database opened before the
       manager was configured, or while its size was 0, has not). Read-only opens are included because
       WAL recovery can retain charged memtables. A dropped family can remain charged through a live
-      handle after leaving the by-name map, so that descriptor makes the inventory unavailable rather
-      than incomplete. The retention value it reports is the **effective**
+      handle after leaving the by-name map, so `unregisterColumnFamily` moves it to
+      `DBDescriptor::droppedColumns` — a `weak_ptr` plus a copy of its retention target — and the
+      walk keeps counting it until that last handle closes. Only `expired()` is ever called on that
+      reference: `lock()`ing it would make the sampling thread the potential last releaser, running
+      `~ColumnFamilyDescriptor` (and the RocksDB handle it owns) under both inventory locks. Latching
+      the descriptor unavailable instead was the first attempt, and one `dropSync()` then blinded the
+      report for the life of the database. The retention value it reports is the **effective**
       `max_write_buffer_size_to_maintain` read from `db->GetOptions(cf)` at creation, never the
       requested one: #821's whole finding is that `TransactionDB::Open` rewrites a requested `0` into
       256 MiB per CF, so the requested value hides the fact the report exists to expose.

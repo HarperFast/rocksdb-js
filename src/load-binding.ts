@@ -705,7 +705,11 @@ export type WriteBufferManagerStats = {
 	 * `ROCKSDB_JS_WBM_STALL_WARN_MS` is not `0`.
 	 */
 	watchdogRunning: boolean;
-	/** Live column families across every writable database attached to this manager. */
+	/**
+	 * Live column families across every database attached to this manager. A
+	 * dropped column family keeps charging the manager until its last handle
+	 * closes, so it is counted until then.
+	 */
 	columnFamilies: number;
 	/**
 	 * `false` when the column-family inventory could not be collected because the

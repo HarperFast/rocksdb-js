@@ -535,6 +535,9 @@ void DBDescriptor::finishClose() {
 	{
 		std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
 		this->columns.clear();
+		// The entry stays in the registry until the purge tail finishes, so stop
+		// reporting this database's dropped families the moment its live ones go.
+		this->droppedColumns.clear();
 	}
 
 	this->events.releaseAll();
@@ -1646,17 +1649,34 @@ uint32_t DBDescriptor::transactionGetNextId() {
  */
 void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
 	std::lock_guard<std::mutex> lock(this->columnsMutex);
-	this->writeBufferManagerInventoryComplete = false;
 	// Retire debounce state so the map stays bounded and a recreated CF of the
 	// same name starts fresh rather than inheriting a stale reported-stalled bit.
 	this->writeStallDebounce.forget(columnName);
-	if (this->columns.erase(columnName)) {
-		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
-			this, columnName.c_str());
-	} else {
+	// Drop families whose last handle has since closed; this is the only place
+	// the list grows, so pruning here bounds it.
+	std::erase_if(this->droppedColumns, [](const DroppedColumnFamily& dropped) {
+		return dropped.descriptor.expired();
+	});
+	auto it = this->columns.find(columnName);
+	if (it == this->columns.end()) {
 		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" not found\n",
 			this, columnName.c_str());
+		return;
 	}
+	std::weak_ptr<ColumnFamilyDescriptor> dropped = it->second;
+	const int64_t maxWriteBufferSizeToMaintain =
+		it->second ? it->second->maxWriteBufferSizeToMaintain : 0;
+	this->columns.erase(it);
+	// A dropped family keeps charging the WriteBufferManager until its last
+	// handle closes, so keep counting it in the stall inventory until then —
+	// dropping it here would understate the memory a stall report has to
+	// explain, and latching the inventory unavailable would erase that report
+	// for the life of the database.
+	if (!dropped.expired()) {
+		this->droppedColumns.push_back({ std::move(dropped), maxWriteBufferSizeToMaintain });
+	}
+	DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
+		this, columnName.c_str());
 }
 
 /**

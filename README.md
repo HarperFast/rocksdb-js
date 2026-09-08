@@ -268,11 +268,13 @@ where the call was made.
   Sampled once a second by the watchdog, so `0` for a stall's first second and whenever
   `watchdogRunning` is `false`.
 - `watchdogRunning: boolean` Whether the stall watchdog thread is running.
-- `columnFamilies: number` Live column families across every database attached to this manager.
+- `columnFamilies: number` Live column families across every database attached to this manager. A
+  dropped column family keeps charging the manager until its last handle closes, so it is counted
+  until then.
 - `inventoryAvailable: boolean` `false` when the inventory could not be collected because the
-  database registry or a column-family inventory was locked, or a dropped column family may still
-  be retained by a live handle. The two inventory fields are then empty and everything else is
-  still live; the call never blocks on database work that may itself be stalled.
+  database registry or a column-family inventory was locked. The two inventory fields are then
+  empty and everything else is still live; the call never blocks on database work that may itself
+  be stalled.
 - `maxWriteBufferSizeToMaintain: Record<string, number>` Effective per-column-family retained-history
   target (as a decimal string) to how many of those column families carry it. Effective, not
   requested: RocksDB rewrites a requested `0` for a transaction database.

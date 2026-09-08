@@ -118,9 +118,9 @@ public:
 	 * effective `max_write_buffer_size_to_maintain` — the inventory the stall
 	 * report needs to explain a full budget.
 	 *
-	 * Only descriptors that attached this exact manager are counted. If a dropped
-	 * column family may still be retained by a live handle, the inventory is
-	 * reported unavailable rather than omitting a possible budget owner.
+	 * Only descriptors that attached this exact manager are counted. A dropped
+	 * column family still charging the manager through a live handle is counted
+	 * too, and stops being counted once that last handle closes.
 	 *
 	 * Reads only cached integers under `databasesMutex` -> `columnsMutex` (the
 	 * order `OpenDB` already establishes) and copies no `shared_ptr` out, so it

@@ -133,6 +133,8 @@ describe('WriteBufferManager', () => {
 				const readOnlyPath = generateDBPath();
 				const attachedPath = generateDBPath();
 				const columnFamilies = (): number => getWriteBufferManagerStats().columnFamilies;
+				const sumTargets = (targets: Record<string, number>): number =>
+					Object.values(targets).reduce((total, count) => total + count, 0);
 
 				const opened: RocksDatabase[] = [];
 				try {
@@ -164,14 +166,31 @@ describe('WriteBufferManager', () => {
 					opened.push(readOnly);
 					expect(columnFamilies()).toBe(withAttached + 1);
 
+					// A dropped family keeps charging the manager until its last handle
+					// closes, so it stays counted across the drop and stops being
+					// counted at that close — the inventory recovers rather than
+					// latching unavailable for the life of the database.
+					const retained = new RocksDatabase(droppedPath);
+					retained.open();
+					opened.push(retained);
 					const dropped = new RocksDatabase(droppedPath, { name: 'dropped' });
 					dropped.open();
 					opened.push(dropped);
+					const withDropped = columnFamilies();
+					expect(withDropped).toBe(withAttached + 3);
+
 					dropped.dropSync();
-					const incomplete = getWriteBufferManagerStats();
-					expect(incomplete.inventoryAvailable).toBe(false);
-					expect(incomplete.columnFamilies).toBe(0);
-					expect(incomplete.maxWriteBufferSizeToMaintain).toEqual({});
+					const afterDrop = getWriteBufferManagerStats();
+					expect(afterDrop.inventoryAvailable).toBe(true);
+					expect(afterDrop.columnFamilies).toBe(withDropped);
+					expect(sumTargets(afterDrop.maxWriteBufferSizeToMaintain)).toBe(withDropped);
+
+					dropped.close();
+					opened.splice(opened.indexOf(dropped), 1);
+					const afterClose = getWriteBufferManagerStats();
+					expect(afterClose.inventoryAvailable).toBe(true);
+					expect(afterClose.columnFamilies).toBe(withDropped - 1);
+					expect(sumTargets(afterClose.maxWriteBufferSizeToMaintain)).toBe(withDropped - 1);
 				} finally {
 					for (const db of opened) {
 						db.close();

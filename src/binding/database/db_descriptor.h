@@ -284,8 +284,27 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Map of column family name to column family handle.
 	 */
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
-	// A dropped family can remain charged through a live handle after leaving `columns`.
-	bool writeBufferManagerInventoryComplete = true;
+
+	/**
+	 * A dropped column family whose memtables a live handle may still be
+	 * charging to the WriteBufferManager after it left `columns`.
+	 *
+	 * The retention target is copied out rather than read back through the
+	 * reference, so the stall inventory can count these without calling
+	 * `weak_ptr::lock()`: releasing that temporary could be the last reference,
+	 * destroying the RocksDB column-family handle on the sampling thread while
+	 * both `databasesMutex` and `columnsMutex` are held.
+	 */
+	struct DroppedColumnFamily final {
+		std::weak_ptr<ColumnFamilyDescriptor> descriptor;
+		int64_t maxWriteBufferSizeToMaintain = 0;
+	};
+
+	/**
+	 * Guarded by `columnsMutex`. Pruned of expired entries on every drop, so it
+	 * holds at most the families that were still live at the previous drop.
+	 */
+	std::vector<DroppedColumnFamily> droppedColumns;
 
 	/**
 	 * Mutex to protect the columns map. Column families can be unregistered on
