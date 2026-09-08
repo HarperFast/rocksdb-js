@@ -1,17 +1,15 @@
-import {
-	getWriteBufferManagerStats,
-	RocksDatabase,
-	registryStatus,
-	shutdown,
-} from '../src/index.ts';
+import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
+
+const watchdogShutdownFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-shutdown.mts');
 
 describe('Shutdown', () => {
 	it('should shutdown rocksdb-js', () =>
@@ -44,28 +42,24 @@ describe('Shutdown', () => {
 			expect(status.length).toBe(0);
 		}));
 
+	// In a child: creating the manager fixes its `costToCache` for the whole
+	// process, and every test file shares one vitest worker, so doing it here
+	// would decide it for whichever file runs next.
 	it.skipIf(process.env.ROCKSDB_JS_WBM_STALL_WARN_MS === '0')(
 		'should restart the WriteBufferManager watchdog after shutdown',
 		() => {
 			const path = generateDBPath();
-			const db = new RocksDatabase(path);
-			RocksDatabase.config({
-				writeBufferManagerSize: 64 * 1024 * 1024,
-				writeBufferManagerAllowStall: true,
-			});
 			try {
-				db.open();
-				expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
-				shutdown();
-				expect(getWriteBufferManagerStats().watchdogRunning).toBe(false);
-				db.open();
-				expect(getWriteBufferManagerStats().watchdogRunning).toBe(true);
-			} finally {
-				RocksDatabase.config({
-					writeBufferManagerSize: 0,
-					writeBufferManagerAllowStall: false,
+				const child = spawnSync(process.execPath, [watchdogShutdownFixturePath, path], {
+					encoding: 'utf8',
+					timeout: 30000,
 				});
-				db.close();
+				expect(child.status, child.stderr).toBe(0);
+				expect(JSON.parse(child.stdout.trim().split(/\r?\n/).at(-1)!)).toEqual([true, false, true]);
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+				}
 			}
 		}
 	);
