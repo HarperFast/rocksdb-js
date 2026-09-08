@@ -52,7 +52,6 @@ describe('Shutdown', () => {
 					timeout: 60000,
 				});
 				expect(child.status, child.stderr).toBe(0);
-				// Open, shutdown, reopen; then four rounds of concurrent shutdown + reopen.
 				expect(JSON.parse(child.stdout.trim().split(/\r?\n/).at(-1)!)).toEqual([
 					true,
 					false,

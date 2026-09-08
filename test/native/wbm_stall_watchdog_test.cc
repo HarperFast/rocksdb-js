@@ -49,7 +49,6 @@ TEST(WbmStallWatchdogState, ReportsOnceWhenTheThresholdIsCrossed) {
 	EXPECT_EQ(crossed.stallActiveMs, 5000u);
 	state.markReported();
 
-	// A wedge is one line, not one per sample.
 	for (long long ms = 6000; ms <= 3600000; ms += 1000) {
 		EXPECT_FALSE(state.onSample(true, at(ms), kThreshold).reportNow);
 	}
@@ -59,7 +58,6 @@ TEST(WbmStallWatchdogState, RetriesUntilTheReportIsAcknowledged) {
 	WbmStallWatchdogState state;
 	state.onSample(true, at(0), kThreshold);
 	EXPECT_TRUE(state.onSample(true, at(5000), kThreshold).reportNow);
-	// markReported() not called: a report that could not be written is retried.
 	EXPECT_TRUE(state.onSample(true, at(6000), kThreshold).reportNow);
 	state.markReported();
 	EXPECT_FALSE(state.onSample(true, at(7000), kThreshold).reportNow);

@@ -4,18 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-/**
- * The WriteBufferManager stall watchdog, against a real stall.
- *
- * A real stall blocks the thread that writes, so the runner's own timeout cannot
- * fire (HarperFast/rocksdb-js#781 item 2). The deadline belongs to a parent process
- * that can kill the deliberately wedged child.
- *
- * The decision logic itself is unit-tested deterministically in
- * `test/native/wbm_stall_watchdog_test.cc`; this proves the wiring: that a stall
- * is reached, that both read surfaces see it, and that the watchdog writes exactly
- * one line no matter how long it lasts.
- */
+// A real stall blocks the writer, so a parent process owns the deadline and kills the child.
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-wbm-stall-watchdog.mts');
 const exitFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-exit.mts');

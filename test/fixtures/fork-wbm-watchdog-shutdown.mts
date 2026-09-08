@@ -17,7 +17,6 @@ const workerPath = './test/workers/wbm-shutdown-worker.mts';
 const CONCURRENT_SHUTDOWNS = 4;
 const ROUNDS = 4;
 
-/** Runs `shutdown()` from several envs at once, all released from one gate. */
 async function shutdownConcurrently(): Promise<void> {
 	await Promise.all(await startConcurrentShutdowns(CONCURRENT_SHUTDOWNS));
 }

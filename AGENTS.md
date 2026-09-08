@@ -758,12 +758,15 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     So `DBStats` owns one process-wide thread, created lazily the first time a manager exists **with**
     `allowStall` (`ShouldStall()` short-circuits otherwise, so no stall is reachable). Runtime disable
     parks that thread and re-enable arms it with a fresh episode state; explicit shutdown and final
-    teardown join it. Since `shutdown()` supports reopening databases, the stop latch resets only
-    after the old thread has joined — and only by the joiner that actually took the thread. Two envs
-    calling `shutdown()` at once both reach the join, and letting the one that found nothing to join
-    clear the latch stranded the other inside `join()` forever: the thread had not observed the stop
-    yet, so it went back to waiting on `stopRequested || armed` with both false. `watchdogRetiring`
-    makes the non-owning joiners wait for the retirement instead
+    teardown join it. Since `shutdown()` supports reopening databases, every `ensure` advances an
+    arm-request generation that `shutdown()` snapshots before closing databases. A rearm-capable
+    joiner returns without retiring when that generation changed, so an older shutdown cannot stop a
+    watchdog belonging to a concurrent reopen. Once a joiner takes a thread, the stop latch resets
+    only after that thread has joined; callers that find no thread return without mutating the stop
+    state. Two envs calling `shutdown()` at once both reach the join, and letting a non-owner clear
+    the latch stranded the owner inside `join()` forever: the thread had not observed the stop yet,
+    so it went back to waiting on `stopRequested || armed` with both false. `watchdogRetiring` makes
+    the non-owning joiners wait for the retirement instead
     (`test/fixtures/fork-wbm-watchdog-shutdown.mts`, which reproduces the hang about one run in three
     without the fix). It samples one relaxed atomic per second. Plain `std::thread`,
     not `uv_timer_t`, for invariant 12's reason.
@@ -778,10 +781,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       materializes the watchdog owner after `DBRegistry`, while its constructor first materializes
       `DBSettings` and `GlobalEvents`; reverse static destruction therefore joins the watchdog before
       any dependency it reads is destroyed.
-    - **Stop and join are split** (`binding.cpp`, both the `shutdown()` export and the last-env
-      cleanup hook): request the stop first, run `DBRegistry::Shutdown()` (the flush path), and join
-      _after_. The warn line goes to `stderr`, which can block on a full pipe, and joining first
-      would put a logging stall in front of durability.
+    - **Stop and join both follow the flush** (`binding.cpp`, both the `shutdown()` export and the
+      last-env cleanup hook): snapshot the arm-request generation, run `DBRegistry::Shutdown()`, then
+      stop and join. Keeping the watchdog live through the flush lets it write to `stderr` when
+      shutdown itself is wedged behind a stalled writer; global listeners have already been released.
+      Joining after the flush also keeps a blocking stderr write out of the durability path.
     - **The inventory counts only column families that can explain the budget** — descriptors that
       attached _this_ manager (attachment is decided per open, so a database opened before the
       manager was configured, or while its size was 0, has not). Read-only opens are included because

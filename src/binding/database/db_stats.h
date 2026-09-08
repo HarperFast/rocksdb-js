@@ -53,7 +53,7 @@ private:
 	bool watchdogStarted = false;
 	bool watchdogArmed = false;
 	bool watchdogStopRequested = false;
-	/** One joiner owns the retiring thread; the rest wait for it. */
+	/** One joiner owns the retirement; the rest wait for it. */
 	bool watchdogRetiring = false;
 	uint64_t watchdogArmRequestGeneration = 0;
 	/**

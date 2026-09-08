@@ -155,15 +155,16 @@ void DBStats::joinWriteBufferManagerWatchdog(bool allowRearm, uint64_t shutdownG
 		if (allowRearm && shutdownGeneration != this->watchdogArmRequestGeneration) {
 			return;
 		}
+		if (!this->watchdogStarted) {
+			return;
+		}
 		this->watchdogArmed = false;
 		this->watchdogStopRequested = true;
 		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
 		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
-		if (this->watchdogStarted) {
-			toJoin = std::move(this->watchdogThread);
-			this->watchdogStarted = false;
-			this->watchdogRetiring = true;
-		}
+		toJoin = std::move(this->watchdogThread);
+		this->watchdogStarted = false;
+		this->watchdogRetiring = true;
 	}
 	this->watchdogCv.notify_all();
 
