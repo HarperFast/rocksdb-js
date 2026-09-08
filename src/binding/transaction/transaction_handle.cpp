@@ -673,8 +673,11 @@ rocksdb::Status TransactionHandle::putSync(
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->getColumnFamilyHandle();
 	// Before the write: a family must never be in the batch but not in the gate set.
-	this->stagedColumns.note(dbHandle->columnDescriptor->gate);
+	const bool noted = this->stagedColumns.note(dbHandle->columnDescriptor->gate);
 	rocksdb::Status status = this->txn->Put(column, key, value);
+	if (!status.ok() && noted) {
+		this->stagedColumns.forgetLast();
+	}
 
 	// Lock the VT slot for this key immediately on write. This ensures that
 	// any cached version of the key is invalidated as soon as it enters the
@@ -711,8 +714,11 @@ rocksdb::Status TransactionHandle::removeSync(
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	auto column = dbHandle->getColumnFamilyHandle();
-	this->stagedColumns.note(dbHandle->columnDescriptor->gate);
+	const bool noted = this->stagedColumns.note(dbHandle->columnDescriptor->gate);
 	rocksdb::Status status = this->txn->Delete(column, key);
+	if (!status.ok() && noted) {
+		this->stagedColumns.forgetLast();
+	}
 
 	if (status.ok() && dbHandle->enableVerificationTable) {
 		this->lockVTSlot(dbHandle, key);

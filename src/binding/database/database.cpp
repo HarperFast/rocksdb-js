@@ -729,15 +729,11 @@ static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
 }
 
 /**
- * Drops a non-default column family through its admission gate (AGENTS.md
- * invariant 20): admission closes first, so a commit submitted from here on is
- * refused before it reaches RocksDB; already-admitted commits then drain; only
- * then does RocksDB remove the family. The already-dropped case is success
- * (Harper broadcasts drops to every worker). Any other failure leaves the gate
- * closed: RocksDB may have removed the family before reporting the error (a
- * failed OPTIONS persistence follows a completed drop), and the caller's retry
- * lands on the already-dropped path, whose identity-checked retirement then
- * frees the name.
+ * AGENTS.md invariant 20. Already-dropped is success (Harper broadcasts drops
+ * to every worker). Any other failure leaves the gate closed: RocksDB may have
+ * removed the family before reporting the error (OPTIONS persistence follows
+ * the drop), and the retry then lands on the already-dropped path, whose
+ * identity-checked retirement frees the name.
  */
 static rocksdb::Status dropColumnFamilyGated(DBHandle& dbHandle) {
 	std::shared_ptr<ColumnFamilyDescriptor> column = dbHandle.columnDescriptor;

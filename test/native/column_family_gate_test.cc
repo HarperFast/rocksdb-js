@@ -181,6 +181,29 @@ TEST(StagedColumnFamilies, DeduplicatesIgnoresNullAndClears) {
 	EXPECT_EQ(g1.use_count(), 1);
 }
 
+TEST(StagedColumnFamilies, ForgetLastUndoesOnlyANewNote) {
+	StagedColumnFamilies staged;
+	auto g1 = gate(1);
+	auto g2 = gate(2);
+	EXPECT_TRUE(staged.note(g1));
+	EXPECT_FALSE(staged.note(g1));
+	EXPECT_TRUE(staged.note(g2));
+	staged.forgetLast();
+	EXPECT_EQ(staged.size(), 1u);
+	EXPECT_EQ(&staged.at(0), g1.get());
+	EXPECT_EQ(g2.use_count(), 1);
+	// across the inline boundary the undo comes off the overflow vector first
+	std::vector<std::shared_ptr<ColumnFamilyGate>> more;
+	for (uint32_t i = 10; i < 10 + StagedColumnFamilies::kInline; ++i) {
+		more.push_back(gate(i));
+		staged.note(more.back());
+	}
+	EXPECT_EQ(staged.size(), StagedColumnFamilies::kInline + 1);
+	staged.forgetLast();
+	EXPECT_EQ(staged.size(), StagedColumnFamilies::kInline);
+	EXPECT_EQ(more.back().use_count(), 1);
+}
+
 TEST(StagedColumnFamilies, OverflowKeepsEveryDistinctFamily) {
 	StagedColumnFamilies staged;
 	std::vector<std::shared_ptr<ColumnFamilyGate>> gates;

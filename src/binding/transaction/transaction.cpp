@@ -326,10 +326,8 @@ static void rejectRetryNowSetupFailure(
 }
 
 /**
- * Column-family admission for a commit (AGENTS.md invariant 20), with the
- * exception boundary the commit lane lacks: a throw becomes a rejected commit
- * and RAII drops any partial admission. The fallback status carries no message
- * so it cannot throw itself.
+ * The commit lane has no exception boundary of its own; the fallback status
+ * carries no message so it cannot throw either.
  */
 static rocksdb::Status admitStagedColumnFamilies(
 	TransactionHandle& txnHandle,
