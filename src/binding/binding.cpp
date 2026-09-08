@@ -43,7 +43,9 @@ napi_value Shutdown(napi_env env, napi_callback_info info) {
 	DBStats::getInstance().requestWriteBufferManagerWatchdogStop();
 	GlobalEvents::Shutdown();
 	DBRegistry::Shutdown();
-	DBStats::getInstance().joinWriteBufferManagerWatchdog();
+	// This JS-callable shutdown() documents that databases may reopen
+	// afterward, so replay an ensure() that raced the stop above.
+	DBStats::getInstance().joinWriteBufferManagerWatchdog(true);
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
@@ -223,7 +225,10 @@ NAPI_MODULE_INIT() {
 			rocksdb_js::GlobalEvents::Shutdown();
 			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
 			rocksdb_js::DBRegistry::Shutdown();
-			rocksdb_js::DBStats::getInstance().joinWriteBufferManagerWatchdog();
+			// Unlike the JS-callable shutdown() above, this path cannot tell
+			// "last env, may reopen" from "process is ending" — never spawn a
+			// replacement thread that this path won't join again.
+			rocksdb_js::DBStats::getInstance().joinWriteBufferManagerWatchdog(false);
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");

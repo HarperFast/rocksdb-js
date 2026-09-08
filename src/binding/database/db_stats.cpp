@@ -152,7 +152,7 @@ void DBStats::requestWriteBufferManagerWatchdogStop() {
 	this->watchdogCv.notify_all();
 }
 
-void DBStats::joinWriteBufferManagerWatchdog() {
+void DBStats::joinWriteBufferManagerWatchdog(bool allowRearm) {
 	std::thread toJoin;
 	{
 		std::unique_lock<std::mutex> lock(this->watchdogMutex);
@@ -175,10 +175,12 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 	// Reset-and-notify runs on scope exit rather than only after the join
 	// below, so any future fallible step added between here and the end of
 	// the function still releases a concurrent joiner parked in the wait
-	// above (and still replays an ensure() call that arrived mid-stop)
-	// instead of leaving watchdogRetiring stuck true forever.
+	// above (and still replays an ensure() call that arrived mid-stop, when
+	// this caller allows it) instead of leaving watchdogRetiring stuck true
+	// forever.
 	struct RetireGuard {
 		DBStats* self;
+		bool allowRearm;
 		~RetireGuard() {
 			{
 				std::lock_guard<std::mutex> lock(self->watchdogMutex);
@@ -186,12 +188,14 @@ void DBStats::joinWriteBufferManagerWatchdog() {
 				self->watchdogStopRequested = false;
 				if (self->watchdogArmPendingAfterStop) {
 					self->watchdogArmPendingAfterStop = false;
-					self->armWatchdogLocked();
+					if (allowRearm) {
+						self->armWatchdogLocked();
+					}
 				}
 			}
 			self->watchdogCv.notify_all();
 		}
-	} retireGuard{this};
+	} retireGuard{this, allowRearm};
 
 	if (toJoin.joinable()) {
 		try {
@@ -411,7 +415,9 @@ void DBStats::Init(napi_env env, napi_value exports) {
 }
 
 DBStats::~DBStats() {
-	this->joinWriteBufferManagerWatchdog();
+	// True process exit: never spawn a replacement thread here, since nothing
+	// will join it again.
+	this->joinWriteBufferManagerWatchdog(false);
 }
 
 } // namespace rocksdb_js

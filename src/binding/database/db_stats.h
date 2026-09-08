@@ -77,7 +77,16 @@ public:
 	void ensureWriteBufferManagerWatchdog();
 	void disableWriteBufferManagerWatchdog();
 	void requestWriteBufferManagerWatchdogStop();
-	void joinWriteBufferManagerWatchdog();
+	/**
+	 * `allowRearm` distinguishes the two callers: the explicit, JS-callable
+	 * `shutdown()` documents that databases may reopen afterward, so an
+	 * `ensure` that raced its stop should replay once the join resolves. The
+	 * module's last-env cleanup hook and ~DBStats() cannot tell "shutdown,
+	 * may reopen" from "process is ending" — a thread spawned there could
+	 * outlive the join that is supposed to retire it — so both pass false
+	 * and simply drop a queued replay, same as before this ever tracked one.
+	 */
+	void joinWriteBufferManagerWatchdog(bool allowRearm);
 
 	bool getWriteBufferManagerStat(const std::string& statName, double& value);
 	void setWriteBufferManagerStatsOnObject(napi_env env, napi_value result);
