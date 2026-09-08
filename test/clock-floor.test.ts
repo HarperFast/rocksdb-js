@@ -157,8 +157,6 @@ describe('monotonic clock floor', () => {
 
 		const { warnings, clock } = JSON.parse(warned.stdout);
 		expect(warnings.join(' ')).toContain('could not be read at open');
-		// The walk continues past the failure: the healthy segment's key still
-		// seeds the floor, and the unreadable segment's higher key does not.
 		expect(clock).toBeGreaterThan(highest - 60 * 1000);
 		expect(clock).toBeLessThan(highest);
 	}, 90000);
