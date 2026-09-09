@@ -268,11 +268,11 @@ against the same database opened without the option:
 
 Roughly a millisecond per thousand entries. Retention bounds a log's age, not its entry count, so
 the walk is bounded directly instead: `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` (default `2000`) caps it,
-newest segment first, and a walk that runs out of budget warns and leaves the floor where it got to.
+newest segment first, and a walk that runs out of budget rejects an open that names the log.
 The deadline is checked before each physical read; sequential headers share a 64 KiB window, so the
 small amount of already-buffered header parsing can finish after the deadline but one large segment
 cannot run unbounded.
-The value is honored literally between `0` (scan nothing, and warn) and one day, and there is no
+The value is honored literally between `0` (scan nothing, and reject) and one day, and there is no
 unbounded setting — the failure it bounds is an `open()` that does not return, so a deployment that
 would rather wait raises the number. Above a day it is clamped, because the deadline is a monotonic
 clock time point and a larger value overflows its resolution and wraps into the past.
@@ -284,7 +284,9 @@ The seed is fail closed when `timestampFloorLog` is set. A segment that cannot b
 a framing break (the entries past it can still be durable — `query()` resyncs to them — but this walk
 stops there), an exhausted budget, or a key more than ten years ahead of the wall clock rejects the
 open rather than risk issuing a duplicate key. A `timestampFloorLog` naming a log the database does
-not have still warns: an empty or newly named locally originated log has no existing keys to seed.
+not have still warns: a newly named locally originated log has no existing keys to seed. Callers
+that need restart-safe uniqueness must provision and name their local log consistently before its
+first write; a missing name can otherwise be a configuration mistake that leaves no key to scan.
 
 The option is fixed at the first open of a path in the process — the database descriptor is shared
 across handles and `worker_threads` envs — so a later open of the same path that names a log cannot

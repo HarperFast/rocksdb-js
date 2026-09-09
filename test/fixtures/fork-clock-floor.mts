@@ -18,11 +18,14 @@ if (mode === 'warn' || mode === 'warn-read-only') {
 
 const rotating = mode === 'write-rotate';
 const FRAME_PAYLOAD = 32;
-const db = RocksDatabase.open(dbPath, {
-	...(mode === 'write-unseeded' || mode === 'reopen-refuse' ? {} : { timestampFloorLog: log }),
-	...(mode === 'warn-read-only' ? { readOnly: true } : {}),
-	...(rotating ? { transactionLogMaxSize: 64 * 1024 } : {}),
-});
+let db!: RocksDatabase;
+if (mode !== 'refuse-then-unseeded') {
+	db = RocksDatabase.open(dbPath, {
+		...(mode === 'write-unseeded' || mode === 'reopen-refuse' ? {} : { timestampFloorLog: log }),
+		...(mode === 'warn-read-only' ? { readOnly: true } : {}),
+		...(rotating ? { transactionLogMaxSize: 64 * 1024 } : {}),
+	});
+}
 
 function segmentCount(): number {
 	return readdirSync(join(dbPath, 'transaction_logs', log)).filter((name) =>
@@ -87,6 +90,19 @@ try {
 				fail(`unexpected second-open error: ${message}`);
 			}
 		}
+	} else if (mode === 'refuse-then-unseeded') {
+		try {
+			RocksDatabase.open(dbPath, { timestampFloorLog: log });
+			fail('an untrusted timestamp floor unexpectedly opened');
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (!message.includes('ahead of the wall clock')) {
+				fail(`unexpected timestamp-floor error: ${message}`);
+			}
+		}
+		const unseeded = RocksDatabase.open(dbPath);
+		unseeded.close();
+		console.log(JSON.stringify({ recovered: true }));
 	} else if (mode === 'warn' || mode === 'warn-read-only') {
 		const until = Date.now() + 5000;
 		while (
@@ -104,5 +120,7 @@ try {
 		fail(`unknown mode ${mode}`);
 	}
 } finally {
-	db.close();
+	if (db) {
+		db.close();
+	}
 }
