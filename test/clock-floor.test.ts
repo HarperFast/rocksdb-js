@@ -117,21 +117,18 @@ describe('monotonic clock floor', () => {
 		expect(JSON.parse(other.stdout).clock).toBeLessThan(key);
 	}, 60000);
 
-	it('refuses a key implausibly far ahead of the wall clock, and says so', async () => {
+	it('refuses to open when a key is implausibly far ahead of the wall clock', async () => {
 		const dbPath = newDBPath();
 		const far = Date.now() + 20 * 365 * 24 * 60 * 60 * 1000;
 
 		expect((await runFixture('write', dbPath, far)).code).toBe(0);
 
-		const warned = await runFixture('warn', dbPath, far);
-		expect(warned.code, warned.stderr).toBe(0);
-
-		const { warnings, clock } = JSON.parse(warned.stdout);
-		expect(warnings.join(' ')).toContain('ahead of the wall clock');
-		expect(clock).toBeLessThan(far);
+		const refused = await runFixture('warn', dbPath, far);
+		expect(refused.code).not.toBe(0);
+		expect(refused.stderr).toContain('ahead of the wall clock');
 	}, 60000);
 
-	it('still opens, and says so, when a segment cannot be read', async () => {
+	it('refuses to open when a segment cannot be read', async () => {
 		const dbPath = newDBPath();
 		const highest = aheadOfNow();
 
@@ -152,29 +149,22 @@ describe('monotonic clock floor', () => {
 			closeSync(fd);
 		}
 
-		const warned = await runFixture('warn', dbPath, highest);
-		expect(warned.code, warned.stderr).toBe(0);
-
-		const { warnings, clock } = JSON.parse(warned.stdout);
-		expect(warnings.join(' ')).toContain('could not be read at open');
-		expect(clock).toBeGreaterThan(highest - 60 * 1000);
-		expect(clock).toBeLessThan(highest);
+		const refused = await runFixture('warn', dbPath, highest);
+		expect(refused.code).not.toBe(0);
+		expect(refused.stderr).toContain('could not be read at open');
 	}, 90000);
 
-	it('stops at the scan budget rather than stalling open, and says so', async () => {
+	it('refuses to open when the scan budget runs out', async () => {
 		const dbPath = newDBPath();
 		const highest = aheadOfNow();
 
 		expect((await runFixture('write', dbPath, highest)).code).toBe(0);
 
-		const warned = await runFixture('warn', dbPath, highest, LOG, {
+		const refused = await runFixture('warn', dbPath, highest, LOG, {
 			ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS: '0',
 		});
-		expect(warned.code, warned.stderr).toBe(0);
-
-		const { warnings, clock } = JSON.parse(warned.stdout);
-		expect(warnings.join(' ')).toContain('scan budget');
-		expect(clock).toBeLessThan(highest);
+		expect(refused.code).not.toBe(0);
+		expect(refused.stderr).toContain('scan budget');
 	}, 120000);
 
 	it('warns when the named log is not one this database has', async () => {
@@ -188,16 +178,16 @@ describe('monotonic clock floor', () => {
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('does not have');
 	}, 60000);
 
-	it('warns when discovery skips a named-log segment', async () => {
+	it('refuses to open when discovery skips a named-log segment', async () => {
 		const dbPath = newDBPath();
 		const key = aheadOfNow();
 
 		expect((await runFixture('write', dbPath, key)).code).toBe(0);
 		writeFileSync(join(dbPath, 'transaction_logs', LOG, 'bad.txnlog'), 'not a log');
 
-		const warned = await runFixture('warn', dbPath, key, LOG, {}, 'discovery skipped');
-		expect(warned.code, warned.stderr).toBe(0);
-		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('discovery skipped');
+		const refused = await runFixture('warn', dbPath, key, LOG, {}, 'discovery skipped');
+		expect(refused.code).not.toBe(0);
+		expect(refused.stderr).toContain('discovery skipped');
 	}, 60000);
 
 	it('warns when a later open of the same path names a log', async () => {
@@ -211,7 +201,7 @@ describe('monotonic clock floor', () => {
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('was ignored');
 	}, 60000);
 
-	it('reports the keys a mid-file framing break hides, and does not claim them', async () => {
+	it('refuses to open when a mid-file framing break hides durable keys', async () => {
 		const dbPath = newDBPath();
 		const key = aheadOfNow();
 
@@ -235,12 +225,16 @@ describe('monotonic clock floor', () => {
 			closeSync(fd);
 		}
 
-		const warned = await runFixture('warn', dbPath, key, LOG, {}, 'framing breaks partway through');
-		expect(warned.code, warned.stderr).toBe(0);
-
-		const { warnings, clock } = JSON.parse(warned.stdout);
-		expect(warnings.join(' ')).toContain('framing breaks partway through');
-		expect(clock).toBeLessThan(key);
+		const refused = await runFixture(
+			'warn',
+			dbPath,
+			key,
+			LOG,
+			{},
+			'framing breaks partway through'
+		);
+		expect(refused.code).not.toBe(0);
+		expect(refused.stderr).toContain('framing breaks partway through');
 	}, 120000);
 
 	it('distinguishes an unrecovered read-only torn tail from a framing break', async () => {

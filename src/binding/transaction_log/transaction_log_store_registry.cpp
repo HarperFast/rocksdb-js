@@ -285,11 +285,6 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		std::nextafter(MAX_TIMESTAMP_MS, 0.0));
 	auto scan = store->scanLargestDurableKey(plausibleBound, timestampFloorScanBudget());
 
-	if (raiseMonotonicTimestampFloor(scan.largestKey, plausibleBound)) {
-		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor Raised clock floor to %f from log \"%s\" of \"%s\"\n",
-			instance.get(), scan.largestKey, logName.c_str(), dbPath.c_str());
-	}
-
 	if (scan.refusedKey > 0) {
 		std::ostringstream msg;
 		msg << "Transaction log \"" << logName << "\" of database " << dbPath
@@ -300,16 +295,7 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 			   " rollback to recover from. This check excludes such keys one at a time, not the"
 			   " segments holding them.";
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
-		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
-	}
-
-	if (scan.tornTail) {
-		std::ostringstream msg;
-		msg << "Transaction log \"" << logName << "\" of database " << dbPath
-			<< " ends in a partial entry this handle cannot recover; it may be an in-flight "
-			   "append from another writer. Its contiguous framed prefix was scanned.";
-		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
-		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		throw rocksdb_js::DBException(msg.str());
 	}
 
 	if (!scan.complete) {
@@ -337,9 +323,23 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		for (size_t i = 0; i < reasons.size(); ++i) {
 			msg << (i == 0 ? "" : "; and ") << reasons[i];
 		}
-		msg << ". The monotonic timestamp floor may sit below a batch key already durable in it.";
+		msg << ". Refusing to open with timestampFloorLog because the monotonic timestamp floor may sit below a batch key already durable in it.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		throw rocksdb_js::DBException(msg.str());
+	}
+
+	if (scan.tornTail) {
+		std::ostringstream msg;
+		msg << "Transaction log \"" << logName << "\" of database " << dbPath
+			<< " ends in a partial entry this handle cannot recover; it may be an in-flight "
+			   "append from another writer. Its contiguous framed prefix was scanned.";
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	}
+
+	if (raiseMonotonicTimestampFloor(scan.largestKey, plausibleBound)) {
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor Raised clock floor to %f from log \"%s\" of \"%s\"\n",
+			instance.get(), scan.largestKey, logName.c_str(), dbPath.c_str());
 	}
 }
 
