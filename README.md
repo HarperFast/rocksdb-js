@@ -2258,7 +2258,10 @@ finish, for all open databases. It is highly recommended to call this in a `proc
 listener (on the main thread), to ensure that all data is flushed to disk before the process exits.
 It throws the first close failure after attempting every claimed database; call it again to retry
 any descriptor whose native teardown did not complete. It reports pending destroy-cleanup
-tombstones without deleting their paths; retry those with an explicit `destroy()`:
+tombstones without deleting their paths; retry those with an explicit `destroy()`.
+
+Wrap the call: an exception thrown from an `exit` listener skips every `exit` listener registered
+after it, and sets the exit code to 1 unless an `uncaughtException` handler is installed.
 
 ```typescript
 import { shutdown } from '@harperfast/rocksdb-js';
