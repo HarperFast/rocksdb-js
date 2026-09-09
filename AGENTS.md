@@ -930,7 +930,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     written remains frozen across retries, though reapplying the same timestamp is idempotent while
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
-20. **Transactional ranges keep the caller's column family and close before the transaction**:
+21. **Transactional ranges keep the caller's column family and close before the transaction**:
     `Store.getRange()` routes `options.transaction` to native by transaction ID, where the caller
     database descriptor resolves it and supplies the caller's `DBHandle` to `DBIteratorHandle`.
     Replacing the context with `transaction._context` is incorrect for cross-column-family scans:
@@ -963,7 +963,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     bound: `inclusiveEnd` appends a NUL to that bound, so the bound itself is exclusive in both
     directions and a staged key that lands exactly on it must be excluded like a committed one.
 
-21. **A WriteBufferManager stall is a second, entirely separate stall mechanism, and nothing in
+22. **A WriteBufferManager stall is a second, entirely separate stall mechanism, and nothing in
     RocksDB reports it**: `DBImpl::WriteBufferManagerStallWrites` parks writers on the manager's own
     queue (`WBMStallInterface::Block`) without touching the `WriteController`, so `rocksdb.stall.micros`,
     the `WRITE_STALL` histogram, `OnStallConditionsChanged` — and therefore the `'writeStall'` event
@@ -1031,7 +1031,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
     and the runner's own timeout cannot fire (#781 item 2).
 
-22. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
+23. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
     namespace-scope `static`, so anything still in `instance->databases` when the hook returns is
     destroyed from an `atexit` handler. Closing a RocksDB database there runs
     `DBImpl::CancelAllBackgroundWork()` → `PeriodicTaskScheduler::Unregister()` **after** RocksDB's
@@ -1049,7 +1049,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
     which is why its fixtures now tear down with `destroy()` rather than `close()`).
 
-23. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
+24. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
     lifecycle waits**:
     `DBHandle::close()` publishes `cancelled` (and, per invariant 6, the per-handle compaction
     token), and every async admission refuses while either stands — so `DBHandle::open()` has to
@@ -1065,7 +1065,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     release their descriptor before the base destructor unregisters async work, preserving that
     order.
 
-24. **Handle adoption and descriptor attachment are one registry-locked publication**:
+25. **Handle adoption and descriptor attachment are one registry-locked publication**:
     `DBRegistry::OpenDB()` selects the descriptor and column family, clears stale close cancellation,
     publishes every descriptor-backed handle field, and inserts the handle into
     `DBDescriptor::closables` before releasing `databasesMutex`. The owner-thread-only `path` is set
