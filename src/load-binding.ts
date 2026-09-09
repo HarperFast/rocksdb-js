@@ -479,10 +479,6 @@ export type NativeDatabase = {
 		callback?: UserSharedBufferCallback
 	): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
-	/**
-	 * The resolved filesystem identity of the open database — the registry key
-	 * two spellings of one directory share. `undefined` until opened.
-	 */
 	identityPath: string | undefined;
 	listeners(event: string | BufferWithDataView): number;
 	listLogs(): string[];

@@ -753,8 +753,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     the path a caller passed to `open()`: it is a spelling, so `data` and `./data` — one database
     and one id space — would be rejected, while one relative path can name two databases across a
     `chdir`. Column families of a database share the identity, so cross-column-family reads pass.
-    Transaction-backed
-    iterators establish and pass the transaction snapshot, seek explicitly, and enforce their encoded
+    Transaction-backed iterators establish and pass the transaction snapshot, seek explicitly, and
+    enforce their encoded
     bounds in `valid()` rather than trusting RocksDB alone: `iterate_lower_bound` is inclusive, so the
     exclusive lower bound of a reverse range (`exclusiveStart`) has to be applied by the handle when
     the iterator reaches it, and a transaction's write batch ignored the read-option bounds before

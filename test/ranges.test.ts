@@ -429,8 +429,6 @@ describe('Ranges', () => {
 
 		it('should accept a transaction from another spelling of the same database', () => {
 			const dbPath = generateDBPath();
-			// One database, two spellings. Identity is the resolved directory, so
-			// the ids belong to the same space and the transaction is legitimate.
 			const alias = `${dbPath}${sep}..${sep}${basename(dbPath)}`;
 			return dbRunner(
 				{ dbOptions: [{ path: dbPath }, { path: alias }] },

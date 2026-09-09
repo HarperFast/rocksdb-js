@@ -565,10 +565,8 @@ export class Store {
 	path: string;
 
 	/**
-	 * The open database's resolved filesystem identity, read from native once
-	 * per open. Two spellings of one directory — `data` and `./data`, a symlink
-	 * and its target — share it, and it does not move when a symlink is
-	 * repointed or the process changes directory. `undefined` until opened.
+	 * The open database's resolved filesystem identity, read once from
+	 * `NativeDatabase.identityPath`. `undefined` until opened.
 	 */
 	identityPath?: string;
 
@@ -1210,13 +1208,9 @@ export class Store {
 			if (transaction.store === undefined) {
 				throw new TypeError('Invalid transaction');
 			}
-			// Ids are allocated per database, so one from elsewhere would resolve
-			// to an unrelated transaction of the same number. Native identity, not
-			// the path the caller spelled: `data` and `./data` are one database
-			// (and one id space), while one relative path can name two databases
-			// across a chdir. Column families of a database share the identity, so
-			// cross-column-family reads still pass. An unopened store has no
-			// identity to compare and fails its own open check instead.
+			// Ids are per database, so one from elsewhere resolves here to an
+			// unrelated transaction of the same number. Identity, never the path
+			// the caller spelled — see AGENTS.md invariant 20.
 			if (this.identityPath !== undefined && transaction.store.identityPath !== this.identityPath) {
 				throw new TypeError('Transaction belongs to a different database');
 			}
