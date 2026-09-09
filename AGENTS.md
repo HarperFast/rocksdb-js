@@ -232,7 +232,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   set in the environment a process is started with. `0` disables the window (every
   rising edge emits); malformed/negative falls back to the default
 - `ROCKSDB_JS_DESTROY_DELAY_MS` - Test-only: delay after descriptor teardown and
-  before physical database destruction (widens same-path reopen races)
+  before physical database destruction (widens same-path reopen races). Snapshotted in
+  `initializeTestSeams()` — it is read on whichever thread drives teardown, so it must be set in
+  the environment that starts the process
 - `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` - Test-only: delay after `DBRegistry::OpenDB()` has atomically
   adopted and attached a handle, but before the native open returns to JavaScript (proves a forced
   destroy cannot claim the descriptor during the former return/adopt/attach gap). Snapshotted in
@@ -259,9 +261,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   run on any thread
 - `ROCKSDB_JS_CLOSE_RETRY_DELAY_MS` - Test-only: delay inside a _resumed_ `finishClose()` (the
   `shutdown()`/`destroy()` retry of a quarantined descriptor), widening the window in which a
-  concurrent open must wait for the retry rather than reopen the path
+  concurrent open must wait for the retry rather than reopen the path. Snapshotted in
+  `initializeTestSeams()` for the same reason as `ROCKSDB_JS_DESTROY_DELAY_MS`
 - `ROCKSDB_JS_BACKUP_DELAY_MS` - Test-only: delay inside a native backup copy, holding it across a
-  concurrent destroy claim
+  concurrent destroy claim. Snapshotted in `initializeTestSeams()` — the copy runs on a libuv
+  worker, so it must be set in the environment that starts the process
 - `ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS` / `ROCKSDB_JS_TXN_CLOSE_DELAY_MS` - Test-only delays inside
   iterator construction and transaction close. Both are snapshotted in `initializeTestSeams()`, so
   they must be set in the environment that starts the process rather than through an in-process
@@ -829,6 +833,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     the real owner env is already gone, and by then this has already run, so the misfiring branch
     finds nothing left to release. Do not delete this hook call assuming `close()`'s guard is
     sufficient on its own — it is not, without the hook running first.
+
+    The guard has a second consequence: a foreign close leaves `logRefs` populated, so
+    `DBHandle::open()` releases it at the top of a reopen. Without that, `useLog()` returns the
+    cached `TransactionLog` of the closed lifecycle, whose `TransactionLogHandle::store`
+    `weak_ptr` is expired — only `addEntry` re-resolves, so every read accessor reports an empty
+    log instead of the reopened one (`test/fixtures/fork-foreign-close-log-cache.mts`).
 
 19. **A secondary open's identity is `{path, readOnly, secondaryPath}` and its workspace is
     exclusive**: `secondaryPath` opens via `DB::OpenAsSecondary` (a read-only follower of a live

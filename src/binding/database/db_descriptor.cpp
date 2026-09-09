@@ -488,7 +488,7 @@ void DBDescriptor::finishClose(bool destroying) {
 		this->closeWorkersStopped = true;
 	}
 	if (retryingClose) {
-		const int retryDelayMs = testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS");
+		const int retryDelayMs = closeRetryDelayMsFlag().load(std::memory_order_relaxed);
 		if (retryDelayMs > 0) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(retryDelayMs));
 		}

@@ -60,6 +60,13 @@ const destroying = await nextMessage();
 if (!destroying.destroying)
 	throw new Error(`Worker did not start destroying: ${JSON.stringify(destroying)}`);
 
+// Claim the destroy result BEFORE awaiting the compaction: `await outcome` yields
+// to the event loop, and the worker can finish destroying and post
+// `{ destroyed: true }` before this env runs the compaction's complete callback.
+// A message delivered with no 'message' listener attached is dropped, so a
+// nextMessage() created after the await would never resolve.
+const destroyResultMessage = nextMessage();
+
 const compactError = await outcome;
 const elapsed = Date.now() - started;
 
@@ -79,7 +86,7 @@ if (elapsed >= 2000)
 		`compact() ran ${elapsed}ms after the close claim; it should have been cancelled immediately`
 	);
 
-const destroyResult = await nextMessage();
+const destroyResult = await destroyResultMessage;
 if (!destroyResult.destroyed) throw new Error(`Destroy failed: ${JSON.stringify(destroyResult)}`);
 
 if (registryStatus().some((entry) => entry.path === path))

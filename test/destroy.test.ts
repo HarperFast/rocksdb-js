@@ -12,6 +12,7 @@ const closeFailureFixture = join(__dirname, 'fixtures', 'fork-close-failure.mts'
 const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure.mts');
 const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
 const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mts');
+const foreignCloseLogCacheFixture = join(__dirname, 'fixtures', 'fork-foreign-close-log-cache.mts');
 const lifecycleTimeoutFixture = join(__dirname, 'fixtures', 'fork-lifecycle-timeout.mts');
 const lifecycleTimeoutTwoDescriptorsFixture = join(
 	__dirname,
@@ -373,6 +374,10 @@ describe('Destroy', () => {
 			ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '1000',
 		});
 	}, 15_000);
+
+	it("drops a handle's transaction-log cache when it reopens after a foreign shutdown", async () => {
+		await runDestroyFixture(foreignCloseLogCacheFixture, generateDBPath());
+	}, 20_000);
 
 	it('times out an open past lifecycleWaitSeconds and recovers once the retry finishes', async () => {
 		await runDestroyFixture(lifecycleTimeoutFixture, generateDBPath(), {

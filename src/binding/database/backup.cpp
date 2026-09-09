@@ -205,7 +205,7 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 	if (!state->descriptor || !state->handle || state->handle->isCancelled()) {
 		return rocksdb::Status::Aborted("Database closed during backup operation");
 	}
-	const int backupDelayMs = testDelayMs("ROCKSDB_JS_BACKUP_DELAY_MS");
+	const int backupDelayMs = backupDelayMsFlag().load(std::memory_order_relaxed);
 	if (backupDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(backupDelayMs));
 	}

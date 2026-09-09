@@ -401,6 +401,16 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	this->path = path;
 	this->readOnly = options.readOnly;
 
+	// Drop the previous lifecycle's transaction-log cache, on this handle's own
+	// (owning) thread. close() can only release `logRefs` from here -- a foreign
+	// cross-env close must not touch this env's napi_refs -- so after a foreign
+	// destroy()/shutdown() the cache survives into the reopen, and `useLog()`
+	// would hand back a TransactionLog whose store weak_ptr points at the
+	// unregistered store of the closed lifecycle. Only its write path
+	// re-resolves; every read accessor reports an empty log
+	// (test/fixtures/fork-foreign-close-log-cache.mts).
+	this->releaseLogRefs();
+
 	DBRegistry::OpenDB(this->shared_from_this(), path, options);
 	this->identityPath = this->descriptor->identityPath;
 

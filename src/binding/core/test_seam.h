@@ -99,6 +99,24 @@ inline std::atomic<int>& openAttachDelayMsFlag() {
 	return delayMs;
 }
 
+// The three teardown/backup delays below run on a libuv worker or on whichever
+// thread drives teardown, so they are snapshotted for the same reason as the
+// fault flags above rather than read through ::getenv there.
+inline std::atomic<int>& backupDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
+inline std::atomic<int>& destroyDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
+inline std::atomic<int>& closeRetryDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -124,6 +142,12 @@ inline void initializeTestSeams() {
 			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed);
 		openAttachDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_OPEN_ATTACH_DELAY_MS"), std::memory_order_relaxed);
+		backupDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_BACKUP_DELAY_MS"), std::memory_order_relaxed);
+		destroyDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_DESTROY_DELAY_MS"), std::memory_order_relaxed);
+		closeRetryDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS"), std::memory_order_relaxed);
 	});
 }
 

@@ -399,7 +399,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// keeping a concurrent OpenDB from recreating this path while physical
 	// deletion (potentially slow: a large directory, a slow disk, or the test
 	// seam below) is still in flight -- so this runs WITHOUT databasesMutex.
-	const int destroyDelayMs = testDelayMs("ROCKSDB_JS_DESTROY_DELAY_MS");
+	const int destroyDelayMs = destroyDelayMsFlag().load(std::memory_order_relaxed);
 	if (destroyDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(destroyDelayMs));
 	}
@@ -1031,6 +1031,13 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				napi_value columnFamilies;
 				NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
+				// Every non-optional field of RegistryStatusDB, including this one:
+				// a monitor reading `entry.transactionDetails.length` must not
+				// throw on the one entry shape that only appears when a destroy's
+				// physical cleanup failed.
+				napi_value transactionDetails;
+				NAPI_STATUS_THROWS(::napi_create_array(env, &transactionDetails));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "transactionDetails", transactionDetails));
 				NAPI_STATUS_THROWS(::napi_set_element(env, result, i++, database));
 				continue;
 			}
