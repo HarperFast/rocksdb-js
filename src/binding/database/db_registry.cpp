@@ -828,6 +828,15 @@ void DBRegistry::OpenDB(
 				);
 			}
 
+			if (!options.timestampFloorLog.empty() &&
+				options.timestampFloorLog != entry.descriptor->timestampFloorLog
+			) {
+				throw rocksdb_js::DBException(
+					"Database \"" + path + "\" is already open with a different timestampFloorLog; "
+					"close every handle for this path before reopening with timestampFloorLog"
+				);
+			}
+
 			// max_log_file_size and info_log_level are DB-wide (`DBOptions`) settings
 			// fixed at first open; the process-global descriptor is reused across
 			// handles/envs, so a second open can't change them. Reject an explicitly

@@ -12,14 +12,14 @@ function fail(message: string): never {
 }
 
 const warnings: string[] = [];
-if (mode === 'warn' || mode === 'warn-read-only' || mode === 'reopen-warn') {
+if (mode === 'warn' || mode === 'warn-read-only') {
 	RocksDatabase.on('log.warn', (...args: unknown[]) => warnings.push(JSON.stringify(args)));
 }
 
 const rotating = mode === 'write-rotate';
 const FRAME_PAYLOAD = 32;
 const db = RocksDatabase.open(dbPath, {
-	...(mode === 'write-unseeded' || mode === 'reopen-warn' ? {} : { timestampFloorLog: log }),
+	...(mode === 'write-unseeded' || mode === 'reopen-refuse' ? {} : { timestampFloorLog: log }),
 	...(mode === 'warn-read-only' ? { readOnly: true } : {}),
 	...(rotating ? { transactionLogMaxSize: 64 * 1024 } : {}),
 });
@@ -75,16 +75,17 @@ try {
 		if (!(clock >= now - 60000 && clock <= now + 60000)) {
 			fail(`clock ${clock} is not tracking the wall clock ${now}`);
 		}
-	} else if (mode === 'reopen-warn') {
-		const second = RocksDatabase.open(dbPath, { name: 'other', timestampFloorLog: log });
-		const until = Date.now() + 5000;
-		while (Date.now() < until && warnings.length === 0) {
-			await new Promise((resolve) => setTimeout(resolve, 20));
-		}
-		second.close();
-		console.log(JSON.stringify({ warnings, clock: db.getMonotonicTimestamp(), key }));
-		if (!warnings.some((warning) => warning.includes('was ignored'))) {
-			fail('a second open with timestampFloorLog did not warn');
+	} else if (mode === 'reopen-refuse') {
+		try {
+			const second = RocksDatabase.open(dbPath, { name: 'other', timestampFloorLog: log });
+			second.close();
+			fail('a second open with timestampFloorLog unexpectedly succeeded');
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.log(JSON.stringify({ error: message, clock: db.getMonotonicTimestamp(), key }));
+			if (!message.includes('monotonic timestamp floor was not seeded')) {
+				fail(`unexpected second-open error: ${message}`);
+			}
 		}
 	} else if (mode === 'warn' || mode === 'warn-read-only') {
 		const until = Date.now() + 5000;

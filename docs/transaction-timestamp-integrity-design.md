@@ -162,3 +162,14 @@ successful seeding, then independently corrupts a segment, exhausts the deadline
 creates a mid-file framing break, and writes an implausible key; each unsafe case must reject the
 opted-in open. Native tests cover scan classification and the repository build/check gates validate
 the binding and TypeScript surface.
+
+### Planning review resolution
+
+The planning review found that a later handle could name `timestampFloorLog` after the first handle
+opened without it, and receive only a warning. The registry now rejects that handle: the descriptor
+cannot safely rerun its one-time seed, and accepting the request would falsely suggest restart-safe
+uniqueness. The review also proposed making the scan budget unbounded by default. That is overruled
+by the owner-selected availability boundary and the existing open-time invariant: an unbounded scan
+can hold serialized opens indefinitely; the default bounded scan instead rejects an opted-in open
+when it cannot prove the floor, and an operator who needs more time raises
+`ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS`.

@@ -288,7 +288,7 @@ not have still warns: an empty or newly named locally originated log has no exis
 
 The option is fixed at the first open of a path in the process — the database descriptor is shared
 across handles and `worker_threads` envs — so a later open of the same path that names a log cannot
-re-run the seed and warns instead of appearing to work.
+re-run the seed and rejects rather than appearing to work.
 
 ### Sequential Read
 
