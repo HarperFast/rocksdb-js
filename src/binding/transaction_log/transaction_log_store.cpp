@@ -230,8 +230,8 @@ std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenc
 	if (!logFile) {
 		return nullptr;
 	}
-	if (!logFile->isOpen()) {
-		logFile->open(this->latestTimestamp);
+	if (!this->openIfPresent(*logFile)) {
+		return nullptr;
 	}
 	// Return a strong reference: for a frozen file the log file itself keeps only
 	// a weak handle, so this strong ref (and the JS external buffer it is handed
@@ -249,6 +249,24 @@ std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenc
 		isCurrent);
 }
 
+bool TransactionLogStore::openIfPresent(TransactionLogFile& file) {
+	if (file.isOpen()) {
+		return true;
+	}
+	std::error_code existsEc;
+	if (!std::filesystem::exists(file.path, existsEc) && !existsEc) {
+		return false;
+	}
+	file.open(this->latestTimestamp);
+	return true;
+}
+
+uint32_t TransactionLogStore::nextSequenceAfter(uint32_t sequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	auto it = this->sequenceFiles.upper_bound(sequenceNumber);
+	return it == this->sequenceFiles.end() ? 0 : it->first;
+}
+
 uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 
@@ -258,8 +276,8 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 		if (!logFile) {
 			return 0;
 		}
-		if (!logFile->isOpen()) {
-			logFile->open(this->latestTimestamp);
+		if (!this->openIfPresent(*logFile)) {
+			return 0;
 		}
 		return logFile->size;
 	}
@@ -267,8 +285,8 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	// get the total size of all log files
 	uint64_t size = 0;
 	for (auto& [key, logFile] : this->sequenceFiles) {
-		if (!logFile->isOpen()) {
-			logFile->open(this->latestTimestamp);
+		if (!this->openIfPresent(*logFile)) {
+			continue;
 		}
 		size += logFile->size;
 	}
@@ -324,9 +342,13 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	while (it != this->sequenceFiles.end()) {
 		auto logFile = it->second.get();
 		// Directory iteration order is unspecified, so registerLogFile() may not
-		// have opened an older file before a higher sequence became current.
-		if (!logFile->isOpen()) {
-			logFile->open(this->latestTimestamp);
+		// have opened an older file before a higher sequence became current. Skip a
+		// registered segment that is gone from disk rather than opening it: open()
+		// creates, so the walk would leave a header-only ghost behind (openIfPresent).
+		if (!this->openIfPresent(*logFile)) {
+			isCurrent = false;
+			it = this->sequenceFiles.find(--sequenceNumber);
+			continue;
 		}
 		positionInLogFile = logFile->findPositionByTimestamp(
 			timestamp,

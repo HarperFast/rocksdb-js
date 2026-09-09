@@ -446,29 +446,40 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
  *
  * Only a segment the store has no bytes for is skipped: one it still knows is merely unmappable
  * for the moment (mid-rotation, 0 bytes at mmap time, a transient resource failure), so iteration
- * stops and picks it up on the next poll rather than stepping over durable history. That check is
- * the segment's own extent rather than `_findPosition(0)`, which resolves the start of the
- * contiguous run below the current segment and so can name a segment past a *second* hole.
- * `_findPosition(0)` then jumps to the oldest survivor in one native call rather than a probe per
- * deleted segment.
+ * stops and picks it up on the next poll rather than stepping over durable history.
+ *
+ * The jump target is `_nextLogId()`, the successor over the store's registered segments — *not*
+ * `_findPosition(0)`, which walks backward from the current sequence and stops at the first gap,
+ * naming the bottom of the contiguous run that ends at the current segment. Those agree only when
+ * the deletions form a single prefix. With a survivor between two holes — a `purge({all})` that
+ * continued past a segment it could not unlink, or segments deleted out of band and registered
+ * that way at load — `_findPosition(0)` lands *past* the survivor and its committed entries are
+ * never yielded.
  */
 function nextReadableLogBuffer(
 	transactionLog: TransactionLog,
 	fromLogId: number,
 	latestLogId: number
 ): LogBuffer | undefined {
-	const nextLogId = fromLogId + 1;
-	const logBuffer = getLogMemoryMap(transactionLog, nextLogId);
-	if (logBuffer) {
-		return logBuffer;
-	}
-	if (transactionLog.getLogFileSize(nextLogId) > 0) {
-		return;
-	}
-	FLOAT_TO_UINT32[0] = transactionLog._findPosition(0);
-	const oldestLogId = UINT32_FROM_FLOAT[1];
-	if (oldestLogId > nextLogId && oldestLogId <= latestLogId) {
-		return getLogMemoryMap(transactionLog, oldestLogId);
+	let candidateLogId = fromLogId + 1;
+	while (candidateLogId <= latestLogId) {
+		const logBuffer = getLogMemoryMap(transactionLog, candidateLogId);
+		if (logBuffer) {
+			return logBuffer;
+		}
+		if (transactionLog.getLogFileSize(candidateLogId) > 0) {
+			// the store still has bytes for it, so it is durable history that is merely
+			// unmappable right now; stop and pick it up on the next poll
+			return;
+		}
+		// A registered segment can also be absent — unlinked out of band, or by another
+		// process's retention, before this process's purge run forgets it. Its successor can
+		// be absent too, so keep probing rather than stopping at the first one that will not
+		// map: stopping there is the permanent wedge this function exists to prevent.
+		candidateLogId = transactionLog._nextLogId(candidateLogId);
+		if (candidateLogId === 0) {
+			return;
+		}
 	}
 }
 
