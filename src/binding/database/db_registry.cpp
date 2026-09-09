@@ -1071,10 +1071,12 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				napi_value columnFamilies;
 				NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
-				// Every non-optional field of RegistryStatusDB, including this one:
-				// a monitor reading `entry.transactionDetails.length` must not
-				// throw on the one entry shape that only appears when a destroy's
-				// physical cleanup failed.
+				// A monitor reading `entry.transactionDetails.length` must not throw
+				// on the one entry shape that only appears when a destroy's
+				// physical cleanup failed. (`RegistryStatusDB` also declares
+				// `userSharedBuffers` non-optional and types `columnFamilies` as
+				// `string[]`; neither matches what any branch here builds, which
+				// predates this change and wants its own fix.)
 				napi_value transactionDetails;
 				NAPI_STATUS_THROWS(::napi_create_array(env, &transactionDetails));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "transactionDetails", transactionDetails));
