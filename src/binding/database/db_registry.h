@@ -200,6 +200,7 @@ public:
 	static void RemoveListenersByEnv(napi_env env);
 	static void ReleaseCommitCompletionsByEnv(napi_env env);
 	static void ReleaseParkTimeoutsByEnv(napi_env env);
+	static void ReleaseLogRefsByEnv(napi_env env);
 	static void Shutdown();
 	/**
 	 * Releases every remaining registry entry. Called from the module env

@@ -233,10 +233,17 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 				DEBUG_LOG("DBIterator::Constructor NativeIterator GC'd itHandle=%p\n", data);
 				auto* itHandle = static_cast<std::shared_ptr<DBIteratorHandle>*>(data);
 				if (*itHandle) {
+					// Close before detaching: while attached, a concurrent
+					// destroy()/shutdown() sweep sees this iterator in
+					// `closables` and calls its close() too, serialized
+					// against this one by `iteratorMutex` (closeIfOpen()
+					// is idempotent). Detaching first would let that sweep
+					// skip this iterator and reset the DB out from under a
+					// still-running native `Reset()` here.
+					(*itHandle)->close();
 					if ((*itHandle)->dbHandle && (*itHandle)->dbHandle->descriptor) {
 						(*itHandle)->dbHandle->descriptor->detach(*itHandle);
 					}
-					(*itHandle)->close();
 				}
 				delete itHandle;
 			},

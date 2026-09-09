@@ -12,6 +12,7 @@ const closeFailureFixture = join(__dirname, 'fixtures', 'fork-close-failure.mts'
 const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure.mts');
 const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
 const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mts');
+const lifecycleTimeoutFixture = join(__dirname, 'fixtures', 'fork-lifecycle-timeout.mts');
 const flushFailureFixture = join(__dirname, 'fixtures', 'fork-flush-failure.mts');
 const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
 const iteratorNextRaceFixture = join(__dirname, 'fixtures', 'fork-iterator-next-race.mts');
@@ -365,6 +366,13 @@ describe('Destroy', () => {
 		await runDestroyFixture(shutdownRetryFixture, generateDBPath(), {
 			ROCKSDB_JS_CLOSE_FAILURE: '1',
 			ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '1000',
+		});
+	}, 15_000);
+
+	it('times out an open past lifecycleWaitSeconds and recovers once the retry finishes', async () => {
+		await runDestroyFixture(lifecycleTimeoutFixture, generateDBPath(), {
+			ROCKSDB_JS_CLOSE_FAILURE: '1',
+			ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '3000',
 		});
 	}, 15_000);
 

@@ -241,6 +241,10 @@ NAPI_MODULE_INIT() {
 
 		rocksdb_js::GlobalEvents::getInstance().removeListenersByEnv(dyingEnv);
 		rocksdb_js::DBRegistry::RemoveListenersByEnv(dyingEnv);
+		// Release this env's DBHandle transaction-log refs before Node frees
+		// them, so a later foreign close() cannot touch them through a
+		// recycled `std::thread::id` (AGENTS.md invariant 18).
+		rocksdb_js::DBRegistry::ReleaseLogRefsByEnv(dyingEnv);
 		// Release this env's commit-completion tsfns before Node frees the env's
 		// tsfns, so the shared commit thread stops marshalling into a torn-down
 		// env (mirrors the listener cleanup above).

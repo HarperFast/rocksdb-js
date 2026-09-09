@@ -683,6 +683,20 @@ public:
 	void closeTransactionsByEnv(napi_env env);
 
 	/**
+	 * Releases the `logRefs` napi_refs of every attached DBHandle created by
+	 * `env`, from that env's module cleanup hook. A worker env that exits
+	 * without calling `db.close()` leaves its DBHandle attached in
+	 * `closables`, its `ownerThreadId` never reused while the env itself is
+	 * still alive -- but the OS may recycle that `std::thread::id` once the
+	 * env's own thread exits, so `DBHandle::close()`'s owner-thread check
+	 * could later misfire on a foreign thread and call `napi_delete_reference`
+	 * against this torn-down env (AGENTS.md invariant 18). Running this here,
+	 * while the env is still valid, empties `logRefs` before that identity
+	 * check can ever be evaluated against a stale id.
+	 */
+	void releaseLogRefsByEnv(napi_env env);
+
+	/**
 	 * Removes a dropped column family from the columns map (under
 	 * `columnsMutex`) so a later open-by-name creates a fresh column family
 	 * instead of reusing the dangling dropped handle. DBHandles still holding

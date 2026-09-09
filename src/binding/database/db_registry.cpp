@@ -143,11 +143,29 @@ CloseResult DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	}
 
 	DBKey key = descriptorKey(*handle->descriptor);
-
-	handle->descriptor->detach(handle);
+	std::shared_ptr<DBDescriptor> descriptor = handle->descriptor;
 
 	// close the handle, decrements the descriptor ref count
 	handle->close();
+
+	// Detach only after close() returns, not before: while this handle stays
+	// attached to `closables`, a concurrent destroy()/shutdown() that claims
+	// this descriptor in the same window sees it in its sweep and calls
+	// close() on it too -- serialized against this call by `closeMutex`, and
+	// a no-op once it runs (closeIfOpen-style idempotency; see close()'s
+	// per-substep guards). That makes the foreign finishClose() wait out this
+	// close's async-work drain instead of skipping the handle: an admitted
+	// Flush/Compact/Get releases its OperationGuard at setup handoff, so
+	// nothing else would stop finishClose() from reaching db.reset() while
+	// that op's execute callback is still using descriptor->db. Detaching
+	// first (the previous order) left that in-flight op with no closer
+	// waiting on it. Snapshot `descriptor` before close(), which resets
+	// `handle->descriptor` to null on this (the owning) thread.
+	descriptor->detach(handle);
+	// Release this local ref before the purge check below: it counts
+	// live references via use_count(), and a ref still held here would
+	// make it see 2 instead of 1 and wrongly skip the purge.
+	descriptor.reset();
 
 	return DBRegistry::PurgeIfUnreferenced(key);
 }
@@ -617,27 +635,36 @@ void DBRegistry::OpenDB(
 		// getting a chance to reject with its more helpful message. A retry in
 		// flight (closeRetrying) is a distinct, still-transient state handled by
 		// its own wait further down.
+		//
+		// Only ONE entry's condition is picked here, and the predicate below
+		// checks only THAT entry (by key) -- not a path-wide scan. Each entry's
+		// own finishClose() notifies only its own condition (see
+		// closeClaimedDescriptors), so a path-wide predicate parked on one
+		// entry's condition would never wake for a DIFFERENT entry's notify: two
+		// closing descriptors on one path (e.g. a writable and a secondary) can
+		// leave the predicate false forever while this wait sleeps on the wrong
+		// condition, stalling the opener for the full deadline even though the
+		// path is long since free. Waiting on one entry at a time and looping
+		// back to reselect keeps the wait and its wake source the same object.
+		DBKey pathClosingKey;
 		std::shared_ptr<std::condition_variable> pathClosingCondition;
 		for (const auto& [existingKey, existingEntry] : instance->databases) {
 			if (existingKey.path == identityPath && existingEntry.descriptor &&
 				existingEntry.descriptor->isClosing() &&
 				(existingEntry.closeError.empty() || existingEntry.closeRetrying)
 			) {
+				pathClosingKey = existingKey;
 				pathClosingCondition = existingEntry.condition;
 				break;
 			}
 		}
 		if (pathClosingCondition) {
 			if (!pathClosingCondition->wait_until(lock, deadline, [&]() {
-				for (const auto& [existingKey, existingEntry] : instance->databases) {
-					if (existingKey.path == identityPath && existingEntry.descriptor &&
-						existingEntry.descriptor->isClosing() &&
-						(existingEntry.closeError.empty() || existingEntry.closeRetrying)
-					) {
-						return false;
-					}
-				}
-				return true;
+				auto found = instance->databases.find(pathClosingKey);
+				return found == instance->databases.end() ||
+					found->second.condition != pathClosingCondition ||
+					!found->second.descriptor || !found->second.descriptor->isClosing() ||
+					(!found->second.closeError.empty() && !found->second.closeRetrying);
 			})) {
 				throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": another instance on this path is still closing");
 			}
@@ -667,22 +694,24 @@ void DBRegistry::OpenDB(
 		}
 		// A retry in flight (closeRetrying) is a transient state a fresh open
 		// should wait out rather than reject, since the retry may still succeed
-		// and leave the path openable.
+		// and leave the path openable. Same one-entry-at-a-time discipline as
+		// the closing-condition wait above, for the same reason: each entry
+		// notifies only its own condition, so a path-wide predicate parked on
+		// one entry's condition can miss a different entry's retry finishing.
+		DBKey retryKey;
 		std::shared_ptr<std::condition_variable> retryCondition;
 		for (const auto& [existingKey, existingEntry] : instance->databases) {
 			if (existingKey.path == identityPath && existingEntry.closeRetrying) {
+				retryKey = existingKey;
 				retryCondition = existingEntry.condition;
 				break;
 			}
 		}
 		if (retryCondition) {
 			if (!retryCondition->wait_until(lock, deadline, [&]() {
-				for (const auto& [existingKey, existingEntry] : instance->databases) {
-					if (existingKey.path == identityPath && existingEntry.closeRetrying) {
-						return false;
-					}
-				}
-				return true;
+				auto found = instance->databases.find(retryKey);
+				return found == instance->databases.end() ||
+					found->second.condition != retryCondition || !found->second.closeRetrying;
 			})) {
 				throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": close retry is still in progress");
 			}
@@ -1170,6 +1199,35 @@ void DBRegistry::ReleaseCommitCompletionsByEnv(napi_env env) {
 
 	for (auto& descriptor : descriptors) {
 		descriptor->releaseCommitCompletionsByEnv(env);
+	}
+}
+
+/**
+ * Release each attached DBHandle's `logRefs` for handles created on the given
+ * env. Called from the module env-cleanup hook, on the dying env's own
+ * thread, before Node frees the env -- so a worker that exits without
+ * closing its DBHandle does not leave a `napi_ref` for a later foreign
+ * `close()` to touch through a recycled `std::thread::id` (AGENTS.md
+ * invariant 18). Mirrors RemoveListenersByEnv.
+ */
+void DBRegistry::ReleaseLogRefsByEnv(napi_env env) {
+	if (!instance) {
+		return;
+	}
+
+	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		descriptors.reserve(instance->databases.size());
+		for (auto& [_key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				descriptors.push_back(entry.descriptor);
+			}
+		}
+	}
+
+	for (auto& descriptor : descriptors) {
+		descriptor->releaseLogRefsByEnv(env);
 	}
 }
 

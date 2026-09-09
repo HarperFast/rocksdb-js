@@ -449,6 +449,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    teardown but reported an error (a failed close-time flush) is fatal for `shutdown()`/`PurgeAll()`
    because dropping it silently would hide possible data loss, and non-fatal for `destroy()`, whose
    caller asked for the data to be deleted anyway.
+
+   A self-close must detach from `closables` **after** it closes, not before: `DBRegistry::CloseDB`
+   and the `NativeIterator`/iterator finalizer each own a handle/iterator that a foreign
+   `destroy()`/`shutdown()` can also try to claim, and detaching first makes that foreign closer's
+   sweep skip this one entirely — it drains `operationsInFlight` (already zero: an admitted async
+   `Flush`/`Compact`/`Get` releases its `OperationGuard` at setup handoff, per invariant 17) and
+   reaches `db.reset()`/`iterator::Reset()` while the self-close's own async-work drain, or the
+   `Next()` in progress, is still using the DB. Detaching after close() returns costs nothing on the
+   ordinary path — a foreign close arriving in that window blocks on the same `closeMutex`/
+   `iteratorMutex`, finds nothing left to do once it acquires it, and moves on — and it makes
+   `close()` itself the single point every teardown source waits on.
+
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
    own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
    RocksDB only serializes work _within_ a single engine — it has no cross-engine lock on the directory.
@@ -802,6 +814,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     leaker repro still faults in Node's second-pass napi finalizer drain even with the fix; it
     never reproduces natively or on glibc, so the repro test is `skipIf(darwin)` (and, like the
     repo's other teardown repros, gated to Node).
+
+    `DBHandle::close()` cannot be made napi-free the same way — closing a database handle
+    legitimately needs to release its `logRefs` (`TransactionLog` JS-wrapper `napi_ref`s), and
+    unlike a transaction there is no separate object to move that work onto. It instead keeps the
+    same recycled-thread-id-guarded shape the transaction case used to have, and stays safe only
+    because `DBRegistry::ReleaseLogRefsByEnv` → `DBDescriptor::releaseLogRefsByEnv` →
+    `DBHandle::releaseLogRefs()`, wired into the same cleanup hook as `CloseTransactionsByEnv`,
+    empties `logRefs` for every attached handle owned by the dying env **before** that env's
+    thread id can be reused: the only way `close()`'s `ownerThreadId` check can misfire is after
+    the real owner env is already gone, and by then this has already run, so the misfiring branch
+    finds nothing left to release. Do not delete this hook call assuming `close()`'s guard is
+    sufficient on its own — it is not, without the hook running first.
 
 19. **A secondary open's identity is `{path, readOnly, secondaryPath}` and its workspace is
     exclusive**: `secondaryPath` opens via `DB::OpenAsSecondary` (a read-only follower of a live

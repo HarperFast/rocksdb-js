@@ -184,6 +184,29 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	bool opened() const;
 	void unrefLog(const std::string& name);
 	napi_value useLog(napi_env env, napi_value jsDatabase, std::string& name);
+
+	/**
+	 * Releases every `logRefs` napi_ref and clears the map. Takes
+	 * `closeMutex` itself; see `DBDescriptor::releaseLogRefsByEnv` for why
+	 * this exists as a separate, env-cleanup-hook-driven path rather than
+	 * folding into `close()`'s existing `ownerThreadId` guard (AGENTS.md
+	 * invariant 18).
+	 */
+	void releaseLogRefs();
+
+	// Closable override: releases `logRefs` only if `env` is this handle's own.
+	void releaseEnvRefs(void* env) override {
+		if (static_cast<napi_env>(env) == this->env) {
+			this->releaseLogRefs();
+		}
+	}
+
+private:
+	// Same as `releaseLogRefs()`, but assumes `closeMutex` is already held --
+	// `close()` calls this directly to avoid re-locking its own mutex.
+	void releaseLogRefsLocked();
+
+public:
 };
 
 } // namespace rocksdb_js

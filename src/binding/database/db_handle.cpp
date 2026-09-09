@@ -178,18 +178,45 @@ void DBHandle::close() {
 		}
 	}
 
-	// N-API references are environment-thread-affine. Destroying a shared
-	// descriptor can close this handle from another worker; retain the refs and
-	// descriptor until the owning environment's close or finalizer releases them.
+	// N-API references are environment-thread-affine, and `ownerThreadId` is a
+	// `std::thread::id` -- reusable by the OS once that thread exits. A worker
+	// env that exits without closing this handle leaves it attached in
+	// `descriptor->closables`; if a foreign close later lands on a thread that
+	// happens to have been assigned the dead owner's recycled id, this check
+	// would wrongly look like "my own thread" and call `napi_delete_reference`
+	// against a torn-down env (the corrupting write AGENTS.md invariant 18
+	// documents for the equivalent transaction-close case). That is only
+	// possible once the owner env is already gone, and by then
+	// `DBRegistry::ReleaseLogRefsByEnv` -- run from that env's own cleanup
+	// hook while it was still alive -- has already emptied `logRefs`, so this
+	// loop finds nothing left to release even if the identity check misfires.
 	if (std::this_thread::get_id() == this->ownerThreadId) {
-		for (auto& [name, ref] : this->logRefs) {
-			DEBUG_LOG("%p DBHandle::close Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
-			::napi_delete_reference(this->env, ref);
-		}
-		this->logRefs.clear();
+		this->releaseLogRefsLocked();
 	}
 
 	DEBUG_LOG("%p DBHandle::close Handle closed\n", this);
+}
+
+/**
+ * Releases every `logRefs` napi_ref and clears the map. Called either from
+ * `close()` on this handle's own owning thread, or from
+ * `DBDescriptor::releaseLogRefsByEnv` on the dying env's own thread via the
+ * module env-cleanup hook (mirrors `DBRegistry::CloseTransactionsByEnv`) --
+ * see the comment in `close()` above for why the latter must run before this
+ * handle's owner thread id can be safely reused as an identity check.
+ * Guarded by `closeMutex` so the two callers cannot race each other.
+ */
+void DBHandle::releaseLogRefs() {
+	std::lock_guard<std::mutex> lock(this->closeMutex);
+	this->releaseLogRefsLocked();
+}
+
+void DBHandle::releaseLogRefsLocked() {
+	for (auto& [name, ref] : this->logRefs) {
+		DEBUG_LOG("%p DBHandle::releaseLogRefs Releasing transaction log JS reference \"%s\"\n", this, name.c_str());
+		::napi_delete_reference(this->env, ref);
+	}
+	this->logRefs.clear();
 }
 
 rocksdb::ColumnFamilyHandle* DBHandle::getColumnFamilyHandle() const {

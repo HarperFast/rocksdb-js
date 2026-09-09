@@ -17,6 +17,19 @@ struct Closable {
 	 * Default no-op: most closables have nothing that outlives a flag check.
 	 */
 	virtual void cancelBlockingWork() {}
+
+	/**
+	 * Releases any napi_ref this closable holds on behalf of `env`, if `env`
+	 * is the one that owns them -- called per-closable so a descriptor's
+	 * env-cleanup-hook reap (see `DBDescriptor::releaseLogRefsByEnv`) can walk
+	 * a `map<Closable*, weak_ptr<Closable>>` without RTTI (this binary builds
+	 * with `-fno-rtti`, so a `dynamic_pointer_cast` down to a concrete
+	 * closable type is not available here). `env` is an opaque `void*`
+	 * (really a `napi_env`) so this header, like the rest of `core/`, stays
+	 * free of `node_api.h`. Default no-op: most closables hold no per-env
+	 * napi_refs of their own.
+	 */
+	virtual void releaseEnvRefs(void* env) {}
 };
 
 } // namespace rocksdb_js

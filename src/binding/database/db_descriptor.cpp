@@ -501,22 +501,30 @@ void DBDescriptor::finishClose(bool destroying) {
 		return;
 	}
 
-	// We want to ensure that all in-memory data is written to disk. Keep the waiting default: an
-	// immediate flush races transaction-log-store teardown (AGENTS invariant 16).
+	// We want to ensure that all in-memory data is written to disk -- but only
+	// when the files are staying. A destroy() deletes them immediately after
+	// this returns, so flushing (and, below, compacting) them first is pure
+	// wasted I/O -- and with the `allow_write_stall=false` default (AGENTS
+	// invariant 16) an unbounded wait on a stalled database, which would park
+	// this thread while it still holds the `destroyingPaths` gate, stalling
+	// every concurrent OpenDB() on the path too. Keep the waiting default for
+	// a real close: an immediate flush races transaction-log-store teardown.
 	std::string closeError;
-	rocksdb::Status status = testConsumeCloseFlushFailure()
-		? rocksdb::Status::IOError("Injected database close flush failure")
-		: this->flush();
-	if (!status.ok()) {
-		closeError = "Failed to flush database during close: " + status.ToString();
-		if (!destroying) {
+	rocksdb::Status status;
+	if (!destroying) {
+		status = testConsumeCloseFlushFailure()
+			? rocksdb::Status::IOError("Injected database close flush failure")
+			: this->flush();
+		if (!status.ok()) {
+			closeError = "Failed to flush database during close: " + status.ToString();
 			throw rocksdb_js::DBException(closeError);
 		}
 	}
 
 	// Trigger manual compaction on all column families to reclaim space from
-	// tombstones before closing
-	if (!this->readOnly && DBSettings::getInstance().getCompactOnClose()) {
+	// tombstones before closing -- skipped when destroying for the same
+	// reason as the flush above.
+	if (!destroying && !this->readOnly && DBSettings::getInstance().getCompactOnClose()) {
 		// Snapshot under the columns mutex; a concurrent drop can erase from
 		// the map while we compact.
 		std::vector<std::shared_ptr<ColumnFamilyDescriptor>> pinnedColumns;
@@ -1693,6 +1701,31 @@ void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 		// it the DBHandle) would otherwise outlive the env for the life of the
 		// process. Removing here is idempotent when close() already did it.
 		this->transactionRemove(txnHandle);
+	}
+}
+
+/**
+ * Releases the `logRefs` of every attached DBHandle created on `env`. See the
+ * header for why this is env-scoped rather than part of DBHandle::close().
+ * Calls `releaseEnvRefs(env)` on every attached closable (not just
+ * DBHandles) -- this binary builds with `-fno-rtti`, so there is no cheap way
+ * to filter to DBHandle instances before the call; every other closable's
+ * override is a no-op (see core/closable.h).
+ */
+void DBDescriptor::releaseLogRefsByEnv(napi_env env) {
+	std::vector<std::shared_ptr<Closable>> closables;
+	{
+		std::lock_guard<std::mutex> lock(this->txnsMutex);
+		closables.reserve(this->closables.size());
+		for (auto& [ptr, weakClosable] : this->closables) {
+			if (auto closable = weakClosable.lock()) {
+				closables.push_back(std::move(closable));
+			}
+		}
+	}
+
+	for (auto& closable : closables) {
+		closable->releaseEnvRefs(static_cast<void*>(env));
 	}
 }
 
