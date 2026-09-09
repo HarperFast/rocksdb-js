@@ -1210,7 +1210,7 @@ export class Store {
 			}
 			// Ids are per database, so one from elsewhere resolves here to an
 			// unrelated transaction of the same number. Identity, never the path
-			// the caller spelled — see AGENTS.md invariant 20.
+			// the caller spelled.
 			if (this.identityPath !== undefined && transaction.store.identityPath !== this.identityPath) {
 				throw new TypeError('Transaction belongs to a different database');
 			}
