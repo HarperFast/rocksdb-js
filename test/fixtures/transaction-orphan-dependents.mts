@@ -6,9 +6,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 const mode = process.argv[2];
 const dbPath = process.argv[3];
 
-if ((mode !== 'async-get' && mode !== 'iterator') || !dbPath || !globalThis.gc) {
+if (
+	(mode !== 'async-get' && mode !== 'iterator' && mode !== 'routed-iterator') ||
+	!dbPath ||
+	!globalThis.gc
+) {
 	console.error(
-		'Usage: node --expose-gc transaction-orphan-dependents.mts <async-get|iterator> <dbPath>'
+		'Usage: node --expose-gc transaction-orphan-dependents.mts <async-get|iterator|routed-iterator> <dbPath>'
 	);
 	process.exit(1);
 }
@@ -55,14 +59,16 @@ async function testDelayedAsyncGet(db: RocksDatabase): Promise<void> {
 	await waitForTransactionClose();
 }
 
-async function testLiveIterator(db: RocksDatabase): Promise<void> {
+async function testLiveIterator(db: RocksDatabase, routed: boolean): Promise<void> {
 	for (const key of ['a', 'b', 'c']) {
 		await db.put(key, `value-${key}`);
 	}
 
 	const iterator = (() => {
 		const txn = new Transaction(db.store);
-		const iterator = txn.getRange()[Symbol.iterator]();
+		const iterator = (routed ? db.getRange({ transaction: txn }) : txn.getRange())[
+			Symbol.iterator
+		]();
 		assert.deepEqual(iterator.next(), { done: false, value: { key: 'a', value: 'value-a' } });
 		return iterator;
 	})();
@@ -79,7 +85,7 @@ try {
 	if (mode === 'async-get') {
 		await testDelayedAsyncGet(db);
 	} else {
-		await testLiveIterator(db);
+		await testLiveIterator(db, mode === 'routed-iterator');
 	}
 } finally {
 	db.close();

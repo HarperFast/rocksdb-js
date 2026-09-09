@@ -21,6 +21,7 @@
 namespace rocksdb_js {
 
 struct DBHandle;
+struct DBIteratorHandle;
 struct DBIteratorOptions;
 struct TransactionLogStore;
 
@@ -44,8 +45,9 @@ enum class TransactionState {
  * This handle contains `get()`, `put()`, and `remove()` methods which are
  * shared between the `Database` and `Transaction` classes.
  *
- * Each instance of this class is bound to a JavaScript `Transaction` instance.
- * Since a JS instance is bound to a single thread, we don't need any mutexes.
+ * Each instance of this class is bound to a JavaScript `Transaction` instance,
+ * but descriptor teardown can close it from another environment. State used by
+ * those cross-thread teardown paths must be synchronized explicitly.
  */
 struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_from_this<TransactionHandle> {
 	/**
@@ -125,9 +127,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	/**
 	 * Transaction-backed iterators whose RocksDB iterator still depends on txn.
-	 * Orphan cleanup waits for this to reach zero before destroying txn.
+	 * Orphan cleanup waits for the count to reach zero. The weak map lets an
+	 * explicit commit/abort close those iterators before RocksDB mutates or
+	 * destroys txn without creating an ownership cycle.
 	 */
 	std::atomic<uint32_t> activeIteratorCount{0};
+	std::mutex iteratorsMutex;
+	std::unordered_map<DBIteratorHandle*, std::weak_ptr<DBIteratorHandle>> activeIterators;
 
 	/**
 	 * A batch of log entries to write to the transaction log. It can only be
@@ -199,11 +205,20 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void onWrapperCollected();
 
 	/**
-	 * Registers/releases a transaction-backed iterator dependency. The final
-	 * release retries a deferred orphan close.
+	 * Builds a transaction-backed iterator and registers it while the
+	 * transaction is still pending. The handle is marked registered only after
+	 * the insert, so a failed insert unwinds without re-entering
+	 * `iteratorsMutex` from its destructor. `unregisterIterator` releases the
+	 * dependency (the final release retries a deferred orphan close);
+	 * `closeIterators` closes every registered handle before `txn` is consumed,
+	 * reset, or deleted.
 	 */
-	void registerIterator();
-	void unregisterIterator();
+	std::shared_ptr<DBIteratorHandle> createIterator(
+		DBIteratorOptions& options,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
+	void unregisterIterator(DBIteratorHandle* iterator);
+	void closeIterators();
 
 	/**
 	 * Closes a collected wrapper once no async work or iterator still depends

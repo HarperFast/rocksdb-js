@@ -238,6 +238,29 @@ napi_value Database::Columns(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * The database's resolved filesystem identity — the registry key that two
+ * spellings of one directory (`data` and `./data`, a symlink and its target)
+ * share and that a repointed symlink or a `chdir` cannot change afterwards.
+ * `undefined` until the handle has been opened; retained after close.
+ *
+ * Callers comparing two handles for "same database" must use this and never
+ * the path they passed to `open()`, which is a spelling, not an identity.
+ */
+napi_value Database::IdentityPath(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE();
+
+	if (dbHandle == nullptr || (*dbHandle)->identityPath.empty()) {
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	const std::string& identityPath = (*dbHandle)->identityPath;
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, identityPath.c_str(), identityPath.size(), &result));
+	return result;
+}
+
+/**
  * Compacts the entire key range of the database asynchronously.
  * This triggers manual compaction which removes tombstones and reclaims space.
  *
@@ -1327,12 +1350,22 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			NAPI_RETURN_UNDEFINED();
 		}
-		txnHandle->getCount(itOptions, count, *dbHandle);
+		try {
+			txnHandle->getCount(itOptions, count, *dbHandle);
+		} catch (const std::exception& e) {
+			::napi_throw_error(env, nullptr, e.what());
+			NAPI_RETURN_UNDEFINED();
+		}
 	} else {
-		std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
-		while (itHandle->iterator->Valid()) {
-			++count;
-			itHandle->iterator->Next();
+		try {
+			std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
+			while (itHandle->valid()) {
+				++count;
+				itHandle->advance();
+			}
+		} catch (const std::exception& e) {
+			::napi_throw_error(env, nullptr, e.what());
+			NAPI_RETURN_UNDEFINED();
 		}
 	}
 
@@ -2726,6 +2759,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getUserSharedBuffer", nullptr, GetUserSharedBuffer, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "hasLock", nullptr, HasLock, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "identityPath", nullptr, nullptr, IdentityPath, nullptr, nullptr, napi_default, nullptr },
 		{ "listeners", nullptr, Listeners, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "listLogs", nullptr, ListLogs, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "notify", nullptr, Notify, nullptr, nullptr, nullptr, napi_default, nullptr },

@@ -96,6 +96,7 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 
 void TransactionHandle::resetTransaction(){
 	// clear/delete the previous transaction and create a new transaction so that it can be retried
+	this->closeIterators();
 	if (this->txn) {
 		this->txn->ClearSnapshot();
 		delete this->txn;
@@ -250,15 +251,69 @@ void TransactionHandle::onWrapperCollected() {
 	this->closeOrphanIfUnused();
 }
 
-void TransactionHandle::registerIterator() {
+std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
+	DBIteratorOptions& options,
+	std::shared_ptr<DBHandle> dbHandleOverride
+) {
+	std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+	if (this->closed.load() || !this->txn || this->state != TransactionState::Pending) {
+		throw std::runtime_error("Transaction is not in pending state");
+	}
+	const std::shared_ptr<DBHandle>& targetHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	if (!targetHandle || !targetHandle->opened()) {
+		throw std::runtime_error("Database not open");
+	}
+	std::shared_ptr<DBIteratorHandle> iterator = std::make_shared<DBIteratorHandle>(
+		this->shared_from_this(),
+		options,
+		dbHandleOverride
+	);
+	const bool inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
+	assert(inserted && "Transaction iterator registered twice");
+	(void)inserted;
+	iterator->transactionRegistered = true;
 	this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
+	return iterator;
 }
 
-void TransactionHandle::unregisterIterator() {
+void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
+	{
+		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+		if (this->activeIterators.erase(iterator) == 0) {
+			return;
+		}
+	}
 	const uint32_t previous = this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
 	assert(previous > 0 && "Transaction iterator count underflow");
 	if (previous == 1) {
 		this->closeOrphanIfUnused();
+	}
+}
+
+void TransactionHandle::closeIterators() {
+	// Never allocates: teardown paths cannot throw. A handle mid-destruction on
+	// another thread cannot be pinned, but its destructor resets the RocksDB
+	// iterator before erasing its entry, so wait for that before `txn` is freed.
+	for (;;) {
+		std::shared_ptr<DBIteratorHandle> iterator;
+		bool expired = false;
+		{
+			std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+			for (const auto& [_iterator, weakIterator] : this->activeIterators) {
+				iterator = weakIterator.lock();
+				if (iterator) {
+					break;
+				}
+				expired = true;
+			}
+		}
+		if (iterator) {
+			iterator->close();
+		} else if (expired) {
+			std::this_thread::yield();
+		} else {
+			return;
+		}
 	}
 }
 
@@ -302,6 +357,7 @@ void TransactionHandle::close() {
 	if (this->closed.exchange(true)) {
 		return;
 	}
+	this->closeIterators();
 
 	if (this->dbHandle && this->dbHandle->descriptor) {
 		this->dbHandle->descriptor->transactionRemove(shared_from_this());
@@ -595,16 +651,11 @@ void TransactionHandle::getCount(
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
-	this->ensureSnapshot();
-	if (this->snapshotSet) {
-		itOptions.readOptions.snapshot = this->txn->GetSnapshot();
+	std::shared_ptr<DBIteratorHandle> itHandle = this->createIterator(itOptions, std::move(dbHandleOverride));
+	for (count = 0; itHandle->valid(); ++count) {
+		itHandle->advance();
 	}
-
-	std::unique_ptr<DBIteratorHandle> itHandle =
-		std::make_unique<DBIteratorHandle>(this->shared_from_this(), itOptions, dbHandleOverride);
-	for (count = 0; itHandle->iterator->Valid(); ++count) {
-		itHandle->iterator->Next();
-	}
+	itHandle->close();
 }
 
 /**

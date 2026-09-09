@@ -260,7 +260,8 @@ export declare class NativeIteratorCls {
 		startKeyEnd: number,
 		endKeyStart: number,
 		endKeyEnd: number,
-		options?: NativeIteratorAdvancedOptions
+		options?: NativeIteratorAdvancedOptions,
+		transactionId?: number
 	);
 	next(): NativeIteratorResult;
 	return(): void;
@@ -478,6 +479,7 @@ export type NativeDatabase = {
 		callback?: UserSharedBufferCallback
 	): ArrayBuffer;
 	hasLock(key: BufferWithDataView): boolean;
+	identityPath: string | undefined;
 	listeners(event: string | BufferWithDataView): number;
 	listLogs(): string[];
 	opened: boolean;
@@ -796,6 +798,7 @@ export const constants: {
 	ITERATOR_INCLUDE_VALUES_FLAG: number;
 	ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG: number;
 	ITERATOR_CONTEXT_IS_TRANSACTION_FLAG: number;
+	ITERATOR_HAS_TRANSACTION_ID_FLAG: number;
 	ITERATOR_RESULT_DONE: number;
 	ITERATOR_RESULT_FAST: number;
 } = binding.constants;
