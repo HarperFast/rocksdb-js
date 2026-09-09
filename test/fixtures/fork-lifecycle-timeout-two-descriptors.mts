@@ -66,7 +66,14 @@ for (let attempt = 0; attempt < 40 && !bothRetrying(); attempt++) await delay(25
 if (!bothRetrying()) throw new Error('Both retries were never claimed');
 
 const start = Date.now();
-const reopened = RocksDatabase.open(path);
+// This handle is only for timing -- shutdown() is process-wide, not scoped to
+// this path, and its worker call may still be looping (re-scanning for
+// anything left to close) after this open() returns but before it posts
+// `shutdownResult`. A handle opened while that loop can still run is not
+// safe to read from or hold onto: shutdown() would sweep and force-close it
+// too. Let it go and reopen fresh below, strictly after the worker (and its
+// in-flight shutdown() call) is confirmed done.
+RocksDatabase.open(path);
 const elapsed = Date.now() - start;
 // Two sequential ~1.5s retries: open() must wait past the first (proves it
 // didn't just get lucky reopening as soon as ITS selected entry finished) but
@@ -74,10 +81,12 @@ const elapsed = Date.now() - start;
 if (elapsed < 1200 || elapsed > 5000) {
 	throw new Error(`Open did not wait out both sequential retries correctly (${elapsed}ms)`);
 }
-if (reopened.getSync('key') !== 'value') throw new Error('Retry did not preserve data');
 
 const result = await shutdownResult;
 if (!result.shutdown) throw new Error(`Shutdown retry failed: ${JSON.stringify(result)}`);
-
-reopened.destroy();
 await worker.terminate();
+
+// Now safe: the worker and its shutdown() call are both fully done.
+const reopened = RocksDatabase.open(path);
+if (reopened.getSync('key') !== 'value') throw new Error('Retry did not preserve data');
+reopened.destroy();
