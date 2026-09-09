@@ -1025,11 +1025,35 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_array(env, &result));
 
+	struct RegistryStatusEntry {
+		std::shared_ptr<DBDescriptor> descriptor;
+		std::string reportedPath;
+		std::string closeError;
+		bool closeRetrying;
+		uint32_t refCount;
+	};
+	std::vector<RegistryStatusEntry> entries;
 	if (instance) {
 		std::unique_lock<std::mutex> lock(instance->databasesMutex);
+		entries.reserve(instance->databases.size());
+		for (const auto& [key, entry] : instance->databases) {
+			auto descriptor = entry.descriptor;
+			const std::string reportedPath = descriptor ? descriptor->path
+				: !entry.reportedPath.empty() ? entry.reportedPath
+				: key.path;
+			// Omit the local snapshot's reference so this remains the count a
+			// caller would have observed while the registry lock was held.
+			const uint32_t refCount = descriptor
+				? static_cast<uint32_t>(descriptor.use_count() - 1)
+				: 0;
+			entries.push_back({
+				std::move(descriptor), reportedPath, entry.closeError, entry.closeRetrying, refCount
+			});
+		}
+		lock.unlock();
 
 		size_t i = 0;
-		for (auto& [key, entry] : instance->databases) {
+		for (auto& entry : entries) {
 			napi_value database;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &database));
 			napi_value pathValue;
@@ -1039,10 +1063,8 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			// differently. A tombstoned entry (destroy cleanup failed) has no
 			// descriptor, so fall back to the spelling its last descriptor was
 			// opened with, and only then to the key's resolved identity.
-			const std::string& reportedPath = entry.descriptor ? entry.descriptor->path
-				: !entry.reportedPath.empty() ? entry.reportedPath
-				: key.path;
-			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, reportedPath.c_str(), reportedPath.size(), &pathValue));
+			NAPI_STATUS_THROWS(::napi_create_string_utf8(
+				env, entry.reportedPath.c_str(), entry.reportedPath.size(), &pathValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "path", pathValue));
 			if (!entry.closeError.empty()) {
 				napi_value closeErrorValue;
@@ -1088,7 +1110,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, mode.c_str(), mode.size(), &modeValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "mode", modeValue));
 			napi_value refCount;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor.use_count()), &refCount));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, entry.refCount, &refCount));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "refCount", refCount));
 			// Snapshot the column families under columnsMutex, then build the JS
 			// object outside it -- the same shape as the transaction snapshot
