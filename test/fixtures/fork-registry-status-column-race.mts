@@ -38,7 +38,7 @@ worker.postMessage({ churn: true });
 // readable, which is what turns the use-after-free into a fault.
 let polls = 0;
 let sawColumns = false;
-const deadline = Date.now() + 20_000;
+const deadline = Date.now() + 12_000;
 let settled: any;
 for (;;) {
 	const entry = registryStatus().find((candidate) => candidate.path === path);

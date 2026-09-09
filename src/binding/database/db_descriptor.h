@@ -336,7 +336,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::atomic<uint32_t> nextTransactionId{1};
 
 	/**
-	 * Mutex to protect the transactions map and closables set.
+	 * Mutex to protect the transactions map and closables set. When both are
+	 * held, DBRegistry::databasesMutex precedes txnsMutex; no txnsMutex holder
+	 * acquires the registry mutex.
 	 */
 	std::mutex txnsMutex;
 
@@ -346,7 +348,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::map<Closable*, std::weak_ptr<Closable>> closables;
 
 	/**
-	 * Mutex to protect the locks map.
+	 * Mutex to protect the locks map. When both are held,
+	 * DBRegistry::databasesMutex precedes locksMutex; no locksMutex holder
+	 * acquires the registry mutex.
 	 */
 	std::mutex locksMutex;
 
@@ -427,7 +431,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	/**
 	 * Per-database event emitter. Listeners attached here only fire for events
 	 * emitted on this descriptor. Cleaned up per-DBHandle on close and fully
-	 * cleared when the descriptor itself closes.
+	 * cleared when the descriptor itself closes. When both are held,
+	 * DBRegistry::databasesMutex precedes the emitter's internal mutex; emitter
+	 * operations never acquire the registry mutex.
 	 */
 	EventEmitter events;
 
@@ -958,7 +964,9 @@ struct ColumnFamilyDescriptor final {
 	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;
 
 	/**
-	 * Mutex to protect the user shared buffers map.
+	 * Mutex to protect the user shared buffers map. RegistryStatus reaches it in
+	 * DBRegistry::databasesMutex -> DBDescriptor::columnsMutex ->
+	 * userSharedBuffersMutex order; no holder acquires either parent mutex.
 	 */
 	std::mutex userSharedBuffersMutex;
 

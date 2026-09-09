@@ -1062,6 +1062,12 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				statusEntry.hasDescriptor = true;
 				statusEntry.optimistic = descriptor->mode == DBMode::Optimistic;
 				statusEntry.refCount = static_cast<uint32_t>(entry.descriptor.use_count());
+				// Snapshot the column families under columnsMutex, then build the JS
+				// object outside it -- the same shape as the transaction snapshot
+				// below, and for two reasons. databasesMutex does not alone cover this
+				// map: dropSync() can erase from it while this walk is in flight, and
+				// name.c_str() would then point into a freed map node. The child mutex
+				// also must not be held across N-API calls, which can run a finalizer.
 				{
 					std::lock_guard<std::mutex> columnsLock(descriptor->columnsMutex);
 					statusEntry.columnSummaries.reserve(descriptor->columns.size());
@@ -1080,6 +1086,8 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 						);
 					}
 				}
+				// txnsMutex covers map membership, not a handle's mutable fields. id
+				// and createdAt are fixed before the handle is published.
 				{
 					auto now = std::chrono::steady_clock::now();
 					std::lock_guard<std::mutex> txnsLock(descriptor->txnsMutex);
@@ -1095,6 +1103,8 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 					}
 					statusEntry.closables = static_cast<uint32_t>(descriptor->closables.size());
 				}
+				// locksMutex is required even for the count because teardown erases
+				// entries through lockReleaseByOwner().
 				{
 					std::lock_guard<std::mutex> locksLock(descriptor->locksMutex);
 					statusEntry.locks = static_cast<uint32_t>(descriptor->locks.size());
@@ -1165,16 +1175,6 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			napi_value refCount;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, entry.refCount, &refCount));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "refCount", refCount));
-			// Snapshot the column families under columnsMutex, then build the JS
-			// object outside it -- the same shape as the transaction snapshot
-			// below, and for two reasons. `databasesMutex` does not cover this
-			// map: a foreign destroy()/shutdown() clears it from finishClose()
-			// (and a dropSync() erases from it) while this walk is in flight, and
-			// `name.c_str()` then points into a freed map node, which
-			// napi_set_named_property() strlen()s -- a SIGSEGV on the JS thread,
-			// reproduced by polling registryStatus() across a worker's destroy.
-			// And the mutex must not be held across the N-API calls: creating JS
-			// values can run a finalizer on this thread that takes it again.
 			napi_value columnFamilies;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
 			for (const auto& column : entry.columnSummaries) {
@@ -1188,12 +1188,6 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnFamilies, column.name.c_str(), columnDescriptorValue));
 			}
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
-			// A bare count cannot tell a request in flight from a database that can never reclaim
-			// again, so report each handle's id and age. Deliberately NOT its snapshotSet/state:
-			// those are written by the owning thread and by the commit-completion callback without
-			// any lock, so reading them from another environment here would be a data race —
-			// txnsMutex covers the map's membership, not a handle's mutable fields. id and age are
-			// fixed before the handle is published to the registry.
 			napi_value transactions;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.txnSummaries.size()), &transactions));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "transactions", transactions));
@@ -1265,9 +1259,9 @@ void DBRegistry::CloseTransactionsByEnv(napi_env env) {
  * would later dereference via notify().
  *
  * Snapshots the descriptors under databasesMutex, then drops the lock before
- * calling into each EventEmitter. This keeps the registry lock window short
- * and avoids establishing a new databasesMutex -> events.mutex ordering that
- * isn't already exercised by other call paths.
+ * calling into each EventEmitter. This keeps the registry lock window short;
+ * RegistryStatus is the path that establishes the documented
+ * databasesMutex -> events.mutex ordering.
  */
 void DBRegistry::RemoveListenersByEnv(napi_env env) {
 	if (!instance) {

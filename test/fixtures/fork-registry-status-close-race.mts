@@ -30,7 +30,12 @@ if (!started.started)
 	throw new Error(`Unexpected registry-status result: ${JSON.stringify(started)}`);
 const finished = nextMessage();
 await delay(100);
+const closeStarted = Date.now();
 db.close();
+const closeMs = Date.now() - closeStarted;
+if (closeMs < 200) {
+	throw new Error(`close() did not overlap the registryStatus() walk (${closeMs}ms)`);
+}
 const result = await finished;
 if (result.error) throw new Error(`Registry-status worker failed: ${result.error}`);
 if (!result.finished)
