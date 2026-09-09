@@ -40,7 +40,11 @@ void emitCloseFailure(const std::string& path, const std::string& error) {
 
 void emitCloseFailures(const std::vector<ClosingDescriptor>& descriptors) {
 	for (const auto& closing : descriptors) {
-		emitCloseFailure(closing.key.path, closing.closeError);
+		// The descriptor's spelling, not the key's resolved identity -- the same
+		// rule registryStatus() follows, so a listener can match the event's path
+		// against the path it opened.
+		emitCloseFailure(
+			closing.descriptor ? closing.descriptor->path : closing.key.path, closing.closeError);
 	}
 }
 
@@ -343,6 +347,15 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	// A quarantined entry (a prior close/destroy left `closeError` set) is
 	// retried here too, rather than skipped, so destroy() is the caller's
 	// recovery path for a wedged path even when no handle survived to retry it.
+	//
+	// The spelling to report to JS if this destroy ends in a tombstone: the key
+	// and `identityPath` are resolved identity, which a caller matching against
+	// the path it opened would not recognize. Taken from the first descriptor
+	// claimed below, since the descriptors are gone by the time the tombstone is
+	// written; `identityPath` is the only option for a path no descriptor in this
+	// process ever opened.
+	std::string reportedPath = identityPath;
+	bool reportedPathKnown = false;
 	while (true) {
 		std::vector<ClosingDescriptor> claimed;
 		std::vector<ClosingDescriptor> alreadyClosing;
@@ -362,6 +375,15 @@ void DBRegistry::DestroyDB(const std::string& path) {
 					claimed.push_back(std::move(closing));
 				} else {
 					alreadyClosing.push_back(std::move(closing));
+				}
+			}
+			if (!reportedPathKnown) {
+				for (const auto& [key, entry] : instance->databases) {
+					if (key.path == identityPath && entry.descriptor) {
+						reportedPath = entry.descriptor->path;
+						reportedPathKnown = true;
+						break;
+					}
 				}
 			}
 		}
@@ -432,9 +454,13 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		// non-destructive) can clear it.
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
-			instance->databases[DBKey{identityPath, false, ""}].closeError = destroyError;
+			DBRegistryEntry& tombstone = instance->databases[DBKey{identityPath, false, ""}];
+			tombstone.closeError = destroyError;
+			if (tombstone.reportedPath.empty()) {
+				tombstone.reportedPath = reportedPath;
+			}
 		}
-		emitCloseFailure(identityPath, destroyError);
+		emitCloseFailure(reportedPath, destroyError);
 		throw rocksdb_js::DBException(destroyError);
 	}
 
@@ -878,6 +904,7 @@ void DBRegistry::OpenDB(
 	} else {
 		try {
 			entry.descriptor = DBDescriptor::open(path, identityPath, options);
+			entry.reportedPath = entry.descriptor->path;
 		} catch (...) {
 			// Remove the stale entry (null descriptor) so it does not pollute the
 			// registry and cause null-dereference crashes in callers such as
@@ -1000,8 +1027,11 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			// resolved identity, and a caller matching this against the path it
 			// opened would miss wherever the two spell the same directory
 			// differently. A tombstoned entry (destroy cleanup failed) has no
-			// descriptor, so fall back to the key's resolved identity.
-			const std::string& reportedPath = entry.descriptor ? entry.descriptor->path : key.path;
+			// descriptor, so fall back to the spelling its last descriptor was
+			// opened with, and only then to the key's resolved identity.
+			const std::string& reportedPath = entry.descriptor ? entry.descriptor->path
+				: !entry.reportedPath.empty() ? entry.reportedPath
+				: key.path;
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, reportedPath.c_str(), reportedPath.size(), &pathValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "path", pathValue));
 			if (!entry.closeError.empty()) {

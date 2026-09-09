@@ -287,6 +287,52 @@ describe('Destroy', () => {
 			})
 	);
 
+	// The macOS `/var` -> `/private/var` case, reproduced with an explicit symlink
+	// so it runs everywhere: `registryStatus().path` and `database:closeFailed`
+	// must report the spelling the caller opened, not the resolved identity the
+	// registry key carries. A tombstone has no descriptor left to ask, so the
+	// entry has to remember it.
+	it.skipIf(process.platform === 'win32' || (process.getuid?.() ?? 0) === 0)(
+		'reports the opened path spelling, not the resolved identity, for a symlinked path',
+		async () => {
+			const realPath = generateDBPath();
+			const linkPath = `${realPath}-link`;
+			mkdirSync(realPath, { recursive: true });
+			symlinkSync(realPath, linkPath, 'dir');
+			const lockedDirectory = join(realPath, 'transaction_logs', 'locked');
+			let resolveCloseFailure: (args: unknown[]) => void;
+			const closeFailure = new Promise<unknown[]>((resolve) => {
+				resolveCloseFailure = resolve;
+			});
+			const listener = (...args: unknown[]) => resolveCloseFailure(args);
+			RocksDatabase.on('database:closeFailed', listener);
+			const db = RocksDatabase.open(linkPath);
+			try {
+				db.putSync('key', 'value');
+				expect(registryStatus().find((entry) => entry.path === linkPath)).toBeDefined();
+				mkdirSync(lockedDirectory, { recursive: true });
+				writeFileSync(join(lockedDirectory, 'leftover'), 'data');
+				chmodSync(lockedDirectory, 0o000);
+				expect(() => db.destroy()).toThrow('Failed to remove database directory');
+				// The descriptor is gone by now, so this is the entry's remembered
+				// spelling rather than the live descriptor's.
+				expect(
+					registryStatus().find((entry) => entry.path === linkPath)?.destroyCleanupPending
+				).toBe(true);
+				await expect(closeFailure).resolves.toMatchObject([
+					linkPath,
+					expect.stringContaining('Failed to remove database directory'),
+				]);
+			} finally {
+				RocksDatabase.off('database:closeFailed', listener);
+				if (existsSync(lockedDirectory)) chmodSync(lockedDirectory, 0o700);
+				db.destroy();
+				rmSync(linkPath, { force: true });
+				rmSync(realPath, { force: true, recursive: true });
+			}
+		}
+	);
+
 	it('waits for physical destruction before reopening the same path', async () => {
 		await runDestroyFixture(destroyOpenFixture, generateDBPath(), {
 			ROCKSDB_JS_DESTROY_DELAY_MS: '2000',

@@ -76,6 +76,15 @@ struct DBRegistryEntry final {
 	// the same finishClose() stage.
 	std::string closeError;
 	bool closeRetrying = false;
+	// The opening caller's spelling of the path (`DBDescriptor::path`), kept on
+	// the entry so a tombstone -- an entry whose descriptor is gone because a
+	// destroy's physical cleanup failed -- can still report the spelling the
+	// caller supplied rather than the resolved identity the key carries. A
+	// caller matching `registryStatus().path` against the path it opened would
+	// otherwise miss wherever the two spell the same directory differently
+	// (macOS `/var` vs `/private/var`, a symlink, a relative path). Empty only
+	// for a path no descriptor in this process ever opened.
+	std::string reportedPath;
 
 	// Default constructor
 	DBRegistryEntry() : condition(std::make_shared<std::condition_variable>()) {}
