@@ -1078,7 +1078,11 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	// closables sweep rolls back the transaction while the scan is parked
 	// between rows, leaving the iterator reading freed memory.
 	auto& txnDbHandle = (*txnHandle)->dbHandle;
-	if (!txnDbHandle || !txnDbHandle->descriptor) {
+	if (!txnDbHandle) {
+		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
+		NAPI_RETURN_UNDEFINED();
+	}
+	if (!txnDbHandle->descriptor) {
 		::napi_throw_error(env, nullptr, "Get count failed: Database not open");
 		NAPI_RETURN_UNDEFINED();
 	}
