@@ -266,6 +266,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
 - `ROCKSDB_JS_BACKUP_DELAY_MS` - Test-only: delay inside a native backup copy, holding it across a
   concurrent destroy claim. Snapshotted in `initializeTestSeams()` — the copy runs on a libuv
   worker, so it must be set in the environment that starts the process
+- `ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS` - Test-only: per-column-family delay inside
+  `registryStatus()`'s column walk, so a concurrent `dropSync()` or close-time `columns.clear()`
+  lands in the middle of it (`test/fixtures/fork-registry-status-column-race.mts`). Snapshotted in
+  `initializeTestSeams()` like the seams above
 - `ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS` / `ROCKSDB_JS_TXN_CLOSE_DELAY_MS` - Test-only delays inside
   iterator construction and transaction close. Both are snapshotted in `initializeTestSeams()`, so
   they must be set in the environment that starts the process rather than through an in-process
@@ -456,6 +460,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    teardown but reported an error (a failed close-time flush) is fatal for `shutdown()`/`PurgeAll()`
    because dropping it silently would hide possible data loss, and non-fatal for `destroy()`, whose
    caller asked for the data to be deleted anyway.
+
+   **`databasesMutex` covers the registry map, not a descriptor's own maps.** `registryStatus()`
+   walks every entry under it and then reaches into each descriptor, but `columns` is guarded by
+   `columnsMutex` and `locks` by `locksMutex` — both mutated from whichever thread drives a
+   `dropSync()` (`unregisterColumnFamily`) or a teardown (`finishClose()`'s `columns.clear()`,
+   `lockReleaseByOwner`), which for a cross-env `destroy()`/`shutdown()` is not the thread
+   reporting. Walking `columns` unguarded is a use-after-free, not a torn count: the map node is
+   freed while the loop still holds its key, and `napi_set_named_property()` `strlen()`s that key
+   (SIGSEGV, or a `std::bad_alloc` abort from a garbage length). Snapshot under the owning mutex
+   and build the JS values after releasing it — holding it across N-API calls risks a finalizer
+   re-entering the same non-recursive mutex on this thread. `transactions` already followed that
+   pattern under `txnsMutex`; `events.size()` locks internally.
 
    A self-close must detach from `closables` **after** it closes, not before: `DBRegistry::CloseDB`
    and the `NativeIterator`/iterator finalizer each own a handle/iterator that a foreign

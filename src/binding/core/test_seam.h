@@ -117,6 +117,15 @@ inline std::atomic<int>& closeRetryDelayMsFlag() {
 	return delayMs;
 }
 
+// Per-column-family delay inside registryStatus()'s column walk, so a foreign
+// destroy()/shutdown() clearing `DBDescriptor::columns` lands in the middle of
+// it. Without the columnsMutex snapshot that walk is a use-after-free on the
+// freed map node's key.
+inline std::atomic<int>& registryStatusColumnsDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -148,6 +157,8 @@ inline void initializeTestSeams() {
 			testDelayMs("ROCKSDB_JS_DESTROY_DELAY_MS"), std::memory_order_relaxed);
 		closeRetryDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS"), std::memory_order_relaxed);
+		registryStatusColumnsDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS"), std::memory_order_relaxed);
 	});
 }
 

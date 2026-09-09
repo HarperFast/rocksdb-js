@@ -1088,17 +1088,50 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			napi_value refCount;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor.use_count()), &refCount));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "refCount", refCount));
+			// Snapshot the column families under columnsMutex, then build the JS
+			// object outside it -- the same shape as the transaction snapshot
+			// below, and for two reasons. `databasesMutex` does not cover this
+			// map: a foreign destroy()/shutdown() clears it from finishClose()
+			// (and a dropSync() erases from it) while this walk is in flight, and
+			// `name.c_str()` then points into a freed map node, which
+			// napi_set_named_property() strlen()s -- a SIGSEGV on the JS thread,
+			// reproduced by polling registryStatus() across a worker's destroy.
+			// And the mutex must not be held across the N-API calls: creating JS
+			// values can run a finalizer on this thread that takes it again.
+			struct ColumnSummary {
+				std::string name;
+				uint32_t userSharedBuffers;
+			};
+			std::vector<ColumnSummary> columnSummaries;
+			{
+				std::lock_guard<std::mutex> columnsLock(entry.descriptor->columnsMutex);
+				columnSummaries.reserve(entry.descriptor->columns.size());
+				const int columnsDelayMs =
+					registryStatusColumnsDelayMsFlag().load(std::memory_order_relaxed);
+				for (const auto& [name, columnDescriptor] : entry.descriptor->columns) {
+					if (!columnDescriptor) {
+						continue;
+					}
+					if (columnsDelayMs > 0) {
+						std::this_thread::sleep_for(std::chrono::milliseconds(columnsDelayMs));
+					}
+					std::lock_guard<std::mutex> buffersLock(columnDescriptor->userSharedBuffersMutex);
+					columnSummaries.push_back(
+						ColumnSummary{name, static_cast<uint32_t>(columnDescriptor->userSharedBuffers.size())}
+					);
+				}
+			}
 			napi_value columnFamilies;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
-			for (auto& [name, columnDescriptor] : entry.descriptor->columns) {
+			for (const auto& column : columnSummaries) {
 				napi_value columnDescriptorValue;
 				NAPI_STATUS_THROWS(::napi_create_object(env, &columnDescriptorValue));
 
 				napi_value userSharedBuffers;
-				NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(columnDescriptor->userSharedBuffers.size()), &userSharedBuffers));
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, column.userSharedBuffers, &userSharedBuffers));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnDescriptorValue, "userSharedBuffers", userSharedBuffers));
 
-				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnFamilies, name.c_str(), columnDescriptorValue));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnFamilies, column.name.c_str(), columnDescriptorValue));
 			}
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "columnFamilies", columnFamilies));
 			// A bare count cannot tell a request in flight from a database that can never reclaim
@@ -1149,8 +1182,15 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			napi_value closables;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(closablesCount), &closables));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closables", closables));
+			// locksMutex for the same reason, though this one only reads a count:
+			// lockReleaseByOwner() erases from the map during teardown.
+			uint32_t lockCount;
+			{
+				std::lock_guard<std::mutex> locksLock(entry.descriptor->locksMutex);
+				lockCount = static_cast<uint32_t>(entry.descriptor->locks.size());
+			}
 			napi_value locks;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->locks.size()), &locks));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, lockCount, &locks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "locks", locks));
 			napi_value listenerCallbacks;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->events.size()), &listenerCallbacks));

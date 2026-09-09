@@ -13,6 +13,11 @@ const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure
 const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
 const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mts');
 const foreignCloseLogCacheFixture = join(__dirname, 'fixtures', 'fork-foreign-close-log-cache.mts');
+const registryStatusColumnRaceFixture = join(
+	__dirname,
+	'fixtures',
+	'fork-registry-status-column-race.mts'
+);
 const lifecycleTimeoutFixture = join(__dirname, 'fixtures', 'fork-lifecycle-timeout.mts');
 const lifecycleTimeoutTwoDescriptorsFixture = join(
 	__dirname,
@@ -450,6 +455,12 @@ describe('Destroy', () => {
 	it("drops a handle's transaction-log cache when it reopens after a foreign shutdown", async () => {
 		await runDestroyFixture(foreignCloseLogCacheFixture, generateDBPath());
 	}, 20_000);
+
+	it('survives a column-family drop racing a registryStatus() walk', async () => {
+		await runDestroyFixture(registryStatusColumnRaceFixture, generateDBPath(), {
+			ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS: '10',
+		});
+	}, 15_000);
 
 	it('times out an open past lifecycleWaitSeconds and recovers once the retry finishes', async () => {
 		await runDestroyFixture(lifecycleTimeoutFixture, generateDBPath(), {
