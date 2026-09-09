@@ -3,7 +3,7 @@ import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 
-// A foreign destroy must cancel an async compaction *before* the first step of
+// A foreign closer must cancel an async compaction *before* the first step of
 // finishClose() that blocks on it -- not when the closables sweep eventually
 // closes the owning handle.
 //
@@ -12,15 +12,19 @@ import { Worker } from 'node:worker_threads';
 // which takes DBDescriptor::compactMutex -> WaitForCompact(), which does not
 // return while a manual compaction is running -> only then the closables sweep.
 // The running compaction holds compactMutex, so with cancellation deferred to
-// the sweep the destroy parks for the compaction's full remaining duration
-// while holding destroyingPaths -- and every concurrent open of the path then
-// times out after lifecycleWaitSeconds.
+// the sweep the closer parks for the compaction's full remaining duration.
 //
+// Driven through shutdown(), not destroy(): destroy() skips compactOnClose
+// entirely (finishClose(destroying=true) -- wasted I/O on files about to be
+// deleted), which removes the only step here that blocks on compactMutex, so a
+// destroy-driven version of this fixture would pass even with the early arm
+// removed. shutdown() still runs finishClose(destroying=false), so
+// compactOnClose still takes compactMutex and the timing stays discriminating.
 // compactOnClose is enabled here to make that ordering observable with the
 // existing seam: the parked compaction holds compactMutex, so a late arm shows
-// up as a slow destroy. fork-compact-cancel-async.mts cannot see it -- the seam
-// parks before db->CompactRange, so with compactOnClose off nothing between the
-// in-flight wait and the sweep touches the compaction.
+// up as a slow shutdown. fork-compact-cancel-async.mts cannot see it -- the
+// seam parks before db->CompactRange, so with compactOnClose off nothing
+// between the in-flight wait and the sweep touches the compaction.
 const path = process.argv[2];
 RocksDatabase.config({ compactOnClose: true });
 const db = RocksDatabase.open(path);
@@ -29,10 +33,13 @@ for (let i = 0; i < 20; i++) {
 }
 db.flushSync();
 
-const worker = new Worker(createWorkerBootstrapScript('./test/workers/destroy-open-worker.mts'), {
-	eval: true,
-	workerData: { path, destroyStartDelayMs: 0 },
-});
+const worker = new Worker(
+	createWorkerBootstrapScript('./test/workers/shutdown-compact-cancel-worker.mts'),
+	{
+		eval: true,
+		workerData: { path },
+	}
+);
 
 function nextMessage(): Promise<any> {
 	return new Promise((resolve, reject) => {
@@ -57,26 +64,27 @@ const outcome = compacting.then(
 	}
 );
 await delay(250);
-if (compactSettled) throw new Error('Compaction settled before the destroy claim; seam not active');
+if (compactSettled)
+	throw new Error('Compaction settled before the shutdown claim; seam not active');
 
 const started = Date.now();
-worker.postMessage({ destroy: true });
-const destroying = await nextMessage();
-if (!destroying.destroying)
-	throw new Error(`Worker did not start destroying: ${JSON.stringify(destroying)}`);
+worker.postMessage({ shutdown: true });
+const shuttingDown = await nextMessage();
+if (!shuttingDown.shuttingDown)
+	throw new Error(`Worker did not start shutting down: ${JSON.stringify(shuttingDown)}`);
 
-const destroyResult = await nextMessage();
+const shutdownResult = await nextMessage();
 const elapsed = Date.now() - started;
-if (!destroyResult.destroyed) throw new Error(`Destroy failed: ${JSON.stringify(destroyResult)}`);
+if (!shutdownResult.shutdown) throw new Error(`Shutdown failed: ${JSON.stringify(shutdownResult)}`);
 if (elapsed >= 2500)
 	throw new Error(
-		`destroy() took ${elapsed}ms while an async compact() was in flight -- ` +
+		`shutdown() took ${elapsed}ms while an async compact() was in flight -- ` +
 			'finishClose() is not cancelling attached handles before it blocks on them'
 	);
 
 const compactError = await outcome;
 if (!compactError)
-	throw new Error('Expected the in-flight compact() to be cancelled by the foreign destroy');
+	throw new Error('Expected the in-flight compact() to be cancelled by the foreign shutdown');
 if (String(compactError).includes('Database closed during compact operation'))
 	throw new Error(
 		'Compaction was rejected at entry rather than cancelled mid-flight; the fixture ' +
@@ -85,6 +93,6 @@ if (String(compactError).includes('Database closed during compact operation'))
 if (!/cancel|paused|incomplete/i.test(String(compactError))) throw compactError;
 
 if (registryStatus().some((entry) => entry.path === path))
-	throw new Error('Expected destroy to fully clear the registry entry');
+	throw new Error('Expected shutdown to fully clear the registry entry');
 
 await worker.terminate();

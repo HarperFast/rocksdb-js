@@ -13,6 +13,11 @@ const gcCloseFailureFixture = join(__dirname, 'fixtures', 'fork-gc-close-failure
 const shutdownFailureFixture = join(__dirname, 'fixtures', 'fork-shutdown-failure.mts');
 const shutdownRetryFixture = join(__dirname, 'fixtures', 'fork-shutdown-retry.mts');
 const lifecycleTimeoutFixture = join(__dirname, 'fixtures', 'fork-lifecycle-timeout.mts');
+const lifecycleTimeoutTwoDescriptorsFixture = join(
+	__dirname,
+	'fixtures',
+	'fork-lifecycle-timeout-two-descriptors.mts'
+);
 const flushFailureFixture = join(__dirname, 'fixtures', 'fork-flush-failure.mts');
 const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
 const iteratorNextRaceFixture = join(__dirname, 'fixtures', 'fork-iterator-next-race.mts');
@@ -373,6 +378,13 @@ describe('Destroy', () => {
 		await runDestroyFixture(lifecycleTimeoutFixture, generateDBPath(), {
 			ROCKSDB_JS_CLOSE_FAILURE: '1',
 			ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '3000',
+		});
+	}, 15_000);
+
+	it('reopens promptly after two concurrently-retrying descriptors finish, not at the deadline', async () => {
+		await runDestroyFixture(lifecycleTimeoutTwoDescriptorsFixture, generateDBPath(), {
+			ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2',
+			ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '1500',
 		});
 	}, 15_000);
 

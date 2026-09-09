@@ -435,8 +435,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    the same order as above. What they pin down is **our** half of the contract — that the right
    token is armed, early enough, and handed to RocksDB: each fails if `options.canceled` stops
    being passed (the compaction then succeeds instead of returning `Incomplete`), `sync` also fails
-   if the descriptor arm moves past the in-flight drain, and `destroy` also fails if the foreign
-   arm moves back to the closables sweep. They do **not** exercise RocksDB aborting a compaction
+   if the descriptor arm moves past the in-flight drain, and the `destroy` fixture (which drives its
+   foreign closer through `shutdown()`, not `destroy()` — a `destroy()`-driven closer skips
+   `compactOnClose` entirely, per the flush/compaction skip below, removing the only step that
+   blocks on `compactMutex` and making early-vs-late arm timing indistinguishable) also fails if the
+   foreign arm moves back to the closables sweep. They do **not** exercise RocksDB aborting a compaction
    already in progress: `ROCKSDB_JS_COMPACT_DELAY_MS` parks before `CompactRange`, deliberately, so
    the fixtures do not depend on how long a real compaction runs. Nor does any of them separate
    arming in `beginClose()` from arming at the top of `finishClose()` — for a single descriptor

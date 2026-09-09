@@ -648,6 +648,8 @@ export type RegistryStatusTransaction = {
 export type RegistryStatusDB = {
 	path: string;
 	closeError?: string;
+	/** A prior close failed and `shutdown()`/`destroy()` is currently retrying it. */
+	closeRetrying?: boolean;
 	destroyCleanupPending?: boolean;
 	refCount: number;
 	columnFamilies: string[];

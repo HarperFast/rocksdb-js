@@ -1014,6 +1014,11 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closeError", closeErrorValue));
 			}
+			if (entry.closeRetrying) {
+				napi_value closeRetryingValue;
+				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &closeRetryingValue));
+				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closeRetrying", closeRetryingValue));
+			}
 			if (!entry.descriptor) {
 				napi_value pending;
 				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &pending));

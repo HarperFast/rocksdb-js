@@ -1,17 +1,12 @@
-import { RocksDatabase } from '../../src/index.ts';
+import { RocksDatabase, registryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 
-// A short lifecycleWaitSeconds budget makes OpenDB's "close retry in
-// progress" wait (db_registry.cpp) time out well before a close retry --
-// deliberately slowed by ROCKSDB_JS_CLOSE_RETRY_DELAY_MS -- can finish,
-// exercising the timeout throw path itself and proving recovery afterward:
-// none of the `lifecycleWaitSeconds` timeout branches had a test before this
-// (only config validation did). This is a single descriptor on the path, so
-// it does not reproduce a predicate/notifier mismatch across two concurrently
-// closing descriptors (db_registry.cpp:585's own fix needs a dedicated
-// two-descriptor test) -- it only proves a timeout fires and the gate
-// recovers afterward.
+// Proves a `lifecycleWaitSeconds` timeout actually fires and the gate
+// recovers afterward -- previously only config validation was tested.
+// Single descriptor only: does not reproduce db_registry.cpp:585's
+// multi-descriptor predicate/notifier mismatch.
 RocksDatabase.config({ lifecycleWaitSeconds: 1 });
 
 const path = process.argv[2];
@@ -35,6 +30,18 @@ function nextMessage(): Promise<any> {
 }
 await nextMessage(); // worker started, about to call shutdown()
 const shutdownResult = nextMessage();
+
+// Wait for the retry claim to actually land (closeRetrying: true) before
+// racing the open below -- otherwise an open that wins the race hits the
+// quarantine check first and throws "previous close failed" instead of
+// timing out, which is a flake under load, not a proof.
+for (let attempt = 0; attempt < 40; attempt++) {
+	if (registryStatus().some((entry) => entry.path === path && entry.closeRetrying)) break;
+	await delay(25);
+}
+if (!registryStatus().some((entry) => entry.path === path && entry.closeRetrying)) {
+	throw new Error('Shutdown retry was never claimed');
+}
 
 const start = Date.now();
 try {
