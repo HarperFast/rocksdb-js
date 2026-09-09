@@ -210,6 +210,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   ambiguous "disable the bound") falls back to the default like any malformed
   value. There is no opt-out: a deployment that would rather wait than fail a
   legitimately slow holder raises the value instead
+- `ROCKSDB_JS_WBM_STALL_WARN_MS` - How long a `WriteBufferManager` stall must be
+  _continuously_ active (default `5000`) before the stall watchdog writes its one
+  warn line. `0` disables the watchdog entirely (and with it
+  `writeBufferManager.stallActiveMs`); a value below the 1s sample interval clamps
+  up to it; malformed, negative or above 24h falls back to the default. Read once
+  per process via a function-local `static` (the watchdog runs off the JS thread —
+  same `::getenv`-vs-`process.env` caveat as `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it
+  must be set in the environment a process is started with
 - `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` - Rate-limit window (default `1000`) for the
   per-database `'writeStall'` event. The event is rising-edge only (fires when a
   column family enters a stall); during a sustained oscillating stall it re-emits
@@ -731,6 +739,74 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     written remains frozen across retries, though reapplying the same timestamp is idempotent while
     the transaction remains pending. rocksdb-js does not define record value layouts: a producer
     that copies `getTimestamp()` into record bytes must call `setTimestamp()` first.
+
+20. **A WriteBufferManager stall is a second, entirely separate stall mechanism, and nothing in
+    RocksDB reports it**: `DBImpl::WriteBufferManagerStallWrites` parks writers on the manager's own
+    queue (`WBMStallInterface::Block`) without touching the `WriteController`, so `rocksdb.stall.micros`,
+    the `WRITE_STALL` histogram, `OnStallConditionsChanged` — and therefore the `'writeStall'` event
+    and `isWriteStalled()` (invariant 16's neighbours) — all stay at zero for its entire duration.
+    Eight hours of wedged production read `0` on every one of them (HarperFast/rocksdb-js#822).
+    `WriteBufferManager::IsStallActive()` against `memory_usage()`/`buffer_size()` is the only
+    distinguishing signal, surfaced as `writeBufferManager.*` in `db.getStats()`/`getStat()` and
+    `getWriteBufferManagerStats()`.
+
+    **The watchdog owns a thread because every other tick in this process is blocked by the
+    condition it reports.** `CommitWorker` parks in `db->Write()` (it is one of the wedged threads in
+    #822's backtrace); `logWorker` is event-driven off commits the stall prevents;
+    `ParkTimeoutRegistry`'s thread is per-descriptor and only exists after a VT conflict; RocksDB's
+    stall callbacks never fire; and a JS timer cannot run on a thread parked in `store.putSync()`.
+    So `DBStats` owns one process-wide thread, created lazily the first time a manager exists **with**
+    `allowStall` (`ShouldStall()` short-circuits otherwise, so no stall is reachable). Runtime disable
+    parks that thread and re-enable arms it with a fresh episode state; explicit shutdown and final
+    teardown join it. Since `shutdown()` supports reopening databases, every `ensure` advances an
+    arm-request generation that `shutdown()` snapshots before closing databases. A rearm-capable
+    joiner returns without retiring when that generation changed, so an older shutdown cannot stop a
+    watchdog belonging to a concurrent reopen. Once a joiner takes a thread, the stop latch resets
+    only after that thread has joined; callers that find no thread return without mutating the stop
+    state. Two envs calling `shutdown()` at once both reach the join, and letting a non-owner clear
+    the latch stranded the owner inside `join()` forever: the thread had not observed the stop yet,
+    so it went back to waiting on `stopRequested || armed` with both false. `watchdogRetiring` makes
+    the non-owning joiners wait for the retirement instead
+    (`test/fixtures/fork-wbm-watchdog-shutdown.mts`, which reproduces the hang about one run in three
+    without the fix). It samples one relaxed atomic per second. Plain `std::thread`,
+    not `uv_timer_t`, for invariant 12's reason.
+
+    Three constraints on that thread, each of which has a failure mode:
+    - **Lock order is `databasesMutex -> writeBufferManagerMutex -> watchdogMutex`**, because
+      `DBRegistry::OpenDB` holds `databasesMutex` across `DBDescriptor::open`, which calls
+      `getWriteBufferManager()`. The watchdog drops `watchdogMutex` before every sample and only
+      try-locks the registry and column inventories, so there is no cycle. `ensure` and `disable`
+      only arm or park it because they run under higher-order locks and its stderr write may block;
+      joining is `DBStats::joinWriteBufferManagerWatchdog()`'s final-teardown job alone. `DBStats::Init()`
+      materializes the watchdog owner after `DBRegistry`, while its constructor first materializes
+      `DBSettings` and `GlobalEvents`; reverse static destruction therefore joins the watchdog before
+      any dependency it reads is destroyed.
+    - **Stop and join both follow the flush** (`binding.cpp`, both the `shutdown()` export and the
+      last-env cleanup hook): snapshot the arm-request generation, run `DBRegistry::Shutdown()`, then
+      stop and join. Keeping the watchdog live through the flush lets it write to `stderr` when
+      shutdown itself is wedged behind a stalled writer; global listeners have already been released.
+      Joining after the flush also keeps a blocking stderr write out of the durability path.
+    - **The inventory counts only column families that can explain the budget** — descriptors that
+      attached _this_ manager (attachment is decided per open, so a database opened before the
+      manager was configured, or while its size was 0, has not). Read-only opens are included because
+      WAL recovery can retain charged memtables. A dropped family can remain charged through a live
+      handle after leaving the by-name map, so `unregisterColumnFamily` moves it to
+      `DBDescriptor::droppedColumns` — a `weak_ptr` plus a copy of its retention target — and the
+      walk keeps counting it until that last handle closes. Only `expired()` is ever called on that
+      reference: `lock()`ing it would make the sampling thread the potential last releaser, running
+      `~ColumnFamilyDescriptor` (and the RocksDB handle it owns) under both inventory locks. Latching
+      the descriptor unavailable instead was the first attempt, and one `dropSync()` then blinded the
+      report for the life of the database. The retention value it reports is the **effective**
+      `max_write_buffer_size_to_maintain` read from `db->GetOptions(cf)` at creation, never the
+      requested one: #821's whole finding is that `TransactionDB::Open` rewrites a requested `0` into
+      256 MiB per CF, so the requested value hides the fact the report exists to expose.
+
+    The report is one line per _episode_ (a stall must be continuously active past the threshold),
+    with deliberately no second rate-limit window on top — a window would suppress the first line of
+    a genuinely new episode, which is the one that matters. The decision FSM is Node-free in
+    `core/wbm_stall_watchdog.h` and GoogleTest-covered; a test that reaches a real stall must run in
+    a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
+    and the runner's own timeout cannot fire (#781 item 2).
 
 ## Debugging native heap corruption
 

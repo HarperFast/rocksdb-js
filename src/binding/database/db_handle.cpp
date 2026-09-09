@@ -2,6 +2,7 @@
 #include "database/db_handle.h"
 #include "database/db_descriptor.h"
 #include "database/db_registry.h"
+#include "database/db_stats.h"
 #include "database/db_settings.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/verification_table.h"
@@ -188,6 +189,17 @@ napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
 		return jsValue;
 	}
 
+	if (statName.rfind("writeBufferManager.", 0) == 0) {
+		double value = 0;
+		napi_value jsValue;
+		if (DBStats::getInstance().getWriteBufferManagerStat(statName, value)) {
+			NAPI_STATUS_THROWS(::napi_create_double(env, value, &jsValue));
+		} else {
+			NAPI_STATUS_THROWS(::napi_get_undefined(env, &jsValue));
+		}
+		return jsValue;
+	}
+
 	// transaction log summary stats are computed here (not RocksDB tickers or
 	// column-family properties), so resolve them before anything else.
 	if (statName.rfind("txnlog.", 0) == 0) {
@@ -294,6 +306,8 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 		this->collectTransactionLogSummary(total, logCount);
 		setTxnlogSummaryStatsOnObject(env, result, total, logCount);
 	}
+
+	DBStats::getInstance().setWriteBufferManagerStatsOnObject(env, result);
 
 	// commit-pipeline queue depths
 	{

@@ -140,10 +140,14 @@ describe('Statistics', () => {
 
 			stats = db.getStats();
 			expect(stats).toBeDefined();
-			// the curated column-family set stays small; the always-present txnlog.*
-			// and commitPipeline.* summary keys are counted separately.
+			// the curated column-family set stays small; the always-present txnlog.*,
+			// commitPipeline.* and writeBufferManager.* summary keys are counted
+			// separately.
 			const nonTxnlogKeys = Object.keys(stats).filter(
-				(key) => !key.startsWith('txnlog.') && !key.startsWith('commitPipeline.')
+				(key) =>
+					!key.startsWith('txnlog.') &&
+					!key.startsWith('commitPipeline.') &&
+					!key.startsWith('writeBufferManager.')
 			);
 			expect(nonTxnlogKeys.length).toBeLessThanOrEqual(26);
 

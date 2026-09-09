@@ -1,0 +1,95 @@
+import { getWriteBufferManagerStats, RocksDatabase, shutdown } from '../../src/index.ts';
+import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
+import { setTimeout as delay } from 'node:timers/promises';
+import { Worker } from 'node:worker_threads';
+
+const dbPath = process.argv[2];
+const shutdownWhenStalled = process.argv[3] === 'shutdown';
+
+if (!dbPath) {
+	console.error('Usage: fork-wbm-stall-watchdog.mts <dbPath>');
+	process.exit(1);
+}
+
+const COLUMN_FAMILIES = 4;
+// Explicit, and far above the budget: the derived default already resolves to 0
+// under a stalling manager, so only an explicit retention target fills the budget
+// with history nothing can release.
+const MAINTAIN = 32 * 1024 * 1024;
+const BUDGET = 4 * 1024 * 1024;
+
+RocksDatabase.config({
+	blockCacheSize: 8 * 1024 * 1024,
+	writeBufferManagerSize: BUDGET,
+	writeBufferManagerAllowStall: true,
+});
+
+const db = RocksDatabase.open(dbPath, { maxWriteBufferSizeToMaintain: MAINTAIN });
+
+RocksDatabase.on('log.warn', (message: string) => {
+	console.log(`WARNED ${message}`);
+});
+
+const worker = new Worker(
+	createWorkerBootstrapScript('./test/workers/wbm-stall-writer-worker.mts'),
+	{
+		eval: true,
+		workerData: { path: dbPath, columnFamilies: COLUMN_FAMILIES, maintain: MAINTAIN },
+	}
+);
+worker.unref();
+await new Promise<void>((resolve, reject) => {
+	worker.once('message', () => resolve());
+	worker.once('error', reject);
+});
+
+const OBSERVE_AFTER_REPORT_MS = 6000;
+const deadline = performance.now() + 90_000;
+let sawStall = false;
+let cleared = false;
+let stalledSince = 0;
+while (performance.now() < deadline) {
+	const stats = getWriteBufferManagerStats();
+	const fromGetStats = db.getStats();
+	console.log(
+		`STATS ${JSON.stringify({
+			stats,
+			getStats: {
+				bufferSize: fromGetStats['writeBufferManager.bufferSize'],
+				memoryUsage: fromGetStats['writeBufferManager.memoryUsage'],
+				mutableMemoryUsage: fromGetStats['writeBufferManager.mutableMemoryUsage'],
+				stallActive: fromGetStats['writeBufferManager.stallActive'],
+				stallActiveMs: fromGetStats['writeBufferManager.stallActiveMs'],
+			},
+			getStat: {
+				bufferSize: db.getStat('writeBufferManager.bufferSize'),
+				stallActive: db.getStat('writeBufferManager.stallActive'),
+				stallActiveMs: db.getStat('writeBufferManager.stallActiveMs'),
+			},
+		})}`
+	);
+	if (stats.stallActive) {
+		if (!sawStall) {
+			sawStall = true;
+			stalledSince = performance.now();
+			if (shutdownWhenStalled) {
+				console.log('SHUTTING_DOWN');
+				shutdown();
+				process.exit(2);
+			}
+		}
+	} else if (sawStall) {
+		// A stall that cleared mid-window could produce a second episode, and with
+		// it a second warn line, so this run cannot prove the once-per-episode
+		// property. Report it as its own outcome instead of as a reached stall.
+		cleared = true;
+		break;
+	}
+	if (sawStall && performance.now() - stalledSince > OBSERVE_AFTER_REPORT_MS) {
+		break;
+	}
+	await delay(250);
+}
+
+console.log(cleared ? 'CLEARED' : sawStall ? 'STALLED' : 'NEVER_STALLED');
+setInterval(() => {}, 1000);

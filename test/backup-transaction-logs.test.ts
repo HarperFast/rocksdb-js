@@ -14,9 +14,8 @@ import {
 	writeFileSync,
 } from 'node:fs';
 import { basename, join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import * as tar from 'tar';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const tempPaths: string[] = [];
 const {
@@ -137,8 +136,7 @@ describe('Transaction log backups', () => {
 
 				expect(existsSync(join(backedUpStore, basename(lazySegment)))).toBe(false);
 				expect(readdirSync(backedUpStore).length).toBe(63);
-				await delay(0);
-				expect(warnings).toHaveLength(1);
+				await vi.waitFor(() => expect(warnings).toHaveLength(1));
 			} finally {
 				RocksDatabase.off('log.warn', onWarning);
 			}

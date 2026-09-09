@@ -3,9 +3,8 @@ import { dbRunner } from './lib/util.ts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 /**
- * `allowStall` is fixed when the WriteBufferManager singleton is created and cannot be changed
- * afterwards, so this scenario needs a WBM nothing else in the process has built yet — hence its
- * own file (Vitest isolates each test file in its own worker/process).
+ * This scenario intentionally drives the process-wide manager into a stall, so it stays isolated
+ * from tests that use the singleton with ordinary budgets.
  */
 describe('WriteBufferManager stall', () => {
 	beforeAll(() => {
@@ -18,12 +17,11 @@ describe('WriteBufferManager stall', () => {
 		});
 	});
 
-	// Leave no manager attached to databases opened by later files (same reason
-	// write-buffer-manager.test.ts resets); `allowStall` itself is not resettable.
 	afterAll(() => {
 		RocksDatabase.config({
 			blockCacheSize: 32 * 1024 * 1024,
 			writeBufferManagerSize: 0,
+			writeBufferManagerAllowStall: false,
 		});
 	});
 

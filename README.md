@@ -225,7 +225,11 @@ Sets global database settings.
   - `writeBufferManagerAllowStall: boolean` When `true`, writes are stalled once the manager's
     `buffer_size` is exceeded, providing a hard cap on memtable memory. When `false`, memtables are
     allowed to grow past the limit and flushes are simply scheduled more aggressively. Off by
-    default to favor write throughput over hard memory bounding. Defaults to `false`.
+    default to favor write throughput over hard memory bounding. Defaults to `false`. A stall here
+    is invisible to RocksDB's own stall counters and to
+    [`db.isWriteStalled()`](#dbiswritestalled-boolean) — see
+    [`getWriteBufferManagerStats()`](#getwritebuffermanagerstats-writebuffermanagerstats),
+    which also describes the watchdog that logs a sustained stall.
   - `writeBufferManagerCostToCache: boolean` When `true`, memtable memory is "charged" against the
     shared block cache so the block cache and write buffers draw from a single pool. During write
     bursts the cache shrinks to make room for memtables; once memtables flush, the cache can grow
@@ -243,6 +247,80 @@ RocksDatabase.config({
 	writeBufferManagerCostToCache: false,
 	writeBufferManagerSize: 64 * 1024 * 1024, // 64MB
 });
+```
+
+### `getWriteBufferManagerStats(): WriteBufferManagerStats`
+
+Reads the live state of the `WriteBufferManager`.
+
+**Process-wide, not per-database.** The manager is a singleton shared by every database opened in
+this process, `worker_threads` included, so these values describe the whole process regardless of
+where the call was made.
+
+- `enabled: boolean` Whether a manager has been created. `bufferSize`, `memoryUsage`,
+  `mutableMemoryUsage`, `stallActive`, `stallActiveMs`, `watchdogRunning` and `columnFamilies` are
+  `0`/`false` when not; `allowStall` and `costToCache` still reflect the configured setting (a
+  manager is only created once `writeBufferManagerSize` is also set), and `inventoryAvailable` is
+  `true` (there is nothing to fail to collect).
+- `bufferSize: number` The budget in bytes (`writeBufferManagerSize`, read live).
+- `memoryUsage: number` Total memtable memory in bytes charged against the manager.
+- `mutableMemoryUsage: number` The share of `memoryUsage` held by active (mutable) memtables; the
+  rest is memtables awaiting flush plus retained write history.
+- `allowStall: boolean`, `costToCache: boolean` The manager's configuration.
+- `stallActive: boolean` Whether the manager is currently stalling writes.
+- `stallActiveMs: number` How long the current stall has been active; `0` when not stalled.
+  Sampled once a second by the watchdog, so `0` for a stall's first second and whenever
+  `watchdogRunning` is `false`.
+- `watchdogRunning: boolean` Whether the stall watchdog thread is running.
+- `columnFamilies: number` Live column families across every database attached to this manager. A
+  dropped column family keeps charging the manager until its last handle closes, so it is counted
+  until then.
+- `inventoryAvailable: boolean` `false` when the inventory could not be collected because the
+  database registry or a column-family inventory was locked. The two inventory fields are then
+  empty and everything else is still live; the call never blocks on database work that may itself
+  be stalled.
+- `maxWriteBufferSizeToMaintain: Record<string, number>` Effective per-column-family retained-history
+  target (as a decimal string) to how many of those column families carry it. Effective, not
+  requested: RocksDB rewrites a requested `0` for a transaction database.
+
+`bufferSize`, `memoryUsage`, `mutableMemoryUsage`, `stallActive` and `stallActiveMs` are also in
+[`db.getStats()`](#dbgetstatsall-boolean-rocksdbstats) and `db.getStat()` under the same
+`writeBufferManager.` prefix, for scraping; `enabled`, `allowStall`, `costToCache`,
+`watchdogRunning`, and the column-family inventory are only here, because collecting them either
+walks the database registry or isn't scrape-shaped.
+
+`stallActive` is the signal that distinguishes a stalled process from an idle one.
+[`db.isWriteStalled()`](#dbiswritestalled-boolean), the [`'writeStall'` event](#event-writestall)
+and `rocksdb.stall.micros` all track RocksDB's `WriteController`, which a `WriteBufferManager`
+stall never goes through.
+
+#### The stall watchdog
+
+While a manager exists with `writeBufferManagerAllowStall`, one low-frequency thread samples the
+manager once a second. When a stall has been continuously active past
+`ROCKSDB_JS_WBM_STALL_WARN_MS` (default `5000`; `0` disables the watchdog) it writes **one** line
+to `stderr` and emits it as a process-wide `'log.warn'` event — once per stall episode, not per
+blocked writer and not per sample:
+
+```
+[rocksdb-js] WriteBufferManager write stall active for 5.0s - no write can complete until memtable
+memory drops below the budget. budget=661.2MB usage=662.2MB (100.2%) mutable=12.4MB (1.9%)
+allowStall=true costToCache=true columnFamilies=28 maxWriteBufferSizeToMaintain={268435456:28}
+```
+
+It needs its own thread because every other candidate is blocked by the very condition it reports:
+a writer is parked inside RocksDB, RocksDB's stall callbacks are `WriteController`-only, and a JS
+timer cannot fire on a thread parked in a synchronous write. The line goes to `stderr` as well as
+the event so it is not lost when nothing has registered a `'log.warn'` listener; route one and
+ignore `stderr` if you would rather have it in your own log.
+
+```typescript
+RocksDatabase.on('log.warn', (message) => logger.warn(message));
+
+const wbm = getWriteBufferManagerStats();
+if (wbm.stallActive) {
+	logger.warn(`writes stalled for ${wbm.stallActiveMs}ms: ${wbm.memoryUsage}/${wbm.bufferSize}`);
+}
 ```
 
 ### `db.isOpen(): boolean`
@@ -1393,8 +1471,11 @@ Column family and ticker stat values are 64-bit unsigned integers and histogram 
 `StatsHistogramData` objects.
 
 The result also always includes a summarized, aggregate set of `txnlog.*` keys covering all of
-the database's transaction logs. These are present regardless of whether statistics are enabled
-and can be fetched individually with `db.getStat('txnlog.…')`. For detailed, per-log statistics —
+the database's transaction logs, and a set of `writeBufferManager.*` keys describing the
+process-wide `WriteBufferManager`
+([`getWriteBufferManagerStats()`](#getwritebuffermanagerstats-writebuffermanagerstats)
+carries the same values plus its column-family inventory). Both sets are present regardless of
+whether statistics are enabled and can be fetched individually with `db.getStat()`. For detailed, per-log statistics —
 including memory-map usage — use [`log.getStats()`](#loggetstats-transactionlogstats). All stat
 names are documented in [docs/stats.md](docs/stats.md).
 

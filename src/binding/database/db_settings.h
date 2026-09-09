@@ -1,6 +1,7 @@
 #ifndef __DB_SETTINGS_H__
 #define __DB_SETTINGS_H__
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <node_api.h>

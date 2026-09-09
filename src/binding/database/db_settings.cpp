@@ -1,7 +1,7 @@
 #include "database/db_settings.h"
 #include <random>
+#include "database/db_stats.h"
 #include "napi/macros.h"
-#include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "rocksdb/advanced_cache.h"
@@ -92,6 +92,10 @@ std::shared_ptr<rocksdb::WriteBufferManager> DBSettings::getWriteBufferManager()
 			cache,
 			writeBufferManagerAllowStall.load(std::memory_order_relaxed)
 		);
+		DBStats::getInstance().publishWriteBufferManager(writeBufferManager.get());
+	}
+	if (writeBufferManagerAllowStall.load(std::memory_order_relaxed)) {
+		DBStats::getInstance().ensureWriteBufferManagerWatchdog();
 	}
 	return writeBufferManager;
 }
@@ -208,6 +212,11 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		// the RocksDB-supported runtime knob.
 		if (wbmAlreadyCreated && allowStallProvided) {
 			settings.writeBufferManager->SetAllowStall(newAllowStall);
+			if (newAllowStall) {
+				DBStats::getInstance().ensureWriteBufferManagerWatchdog();
+			} else {
+				DBStats::getInstance().disableWriteBufferManagerWatchdog();
+			}
 		}
 	}
 

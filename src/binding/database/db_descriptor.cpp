@@ -372,6 +372,7 @@ DBDescriptor::DBDescriptor(
 	const DBOptions& options,
 	const rocksdb::ColumnFamilyOptions& cfOptions,
 	std::shared_ptr<rocksdb::DB> db,
+	rocksdb::WriteBufferManager* attachedWriteBufferManager,
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
 	std::shared_ptr<rocksdb::Statistics> statistics
 ):
@@ -383,6 +384,7 @@ DBDescriptor::DBDescriptor(
 	secondaryPath(options.secondaryPath),
 	cfOptions(cfOptions),
 	db(db),
+	attachedWriteBufferManager(attachedWriteBufferManager),
 	columns(std::move(columns)),
 	statistics(statistics)
 {
@@ -533,6 +535,9 @@ void DBDescriptor::finishClose() {
 	{
 		std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
 		this->columns.clear();
+		// The registry entry outlives this, so drop both or the inventory keeps
+		// reporting families of a closed database.
+		this->droppedColumns.clear();
 	}
 
 	this->events.releaseAll();
@@ -1252,8 +1257,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	// memory is bounded across all DBs in this process. With cost_to_cache,
 	// active memtables share the block cache pool — the cache shrinks during
 	// write bursts and reclaims room as memtables flush.
+	rocksdb::WriteBufferManager* attachedWriteBufferManager = nullptr;
 	if (auto wbm = settings.getWriteBufferManager()) {
 		dbOptions.write_buffer_manager = wbm;
+		attachedWriteBufferManager = wbm.get();
 	}
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	// Bound how many table files RocksDB holds open: with the RocksDB default
@@ -1501,7 +1508,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	bool columnExists = false;
 	for (size_t n = 0; n < cfHandles.size(); ++n) {
 		auto column = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
-		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
+		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
+			column, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+		);
 		columns[cfDescriptors[n].name] = columnDescriptor;
 		if (cfDescriptors[n].name == options.name) {
 			columnExists = true;
@@ -1521,12 +1530,14 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 			applyCompression(cfo, *options.compression, options.compressionLevel);
 		}
 		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, cfo);
-		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(column);
+		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
+			column, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+		);
 		columns[options.name] = columnDescriptor;
 	}
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, identityPath, options, cfOptions, db, std::move(columns), dbOptions.statistics));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, identityPath, options, cfOptions, db, attachedWriteBufferManager, std::move(columns), dbOptions.statistics));
 	descriptor->secondaryLockToken = secondaryLock.token;
 	secondaryLock.token = 0;
 
@@ -1641,13 +1652,29 @@ void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
 	// Retire debounce state so the map stays bounded and a recreated CF of the
 	// same name starts fresh rather than inheriting a stale reported-stalled bit.
 	this->writeStallDebounce.forget(columnName);
-	if (this->columns.erase(columnName)) {
-		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
-			this, columnName.c_str());
-	} else {
+	// Attachment is decided once, at open, so an unattached database never reaches
+	// the stall inventory and tracks nothing.
+	const bool trackForInventory = this->attachedWriteBufferManager != nullptr;
+	if (trackForInventory) {
+		std::erase_if(this->droppedColumns, [](const DroppedColumnFamily& dropped) {
+			return dropped.descriptor.expired();
+		});
+	}
+	auto it = this->columns.find(columnName);
+	if (it == this->columns.end()) {
 		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" not found\n",
 			this, columnName.c_str());
+		return;
 	}
+	std::weak_ptr<ColumnFamilyDescriptor> dropped = it->second;
+	const int64_t maxWriteBufferSizeToMaintain =
+		it->second ? it->second->maxWriteBufferSizeToMaintain : 0;
+	this->columns.erase(it);
+	if (trackForInventory && !dropped.expired()) {
+		this->droppedColumns.push_back({ std::move(dropped), maxWriteBufferSizeToMaintain });
+	}
+	DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
+		this, columnName.c_str());
 }
 
 /**

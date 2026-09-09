@@ -1,0 +1,395 @@
+#include "database/db_stats.h"
+#include <cstdio>
+#include "core/platform.h"
+#include "database/db_registry.h"
+#include "database/db_settings.h"
+#include "napi/global_events.h"
+#include "napi/macros.h"
+
+namespace rocksdb_js {
+
+namespace {
+
+constexpr const char* WBM_BUFFER_SIZE_KEY = "writeBufferManager.bufferSize";
+constexpr const char* WBM_MEMORY_USAGE_KEY = "writeBufferManager.memoryUsage";
+constexpr const char* WBM_MUTABLE_MEMORY_USAGE_KEY = "writeBufferManager.mutableMemoryUsage";
+constexpr const char* WBM_STALL_ACTIVE_KEY = "writeBufferManager.stallActive";
+constexpr const char* WBM_STALL_ACTIVE_MS_KEY = "writeBufferManager.stallActiveMs";
+
+// A WAL-recovery-sized hold on databasesMutex/columnsMutex runs to the hundreds of
+// milliseconds; ~450ms of total budget covers that without meaningfully delaying
+// the once-per-episode alarm against a 5s+ threshold.
+constexpr int WBM_STALL_INVENTORY_COLLECT_ATTEMPTS = 10;
+constexpr int WBM_STALL_INVENTORY_RETRY_DELAY_MS = 50;
+
+uint64_t resolveWbmStallWarnMsAndWarn() {
+	const char* raw = ::getenv("ROCKSDB_JS_WBM_STALL_WARN_MS");
+	bool rejected = false;
+	uint64_t resolved = resolveWbmStallWarnMs(raw, &rejected);
+	if (rejected) {
+		::fprintf(stderr,
+			"[rocksdb-js] ignoring ROCKSDB_JS_WBM_STALL_WARN_MS=\"%s\" (not an integer in "
+			"[0, %llu] ms); using %llu\n",
+			raw, static_cast<unsigned long long>(WBM_STALL_WARN_MS_MAX),
+			static_cast<unsigned long long>(resolved));
+	}
+	return resolved;
+}
+
+bool lookupWriteBufferManagerStat(
+	const std::string& statName,
+	const WriteBufferManagerStats& stats,
+	double& value
+) {
+	if (statName == WBM_BUFFER_SIZE_KEY) {
+		value = static_cast<double>(stats.bufferSize);
+	} else if (statName == WBM_MEMORY_USAGE_KEY) {
+		value = static_cast<double>(stats.memoryUsage);
+	} else if (statName == WBM_MUTABLE_MEMORY_USAGE_KEY) {
+		value = static_cast<double>(stats.mutableMemoryUsage);
+	} else if (statName == WBM_STALL_ACTIVE_KEY) {
+		value = stats.stallActive ? 1 : 0;
+	} else if (statName == WBM_STALL_ACTIVE_MS_KEY) {
+		value = static_cast<double>(stats.stallActiveMs);
+	} else {
+		return false;
+	}
+	return true;
+}
+
+napi_status setNumberProperty(napi_env env, napi_value target, const char* key, uint64_t value) {
+	napi_value jsValue;
+	napi_status status = ::napi_create_double(env, static_cast<double>(value), &jsValue);
+	if (status != napi_ok) {
+		return status;
+	}
+	return ::napi_set_named_property(env, target, key, jsValue);
+}
+
+napi_status setBoolProperty(napi_env env, napi_value target, const char* key, bool value) {
+	napi_value jsValue;
+	napi_status status = ::napi_get_boolean(env, value, &jsValue);
+	if (status != napi_ok) {
+		return status;
+	}
+	return ::napi_set_named_property(env, target, key, jsValue);
+}
+
+} // namespace
+
+DBStats::DBStats() : stallWarnMs(resolveWbmStallWarnMsAndWarn()) {
+	// These dependencies must be destroyed after the watchdog owner.
+	(void)DBSettings::getInstance();
+	(void)GlobalEvents::getInstance();
+}
+
+void DBStats::publishWriteBufferManager(rocksdb::WriteBufferManager* writeBufferManager) {
+	this->writeBufferManager.store(writeBufferManager, std::memory_order_release);
+}
+
+void DBStats::ensureWriteBufferManagerWatchdog() {
+	if (this->stallWarnMs == 0) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(this->watchdogMutex);
+	++this->watchdogArmRequestGeneration;
+	if (this->watchdogStopRequested) {
+		this->watchdogArmPendingAfterStop = true;
+		return;
+	}
+	this->armWatchdogLocked();
+}
+
+void DBStats::armWatchdogLocked() {
+	if (this->watchdogArmed) {
+		return;
+	}
+	this->watchdogArmed = true;
+	this->writeBufferManagerWatchdogStopping.store(false, std::memory_order_relaxed);
+	this->watchdogGeneration.fetch_add(1, std::memory_order_relaxed);
+	if (this->watchdogStarted) {
+		this->writeBufferManagerWatchdogRunning.store(true, std::memory_order_relaxed);
+		this->watchdogCv.notify_all();
+		return;
+	}
+	try {
+		this->watchdogThread = std::thread([this]() { this->runWriteBufferManagerWatchdog(); });
+		this->watchdogStarted = true;
+		this->writeBufferManagerWatchdogRunning.store(true, std::memory_order_relaxed);
+	} catch (...) {
+		this->watchdogArmed = false;
+		this->watchdogStarted = false;
+		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
+		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+	}
+}
+
+void DBStats::disableWriteBufferManagerWatchdog() {
+	{
+		std::lock_guard<std::mutex> lock(this->watchdogMutex);
+		this->watchdogArmed = false;
+		// An explicit disable is the most recent intent and must win over an
+		// ensure() that raced an in-flight stop and is still waiting to replay
+		// once that stop resolves — otherwise the replay re-arms a watchdog
+		// this call was just told to turn off.
+		this->watchdogArmPendingAfterStop = false;
+		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
+		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+		this->writeBufferManagerStallActiveMs.store(0, std::memory_order_relaxed);
+	}
+	this->watchdogCv.notify_all();
+}
+
+uint64_t DBStats::beginWriteBufferManagerWatchdogShutdown() {
+	std::lock_guard<std::mutex> lock(this->watchdogMutex);
+	return this->watchdogArmRequestGeneration;
+}
+
+void DBStats::joinWriteBufferManagerWatchdog(bool allowRearm, uint64_t shutdownGeneration) {
+	std::thread toJoin;
+	{
+		std::unique_lock<std::mutex> lock(this->watchdogMutex);
+		if (this->watchdogRetiring) {
+			this->watchdogCv.wait(lock, [this]() { return !this->watchdogRetiring; });
+		}
+		if (allowRearm && shutdownGeneration != this->watchdogArmRequestGeneration) {
+			return;
+		}
+		if (!this->watchdogStarted) {
+			return;
+		}
+		this->watchdogArmed = false;
+		this->watchdogStopRequested = true;
+		this->writeBufferManagerWatchdogStopping.store(true, std::memory_order_relaxed);
+		this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+		toJoin = std::move(this->watchdogThread);
+		this->watchdogStarted = false;
+		this->watchdogRetiring = true;
+	}
+	this->watchdogCv.notify_all();
+
+	struct RetireGuard {
+		DBStats* self;
+		bool allowRearm;
+		~RetireGuard() {
+			{
+				std::lock_guard<std::mutex> lock(self->watchdogMutex);
+				self->watchdogRetiring = false;
+				self->watchdogStopRequested = false;
+				if (self->watchdogArmPendingAfterStop) {
+					self->watchdogArmPendingAfterStop = false;
+					if (allowRearm) {
+						self->armWatchdogLocked();
+					}
+				}
+			}
+			self->watchdogCv.notify_all();
+		}
+	} retireGuard{this, allowRearm};
+
+	if (toJoin.joinable()) {
+		toJoin.join();
+	}
+}
+
+void DBStats::runWriteBufferManagerWatchdog() {
+	setThreadName("rocksdb-wbm-watchdog");
+	const uint64_t thresholdMs = this->stallWarnMs;
+	WbmStallWatchdogState state;
+	uint64_t activeGeneration = 0;
+	std::unique_lock<std::mutex> lock(this->watchdogMutex);
+	while (!this->watchdogStopRequested) {
+		this->watchdogCv.wait(lock, [this]() {
+			return this->watchdogStopRequested || this->watchdogArmed;
+		});
+		if (this->watchdogStopRequested) {
+			break;
+		}
+		const uint64_t generation = this->watchdogGeneration.load(std::memory_order_relaxed);
+		if (activeGeneration != generation) {
+			state = WbmStallWatchdogState();
+			activeGeneration = generation;
+		}
+		if (this->watchdogCv.wait_for(
+				lock,
+				std::chrono::milliseconds(WBM_STALL_SAMPLE_INTERVAL_MS),
+				[this, activeGeneration]() {
+					return this->watchdogStopRequested || !this->watchdogArmed ||
+						this->watchdogGeneration.load(std::memory_order_relaxed) != activeGeneration;
+				}
+		)) {
+			continue;
+		}
+		lock.unlock();
+		try {
+			this->sampleWriteBufferManagerStall(state, thresholdMs, activeGeneration);
+		} catch (...) {}
+		lock.lock();
+	}
+	this->writeBufferManagerStallActiveMs.store(0, std::memory_order_relaxed);
+	this->writeBufferManagerWatchdogRunning.store(false, std::memory_order_relaxed);
+}
+
+void DBStats::sampleWriteBufferManagerStall(
+	WbmStallWatchdogState& state,
+	uint64_t thresholdMs,
+	uint64_t generation
+) {
+	rocksdb::WriteBufferManager* writeBufferManager =
+		this->writeBufferManager.load(std::memory_order_acquire);
+	if (writeBufferManager == nullptr) {
+		return;
+	}
+	WbmStallWatchdogState::Sample sample = state.onSample(
+		writeBufferManager->IsStallActive(), WbmStallWatchdogState::Clock::now(), thresholdMs
+	);
+	{
+		// Keep the generation check and duration write atomic against disable().
+		std::lock_guard<std::mutex> lock(this->watchdogMutex);
+		if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
+			this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
+			return;
+		}
+		this->writeBufferManagerStallActiveMs.store(sample.stallActiveMs, std::memory_order_relaxed);
+	}
+	if (!sample.reportNow) {
+		return;
+	}
+
+	DBSettings& settings = DBSettings::getInstance();
+	WriteBufferManagerStallReport report;
+	report.stallActiveMs = sample.stallActiveMs;
+	report.bufferSize = writeBufferManager->buffer_size();
+	report.memoryUsage = writeBufferManager->memory_usage();
+	report.mutableMemoryUsage = writeBufferManager->mutable_memtable_memory_usage();
+	report.allowStall = settings.getWriteBufferManagerAllowStall();
+	report.costToCache = settings.getWriteBufferManagerCostToCache();
+	report.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
+		writeBufferManager, report.columnFamilies, report.maxWriteBufferSizeToMaintain
+	);
+	for (int attempt = 1; !report.inventoryAvailable && attempt < WBM_STALL_INVENTORY_COLLECT_ATTEMPTS;
+		 attempt++) {
+		if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
+			this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
+			return;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(WBM_STALL_INVENTORY_RETRY_DELAY_MS));
+		report.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
+			writeBufferManager, report.columnFamilies, report.maxWriteBufferSizeToMaintain
+		);
+	}
+	if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
+		this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
+		return;
+	}
+
+	std::string line = formatWriteBufferManagerStallReport(report);
+	const bool wroteToStderr = ::fprintf(stderr, "%s\n", line.c_str()) >= 0;
+	if (wroteToStderr) {
+		::fflush(stderr);
+	}
+	const bool emitted = emitGlobalEvent("log.warn", ListenerData::fromStrings({ line }));
+	if (wroteToStderr || emitted) {
+		state.markReported();
+	}
+}
+
+WriteBufferManagerStats DBStats::getWriteBufferManagerStats(bool includeColumnFamilies) {
+	DBSettings& settings = DBSettings::getInstance();
+	WriteBufferManagerStats stats;
+	stats.allowStall = settings.getWriteBufferManagerAllowStall();
+	stats.costToCache = settings.getWriteBufferManagerCostToCache();
+	stats.watchdogRunning = this->writeBufferManagerWatchdogRunning.load(std::memory_order_relaxed);
+
+	rocksdb::WriteBufferManager* writeBufferManager =
+		this->writeBufferManager.load(std::memory_order_acquire);
+	if (writeBufferManager == nullptr) {
+		return stats;
+	}
+	stats.enabled = true;
+	stats.bufferSize = writeBufferManager->buffer_size();
+	stats.memoryUsage = writeBufferManager->memory_usage();
+	stats.mutableMemoryUsage = writeBufferManager->mutable_memtable_memory_usage();
+	stats.stallActive = writeBufferManager->IsStallActive();
+	if (stats.stallActive) {
+		stats.stallActiveMs =
+			this->writeBufferManagerStallActiveMs.load(std::memory_order_relaxed);
+	}
+	if (includeColumnFamilies) {
+		stats.inventoryAvailable = DBRegistry::CollectWriteBufferManagerInventory(
+			writeBufferManager, stats.columnFamilies, stats.maxWriteBufferSizeToMaintain
+		);
+	}
+	return stats;
+}
+
+bool DBStats::getWriteBufferManagerStat(const std::string& statName, double& value) {
+	return lookupWriteBufferManagerStat(
+		statName, this->getWriteBufferManagerStats(false), value
+	);
+}
+
+void DBStats::setWriteBufferManagerStatsOnObject(napi_env env, napi_value result) {
+	WriteBufferManagerStats stats = this->getWriteBufferManagerStats(false);
+	setNumberProperty(env, result, WBM_BUFFER_SIZE_KEY, stats.bufferSize);
+	setNumberProperty(env, result, WBM_MEMORY_USAGE_KEY, stats.memoryUsage);
+	setNumberProperty(env, result, WBM_MUTABLE_MEMORY_USAGE_KEY, stats.mutableMemoryUsage);
+	setNumberProperty(env, result, WBM_STALL_ACTIVE_KEY, stats.stallActive ? 1 : 0);
+	setNumberProperty(env, result, WBM_STALL_ACTIVE_MS_KEY, stats.stallActiveMs);
+}
+
+napi_value DBStats::GetWriteBufferManagerStats(napi_env env, napi_callback_info info) {
+	WriteBufferManagerStats stats = DBStats::getInstance().getWriteBufferManagerStats(true);
+
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "bufferSize", stats.bufferSize));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "memoryUsage", stats.memoryUsage));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "mutableMemoryUsage", stats.mutableMemoryUsage));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "stallActiveMs", stats.stallActiveMs));
+	NAPI_STATUS_THROWS(setNumberProperty(env, result, "columnFamilies", stats.columnFamilies));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "enabled", stats.enabled));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "allowStall", stats.allowStall));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "costToCache", stats.costToCache));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "stallActive", stats.stallActive));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "watchdogRunning", stats.watchdogRunning));
+	NAPI_STATUS_THROWS(setBoolProperty(env, result, "inventoryAvailable", stats.inventoryAvailable));
+
+	napi_value targets;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &targets));
+	for (const auto& [target, count] : stats.maxWriteBufferSizeToMaintain) {
+		napi_value countValue;
+		NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(count), &countValue));
+		NAPI_STATUS_THROWS(::napi_set_named_property(
+			env, targets, std::to_string(target).c_str(), countValue
+		));
+	}
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env, result, "maxWriteBufferSizeToMaintain", targets
+	));
+
+	return result;
+}
+
+void DBStats::Init(napi_env env, napi_value exports) {
+	(void)DBStats::getInstance();
+
+	napi_value writeBufferManagerStatsFn;
+	NAPI_STATUS_THROWS_VOID(::napi_create_function(
+		env,
+		"getWriteBufferManagerStats",
+		NAPI_AUTO_LENGTH,
+		DBStats::GetWriteBufferManagerStats,
+		nullptr,
+		&writeBufferManagerStatsFn
+	));
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(
+		env, exports, "getWriteBufferManagerStats", writeBufferManagerStatsFn
+	));
+}
+
+DBStats::~DBStats() {
+	this->joinWriteBufferManagerWatchdog(false, 0);
+}
+
+} // namespace rocksdb_js
