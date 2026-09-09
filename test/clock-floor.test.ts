@@ -128,6 +128,17 @@ describe('monotonic clock floor', () => {
 		expect(refused.stderr).toContain('ahead of the wall clock');
 	}, 60000);
 
+	it('cleans up a rejected timestamp-floor open before a same-process reopen', async () => {
+		const dbPath = newDBPath();
+		const far = Date.now() + 20 * 365 * 24 * 60 * 60 * 1000;
+
+		expect((await runFixture('write', dbPath, far)).code).toBe(0);
+
+		const reopened = await runFixture('refuse-then-unseeded', dbPath, far);
+		expect(reopened.code, reopened.stderr).toBe(0);
+		expect(JSON.parse(reopened.stdout).recovered).toBe(true);
+	}, 60000);
+
 	it('refuses to open when a segment cannot be read', async () => {
 		const dbPath = newDBPath();
 		const highest = aheadOfNow();
@@ -264,6 +275,24 @@ describe('monotonic clock floor', () => {
 		expect(warnings.join(' ')).toContain('partial entry this handle cannot recover');
 		expect(warnings.join(' ')).not.toContain('framing breaks partway through');
 		expect(clock).toBeGreaterThan(key);
+	}, 60000);
+
+	it('recovers a writable torn tail before scanning the floor', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+		const logDir = join(dbPath, 'transaction_logs', LOG);
+		const segment = readdirSync(logDir).find((name) => name.endsWith('.txnlog'))!;
+		const fd = openSync(join(logDir, segment), 'a');
+		try {
+			writeSync(fd, Buffer.from([1]));
+		} finally {
+			closeSync(fd);
+		}
+
+		const read = await runFixture('read', dbPath, key);
+		expect(read.code, read.stderr).toBe(0);
 	}, 60000);
 
 	it('still scans under a budget too large for the clock to add', async () => {

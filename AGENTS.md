@@ -228,7 +228,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   store can concurrently serve another database descriptor. It runs while database opens and closes
   are serialized process-wide, so increasing its budget can delay unrelated opens and closes.
   Honored literally, `0` included (scan
-  nothing, warn); there is no unbounded setting, so a deployment that would rather wait raises the
+  nothing, refuse); there is no unbounded setting, so a deployment that would rather wait raises the
   value (capped at a day: the deadline is a `steady_clock` time point, and a larger value overflows
   its resolution and wraps into the past, scanning nothing). Read once per process
   (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
