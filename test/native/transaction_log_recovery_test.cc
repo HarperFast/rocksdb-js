@@ -135,6 +135,19 @@ TEST(TransactionLogRecovery, ZeroPaddedTailIsCleanAtPadStart) {
 	EXPECT_EQ(scan.validEnd, entriesEnd);
 }
 
+TEST(TransactionLogRecovery, ZeroMarkerBeforeAFramedEntryIsMidFileCorruption) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	const uint32_t zeroMarker = img.size();
+	img.zeros(TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+	img.entry(10, 1, 900.0);
+
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, zeroMarker);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
 TEST(TransactionLogRecovery, SubHeaderZeroPaddingRemainsATornTailForRecovery) {
 	LogImage img;
 	img.entry(10);

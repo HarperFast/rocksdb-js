@@ -178,14 +178,15 @@ RecoveryScan scanTransactionLogForRecovery(
 			source.readHeaderAt(pos, header);
 			double timestamp = readDoubleBE(header);
 			if (timestamp == 0) {
-				// A zero timestamp also marks the padding of a pre-extended file.
+				if (validFramingResumes(source, pos + 1)) {
+					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
+				}
 				return scan(RecoveryScan::Kind::Clean, pos);
 			}
 			uint32_t length = readUint32BE(header + 8);
 			if (length == 0 ||
 				static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
 				if (validFramingResumes(source, pos + 1)) {
-					// Framed entries after the break must remain intact.
 					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
 				}
 				return scan(RecoveryScan::Kind::TruncateTail, pos);
