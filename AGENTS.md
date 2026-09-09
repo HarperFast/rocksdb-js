@@ -39,7 +39,10 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 untouched and must be checked by hand. Markdown is checked, which includes the ordered list of
 invariants below: a branch that adds an invariant while `main` adds another **renumbers cleanly in
 git and still fails `fmt:check` on the merge ref**, because both sides claim the same number. Rebase
-onto `main` and renumber before pushing rather than reading the red check as unrelated.
+onto `main` and renumber before pushing rather than reading the red check as unrelated;
+`git merge-tree --write-tree origin/main HEAD` builds the tree CI actually formats, so you can check
+it without pushing. (oxfmt leaves lazy `1.` numbering alone, but the invariants are cited by number
+in prose, so they are numbered explicitly on purpose.)
 
 ### Development Workflow
 
