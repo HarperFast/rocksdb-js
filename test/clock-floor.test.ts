@@ -190,15 +190,15 @@ describe('monotonic clock floor', () => {
 		expect(refused.stderr).toContain('discovery skipped');
 	}, 60000);
 
-	it('warns when a later open of the same path names a log', async () => {
+	it('refuses a later open that cannot apply timestampFloorLog', async () => {
 		const dbPath = newDBPath();
 		const key = aheadOfNow();
 
 		expect((await runFixture('write', dbPath, key)).code).toBe(0);
 
-		const warned = await runFixture('reopen-warn', dbPath, key);
-		expect(warned.code, warned.stderr).toBe(0);
-		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('was ignored');
+		const refused = await runFixture('reopen-refuse', dbPath, key);
+		expect(refused.code, refused.stderr).toBe(0);
+		expect(JSON.parse(refused.stdout).error).toContain('monotonic timestamp floor was not seeded');
 	}, 60000);
 
 	it('refuses to open when a mid-file framing break hides durable keys', async () => {

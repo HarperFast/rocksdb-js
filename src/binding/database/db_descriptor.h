@@ -215,7 +215,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * The `timestampFloorLog` this path was opened with, or empty. Fixed at first
 	 * open: the descriptor is process-global, so a later open of the same path
 	 * cannot re-run the seed (see TransactionLogStoreRegistry::SeedTimestampFloor),
-	 * and DBRegistry::OpenDB warns rather than let a differing request look applied.
+	 * and DBRegistry::OpenDB rejects a differing request rather than let it look
+	 * applied.
 	 */
 	std::string timestampFloorLog;
 

@@ -492,10 +492,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				<< (entry.descriptor->timestampFloorLog.empty()
 					? " without a timestampFloorLog"
 					: " with timestampFloorLog \"" + entry.descriptor->timestampFloorLog + "\"")
-				<< "; this open's timestampFloorLog \"" << options.timestampFloorLog
-				<< "\" was ignored and the monotonic timestamp floor was not seeded from it.";
-			DEBUG_LOG("DBRegistry::OpenDB WARNING: %s\n", msg.str().c_str());
-			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				<< "; cannot reopen it with timestampFloorLog \"" << options.timestampFloorLog
+				<< "\" because the monotonic timestamp floor was not seeded from it. Close every "
+				   "handle for this path, then reopen with timestampFloorLog.";
+			throw rocksdb_js::DBException(msg.str());
 		}
 
 		// max_log_file_size and info_log_level are DB-wide (`DBOptions`) settings
