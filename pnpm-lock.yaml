@@ -85,6 +85,9 @@ importers:
       '@harperfast/rocksdb-js-linux-x64-glibc':
         specifier: 2.9.0
         version: 2.9.0
+      '@harperfast/rocksdb-js-linux-x64-musl':
+        specifier: 2.9.0
+        version: 2.9.0
       '@harperfast/rocksdb-js-win32-arm64':
         specifier: 2.9.0
         version: 2.9.0
@@ -318,6 +321,13 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
+
+  '@harperfast/rocksdb-js-linux-x64-musl@2.9.0':
+    resolution: {integrity: sha512-D/MfsqycP7ijIAAptUcITsMMzn7cnawdL3H1XUqe+h9fgNP7+y0gXk/9KxVA5D6cKPw1TkEDaeLuuBsiI2vFUA==}
+    engines: {node: ^22.18.0 || >=24.0.0}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
 
   '@harperfast/rocksdb-js-win32-arm64@2.9.0':
     resolution: {integrity: sha512-76PILBAErw0R9enoprg83FdyHk0UNG63pII4klFV5Xlrfj0gmJ0iqLEbocEwC+d2RTGkpgkUPjoNMw4BbMpyTA==}
@@ -2046,6 +2056,9 @@ snapshots:
     optional: true
 
   '@harperfast/rocksdb-js-linux-x64-glibc@2.9.0':
+    optional: true
+
+  '@harperfast/rocksdb-js-linux-x64-musl@2.9.0':
     optional: true
 
   '@harperfast/rocksdb-js-win32-arm64@2.9.0':

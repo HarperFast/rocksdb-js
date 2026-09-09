@@ -878,14 +878,25 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       visible in that same mapping.
     - `nextReadableLogBuffer()` in `src/transaction-log-reader.ts` skips a deleted run when an
       iterator advances: those segments are genuinely gone (no mapping exists), and stopping at the
-      hole stopped the iterator permanently — every later poll stopped at the same place. It uses
-      `_findPosition(0)` to jump straight to the oldest survivor, so a purged prefix costs one
-      native call rather than a probe per deleted segment. Only a segment the store has no bytes
-      for is skipped — one it still knows is merely unmappable for now (mid-rotation, 0 bytes at
-      mmap time, transient resource pressure), so iteration stops and retries on the next poll
-      rather than stepping over durable history. That gate is the segment's own extent, not
-      `_findPosition(0)`, which resolves the start of the contiguous run below the current segment
-      and so can name a segment past a _second_ hole.
+      hole stopped the iterator permanently — every later poll stopped at the same place. Only a
+      segment the store has no bytes for is skipped — one it still knows is merely unmappable for
+      now (mid-rotation, 0 bytes at mmap time, transient resource pressure), so iteration stops and
+      retries on the next poll rather than stepping over durable history. That gate is the
+      segment's own extent.
+      The jump target is `_nextLogId()` (`TransactionLogStore::nextSequenceAfter`,
+      `sequenceFiles.upper_bound`), the successor over the registered segments — **not**
+      `_findPosition(0)`, which walks backward from the current sequence and stops at the first
+      gap, so it names the bottom of the contiguous run ending at the current segment. Those agree
+      only when the deletions form a single prefix; with a survivor between two holes
+      `_findPosition(0)` lands past it and its committed entries are never yielded. The probe is a
+      bounded **loop**, not one hop: a registered successor can be absent too (unlinked out of
+      band, or by another process's retention, before this process's purge run forgets it), and
+      stopping at the first one that will not map is the same permanent wedge. It terminates
+      because `_nextLogId()` strictly increases and is capped at the latest sequence.
+      `findPositionByTimestamp()` still has the backward-walk shape, so **initial** positioning
+      after a restart with holes resolves to the newest contiguous run and cannot reach a survivor
+      below one — that is why the regression covers the successor lookup directly rather than
+      driving an iterator end to end.
     - Not covered here: `purgeLogs({ destroy: true })` removes the store directory and a fresh store
       restarts segment numbering at 1, so a cached buffer keyed by segment number can answer for a
       different store's file. That is a cache-key identity problem, not a purge-coherence one; it is

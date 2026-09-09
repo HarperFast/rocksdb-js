@@ -19,6 +19,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	unlinkSync,
 } from 'node:fs';
 import { mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { release } from 'node:os';
@@ -2602,6 +2603,14 @@ describe('Transaction Log', () => {
 		// What must not survive the purge is the mapping: a strong cache of it kept the deleted
 		// file resident for the life of the process (HarperFast/harper#2337).
 		describe('reader state after purge', () => {
+			// `_findPosition` packs {position, logId} into one float; the log id is the high word.
+			const positionFloat = new Float64Array(1);
+			const positionWords = new Uint32Array(positionFloat.buffer);
+			const logIdOf = (position: number) => {
+				positionFloat[0] = position;
+				return positionWords[1];
+			};
+
 			const writeEntry = (db: RocksDatabase, log: TransactionLog, fill: number, length: number) =>
 				db.transaction(async (txn) => {
 					const value = Buffer.alloc(length, fill);
@@ -2715,6 +2724,96 @@ describe('Transaction Log', () => {
 						expect(deletedMappings()).toEqual([]);
 					})
 			);
+
+			// A hole is not always a prefix: `purge({all})` continues past a segment it could
+			// not unlink, and a restart registers only the segments still on disk. When a
+			// survivor sits between two holes, `_findPosition(0)` is the wrong question to ask
+			// for "what comes after N" — it walks backward from the current sequence and stops
+			// at the first gap, so it names the bottom of the newest contiguous run and lands
+			// past the survivor, whose committed entries are then never yielded.
+			it('resolves the successor across a hole rather than the newest contiguous run', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						let log = database.useLog('foo');
+						for (const fill of [1, 2, 3, 4, 5]) {
+							await writeEntry(database, log, fill, 300);
+						}
+						database.close();
+
+						// leave 1, 3 and 5 on disk; a reopen registers only what it finds
+						unlinkSync(join(logDirectory, '2.txnlog'));
+						unlinkSync(join(logDirectory, '4.txnlog'));
+
+						database = RocksDatabase.open(dbPath);
+						log = database.useLog('foo');
+
+						expect(log._nextLogId(2)).toBe(3);
+						expect(log._nextLogId(4)).toBe(5);
+						expect(log._nextLogId(5)).toBe(0);
+
+						// segment 3 is on disk and registered, so the skip is a lookup answering the
+						// wrong question rather than a missing segment. Asserted by presence, not
+						// by `getLogFileSize()`: reading the extent *opens* the segment, and an
+						// open handle keeps reporting the real size after an unlink, which would
+						// defeat the absence set up below.
+						expect(existsSync(join(logDirectory, '3.txnlog'))).toBe(true);
+
+						// a registered successor can be absent too — one hop is not enough, and
+						// stopping at it is the permanent wedge, so the probe has to keep going
+						unlinkSync(join(logDirectory, '3.txnlog'));
+						expect(log.getLogFileSize(3)).toBe(0);
+						expect(log._nextLogId(3)).toBe(5);
+						expect(log.getLogFileSize(5)).toBeGreaterThan(0);
+
+						// the divergence this fix exists for: the backward walk stops at the
+						// gap below 5 and reports 5, skipping the surviving segment 3
+						expect(logIdOf(log._findPosition(0))).toBe(5);
+					} finally {
+						database.close();
+					}
+				}));
+
+			// `TransactionLogFile::open()` creates (`O_RDWR | O_CREAT`, `OPEN_ALWAYS` on
+			// Windows), so a read that opens a registered-but-unlinked segment would leave a
+			// ghost behind that the next startup discovery registers again. Discovery is what
+			// makes that reachable: `load()` registers every segment but opens only the
+			// surviving current one, so the rest sit registered and closed.
+			it('does not recreate a registered segment that was unlinked underneath it', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						let log = database.useLog('foo');
+						for (const fill of [1, 2, 3]) {
+							await writeEntry(database, log, fill, 300);
+						}
+						database.close();
+
+						database = RocksDatabase.open(dbPath);
+						log = database.useLog('foo');
+
+						// segment 1 is registered but closed, and now gone from disk
+						const ghost = join(logDirectory, '1.txnlog');
+						expect(existsSync(ghost)).toBe(true);
+						unlinkSync(ghost);
+
+						expect(log.getLogFileSize(1)).toBe(0);
+						expect(existsSync(ghost)).toBe(false);
+
+						// the aggregate walk takes the same path over every registered segment
+						expect(log.getLogFileSize()).toBeGreaterThan(0);
+						expect(existsSync(ghost)).toBe(false);
+
+						// so does the timestamp walk, which visits every registered segment
+						// below the current one looking for the start position
+						expect(Array.from(log.query({ start: 0 })).length).toBeGreaterThan(0);
+						expect(existsSync(ghost)).toBe(false);
+					} finally {
+						database.close();
+					}
+				}));
 
 			// Windows cannot delete a mapped file at all, so there the reader releasing its
 			// mapping is what lets retention advance. Unverified locally (no Windows host); it

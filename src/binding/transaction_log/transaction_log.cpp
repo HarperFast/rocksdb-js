@@ -205,6 +205,30 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 	return result;
 }
 
+/**
+ * The lowest registered log sequence number greater than the argument, or 0 when
+ * there is none. Lets a reader advancing past a purged run land on the next
+ * segment that actually exists rather than the bottom of the newest contiguous
+ * run, which is what `_findPosition(0)` reports.
+ */
+napi_value TransactionLog::NextLogId(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_LOG_HANDLE("NextLogId");
+	uint32_t sequenceNumber = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+
+	uint32_t nextSequenceNumber;
+	try {
+		nextSequenceNumber = (*txnLogHandle)->nextSequenceAfter(sequenceNumber);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, nextSequenceNumber, &result));
+	return result;
+}
+
 struct PositionHandle {
 	std::shared_ptr<LogPosition> position;
 };
@@ -461,6 +485,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },
 		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_nextLogId", nullptr, NextLogId, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastFlushed", nullptr, GetLastFlushed, nullptr, nullptr, nullptr, napi_default, nullptr }
