@@ -468,10 +468,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    `lockReleaseByOwner`), which for a cross-env `destroy()`/`shutdown()` is not the thread
    reporting. Walking `columns` unguarded is a use-after-free, not a torn count: the map node is
    freed while the loop still holds its key, and `napi_set_named_property()` `strlen()`s that key
-   (SIGSEGV, or a `std::bad_alloc` abort from a garbage length). Snapshot under the owning mutex
-   and build the JS values after releasing it — holding it across N-API calls risks a finalizer
-   re-entering the same non-recursive mutex on this thread. `transactions` already followed that
-   pattern under `txnsMutex`; `events.size()` locks internally.
+   (SIGSEGV, or a `std::bad_alloc` abort from a garbage length). Snapshot value-only data under
+   `databasesMutex` and each owning mutex, release them all, then build the JS values — holding a
+   mutex across N-API calls risks a finalizer re-entering it on this thread, while carrying a
+   `shared_ptr<DBDescriptor>` past `databasesMutex` makes a racing last-handle close see
+   `use_count() > 1` and skip its purge permanently (the pin has no release-side retry).
+   `transactions` follows the same copy-under-`txnsMutex` pattern; `events.size()` locks internally.
 
    A self-close must detach from `closables` **after** it closes, not before: `DBRegistry::CloseDB`
    and the `NativeIterator`/iterator finalizer each own a handle/iterator that a foreign

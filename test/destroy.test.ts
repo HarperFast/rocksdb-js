@@ -18,6 +18,11 @@ const registryStatusColumnRaceFixture = join(
 	'fixtures',
 	'fork-registry-status-column-race.mts'
 );
+const registryStatusCloseRaceFixture = join(
+	__dirname,
+	'fixtures',
+	'fork-registry-status-close-race.mts'
+);
 const lifecycleTimeoutFixture = join(__dirname, 'fixtures', 'fork-lifecycle-timeout.mts');
 const lifecycleTimeoutTwoDescriptorsFixture = join(
 	__dirname,
@@ -459,6 +464,12 @@ describe('Destroy', () => {
 	it('survives a column-family drop racing a registryStatus() walk', async () => {
 		await runDestroyFixture(registryStatusColumnRaceFixture, generateDBPath(), {
 			ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS: '10',
+		});
+	}, 15_000);
+
+	it('purges the last handle closed during a registryStatus() walk', async () => {
+		await runDestroyFixture(registryStatusCloseRaceFixture, generateDBPath(), {
+			ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS: '20',
 		});
 	}, 15_000);
 

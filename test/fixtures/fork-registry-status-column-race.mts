@@ -48,7 +48,7 @@ for (;;) {
 	settled = await Promise.race([churnResult, Promise.resolve(undefined)]);
 	if (settled !== undefined) break;
 	if (Date.now() >= deadline) throw new Error('Timed out waiting for the column churn');
-	// registryStatus() holds databasesMutex for its whole body, so back-to-back
+	// registryStatus() holds databasesMutex through the column snapshot, so back-to-back
 	// polls starve the worker's own open()s; yield between them.
 	await delay(1);
 }

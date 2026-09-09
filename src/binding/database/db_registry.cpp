@@ -1025,30 +1025,83 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_array(env, &result));
 
+	struct ColumnSummary {
+		std::string name;
+		uint32_t userSharedBuffers;
+	};
+	struct TxnSummary {
+		uint32_t id;
+		double ageMs;
+	};
 	struct RegistryStatusEntry {
-		std::shared_ptr<DBDescriptor> descriptor;
 		std::string reportedPath;
 		std::string closeError;
-		bool closeRetrying;
-		uint32_t refCount;
+		bool closeRetrying = false;
+		bool hasDescriptor = false;
+		bool optimistic = false;
+		uint32_t refCount = 0;
+		std::vector<ColumnSummary> columnSummaries;
+		std::vector<TxnSummary> txnSummaries;
+		uint32_t closables = 0;
+		uint32_t locks = 0;
+		uint32_t listenerCallbacks = 0;
 	};
 	std::vector<RegistryStatusEntry> entries;
 	if (instance) {
 		std::unique_lock<std::mutex> lock(instance->databasesMutex);
 		entries.reserve(instance->databases.size());
 		for (const auto& [key, entry] : instance->databases) {
-			auto descriptor = entry.descriptor;
-			const std::string reportedPath = descriptor ? descriptor->path
+			DBDescriptor* descriptor = entry.descriptor.get();
+			RegistryStatusEntry statusEntry;
+			statusEntry.reportedPath = descriptor ? descriptor->path
 				: !entry.reportedPath.empty() ? entry.reportedPath
 				: key.path;
-			// Omit the local snapshot's reference so this remains the count a
-			// caller would have observed while the registry lock was held.
-			const uint32_t refCount = descriptor
-				? static_cast<uint32_t>(descriptor.use_count() - 1)
-				: 0;
-			entries.push_back({
-				std::move(descriptor), reportedPath, entry.closeError, entry.closeRetrying, refCount
-			});
+			statusEntry.closeError = entry.closeError;
+			statusEntry.closeRetrying = entry.closeRetrying;
+			if (descriptor) {
+				statusEntry.hasDescriptor = true;
+				statusEntry.optimistic = descriptor->mode == DBMode::Optimistic;
+				statusEntry.refCount = static_cast<uint32_t>(entry.descriptor.use_count());
+				{
+					std::lock_guard<std::mutex> columnsLock(descriptor->columnsMutex);
+					statusEntry.columnSummaries.reserve(descriptor->columns.size());
+					const int columnsDelayMs =
+						registryStatusColumnsDelayMsFlag().load(std::memory_order_relaxed);
+					for (const auto& [name, columnDescriptor] : descriptor->columns) {
+						if (!columnDescriptor) {
+							continue;
+						}
+						if (columnsDelayMs > 0) {
+							std::this_thread::sleep_for(std::chrono::milliseconds(columnsDelayMs));
+						}
+						std::lock_guard<std::mutex> buffersLock(columnDescriptor->userSharedBuffersMutex);
+						statusEntry.columnSummaries.push_back(
+							ColumnSummary{name, static_cast<uint32_t>(columnDescriptor->userSharedBuffers.size())}
+						);
+					}
+				}
+				{
+					auto now = std::chrono::steady_clock::now();
+					std::lock_guard<std::mutex> txnsLock(descriptor->txnsMutex);
+					statusEntry.txnSummaries.reserve(descriptor->transactions.size());
+					for (auto& [txnId, txnHandle] : descriptor->transactions) {
+						if (!txnHandle) {
+							continue;
+						}
+						statusEntry.txnSummaries.push_back({
+							txnId,
+							std::chrono::duration<double, std::milli>(now - txnHandle->createdAt).count()
+						});
+					}
+					statusEntry.closables = static_cast<uint32_t>(descriptor->closables.size());
+				}
+				{
+					std::lock_guard<std::mutex> locksLock(descriptor->locksMutex);
+					statusEntry.locks = static_cast<uint32_t>(descriptor->locks.size());
+				}
+				statusEntry.listenerCallbacks = static_cast<uint32_t>(descriptor->events.size());
+			}
+			entries.push_back(std::move(statusEntry));
 		}
 		lock.unlock();
 
@@ -1081,7 +1134,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &closeRetryingValue));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closeRetrying", closeRetryingValue));
 			}
-			if (!entry.descriptor) {
+			if (!entry.hasDescriptor) {
 				napi_value pending;
 				NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &pending));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "destroyCleanupPending", pending));
@@ -1106,7 +1159,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				continue;
 			}
 			napi_value modeValue;
-			std::string mode = entry.descriptor->mode == DBMode::Optimistic ? "optimistic" : "pessimistic";
+			std::string mode = entry.optimistic ? "optimistic" : "pessimistic";
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(env, mode.c_str(), mode.size(), &modeValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "mode", modeValue));
 			napi_value refCount;
@@ -1122,32 +1175,9 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			// reproduced by polling registryStatus() across a worker's destroy.
 			// And the mutex must not be held across the N-API calls: creating JS
 			// values can run a finalizer on this thread that takes it again.
-			struct ColumnSummary {
-				std::string name;
-				uint32_t userSharedBuffers;
-			};
-			std::vector<ColumnSummary> columnSummaries;
-			{
-				std::lock_guard<std::mutex> columnsLock(entry.descriptor->columnsMutex);
-				columnSummaries.reserve(entry.descriptor->columns.size());
-				const int columnsDelayMs =
-					registryStatusColumnsDelayMsFlag().load(std::memory_order_relaxed);
-				for (const auto& [name, columnDescriptor] : entry.descriptor->columns) {
-					if (!columnDescriptor) {
-						continue;
-					}
-					if (columnsDelayMs > 0) {
-						std::this_thread::sleep_for(std::chrono::milliseconds(columnsDelayMs));
-					}
-					std::lock_guard<std::mutex> buffersLock(columnDescriptor->userSharedBuffersMutex);
-					columnSummaries.push_back(
-						ColumnSummary{name, static_cast<uint32_t>(columnDescriptor->userSharedBuffers.size())}
-					);
-				}
-			}
 			napi_value columnFamilies;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
-			for (const auto& column : columnSummaries) {
+			for (const auto& column : entry.columnSummaries) {
 				napi_value columnDescriptorValue;
 				NAPI_STATUS_THROWS(::napi_create_object(env, &columnDescriptorValue));
 
@@ -1164,35 +1194,13 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			// any lock, so reading them from another environment here would be a data race —
 			// txnsMutex covers the map's membership, not a handle's mutable fields. id and age are
 			// fixed before the handle is published to the registry.
-			struct TxnSummary {
-				uint32_t id;
-				double ageMs;
-			};
-			std::vector<TxnSummary> txnSummaries;
-			size_t closablesCount;
-			{
-				auto now = std::chrono::steady_clock::now();
-				std::lock_guard<std::mutex> txnsLock(entry.descriptor->txnsMutex);
-				txnSummaries.reserve(entry.descriptor->transactions.size());
-				for (auto& [txnId, txnHandle] : entry.descriptor->transactions) {
-					if (!txnHandle) {
-						continue;
-					}
-					txnSummaries.push_back({
-						txnId,
-						std::chrono::duration<double, std::milli>(now - txnHandle->createdAt).count()
-					});
-				}
-				closablesCount = entry.descriptor->closables.size();
-			}
-
 			napi_value transactions;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(txnSummaries.size()), &transactions));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.txnSummaries.size()), &transactions));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "transactions", transactions));
 			napi_value transactionDetails;
 			NAPI_STATUS_THROWS(::napi_create_array(env, &transactionDetails));
-			for (size_t t = 0; t < txnSummaries.size(); t++) {
-				const auto& summary = txnSummaries[t];
+			for (size_t t = 0; t < entry.txnSummaries.size(); t++) {
+				const auto& summary = entry.txnSummaries[t];
 				napi_value detail;
 				NAPI_STATUS_THROWS(::napi_create_object(env, &detail));
 				napi_value value;
@@ -1204,20 +1212,13 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			}
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "transactionDetails", transactionDetails));
 			napi_value closables;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(closablesCount), &closables));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, entry.closables, &closables));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "closables", closables));
-			// locksMutex for the same reason, though this one only reads a count:
-			// lockReleaseByOwner() erases from the map during teardown.
-			uint32_t lockCount;
-			{
-				std::lock_guard<std::mutex> locksLock(entry.descriptor->locksMutex);
-				lockCount = static_cast<uint32_t>(entry.descriptor->locks.size());
-			}
 			napi_value locks;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, lockCount, &locks));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, entry.locks, &locks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "locks", locks));
 			napi_value listenerCallbacks;
-			NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(entry.descriptor->events.size()), &listenerCallbacks));
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, entry.listenerCallbacks, &listenerCallbacks));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "listenerCallbacks", listenerCallbacks));
 			NAPI_STATUS_THROWS(::napi_set_element(env, result, i, database));
 			i++;
