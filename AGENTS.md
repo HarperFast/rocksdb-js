@@ -222,8 +222,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   monotonic timestamp floor from the `timestampFloorLog` log. The walk is O(entries in that log) on
   the calling thread inside `RocksDatabase.open()`, and a log's retention window bounds its age
   rather than its entry count, so without a bound a large log is an open that does not return. It
-  goes newest segment first and, on running out, warns and keeps the floor it reached — losing
-  coverage, never correctness. Historical segments are scanned through a private read-only stream;
+  goes newest segment first and rejects the explicitly opted-in open when it cannot cover every
+  durable key. Historical segments are scanned through a private read-only stream;
   the floor walk must not open, close, map, or index the shared `TransactionLogFile`, since the same
   store can concurrently serve another database descriptor. It runs while database opens and closes
   are serialized process-wide, so increasing its budget can delay unrelated opens and closes.
@@ -820,8 +820,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     with deliberately no second rate-limit window on top — a window would suppress the first line of
     a genuinely new episode, which is the one that matters. The decision FSM is Node-free in
     `core/wbm_stall_watchdog.h` and GoogleTest-covered; a test that reaches a real stall must run in
-     a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
-     and the runner's own timeout cannot fire (#781 item 2).
+    a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
+    and the runner's own timeout cannot fire (#781 item 2).
 
 21. **A transaction timestamp is only unique within one process unless the caller names its log**:
     `getMonotonicTimestamp()` (`core/platform.cpp`) ratchets a file-static atomic that starts at `0`
@@ -839,11 +839,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     implementation encodes: the seed runs **after** recovery, because a key in bytes `recoverTail()`
     truncates is not durable; and **every segment is walked**, because keys are unordered and a
     segment header holds only `latestTimestamp` as of that segment's creation — which, starting at
-    `0` each process, is _below_ older segments' keys after a rollback, not above them. Failure is
-     best effort by design (a `log.warn`, not a refused open): one unreadable legacy segment must not
-     make a database unopenable, and neither must a log large enough to outlast
-     `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` — the walk is O(entries) on the thread inside `open()`, so
-     it is bounded, newest segment first, and reports what it did not reach.
+    `0` each process, is _below_ older segments' keys after a rollback, not above them. An explicitly
+    named log is fail closed: an unreadable segment, framing break, exhausted scan budget, or
+    implausibly future key refuses that open rather than risk reissuing a durable batch key. The
+    caller can omit `timestampFloorLog` only when its writes do not need restart-safe uniqueness.
 
 ## Debugging native heap corruption
 

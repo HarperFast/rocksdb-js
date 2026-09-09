@@ -280,12 +280,11 @@ A database opened without `timestampFloorLog` pays none of it. The walk runs whi
 and closes are serialized process-wide, so increasing its budget can delay unrelated opens and
 closes too.
 
-The seed is best effort, and says so when it falls short: a segment that cannot be opened or scanned
-emits a `log.warn` global event, as does a framing break (the entries past it can still be durable —
-`query()` resyncs to them — but this walk stops there), a budget that runs out, and a
-`timestampFloorLog` naming a log the database does not have. A key more than ten years ahead of the
-wall clock is left out of the floor as corruption rather than a rollback to recover from, per entry
-rather than per segment so it does not take the real keys beside it with it, and it warns too.
+The seed is fail closed when `timestampFloorLog` is set. A segment that cannot be opened or scanned,
+a framing break (the entries past it can still be durable — `query()` resyncs to them — but this walk
+stops there), an exhausted budget, or a key more than ten years ahead of the wall clock rejects the
+open rather than risk issuing a duplicate key. A `timestampFloorLog` naming a log the database does
+not have still warns: an empty or newly named locally originated log has no existing keys to seed.
 
 The option is fixed at the first open of a path in the process — the database descriptor is shared
 across handles and `worker_threads` envs — so a later open of the same path that names a log cannot

@@ -813,10 +813,10 @@ keyed by that node's clock; seeding from it would ratchet this process's clock t
 those nodes at every restart, and there is no way for the database to tell the two kinds of log
 apart on its own.
 
-The seed is best effort. A segment that cannot be read at open, and a key more than ten years ahead
-of the wall clock (corruption rather than a rollback to recover from), are both left out of the
-floor and reported as a `log.warn` global event. The floor is process-wide, so it applies to every
-database open in the process. The scan runs while the process serializes database opens and closes,
+The seed is fail closed. With `timestampFloorLog` set, an unreadable segment, framing break,
+exhausted scan budget, or key more than ten years ahead of the wall clock rejects the open rather
+than risk issuing a duplicate key. The floor is process-wide, so it applies to every database open
+in the process. The scan runs while the process serializes database opens and closes,
 so increasing its budget can delay unrelated opens and closes too.
 
 ### `db.getOldestSnapshotTimestamp(): number`

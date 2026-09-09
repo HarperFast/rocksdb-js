@@ -181,7 +181,7 @@ public:
 	/**
 	 * Raises the process-wide monotonic timestamp floor from the caller-named,
 	 * locally originated log. Call after DiscoverStores() has completed recovery;
-	 * incomplete scans are best effort and emit `log.warn`.
+	 * throws when the scan cannot establish a complete, plausible floor.
 	 */
 	static void SeedTimestampFloor(const std::string& dbPath, const std::string& logName);
 

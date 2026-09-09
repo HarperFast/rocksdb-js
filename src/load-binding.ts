@@ -343,9 +343,10 @@ export type NativeDatabaseOptions = {
 	 * on every restart. Unset (the default), the floor is left alone; native
 	 * code cannot tell the two kinds of log apart.
 	 *
-	 * Best effort: a segment that cannot be read at open leaves the floor lower
-	 * than it should be and emits a `log.warn` global event. The floor is
-	 * process-wide, so it is shared by every database open in the process.
+	 * Safety check: an incomplete scan or a key implausibly far ahead of the
+	 * wall clock rejects this open rather than risk issuing a duplicate key.
+	 * The floor is process-wide, so it is shared by every database open in the
+	 * process.
 	 */
 	timestampFloorLog?: string;
 	/**
