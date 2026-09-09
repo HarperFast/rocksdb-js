@@ -300,11 +300,28 @@ describe('Destroy', () => {
 			mkdirSync(realPath, { recursive: true });
 			symlinkSync(realPath, linkPath, 'dir');
 			const lockedDirectory = join(realPath, 'transaction_logs', 'locked');
-			let resolveCloseFailure: (args: unknown[]) => void;
-			const closeFailure = new Promise<unknown[]>((resolve) => {
-				resolveCloseFailure = resolve;
-			});
-			const listener = (...args: unknown[]) => resolveCloseFailure(args);
+			// Filtered to this path so an event from anything else in the file
+			// cannot shift the indices asserted below.
+			const closeFailures: unknown[][] = [];
+			let notify: () => void = () => {};
+			const listener = (...args: unknown[]) => {
+				if (args[0] === linkPath || args[0] === realPath) closeFailures.push(args);
+				notify();
+			};
+			const nextCloseFailure = (count: number) =>
+				new Promise<void>((resolve, reject) => {
+					const timer = setTimeout(
+						() => reject(new Error(`database:closeFailed #${count} never arrived`)),
+						5_000
+					);
+					notify = () => {
+						if (closeFailures.length >= count) {
+							clearTimeout(timer);
+							resolve();
+						}
+					};
+					notify();
+				});
 			RocksDatabase.on('database:closeFailed', listener);
 			const db = RocksDatabase.open(linkPath);
 			try {
@@ -319,7 +336,16 @@ describe('Destroy', () => {
 				expect(
 					registryStatus().find((entry) => entry.path === linkPath)?.destroyCleanupPending
 				).toBe(true);
-				await expect(closeFailure).resolves.toMatchObject([
+				await nextCloseFailure(1);
+				expect(closeFailures[0]).toMatchObject([
+					linkPath,
+					expect.stringContaining('Failed to remove database directory'),
+				]);
+				// Retrying the destroy finds only the tombstone -- no descriptor to
+				// ask -- so the remembered spelling is the only source left.
+				expect(() => db.destroy()).toThrow('Failed to remove database directory');
+				await nextCloseFailure(2);
+				expect(closeFailures[1]).toMatchObject([
 					linkPath,
 					expect.stringContaining('Failed to remove database directory'),
 				]);

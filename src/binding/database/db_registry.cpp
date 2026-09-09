@@ -379,10 +379,20 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			}
 			if (!reportedPathKnown) {
 				for (const auto& [key, entry] : instance->databases) {
-					if (key.path == identityPath && entry.descriptor) {
+					if (key.path != identityPath) {
+						continue;
+					}
+					if (entry.descriptor) {
 						reportedPath = entry.descriptor->path;
 						reportedPathKnown = true;
 						break;
+					}
+					// A tombstone left by an earlier failed destroy() already
+					// remembers the spelling, which is all a retry of that destroy
+					// has: it finds no descriptor to ask. Keep scanning for a live
+					// one anyway -- it is the more authoritative source.
+					if (!entry.reportedPath.empty()) {
+						reportedPath = entry.reportedPath;
 					}
 				}
 			}
