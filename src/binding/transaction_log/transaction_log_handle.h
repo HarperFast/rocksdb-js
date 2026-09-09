@@ -64,6 +64,7 @@ struct TransactionLogHandle final : Closable {
 	LogPosition findPosition(double timestamp);
 	LogPosition getLastFlushed();
 	uint64_t getLogFileSize(uint32_t sequenceNumber);
+	uint32_t nextSequenceAfter(uint32_t sequenceNumber);
 	std::weak_ptr<LogPosition> getLastCommittedPosition();
 
 	/**
