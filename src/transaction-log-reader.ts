@@ -132,10 +132,7 @@ function corruptFrame(
 	let dataEnd = limit;
 	if (readUncommitted) {
 		try {
-			dataEnd = Math.min(
-				logBuffer.length,
-				logBuffer.size ?? readableExtent(transactionLog, logBuffer)
-			);
+			dataEnd = Math.min(logBuffer.length, logBuffer.size ?? readableExtent(logBuffer));
 		} catch {
 			dataEnd = 0;
 		}
@@ -262,7 +259,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		if (latestLogId !== logId) {
 			const cachedSize = logBuffer.size;
 			if (cachedSize === undefined) {
-				size = logBuffer.size = readableExtent(this, logBuffer);
+				size = logBuffer.size = readableExtent(logBuffer);
 			} else {
 				size = cachedSize;
 			}
@@ -284,8 +281,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					size = latestSize;
 					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
-						size =
-							logBuffer!.size ?? (logBuffer!.size = readableExtent(transactionLog, logBuffer!));
+						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
 							const nextLogBuffer = nextReadableLogBuffer(
@@ -298,9 +294,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								logBuffer = nextLogBuffer;
 								if (latestLogId > logBuffer!.logId) {
 									// it is non-current log file, we can safely use or cache the size
-									size =
-										logBuffer!.size ??
-										(logBuffer!.size = readableExtent(transactionLog, logBuffer!));
+									size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 								} else {
 									size = latestSize; // use the latest position from loadLastPosition
 								}
@@ -430,7 +424,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							dataView = logBuffer.dataView;
 							const cachedSize = logBuffer.size;
 							if (cachedSize === undefined) {
-								size = readableExtent(transactionLog, logBuffer);
+								size = readableExtent(logBuffer);
 								if (!readUncommitted) {
 									logBuffer.size = size;
 								}
@@ -497,11 +491,8 @@ function nextReadableLogBuffer(
  * successful write. It remains attached to the mapping after purge forgets the file object, so
  * readers retain committed history without interpreting a partial failed append as another frame.
  */
-function readableExtent(transactionLog: TransactionLog, logBuffer: LogBuffer): number {
-	// Synthetic test buffers predate the native accessor; production mappings
-	// always take the first branch without crossing back into native.
-	const extent = logBuffer.readableExtent ?? transactionLog.getLogFileSize(logBuffer.logId);
-	return Math.min(logBuffer.length, extent);
+function readableExtent(logBuffer: LogBuffer): number {
+	return Math.min(logBuffer.length, logBuffer.readableExtent);
 }
 
 function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {

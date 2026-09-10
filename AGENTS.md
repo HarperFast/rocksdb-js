@@ -491,10 +491,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     declared length is never an in-flight append: `size` is bumped only after the bytes land, so a
     nonzero header below `size` is a complete entry and a length overrunning it is a break.
 
-    The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
-    append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size),
-    or, once the store has forgotten a purged segment and reports 0 for it, by `readableExtent()`'s
-    end-of-entries walk — **never** the raw mapping length.
+    The resync scan must be bounded by the **written extent**: the live mapping-carried
+    `readableExtent`, seeded from append-owned `TransactionLogFile::size` — see invariant 5 — and
+    retained after the store forgets a purged segment. It must use neither the physical nor raw
+    mapped size.
     An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
     fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.

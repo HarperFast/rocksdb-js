@@ -23,6 +23,7 @@ namespace rocksdb_js {
 struct TransactionLogEntryBatch;
 struct TransactionLogFile;
 struct MemoryMap;
+struct TransactionLogStoreTestPeer;
 
 #define LOG_POSITION_SIZE 8
 
@@ -578,6 +579,7 @@ struct TransactionLogStore final {
 	);
 
 private:
+	friend struct TransactionLogStoreTestPeer;
 	/**
 	 * Opens a log file for the given sequence number. If the log file does not
 	 * exist, it will be created.
@@ -632,6 +634,7 @@ private:
 	bool openIfPresent(TransactionLogFile& file);
 
 	void recordFlushedPosition(rocksdb::SequenceNumber rocksSequenceNumber);
+	void writeFlushedPosition(LogPosition latestSequencePosition, uint64_t observedGeneration);
 	void warnFlushedStateFailure(const char* what, const char* detail) noexcept;
 
 	void doPurge(
