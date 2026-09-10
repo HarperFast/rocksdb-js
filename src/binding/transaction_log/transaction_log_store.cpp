@@ -253,12 +253,7 @@ bool TransactionLogStore::openIfPresent(TransactionLogFile& file) {
 	if (file.isOpen()) {
 		return true;
 	}
-	std::error_code existsEc;
-	if (!std::filesystem::exists(file.path, existsEc) && !existsEc) {
-		return false;
-	}
-	file.open(this->latestTimestamp);
-	return true;
+	return file.openExisting(this->latestTimestamp);
 }
 
 uint32_t TransactionLogStore::nextSequenceAfter(uint32_t sequenceNumber) {
@@ -408,16 +403,11 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 		return;
 	}
 
-	// Only a definite absence skips the open: a stat that *errors* leaves us
-	// unable to tell, and both callers fail unsafely on an unresolved extent,
-	// while the worst case of opening a since-deleted path is a 13-byte header
-	// stub that the next startup rescan purges.
-	std::error_code existsEc;
-	if (!std::filesystem::exists(file->path, existsEc) && !existsEc) {
+	// The no-create OS open closes the stat/open race with purge: an absent
+	// registered segment remains absent instead of becoming a header-only ghost.
+	if (!file->openExisting(this->latestTimestamp)) {
 		return;
 	}
-
-	file->open(this->latestTimestamp);
 	file->close();
 }
 
@@ -1236,79 +1226,81 @@ void TransactionLogStore::writeFlushedPosition(LogPosition latestSequencePositio
 		return;
 	}
 
-	// An open stream describes a descriptor, not a pathname: once txn.state (or
-	// the whole store directory) is unlinked, writes land in the orphaned inode
-	// while getLastFlushedPosition() reads {0,0} by path and retention stops.
 	auto flushedStateFilePath = this->path / "txn.state";
-	if (this->flushedStateFile.is_open()) {
-		std::error_code existsError;
-		bool exists = std::filesystem::exists(flushedStateFilePath, existsError);
-		if (existsError) {
-			// Unknowable whether a write would be visible: leave the position
-			// unrecorded so the next flush retries rather than trusting the stream.
-			this->warnFlushedStateFailure("could not be checked", existsError.message().c_str());
-			return;
-		}
-		if (!exists) {
-			this->flushedStateFile.close();
-		}
-	}
+	auto stateFileMatches = [&]() {
+		std::ifstream input(flushedStateFilePath, std::ios::binary | std::ios::in);
+		LogPosition recorded = { 0, 0 };
+		input.read(reinterpret_cast<char*>(&recorded), sizeof(recorded));
+		return input.gcount() == static_cast<std::streamsize>(sizeof(recorded)) &&
+			recorded.fullPosition == latestSequencePosition.fullPosition;
+	};
 
 	bool positionChanged = latestSequencePosition.fullPosition != lastWrittenFlushedPosition.fullPosition;
-	if (!positionChanged && (this->flushedStateFile.is_open() || lastWrittenFlushedPosition.fullPosition == 0)) {
-		if (this->flushedStateFile.is_open()) {
-			// the file is present and current: a later failure must warn again
-			this->flushedStateWarningEmitted.store(false, std::memory_order_relaxed);
-		}
+	if (!positionChanged && lastWrittenFlushedPosition.fullPosition == 0) {
+		return;
+	}
+	if (!positionChanged && stateFileMatches()) {
+		this->flushedStateWarningEmitted.store(false, std::memory_order_relaxed);
 		return;
 	}
 
+	// Never carry pathname identity across callbacks. Purge or another process
+	// can unlink/replace txn.state while this stream remains valid, making a
+	// successful write land in an orphaned inode while retention reads the stale
+	// replacement. Reopen by pathname for every write and verify after closing.
+	if (this->flushedStateFile.is_open()) {
+		this->flushedStateFile.close();
+	}
+	this->flushedStateFile.clear();
+
+	// A destroy's final directory removal happens after doClose() sets isClosing
+	// and takes flushedStateMutex. A flush ordered before it may recreate the
+	// directory, which destroy subsequently removes.
+	if (this->isClosing.load(std::memory_order_relaxed)) {
+		return;
+	}
+	try {
+		rocksdb_js::tryCreateDirectory(this->path);
+	} catch (const std::exception& e) {
+		this->warnFlushedStateFailure("could not recreate its directory", e.what());
+		return;
+	}
+	errno = 0;
+	// In place, never truncating: the 8-byte record is overwritten whole, and a
+	// truncating reopen after a failed write would erase the last durable
+	// position before the retry that may fail again (ENOSPC).
+	this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::in | std::ios::out);
 	if (!this->flushedStateFile.is_open()) {
-		// A destroy's final directory removal happens after doClose() closes this
-		// stream, and doClose() sets isClosing before taking flushedStateMutex, so
-		// a reopen that sees it clear is ordered before that removal. (doPurge's
-		// own remove_all of an emptied directory runs earlier, with isClosing still
-		// clear; a directory recreated in that window is removed again by the
-		// destroy, and a destroy that fails to close leaves a live store that
-		// legitimately wants its directory.)
-		if (this->isClosing.load(std::memory_order_relaxed)) {
-			return;
+		// Create only when verifiably absent: the creating mode truncates, and an
+		// existing file that merely refused read/write must keep its record.
+		std::error_code absentError;
+		if (!std::filesystem::exists(flushedStateFilePath, absentError) && !absentError) {
+			this->flushedStateFile.clear();
+			this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
 		}
-		try {
-			rocksdb_js::tryCreateDirectory(this->path);
-		} catch (const std::exception& e) {
-			this->warnFlushedStateFailure("could not recreate its directory", e.what());
-			return;
-		}
-		this->flushedStateFile.clear();
-		errno = 0;
-		// In place, never truncating: the 8-byte record is overwritten whole, and a
-		// truncating reopen after a failed write would erase the last durable
-		// position before the retry that may fail again (ENOSPC).
-		this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::in | std::ios::out);
-		if (!this->flushedStateFile.is_open()) {
-			// Create only when verifiably absent: the creating mode truncates, and an
-			// existing file that merely refused read/write must keep its record.
-			std::error_code absentError;
-			if (!std::filesystem::exists(flushedStateFilePath, absentError) && !absentError) {
-				this->flushedStateFile.clear();
-				this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
-			}
-		}
-		if (!this->flushedStateFile.is_open()) {
-			this->warnFlushedStateFailure("could not be opened", lastSystemError().c_str());
-			return;
-		}
+	}
+	if (!this->flushedStateFile.is_open()) {
+		this->warnFlushedStateFailure("could not be opened", lastSystemError().c_str());
+		return;
 	}
 
 	errno = 0;
 	this->flushedStateFile.seekp(0);
 	this->flushedStateFile.write(reinterpret_cast<const char*>(&latestSequencePosition), sizeof(latestSequencePosition));
 	this->flushedStateFile.flush();
-	if (!this->flushedStateFile.good()) {
+	bool writeSucceeded = this->flushedStateFile.good();
+	this->flushedStateFile.close();
+	if (!writeSucceeded || this->flushedStateFile.fail()) {
 		// Leave lastWrittenFlushedPosition alone so the next flush retries the write.
 		this->warnFlushedStateFailure("could not be written", lastSystemError().c_str());
-		this->flushedStateFile.close();
+		this->flushedStateFile.clear();
+		return;
+	}
+	this->flushedStateFile.clear();
+	if (!stateFileMatches()) {
+		// The pathname was removed or replaced after open. The descriptor write is
+		// not a persisted retention boundary unless the pathname reads it back.
+		this->warnFlushedStateFailure("could not be verified", "pathname changed during write");
 		return;
 	}
 	lastWrittenFlushedPosition = latestSequencePosition;

@@ -261,10 +261,10 @@ void TransactionLogFile::flush() {
 	this->lastFlushedSize = currentSize;
 }
 
-void TransactionLogFile::openFile() {
+bool TransactionLogFile::openFile(bool createIfMissing) {
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str());
-		return;
+		return true;
 	}
 
 	// Fresh (re)open: until the first append, a zero timestamp seen while indexing is a genuine
@@ -279,6 +279,9 @@ void TransactionLogFile::openFile() {
 		// open logs on a read-only-mounted volume or owned by another uid.
 		this->fd = ::open(this->path.c_str(), O_RDONLY);
 		if (this->fd < 0) {
+			if (!createIfMissing && errno == ENOENT) {
+				return false;
+			}
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read: %s (error=%d)\n",
 				this, this->path.string().c_str(), errno);
 			throw rocksdb_js::DBException("Failed to open sequence file for read: " + this->path.string());
@@ -286,7 +289,7 @@ void TransactionLogFile::openFile() {
 	} else {
 		// ensure parent directory exists (may have been deleted by purge())
 		auto parentPath = this->path.parent_path();
-		if (!parentPath.empty()) {
+		if (createIfMissing && !parentPath.empty()) {
 			try {
 				DEBUG_LOG("%p TransactionLogFile::openFile Creating parent directory: %s\n", this, parentPath.string().c_str());
 				rocksdb_js::tryCreateDirectory(parentPath);
@@ -298,8 +301,15 @@ void TransactionLogFile::openFile() {
 		}
 
 		// open file for both reading and writing
-		this->fd = ::open(this->path.c_str(), O_RDWR | O_CREAT | O_APPEND, 0640);
+		int flags = O_RDWR | O_APPEND;
+		if (createIfMissing) {
+			flags |= O_CREAT;
+		}
+		this->fd = ::open(this->path.c_str(), flags, 0640);
 		if (this->fd < 0) {
+			if (!createIfMissing && errno == ENOENT) {
+				return false;
+			}
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%d)\n",
 				this, this->path.string().c_str(), errno);
 			throw rocksdb_js::DBException("Failed to open sequence file for read/write: " + this->path.string());
@@ -316,6 +326,7 @@ void TransactionLogFile::openFile() {
 	this->size = st.st_size;
 	DEBUG_LOG("%p TransactionLogFile::openFile File size: %s (size=%zu)\n",
 		this, this->path.string().c_str(), this->size.load(std::memory_order_relaxed));
+	return true;
 }
 
 // Precondition: caller holds fileMutex (the guard for this->memoryMap /

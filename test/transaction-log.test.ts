@@ -2923,11 +2923,9 @@ describe('Transaction Log', () => {
 					}
 				}));
 
-			// `TransactionLogFile::open()` creates (`O_RDWR | O_CREAT`, `OPEN_ALWAYS` on
-			// Windows), so a read that opens a registered-but-unlinked segment would leave a
-			// ghost behind that the next startup discovery registers again. Discovery is what
-			// makes that reachable: `load()` registers every segment but opens only the
-			// surviving current one, so the rest sit registered and closed.
+			// A read probe must use an atomic no-create open. A separate existence check
+			// followed by the normal creating open leaves a TOCTOU window where purge can
+			// unlink the segment and the read recreates a ghost that startup registers again.
 			it('does not recreate a registered segment that was unlinked underneath it', () =>
 				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
 					let database = db;
@@ -3129,8 +3127,8 @@ describe('Transaction Log', () => {
 				db.flushSync();
 				expect(existsSync(stateFile)).toBe(true);
 
-				// the state stream stays open across flushes and still reports open once the
-				// file is gone; the next flush has to notice the pathname instead
+				// The next flush must reopen the pathname rather than writing through any
+				// descriptor that still names the unlinked inode.
 				await unlink(stateFile);
 				await commit();
 				db.flushSync();

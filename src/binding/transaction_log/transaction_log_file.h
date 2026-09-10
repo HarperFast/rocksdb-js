@@ -342,6 +342,12 @@ struct TransactionLogFile final {
  	void open(const double latestTimestamp);
 
 	/**
+	 * Opens an existing log file without creating either it or its parent.
+	 * Returns false when the pathname is absent at the atomic OS open.
+	 */
+	bool openExisting(const double latestTimestamp);
+
+	/**
 	 * Open-time crash recovery for the v1 format. Scans the file's framing and,
 	 * if a torn/partial entry is detectable at the tail (e.g. an O_APPEND short
 	 * write interrupted by a crash), truncates the file back to the last valid
@@ -449,7 +455,7 @@ struct TransactionLogFile final {
 	/**
 	 * Body of open(). Precondition: the caller already holds fileMutex.
 	 */
-	void openLocked(const double latestTimestamp);
+	bool openLocked(const double latestTimestamp, bool createIfMissing = true);
 
 	/**
 	 * Counts the committed entry frames in this log file by reading its on-disk
@@ -589,7 +595,7 @@ private:
 	/**
 	 * Platform specific function that opens the log file for reading and writing.
 	 */
-	void openFile();
+	bool openFile(bool createIfMissing = true);
 
 	/**
 	 * Platform specific function that reads data from the log file.

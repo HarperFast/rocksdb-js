@@ -910,20 +910,20 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       different store's file. That is a cache-key identity problem, not a purge-coherence one; it is
       pre-existing and Harper does not call `destroy` in production.
 
-23. **`databaseFlushed()` trusts the pathname, not `ofstream::is_open()`, before writing
-    `txn.state`**: the stream is kept open across flushes, and after the file (or the whole store
-    directory) is unlinked it still reports open, so every write landed in the orphaned inode while
-    `getLastFlushedPosition()` — which reads by path — returned the `{0,0}` sentinel and retention
-    never advanced. Today only `purgeLogs({ destroy: true })` removes the directory, and Harper
-    never calls it in production, so this is hardening rather than a live bug. The check runs
-    _before_ the unchanged-position shortcut (a flush resolving to the already-recorded position must
-    still restore a missing file), recreates the directory the way `getLogFile()` does, re-checks
-    `isClosing` under `flushedStateMutex` so a concurrent destroy cannot be resurrected (`doClose()`
-    sets `isClosing` before taking that mutex, so a reopen that saw it clear is ordered before the
-    destroy's final directory removal; `doPurge`'s own `remove_all` of an emptied directory runs
-    earlier with `isClosing` still clear, and a directory recreated in that window is removed again
-    by the destroy), and advances `lastWrittenFlushedPosition` only after a successful
-    write. An all-segment purge that actually empties the registered set also advances a store
+23. **`databaseFlushed()` persists and verifies `txn.state` by pathname**: a stream kept open across
+    flushes still describes the old inode after the file is unlinked or replaced, so a successful
+    write can be invisible to `getLastFlushedPosition()` — which reads by path — and retention never
+    advances. Today only `purgeLogs({ destroy: true })` removes the directory in-process, and Harper
+    never calls it in production, so this is hardening rather than a live bug. Every update closes
+    any prior stream, reopens the pathname without truncating, writes and closes it, then reads the
+    pathname back before advancing `lastWrittenFlushedPosition`. The unchanged-position shortcut
+    also verifies the pathname first, so it restores a missing or stale replacement. The path
+    recreates the directory the way `getLogFile()` does and re-checks `isClosing` under
+    `flushedStateMutex`, so a concurrent destroy cannot be resurrected (`doClose()` sets `isClosing`
+    before taking that mutex, so a reopen that saw it clear is ordered before the destroy's final
+    directory removal; `doPurge`'s own `remove_all` of an emptied directory runs earlier with
+    `isClosing` still clear, and a directory recreated in that window is removed again by the
+    destroy). An all-segment purge that actually empties the registered set also advances a store
     generation, clears the old commit-correlation ring, closes and resets the state stream, and
     resets the last-written position under the existing `dataSetsMutex -> flushedStateMutex` order.
     A flush callback captures that generation with its correlation scan and checks it after taking
