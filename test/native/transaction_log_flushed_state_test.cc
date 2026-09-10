@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include "transaction_log/transaction_log_entry.h"
@@ -86,10 +87,8 @@ TEST(TransactionLogFlushedState, RejectsFlushSelectedBeforeGenerationChange) {
 	std::filesystem::remove_all(storePath.parent_path());
 }
 
-// databaseFlushed() keeps txn.state open across flushes. Once the file (or the
-// whole store directory) is unlinked underneath it, the stream still reports
-// open, so a write lands in the orphaned inode while getLastFlushedPosition() —
-// which reads by path — sees the {0,0} sentinel and retention never advances.
+// Regression coverage for a writer that retained txn.state's descriptor across
+// callbacks: unlinking the pathname left later writes in an orphaned inode.
 #ifndef _WIN32
 // Windows keeps an open CRT stream's file undeletable, so pathname loss under an
 // open stream cannot be staged there.
@@ -119,6 +118,39 @@ TEST(TransactionLogFlushedState, RewritesStateFileAfterItIsUnlinked) {
 		store->databaseFlushed(30);
 		EXPECT_TRUE(std::filesystem::exists(statePath));
 		expectFlushedPosition(*store, 300, 3);
+
+		store->close();
+	}
+
+	std::filesystem::remove_all(storePath.parent_path());
+}
+#endif
+
+#ifndef _WIN32
+TEST(TransactionLogFlushedState, ReopensReplacedStateFileByPathname) {
+	auto storePath = uniqueFlushedStatePath();
+	std::filesystem::create_directories(storePath);
+	auto statePath = storePath / "txn.state";
+	auto displacedPath = storePath / "txn.state.displaced";
+
+	{
+		auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		store->recentlyCommittedSequencePositions[0] = { 10, rocksdb_js::LogPosition(100, 1) };
+		store->databaseFlushed(10);
+		expectFlushedPosition(*store, 100, 1);
+
+		// Move the pathname away while the old implementation still has its stream
+		// open, then install a stale replacement at the original name.
+		std::filesystem::rename(statePath, displacedPath);
+		rocksdb_js::LogPosition stale(50, 1);
+		std::ofstream replacement(statePath, std::ios::binary | std::ios::trunc);
+		replacement.write(reinterpret_cast<const char*>(&stale), sizeof(stale));
+		replacement.close();
+
+		store->recentlyCommittedSequencePositions[1] = { 20, rocksdb_js::LogPosition(200, 2) };
+		store->databaseFlushed(20);
+		expectFlushedPosition(*store, 200, 2);
 
 		store->close();
 	}
