@@ -2753,11 +2753,12 @@ describe('Transaction Log', () => {
 						expect(log._nextLogId(4)).toBe(5);
 						expect(log._nextLogId(5)).toBe(0);
 
-						// segment 3 is on disk and registered, so the skip is a lookup answering the
-						// wrong question rather than a missing segment. Asserted by presence, not
-						// by `getLogFileSize()`: reading the extent *opens* the segment, and an
-						// open handle keeps reporting the real size after an unlink, which would
-						// defeat the absence set up below.
+						// Segment 3 is on disk and registered, so the skip was a lookup answering the
+						// wrong question rather than a missing segment. Asserted by presence, not by
+						// `getLogFileSize()`: reading the extent *opens* the segment, and an open
+						// handle keeps reporting the real size after an unlink (invariant 20), which
+						// would defeat the absence set up next. Every read below is ordered for the
+						// same reason — nothing may touch a segment before it is meant to be gone.
 						expect(existsSync(join(logDirectory, '3.txnlog'))).toBe(true);
 
 						// a registered successor can be absent too — one hop is not enough, and
@@ -2767,9 +2768,24 @@ describe('Transaction Log', () => {
 						expect(log._nextLogId(3)).toBe(5);
 						expect(log.getLogFileSize(5)).toBeGreaterThan(0);
 
-						// the divergence this fix exists for: the backward walk stops at the
-						// gap below 5 and reports 5, skipping the surviving segment 3
-						expect(logIdOf(log._findPosition(0))).toBe(5);
+						// the walk descends by map order, so a hole no longer ends it: it reaches
+						// the oldest survivor instead of stopping at the newest contiguous run
+						expect(logIdOf(log._findPosition(0))).toBe(1);
+
+						// end to end over a three-wide gap — 2 and 4 were never registered, 3 is
+						// registered but absent — so positioning descends past it and advancing
+						// probes across all three. The old lookup started at 5 and yielded only [5].
+						expect(Array.from(log.query({ start: 0 })).map((entry) => entry.data[0])).toEqual([
+							1, 5,
+						]);
+
+						// a timestamp newer than everything exercises the other exit: the walk runs
+						// out above rather than below, and must land on a segment that is on disk
+						const beyond = Date.now() + 60_000;
+						const beyondId = logIdOf(log._findPosition(beyond));
+						expect([1, 5]).toContain(beyondId);
+						expect(existsSync(join(logDirectory, `${beyondId}.txnlog`))).toBe(true);
+						expect(Array.from(log.query({ start: beyond }))).toEqual([]);
 					} finally {
 						database.close();
 					}

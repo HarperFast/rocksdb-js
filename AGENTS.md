@@ -452,12 +452,17 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
 
     The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
-    append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size).
-    An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
-    fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
-    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
-    Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
-    a per-frame call would tax every healthy read.
+    append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size),
+    or, once the store has forgotten a purged segment and reports 0 for it, by `readableExtent()`'s
+    end-of-entries walk — **never** the raw mapping length. An uncommitted read's own limit is the
+    pre-extended memory map, and every offset in that zero fill reads as an end-of-entries marker:
+    scanning against it both loses the exact-end signal and, if a zero were taken as a terminator,
+    would let a chain "end" anywhere in megabytes of padding. It is also not merely imprecise but
+    slow in the way that matters — `findResyncPosition` tries every start offset, so a mapped-capacity
+    bound byte-scans the whole pre-extended map on the JS thread and then reports a _recoverable_
+    mid-log break as a torn tail, which is the harper#2016 amputation this invariant exists to
+    prevent. Resolve it only on a break — `getLogFileSize` crosses into native and takes the store
+    mutex, so a per-frame call would tax every healthy read.
 
 12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
     commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —
@@ -893,10 +898,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       band, or by another process's retention, before this process's purge run forgets it), and
       stopping at the first one that will not map is the same permanent wedge. It terminates
       because `_nextLogId()` strictly increases and is capped at the latest sequence.
-      `findPositionByTimestamp()` still has the backward-walk shape, so **initial** positioning
-      after a restart with holes resolves to the newest contiguous run and cannot reach a survivor
-      below one — that is why the regression covers the successor lookup directly rather than
-      driving an iterator end to end.
+      `findPositionByTimestamp()` descends the same way, by map order rather than
+      `--sequenceNumber`: it used to end the walk at the first missing sequence, so **initial**
+      positioning after a restart with holes resolved to the newest contiguous run and every older
+      survivor — registered, on disk, with a valid extent — was unreachable. Its two
+      "belongs further up" exits name the next _registered_ segment rather than
+      `sequenceNumber + 1`, which a hole may have removed.
     - Not covered here: `purgeLogs({ destroy: true })` removes the store directory and a fresh store
       restarts segment numbering at 1, so a cached buffer keyed by segment number can answer for a
       different store's file. That is a cache-key identity problem, not a purge-coherence one; it is
