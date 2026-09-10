@@ -178,10 +178,10 @@ void TransactionLogFile::flush() {
 	this->lastFlushedSize = currentSize;
 }
 
-void TransactionLogFile::openFile() {
+bool TransactionLogFile::openFile(bool createIfMissing) {
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str());
-		return;
+		return true;
 	}
 
 	// Fresh (re)open: until the first append, a zero timestamp seen while indexing is a genuine
@@ -197,7 +197,7 @@ void TransactionLogFile::openFile() {
 	// the primary is creating right now, and the follower would rewrite its DACL.
 	// Mirrors the POSIX sibling.
 	bool fileExisted = true;
-	if (!this->readOnly) {
+	if (!this->readOnly && createIfMissing) {
 		// ensure parent directory exists (may have been deleted by purge())
 		auto parentPath = this->path.parent_path();
 		if (!parentPath.empty()) {
@@ -229,6 +229,10 @@ void TransactionLogFile::openFile() {
 		);
 		if (this->fileHandle == INVALID_HANDLE_VALUE) {
 			DWORD error = ::GetLastError();
+			if (!createIfMissing &&
+				(error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) {
+				return false;
+			}
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read: %s (error=%lu: %s)\n",
 				this, this->path.string().c_str(), error, errorMessage.c_str());
@@ -241,13 +245,17 @@ void TransactionLogFile::openFile() {
 			GENERIC_READ | GENERIC_WRITE,
 			FILE_SHARE_READ | FILE_SHARE_WRITE,
 			nullptr,
-			OPEN_ALWAYS,
+			createIfMissing ? OPEN_ALWAYS : OPEN_EXISTING,
 			FILE_ATTRIBUTE_NORMAL,
 			nullptr
 		);
 
 		if (this->fileHandle == INVALID_HANDLE_VALUE) {
 			DWORD error = ::GetLastError();
+			if (!createIfMissing &&
+				(error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) {
+				return false;
+			}
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%lu: %s)\n",
 				this, this->path.string().c_str(), error, errorMessage.c_str());
@@ -355,6 +363,7 @@ void TransactionLogFile::openFile() {
 		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
 			this, size, this->path.string().c_str());
 	}
+	return true;
 }
 
 // Precondition: caller holds fileMutex (the guard for this->memoryMap /

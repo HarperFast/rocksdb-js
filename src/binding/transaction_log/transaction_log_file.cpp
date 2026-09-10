@@ -132,7 +132,7 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 void TransactionLogFile::open(const double latestTimestamp) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	try {
-		this->openLocked(latestTimestamp);
+		(void) this->openLocked(latestTimestamp);
 	} catch (...) {
 		// A rejected file must not keep its handle — or, on Windows, the mapping
 		// openFile()'s index scan created — or retain an unvalidated extent that a
@@ -143,11 +143,30 @@ void TransactionLogFile::open(const double latestTimestamp) {
 	}
 }
 
-void TransactionLogFile::openLocked(const double latestTimestamp) {
-	if (this->appendBoundaryMarkerEnabled) {
+bool TransactionLogFile::openExisting(const double latestTimestamp) {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+	try {
+		return this->openLocked(latestTimestamp, false);
+	} catch (...) {
+		this->closeLocked();
+		this->size.store(0, std::memory_order_relaxed);
+		throw;
+	}
+}
+
+bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfMissing) {
+	// A creating writer publishes its append marker before its segment. A read
+	// probe must first atomically open the existing segment, or it could create a
+	// marker for a pathname that purge removed between discovery and this call.
+	if (createIfMissing && this->appendBoundaryMarkerEnabled) {
 		this->ensureAppendBoundaryMarker();
 	}
-	this->openFile();
+	if (!this->openFile(createIfMissing)) {
+		return false;
+	}
+	if (!createIfMissing && this->appendBoundaryMarkerEnabled) {
+		this->ensureAppendBoundaryMarker();
+	}
 	uint32_t physicalExtent = this->size.load(std::memory_order_relaxed);
 	uint32_t retiredBoundary = this->retiredAppendBoundary.load(std::memory_order_relaxed);
 	if (retiredBoundary > physicalExtent) {
@@ -241,6 +260,7 @@ void TransactionLogFile::openLocked(const double latestTimestamp) {
 		this->appendBoundaryLost.store(true, std::memory_order_relaxed);
 		this->publishReadableExtentLocked();
 	}
+	return true;
 }
 
 void TransactionLogFile::loadAppendBoundaryMarkerReadOnly() {
