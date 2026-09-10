@@ -796,7 +796,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		return 0xFFFFFFFF;
 	}
 
-	std::lock_guard<std::mutex> indexLock(this->indexMutex);
+	std::unique_lock<std::mutex> indexLock(this->indexMutex);
 
 	// we use our memory maps for fast access to the data
 	char* mappedFile = (char*) memoryMap->map;
@@ -806,6 +806,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	// Set when indexing stops early at a committed-but-not-yet-visible tail (a concurrent append we
 	// couldn't read this pass); used below to start the scan at lastIndexedPosition rather than EOF.
 	bool stoppedAtUnindexedTail = false;
+	bool correctStartupExtent = false;
 	while (this->lastIndexedPosition < this->size) {
 		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
 		// The header's own timestamp slot is not an entry, so a legitimate value of exactly
@@ -832,10 +833,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			// committed position, so we just stop indexing here and resume from lastIndexedPosition
 			// on a later call once the bytes are visible.
 			if (!this->hasAppendedSinceOpen.load()) {
-				this->size = this->lastIndexedPosition;
-				memoryMap->readableExtent.store(
-					std::min(this->lastIndexedPosition, memoryMap->mapSize),
-					std::memory_order_release);
+				correctStartupExtent = true;
 			} else {
 				stoppedAtUnindexedTail = true;
 			}
@@ -850,6 +848,22 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		}
 		// read size of the entry and move on
 		this->lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(mappedFile + this->lastIndexedPosition + 8);
+	}
+	if (correctStartupExtent) {
+		// Re-check under fileMutex so the first append cannot publish a larger
+		// committed extent and then be overwritten by this startup correction.
+		std::unique_lock<std::mutex> fileLock;
+		if (!fileMutexHeld) {
+			indexLock.unlock();
+			fileLock = std::unique_lock<std::mutex>(this->fileMutex);
+			indexLock.lock();
+		}
+		if (!this->hasAppendedSinceOpen.load()) {
+			this->size = this->lastIndexedPosition;
+			memoryMap->readableExtent.store(
+				std::min(this->lastIndexedPosition, memoryMap->mapSize),
+				std::memory_order_release);
+		}
 	}
 	// now do the actual search: just a search for the lower bound
 	auto it = this->positionByTimestampIndex.lower_bound(timestamp);

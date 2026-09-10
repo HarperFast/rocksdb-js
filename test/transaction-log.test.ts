@@ -283,6 +283,13 @@ describe('Transaction Log', () => {
 				const buffer = log._getMemoryMapOfFile(1);
 				expect(buffer).toBeDefined();
 				expect(buffer?.subarray(0, 4).toString()).toBe('WOOF');
+				const readableExtentGetter = Object.getOwnPropertyDescriptor(
+					buffer!,
+					'readableExtent'
+				)?.get;
+				expect(() => readableExtentGetter?.call({})).toThrow(
+					/readableExtent getter called on an incompatible receiver/
+				);
 				expect(buffer?.readableExtent).toBe(
 					TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + value.length
 				);
@@ -1444,6 +1451,11 @@ describe('Transaction Log', () => {
 		throw new Error(`iterator did not finish within ${maxSteps} steps`);
 	}
 
+	function attachReadableExtent(buffer: Buffer, extent: number): Buffer {
+		Object.defineProperty(buffer, 'readableExtent', { value: Math.min(buffer.length, extent) });
+		return buffer;
+	}
+
 	describe('corruption handling', () => {
 		// A torn/corrupt entry can declare a length far larger than the bytes
 		// actually present (e.g. a partial write that left a header pointing past
@@ -1451,7 +1463,6 @@ describe('Transaction Log', () => {
 		// rather than driving an unbounded allocUnsafe (OOM), building a multi-GB
 		// hex string, or dereferencing an undefined buffer. Regression for the
 		// race_alerts crash-loop investigation.
-
 		function buildLogBuffer(
 			entries: { timestamp: number; length: number; flags: number; data: Buffer }[]
 		): Buffer {
@@ -1509,7 +1520,10 @@ describe('Transaction Log', () => {
 				// the copy from _getMemoryMapOfFile lets us exercise the reader's framing
 				// path without a read-only mmap we can't mutate in place.
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryLengthOffset =
 					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10) + 8;
@@ -1562,7 +1576,10 @@ describe('Transaction Log', () => {
 				// length, `subarray` would silently hand back a truncated (misframed) entry.
 				const real = log._getMemoryMapOfFile(1)!;
 				const truncatedLength = committedSize - 5;
-				const copyBuffer = Buffer.from(new ArrayBuffer(truncatedLength));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(truncatedLength)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer, 0, 0, truncatedLength);
 
 				log._logBuffers.clear();
@@ -1600,7 +1617,10 @@ describe('Transaction Log', () => {
 
 				// break the 2nd entry's length field; entries 3-12 stay well-formed behind it
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
@@ -1649,7 +1669,10 @@ describe('Transaction Log', () => {
 				// A zero-length frame is invalid, not an empty transaction. Entries after it remain
 				// readable once the caller resumes the iterator after the corruption report.
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				copyBuffer.writeUInt32BE(0, secondEntryStart + 8);
@@ -1685,7 +1708,10 @@ describe('Transaction Log', () => {
 				expect(Array.from(log.query({ start: 0 })).length).toBe(22);
 
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const firstBrokenEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				const secondBrokenEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + 11 * entryStride;
@@ -1725,7 +1751,10 @@ describe('Transaction Log', () => {
 				expect(Array.from(log.query({ start: 0 })).length).toBe(12);
 
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				const deceptiveFrameStart = secondEntryStart + TRANSACTION_LOG_ENTRY_HEADER_SIZE;
@@ -1755,7 +1784,7 @@ describe('Transaction Log', () => {
 				}
 			}));
 
-		it('query() reports corruption without scanning when the written extent cannot be read', () =>
+		it('query() resyncs from the mapping extent when the store no longer knows the file', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 				const value = Buffer.alloc(10, 'a');
@@ -1768,7 +1797,10 @@ describe('Transaction Log', () => {
 				expect(Array.from(log.query({ start: 0 })).length).toBe(4);
 
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
@@ -1797,9 +1829,9 @@ describe('Transaction Log', () => {
 						error = caught;
 					}
 					expect(error).toBeInstanceOf(CorruptFrameError);
-					expect((error as CorruptFrameError).resyncPosition).toBeUndefined();
+					expect((error as CorruptFrameError).resyncPosition).toBe(secondEntryStart + entryStride);
 					delete (log as { getLogFileSize?: unknown }).getLogFileSize;
-					expect(iterator.next().done).toBe(true);
+					expect(Array.from(iterator)).toHaveLength(2);
 				} finally {
 					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
 					delete (log as { getLogFileSize?: unknown }).getLogFileSize;
@@ -1821,7 +1853,10 @@ describe('Transaction Log', () => {
 
 				// break the final entry's length; only zero padding follows it
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const thirdEntryStart =
 					TRANSACTION_LOG_FILE_HEADER_SIZE + 2 * (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10);
@@ -1866,7 +1901,10 @@ describe('Transaction Log', () => {
 
 			const real = log._getMemoryMapOfFile(1)!;
 			// mimic the mapped buffer: real data followed by pre-extended zero fill
-			const copyBuffer = Buffer.from(new ArrayBuffer(real.length + 4096));
+			const copyBuffer = attachReadableExtent(
+				Buffer.from(new ArrayBuffer(real.length + 4096)),
+				real.readableExtent
+			);
 			real.copy(copyBuffer);
 			const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 			copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
@@ -1939,7 +1977,10 @@ describe('Transaction Log', () => {
 				);
 				const real = log._getMemoryMapOfFile(1)!;
 				const truncatedLength = committedWord[0] - 5;
-				const copyBuffer = Buffer.from(new ArrayBuffer(truncatedLength));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(truncatedLength)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer, 0, 0, truncatedLength);
 
 				log._logBuffers.clear();

@@ -451,11 +451,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     writes and #2063 starved a replication stream for 11 days. Keep `RESYNC_MIN_FRAMES` in
     `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
 
-    The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
-    append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size),
-    or, once the store has forgotten a purged segment and reports 0 for it, by `readableExtent()`'s
-    end-of-entries walk — **never** the raw mapping length. An uncommitted read's own limit is the
-    pre-extended memory map, and every offset in that zero fill reads as an end-of-entries marker:
+    The resync scan must be bounded by the **written extent**: the live mapping-carried
+    `readableExtent` described in invariant 22, which is seeded from append-owned
+    `TransactionLogFile::size` — see invariant 5 — and survives the store forgetting a purged
+    segment. It must use **neither** the physical nor raw mapped size. An uncommitted read's own
+    limit is the pre-extended memory map, and every offset in that zero fill reads as an
+    end-of-entries marker:
     scanning against it both loses the exact-end signal and, if a zero were taken as a terminator,
     would let a chain "end" anywhere in megabytes of padding. It is also not merely imprecise but
     slow in the way that matters — `findResyncPosition` tries every start offset, so a mapped-capacity

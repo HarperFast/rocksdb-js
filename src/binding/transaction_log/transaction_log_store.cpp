@@ -1230,7 +1230,10 @@ void TransactionLogStore::recordFlushedPosition(rocksdb::SequenceNumber rocksSeq
 
 	DEBUG_LOG("%p TransactionLogStore::databaseFlushed, flushed up to logId: %u position %u\n",
 		this, latestSequencePosition.logSequenceNumber, latestSequencePosition.positionInLogFile);
+	this->writeFlushedPosition(latestSequencePosition, observedGeneration);
+}
 
+void TransactionLogStore::writeFlushedPosition(LogPosition latestSequencePosition, uint64_t observedGeneration) {
 	// All file I/O and lastWrittenFlushedPosition updates are protected by
 	// flushedStateMutex (not dataSetsMutex) so that getLastFlushedPosition()
 	// can safely read txn.state from doPurge() without risk of deadlock.

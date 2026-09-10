@@ -6,6 +6,20 @@
 #include "transaction_log/transaction_log_entry.h"
 #include "transaction_log/transaction_log_store.h"
 
+namespace rocksdb_js {
+
+struct TransactionLogStoreTestPeer {
+	static void writeFlushedPosition(
+		TransactionLogStore& store,
+		LogPosition position,
+		uint64_t generation
+	) {
+		store.writeFlushedPosition(position, generation);
+	}
+};
+
+} // namespace rocksdb_js
+
 namespace {
 
 std::filesystem::path uniqueFlushedStatePath() {
@@ -49,6 +63,24 @@ TEST(TransactionLogFlushedState, DestructivePurgeInvalidatesOldFlushCorrelations
 	// segment generation that destroy just removed.
 	store->databaseFlushed(10);
 	EXPECT_FALSE(std::filesystem::exists(statePath));
+
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogFlushedState, RejectsFlushSelectedBeforeGenerationChange) {
+	auto storePath = uniqueFlushedStatePath();
+	auto statePath = storePath / "txn.state";
+	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+
+	auto observedGeneration = store->flushedStateGeneration.load(std::memory_order_relaxed);
+	store->flushedStateGeneration.fetch_add(1, std::memory_order_relaxed);
+	rocksdb_js::TransactionLogStoreTestPeer::writeFlushedPosition(
+		*store, rocksdb_js::LogPosition(100, 1), observedGeneration);
+
+	EXPECT_FALSE(std::filesystem::exists(statePath));
+	EXPECT_EQ(store->databaseFlushes.load(std::memory_order_relaxed), 0u);
 
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());
