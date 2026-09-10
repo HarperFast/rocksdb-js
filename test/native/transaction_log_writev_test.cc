@@ -372,6 +372,9 @@ TEST_F(AppendBoundary, FailedPartialAppendRetiresWithoutTruncating) {
 	file.writeEntries(first, 0);
 	const uint32_t committedSize = file.size.load();
 	ASSERT_EQ(std::filesystem::file_size(path_), committedSize);
+	auto map = file.getMemoryMap(4096, /*isCurrent=*/true);
+	ASSERT_NE(map, nullptr);
+	EXPECT_EQ(map->readableExtent.load(), committedSize);
 
 	// Fail six bytes into the next entry.
 	g_writev_budget_bytes = 6;
@@ -380,6 +383,8 @@ TEST_F(AppendBoundary, FailedPartialAppendRetiresWithoutTruncating) {
 	g_writev_budget_bytes = kUnlimitedWritevBudget;
 
 	EXPECT_EQ(file.size.load(), committedSize);
+	EXPECT_EQ(map->readableExtent.load(), committedSize)
+		<< "orphaned physical bytes became readable through a retained mapping";
 	EXPECT_EQ(std::filesystem::file_size(path_), committedSize + 6);
 	EXPECT_EQ(g_ftruncate_calls, size_t{ 0 }) << "failed append truncated beneath a potentially live mapping";
 	EXPECT_EQ(interrupted.currentEntryIndex, 0u)
@@ -395,6 +400,21 @@ TEST_F(AppendBoundary, FailedPartialAppendRetiresWithoutTruncating) {
 	auto scan = rocksdb_js::scanTransactionLogForRecovery(image.data(), static_cast<uint32_t>(image.size()));
 	EXPECT_EQ(scan.kind, rocksdb_js::RecoveryScan::Kind::TruncateTail);
 	EXPECT_EQ(scan.validEnd, committedSize);
+}
+
+TEST_F(AppendBoundary, CurrentMappingExtentAdvancesOnlyAfterSuccessfulAppend) {
+	auto& file = openLog("mapping-extent");
+	auto first = makeBatch(1001.0, { "first-entry" });
+	file.writeEntries(first, 0);
+	auto map = file.getMemoryMap(4096, /*isCurrent=*/true);
+	ASSERT_NE(map, nullptr);
+	const uint32_t firstEnd = file.size.load();
+	EXPECT_EQ(map->readableExtent.load(), firstEnd);
+
+	auto second = makeBatch(1002.0, { "second-entry" });
+	file.writeEntries(second, 0);
+	EXPECT_GT(file.size.load(), firstEnd);
+	EXPECT_EQ(map->readableExtent.load(), file.size.load());
 }
 
 TEST_F(AppendBoundary, FailedPartialAppendImmediatelyRotatesTheStore) {

@@ -21,7 +21,7 @@ import {
 	symlinkSync,
 	unlinkSync,
 } from 'node:fs';
-import { mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { release } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -283,6 +283,16 @@ describe('Transaction Log', () => {
 				const buffer = log._getMemoryMapOfFile(1);
 				expect(buffer).toBeDefined();
 				expect(buffer?.subarray(0, 4).toString()).toBe('WOOF');
+				expect(buffer?.readableExtent).toBe(
+					TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + value.length
+				);
+
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+				});
+				expect(buffer?.readableExtent).toBe(
+					TRANSACTION_LOG_FILE_HEADER_SIZE + 2 * (TRANSACTION_LOG_ENTRY_HEADER_SIZE + value.length)
+				);
 			}));
 	});
 
@@ -2179,6 +2189,35 @@ describe('Transaction Log', () => {
 				expect(existsSync(logDirectory)).toBe(false);
 			}));
 
+		it('should not recreate flushed state from correlations destroyed with the last segment', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('committed'), txn.id);
+					db.putSync('committed', true, { transaction: txn });
+				});
+				db.flushSync();
+
+				// Keep the store live after destroy: the unwritten entry binds this
+				// transaction but has not created a replacement segment.
+				const pending = new Transaction(db.store);
+				log.addEntry(Buffer.from('pending'), pending.id);
+				try {
+					expect(db.purgeLogs({ destroy: true, name: 'foo' })).toEqual([logFile]);
+					expect(existsSync(logDirectory)).toBe(false);
+
+					// A later unrelated flush used to replay the old correlation ring and
+					// recreate txn.state with the deleted segment's sequence.
+					db.putSync('unrelated', true);
+					db.flushSync();
+					expect(existsSync(logDirectory)).toBe(false);
+				} finally {
+					pending.abort();
+				}
+			}));
+
 		// Paths the API hands back keep the caller's spelling. The registry keys
 		// databases by resolved filesystem identity, and letting that spelling
 		// reach an API result changes every returned path wherever the database
@@ -2672,6 +2711,33 @@ describe('Transaction Log', () => {
 					})
 			);
 
+			it.skipIf(process.platform === 'win32')(
+				'should not read frame-shaped physical bytes past a purged segment logical extent',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 200 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						await writeEntry(db, log, 1, 150);
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						// Model a failed append whose bytes landed but did not advance the
+						// append-owned extent. This complete-looking frame ends exactly at
+						// the mapped capacity, so a framing scan would accept it.
+						const orphan = Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE + 11, 99);
+						orphan.writeDoubleBE(Date.now(), 0);
+						orphan.writeUInt32BE(11, 8);
+						orphan.writeUInt8(1, 12);
+						await appendFile(join(dbPath, 'transaction_logs', 'foo', '1.txnlog'), orphan);
+
+						await writeEntry(db, log, 2, 50);
+						db.flushSync();
+						expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([
+							join(dbPath, 'transaction_logs', 'foo', '1.txnlog'),
+						]);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2]);
+					})
+			);
+
 			// A reader that fell behind the retention floor used to stop at the hole and stop
 			// there on every later poll, so it never saw another entry.
 			it('should resume past a purged run rather than stopping at the hole', () =>
@@ -2831,6 +2897,28 @@ describe('Transaction Log', () => {
 					}
 				}));
 
+			it('stops at a durable segment whose mapping is temporarily unavailable', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+					const log = db.useLog('foo');
+					await writeEntry(db, log, 1, 300);
+					const iterator = log.query({ start: 0 });
+					expect(iterator.next().value?.data[0]).toBe(1);
+					await writeEntry(db, log, 2, 300);
+					await writeEntry(db, log, 3, 300);
+
+					const realGetMemoryMap = log._getMemoryMapOfFile.bind(log);
+					Object.defineProperty(log, '_getMemoryMapOfFile', {
+						value: (sequence: number) => (sequence === 2 ? undefined : realGetMemoryMap(sequence)),
+						configurable: true,
+					});
+					try {
+						expect(Array.from(iterator)).toEqual([]);
+					} finally {
+						delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
+					}
+					expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+				}));
+
 			// Windows cannot delete a mapped file at all, so there the reader releasing its
 			// mapping is what lets retention advance. Unverified locally (no Windows host); it
 			// runs only in the Windows CI job.
@@ -2841,19 +2929,18 @@ describe('Transaction Log', () => {
 						const log = db.useLog('foo');
 						const segment = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 						await seedFirstSegment(db, log);
-						// map segment 1, then rotate past it and make it purgeable
-						expect(Array.from(log.query({ start: 0 }))).toHaveLength(2);
+						// Keep a direct buffer reference so the first unlink is guaranteed to
+						// be refused, rather than depending on when a weak query cache is GC'd.
+						let buffer = log._getMemoryMapOfFile(1);
+						expect(buffer).toBeDefined();
 						await writeEntry(db, log, 3, 300);
 						db.flushSync();
 
 						// the mapping this handle holds is what refuses the unlink
 						const first = db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
-						if (first.length > 0) {
-							// nothing was holding it after all; the segment is gone and the loop is moot
-							expect(existsSync(segment)).toBe(false);
-							return;
-						}
+						expect(first).toEqual([]);
 						expect(existsSync(segment)).toBe(true);
+						buffer = undefined;
 
 						const end = performance.now() + 10000;
 						let purged: string[] = [];

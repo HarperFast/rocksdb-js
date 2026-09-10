@@ -390,6 +390,9 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 			// existing memory map will work
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Returning existing memory map (map size=%u)\n", this, memoryMap->mapSize);
 			this->memoryMap->fileSize = fileSize;
+			this->memoryMap->readableExtent.store(
+				std::min(this->size.load(std::memory_order_relaxed), this->memoryMap->mapSize),
+				std::memory_order_release);
 			return this->memoryMap;
 		} else {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map was too small, creating new map (map size=%u)\n", this, memoryMap->mapSize);
@@ -487,7 +490,9 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	::CloseHandle(mh);
 
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap Mapped to: %p\n", this, map);
-	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
+	this->memoryMap = std::make_shared<MemoryMap>(
+		map, fileSize,
+		std::min(this->size.load(std::memory_order_relaxed), fileSize));
 
 	return this->memoryMap;
 }
@@ -690,6 +695,7 @@ bool TransactionLogFile::retireAfterFailedZeroTail(uint32_t newSize, const char*
 	DEBUG_LOG("%p TransactionLogFile::zeroTailLocked %s failed for %s (error=%lu); retiring the segment at %u\n",
 		this, stage, this->path.string().c_str(), ::GetLastError(), newSize);
 	this->size.store(newSize, std::memory_order_relaxed);
+	this->publishReadableExtentLocked();
 	this->appendBoundaryLost.store(true, std::memory_order_relaxed);
 	return false;
 }

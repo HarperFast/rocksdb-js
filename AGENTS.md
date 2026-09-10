@@ -874,13 +874,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     - A segment that vanished between the purge's scan and its unlink is forgotten from
       `sequenceFiles` the way the scan forgets an already-missing one, rather than left registered.
     - The store forgets a purged segment, so `getLogFileSize()` reports 0 for it and the mapping
-      becomes the only remaining description of the file. `readableExtent()` falls back to it,
-      walking the frames to the zero-timestamp end marker (`endOfEntries()`) so iteration still
-      advances to the next segment at the right offset; broken framing yields the whole mapping
-      instead, leaving the break for the read path to report with a resync point (invariant 11).
-      Taking the store's 0 as the bound silently dropped every entry the reader had not reached —
-      including entries appended after it last polled, which the writer's overlay extension made
-      visible in that same mapping.
+      becomes the only remaining description of the file. Every `MemoryMap` therefore carries an
+      atomic `readableExtent`, seeded from append-owned `TransactionLogFile::size`, advanced only
+      after a successful append, and exposed to its external buffer through a live N-API accessor.
+      It keeps entries appended after the reader first mapped the active segment visible after
+      rotation and purge, while excluding physical bytes a failed append landed past the last safe
+      logical boundary. Walking frames cannot recover that distinction: a partial append may leave
+      a complete-looking frame, so the old zero-marker scan could promote data that never committed.
     - `nextReadableLogBuffer()` in `src/transaction-log-reader.ts` skips a deleted run when an
       iterator advances: those segments are genuinely gone (no mapping exists), and stopping at the
       hole stopped the iterator permanently — every later poll stopped at the same place. Only a
@@ -922,7 +922,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     destroy's final directory removal; `doPurge`'s own `remove_all` of an emptied directory runs
     earlier with `isClosing` still clear, and a directory recreated in that window is removed again
     by the destroy), and advances `lastWrittenFlushedPosition` only after a successful
-    write. It runs on RocksDB's flush thread, so every filesystem failure is caught and reported once
+    write. An all-segment purge that actually empties the registered set also advances a store
+    generation, clears the old commit-correlation ring, closes and resets the state stream, and
+    resets the last-written position under the existing `dataSetsMutex -> flushedStateMutex` order.
+    A flush callback captures that generation with its correlation scan and checks it after taking
+    `flushedStateMutex`, so a pre-purge observation cannot recreate `txn.state` after a destroy that
+    leaves the store live because a transaction is still bound. A current-generation commit and
+    flush may legitimately recreate it. It runs on RocksDB's flush thread, so every filesystem failure is caught and reported once
     via `log.warn` (`flushedStateWarningEmitted`) and the write is retried on the next flush.
 
 ## Debugging native heap corruption

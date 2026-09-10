@@ -127,8 +127,8 @@ function corruptFrame(
 	// committed read is already bounded at the watermark. Never the mapped capacity: every offset
 	// in the map's zero fill reads as an end-of-entries marker, so scanning against it both loses
 	// the exact-end signal and byte-scans megabytes of padding on the JS thread, reporting a
-	// recoverable mid-log break as a torn tail (invariant 11). `readableExtent` walks the frames
-	// when the store has forgotten a purged segment, which is the case that has no store extent.
+	// recoverable mid-log break as a torn tail (invariant 11). The mapping carries
+	// the append-owned extent even after the store forgets a purged segment.
 	let dataEnd = limit;
 	if (readUncommitted) {
 		try {
@@ -260,9 +260,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		dataView = logBuffer.dataView;
 
 		if (latestLogId !== logId) {
-			size = logBuffer.size;
-			if (size === undefined) {
+			const cachedSize = logBuffer.size;
+			if (cachedSize === undefined) {
 				size = logBuffer.size = readableExtent(this, logBuffer);
+			} else {
+				size = cachedSize;
 			}
 		}
 
@@ -426,12 +428,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 							logBuffer = nextLogBuffer;
 							dataView = logBuffer.dataView;
-							size = logBuffer.size;
-							if (size == undefined) {
+							const cachedSize = logBuffer.size;
+							if (cachedSize === undefined) {
 								size = readableExtent(transactionLog, logBuffer);
 								if (!readUncommitted) {
 									logBuffer.size = size;
 								}
+							} else {
+								size = cachedSize;
 							}
 							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 						}
@@ -489,40 +493,15 @@ function nextReadableLogBuffer(
 }
 
 /**
- * The bound for reading `logBuffer`. Normally the segment's written extent, from the store. Once
- * retention has purged the segment the store reports nothing for it, and the mapping itself is
- * the only remaining description of the file: the unlink removed one link to an inode a retired
- * segment never changes again, and this mapping is the other, so its bytes are still exactly the
- * committed history. Taking the store's 0 as the bound would silently drop every entry the reader
- * had not reached before the purge — including entries appended after it last polled, which the
- * writer's overlay made visible in this very mapping.
+ * The bound for reading `logBuffer`. Native advances this append-owned extent only after a
+ * successful write. It remains attached to the mapping after purge forgets the file object, so
+ * readers retain committed history without interpreting a partial failed append as another frame.
  */
 function readableExtent(transactionLog: TransactionLog, logBuffer: LogBuffer): number {
-	const writtenExtent = transactionLog.getLogFileSize(logBuffer.logId);
-	return writtenExtent > 0 ? writtenExtent : endOfEntries(logBuffer);
-}
-
-/**
- * Walks a purged segment's mapping to where its entries end, so iteration advances to the next
- * segment there rather than stopping on the zero fill. Broken framing returns the whole mapping
- * instead, leaving the break for the read path to report with a resync point (invariant 11) —
- * this scan must not be the thing that decides a corrupt frame ends the log. Costs one pass over
- * the segment's frame headers, once: the caller caches it on the buffer.
- */
-function endOfEntries(logBuffer: LogBuffer): number {
-	const { dataView, length } = logBuffer;
-	let position = TRANSACTION_LOG_FILE_HEADER_SIZE;
-	while (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= length) {
-		if (dataView.getFloat64(position) === 0) {
-			return position;
-		}
-		const entryLength = dataView.getUint32(position + 8);
-		if (entryLength === 0 || position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength > length) {
-			return length;
-		}
-		position += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength;
-	}
-	return length;
+	// Synthetic test buffers predate the native accessor; production mappings
+	// always take the first branch without crossing back into native.
+	const extent = logBuffer.readableExtent ?? transactionLog.getLogFileSize(logBuffer.logId);
+	return Math.min(logBuffer.length, extent);
 }
 
 function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {

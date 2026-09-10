@@ -85,6 +85,7 @@ bool TransactionLogFile::removeFile() {
 void TransactionLogFile::downgradeMapToFrozen() {
 	std::lock_guard<std::mutex> lock(this->fileMutex);
 	if (this->memoryMap) {
+		this->publishReadableExtentLocked();
 		// The file is no longer the current (actively-written) log, so drop the
 		// strong reference. Keep a weak handle for handout dedup; the mapping now
 		// lives exactly as long as the JS external buffer (if any reader mapped it
@@ -238,6 +239,7 @@ void TransactionLogFile::openLocked(const double latestTimestamp) {
 	if (retiredBoundary > 0) {
 		this->size.store(retiredBoundary, std::memory_order_relaxed);
 		this->appendBoundaryLost.store(true, std::memory_order_relaxed);
+		this->publishReadableExtentLocked();
 	}
 }
 
@@ -422,6 +424,7 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 					? this->unclosedTransactionBoundary(scan, scan.validEnd, protectedPosition)
 					: scan.validEnd;
 				this->size.store(newSize, std::memory_order_relaxed);
+				this->publishReadableExtentLocked();
 				if (this->lastFlushedSize > newSize) {
 					this->lastFlushedSize = newSize;
 				}
@@ -526,6 +529,7 @@ void TransactionLogFile::discardUnclosedTransaction(
 	}
 
 	this->size.store(boundary, std::memory_order_relaxed);
+	this->publishReadableExtentLocked();
 	if (this->lastFlushedSize > boundary) {
 		this->lastFlushedSize = boundary;
 	}
@@ -732,6 +736,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	this->updateMemoryMapOverlay();
 #endif
+	this->publishReadableExtentLocked();
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu)\n",
 		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex);
 }
@@ -742,6 +747,15 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, bool isCurrent) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	return this->getMemoryMapLocked(fileSize, isCurrent);
+}
+
+void TransactionLogFile::publishReadableExtentLocked() {
+	auto map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
+	if (map) {
+		map->readableExtent.store(
+			std::min(this->size.load(std::memory_order_relaxed), map->mapSize),
+			std::memory_order_release);
+	}
 }
 
 /**
@@ -819,6 +833,9 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			// on a later call once the bytes are visible.
 			if (!this->hasAppendedSinceOpen.load()) {
 				this->size = this->lastIndexedPosition;
+				memoryMap->readableExtent.store(
+					std::min(this->lastIndexedPosition, memoryMap->mapSize),
+					std::memory_order_release);
 			} else {
 				stoppedAtUnindexedTail = true;
 			}

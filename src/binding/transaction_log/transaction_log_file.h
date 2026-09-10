@@ -505,6 +505,9 @@ struct TransactionLogFile final {
 	 */
 	std::shared_ptr<MemoryMap> getMemoryMapLocked(uint32_t fileSize, bool isCurrent);
 
+	/** Publish append-owned size to an existing mapping. Caller holds fileMutex. */
+	void publishReadableExtentLocked();
+
 	/**
 	 * Hints the kernel that this log's file-backed pages are cold (MADV_COLD),
 	 * so they are reclaimed first under memory pressure without being freed.
@@ -696,14 +699,21 @@ struct MemoryMap final {
 	uint32_t fileSize = 0;
 
 	/**
+	 * The append-owned logical extent that readers may consume. This stays
+	 * authoritative after purge unlinks the file and the mapping outlives its
+	 * TransactionLogFile, so physical orphan bytes never become log entries.
+	 */
+	std::atomic<uint32_t> readableExtent = 0;
+
+	/**
 	 * Count of live MemoryMap instances across the process. Lets tests verify
 	 * that releasing all JS references to a (frozen) log's external buffer
 	 * actually unmaps the mapping rather than leaving it retained.
 	 */
 	static std::atomic<int64_t> liveCount;
 
-	MemoryMap(void* map, uint32_t mapSize)
-		: map(map), mapSize(mapSize), fileSize(mapSize) {
+	MemoryMap(void* map, uint32_t mapSize, uint32_t readableExtent)
+		: map(map), mapSize(mapSize), fileSize(mapSize), readableExtent(readableExtent) {
 		liveCount.fetch_add(1, std::memory_order_relaxed);
 	}
 

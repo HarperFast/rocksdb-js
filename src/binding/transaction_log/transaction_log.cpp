@@ -21,6 +21,29 @@
 
 namespace rocksdb_js {
 
+namespace {
+
+constexpr const char* READABLE_EXTENT_HANDLE = "__rocksdbJsReadableExtentHandle";
+
+napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
+	size_t argc = 0;
+	napi_value jsThis;
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, nullptr, &jsThis, nullptr));
+	napi_value externalHandle;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, jsThis, READABLE_EXTENT_HANDLE, &externalHandle));
+	void* data = nullptr;
+	NAPI_STATUS_THROWS(::napi_get_value_external(env, externalHandle, &data));
+	auto* memoryMapHandle = static_cast<std::shared_ptr<MemoryMap>*>(data);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(
+		env,
+		(*memoryMapHandle)->readableExtent.load(std::memory_order_acquire),
+		&result));
+	return result;
+}
+
+} // namespace
+
 /**
  * Constructor for the `NativeTransactionLog` class.
  *
@@ -301,6 +324,32 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		memoryMapHandle, // finalize_hint
 		&result // [out] result
 	));
+
+	// The accessor is live rather than a snapshot: the current segment's extent
+	// advances after each successful append. Resolve its handle from the receiver
+	// instead of callback data, because JS can retain an extracted getter after
+	// the buffer (and its finalizer-owned handle) has been collected.
+	auto readableExtentHandle = std::make_unique<std::shared_ptr<MemoryMap>>(memoryMap);
+	napi_value readableExtentExternal;
+	NAPI_STATUS_THROWS(::napi_create_external(
+		env,
+		readableExtentHandle.get(),
+		[](napi_env env, void* data, void* hint) {
+			delete static_cast<std::shared_ptr<MemoryMap>*>(data);
+		},
+		nullptr,
+		&readableExtentExternal));
+	readableExtentHandle.release();
+	napi_property_descriptor readableExtentProperties[] = {
+		{ READABLE_EXTENT_HANDLE, nullptr, nullptr, nullptr,
+			nullptr, readableExtentExternal, napi_default, nullptr },
+		{ "readableExtent", nullptr, nullptr, GetReadableExtent,
+			nullptr, nullptr, napi_default, nullptr },
+	};
+	NAPI_STATUS_THROWS(::napi_define_properties(
+		env, result,
+		sizeof(readableExtentProperties) / sizeof(napi_property_descriptor),
+		readableExtentProperties));
 
 	// at this point, the transaction log file and the external buffer have a ref to the memory map
 

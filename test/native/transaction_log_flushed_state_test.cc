@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include "transaction_log/transaction_log_entry.h"
 #include "transaction_log/transaction_log_store.h"
 
 namespace {
@@ -24,6 +25,34 @@ void expectFlushedPosition(
 }
 
 } // namespace
+
+TEST(TransactionLogFlushedState, DestructivePurgeInvalidatesOldFlushCorrelations) {
+	auto storePath = uniqueFlushedStatePath();
+	auto statePath = storePath / "txn.state";
+	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+
+	std::string payload = "entry";
+	rocksdb_js::TransactionLogEntryBatch batch(1001.0);
+	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+	rocksdb_js::LogPosition position;
+	store->writeBatch(batch, position);
+	store->commitFinished(position, 10);
+	store->databaseFlushed(10);
+	ASSERT_TRUE(std::filesystem::exists(statePath));
+
+	store->purge(nullptr, /*all=*/true, /*before=*/0);
+	ASSERT_FALSE(std::filesystem::exists(storePath));
+
+	// The same RocksDB flush watermark must not republish a position from the
+	// segment generation that destroy just removed.
+	store->databaseFlushed(10);
+	EXPECT_FALSE(std::filesystem::exists(statePath));
+
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
 
 // databaseFlushed() keeps txn.state open across flushes. Once the file (or the
 // whole store directory) is unlinked underneath it, the stream still reports

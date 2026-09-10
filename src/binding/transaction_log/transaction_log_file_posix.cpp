@@ -364,7 +364,9 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 		// correctly frees both anonymous and file-backed pages. Removing files
 		// that are memory mapped is perfectly fine on POSIX, and the memory map
 		// can be safely used indefinitely.
-		map = std::make_shared<MemoryMap>(anonMap, fileSize);
+		map = std::make_shared<MemoryMap>(
+			anonMap, fileSize,
+			std::min(this->size.load(std::memory_order_relaxed), fileSize));
 #else
 		void* newMap = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, newMap);
@@ -372,10 +374,15 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno));
 			return nullptr;
 		}
-		map = std::make_shared<MemoryMap>(newMap, fileSize);
+		map = std::make_shared<MemoryMap>(
+			newMap, fileSize,
+			std::min(this->size.load(std::memory_order_relaxed), fileSize));
 #endif
 	}
 	map->fileSize = fileSize;
+	map->readableExtent.store(
+		std::min(this->size.load(std::memory_order_relaxed), map->mapSize),
+		std::memory_order_release);
 
 	// Ownership: the current (actively-written) file keeps a strong reference —
 	// the writer extends its overlay and the index reads through it. A frozen
