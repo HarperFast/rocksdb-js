@@ -2742,6 +2742,10 @@ describe('Transaction Log', () => {
 				]);
 			};
 
+			// These three assert that the FIRST purge deletes the segment while a reader still
+			// maps it, which is a POSIX guarantee only: Windows has been observed both
+			// removing a mapped segment and refusing to (see the convergence test below, which
+			// is the portable version of the same contract).
 			it.skipIf(process.platform === 'win32')(
 				'should finish the segment it mapped before the purge',
 				() =>
@@ -2777,6 +2781,10 @@ describe('Transaction Log', () => {
 					})
 			);
 
+			// Also POSIX-only for a second reason: the orphan is appended with an `a` handle,
+			// which lands at physical EOF. On Windows that is the end of the pre-extended
+			// segment rather than the end of the entries, so it models a failed append here
+			// only.
 			it.skipIf(process.platform === 'win32')(
 				'should not read frame-shaped physical bytes past a purged segment logical extent',
 				() =>
@@ -2983,37 +2991,48 @@ describe('Transaction Log', () => {
 					expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
 				}));
 
-			// Windows cannot delete a mapped file at all, so there the reader releasing its
-			// mapping is what lets retention advance. Unverified locally (no Windows host); it
-			// runs only in the Windows CI job.
-			it.skipIf(process.platform !== 'win32' || !globalThis.gc)(
-				'should converge on a purge refused by a live mapping',
+			// What a purge owes a reader that mapped the segment: its committed entries, and
+			// the space back once nothing maps it. POSIX unlinks the name immediately; a
+			// filesystem that refuses to remove a mapped file leaves the segment registered
+			// and the next run reclaims it, so only the convergence is portable. The read of
+			// `buffer` after the purge is what holds the mapping across it — an earlier
+			// revision asserted a Windows-only refusal while its last read of the reference
+			// was before the purge, leaving V8 free to collect it first.
+			it.skipIf(!globalThis.gc)(
+				'should reclaim a mapped segment without losing the entries it serves',
 				() =>
 					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
 						const log = db.useLog('foo');
 						const segment = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 						await seedFirstSegment(db, log);
-						// Keep a direct buffer reference so the first unlink is guaranteed to
-						// be refused, rather than depending on when a weak query cache is GC'd.
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						// a direct reference, so the mapping is live regardless of when the weak
+						// query caches are collected
 						let buffer = log._getMemoryMapOfFile(1);
 						expect(buffer).toBeDefined();
 						await writeEntry(db, log, 3, 300);
 						db.flushSync();
 
-						// the mapping this handle holds is what refuses the unlink
 						const first = db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
-						expect(first).toEqual([]);
-						expect(existsSync(segment)).toBe(true);
-						buffer = undefined;
+						if (process.platform !== 'win32') {
+							expect(first).toEqual([segment]);
+						}
 
+						// the mapping is still live, and still serves everything it mapped
+						expect(buffer!.readableExtent).toBeGreaterThan(0);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+
+						// releasing it reclaims the space: either the name is already gone, or a
+						// later run removes what it could not remove while the mapping was live
+						buffer = undefined;
 						const end = performance.now() + 10000;
-						let purged: string[] = [];
-						while (purged.length === 0 && performance.now() < end) {
+						while (existsSync(segment) && performance.now() < end) {
 							globalThis.gc!();
 							await delay(100);
-							purged = db.purgeLogs({ name: 'foo', before: Date.now() + 1000 }) as string[];
+							db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
 						}
-						expect(purged).toEqual([segment]);
 						expect(existsSync(segment)).toBe(false);
 					}),
 				30000

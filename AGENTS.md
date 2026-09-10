@@ -867,11 +867,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
       moved on, with no purge-time invalidation and no cross-handle signalling — which matters
       because the store is process-global and every handle and `worker_threads` worker has its own
       JS caches.
-    - On Windows a live mapping makes the unlink fail outright, so the purge skips that segment and
-      retention stalls until the buffer is collected; the loop is refused unlink → collection → the
-      next purge succeeds. `removeFile()` uses the non-throwing `std::filesystem::remove` overloads
-      on both platforms (a sharing violation used to unwind a C++ exception through the N-API purge
-      boundary) and the purge reports a segment it could not delete once per run via `log.warn`.
+    - **Only the convergence is portable — do not assert an outcome for one purge run on
+      Windows.** POSIX always unlinks. Windows CI on this branch has shown both outcomes for the
+      same test: a segment a reader still mapped was refused at one head (`9a8606a8`) and removed
+      at the next (`c8e790a0`), with no change to the mapping's lifetime in between; which one
+      happens is not currently explained. So `removeFile()` uses the non-throwing
+      `std::filesystem::remove` overloads on both platforms (a sharing violation used to unwind a
+      C++ exception through the N-API purge boundary), a refused segment stays registered and is
+      reported once per run via `log.warn`, and the next run after the mapping is released reclaims
+      it. Tests that assert a specific first-run outcome are POSIX-only; the portable contract —
+      the reader keeps every entry it mapped, and retention converges — is asserted cross-platform.
+      Whatever holds the mapping must be read _after_ the purge, or V8 may collect it first and the
+      test proves nothing about a live mapping.
     - A segment that vanished between the purge's scan and its unlink is forgotten from
       `sequenceFiles` the way the scan forgets an already-missing one, rather than left registered.
     - The store forgets a purged segment, so `getLogFileSize()` reports 0 for it and the mapping
