@@ -304,11 +304,17 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 	napi_value result;
 
 	if (!it->valid()) {
+		// An iterator stops being valid for one of two reasons, and only `status()`
+		// tells them apart: it ran out of range, or it failed (a block checksum
+		// mismatch, an I/O error). A failure has to reach JavaScript as an error, the
+		// way `get()` reports the same corruption; returning DONE would make a
+		// damaged file read as the end of the data.
 		if (it->iterator && !it->iterator->status().ok()) {
-			DEBUG_LOG("%p DBIterator::Next iterator not valid/ok: %s\n", itHandle, it->iterator->status().ToString().c_str());
-		} else {
-			DEBUG_LOG("%p DBIterator::Next iterator no keys found in range\n", it.get());
+			DEBUG_LOG("%p DBIterator::Next iterator failed: %s\n", itHandle, it->iterator->status().ToString().c_str());
+			ROCKSDB_STATUS_THROWS_ERROR_LIKE(it->iterator->status(), "Iterator failed");
+			return nullptr;
 		}
+		DEBUG_LOG("%p DBIterator::Next iterator no keys found in range\n", it.get());
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_DONE, &result));
 		return result;
 	}
