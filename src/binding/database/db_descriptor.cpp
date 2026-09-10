@@ -121,8 +121,7 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 	int64_t historyTarget,
 	size_t familyCount,
 	bool readOnly,
-	const std::shared_ptr<rocksdb::WriteBufferManager>& writeBufferManager,
-	const std::shared_ptr<rocksdb::Logger>& infoLog
+	const std::shared_ptr<rocksdb::WriteBufferManager>& writeBufferManager
 ) {
 	if (readOnly || historyTarget <= 0 || familyCount == 0 || !writeBufferManager) {
 		return;
@@ -162,11 +161,6 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 		<< "the same budget, so a database that does not warn is not proven safe.";
 	const std::string text = msg.str();
 	DEBUG_LOG("DBDescriptor::open WARNING: %s\n", text.c_str());
-	// Also to the database's own LOG: a deployment that registers no JS listener still needs a
-	// durable record of the configuration alongside the options block it applies to.
-	if (infoLog) {
-		rocksdb::Warn(infoLog, "%s", text.c_str());
-	}
 	if (GlobalEvents::hasListeners()) {
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ text }));
 	}
@@ -1614,8 +1608,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		cfOptions.max_write_buffer_size_to_maintain,
 		columns.size(),
 		options.readOnly,
-		dbOptions.write_buffer_manager,
-		db->GetDBOptions().info_log
+		dbOptions.write_buffer_manager
 	);
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());

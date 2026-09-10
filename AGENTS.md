@@ -451,9 +451,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     The bound is one flushed memtable per family instead of 256MB per family, and no positive target
     does better — the residual is independent of the target's magnitude, so a budget smaller than
     `familyCount * writeBufferSize` can still wedge. `DBDescriptor::open` reports a configuration whose
-    known families' targets already reach the budget on the `log.warn` channel and in the database's own
-    `LOG`; that is a report, not a guarantee, because families are created lazily and only the ones
-    present at that open are counted.
+    known families' targets already reach the budget to registered `log.warn` listeners; without one,
+    the open-time report is not retained. When stalls are enabled, an actual continuous stall is still
+    written to `stderr` by the stall watchdog unless `ROCKSDB_JS_WBM_STALL_WARN_MS=0`. The open-time
+    report is not a guarantee, because families are created lazily and only the ones present at that
+    open are counted.
 
     The general trap: `DBOptions` defaults that derive a large value were sized when they reached one
     column family, so widening where an option applies means re-checking its default against every
