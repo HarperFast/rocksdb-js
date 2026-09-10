@@ -330,51 +330,58 @@ std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
 
 LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	uint32_t sequenceNumber = this->currentSequenceNumber.load(std::memory_order_relaxed);
-	bool isCurrent = true;
-	uint32_t positionInLogFile = 0;
-	auto it = this->sequenceFiles.find(sequenceNumber);
-	if (it == this->sequenceFiles.end()) {
-		// it is possible that the current log file doesn't exist yet, so we need to look at the previous one
-		it = this->sequenceFiles.find(--sequenceNumber);
-		isCurrent = false;
-	}
-	while (it != this->sequenceFiles.end()) {
+	uint32_t currentSeq = this->currentSequenceNumber.load(std::memory_order_relaxed);
+
+	// Descend through the *registered* segments from the current sequence, stepping by map
+	// order rather than by `--sequenceNumber`. That distinction is the whole point: a missing
+	// sequence is a hole, not the bottom of the log — a segment can be purged, or deleted out
+	// of band and never registered at load — and `find(--sequenceNumber)` ended the walk at
+	// the first one, so every older survivor below it became unreachable and a reader asking
+	// for an old timestamp silently got only the newest contiguous run (invariant 22).
+	//
+	// `above` is the registered sequence one step newer than the entry being examined, so the
+	// two "the timestamp belongs further up" exits can name a segment that exists instead of
+	// `sequenceNumber + 1`, which a hole may have removed.
+	auto it = this->sequenceFiles.upper_bound(currentSeq);
+	uint32_t above = 0;
+	while (it != this->sequenceFiles.begin()) {
+		--it;
+		uint32_t sequenceNumber = it->first;
 		auto logFile = it->second.get();
-		// Directory iteration order is unspecified, so registerLogFile() may not
-		// have opened an older file before a higher sequence became current. Skip a
-		// registered segment that is gone from disk rather than opening it: open()
-		// creates, so the walk would leave a header-only ghost behind (openIfPresent).
-		if (!this->openIfPresent(*logFile)) {
-			isCurrent = false;
-			it = this->sequenceFiles.find(--sequenceNumber);
-			continue;
-		}
-		positionInLogFile = logFile->findPositionByTimestamp(
-			timestamp,
-			isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed),
-			isCurrent
-		);
-		// a position of zero means that the timestamp is before the log file header's timestamp, greater than that,
-		// we are in the correct log file to start searching
-		if (positionInLogFile > 0) {
+		bool isCurrent = sequenceNumber == currentSeq;
+		// Directory iteration order is unspecified, so registerLogFile() may not have opened an
+		// older file before a higher sequence became current. Skip a registered segment that is
+		// gone from disk rather than opening it: open() creates, so the walk would leave a
+		// header-only ghost behind (openIfPresent).
+		if (this->openIfPresent(*logFile)) {
+			uint32_t positionInLogFile = logFile->findPositionByTimestamp(
+				timestamp,
+				isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed),
+				isCurrent
+			);
 			if (positionInLogFile == 0xFFFFFFFF) {
-				// beyond the end of this log file
-				if (sequenceNumber < this->currentSequenceNumber.load(std::memory_order_relaxed)) {
-					// revert to next one (because it exists)
-					break;
-				} else { // otherwise position at the end of the log file (JS code can filter from here)
-					positionInLogFile = logFile->size;
+				// beyond the end of this log file: the timestamp belongs to the next registered
+				// segment up, or — when this is the newest one there is — to its end, which JS
+				// filters from
+				if (above != 0) {
+					return { TRANSACTION_LOG_FILE_HEADER_SIZE, above };
 				}
+				return { logFile->size.load(std::memory_order_relaxed), sequenceNumber };
 			}
-			// found a valid position in the log file
-			return { positionInLogFile, sequenceNumber };
+			// a position of zero means the timestamp is before this log file header's timestamp;
+			// anything greater means this is the file to start searching in
+			if (positionInLogFile > 0) {
+				return { positionInLogFile, sequenceNumber };
+			}
+			// Only a segment we could actually open becomes `above`: both exits below hand
+			// this back as a position to read from, and naming a registered-but-absent
+			// segment there would send the reader to a file that is not on disk.
+			above = sequenceNumber;
 		}
-		isCurrent = false;
-		it = this->sequenceFiles.find(--sequenceNumber);
-	};
-	// we iterated too far, return to the beginning position in the current log file
-	return { TRANSACTION_LOG_FILE_HEADER_SIZE, sequenceNumber + 1 };
+	}
+	// Older than every registered segment: start at the beginning of the oldest one that exists,
+	// falling back to the current sequence when the store holds no segments at all.
+	return { TRANSACTION_LOG_FILE_HEADER_SIZE, above != 0 ? above : currentSeq };
 }
 
 LogPosition TransactionLogStore::getLastFlushedPosition() {
