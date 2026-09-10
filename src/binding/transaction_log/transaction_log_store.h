@@ -353,7 +353,8 @@ struct TransactionLogStore final {
 	std::mutex flushedStateMutex;
 
 	/**
-	 * This file stream is used to track how much of the transaction log has been flushed to the database.
+	 * Short-lived stream used to persist how much of the transaction log has
+	 * reached the database. It is reopened by pathname for every update.
 	 */
 	std::ofstream flushedStateFile;
 
@@ -617,23 +618,18 @@ private:
 	 *
 	 * Never touches the active segment: its handle belongs to the write path.
 	 *
-	 * Important! Must be called with `dataSetsMutex` held, which is also what
-	 * makes the exists() check meaningful: outside it the file could be
-	 * unlinked between the check and open(), whose O_CREAT / OPEN_ALWAYS would
-	 * resurrect a header-only ghost segment.
+	 * Important! Must be called with `dataSetsMutex` held so another local purge
+	 * cannot detach the registered entry while its extent is being resolved.
+	 * The actual open is atomic and non-creating, covering cross-process unlink.
 	 */
 	void ensureExtent(const std::shared_ptr<TransactionLogFile>& file);
 
 	/**
-	 * Opens `file` if it is closed, unless it is definitely absent from disk.
+	 * Opens `file` if it is closed and still present on disk.
 	 *
-	 * `open()` creates (`O_RDWR | O_CREAT`, `OPEN_ALWAYS` on Windows), so a read
-	 * that opens a registered-but-unlinked segment resurrects it as a ghost the
-	 * next startup discovery will register again. Only a *definite* absence skips:
-	 * a stat that errors leaves us unable to tell, and the caller needs the extent.
-	 *
-	 * Meaningful only with `dataSetsMutex` held — outside it the file could be
-	 * unlinked between the check and the open. Returns whether the file is open.
+	 * Uses the platform's no-create open rather than a separate existence probe,
+	 * so purge cannot unlink between the check and a creating O_CREAT/OPEN_ALWAYS
+	 * call. Meaningful only with `dataSetsMutex` held; returns whether it opened.
 	 */
 	bool openIfPresent(TransactionLogFile& file);
 
