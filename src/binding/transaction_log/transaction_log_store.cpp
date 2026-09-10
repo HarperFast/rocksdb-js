@@ -793,7 +793,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 				try {
 					std::ostringstream msg;
 					msg << "Transaction log segment " << logFile->path.string() << " could not be deleted ("
-						<< logFile->lastRemoveError.message() << "); retention cannot advance past it.";
+						<< logFile->getLastRemoveError().message() << "); retention cannot advance past it.";
 					DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
 					emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 				} catch (...) {

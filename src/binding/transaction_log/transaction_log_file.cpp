@@ -82,6 +82,11 @@ bool TransactionLogFile::removeFile() {
 	return this->removeFileLocked();
 }
 
+std::error_code TransactionLogFile::getLastRemoveError() {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	return this->lastRemoveError;
+}
+
 void TransactionLogFile::downgradeMapToFrozen() {
 	std::lock_guard<std::mutex> lock(this->fileMutex);
 	if (this->memoryMap) {

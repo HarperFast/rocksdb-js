@@ -438,22 +438,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 });
 
 /**
- * Maps the next readable segment after `fromLogId`, skipping a run that retention has deleted.
- * Without the skip an iterator that fell behind the retention floor stops at the hole and every
- * later poll stops in the same place, so it never sees another entry: the segments past the hole
- * are still on disk and still its own history.
- *
- * Only a segment the store has no bytes for is skipped: one it still knows is merely unmappable
- * for the moment (mid-rotation, 0 bytes at mmap time, a transient resource failure), so iteration
- * stops and picks it up on the next poll rather than stepping over durable history.
+ * Maps the next readable segment after `fromLogId`, skipping a run retention has deleted —
+ * stopping at the hole wedges the iterator there for every later poll (invariant 22).
  *
  * The jump target is `_nextLogId()`, the successor over the store's registered segments — *not*
- * `_findPosition(0)`, which walks backward from the current sequence and stops at the first gap,
- * naming the bottom of the contiguous run that ends at the current segment. Those agree only when
- * the deletions form a single prefix. With a survivor between two holes — a `purge({all})` that
- * continued past a segment it could not unlink, or segments deleted out of band and registered
- * that way at load — `_findPosition(0)` lands *past* the survivor and its committed entries are
- * never yielded.
+ * `_findPosition(0)`, which names the bottom of the contiguous run ending at the current segment
+ * and so lands *past* a survivor sitting between two holes.
  */
 function nextReadableLogBuffer(
 	transactionLog: TransactionLog,

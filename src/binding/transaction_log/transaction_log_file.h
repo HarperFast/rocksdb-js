@@ -291,6 +291,13 @@ struct TransactionLogFile final {
 	/** Empty when the last removeFile() succeeded or the file was already gone. */
 	std::error_code lastRemoveError;
 
+	/**
+	 * Copy of lastRemoveError taken under fileMutex. The field is a plain
+	 * std::error_code, so an unlocked read can tear its value/category pair
+	 * against a concurrent retirement or close removing the same file.
+	 */
+	std::error_code getLastRemoveError();
+
 	TransactionLogFile(
 		const std::filesystem::path& p,
 		const uint32_t seq,

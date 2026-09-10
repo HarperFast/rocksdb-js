@@ -12,6 +12,7 @@ import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
 import {
+	chmodSync,
 	existsSync,
 	readFileSync,
 	readdirSync,
@@ -26,7 +27,7 @@ import { release } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const {
 	TRANSACTION_LOG_FILE_HEADER_SIZE,
@@ -3036,6 +3037,44 @@ describe('Transaction Log', () => {
 						expect(existsSync(segment)).toBe(false);
 					}),
 				30000
+			);
+
+			// A refused unlink has no portable trigger, so force one: an unwritable store
+			// directory fails the unlink with EACCES, the same branch a sharing violation
+			// takes. Root ignores the permission, so this only runs unprivileged.
+			it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+				'should keep a refused segment registered, warn once, and reclaim it next run',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						const segment = join(logDirectory, '1.txnlog');
+						await seedFirstSegment(db, log);
+						await writeEntry(db, log, 3, 300);
+						db.flushSync();
+
+						const warnings: string[] = [];
+						const onWarning = (message: string) => {
+							if (message.includes(segment)) warnings.push(message);
+						};
+						RocksDatabase.on('log.warn', onWarning);
+						const directoryMode = statSync(logDirectory).mode;
+						try {
+							chmodSync(logDirectory, 0o500);
+							expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([]);
+							expect(existsSync(segment)).toBe(true);
+							// the operator signal for a stalled retention floor, delivered end to end
+							await vi.waitFor(() => expect(warnings).toHaveLength(1));
+						} finally {
+							chmodSync(logDirectory, directoryMode);
+							RocksDatabase.off('log.warn', onWarning);
+						}
+
+						// still registered rather than forgotten, so the next run reclaims it
+						expect(log.getLogFileSize(1)).toBeGreaterThan(0);
+						expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([segment]);
+						expect(existsSync(segment)).toBe(false);
+					})
 			);
 		});
 
