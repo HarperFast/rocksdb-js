@@ -1838,6 +1838,31 @@ describe('Transaction Log', () => {
 				}
 			}));
 
+		it('query() rejects a mapped buffer without a readable extent', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 100 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				for (const fill of [1, 2]) {
+					await db.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(50, fill), txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: 0 }))).toHaveLength(2);
+				const copyBuffer = Buffer.from(log._getMemoryMapOfFile(1)!);
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					expect(() => Array.from(log.query({ start: 0 }))).toThrow(/has no readableExtent/);
+				} finally {
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
+				}
+			}));
+
 		// Nothing valid follows a torn tail, so there is nothing to resync to — but the reader must
 		// still not re-throw at the same position forever.
 		it('query() reports a torn tail once and then reads as end-of-log', () =>

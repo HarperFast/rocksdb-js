@@ -530,9 +530,6 @@ bool TransactionLogFile::removeFileLocked() {
 	auto removed = std::filesystem::remove(this->path, removeError);
 	this->lastRemoveError = removeError;
 	if (removeError) {
-		// Reported as "not removed" so the purge skips the segment: on Windows a
-		// live reader mapping makes this a sharing violation, which must not
-		// escape the purge call.
 		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s: %s\n",
 			this, this->path.string().c_str(), removeError.message().c_str());
 		return false;

@@ -462,8 +462,8 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     slow in the way that matters — `findResyncPosition` tries every start offset, so a mapped-capacity
     bound byte-scans the whole pre-extended map on the JS thread and then reports a _recoverable_
     mid-log break as a torn tail, which is the harper#2016 amputation this invariant exists to
-    prevent. Resolve it only on a break — `getLogFileSize` crosses into native and takes the store
-    mutex, so a per-frame call would tax every healthy read.
+    prevent. Resolve it only on a break: even the mapping-carried getter crosses into native, so a
+    per-frame call would tax every healthy read.
 
 12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
     commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —
