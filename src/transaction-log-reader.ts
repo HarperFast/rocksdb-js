@@ -123,14 +123,19 @@ function corruptFrame(
 	size: number,
 	readUncommitted: boolean
 ): { error: CorruptFrameError; nextPosition: number } {
-	// An uncommitted read's `limit` is the pre-extended map, so ask the file for its written extent;
-	// a committed read is already bounded at the watermark.
+	// An uncommitted read's `limit` is the pre-extended map, so resolve the written extent; a
+	// committed read is already bounded at the watermark. Never the mapped capacity: every offset
+	// in the map's zero fill reads as an end-of-entries marker, so scanning against it both loses
+	// the exact-end signal and byte-scans megabytes of padding on the JS thread, reporting a
+	// recoverable mid-log break as a torn tail (invariant 11). `readableExtent` walks the frames
+	// when the store has forgotten a purged segment, which is the case that has no store extent.
 	let dataEnd = limit;
 	if (readUncommitted) {
 		try {
-			const writtenExtent = transactionLog.getLogFileSize(logBuffer.logId);
-			// A purged segment has no store extent; its own mapping bounds the scan (readableExtent).
-			dataEnd = writtenExtent > 0 ? Math.min(logBuffer.length, writtenExtent) : logBuffer.length;
+			dataEnd = Math.min(
+				logBuffer.length,
+				logBuffer.size ?? readableExtent(transactionLog, logBuffer)
+			);
 		} catch {
 			dataEnd = 0;
 		}
