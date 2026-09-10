@@ -136,7 +136,8 @@ export type NativeTransaction = {
 export type LogBuffer = Buffer & {
 	dataView: DataView;
 	logId: number;
-	size: number;
+	readonly readableExtent: number;
+	size?: number;
 };
 
 export type TransactionLogQueryOptions = {

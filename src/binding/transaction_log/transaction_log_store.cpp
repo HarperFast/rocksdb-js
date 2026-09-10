@@ -855,6 +855,28 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	// if all log files have been removed, clean up the empty directory
 	// only try to remove if we actually removed at least one file from this store
 	if (all && this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
+		// The live store can survive this destroy when a transaction is still
+		// bound. Invalidate both the correlation ring and callbacks that already
+		// selected a position from it, or an unrelated later RocksDB flush can
+		// recreate txn.state with a stale high sequence and make restarted
+		// retention delete an unflushed replacement segment.
+		this->flushedStateGeneration.fetch_add(1, std::memory_order_relaxed);
+		for (auto& sequencePosition : this->recentlyCommittedSequencePositions) {
+			sequencePosition.position = { 0, 0 };
+			sequencePosition.rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF;
+		}
+		this->nextSequencePositionsCount = 0;
+		{
+			// doPurge() already holds dataSetsMutex, preserving the declared
+			// dataSetsMutex -> flushedStateMutex order.
+			std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
+			if (this->flushedStateFile.is_open()) {
+				this->flushedStateFile.close();
+			}
+			this->flushedStateFile.clear();
+			this->lastWrittenFlushedPosition = { 0, 0 };
+			this->flushedStateWarningEmitted.store(false, std::memory_order_relaxed);
+		}
 		try {
 			if (std::filesystem::exists(this->path)) {
 				DEBUG_LOG("%p TransactionLogStore::purge Removing log store directory: %s\n", this, this->path.string().c_str());
@@ -1193,8 +1215,10 @@ void TransactionLogStore::recordFlushedPosition(rocksdb::SequenceNumber rocksSeq
 	}
 
 	LogPosition latestSequencePosition = { 0, 0 };
+	uint64_t observedGeneration;
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		observedGeneration = this->flushedStateGeneration.load(std::memory_order_relaxed);
 		// the latest sequence number that has been flushed according to this flush update
 		for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
 			SequencePosition sequencePosition = this->recentlyCommittedSequencePositions[i];
@@ -1211,6 +1235,12 @@ void TransactionLogStore::recordFlushedPosition(rocksdb::SequenceNumber rocksSeq
 	// flushedStateMutex (not dataSetsMutex) so that getLastFlushedPosition()
 	// can safely read txn.state from doPurge() without risk of deadlock.
 	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
+	if (observedGeneration != this->flushedStateGeneration.load(std::memory_order_relaxed)) {
+		// A destructive purge invalidated the correlation after this callback
+		// selected it. Returning silently is expected coordination, not an I/O
+		// failure that should emit a warning.
+		return;
+	}
 
 	// An open stream describes a descriptor, not a pathname: once txn.state (or
 	// the whole store directory) is unlinked, writes land in the orphaned inode

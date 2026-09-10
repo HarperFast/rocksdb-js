@@ -362,6 +362,13 @@ struct TransactionLogStore final {
 	std::atomic<bool> flushedStateWarningEmitted = false;
 
 	/**
+	 * Generation of the correlation ring and txn.state. An all-segment purge
+	 * advances it while holding dataSetsMutex; a flush callback captures it with
+	 * its position scan and checks it after acquiring flushedStateMutex.
+	 */
+	std::atomic<uint64_t> flushedStateGeneration = 0;
+
+	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
 	LogPosition nextLogPosition = { 0, 0 };
