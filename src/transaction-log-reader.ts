@@ -131,11 +131,7 @@ function corruptFrame(
 	// the append-owned extent even after the store forgets a purged segment.
 	let dataEnd = limit;
 	if (readUncommitted) {
-		try {
-			dataEnd = Math.min(logBuffer.length, logBuffer.size ?? readableExtent(logBuffer));
-		} catch {
-			dataEnd = 0;
-		}
+		dataEnd = Math.min(logBuffer.length, logBuffer.size ?? readableExtent(logBuffer));
 	}
 	const resyncPosition = findResyncPosition(dataView, position + 1, dataEnd);
 	return {
@@ -492,7 +488,11 @@ function nextReadableLogBuffer(
  * readers retain committed history without interpreting a partial failed append as another frame.
  */
 function readableExtent(logBuffer: LogBuffer): number {
-	return Math.min(logBuffer.length, logBuffer.readableExtent);
+	const extent = (logBuffer as Partial<LogBuffer>).readableExtent;
+	if (extent === undefined) {
+		throw new Error(`Transaction log buffer ${logBuffer.logId} has no readableExtent`);
+	}
+	return Math.min(logBuffer.length, extent);
 }
 
 function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {

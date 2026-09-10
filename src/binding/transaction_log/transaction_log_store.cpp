@@ -360,16 +360,11 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 				isCurrent
 			);
 			if (positionInLogFile == 0xFFFFFFFF) {
-				// beyond the end of this log file: the timestamp belongs to the next registered
-				// segment up, or — when this is the newest one there is — to its end, which JS
-				// filters from
 				if (above != 0) {
 					return { TRANSACTION_LOG_FILE_HEADER_SIZE, above };
 				}
 				return { logFile->size.load(std::memory_order_relaxed), sequenceNumber };
 			}
-			// a position of zero means the timestamp is before this log file header's timestamp;
-			// anything greater means this is the file to start searching in
 			if (positionInLogFile > 0) {
 				return { positionInLogFile, sequenceNumber };
 			}
@@ -867,8 +862,6 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		}
 		this->nextSequencePositionsCount = 0;
 		{
-			// doPurge() already holds dataSetsMutex, preserving the declared
-			// dataSetsMutex -> flushedStateMutex order.
 			std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 			if (this->flushedStateFile.is_open()) {
 				this->flushedStateFile.close();
@@ -1239,9 +1232,7 @@ void TransactionLogStore::writeFlushedPosition(LogPosition latestSequencePositio
 	// can safely read txn.state from doPurge() without risk of deadlock.
 	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 	if (observedGeneration != this->flushedStateGeneration.load(std::memory_order_relaxed)) {
-		// A destructive purge invalidated the correlation after this callback
-		// selected it. Returning silently is expected coordination, not an I/O
-		// failure that should emit a warning.
+		// Purge invalidated the correlation selected by this callback.
 		return;
 	}
 
