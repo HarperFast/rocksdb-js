@@ -23,7 +23,9 @@ namespace rocksdb_js {
 struct TransactionLogEntryBatch;
 struct TransactionLogFile;
 struct MemoryMap;
+#ifdef ROCKSDB_JS_NATIVE_TESTS
 struct TransactionLogStoreTestPeer;
+#endif
 
 #define LOG_POSITION_SIZE 8
 
@@ -579,7 +581,9 @@ struct TransactionLogStore final {
 	);
 
 private:
+#ifdef ROCKSDB_JS_NATIVE_TESTS
 	friend struct TransactionLogStoreTestPeer;
+#endif
 	/**
 	 * Opens a log file for the given sequence number. If the log file does not
 	 * exist, it will be created.
