@@ -91,8 +91,8 @@ function frameFits(dataView: DataView, pos: number, dataEnd: number): boolean {
  * terminator, let a chain "end" anywhere in megabytes of padding. Against the written extent the
  * end is a single offset, so a chain landing on it is ~1/2^32 to be coincidence.
  *
- * The JS counterpart of `validFramingResumes()` in `transaction_log_recovery.cpp`, which answers
- * the same question at open time but keeps only the yes/no, discarding the offset.
+ * The JS counterpart of `findFramingResumeOffset()` in `transaction_log_recovery.cpp`, which the
+ * open-time scan and the timestamp index use to keep walking past the same break.
  */
 function findResyncPosition(dataView: DataView, from: number, dataEnd: number): number | undefined {
 	const lastStart = dataEnd - TRANSACTION_LOG_ENTRY_HEADER_SIZE;
