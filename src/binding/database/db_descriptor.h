@@ -609,6 +609,12 @@ public:
 	bool lockExistsByKey(std::string& key);
 	bool lockReleaseByKey(std::string& key);
 	void lockReleaseByOwner(DBHandle* owner);
+
+	/**
+	 * Env-cleanup hook: release every queued unlock callback that a dying env
+	 * registered, on every lock this descriptor tracks. Never calls them.
+	 */
+	void releaseLockCallbacksByEnv(napi_env env);
 	void onCallbackComplete(const std::string& key);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
@@ -740,11 +746,18 @@ struct LockCallbackCompletionData final {
  * Holds a threadsafe callback and its associated deferred promise (if any).
  */
 struct LockCallback final {
-	LockCallback(napi_threadsafe_function callback, napi_deferred deferred = nullptr)
-		: callback(callback), deferred(deferred) {}
+	LockCallback(napi_threadsafe_function callback, napi_deferred deferred = nullptr, napi_env env = nullptr)
+		: callback(callback), deferred(deferred), env(env) {}
 
 	napi_threadsafe_function callback;
 	napi_deferred deferred;
+
+	/**
+	 * The env that queued this callback. A worker's env can be torn down while
+	 * its callback still waits on a lock another env holds; `releaseLockCallbacksByEnv`
+	 * drops it then, because calling the tsfn after Node freed it aborts the process.
+	 */
+	napi_env env;
 };
 
 /**
