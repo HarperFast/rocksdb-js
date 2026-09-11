@@ -150,6 +150,7 @@ public:
 	static void RemoveListenersByEnv(napi_env env);
 	static void ReleaseCommitCompletionsByEnv(napi_env env);
 	static void ReleaseParkTimeoutsByEnv(napi_env env);
+	static void ReleaseLockCallbacksByEnv(napi_env env);
 	static void Shutdown();
 	static size_t Size();
 };

@@ -896,6 +896,31 @@ void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
 }
 
 /**
+ * Env-cleanup hook: drop every unlock callback a dying env queued on any
+ * descriptor's locks (rocksdb-js#848). Mirrors ReleaseParkTimeoutsByEnv.
+ */
+void DBRegistry::ReleaseLockCallbacksByEnv(napi_env env) {
+	if (!instance) {
+		return;
+	}
+
+	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		descriptors.reserve(instance->databases.size());
+		for (auto& [_key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				descriptors.push_back(entry.descriptor);
+			}
+		}
+	}
+
+	for (auto& descriptor : descriptors) {
+		descriptor->releaseLockCallbacksByEnv(env);
+	}
+}
+
+/**
  * Shutdown will force all databases to flush in-memory data to disk and purge the registry.
  */
 void DBRegistry::Shutdown() {
