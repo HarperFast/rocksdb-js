@@ -27,9 +27,9 @@ on:
 
 jobs:
   validate:
-    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@1255f2e155e2202992508034d21b421fa99d14be # main 2026-07-10 (#72 native-addon layer)
+    uses: HarperFast/ai-review-prompts/.github/workflows/_validate-caller-workflows.yml@af81872e56dd63da1160adb5eae82d359a456dde # main 2026-09-01
     with:
       # Same SHA as the `uses:` ref above — the reusable uses this
       # to check out the validator script at the matching version.
       # Same SHA-twice pattern as the other caller workflows.
-      ai-review-prompts-ref: 1255f2e155e2202992508034d21b421fa99d14be
+      ai-review-prompts-ref: af81872e56dd63da1160adb5eae82d359a456dde
