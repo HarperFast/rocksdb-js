@@ -123,16 +123,15 @@ function corruptFrame(
 	size: number,
 	readUncommitted: boolean
 ): { error: CorruptFrameError; nextPosition: number } {
-	// An uncommitted read's `limit` is the pre-extended map, so ask the file for its written extent;
-	// a committed read is already bounded at the watermark.
+	// An uncommitted read's `limit` is the pre-extended map, so resolve the written extent; a
+	// committed read is already bounded at the watermark. Never the mapped capacity: every offset
+	// in the map's zero fill reads as an end-of-entries marker, so scanning against it both loses
+	// the exact-end signal and byte-scans megabytes of padding on the JS thread, reporting a
+	// recoverable mid-log break as a torn tail (invariant 11). The mapping carries
+	// the append-owned extent even after the store forgets a purged segment.
 	let dataEnd = limit;
 	if (readUncommitted) {
-		try {
-			const writtenExtent = transactionLog.getLogFileSize(logBuffer.logId);
-			dataEnd = writtenExtent > 0 ? Math.min(logBuffer.length, writtenExtent) : 0;
-		} catch {
-			dataEnd = 0;
-		}
+		dataEnd = Math.min(logBuffer.length, logBuffer.size ?? readableExtent(logBuffer));
 	}
 	const resyncPosition = findResyncPosition(dataView, position + 1, dataEnd);
 	return {
@@ -180,7 +179,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let logId = latestLogId;
 		let position = 0;
 		let dataView: DataView;
-		let logBuffer: LogBuffer | undefined = this._currentLogBuffer; // try the current one first
+		// weak: this is a fast path over the `_logBuffers` cache, and a strong reference here
+		// outlives every retention purge, keeping the unlinked segment's mapping resident for the
+		// life of the process (HarperFast/harper#2337)
+		let logBuffer: LogBuffer | undefined = this._currentLogBuffer?.deref(); // try the current one first
 		let foundExactStart = false;
 
 		if (start === undefined && !startFromLastFlushed) {
@@ -221,8 +223,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			// if this is the latest, cache for easy access, unless...
 			// if we are reading uncommitted, we might be a log file ahead of the committed transaction
 			// also, it is pointless to cache the latest log file in a memory map on Windows, because it is not growable
-			if (logBuffer && latestLogId === logId && !readUncommitted) {
-				this._currentLogBuffer = logBuffer;
+			if (
+				logBuffer &&
+				latestLogId === logId &&
+				!readUncommitted &&
+				this._currentLogBuffer?.deref() !== logBuffer
+			) {
+				// only re-wrap on a change: a WeakRef per query() is an allocation on the hot path
+				this._currentLogBuffer = new WeakRef(logBuffer);
 			}
 
 			if (logBuffer === undefined) {
@@ -245,9 +253,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		dataView = logBuffer.dataView;
 
 		if (latestLogId !== logId) {
-			size = logBuffer.size;
-			if (size === undefined) {
-				size = logBuffer.size = this.getLogFileSize(logId);
+			const cachedSize = logBuffer.size;
+			if (cachedSize === undefined) {
+				size = logBuffer.size = readableExtent(logBuffer);
+			} else {
+				size = cachedSize;
 			}
 		}
 
@@ -267,20 +277,20 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					size = latestSize;
 					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
-						size =
-							logBuffer!.size ??
-							(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
-							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1)!;
+							const nextLogBuffer = nextReadableLogBuffer(
+								transactionLog,
+								logBuffer!.logId,
+								latestLogId
+							);
 							if (nextLogBuffer) {
 								dataView = nextLogBuffer.dataView;
 								logBuffer = nextLogBuffer;
 								if (latestLogId > logBuffer!.logId) {
 									// it is non-current log file, we can safely use or cache the size
-									size =
-										logBuffer!.size ??
-										(logBuffer!.size = transactionLog.getLogFileSize(logBuffer!.logId));
+									size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 								} else {
 									size = latestSize; // use the latest position from loadLastPosition
 								}
@@ -395,21 +405,27 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
-							const nextLogBuffer = getLogMemoryMap(transactionLog, logBuffer!.logId + 1);
+							const nextLogBuffer = nextReadableLogBuffer(
+								transactionLog,
+								logBuffer!.logId,
+								latestLogId
+							);
 							if (!nextLogBuffer) {
-								// the next log file can't be mapped (purged, mid-rotation,
-								// 0-byte at mmap time, FS race); stop cleanly rather than
-								// dereferencing an undefined buffer
+								// nothing past this segment is mappable yet (mid-rotation, 0-byte at
+								// mmap time, FS race); stop cleanly rather than dereferencing an
+								// undefined buffer, and pick it up on the next poll
 								return { done: true, value: undefined };
 							}
 							logBuffer = nextLogBuffer;
 							dataView = logBuffer.dataView;
-							size = logBuffer.size;
-							if (size == undefined) {
-								size = transactionLog.getLogFileSize(logBuffer.logId);
+							const cachedSize = logBuffer.size;
+							if (cachedSize === undefined) {
+								size = readableExtent(logBuffer);
 								if (!readUncommitted) {
 									logBuffer.size = size;
 								}
+							} else {
+								size = cachedSize;
 							}
 							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 						}
@@ -420,6 +436,54 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		};
 	},
 });
+
+/**
+ * Maps the next readable segment after `fromLogId`, skipping a run retention has deleted —
+ * stopping at the hole wedges the iterator there for every later poll (invariant 22).
+ *
+ * The jump target is `_nextLogId()`, the successor over the store's registered segments — *not*
+ * `_findPosition(0)`, which names the bottom of the contiguous run ending at the current segment
+ * and so lands *past* a survivor sitting between two holes.
+ */
+function nextReadableLogBuffer(
+	transactionLog: TransactionLog,
+	fromLogId: number,
+	latestLogId: number
+): LogBuffer | undefined {
+	let candidateLogId = fromLogId + 1;
+	while (candidateLogId <= latestLogId) {
+		const logBuffer = getLogMemoryMap(transactionLog, candidateLogId);
+		if (logBuffer) {
+			return logBuffer;
+		}
+		if (transactionLog.getLogFileSize(candidateLogId) > 0) {
+			// the store still has bytes for it, so it is durable history that is merely
+			// unmappable right now; stop and pick it up on the next poll
+			return;
+		}
+		// A registered segment can also be absent — unlinked out of band, or by another
+		// process's retention, before this process's purge run forgets it. Its successor can
+		// be absent too, so keep probing rather than stopping at the first one that will not
+		// map: stopping there is the permanent wedge this function exists to prevent.
+		candidateLogId = transactionLog._nextLogId(candidateLogId);
+		if (candidateLogId === 0) {
+			return;
+		}
+	}
+}
+
+/**
+ * The bound for reading `logBuffer`. Native advances this append-owned extent only after a
+ * successful write. It remains attached to the mapping after purge forgets the file object, so
+ * readers retain committed history without interpreting a partial failed append as another frame.
+ */
+function readableExtent(logBuffer: LogBuffer): number {
+	const extent = (logBuffer as Partial<LogBuffer>).readableExtent;
+	if (extent === undefined) {
+		throw new Error(`Transaction log buffer ${logBuffer.logId} has no readableExtent`);
+	}
+	return Math.min(logBuffer.length, extent);
+}
 
 function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {
 	if (logId <= 0) {

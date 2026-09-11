@@ -82,9 +82,15 @@ bool TransactionLogFile::removeFile() {
 	return this->removeFileLocked();
 }
 
+std::error_code TransactionLogFile::getLastRemoveError() {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	return this->lastRemoveError;
+}
+
 void TransactionLogFile::downgradeMapToFrozen() {
 	std::lock_guard<std::mutex> lock(this->fileMutex);
 	if (this->memoryMap) {
+		this->publishReadableExtentLocked();
 		// The file is no longer the current (actively-written) log, so drop the
 		// strong reference. Keep a weak handle for handout dedup; the mapping now
 		// lives exactly as long as the JS external buffer (if any reader mapped it
@@ -131,7 +137,7 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 void TransactionLogFile::open(const double latestTimestamp) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	try {
-		this->openLocked(latestTimestamp);
+		(void) this->openLocked(latestTimestamp);
 	} catch (...) {
 		// A rejected file must not keep its handle — or, on Windows, the mapping
 		// openFile()'s index scan created — or retain an unvalidated extent that a
@@ -142,11 +148,30 @@ void TransactionLogFile::open(const double latestTimestamp) {
 	}
 }
 
-void TransactionLogFile::openLocked(const double latestTimestamp) {
-	if (this->appendBoundaryMarkerEnabled) {
+bool TransactionLogFile::openExisting(const double latestTimestamp) {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+	try {
+		return this->openLocked(latestTimestamp, false);
+	} catch (...) {
+		this->closeLocked();
+		this->size.store(0, std::memory_order_relaxed);
+		throw;
+	}
+}
+
+bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfMissing) {
+	// A creating writer publishes its append marker before its segment. A read
+	// probe must first atomically open the existing segment, or it could create a
+	// marker for a pathname that purge removed between discovery and this call.
+	if (createIfMissing && this->appendBoundaryMarkerEnabled) {
 		this->ensureAppendBoundaryMarker();
 	}
-	this->openFile();
+	if (!this->openFile(createIfMissing)) {
+		return false;
+	}
+	if (!createIfMissing && this->appendBoundaryMarkerEnabled) {
+		this->ensureAppendBoundaryMarker();
+	}
 	uint32_t physicalExtent = this->size.load(std::memory_order_relaxed);
 	uint32_t retiredBoundary = this->retiredAppendBoundary.load(std::memory_order_relaxed);
 	if (retiredBoundary > physicalExtent) {
@@ -238,7 +263,9 @@ void TransactionLogFile::openLocked(const double latestTimestamp) {
 	if (retiredBoundary > 0) {
 		this->size.store(retiredBoundary, std::memory_order_relaxed);
 		this->appendBoundaryLost.store(true, std::memory_order_relaxed);
+		this->publishReadableExtentLocked();
 	}
+	return true;
 }
 
 void TransactionLogFile::loadAppendBoundaryMarkerReadOnly() {
@@ -422,6 +449,7 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 					? this->unclosedTransactionBoundary(scan, scan.validEnd, protectedPosition)
 					: scan.validEnd;
 				this->size.store(newSize, std::memory_order_relaxed);
+				this->publishReadableExtentLocked();
 				if (this->lastFlushedSize > newSize) {
 					this->lastFlushedSize = newSize;
 				}
@@ -526,6 +554,7 @@ void TransactionLogFile::discardUnclosedTransaction(
 	}
 
 	this->size.store(boundary, std::memory_order_relaxed);
+	this->publishReadableExtentLocked();
 	if (this->lastFlushedSize > boundary) {
 		this->lastFlushedSize = boundary;
 	}
@@ -732,6 +761,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	this->updateMemoryMapOverlay();
 #endif
+	this->publishReadableExtentLocked();
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu)\n",
 		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex);
 }
@@ -742,6 +772,15 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, bool isCurrent) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	return this->getMemoryMapLocked(fileSize, isCurrent);
+}
+
+void TransactionLogFile::publishReadableExtentLocked() {
+	auto map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
+	if (map) {
+		map->readableExtent.store(
+			std::min(this->size.load(std::memory_order_relaxed), map->mapSize),
+			std::memory_order_release);
+	}
 }
 
 /**
@@ -782,7 +821,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		return 0xFFFFFFFF;
 	}
 
-	std::lock_guard<std::mutex> indexLock(this->indexMutex);
+	std::unique_lock<std::mutex> indexLock(this->indexMutex);
 
 	// we use our memory maps for fast access to the data
 	char* mappedFile = (char*) memoryMap->map;
@@ -792,6 +831,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	// Set when indexing stops early at a committed-but-not-yet-visible tail (a concurrent append we
 	// couldn't read this pass); used below to start the scan at lastIndexedPosition rather than EOF.
 	bool stoppedAtUnindexedTail = false;
+	bool correctStartupExtent = false;
 	while (this->lastIndexedPosition < this->size) {
 		double entryTimestamp = readDoubleBE(mappedFile + this->lastIndexedPosition);
 		// The header's own timestamp slot is not an entry, so a legitimate value of exactly
@@ -818,7 +858,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			// committed position, so we just stop indexing here and resume from lastIndexedPosition
 			// on a later call once the bytes are visible.
 			if (!this->hasAppendedSinceOpen.load()) {
-				this->size = this->lastIndexedPosition;
+				correctStartupExtent = true;
 			} else {
 				stoppedAtUnindexedTail = true;
 			}
@@ -833,6 +873,22 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		}
 		// read size of the entry and move on
 		this->lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(mappedFile + this->lastIndexedPosition + 8);
+	}
+	if (correctStartupExtent) {
+		// Re-check under fileMutex so the first append cannot publish a larger
+		// committed extent and then be overwritten by this startup correction.
+		std::unique_lock<std::mutex> fileLock;
+		if (!fileMutexHeld) {
+			indexLock.unlock();
+			fileLock = std::unique_lock<std::mutex>(this->fileMutex);
+			indexLock.lock();
+		}
+		if (!this->hasAppendedSinceOpen.load()) {
+			this->size = this->lastIndexedPosition;
+			memoryMap->readableExtent.store(
+				std::min(this->lastIndexedPosition, memoryMap->mapSize),
+				std::memory_order_release);
+		}
 	}
 	// now do the actual search: just a search for the lower bound
 	auto it = this->positionByTimestampIndex.lower_bound(timestamp);

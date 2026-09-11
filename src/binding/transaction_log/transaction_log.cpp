@@ -21,6 +21,40 @@
 
 namespace rocksdb_js {
 
+namespace {
+
+constexpr const char* READABLE_EXTENT_HANDLE = "__rocksdbJsReadableExtentHandle";
+constexpr napi_type_tag READABLE_EXTENT_BUFFER_TAG = {
+	0x47f781f409ad4e13,
+	0x8b8399c4a9e6f252,
+};
+
+napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
+	size_t argc = 0;
+	napi_value jsThis;
+	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, nullptr, &jsThis, nullptr));
+	bool isReadableExtentBuffer = false;
+	napi_status tagStatus = ::napi_check_object_type_tag(
+		env, jsThis, &READABLE_EXTENT_BUFFER_TAG, &isReadableExtentBuffer);
+	if (tagStatus != napi_ok || !isReadableExtentBuffer) {
+		::napi_throw_type_error(env, nullptr, "readableExtent getter called on an incompatible receiver");
+		return nullptr;
+	}
+	napi_value externalHandle;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, jsThis, READABLE_EXTENT_HANDLE, &externalHandle));
+	void* data = nullptr;
+	NAPI_STATUS_THROWS(::napi_get_value_external(env, externalHandle, &data));
+	auto* memoryMapHandle = static_cast<std::shared_ptr<MemoryMap>*>(data);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(
+		env,
+		(*memoryMapHandle)->readableExtent.load(std::memory_order_acquire),
+		&result));
+	return result;
+}
+
+} // namespace
+
 /**
  * Constructor for the `NativeTransactionLog` class.
  *
@@ -205,6 +239,30 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 	return result;
 }
 
+/**
+ * The lowest registered log sequence number greater than the argument, or 0 when
+ * there is none. Lets a reader advancing past a purged run land on the next
+ * segment that actually exists rather than the bottom of the newest contiguous
+ * run, which is what `_findPosition(0)` reports.
+ */
+napi_value TransactionLog::NextLogId(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_LOG_HANDLE("NextLogId");
+	uint32_t sequenceNumber = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[0], &sequenceNumber));
+
+	uint32_t nextSequenceNumber;
+	try {
+		nextSequenceNumber = (*txnLogHandle)->nextSequenceAfter(sequenceNumber);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, nextSequenceNumber, &result));
+	return result;
+}
+
 struct PositionHandle {
 	std::shared_ptr<LogPosition> position;
 };
@@ -277,6 +335,31 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		memoryMapHandle, // finalize_hint
 		&result // [out] result
 	));
+	NAPI_STATUS_THROWS(::napi_type_tag_object(env, result, &READABLE_EXTENT_BUFFER_TAG));
+
+	// A separate shared handle keeps an extracted getter safe after the buffer's
+	// external-memory finalizer has released its own mapping reference.
+	auto readableExtentHandle = std::make_unique<std::shared_ptr<MemoryMap>>(memoryMap);
+	napi_value readableExtentExternal;
+	NAPI_STATUS_THROWS(::napi_create_external(
+		env,
+		readableExtentHandle.get(),
+		[](napi_env env, void* data, void* hint) {
+			delete static_cast<std::shared_ptr<MemoryMap>*>(data);
+		},
+		nullptr,
+		&readableExtentExternal));
+	readableExtentHandle.release();
+	napi_property_descriptor readableExtentProperties[] = {
+		{ READABLE_EXTENT_HANDLE, nullptr, nullptr, nullptr,
+			nullptr, readableExtentExternal, napi_default, nullptr },
+		{ "readableExtent", nullptr, nullptr, GetReadableExtent,
+			nullptr, nullptr, napi_default, nullptr },
+	};
+	NAPI_STATUS_THROWS(::napi_define_properties(
+		env, result,
+		sizeof(readableExtentProperties) / sizeof(napi_property_descriptor),
+		readableExtentProperties));
 
 	// at this point, the transaction log file and the external buffer have a ref to the memory map
 
@@ -461,6 +544,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },
 		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_nextLogId", nullptr, NextLogId, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastFlushed", nullptr, GetLastFlushed, nullptr, nullptr, nullptr, napi_default, nullptr }

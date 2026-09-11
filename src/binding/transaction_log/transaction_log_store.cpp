@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <chrono>
 #include <exception>
 #include <sstream>
@@ -10,6 +11,12 @@
 #include "fstream"
 
 namespace rocksdb_js {
+
+// iostreams do not promise to set errno, so an untouched value must not read as a cause.
+static std::string lastSystemError() {
+	int error = errno;
+	return error ? std::error_code(error, std::system_category()).message() : std::string("stream error");
+}
 
 // Helper function to extract exception message from exception_ptr
 static std::string getExceptionMessage(std::exception_ptr eptr) {
@@ -223,8 +230,8 @@ std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenc
 	if (!logFile) {
 		return nullptr;
 	}
-	if (!logFile->isOpen()) {
-		logFile->open(this->latestTimestamp);
+	if (!this->openIfPresent(*logFile)) {
+		return nullptr;
 	}
 	// Return a strong reference: for a frozen file the log file itself keeps only
 	// a weak handle, so this strong ref (and the JS external buffer it is handed
@@ -242,6 +249,19 @@ std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenc
 		isCurrent);
 }
 
+bool TransactionLogStore::openIfPresent(TransactionLogFile& file) {
+	if (file.isOpen()) {
+		return true;
+	}
+	return file.openExisting(this->latestTimestamp);
+}
+
+uint32_t TransactionLogStore::nextSequenceAfter(uint32_t sequenceNumber) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	auto it = this->sequenceFiles.upper_bound(sequenceNumber);
+	return it == this->sequenceFiles.end() ? 0 : it->first;
+}
+
 uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 
@@ -251,8 +271,8 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 		if (!logFile) {
 			return 0;
 		}
-		if (!logFile->isOpen()) {
-			logFile->open(this->latestTimestamp);
+		if (!this->openIfPresent(*logFile)) {
+			return 0;
 		}
 		return logFile->size;
 	}
@@ -260,8 +280,8 @@ uint64_t TransactionLogStore::getLogFileSize(uint32_t logSequenceNumber) {
 	// get the total size of all log files
 	uint64_t size = 0;
 	for (auto& [key, logFile] : this->sequenceFiles) {
-		if (!logFile->isOpen()) {
-			logFile->open(this->latestTimestamp);
+		if (!this->openIfPresent(*logFile)) {
+			continue;
 		}
 		size += logFile->size;
 	}
@@ -305,47 +325,53 @@ std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
 
 LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-	uint32_t sequenceNumber = this->currentSequenceNumber.load(std::memory_order_relaxed);
-	bool isCurrent = true;
-	uint32_t positionInLogFile = 0;
-	auto it = this->sequenceFiles.find(sequenceNumber);
-	if (it == this->sequenceFiles.end()) {
-		// it is possible that the current log file doesn't exist yet, so we need to look at the previous one
-		it = this->sequenceFiles.find(--sequenceNumber);
-		isCurrent = false;
-	}
-	while (it != this->sequenceFiles.end()) {
+	uint32_t currentSeq = this->currentSequenceNumber.load(std::memory_order_relaxed);
+
+	// Descend through the *registered* segments from the current sequence, stepping by map
+	// order rather than by `--sequenceNumber`. That distinction is the whole point: a missing
+	// sequence is a hole, not the bottom of the log — a segment can be purged, or deleted out
+	// of band and never registered at load — and `find(--sequenceNumber)` ended the walk at
+	// the first one, so every older survivor below it became unreachable and a reader asking
+	// for an old timestamp silently got only the newest contiguous run (invariant 22).
+	//
+	// `above` is the registered sequence one step newer than the entry being examined, so the
+	// two "the timestamp belongs further up" exits can name a segment that exists instead of
+	// `sequenceNumber + 1`, which a hole may have removed.
+	auto it = this->sequenceFiles.upper_bound(currentSeq);
+	uint32_t above = 0;
+	while (it != this->sequenceFiles.begin()) {
+		--it;
+		uint32_t sequenceNumber = it->first;
 		auto logFile = it->second.get();
-		// Directory iteration order is unspecified, so registerLogFile() may not
-		// have opened an older file before a higher sequence became current.
-		if (!logFile->isOpen()) {
-			logFile->open(this->latestTimestamp);
-		}
-		positionInLogFile = logFile->findPositionByTimestamp(
-			timestamp,
-			isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed),
-			isCurrent
-		);
-		// a position of zero means that the timestamp is before the log file header's timestamp, greater than that,
-		// we are in the correct log file to start searching
-		if (positionInLogFile > 0) {
+		bool isCurrent = sequenceNumber == currentSeq;
+		// Directory iteration order is unspecified, so registerLogFile() may not have opened an
+		// older file before a higher sequence became current. Skip a registered segment that is
+		// gone from disk rather than opening it: open() creates, so the walk would leave a
+		// header-only ghost behind (openIfPresent).
+		if (this->openIfPresent(*logFile)) {
+			uint32_t positionInLogFile = logFile->findPositionByTimestamp(
+				timestamp,
+				isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed),
+				isCurrent
+			);
 			if (positionInLogFile == 0xFFFFFFFF) {
-				// beyond the end of this log file
-				if (sequenceNumber < this->currentSequenceNumber.load(std::memory_order_relaxed)) {
-					// revert to next one (because it exists)
-					break;
-				} else { // otherwise position at the end of the log file (JS code can filter from here)
-					positionInLogFile = logFile->size;
+				if (above != 0) {
+					return { TRANSACTION_LOG_FILE_HEADER_SIZE, above };
 				}
+				return { logFile->size.load(std::memory_order_relaxed), sequenceNumber };
 			}
-			// found a valid position in the log file
-			return { positionInLogFile, sequenceNumber };
+			if (positionInLogFile > 0) {
+				return { positionInLogFile, sequenceNumber };
+			}
+			// Only a segment we could actually open becomes `above`: both exits below hand
+			// this back as a position to read from, and naming a registered-but-absent
+			// segment there would send the reader to a file that is not on disk.
+			above = sequenceNumber;
 		}
-		isCurrent = false;
-		it = this->sequenceFiles.find(--sequenceNumber);
-	};
-	// we iterated too far, return to the beginning position in the current log file
-	return { TRANSACTION_LOG_FILE_HEADER_SIZE, sequenceNumber + 1 };
+	}
+	// Older than every registered segment: start at the beginning of the oldest one that exists,
+	// falling back to the current sequence when the store holds no segments at all.
+	return { TRANSACTION_LOG_FILE_HEADER_SIZE, above != 0 ? above : currentSeq };
 }
 
 LogPosition TransactionLogStore::getLastFlushedPosition() {
@@ -377,16 +403,11 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 		return;
 	}
 
-	// Only a definite absence skips the open: a stat that *errors* leaves us
-	// unable to tell, and both callers fail unsafely on an unresolved extent,
-	// while the worst case of opening a since-deleted path is a 13-byte header
-	// stub that the next startup rescan purges.
-	std::error_code existsEc;
-	if (!std::filesystem::exists(file->path, existsEc) && !existsEc) {
+	// The no-create OS open closes the stat/open race with purge: an absent
+	// registered segment remains absent instead of becoming a header-only ghost.
+	if (!file->openExisting(this->latestTimestamp)) {
 		return;
 	}
-
-	file->open(this->latestTimestamp);
 	file->close();
 }
 
@@ -658,6 +679,9 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
+	// Per run, not per process: a directory that stays unwritable stalls the retention
+	// floor, and one line ever would leave every later purge silent about it.
+	bool removeWarned = false;
 	auto lastFlushedPosition = this->getLastFlushedPosition();
 	uint32_t retentionFloorSequence = this->sequenceFiles.rbegin()->first;
 	if (this->sequenceFiles.find(lastFlushedPosition.logSequenceNumber) != this->sequenceFiles.end()) {
@@ -755,6 +779,27 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		uint32_t removedSize = logFile->size.load(std::memory_order_relaxed);
 		auto removed = logFile->removeFile();
 		if (!removed) {
+			// Gone underneath us (another process unlinked it after the scan above):
+			// forget it like the scan does, rather than leaving a segment registered
+			// that retention would keep tripping over.
+			std::error_code existsError;
+			if (!std::filesystem::exists(logFile->path, existsError) && !existsError) {
+				DEBUG_LOG("%p TransactionLogStore::purge Forgetting file removed underneath us: %s\n", this, logFile->path.string().c_str());
+				sequenceNumbersToRemove.push_back(sequenceNumber);
+				continue;
+			}
+			if (!removeWarned) {
+				removeWarned = true;
+				try {
+					std::ostringstream msg;
+					msg << "Transaction log segment " << logFile->path.string() << " could not be deleted ("
+						<< logFile->getLastRemoveError().message() << "); retention cannot advance past it.";
+					DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
+					emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				} catch (...) {
+					// reporting is best-effort
+				}
+			}
 			if (all) {
 				continue;
 			}
@@ -795,6 +840,26 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	// if all log files have been removed, clean up the empty directory
 	// only try to remove if we actually removed at least one file from this store
 	if (all && this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
+		// The live store can survive this destroy when a transaction is still
+		// bound. Invalidate both the correlation ring and callbacks that already
+		// selected a position from it, or an unrelated later RocksDB flush can
+		// recreate txn.state with a stale high sequence and make restarted
+		// retention delete an unflushed replacement segment.
+		this->flushedStateGeneration.fetch_add(1, std::memory_order_relaxed);
+		for (auto& sequencePosition : this->recentlyCommittedSequencePositions) {
+			sequencePosition.position = { 0, 0 };
+			sequencePosition.rocksSequenceNumber = 0x7FFFFFFFFFFFFFFF;
+		}
+		this->nextSequencePositionsCount = 0;
+		{
+			std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
+			if (this->flushedStateFile.is_open()) {
+				this->flushedStateFile.close();
+			}
+			this->flushedStateFile.clear();
+			this->lastWrittenFlushedPosition = { 0, 0 };
+			this->flushedStateWarningEmitted.store(false, std::memory_order_relaxed);
+		}
 		try {
 			if (std::filesystem::exists(this->path)) {
 				DEBUG_LOG("%p TransactionLogStore::purge Removing log store directory: %s\n", this, this->path.string().c_str());
@@ -1117,13 +1182,26 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
  * after restart or crash
  */
 void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceNumber) {
+	// Runs on RocksDB's flush thread, where an escaping exception ends the process.
+	try {
+		this->recordFlushedPosition(rocksSequenceNumber);
+	} catch (const std::exception& e) {
+		this->warnFlushedStateFailure("could not be updated", e.what());
+	} catch (...) {
+		this->warnFlushedStateFailure("could not be updated", "unknown error");
+	}
+}
+
+void TransactionLogStore::recordFlushedPosition(rocksdb::SequenceNumber rocksSequenceNumber) {
 	if (this->isClosing.load(std::memory_order_relaxed)) {
 		return;
 	}
 
 	LogPosition latestSequencePosition = { 0, 0 };
+	uint64_t observedGeneration;
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		observedGeneration = this->flushedStateGeneration.load(std::memory_order_relaxed);
 		// the latest sequence number that has been flushed according to this flush update
 		for (int i = 0; i < RECENTLY_COMMITTED_POSITIONS_SIZE; i++) {
 			SequencePosition sequencePosition = this->recentlyCommittedSequencePositions[i];
@@ -1135,30 +1213,113 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 
 	DEBUG_LOG("%p TransactionLogStore::databaseFlushed, flushed up to logId: %u position %u\n",
 		this, latestSequencePosition.logSequenceNumber, latestSequencePosition.positionInLogFile);
+	this->writeFlushedPosition(latestSequencePosition, observedGeneration);
+}
 
+void TransactionLogStore::writeFlushedPosition(LogPosition latestSequencePosition, uint64_t observedGeneration) {
 	// All file I/O and lastWrittenFlushedPosition updates are protected by
 	// flushedStateMutex (not dataSetsMutex) so that getLastFlushedPosition()
 	// can safely read txn.state from doPurge() without risk of deadlock.
 	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
-
-	// Only write if the position has changed
-	if (latestSequencePosition.fullPosition == lastWrittenFlushedPosition.fullPosition) {
+	if (observedGeneration != this->flushedStateGeneration.load(std::memory_order_relaxed)) {
+		// Purge invalidated the correlation selected by this callback.
 		return;
 	}
 
-	// open the state file if it isn't open yet
-	if (!this->flushedStateFile.is_open()) {
-		auto flushedStateFilePath = this->path / "txn.state";
-		this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
+	auto flushedStateFilePath = this->path / "txn.state";
+	auto stateFileMatches = [&]() {
+		std::ifstream input(flushedStateFilePath, std::ios::binary | std::ios::in);
+		LogPosition recorded = { 0, 0 };
+		input.read(reinterpret_cast<char*>(&recorded), sizeof(recorded));
+		return input.gcount() == static_cast<std::streamsize>(sizeof(recorded)) &&
+			recorded.fullPosition == latestSequencePosition.fullPosition;
+	};
+
+	bool positionChanged = latestSequencePosition.fullPosition != lastWrittenFlushedPosition.fullPosition;
+	if (!positionChanged && lastWrittenFlushedPosition.fullPosition == 0) {
+		return;
+	}
+	if (!positionChanged && stateFileMatches()) {
+		this->flushedStateWarningEmitted.store(false, std::memory_order_relaxed);
+		return;
 	}
 
-	// write the position to the file
+	// Never carry pathname identity across callbacks. Purge or another process
+	// can unlink/replace txn.state while this stream remains valid, making a
+	// successful write land in an orphaned inode while retention reads the stale
+	// replacement. Reopen by pathname for every write and verify after closing.
 	if (this->flushedStateFile.is_open()) {
-		this->flushedStateFile.seekp(0);
-		this->flushedStateFile.write(reinterpret_cast<const char*>(&latestSequencePosition), sizeof(latestSequencePosition));
-		this->flushedStateFile.flush();
-		lastWrittenFlushedPosition = latestSequencePosition;
-		this->databaseFlushes.fetch_add(1, std::memory_order_relaxed);
+		this->flushedStateFile.close();
+	}
+	this->flushedStateFile.clear();
+
+	// A destroy's final directory removal happens after doClose() sets isClosing
+	// and takes flushedStateMutex. A flush ordered before it may recreate the
+	// directory, which destroy subsequently removes.
+	if (this->isClosing.load(std::memory_order_relaxed)) {
+		return;
+	}
+	try {
+		rocksdb_js::tryCreateDirectory(this->path);
+	} catch (const std::exception& e) {
+		this->warnFlushedStateFailure("could not recreate its directory", e.what());
+		return;
+	}
+	errno = 0;
+	// In place, never truncating: the 8-byte record is overwritten whole, and a
+	// truncating reopen after a failed write would erase the last durable
+	// position before the retry that may fail again (ENOSPC).
+	this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::in | std::ios::out);
+	if (!this->flushedStateFile.is_open()) {
+		// Create only when verifiably absent: the creating mode truncates, and an
+		// existing file that merely refused read/write must keep its record.
+		std::error_code absentError;
+		if (!std::filesystem::exists(flushedStateFilePath, absentError) && !absentError) {
+			this->flushedStateFile.clear();
+			this->flushedStateFile.open(flushedStateFilePath, std::ios::binary | std::ios::out);
+		}
+	}
+	if (!this->flushedStateFile.is_open()) {
+		this->warnFlushedStateFailure("could not be opened", lastSystemError().c_str());
+		return;
+	}
+
+	errno = 0;
+	this->flushedStateFile.seekp(0);
+	this->flushedStateFile.write(reinterpret_cast<const char*>(&latestSequencePosition), sizeof(latestSequencePosition));
+	this->flushedStateFile.flush();
+	bool writeSucceeded = this->flushedStateFile.good();
+	this->flushedStateFile.close();
+	if (!writeSucceeded || this->flushedStateFile.fail()) {
+		// Leave lastWrittenFlushedPosition alone so the next flush retries the write.
+		this->warnFlushedStateFailure("could not be written", lastSystemError().c_str());
+		this->flushedStateFile.clear();
+		return;
+	}
+	this->flushedStateFile.clear();
+	if (!stateFileMatches()) {
+		// The pathname was removed or replaced after open. The descriptor write is
+		// not a persisted retention boundary unless the pathname reads it back.
+		this->warnFlushedStateFailure("could not be verified", "pathname changed during write");
+		return;
+	}
+	lastWrittenFlushedPosition = latestSequencePosition;
+	this->flushedStateWarningEmitted.store(false, std::memory_order_relaxed);
+	this->databaseFlushes.fetch_add(1, std::memory_order_relaxed);
+}
+
+void TransactionLogStore::warnFlushedStateFailure(const char* what, const char* detail) noexcept {
+	if (this->flushedStateWarningEmitted.exchange(true, std::memory_order_relaxed)) {
+		return;
+	}
+	try {
+		std::ostringstream msg;
+		msg << "Transaction log flushed-state file " << (this->path / "txn.state").string()
+			<< " " << what << " (" << detail << "); retention cannot advance until a later flush succeeds.";
+		DEBUG_LOG("%p TransactionLogStore::databaseFlushed WARNING: %s\n", this, msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	} catch (...) {
+		// reporting is best-effort on the flush thread
 	}
 }
 

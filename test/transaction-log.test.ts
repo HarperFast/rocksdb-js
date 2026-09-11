@@ -12,6 +12,7 @@ import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
 import {
+	chmodSync,
 	existsSync,
 	readFileSync,
 	readdirSync,
@@ -19,13 +20,14 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	unlinkSync,
 } from 'node:fs';
-import { mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { release } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const {
 	TRANSACTION_LOG_FILE_HEADER_SIZE,
@@ -282,6 +284,23 @@ describe('Transaction Log', () => {
 				const buffer = log._getMemoryMapOfFile(1);
 				expect(buffer).toBeDefined();
 				expect(buffer?.subarray(0, 4).toString()).toBe('WOOF');
+				const readableExtentGetter = Object.getOwnPropertyDescriptor(
+					buffer!,
+					'readableExtent'
+				)?.get;
+				expect(() => readableExtentGetter?.call({})).toThrow(
+					/readableExtent getter called on an incompatible receiver/
+				);
+				expect(buffer?.readableExtent).toBe(
+					TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + value.length
+				);
+
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+				});
+				expect(buffer?.readableExtent).toBe(
+					TRANSACTION_LOG_FILE_HEADER_SIZE + 2 * (TRANSACTION_LOG_ENTRY_HEADER_SIZE + value.length)
+				);
 			}));
 	});
 
@@ -1433,6 +1452,11 @@ describe('Transaction Log', () => {
 		throw new Error(`iterator did not finish within ${maxSteps} steps`);
 	}
 
+	function attachReadableExtent(buffer: Buffer, extent: number): Buffer {
+		Object.defineProperty(buffer, 'readableExtent', { value: Math.min(buffer.length, extent) });
+		return buffer;
+	}
+
 	describe('corruption handling', () => {
 		// A torn/corrupt entry can declare a length far larger than the bytes
 		// actually present (e.g. a partial write that left a header pointing past
@@ -1440,7 +1464,6 @@ describe('Transaction Log', () => {
 		// rather than driving an unbounded allocUnsafe (OOM), building a multi-GB
 		// hex string, or dereferencing an undefined buffer. Regression for the
 		// race_alerts crash-loop investigation.
-
 		function buildLogBuffer(
 			entries: { timestamp: number; length: number; flags: number; data: Buffer }[]
 		): Buffer {
@@ -1498,7 +1521,10 @@ describe('Transaction Log', () => {
 				// the copy from _getMemoryMapOfFile lets us exercise the reader's framing
 				// path without a read-only mmap we can't mutate in place.
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryLengthOffset =
 					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10) + 8;
@@ -1551,7 +1577,10 @@ describe('Transaction Log', () => {
 				// length, `subarray` would silently hand back a truncated (misframed) entry.
 				const real = log._getMemoryMapOfFile(1)!;
 				const truncatedLength = committedSize - 5;
-				const copyBuffer = Buffer.from(new ArrayBuffer(truncatedLength));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(truncatedLength)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer, 0, 0, truncatedLength);
 
 				log._logBuffers.clear();
@@ -1589,7 +1618,10 @@ describe('Transaction Log', () => {
 
 				// break the 2nd entry's length field; entries 3-12 stay well-formed behind it
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
@@ -1638,7 +1670,10 @@ describe('Transaction Log', () => {
 				// A zero-length frame is invalid, not an empty transaction. Entries after it remain
 				// readable once the caller resumes the iterator after the corruption report.
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				copyBuffer.writeUInt32BE(0, secondEntryStart + 8);
@@ -1674,7 +1709,10 @@ describe('Transaction Log', () => {
 				expect(Array.from(log.query({ start: 0 })).length).toBe(22);
 
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const firstBrokenEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				const secondBrokenEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + 11 * entryStride;
@@ -1714,7 +1752,10 @@ describe('Transaction Log', () => {
 				expect(Array.from(log.query({ start: 0 })).length).toBe(12);
 
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				const deceptiveFrameStart = secondEntryStart + TRANSACTION_LOG_ENTRY_HEADER_SIZE;
@@ -1744,7 +1785,7 @@ describe('Transaction Log', () => {
 				}
 			}));
 
-		it('query() reports corruption without scanning when the written extent cannot be read', () =>
+		it('query() resyncs from the mapping extent when the store no longer knows the file', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 				const value = Buffer.alloc(10, 'a');
@@ -1757,7 +1798,10 @@ describe('Transaction Log', () => {
 				expect(Array.from(log.query({ start: 0 })).length).toBe(4);
 
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 				copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
@@ -1786,12 +1830,37 @@ describe('Transaction Log', () => {
 						error = caught;
 					}
 					expect(error).toBeInstanceOf(CorruptFrameError);
-					expect((error as CorruptFrameError).resyncPosition).toBeUndefined();
+					expect((error as CorruptFrameError).resyncPosition).toBe(secondEntryStart + entryStride);
 					delete (log as { getLogFileSize?: unknown }).getLogFileSize;
-					expect(iterator.next().done).toBe(true);
+					expect(Array.from(iterator)).toHaveLength(2);
 				} finally {
 					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
 					delete (log as { getLogFileSize?: unknown }).getLogFileSize;
+				}
+			}));
+
+		it('query() rejects a mapped buffer without a readable extent', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 100 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				for (const fill of [1, 2]) {
+					await db.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(50, fill), txn.id);
+					});
+				}
+				expect(Array.from(log.query({ start: 0 }))).toHaveLength(2);
+				const copyBuffer = Buffer.from(log._getMemoryMapOfFile(1)!);
+				log._logBuffers.clear();
+				(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
+
+				Object.defineProperty(log, '_getMemoryMapOfFile', {
+					value: () => copyBuffer,
+					configurable: true,
+					writable: true,
+				});
+				try {
+					expect(() => Array.from(log.query({ start: 0 }))).toThrow(/has no readableExtent/);
+				} finally {
+					delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
 				}
 			}));
 
@@ -1810,7 +1879,10 @@ describe('Transaction Log', () => {
 
 				// break the final entry's length; only zero padding follows it
 				const real = log._getMemoryMapOfFile(1)!;
-				const copyBuffer = Buffer.from(new ArrayBuffer(real.length));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(real.length)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer);
 				const thirdEntryStart =
 					TRANSACTION_LOG_FILE_HEADER_SIZE + 2 * (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10);
@@ -1855,7 +1927,10 @@ describe('Transaction Log', () => {
 
 			const real = log._getMemoryMapOfFile(1)!;
 			// mimic the mapped buffer: real data followed by pre-extended zero fill
-			const copyBuffer = Buffer.from(new ArrayBuffer(real.length + 4096));
+			const copyBuffer = attachReadableExtent(
+				Buffer.from(new ArrayBuffer(real.length + 4096)),
+				real.readableExtent
+			);
 			real.copy(copyBuffer);
 			const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
 			copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
@@ -1928,7 +2003,10 @@ describe('Transaction Log', () => {
 				);
 				const real = log._getMemoryMapOfFile(1)!;
 				const truncatedLength = committedWord[0] - 5;
-				const copyBuffer = Buffer.from(new ArrayBuffer(truncatedLength));
+				const copyBuffer = attachReadableExtent(
+					Buffer.from(new ArrayBuffer(truncatedLength)),
+					real.readableExtent
+				);
 				real.copy(copyBuffer, 0, 0, truncatedLength);
 
 				log._logBuffers.clear();
@@ -2176,6 +2254,35 @@ describe('Transaction Log', () => {
 				expect(existsSync(logFile)).toBe(true);
 				expect(db.purgeLogs({ destroy: true })).toEqual([logFile]);
 				expect(existsSync(logDirectory)).toBe(false);
+			}));
+
+		it('should not recreate flushed state from correlations destroyed with the last segment', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const logFile = join(logDirectory, '1.txnlog');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('committed'), txn.id);
+					db.putSync('committed', true, { transaction: txn });
+				});
+				db.flushSync();
+
+				// Keep the store live after destroy: the unwritten entry binds this
+				// transaction but has not created a replacement segment.
+				const pending = new Transaction(db.store);
+				log.addEntry(Buffer.from('pending'), pending.id);
+				try {
+					expect(db.purgeLogs({ destroy: true, name: 'foo' })).toEqual([logFile]);
+					expect(existsSync(logDirectory)).toBe(false);
+
+					// A later unrelated flush used to replay the old correlation ring and
+					// recreate txn.state with the deleted segment's sequence.
+					db.putSync('unrelated', true);
+					db.flushSync();
+					expect(existsSync(logDirectory)).toBe(false);
+				} finally {
+					pending.abort();
+				}
 			}));
 
 		// Paths the API hands back keep the caller's spelling. The registry keys
@@ -2597,6 +2704,380 @@ describe('Transaction Log', () => {
 				expect(Array.from(log.query({ start: 0 }))).toHaveLength(1);
 			}));
 
+		// Purging a segment unlinks it; a reader's memory map is the other link to the same
+		// immutable inode, so the entries it already mapped stay readable and are still served.
+		// What must not survive the purge is the mapping: a strong cache of it kept the deleted
+		// file resident for the life of the process (HarperFast/harper#2337).
+		describe('reader state after purge', () => {
+			// `_findPosition` packs {position, logId} into one float; the log id is the high word.
+			const positionFloat = new Float64Array(1);
+			const positionWords = new Uint32Array(positionFloat.buffer);
+			const logIdOf = (position: number) => {
+				positionFloat[0] = position;
+				return positionWords[1];
+			};
+
+			const writeEntry = (db: RocksDatabase, log: TransactionLog, fill: number, length: number) =>
+				db.transaction(async (txn) => {
+					const value = Buffer.alloc(length, fill);
+					log.addEntry(value, txn.id);
+					db.putSync(`${log.name}-${fill}`, value, { transaction: txn });
+				});
+
+			// Two 150-byte entries fit in segment 1 under a 500-byte cap; the 300-byte third
+			// entry does not and rotates to segment 2. The flush moves the retention floor to
+			// segment 2, so the purge deletes segment 1.
+			const seedFirstSegment = async (db: RocksDatabase, log: TransactionLog) => {
+				await writeEntry(db, log, 1, 150);
+				await writeEntry(db, log, 2, 150);
+			};
+			const rotateAndPurgeFirstSegment = async (
+				db: RocksDatabase,
+				log: TransactionLog,
+				logDirectory: string
+			) => {
+				await writeEntry(db, log, 3, 300);
+				db.flushSync();
+				expect(db.purgeLogs({ name: log.name, before: Date.now() + 1000 })).toEqual([
+					join(logDirectory, '1.txnlog'),
+				]);
+			};
+
+			// These three assert that the FIRST purge deletes the segment while a reader still
+			// maps it, which is a POSIX guarantee only: Windows has been observed both
+			// removing a mapped segment and refusing to (see the convergence test below, which
+			// is the portable version of the same contract).
+			it.skipIf(process.platform === 'win32')(
+				'should finish the segment it mapped before the purge',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						await seedFirstSegment(db, log);
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						await rotateAndPurgeFirstSegment(db, log, join(dbPath, 'transaction_logs', 'foo'));
+
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+					})
+			);
+
+			// The mapping a reader holds also carries entries appended after it last polled: the
+			// writer extends the current segment's overlay in place. Bounding the read by the
+			// store's extent — which is gone once the segment is purged — dropped exactly those.
+			it.skipIf(process.platform === 'win32')(
+				'should yield entries appended to the segment it mapped before the purge',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						await writeEntry(db, log, 1, 150);
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						// lands in segment 1, which the iterator mapped but has not read again
+						await writeEntry(db, log, 2, 150);
+						await rotateAndPurgeFirstSegment(db, log, join(dbPath, 'transaction_logs', 'foo'));
+
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+					})
+			);
+
+			// Also POSIX-only for a second reason: the orphan is appended with an `a` handle,
+			// which lands at physical EOF. On Windows that is the end of the pre-extended
+			// segment rather than the end of the entries, so it models a failed append here
+			// only.
+			it.skipIf(process.platform === 'win32')(
+				'should not read frame-shaped physical bytes past a purged segment logical extent',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 200 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						await writeEntry(db, log, 1, 150);
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						// Model a failed append whose bytes landed but did not advance the
+						// append-owned extent. This complete-looking frame ends exactly at
+						// the mapped capacity, so a framing scan would accept it.
+						const orphan = Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE + 11, 99);
+						orphan.writeDoubleBE(Date.now(), 0);
+						orphan.writeUInt32BE(11, 8);
+						orphan.writeUInt8(1, 12);
+						await appendFile(join(dbPath, 'transaction_logs', 'foo', '1.txnlog'), orphan);
+
+						await writeEntry(db, log, 2, 50);
+						db.flushSync();
+						expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([
+							join(dbPath, 'transaction_logs', 'foo', '1.txnlog'),
+						]);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2]);
+					})
+			);
+
+			// A reader that fell behind the retention floor used to stop at the hole and stop
+			// there on every later poll, so it never saw another entry.
+			it('should resume past a purged run rather than stopping at the hole', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+					const log = db.useLog('foo');
+					const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+					await writeEntry(db, log, 1, 300);
+					const iterator = log.query({ start: 0 });
+					expect(iterator.next().value?.data[0]).toBe(1);
+
+					for (const fill of [2, 3, 4]) {
+						await writeEntry(db, log, fill, 300);
+					}
+					db.flushSync();
+					expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual(
+						[1, 2, 3].map((sequence) => join(logDirectory, `${sequence}.txnlog`))
+					);
+
+					expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([4]);
+					expect(Array.from(log.query({ start: 0 })).map((entry) => entry.data[0])).toEqual([4]);
+				}));
+
+			it.skipIf(!globalThis.gc || process.platform !== 'linux')(
+				'should release the mapping of a purged segment without a restart',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						const purgedLogFile = join(logDirectory, '1.txnlog');
+						const deletedMappings = () =>
+							readFileSync('/proc/self/maps', 'utf8')
+								.split('\n')
+								.filter((line) => line.includes(`${purgedLogFile} (deleted)`));
+						await seedFirstSegment(db, log);
+
+						// a committed read caches the current segment's mapping on the log, and a
+						// live iterator holds it too
+						expect(Array.from(log.query({ start: 0 }))).toHaveLength(2);
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						await rotateAndPurgeFirstSegment(db, log, logDirectory);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+
+						const end = performance.now() + 5000;
+						while (deletedMappings().length > 0 && performance.now() < end) {
+							globalThis.gc!();
+							await delay(20);
+						}
+						expect(deletedMappings()).toEqual([]);
+					})
+			);
+
+			// A hole is not always a prefix: `purge({all})` continues past a segment it could
+			// not unlink, and a restart registers only the segments still on disk. When a
+			// survivor sits between two holes, `_findPosition(0)` is the wrong question to ask
+			// for "what comes after N" — it walks backward from the current sequence and stops
+			// at the first gap, so it names the bottom of the newest contiguous run and lands
+			// past the survivor, whose committed entries are then never yielded.
+			it('resolves the successor across a hole rather than the newest contiguous run', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						let log = database.useLog('foo');
+						for (const fill of [1, 2, 3, 4, 5]) {
+							await writeEntry(database, log, fill, 300);
+						}
+						database.close();
+
+						// leave 1, 3 and 5 on disk; a reopen registers only what it finds
+						unlinkSync(join(logDirectory, '2.txnlog'));
+						unlinkSync(join(logDirectory, '4.txnlog'));
+
+						database = RocksDatabase.open(dbPath);
+						log = database.useLog('foo');
+
+						expect(log._nextLogId(2)).toBe(3);
+						expect(log._nextLogId(4)).toBe(5);
+						expect(log._nextLogId(5)).toBe(0);
+
+						// Segment 3 is on disk and registered, so the skip was a lookup answering the
+						// wrong question rather than a missing segment. Asserted by presence, not by
+						// `getLogFileSize()`: reading the extent *opens* the segment, and an open
+						// handle keeps reporting the real size after an unlink (invariant 20), which
+						// would defeat the absence set up next. Every read below is ordered for the
+						// same reason — nothing may touch a segment before it is meant to be gone.
+						expect(existsSync(join(logDirectory, '3.txnlog'))).toBe(true);
+
+						// a registered successor can be absent too — one hop is not enough, and
+						// stopping at it is the permanent wedge, so the probe has to keep going
+						unlinkSync(join(logDirectory, '3.txnlog'));
+						expect(log.getLogFileSize(3)).toBe(0);
+						expect(log._nextLogId(3)).toBe(5);
+						expect(log.getLogFileSize(5)).toBeGreaterThan(0);
+
+						// the walk descends by map order, so a hole no longer ends it: it reaches
+						// the oldest survivor instead of stopping at the newest contiguous run
+						expect(logIdOf(log._findPosition(0))).toBe(1);
+
+						// end to end over a three-wide gap — 2 and 4 were never registered, 3 is
+						// registered but absent — so positioning descends past it and advancing
+						// probes across all three. The old lookup started at 5 and yielded only [5].
+						expect(Array.from(log.query({ start: 0 })).map((entry) => entry.data[0])).toEqual([
+							1, 5,
+						]);
+
+						// a timestamp newer than everything exercises the other exit: the walk runs
+						// out above rather than below, and must land on a segment that is on disk
+						const beyond = Date.now() + 60_000;
+						const beyondId = logIdOf(log._findPosition(beyond));
+						expect([1, 5]).toContain(beyondId);
+						expect(existsSync(join(logDirectory, `${beyondId}.txnlog`))).toBe(true);
+						expect(Array.from(log.query({ start: beyond }))).toEqual([]);
+					} finally {
+						database.close();
+					}
+				}));
+
+			// A read probe must use an atomic no-create open. A separate existence check
+			// followed by the normal creating open leaves a TOCTOU window where purge can
+			// unlink the segment and the read recreates a ghost that startup registers again.
+			it('does not recreate a registered segment that was unlinked underneath it', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						let log = database.useLog('foo');
+						for (const fill of [1, 2, 3]) {
+							await writeEntry(database, log, fill, 300);
+						}
+						database.close();
+
+						database = RocksDatabase.open(dbPath);
+						log = database.useLog('foo');
+
+						// segment 1 is registered but closed, and now gone from disk
+						const ghost = join(logDirectory, '1.txnlog');
+						expect(existsSync(ghost)).toBe(true);
+						unlinkSync(ghost);
+
+						expect(log.getLogFileSize(1)).toBe(0);
+						expect(existsSync(ghost)).toBe(false);
+
+						// the aggregate walk takes the same path over every registered segment
+						expect(log.getLogFileSize()).toBeGreaterThan(0);
+						expect(existsSync(ghost)).toBe(false);
+
+						// so does the timestamp walk, which visits every registered segment
+						// below the current one looking for the start position
+						expect(Array.from(log.query({ start: 0 })).length).toBeGreaterThan(0);
+						expect(existsSync(ghost)).toBe(false);
+					} finally {
+						database.close();
+					}
+				}));
+
+			it('stops at a durable segment whose mapping is temporarily unavailable', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+					const log = db.useLog('foo');
+					await writeEntry(db, log, 1, 300);
+					const iterator = log.query({ start: 0 });
+					expect(iterator.next().value?.data[0]).toBe(1);
+					await writeEntry(db, log, 2, 300);
+					await writeEntry(db, log, 3, 300);
+
+					const realGetMemoryMap = log._getMemoryMapOfFile.bind(log);
+					Object.defineProperty(log, '_getMemoryMapOfFile', {
+						value: (sequence: number) => (sequence === 2 ? undefined : realGetMemoryMap(sequence)),
+						configurable: true,
+					});
+					try {
+						expect(Array.from(iterator)).toEqual([]);
+					} finally {
+						delete (log as { _getMemoryMapOfFile?: unknown })._getMemoryMapOfFile;
+					}
+					expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+				}));
+
+			// What a purge owes a reader that mapped the segment: its committed entries, and
+			// the space back once nothing maps it. POSIX unlinks the name immediately; a
+			// filesystem that refuses to remove a mapped file leaves the segment registered
+			// and the next run reclaims it, so only the convergence is portable. The read of
+			// `buffer` after the purge is what holds the mapping across it — an earlier
+			// revision asserted a Windows-only refusal while its last read of the reference
+			// was before the purge, leaving V8 free to collect it first.
+			it.skipIf(!globalThis.gc)(
+				'should reclaim a mapped segment without losing the entries it serves',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						const segment = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+						await seedFirstSegment(db, log);
+						const iterator = log.query({ start: 0 });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						// a direct reference, so the mapping is live regardless of when the weak
+						// query caches are collected
+						let buffer = log._getMemoryMapOfFile(1);
+						expect(buffer).toBeDefined();
+						await writeEntry(db, log, 3, 300);
+						db.flushSync();
+
+						const first = db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+						if (process.platform !== 'win32') {
+							expect(first).toEqual([segment]);
+						}
+
+						// the mapping is still live, and still serves everything it mapped
+						expect(buffer!.readableExtent).toBeGreaterThan(0);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+
+						// releasing it reclaims the space: either the name is already gone, or a
+						// later run removes what it could not remove while the mapping was live
+						buffer = undefined;
+						const end = performance.now() + 10000;
+						while (existsSync(segment) && performance.now() < end) {
+							globalThis.gc!();
+							await delay(100);
+							db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+						}
+						expect(existsSync(segment)).toBe(false);
+					}),
+				30000
+			);
+
+			// A refused unlink has no portable trigger, so force one: an unwritable store
+			// directory fails the unlink with EACCES, the same branch a sharing violation
+			// takes. Root ignores the permission, so this only runs unprivileged.
+			it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+				'should keep a refused segment registered, warn once, and reclaim it next run',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						const segment = join(logDirectory, '1.txnlog');
+						await seedFirstSegment(db, log);
+						await writeEntry(db, log, 3, 300);
+						db.flushSync();
+
+						const warnings: string[] = [];
+						const onWarning = (message: string) => {
+							if (message.includes(segment)) warnings.push(message);
+						};
+						RocksDatabase.on('log.warn', onWarning);
+						const directoryMode = statSync(logDirectory).mode;
+						try {
+							chmodSync(logDirectory, 0o500);
+							expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([]);
+							expect(existsSync(segment)).toBe(true);
+							// the operator signal for a stalled retention floor, delivered end to end
+							await vi.waitFor(() => expect(warnings).toHaveLength(1));
+						} finally {
+							chmodSync(logDirectory, directoryMode);
+							RocksDatabase.off('log.warn', onWarning);
+						}
+
+						// still registered rather than forgotten, so the next run reclaims it
+						expect(log.getLogFileSize(1)).toBeGreaterThan(0);
+						expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([segment]);
+						expect(existsSync(segment)).toBe(false);
+					})
+			);
+		});
+
 		it('should return valid lastCommittedPosition after purging earlier log files and reopening', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
@@ -2688,6 +3169,32 @@ describe('Transaction Log', () => {
 					expect(queryResults.length).toBe(1);
 				}
 			));
+
+		it.skipIf(process.platform === 'win32')('should restore txn.state after it was unlinked', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				const stateFile = join(dbPath, 'transaction_logs', 'foo', 'txn.state');
+				const value = Buffer.alloc(10, 'a');
+				const commit = () =>
+					db.transaction(async (txn) => {
+						log.addEntry(value, txn.id);
+						db.putSync('foo', value, { transaction: txn });
+					});
+
+				await commit();
+				db.flushSync();
+				expect(existsSync(stateFile)).toBe(true);
+
+				// The next flush must reopen the pathname rather than writing through any
+				// descriptor that still names the unlinked inode.
+				await unlink(stateFile);
+				await commit();
+				db.flushSync();
+				expect(existsSync(stateFile)).toBe(true);
+				const contents = readFileSync(stateFile);
+				expect(contents.readUInt32LE(4)).toBe(1);
+			})
+		);
 	});
 
 	describe('flush()', () => {

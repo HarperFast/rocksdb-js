@@ -288,6 +288,16 @@ struct TransactionLogFile final {
 	 */
 	std::atomic<bool> malformedBackupWarningEmitted = false;
 
+	/** Empty when the last removeFile() succeeded or the file was already gone. */
+	std::error_code lastRemoveError;
+
+	/**
+	 * Copy of lastRemoveError taken under fileMutex. The field is a plain
+	 * std::error_code, so an unlocked read can tear its value/category pair
+	 * against a concurrent retirement or close removing the same file.
+	 */
+	std::error_code getLastRemoveError();
+
 	TransactionLogFile(
 		const std::filesystem::path& p,
 		const uint32_t seq,
@@ -337,6 +347,12 @@ struct TransactionLogFile final {
 	 * Opens the log file for reading and writing.
 	 */
  	void open(const double latestTimestamp);
+
+	/**
+	 * Opens an existing log file without creating either it or its parent.
+	 * Returns false when the pathname is absent at the atomic OS open.
+	 */
+	bool openExisting(const double latestTimestamp);
 
 	/**
 	 * Open-time crash recovery for the v1 format. Scans the file's framing and,
@@ -446,7 +462,7 @@ struct TransactionLogFile final {
 	/**
 	 * Body of open(). Precondition: the caller already holds fileMutex.
 	 */
-	void openLocked(const double latestTimestamp);
+	bool openLocked(const double latestTimestamp, bool createIfMissing = true);
 
 	/**
 	 * Counts the committed entry frames in this log file by reading its on-disk
@@ -501,6 +517,9 @@ struct TransactionLogFile final {
 	 * empty/too-small file.
 	 */
 	std::shared_ptr<MemoryMap> getMemoryMapLocked(uint32_t fileSize, bool isCurrent);
+
+	/** Publish append-owned size to an existing mapping. Caller holds fileMutex. */
+	void publishReadableExtentLocked();
 
 	/**
 	 * Hints the kernel that this log's file-backed pages are cold (MADV_COLD),
@@ -583,7 +602,7 @@ private:
 	/**
 	 * Platform specific function that opens the log file for reading and writing.
 	 */
-	void openFile();
+	bool openFile(bool createIfMissing = true);
 
 	/**
 	 * Platform specific function that reads data from the log file.
@@ -693,14 +712,21 @@ struct MemoryMap final {
 	uint32_t fileSize = 0;
 
 	/**
+	 * The append-owned logical extent that readers may consume. This stays
+	 * authoritative after purge unlinks the file and the mapping outlives its
+	 * TransactionLogFile, so physical orphan bytes never become log entries.
+	 */
+	std::atomic<uint32_t> readableExtent = 0;
+
+	/**
 	 * Count of live MemoryMap instances across the process. Lets tests verify
 	 * that releasing all JS references to a (frozen) log's external buffer
 	 * actually unmaps the mapping rather than leaving it retained.
 	 */
 	static std::atomic<int64_t> liveCount;
 
-	MemoryMap(void* map, uint32_t mapSize)
-		: map(map), mapSize(mapSize), fileSize(mapSize) {
+	MemoryMap(void* map, uint32_t mapSize, uint32_t readableExtent)
+		: map(map), mapSize(mapSize), fileSize(mapSize), readableExtent(readableExtent) {
 		liveCount.fetch_add(1, std::memory_order_relaxed);
 	}
 

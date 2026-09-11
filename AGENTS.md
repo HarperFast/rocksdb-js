@@ -39,7 +39,10 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 untouched and must be checked by hand. Markdown is checked, which includes the ordered list of
 invariants below: a branch that adds an invariant while `main` adds another **renumbers cleanly in
 git and still fails `fmt:check` on the merge ref**, because both sides claim the same number. Rebase
-onto `main` and renumber before pushing rather than reading the red check as unrelated.
+onto `main` and renumber before pushing rather than reading the red check as unrelated;
+`git merge-tree --write-tree origin/main HEAD` builds the tree CI actually formats, so you can check
+it without pushing. (oxfmt leaves lazy `1.` numbering alone, but the invariants are cited by number
+in prose, so they are numbered explicitly on purpose.)
 
 ### Development Workflow
 
@@ -478,13 +481,19 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     writes and #2063 starved a replication stream for 11 days. Keep `RESYNC_MIN_FRAMES` in
     `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
 
-    The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
-    append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size).
-    An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
-    fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
-    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
-    Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
-    a per-frame call would tax every healthy read.
+    The resync scan must be bounded by the **written extent**: the live mapping-carried
+    `readableExtent` described in invariant 22, which is seeded from append-owned
+    `TransactionLogFile::size` — see invariant 5 — and survives the store forgetting a purged
+    segment. It must use **neither** the physical nor raw mapped size. An uncommitted read's own
+    limit is the pre-extended memory map, and every offset in that zero fill reads as an
+    end-of-entries marker:
+    scanning against it both loses the exact-end signal and, if a zero were taken as a terminator,
+    would let a chain "end" anywhere in megabytes of padding. It is also not merely imprecise but
+    slow in the way that matters — `findResyncPosition` tries every start offset, so a mapped-capacity
+    bound byte-scans the whole pre-extended map on the JS thread and then reports a _recoverable_
+    mid-log break as a torn tail, which is the harper#2016 amputation this invariant exists to
+    prevent. Resolve it only on a break: even the mapping-carried getter crosses into native, so a
+    per-frame call would tax every healthy read.
 
 12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
     commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —
@@ -871,6 +880,94 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `core/wbm_stall_watchdog.h` and GoogleTest-covered; a test that reaches a real stall must run in
     a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
     and the runner's own timeout cannot fire (#781 item 2).
+
+22. **A purged transaction-log segment stays readable through a mapping that already exists, but
+    nothing may pin that mapping**: `purgeLogs()` unlinks the file, which removes one link to an
+    inode whose bytes a retired segment never changes again. A reader's `MemoryMap` is the other
+    link, so the entries it mapped are still exactly the committed history and are still served —
+    truncating a read there would drop acknowledged entries that are perfectly readable. What the
+    purge is actually for is reclaiming the space, and that is what a strong cache of the mapping
+    defeated (HarperFast/harper#2337: one 16 MiB mapping of a deleted `.txnlog` resident until
+    restart). So:
+    - `TransactionLog._currentLogBuffer` — the fast path over the per-segment `_logBuffers` cache —
+      holds a `WeakRef`. It is only ever refreshed by `query()`, so a long-lived reader that calls
+      `query()` once and `next()` forever (harper's audit subscription) froze it on whatever segment
+      was current then, and retention later deleted exactly that segment. `_logBuffers` was already
+      weak; with both weak, the mapping is released at the next GC once the iterator holding it has
+      moved on, with no purge-time invalidation and no cross-handle signalling — which matters
+      because the store is process-global and every handle and `worker_threads` worker has its own
+      JS caches.
+    - **Only the convergence is portable — do not assert an outcome for one purge run on
+      Windows.** POSIX always unlinks. Windows CI on this branch has shown both outcomes for the
+      same test: a segment a reader still mapped was refused at one head (`9a8606a8`) and removed
+      at the next (`c8e790a0`), with no change to the mapping's lifetime in between; which one
+      happens is not currently explained. So `removeFile()` uses the non-throwing
+      `std::filesystem::remove` overloads on both platforms (a sharing violation used to unwind a
+      C++ exception through the N-API purge boundary), a refused segment stays registered and is
+      reported once per run via `log.warn`, and the next run after the mapping is released reclaims
+      it. Tests that assert a specific first-run outcome are POSIX-only; the portable contract —
+      the reader keeps every entry it mapped, and retention converges — is asserted cross-platform.
+      Whatever holds the mapping must be read _after_ the purge, or V8 may collect it first and the
+      test proves nothing about a live mapping.
+    - A segment that vanished between the purge's scan and its unlink is forgotten from
+      `sequenceFiles` the way the scan forgets an already-missing one, rather than left registered.
+    - The store forgets a purged segment, so `getLogFileSize()` reports 0 for it and the mapping
+      becomes the only remaining description of the file. Every `MemoryMap` therefore carries an
+      atomic `readableExtent`, seeded from append-owned `TransactionLogFile::size`, advanced only
+      after a successful append, and exposed to its external buffer through a live N-API accessor.
+      It keeps entries appended after the reader first mapped the active segment visible after
+      rotation and purge, while excluding physical bytes a failed append landed past the last safe
+      logical boundary. Walking frames cannot recover that distinction: a partial append may leave
+      a complete-looking frame, so the old zero-marker scan could promote data that never committed.
+    - `nextReadableLogBuffer()` in `src/transaction-log-reader.ts` skips a deleted run when an
+      iterator advances: those segments are genuinely gone (no mapping exists), and stopping at the
+      hole stopped the iterator permanently — every later poll stopped at the same place. Only a
+      segment the store has no bytes for is skipped — one it still knows is merely unmappable for
+      now (mid-rotation, 0 bytes at mmap time, transient resource pressure), so iteration stops and
+      retries on the next poll rather than stepping over durable history. That gate is the
+      segment's own extent.
+      The jump target is `_nextLogId()` (`TransactionLogStore::nextSequenceAfter`,
+      `sequenceFiles.upper_bound`), the successor over the registered segments — **not**
+      `_findPosition(0)`, which walks backward from the current sequence and stops at the first
+      gap, so it names the bottom of the contiguous run ending at the current segment. Those agree
+      only when the deletions form a single prefix; with a survivor between two holes
+      `_findPosition(0)` lands past it and its committed entries are never yielded. The probe is a
+      bounded **loop**, not one hop: a registered successor can be absent too (unlinked out of
+      band, or by another process's retention, before this process's purge run forgets it), and
+      stopping at the first one that will not map is the same permanent wedge. It terminates
+      because `_nextLogId()` strictly increases and is capped at the latest sequence.
+      `findPositionByTimestamp()` descends the same way, by map order rather than
+      `--sequenceNumber`: it used to end the walk at the first missing sequence, so **initial**
+      positioning after a restart with holes resolved to the newest contiguous run and every older
+      survivor — registered, on disk, with a valid extent — was unreachable. Its two
+      "belongs further up" exits name the next _registered_ segment rather than
+      `sequenceNumber + 1`, which a hole may have removed.
+    - Not covered here: `purgeLogs({ destroy: true })` removes the store directory and a fresh store
+      restarts segment numbering at 1, so a cached buffer keyed by segment number can answer for a
+      different store's file. That is a cache-key identity problem, not a purge-coherence one; it is
+      pre-existing and Harper does not call `destroy` in production.
+
+23. **`databaseFlushed()` persists and verifies `txn.state` by pathname**: a stream kept open across
+    flushes still describes the old inode after the file is unlinked or replaced, so a successful
+    write can be invisible to `getLastFlushedPosition()` — which reads by path — and retention never
+    advances. Today only `purgeLogs({ destroy: true })` removes the directory in-process, and Harper
+    never calls it in production, so this is hardening rather than a live bug. Every update closes
+    any prior stream, reopens the pathname without truncating, writes and closes it, then reads the
+    pathname back before advancing `lastWrittenFlushedPosition`. The unchanged-position shortcut
+    also verifies the pathname first, so it restores a missing or stale replacement. The path
+    recreates the directory the way `getLogFile()` does and re-checks `isClosing` under
+    `flushedStateMutex`, so a concurrent destroy cannot be resurrected (`doClose()` sets `isClosing`
+    before taking that mutex, so a reopen that saw it clear is ordered before the destroy's final
+    directory removal; `doPurge`'s own `remove_all` of an emptied directory runs earlier with
+    `isClosing` still clear, and a directory recreated in that window is removed again by the
+    destroy). An all-segment purge that actually empties the registered set also advances a store
+    generation, clears the old commit-correlation ring, closes and resets the state stream, and
+    resets the last-written position under the existing `dataSetsMutex -> flushedStateMutex` order.
+    A flush callback captures that generation with its correlation scan and checks it after taking
+    `flushedStateMutex`, so a pre-purge observation cannot recreate `txn.state` after a destroy that
+    leaves the store live because a transaction is still bound. A current-generation commit and
+    flush may legitimately recreate it. It runs on RocksDB's flush thread, so every filesystem failure is caught and reported once
+    via `log.warn` (`flushedStateWarningEmitted`) and the write is retried on the next flush.
 
 ## Debugging native heap corruption
 
