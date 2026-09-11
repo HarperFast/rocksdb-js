@@ -27,7 +27,9 @@ async function runTransactions10k() {
 		await last;
 	}
 
+	db.close();
 	parentPort?.postMessage({ done: true });
+	parentPort?.close();
 }
 
 async function runTransactions10kWithLogs() {
@@ -44,5 +46,7 @@ async function runTransactions10kWithLogs() {
 		});
 	}
 
+	db.close();
 	parentPort?.postMessage({ done: true });
+	parentPort?.close();
 }

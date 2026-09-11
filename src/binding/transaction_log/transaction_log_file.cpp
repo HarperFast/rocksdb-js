@@ -260,7 +260,7 @@ void TransactionLogFile::persistAppendBoundaryRetirement() {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	if (this->readOnly) {
 		// The marker tree belongs to the writer, which may be live in another
-		// process (invariant 18). A reader has nothing to retire — it never
+		// process (invariant 19). A reader has nothing to retire — it never
 		// appends — so reaching here is a caller bug, not a recoverable state.
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
 			"Cannot retire a read-only transaction log segment: " + this->path.string());

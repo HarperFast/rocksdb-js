@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
 #include "transaction/transaction.h"
@@ -31,7 +32,7 @@ struct DBKey {
 	 * The database's resolved filesystem identity (`DBDescriptor::identityPath`),
 	 * never a caller's raw spelling: two spellings of one directory would
 	 * otherwise hold two descriptors for it, and a second secondary instance
-	 * would open one workspace twice (invariant 18).
+	 * would open one workspace twice (invariant 19).
 	 */
 	std::string path;
 	bool readOnly;
@@ -66,6 +67,24 @@ inline DBKey descriptorKey(const DBDescriptor& descriptor) {
 struct DBRegistryEntry final {
 	std::shared_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<std::condition_variable> condition;
+	// Set when a close (self, foreign, or destroy-driven) fails. The entry is
+	// left in the map instead of erased -- "quarantined" -- so the failure is
+	// visible (registryStatus(), a `database:closeFailed` event) and a caller
+	// can retry via shutdown()/destroy() rather than the path silently
+	// reopening over unflushed data. `closeRetrying` is true while a retry
+	// attempt is in flight, so a second concurrent retry does not double-claim
+	// the same finishClose() stage.
+	std::string closeError;
+	bool closeRetrying = false;
+	// The opening caller's spelling of the path (`DBDescriptor::path`), kept on
+	// the entry so a tombstone -- an entry whose descriptor is gone because a
+	// destroy's physical cleanup failed -- can still report the spelling the
+	// caller supplied rather than the resolved identity the key carries. A
+	// caller matching `registryStatus().path` against the path it opened would
+	// otherwise miss wherever the two spell the same directory differently
+	// (macOS `/var` vs `/private/var`, a symlink, a relative path). Empty only
+	// for a path no descriptor in this process ever opened.
+	std::string reportedPath;
 
 	// Default constructor
 	DBRegistryEntry() : condition(std::make_shared<std::condition_variable>()) {}
@@ -81,6 +100,17 @@ struct DBHandleParams final {
 
 	DBHandleParams(std::shared_ptr<DBDescriptor> descriptor, std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor)
 		: descriptor(std::move(descriptor)), columnDescriptor(std::move(columnDescriptor)) {}
+};
+
+/**
+ * Outcome of a close-family call (`CloseDB`, `PurgeIfUnreferenced`). `error` is
+ * empty on a clean close. `quarantined` means the entry was left in the
+ * registry (with `error` recorded) instead of erased, so it can be retried via
+ * `shutdown()`/`destroy()`.
+ */
+struct CloseResult final {
+	std::string error;
+	bool quarantined = false;
 };
 
 /**
@@ -106,12 +136,37 @@ private:
 	std::mutex databasesMutex;
 
 	/**
+	 * Serializes concurrent `Shutdown()` calls (an explicit JS `shutdown()`
+	 * racing another, or the env-cleanup hook racing a JS caller) so two
+	 * threads never run the claim/close/retry loop over the same entries at
+	 * once. Bounded by `DBSettings::lifecycleWaitSeconds` like every other
+	 * lifecycle wait below -- see `DestroyDB`.
+	 */
+	std::timed_mutex shutdownMutex;
+
+	/**
+	 * Paths currently mid-`DestroyDB`, from the moment every descriptor for the
+	 * path is claimed+closed+erased until physical deletion (which can be
+	 * artificially slow, or genuinely slow for a large directory) finishes.
+	 * That window runs WITHOUT `databasesMutex` held -- deleting files is I/O,
+	 * and a plain lock_guard across it would serialize every open/close in the
+	 * process behind one directory's removal -- so by the time it starts, the
+	 * registry already has no entry for this path to gate a new OpenDB on.
+	 * This set is the substitute gate: OpenDB/Shutdown check it and wait on
+	 * `lifecycleCondition` (a single condvar for all paths -- contention here
+	 * is rare enough that a per-path one is not worth the bookkeeping) rather
+	 * than proceeding as if the path were free.
+	 */
+	std::condition_variable lifecycleCondition;
+	std::unordered_set<std::string> destroyingPaths;
+
+	/**
 	 * The singleton instance of the registry.
 	 */
 	static std::unique_ptr<DBRegistry> instance;
 
 public:
-	static void CloseDB(const std::shared_ptr<DBHandle> handle);
+	static CloseResult CloseDB(const std::shared_ptr<DBHandle> handle);
 
 	/**
 	 * Counts the live column families that draw on `wbm`, grouped by their
@@ -142,15 +197,36 @@ public:
 #endif
 	static void DestroyDB(const std::string& path);
 	static void Init(napi_env env, napi_value exports);
-	static std::unique_ptr<DBHandleParams> OpenDB(const std::string& path, const DBOptions& options);
+	static void OpenDB(
+		const std::shared_ptr<DBHandle>& handle,
+		const std::string& path,
+		const DBOptions& options
+	);
 	static void PurgeAll();
-	static void PurgeIfUnreferenced(const DBKey& key);
+	static CloseResult PurgeIfUnreferenced(const DBKey& key);
 	static napi_value RegistryStatus(napi_env env, napi_callback_info info);
 	static void CloseTransactionsByEnv(napi_env env);
 	static void RemoveListenersByEnv(napi_env env);
 	static void ReleaseCommitCompletionsByEnv(napi_env env);
 	static void ReleaseParkTimeoutsByEnv(napi_env env);
+	static void ReleaseLogRefsByEnv(napi_env env);
 	static void Shutdown();
+	/**
+	 * Releases every remaining registry entry. Called from the module env
+	 * cleanup hook after `Shutdown()`, i.e. while the process is still running
+	 * normally. Nothing may keep a `rocksdb::DB` alive past that point: the
+	 * registry singleton is a namespace-scope static, so anything still in the
+	 * map is destroyed from an `atexit` handler, and closing a RocksDB database
+	 * there runs `DBImpl::CancelAllBackgroundWork()` after RocksDB's own
+	 * function-local statics (the `PeriodicTaskScheduler` timer and its
+	 * `port::Mutex`) have already been destroyed -- which aborts the process in
+	 * `port::Mutex::Lock()` with `pthread lock: Invalid argument`.
+	 *
+	 * `Shutdown()` normally empties the map on its own; a descriptor whose
+	 * close-time flush failed is deliberately quarantined instead, and at
+	 * process exit there is no later `shutdown()`/`destroy()` to retry it.
+	 */
+	static void Teardown();
 	static size_t Size();
 };
 

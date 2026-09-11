@@ -45,12 +45,29 @@ namespace rocksdb_js {
 napi_value Shutdown(napi_env env, napi_callback_info info) {
 	auto& stats = DBStats::getInstance();
 	const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
+	std::string error;
+	try {
+		DBRegistry::Shutdown();
+	} catch (const std::exception& exception) {
+		error = exception.what();
+	} catch (...) {
+		error = "Unknown native database shutdown failure";
+	}
+	// Release global listener threadsafe functions on every path, including a
+	// failed shutdown -- otherwise they outlive this N-API environment. After
+	// DBRegistry::Shutdown() so a quarantining close can still deliver
+	// `database:closeFailed` to its listeners.
 	GlobalEvents::Shutdown();
-	DBRegistry::Shutdown();
 	if (const int delayMs = consumeWriteBufferManagerJoinDelayForTesting(); delayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 	}
+	// Joined before the throw below: a failed shutdown must still not leave the
+	// watchdog thread running.
 	stats.joinWriteBufferManagerWatchdog(true, watchdogShutdownGeneration);
+	if (!error.empty()) {
+		::napi_throw_error(env, nullptr, error.c_str());
+		return nullptr;
+	}
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
@@ -174,6 +191,7 @@ napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
 static std::atomic<int32_t> moduleRefCount{0};
 
 NAPI_MODULE_INIT() {
+	initializeTestSeams();
 #ifdef DEBUG
 	// disable buffering for stderr to ensure messages are written immediately
 	::setvbuf(stderr, nullptr, _IONBF, 0);
@@ -223,6 +241,10 @@ NAPI_MODULE_INIT() {
 
 		rocksdb_js::GlobalEvents::getInstance().removeListenersByEnv(dyingEnv);
 		rocksdb_js::DBRegistry::RemoveListenersByEnv(dyingEnv);
+		// Release this env's DBHandle transaction-log refs before Node frees
+		// them, so a later foreign close() cannot touch them through a
+		// recycled `std::thread::id` (AGENTS.md invariant 18).
+		rocksdb_js::DBRegistry::ReleaseLogRefsByEnv(dyingEnv);
 		// Release this env's commit-completion tsfns before Node frees the env's
 		// tsfns, so the shared commit thread stops marshalling into a torn-down
 		// env (mirrors the listener cleanup above).
@@ -238,9 +260,26 @@ NAPI_MODULE_INIT() {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
 			auto& stats = rocksdb_js::DBStats::getInstance();
 			const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
-			rocksdb_js::GlobalEvents::Shutdown();
-			rocksdb_js::TransactionLogStoreRegistry::Shutdown();
-			rocksdb_js::DBRegistry::Shutdown();
+			auto cleanup = [](const char* name, auto shutdown) {
+				try {
+					shutdown();
+				} catch (const std::exception& error) {
+					::fprintf(stderr, "rocksdb-js %s cleanup failed: %s\n", name, error.what());
+				} catch (...) {
+					::fprintf(stderr, "rocksdb-js %s cleanup failed: unknown native error\n", name);
+				}
+			};
+			cleanup("database registry", []() { rocksdb_js::DBRegistry::Shutdown(); });
+			// Shutdown() leaves a descriptor whose close-time flush failed
+			// quarantined in the registry so shutdown()/destroy() can retry it.
+			// The process is exiting, so there is no later retry -- and a
+			// descriptor that survives to the registry singleton's static
+			// destructor closes its rocksdb::DB from an atexit handler, after
+			// RocksDB's own statics are gone, which aborts. Release whatever is
+			// left here, while that is still safe.
+			cleanup("database registry teardown", []() { rocksdb_js::DBRegistry::Teardown(); });
+			cleanup("transaction logs", []() { rocksdb_js::TransactionLogStoreRegistry::Shutdown(); });
+			cleanup("global events", []() { rocksdb_js::GlobalEvents::Shutdown(); });
 			stats.joinWriteBufferManagerWatchdog(false, watchdogShutdownGeneration);
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {

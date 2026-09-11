@@ -65,6 +65,10 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
 	const dbPath = generateDBPath();
 	const dbPaths = new Set<string>([dbPath]);
 	const databases: TestDB[] = [];
+	let testError: unknown;
+	let closeError: unknown;
+	let testFailed = false;
+	let closeFailed = false;
 
 	try {
 		for (let i = 0; i < testFn.length; i++) {
@@ -78,9 +82,17 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
 		}
 
 		await testFn(...databases);
+	} catch (error) {
+		testFailed = true;
+		testError = error;
 	} finally {
 		for (const { db } of databases.reverse()) {
-			db?.close();
+			try {
+				db?.close();
+			} catch (error) {
+				if (!closeFailed) closeError = error;
+				closeFailed = true;
+			}
 		}
 
 		if (globalThis.gc) {
@@ -103,6 +115,8 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
 			}
 		}
 	}
+	if (testFailed) throw testError;
+	if (closeFailed) throw closeError;
 }
 
 /**

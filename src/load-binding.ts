@@ -440,7 +440,7 @@ export type NativeDatabase = {
 		reject: RejectCallback,
 		targetPath: string
 	): void;
-	destroy(): void;
+	destroy(readOnly?: boolean): void;
 	drop(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	dropSync(): void;
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback, options?: FlushOptions): void;
@@ -482,6 +482,7 @@ export type NativeDatabase = {
 	identityPath: string | undefined;
 	listeners(event: string | BufferWithDataView): number;
 	listLogs(): string[];
+	closing: boolean;
 	opened: boolean;
 	open(path: string, options?: NativeDatabaseOptions): void;
 	populateVersion(keyLengthOrKeyBuffer: number | Buffer, version: number): void;
@@ -523,6 +524,11 @@ export type RocksDatabaseConfig = {
 	 */
 	verificationTableEntries?: number;
 	compactOnClose?: boolean;
+	/**
+	 * Maximum seconds an open, destroy, or shutdown call waits for another
+	 * lifecycle operation. Defaults to 30.
+	 */
+	lifecycleWaitSeconds?: number;
 	/**
 	 * Total memtable memory limit (bytes) shared across every database opened
 	 * in this process. When set, RocksDB uses a single `WriteBufferManager` so
@@ -641,6 +647,10 @@ export type RegistryStatusTransaction = {
 
 export type RegistryStatusDB = {
 	path: string;
+	closeError?: string;
+	/** A prior close failed and `shutdown()`/`destroy()` is currently retrying it. */
+	closeRetrying?: boolean;
+	destroyCleanupPending?: boolean;
 	refCount: number;
 	columnFamilies: string[];
 	transactions: number;
@@ -818,6 +828,31 @@ export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const TransactionLog: TransactionLog = binding.TransactionLog;
 export const registryStatus: () => RegistryStatus = binding.registryStatus;
+/**
+ * Flushes every open database and waits for outstanding compactions, then
+ * releases the registry.
+ *
+ * **Throws** the first failure it encounters: a close whose native teardown
+ * failed (that descriptor stays quarantined — call `shutdown()` again to retry
+ * it), or a `lifecycleWaitSeconds` timeout waiting on a concurrent
+ * open/destroy/shutdown. A quarantining close also emits
+ * `database:closeFailed`; a timeout has no event, so the throw is its only
+ * signal.
+ *
+ * A `process.on('exit')` listener must therefore wrap it: an exception thrown
+ * from an `exit` listener skips every `exit` listener registered after it (and
+ * sets exit code 1 unless an `uncaughtException` handler is installed).
+ *
+ * ```typescript
+ * process.on('exit', () => {
+ * 	try {
+ * 		shutdown();
+ * 	} catch (error) {
+ * 		console.error('rocksdb-js shutdown failed', error);
+ * 	}
+ * });
+ * ```
+ */
 export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;
 

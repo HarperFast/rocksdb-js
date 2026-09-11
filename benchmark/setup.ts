@@ -235,6 +235,7 @@ interface WorkerState {
 	benchPromise: ReturnType<typeof withResolvers<void>>;
 	exitPromise: ReturnType<typeof withResolvers<void>>;
 	teardownPromise: ReturnType<typeof withResolvers<void>>;
+	teardownError?: Error;
 }
 
 interface WorkerBenchmarkOptions extends BenchmarkOptions<any, any> {
@@ -381,6 +382,7 @@ export function workerBenchmark(type: string, options: any): void {
 	}
 
 	const workerState: WorkerState[] = [];
+	const dbPath = join('benchmark', 'data', `rocksdb-benchmark-${randomBytes(8).toString('hex')}`);
 	const workerPayload = {
 		suites: workerCurrentSuites.map((suite) => suite.name),
 		benchmark: benchmarkName,
@@ -408,12 +410,6 @@ export function workerBenchmark(type: string, options: any): void {
 				if (mode === 'run') {
 					return;
 				}
-				const path = join(
-					'benchmark',
-					'data',
-					`rocksdb-benchmark-${randomBytes(8).toString('hex')}`
-				);
-
 				let teardownTimeoutId: NodeJS.Timeout;
 				await Promise.race([
 					activeBenchmark,
@@ -436,11 +432,11 @@ export function workerBenchmark(type: string, options: any): void {
 								benchmarkFile: pathToFileURL(benchmarkFile).toString(),
 								benchmarkWorkerId: i + 1,
 								mode,
-								path,
+								path: dbPath,
 							});
 							// important! these promises need to be referenced as
 							// properties of `state` because they are reset by reference
-							const state = {
+							const state: WorkerState = {
 								worker,
 								benchPromise: withResolvers<void>(),
 								exitPromise: withResolvers<void>(),
@@ -448,7 +444,12 @@ export function workerBenchmark(type: string, options: any): void {
 							};
 							workerState[i] = state;
 							worker.on('error', reject);
-							worker.on('exit', () => {
+							worker.on('exit', (code) => {
+								if (code !== 0 && !state.teardownError) {
+									state.teardownError = new Error(
+										`Benchmark worker ${i + 1} exited with code ${code}`
+									);
+								}
 								state.benchPromise.resolve();
 								state.teardownPromise.resolve();
 								state.exitPromise.resolve();
@@ -460,6 +461,9 @@ export function workerBenchmark(type: string, options: any): void {
 								} else if (event.benchDone) {
 									state.benchPromise.resolve();
 								} else if (event.teardownDone) {
+									state.teardownPromise.resolve();
+								} else if (event.teardownError) {
+									state.teardownError = new Error(event.teardownError);
 									state.teardownPromise.resolve();
 								} else if (event.timeout) {
 									state.teardownPromise.resolve();
@@ -492,8 +496,19 @@ export function workerBenchmark(type: string, options: any): void {
 						return workerState[i].exitPromise.promise;
 					})
 				);
+				const teardownError = workerState.find((state) => state.teardownError)?.teardownError;
+				if (!teardownError) {
+					try {
+						rmSync(dbPath, { force: true, recursive: true, maxRetries: 3 });
+					} catch (err) {
+						console.warn(`Benchmark teardown failed to delete db path: ${err}`);
+					}
+				} else {
+					console.warn(`Benchmark teardown failed; retaining ${dbPath} for inspection`);
+				}
 
 				resolve();
+				if (teardownError) throw teardownError;
 			},
 		}
 	);
@@ -529,12 +544,14 @@ export async function workerInit(): Promise<void> {
 				await teardown(ctx);
 			}
 			if (ctx.db) {
-				// console.log('workerTeardown', workerData.benchmarkWorkerId, workerData.mode, type, path);
-				ctx.db.close();
 				try {
-					rmSync(path, { force: true, recursive: true, maxRetries: 3 });
-				} catch (err) {
-					console.warn(`Benchmark teardown failed to delete db path: ${err}`);
+					await ctx.db.close();
+				} catch (error) {
+					parentPort!.postMessage({
+						teardownError: error instanceof Error ? error.message : String(error),
+						benchmarkWorkerId,
+					});
+					process.exit(1);
 				}
 			}
 			parentPort!.postMessage({ teardownDone: true, benchmarkWorkerId });
