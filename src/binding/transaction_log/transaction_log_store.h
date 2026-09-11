@@ -250,6 +250,7 @@ struct TransactionLogStore final {
 	 * (EnsureWritableRegistrationSafe).
 	 */
 	bool readOnly = false;
+	bool discoveryIncomplete = false;
 
 	/**
 	 * The current sequence number of the transaction log file. Atomic because it
@@ -479,6 +480,21 @@ struct TransactionLogStore final {
 	 * Reads and returns the last flushed position from the txn.state file.
 	 */
 	LogPosition getLastFlushedPosition();
+
+	struct DurableKeyScan final {
+		double largestKey = 0;
+		double refusedKey = 0;
+		bool complete = true;
+		bool budgetExhausted = false;
+		bool stoppedAtBreak = false;
+		bool tornTail = false;
+		bool readFailed = false;
+		bool discoveryIncomplete = false;
+	};
+
+	DurableKeyScan scanLargestDurableKey(
+		double plausibleBound,
+		std::chrono::milliseconds budget);
 
 	/**
 	 * Returns a point-in-time snapshot of the files that make up this store, for

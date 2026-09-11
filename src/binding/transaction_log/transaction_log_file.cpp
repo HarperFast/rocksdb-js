@@ -306,14 +306,15 @@ bool TransactionLogFile::readBytes(uint32_t offset, void* dest, uint32_t n) {
 	return true;
 }
 
-RecoveryScan TransactionLogFile::scanRecoveryLocked() {
+RecoveryScan TransactionLogFile::scanRecoveryLocked(double plausibleBound) {
 	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
 	return scanTransactionLogForRecovery(
 		fileSize,
 		[](void* context, uint32_t offset, void* dest, uint32_t n) {
 			return static_cast<TransactionLogFile*>(context)->readBytes(offset, dest, n);
 		},
-		this
+		this,
+		plausibleBound
 	);
 }
 
@@ -337,6 +338,44 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 	}
 	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
 	return scan.lastCompleteTransactionEnd;
+}
+
+TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline
+) {
+	MaxEntryScan result;
+	uint64_t fileSize;
+	{
+		std::lock_guard<std::mutex> fileLock(this->fileMutex);
+		fileSize = this->retiredAppendBoundary.load(std::memory_order_relaxed);
+		if (fileSize == 0) {
+			fileSize = this->size.load(std::memory_order_relaxed);
+		}
+		if (fileSize == 0) {
+			fileSize = std::filesystem::file_size(this->path);
+		}
+	}
+	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+		return result;
+	}
+	if (fileSize > std::numeric_limits<uint32_t>::max()) {
+		throw DBException("Transaction log is too large to scan: " + this->path.string());
+	}
+
+	RecoveryScan scan;
+	try {
+		scan = scanTransactionLogForRecovery(
+			this->path, static_cast<uint32_t>(fileSize), plausibleBound, deadline);
+	} catch (const DBException& error) {
+		throw DBException(std::string(error.what()) + ": " + this->path.string());
+	}
+
+	result.maxTimestamp = scan.maxTimestamp;
+	result.maxImplausibleTimestamp = scan.maxImplausibleTimestamp;
+	result.kind = scan.kind;
+	result.validEnd = scan.validEnd;
+	return result;
 }
 
 void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
@@ -384,6 +423,9 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 
 			return;
 		}
+
+		case RecoveryScan::Kind::Incomplete:
+			return;
 
 		case RecoveryScan::Kind::TruncateTail:
 			if (scan.validEnd >= fileSize) {

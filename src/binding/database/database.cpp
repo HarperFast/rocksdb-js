@@ -2408,6 +2408,8 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		? std::string()
 		: rocksdb_js::resolveIdentityPath(transactionLogsPath).string();
 
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "timestampFloorLog", dbHandleOptions.timestampFloorLog));
+
 	if (dbHandleOptions.transactionLogMaxAgeThreshold < 0.0f || dbHandleOptions.transactionLogMaxAgeThreshold > 1.0f) {
 		::napi_throw_error(env, nullptr, "transactionLogMaxAgeThreshold must be between 0.0 and 1.0");
 		return nullptr;

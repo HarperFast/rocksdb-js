@@ -6,6 +6,7 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include <limits>
 #include <string>
 #include <utility>
 #include "core/debug.h"
@@ -362,7 +363,7 @@ struct TransactionLogFile final {
 	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
 	 * this->size (append-owned written extent), not the mapped/pre-extended size.
 	 */
-	RecoveryScan scanRecoveryLocked();
+	RecoveryScan scanRecoveryLocked(double plausibleBound = std::numeric_limits<double>::infinity());
 
 	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file
@@ -405,6 +406,24 @@ struct TransactionLogFile final {
 	 * that and falls back toward txn.state.
 	 */
 	uint32_t scanForLastCompleteTransactionEnd();
+
+	struct MaxEntryScan final {
+		double maxTimestamp = 0;
+		double maxImplausibleTimestamp = 0;
+		RecoveryScan::Kind kind = RecoveryScan::Kind::Clean;
+		uint32_t validEnd = 0;
+	};
+
+	/**
+	 * The largest batch key still durable in this file. Walks the same framing as
+	 * scanForLastCompleteTransactionEnd() over the file's current extent, so it
+	 * must run *after* open-time recovery: a key that recoverTail() truncated away
+	 * is no longer durable and must not reach the clock floor. Throws DBException
+	 * on I/O failure.
+	 */
+	MaxEntryScan scanMaxEntryTimestamp(
+		double plausibleBound,
+		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
 
 	/**
 	 * Closes the log file and removes it.

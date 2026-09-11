@@ -179,6 +179,13 @@ public:
 	static void DiscoverStores(const std::string& dbPath, bool callerReadOnly);
 
 	/**
+	 * Raises the process-wide monotonic timestamp floor from the caller-named,
+	 * locally originated log. Call after DiscoverStores() has completed recovery;
+	 * throws when the scan cannot establish a complete, plausible floor.
+	 */
+	static void SeedTimestampFloor(const std::string& dbPath, const std::string& logName);
+
+	/**
 	 * Resolves (finds or creates) a transaction log store by name for the
 	 * given database path.
 	 *

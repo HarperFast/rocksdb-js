@@ -1,4 +1,5 @@
 #include <chrono>
+#include <sstream>
 #include <vector>
 #include "database/db_registry.h"
 #include "transaction/transaction_handle.h"
@@ -7,6 +8,7 @@
 #include "core/compression.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "napi/global_events.h"
 #include "rocksdb/table.h"
 
 namespace rocksdb_js {
@@ -480,6 +482,20 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				(entry.descriptor->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
 				"' mode"
 			);
+		}
+
+		if (!options.timestampFloorLog.empty() &&
+			options.timestampFloorLog != entry.descriptor->timestampFloorLog
+		) {
+			std::ostringstream msg;
+			msg << "Database \"" << path << "\" is already open"
+				<< (entry.descriptor->timestampFloorLog.empty()
+					? " without a timestampFloorLog"
+					: " with timestampFloorLog \"" + entry.descriptor->timestampFloorLog + "\"")
+				<< "; cannot reopen it with timestampFloorLog \"" << options.timestampFloorLog
+				<< "\" because the monotonic timestamp floor was not seeded from it. Close every "
+				   "handle for this path, then reopen with timestampFloorLog.";
+			throw rocksdb_js::DBException(msg.str());
 		}
 
 		// max_log_file_size and info_log_level are DB-wide (`DBOptions`) settings

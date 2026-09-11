@@ -38,6 +38,12 @@ void setThreadName(const char* name);
 
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
 
+constexpr double MAX_TIMESTAMP_MS = 8.64e15;
+
+constexpr double MAX_CLOCK_FLOOR_SKEW_MS = 10.0 * 365.25 * 24.0 * 3600.0 * 1000.0;
+
+double getWallClockTimestamp();
+
 double getMonotonicTimestamp();
 
 /**
@@ -63,6 +69,10 @@ std::filesystem::path resolveIdentityPath(const std::string& path);
  * handled: the separator is not required twice.
  */
 bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child);
+
+bool raiseMonotonicTimestampFloor(double floor);
+
+bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
 
 void tryCreateDirectory(
 	const std::filesystem::path& path,
