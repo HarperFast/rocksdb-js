@@ -62,10 +62,14 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 			result = this.iterator.next();
 		} catch (err) {
 			// A failed native step (a corrupted block, an I/O error) ends iteration
-			// with an error. `for...of` does not call `return()` when `next()`
+			// with an error. for...of does not call return() when next()
 			// throws, so release the native iterator here instead of leaving it,
 			// and the snapshot it holds, to garbage collection.
-			this.iterator.return?.();
+			try {
+				this.iterator.return?.();
+			} catch {
+				// Ignore cleanup errors to avoid masking the original error
+			}
 			throw err;
 		}
 
