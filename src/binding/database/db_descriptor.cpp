@@ -602,13 +602,10 @@ void DBDescriptor::finishClose() {
 
 	this->transactions.clear();
 
-	// Drop every retiring generation while the RocksDB instance still exists;
-	// what still fails stays on disk under its name (invariant 22). A claim
-	// can still be outstanding on the legacy libuv path past the closables
-	// sweep's drain timeout (#784), so the RocksDB handles of retiring
-	// generations are destroyed here, ahead of the database, rather than by
-	// whoever releases that claim later; `reclaimColumnFamily` skips a
-	// generation whose handle is gone.
+	// Drop every retiring generation while the RocksDB instance exists; what
+	// still fails stays on disk under its name. Their handles are destroyed
+	// here, ahead of the database, because a claim can outlive the closables
+	// sweep's drain timeout on the legacy libuv path.
 	this->retryFailedReclaims(true);
 	{
 		std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
@@ -1790,9 +1787,8 @@ rocksdb::Status DBDescriptor::retireColumnFamily(
 		std::lock_guard<std::mutex> lock(this->columnsMutex);
 		auto it = this->columns.find(column->name);
 		if (it == this->columns.end() || it->second != column) {
-			// Not the registered generation: already retired by another handle
-			// (retry its drop if that failed), or a stale handle to a generation
-			// that a recreated same-name family has since replaced (no-op).
+			// Already retired by another handle (retry a failed drop), or a stale
+			// handle to a generation a recreated family has replaced (no-op).
 			RetiringColumnFamily* entry = this->findRetiringLocked(column->name);
 			retryFailed = entry != nullptr && entry->descriptor == column &&
 				entry->state == RetiringColumnFamily::State::Failed;
@@ -1987,8 +1983,6 @@ void DBDescriptor::retryFailedReclaims(bool duringClose) noexcept {
 	try {
 		std::lock_guard<std::mutex> lock(this->columnsMutex);
 		for (const auto& entry : this->retiring) {
-			// An unclaimed Pending generation is one whose commit could not
-			// reclaim (torn out mid-pipeline, or stood down at the closing gate).
 			if (duringClose || entry.state == RetiringColumnFamily::State::Failed ||
 				(entry.state == RetiringColumnFamily::State::Pending &&
 					entry.descriptor->lifetime.admitted.load() == 0)

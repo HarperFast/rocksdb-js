@@ -404,9 +404,8 @@ static void rejectRetryNowSetupFailure(
 }
 
 /**
- * Pins the descriptor for the admission only, the way executeCommitWork pins
- * it for its own stage: a DBHandle::close() whose drain timed out can reset
- * the handle's descriptor mid-pipeline.
+ * Pins the descriptor for the admission only, as executeCommitWork does for
+ * its own stage.
  */
 static rocksdb::Status admitCommit(TransactionCommitState* state, const std::shared_ptr<TransactionHandle>& txnHandle) {
 	std::shared_ptr<DBDescriptor> descriptor = txnHandle->dbHandle->descriptor;

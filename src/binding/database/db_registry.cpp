@@ -444,9 +444,8 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	// waiting for a closing database on this path does not count against it.
 	std::optional<std::chrono::steady_clock::time_point> reclaimDeadline;
 
-	// The body re-runs from the wait loop whenever the column family's
-	// previous generation is still being reclaimed (invariant 22): the wait
-	// slice releases `databasesMutex`, after which the entry must be re-found.
+	// Re-entered after every reclaim wait: the slice releases `databasesMutex`,
+	// so the entry must be re-found.
 	for (;;) {
 		// Wait for any closing database on this path to be fully removed. The map
 		// node must not be held across the wait: DestroyDB erases every entry for
@@ -551,11 +550,11 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// A retired generation of this name blocks the fresh family (RocksDB
 			// cannot hold two families of one name). Decided under `columnsMutex`
 			// so a drop cannot slip between the decision and the create. A failed
-			// physical drop is retried once, here; one still behind an admitted
-			// commit, or one another thread is retrying, is waited for in short
-			// slices with both mutexes released — deadlock-free, because a claim
-			// is only ever held by a commit inside RocksDB, never parked on this
-			// thread — and a stalled family does not block unrelated opens.
+			// or unclaimed physical drop is retried here, under `databasesMutex`
+			// like the create itself; one still behind an admitted commit, or one
+			// another thread is retrying, is waited for in short slices with both
+			// mutexes released — deadlock-free, because a claim is only ever held
+			// by a commit inside RocksDB, never parked on this thread.
 			if (auto* retiringEntry = entry.descriptor->findRetiringLocked(name)) {
 				const bool unclaimedPending =
 					retiringEntry->state == DBDescriptor::RetiringColumnFamily::State::Pending &&

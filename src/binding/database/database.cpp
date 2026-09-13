@@ -792,7 +792,11 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	try {
 		status = dropColumnFamily(**dbHandle);
 	} catch (const std::exception& e) {
-		status = rocksdb::Status::IOError(e.what());
+		try {
+			status = rocksdb::Status::IOError(e.what());
+		} catch (...) {
+			status = rocksdb::Status::IOError();
+		}
 	}
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Drop failed");
@@ -834,7 +838,11 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	try {
 		status = dropColumnFamily(**dbHandle);
 	} catch (const std::exception& e) {
-		status = rocksdb::Status::IOError(e.what());
+		try {
+			status = rocksdb::Status::IOError(e.what());
+		} catch (...) {
+			status = rocksdb::Status::IOError();
+		}
 	}
 	if (!status.ok()) {
 		napi_value error;
