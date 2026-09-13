@@ -390,17 +390,18 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * restamp every other family with this algorithm on the next
 	 * same-instance `close()` + `open()`.
 	 *
-	 * Best-effort: a concurrent close racing this read throws "Database not
-	 * open" from the live getter, which must not replace setCompression()'s
-	 * actual outcome (the change already applied, or its own error already
-	 * describes the failure) with that unrelated one.
+	 * The flag clear is unconditional (a plain assignment, so it cannot itself
+	 * fail) and comes first: a concurrent close racing the live-state read
+	 * below throws "Database not open" from the getter, and that read failing
+	 * must not also skip the flag clear -- otherwise the same restamp this
+	 * method exists to prevent survives on the next open().
 	 */
 	private syncStoreCompressionFromLive(): void {
+		this.store.compressionForAllColumnFamilies = false;
 		try {
 			this.store.compression = this.compression;
-			this.store.compressionForAllColumnFamilies = false;
 		} catch {
-			// Nothing left to sync if the database already closed.
+			// Best-effort: nothing left to sync if the database already closed.
 		}
 	}
 
