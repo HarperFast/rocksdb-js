@@ -429,10 +429,17 @@ describe.each(modes)('commit admitted before the drop begins ($mode)', ({ pessim
 			await releaser.stop();
 			doomed.close();
 			victim.close();
-			// The abrupt worker.terminate() above races Windows releasing that env's
-			// native file handles, so cleanup here needs a longer EBUSY retry budget
-			// than the rest of the suite's graceful-close teardown.
-			rmSync(dbPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+			// The abrupt worker.terminate() above (simulating an env that dies mid-commit,
+			// per AGENTS.md invariant 17) leaves that worker's native handles to Windows'
+			// mandatory file locking, which release is not guaranteed to run promptly for a
+			// terminated env — no retry budget here reliably wins. The assertions above
+			// already proved the gate/drop behavior; a leftover temp dir on Windows is not a
+			// test failure (see the identical precedent in concurrent-teardown.test.ts).
+			try {
+				rmSync(dbPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			} catch {
+				// ignore — leftover temp dir, not a test failure
+			}
 		}
 	}, 60_000);
 
