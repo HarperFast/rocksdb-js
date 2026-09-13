@@ -740,19 +740,37 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED();
 }
 
-// RocksDB rejects dropping a column family that has already been dropped with
-// Status::InvalidArgument("Column family already dropped!"). When two handles
-// to the same shared column family race to drop it — e.g. Harper worker
-// threads that each hold their own handle and all react to a drop broadcast —
-// the second DropColumnFamily call hits this. The family is gone, which is the
-// intended result, so the drop is idempotent: callers treat this as success.
-static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
-	return status.IsInvalidArgument() && status.ToString().find("Column family already dropped") != std::string::npos;
+/**
+ * Logical drop shared by `Drop` and `DropSync` (invariant 22): retires the
+ * handle's generation immediately and runs the physical drop only when no
+ * commit holds a claim on it. Dropping a column family bulk-deletes its data
+ * exactly like clear(), so the VT is swept when this call performed the
+ * retirement (a redundant drop through a second handle owns no sweep).
+ */
+static rocksdb::Status dropColumnFamily(DBHandle& dbHandle) {
+	// A physical drop that failed earlier (on any generation of this
+	// database) is retried on the next drop, so a transient failure heals
+	// without a reopen. Before this drop's own attempt, so a failure it
+	// reports stays pending for the next retry point rather than being
+	// retried, and possibly masked, inside the call that reported it.
+	dbHandle.descriptor->retryFailedReclaims();
+	bool retiredNow = false;
+	rocksdb::Status status = dbHandle.descriptor->retireColumnFamily(dbHandle.columnDescriptor, retiredNow);
+	if (retiredNow && dbHandle.enableVerificationTable) {
+		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+		if (vt) vt->settleAllSlots();
+	}
+	return status;
 }
 
 /**
  * Drops the RocksDB database column family asynchronously. If the column family
  * is the default, it will clear the database instead.
+ *
+ * The name is retired before this returns; the physical drop is deferred
+ * behind any commit already admitted on the family (see AGENTS.md
+ * invariant 22), so a rejection here reports a physical drop this call ran
+ * itself and that will be retried, never a family that is still reachable.
  *
  * @example
  * ```typescript
@@ -774,33 +792,15 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	napi_value global;
 	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
 
+	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
-	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
+	rocksdb::Status status = dropColumnFamily(**dbHandle);
+	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Drop failed");
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 			env, global, reject, 1, &error, nullptr
 		), "Failed to call reject function");
 		return nullptr;
-	}
-
-	if (status.ok()) {
-		// We performed the drop; remove its by-name registry entry so a later
-		// open with the same name creates a fresh column family instead of
-		// reusing this dangling handle (which poisons write batches with
-		// "Invalid column family specified in write batch"). On the
-		// already-dropped path another handle already dropped this family and
-		// owns the unregister; the name may now point to a freshly-created
-		// family, so unregistering here would corrupt the registry.
-		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
-		// Dropping a column family bulk-deletes its data exactly like clear();
-		// sweep the VT so pre-drop versions can no longer verify FRESH (see
-		// DBHandle::clear). Only on the ok path — on already-dropped, the
-		// handle that performed the drop owns the sweep.
-		if ((*dbHandle)->enableVerificationTable) {
-			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-			if (vt) vt->settleAllSlots();
-		}
 	}
 
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
@@ -812,7 +812,8 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 
 /**
  * Drops the RocksDB database column family. If the column family is the
- * default, it will clear the database instead.
+ * default, it will clear the database instead. Same deferral contract as
+ * `drop()`.
  *
  * @example
  * ```typescript
@@ -830,31 +831,12 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 
 	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
-	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
+	rocksdb::Status status = dropColumnFamily(**dbHandle);
+	if (!status.ok()) {
 		napi_value error;
 		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
 		::napi_throw(env, error);
 		return nullptr;
-	}
-
-	if (status.ok()) {
-		// We performed the drop; remove its by-name registry entry so a later
-		// open with the same name creates a fresh column family instead of
-		// reusing this dangling handle (which poisons write batches with
-		// "Invalid column family specified in write batch"). On the
-		// already-dropped path another handle already dropped this family and
-		// owns the unregister; the name may now point to a freshly-created
-		// family, so unregistering here would corrupt the registry.
-		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
-		// Dropping a column family bulk-deletes its data exactly like clear();
-		// sweep the VT so pre-drop versions can no longer verify FRESH (see
-		// DBHandle::clear). Only on the ok path — on already-dropped, the
-		// handle that performed the drop owns the sweep.
-		if ((*dbHandle)->enableVerificationTable) {
-			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-			if (vt) vt->settleAllSlots();
-		}
 	}
 
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
@@ -2527,7 +2509,11 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Put failed");
+		// createRocksDBError carries the status code (e.g. ERR_COLUMN_FAMILY_DROPPED
+		// for a transactional write to a retired family) like the Transaction
+		// class's own putSync/removeSync do.
+		napi_value error;
+		rocksdb_js::createRocksDBError(env, status, "Put failed", error);
 		::napi_throw(env, error);
 		return nullptr;
 	}
@@ -2595,7 +2581,11 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Remove failed");
+		// createRocksDBError carries the status code (e.g. ERR_COLUMN_FAMILY_DROPPED
+		// for a transactional write to a retired family) like the Transaction
+		// class's own putSync/removeSync do.
+		napi_value error;
+		rocksdb_js::createRocksDBError(env, status, "Remove failed", error);
 		::napi_throw(env, error);
 		return nullptr;
 	}

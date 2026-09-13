@@ -42,6 +42,19 @@ inline bool testForceTryAgain() {
 	return false;
 }
 
+// Forces DBDescriptor::reclaimColumnFamily to report failure. 0 = inert; 1 = fail without
+// calling DropColumnFamily (the family stays live for the retry); 2 = perform the real drop and
+// then report failure (the retry must resolve as "already dropped"). Set from JS via
+// `forceDropFailureForTesting(mode)`; process-global like forceTryAgainCounter().
+inline std::atomic<int>& forceDropFailureMode() {
+	static std::atomic<int> mode{0};
+	return mode;
+}
+
+inline int testForceDropFailureMode() {
+	return forceDropFailureMode().load(std::memory_order_relaxed);
+}
+
 inline std::atomic<int>& writeBufferManagerJoinDelayCountdown() {
 	static std::atomic<int> countdown{0};
 	return countdown;

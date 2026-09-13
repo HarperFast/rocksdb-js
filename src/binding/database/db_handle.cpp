@@ -14,6 +14,7 @@ namespace {
 // Commit-pipeline queue-depth gauges (see docs/stats.md).
 constexpr const char* COMMIT_PIPELINE_LOG_QUEUE_DEPTH_KEY = "commitPipeline.logQueueDepth";
 constexpr const char* COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY = "commitPipeline.commitQueueDepth";
+constexpr const char* COLUMN_FAMILY_PENDING_RECLAIMS_KEY = "columnFamily.pendingReclaims";
 
 bool lookupTxnlogSummaryStat(
 	const std::string& statName,
@@ -189,6 +190,12 @@ napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
 		return jsValue;
 	}
 
+	if (statName == COLUMN_FAMILY_PENDING_RECLAIMS_KEY) {
+		napi_value jsValue;
+		NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(this->descriptor->pendingReclaimCount()), &jsValue));
+		return jsValue;
+	}
+
 	if (statName.rfind("writeBufferManager.", 0) == 0) {
 		double value = 0;
 		napi_value jsValue;
@@ -317,6 +324,9 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 		}
 		if (::napi_create_double(env, static_cast<double>(this->descriptor->commitWorker.depth()), &jsValue) == napi_ok) {
 			::napi_set_named_property(env, result, COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY, jsValue);
+		}
+		if (::napi_create_double(env, static_cast<double>(this->descriptor->pendingReclaimCount()), &jsValue) == napi_ok) {
+			::napi_set_named_property(env, result, COLUMN_FAMILY_PENDING_RECLAIMS_KEY, jsValue);
 		}
 	}
 

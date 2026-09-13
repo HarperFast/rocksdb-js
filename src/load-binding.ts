@@ -851,6 +851,15 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
  */
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
 
+/**
+ * Test-only seam: makes the physical column-family drop report failure.
+ * `0` = inert, `1` = fail without dropping (the retry performs the drop),
+ * `2` = drop for real and then report failure (the retry resolves as
+ * "already dropped"). Process-global, like `forceTryAgainForTesting`.
+ */
+export const forceDropFailureForTesting: (mode: 0 | 1 | 2) => void =
+	binding.forceDropFailureForTesting;
+
 /** Delays one selected watchdog join in the concurrent-shutdown regression test. */
 export const setWriteBufferManagerJoinDelayForTesting: (
 	countdown: number,

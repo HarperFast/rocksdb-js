@@ -280,8 +280,67 @@ static unsigned parkTimeoutMs() {
 /**
  * State for the `Commit` async work.
  */
+/**
+ * The claims one commit attempt holds on the generations its batch names
+ * (invariant 22). Taken once at admission, before any transaction-log byte is
+ * written, and released right after `txn->Commit()` returns; the destructor
+ * covers every other exit (log-write failure, N-API/queue failure,
+ * cancellation, teardown) so a claim can never outlive its attempt.
+ */
+struct ColumnFamilyCommitClaim final {
+	std::shared_ptr<DBDescriptor> descriptor;
+	InlineVector<std::shared_ptr<ColumnFamilyDescriptor>, 8> claimed;
+
+	ColumnFamilyCommitClaim() = default;
+	ColumnFamilyCommitClaim(const ColumnFamilyCommitClaim&) = delete;
+	ColumnFamilyCommitClaim& operator=(const ColumnFamilyCommitClaim&) = delete;
+
+	~ColumnFamilyCommitClaim() {
+		this->release();
+	}
+
+	/**
+	 * Claims every family in `touched`. Refuses the whole commit with
+	 * ColumnFamilyDropped naming the first retired family, holding nothing.
+	 */
+	rocksdb::Status admit(const ColumnFamilySet& touched, std::shared_ptr<DBDescriptor> owner) {
+		this->descriptor = std::move(owner);
+		rocksdb::Status status;
+		touched.forEach([this, &status](const TouchedColumnFamily& touchedColumn) {
+			if (!status.ok()) {
+				return;
+			}
+			std::shared_ptr<ColumnFamilyDescriptor> column = touchedColumn.descriptor.lock();
+			bool reclaimNow = false;
+			if (column && column->lifetime.admit(reclaimNow)) {
+				this->claimed.add(std::move(column));
+				return;
+			}
+			if (column && reclaimNow && this->descriptor) {
+				this->descriptor->reclaimColumnFamily(column);
+			}
+			status = rocksdb::Status::ColumnFamilyDropped("column family \"" + touchedColumn.name + "\" was dropped");
+		});
+		if (!status.ok()) {
+			this->release();
+		}
+		return status;
+	}
+
+	void release() noexcept {
+		if (this->descriptor) {
+			this->claimed.forEach([this](const std::shared_ptr<ColumnFamilyDescriptor>& column) {
+				this->descriptor->releaseCommitClaim(column);
+			});
+		}
+		this->claimed.clear();
+		this->descriptor.reset();
+	}
+};
+
 struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	bool hasLog;
+	ColumnFamilyCommitClaim claim;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
@@ -348,6 +407,13 @@ static void executeLogWork(TransactionCommitState* state) {
 	} else if (!txnHandle->dbHandle->opened()) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	} else if (rocksdb::Status admission = state->claim.admit(txnHandle->touchedColumnFamilies, txnHandle->dbHandle->descriptor); !admission.ok()) {
+		// Refused before the log write, so the caller sees the dropped-family
+		// error rather than an abandonment over log bytes written for a commit
+		// that could never run.
+		DEBUG_LOG("%p Transaction::Commit refused at admission for transaction %u: %s\n",
+			txnHandle.get(), txnHandle->id, admission.ToString().c_str());
+		state->status = admission;
 	} else if (txnHandle->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
 			txnHandle.get(), txnHandle->id);
@@ -417,6 +483,9 @@ static void executeCommitWork(TransactionCommitState* state) {
 				}
 				state->status = txnHandle->txn->Commit();
 			}
+			// The batch is inside RocksDB or rolled back; the families it named
+			// may be reclaimed from here on.
+			state->claim.release();
 
 			// For coordinated retry: save slot pointers before
 			// releaseIntent() clears them so the complete callback
@@ -470,6 +539,9 @@ static void executeCommitWork(TransactionCommitState* state) {
 			txnHandle->resetTransaction();
 		}
 	}
+	// A skipped commit (handle torn out, log stage failed) never reached the
+	// release above.
+	state->claim.release();
 	// signal that execute handler is complete
 	state->signalExecuteCompleted();
 }
@@ -904,6 +976,22 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	std::shared_ptr<TransactionLogStore> store = nullptr;
 	bool hasLog = false;
 
+	ColumnFamilyCommitClaim claim;
+	{
+		rocksdb::Status admission = claim.admit((*txnHandle)->touchedColumnFamilies, (*txnHandle)->dbHandle->descriptor);
+		if (!admission.ok()) {
+			(*txnHandle)->state = TransactionState::Pending;
+			napi_value error;
+			ROCKSDB_CREATE_ERROR_LIKE_VOID(error, admission, "Transaction commit failed");
+			napi_value hasLogValue;
+			NAPI_STATUS_THROWS(::napi_get_boolean(env,
+				(*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
+			NAPI_STATUS_THROWS(::napi_throw(env, error));
+			NAPI_RETURN_UNDEFINED();
+		}
+	}
+
 	if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %u\n",
 			(*txnHandle).get(), (*txnHandle)->id);
@@ -925,6 +1013,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
+	claim.release();
 
 	if (!(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();

@@ -103,6 +103,7 @@ void TransactionHandle::resetTransaction(){
 	}
 
 	this->logEntryBatch.reset();
+	this->touchedColumnFamilies.clear();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
 	auto dbHandle = this->dbHandle;
@@ -439,6 +440,7 @@ void TransactionHandle::close() {
 	this->txn->ClearSnapshot();
 	delete this->txn;
 	this->txn = nullptr;
+	this->touchedColumnFamilies.clear();
 
 	// Note: close() is deliberately napi-free. The transaction holds no napi
 	// refs (the JS database is passed to UseLog by the TS layer per-call), so
@@ -699,6 +701,29 @@ void TransactionHandle::ensureSnapshot() {
 /**
  * Put a value using the specified database handle.
  */
+void ColumnFamilySet::add(const std::shared_ptr<ColumnFamilyDescriptor>& column) {
+	TouchedColumnFamily entry;
+	entry.descriptor = column;
+	entry.raw = column.get();
+	entry.name = column->name;
+	this->entries.add(std::move(entry));
+	this->last = column.get();
+}
+
+rocksdb::Status TransactionHandle::noteTouchedColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column) {
+	if (!column) {
+		return rocksdb::Status::Aborted("Database not open");
+	}
+	if (this->touchedColumnFamilies.contains(column.get())) {
+		return rocksdb::Status::OK();
+	}
+	if (column->lifetime.isRetired()) {
+		return rocksdb::Status::ColumnFamilyDropped("column family \"" + column->name + "\" was dropped");
+	}
+	this->touchedColumnFamilies.add(column);
+	return rocksdb::Status::OK();
+}
+
 rocksdb::Status TransactionHandle::putSync(
 	rocksdb::Slice& key,
 	rocksdb::Slice& value,
@@ -719,6 +744,10 @@ rocksdb::Status TransactionHandle::putSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor);
+	if (!touched.ok()) {
+		return touched;
+	}
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Put(column, key, value);
 
@@ -756,6 +785,10 @@ rocksdb::Status TransactionHandle::removeSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor);
+	if (!touched.ok()) {
+		return touched;
+	}
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Delete(column, key);
 

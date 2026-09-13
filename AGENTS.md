@@ -889,6 +889,78 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     and Node cannot free the tsfn under `napi_call_threadsafe_function`. Calling a tsfn only enqueues
     onto its env's loop, so holding the mutex across it cannot re-enter. `test/lock-teardown-abort.test.ts`
     is the child-process repro; it also proves a live waiter is still woken.
+23. **A column family is dropped logically at once and physically only when no admitted commit
+    names it**: `Database::Drop`/`DropSync` used to call `DropColumnFamily` immediately, and a
+    transaction commit already inside RocksDB naming that family — past optimistic validation
+    under the default `kValidateParallel`, or any pessimistic commit — failed in the memtable
+    inserter with `Invalid column family specified in write batch`, which `HandleMemTableInsertFailure`
+    latches as a fatal background error on the whole database (#806, #726; harper#1381). The rule
+    now (`core/column_family_lifetime.h`, GoogleTest-covered): a commit **claims** every family
+    its batch names once, at admission in `executeLogWork`/`CommitSync` **before** the
+    transaction-log write (`ColumnFamilyCommitClaim`, RAII so a log-write failure, N-API/queue
+    failure, cancellation or teardown releases it), and releases right after `txn->Commit()`
+    returns; a drop **retires** the generation under `columnsMutex` (`DBDescriptor::retireColumnFamily`:
+    identity-checked erase from `columns`, `retired = true`, entry in `retiring`) and runs the
+    physical drop itself only when `admitted == 0`, otherwise the last releasing commit runs it
+    (`reclaimColumnFamily`). Both sides are seq_cst two-phase (`retired` store then `admitted`
+    load, versus `admitted` increment then `retired` load), so at least one side observes the
+    other, and `claimReclaim()` makes exactly one of them run `DropColumnFamily`. Staging only
+    **records** the families a transaction touched (`TransactionHandle::touchedColumnFamilies`,
+    inline for 8, most-recent slot compared first, cleared by `resetTransaction()` because the
+    retry callback may touch a different set) and refuses a family already retired; it holds no
+    claim. That is deliberate: a staged-but-idle, abandoned, or drain-timeout-leaked (#784)
+    transaction must not be able to block reclamation or a same-name recreate, and Harper calls
+    `dropSync()` from a synchronous schema section with transactions staged on that same thread.
+
+    **Only write batches need this.** Verified on the pinned build: after a physical drop, a
+    retained handle still serves `get`, iteration and counts for every key (RocksDB's own handle
+    refcount keeps the dropped `ColumnFamilyData` readable until the handle is destroyed), a
+    non-transactional write is discarded by `ignore_missing_column_families` (#725), and a
+    transaction staged after the drop fails at validation. The only hazard is a batch naming the
+    id entering the write thread after `SetDropped()` removed the id from the column-family set.
+    So handles, iterators, async reads and user shared buffers do not pin the generation — an
+    "every owner pins" design (drop in `~ColumnFamilyDescriptor`) was rejected because RocksDB
+    cannot hold two families of one name, so it blocks `open()` of the dropped name until every
+    worker's JS handle closes or is collected, breaking immediate same-name recreate and making
+    correctness depend on GC.
+
+    Caller-visible contract: the name is gone from `db.columns` and reopenable as a fresh family
+    before `drop()` returns; a transaction that stages a write to a retired family, or commits one
+    it staged before the retire, is refused whole with `ERR_COLUMN_FAMILY_DROPPED`
+    (`column family "x" was dropped`), decided before any log byte is written so it surfaces as
+    that error and not as `ERR_TRANSACTION_ABANDONED`; a commit admitted before the retire lands in
+    the dying generation, linearized before the drop; reads through retained handles continue;
+    non-transactional writes keep #725's silent discard. `DBRegistry::OpenDB` of a name whose
+    previous generation is still claimed waits (in 20 ms slices with `databasesMutex` released,
+    bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default 30 s) — deadlock-free because a claim is
+    only ever held by a commit inside RocksDB on a lane, a libuv thread, or another thread's
+    `commitSync`, never parked on the opener's event loop — then creates the fresh family.
+
+    Reclamation is retryable and never silently lost: a failed `DropColumnFamily` leaves the
+    `retiring` entry marked `failed` (retryable state restored with no-throw operations before any
+    diagnostic allocation; the whole path is `noexcept` because it runs from commit completions and
+    destructors), reports through the global `log.warn` event and `columnFamily.pendingReclaims`,
+    and is retried on the next drop on the database, the next `open()` of that name (retried inline
+    with `columnsMutex` released; a second failure throws), and `finishClose()`. Retry is idempotent
+    because RocksDB removes the family (`LogAndApply`, `SetDropped`) before it persists OPTIONS, so a
+    drop that failed past the MANIFEST publish retries as "Column family already dropped", which is
+    success. The retired name is never reinserted. A second handle to the same retired generation
+    retries a failed drop on its own `drop()`; a stale handle to an older generation is a no-op that
+    can never touch a recreated family (the identity check). `reclaimColumnFamily` is never called
+    under `columnsMutex`, `txnsMutex` or the VT `writerMutex_`; every caller already holds a strong
+    `DBDescriptor` (the commit lane's task capture, the JS handle, `finishClose` itself), so the
+    column-family descriptor carries no back-reference and the ownership graph stays acyclic.
+
+    **Not guaranteed across a restart**: a process that exits while a physical drop is pending
+    (only while a commit admitted before the drop is still inside RocksDB) or after one failed leaves
+    the family on disk under its name, and the next open lists it as live; a backup or checkpoint
+    taken inside that window copies it. The immediate drop had the same exposure after a failure and
+    none during the window, which did not exist. A durable tombstone belongs to the caller (Harper
+    stamps physical names per generation and records one in its catalog). This subsumes the
+    commit-time admission gate of PR #843: that gate's drop waited for admitted commits and closed
+    admission around `txn->Commit()` only; here the same admission is taken once, earlier, and the
+    wait is replaced by deferral to the last releaser, so no immediate-drop path remains for the gate
+    to protect.
 
 ## Debugging native heap corruption
 

@@ -36,6 +36,105 @@ enum class TransactionState {
 };
 
 /**
+ * Fixed inline storage for the first `N` entries with a vector past that, so
+ * the common case never allocates for it.
+ */
+template<typename T, size_t N>
+struct InlineVector final {
+	T inlineSlots[N];
+	std::vector<T> overflow;
+	size_t count = 0;
+
+	T& add(T value) {
+		if (this->count < N) {
+			this->inlineSlots[this->count] = std::move(value);
+			this->count++;
+			return this->inlineSlots[this->count - 1];
+		}
+		this->overflow.push_back(std::move(value));
+		this->count++;
+		return this->overflow.back();
+	}
+
+	template<typename Fn>
+	void forEach(Fn&& fn) const {
+		const size_t inlineCount = this->count < N ? this->count : N;
+		for (size_t i = 0; i < inlineCount; i++) {
+			fn(this->inlineSlots[i]);
+		}
+		for (const auto& entry : this->overflow) {
+			fn(entry);
+		}
+	}
+
+	void clear() {
+		const size_t inlineCount = this->count < N ? this->count : N;
+		for (size_t i = 0; i < inlineCount; i++) {
+			this->inlineSlots[i] = T();
+		}
+		this->overflow.clear();
+		this->count = 0;
+	}
+
+	size_t size() const {
+		return this->count;
+	}
+};
+
+/**
+ * One column-family generation a transaction has staged a write to. Weak,
+ * never strong: a transaction can outlive the database (an aborted handle JS
+ * still references after `close()`), and a strong reference here would
+ * destroy the RocksDB column-family handle after the database it belongs to.
+ * The commit locks it for the duration of its claim; a lock that fails means
+ * the generation was dropped and reclaimed, which refuses the commit exactly
+ * like a retired one. `raw` is only compared, never dereferenced.
+ */
+struct TouchedColumnFamily final {
+	std::weak_ptr<ColumnFamilyDescriptor> descriptor;
+	ColumnFamilyDescriptor* raw = nullptr;
+	std::string name;
+};
+
+/**
+ * The distinct generations a transaction's write batch names (its own family
+ * or a `dbHandleOverride` family). The most recently touched family is
+ * compared first, so a transaction writing many records to one family pays
+ * one pointer compare per write.
+ */
+struct ColumnFamilySet final {
+	InlineVector<TouchedColumnFamily, 8> entries;
+	ColumnFamilyDescriptor* last = nullptr;
+
+	bool contains(const ColumnFamilyDescriptor* column) const {
+		if (column == this->last) {
+			return this->last != nullptr;
+		}
+		bool found = false;
+		this->entries.forEach([&](const TouchedColumnFamily& entry) {
+			if (entry.raw == column) found = true;
+		});
+		return found;
+	}
+
+	void add(const std::shared_ptr<ColumnFamilyDescriptor>& column);
+
+	template<typename Fn>
+	void forEach(Fn&& fn) const {
+		this->entries.forEach(std::forward<Fn>(fn));
+	}
+
+	void clear() {
+		this->entries.clear();
+		this->last = nullptr;
+	}
+
+	size_t size() const {
+		return this->entries.size();
+	}
+};
+
+/**
  * A handle to a RocksDB transaction. This is used to keep the transaction
  * alive until the transaction is committed or aborted.
  *
@@ -140,6 +239,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * set once via `addLogEntry()`.
 	 */
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
+
+	/**
+	 * Families this transaction's write batch names (invariant 22). Recorded
+	 * on the first `putSync`/`removeSync` per family; a family already retired
+	 * at that point is refused. Holds no claim: the commit claims each of
+	 * these at admission. Cleared by `resetTransaction()` (the retry restages)
+	 * and `close()`.
+	 */
+	ColumnFamilySet touchedColumnFamilies;
 
 	/**
 	 * VT slots locked by this transaction. Parallel to heldTrackers.
@@ -285,6 +393,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 			? this->txn->GetSnapshot()
 			: nullptr;
 	}
+
+	/**
+	 * Records that this transaction is about to stage a write to `column`.
+	 * Returns ColumnFamilyDropped when the generation is already retired.
+	 */
+	rocksdb::Status noteTouchedColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column);
 
 	rocksdb::Status putSync(
 		rocksdb::Slice& key,

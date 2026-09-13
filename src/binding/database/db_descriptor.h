@@ -20,6 +20,7 @@
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/utilities/options_util.h"
 #include "options/db_options.h"
+#include "core/column_family_lifetime.h"
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
@@ -310,6 +311,30 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * holds at most the families that were still live at the previous drop.
 	 */
 	std::vector<DroppedColumnFamily> droppedColumns;
+
+	/**
+	 * A retired generation whose physical `DropColumnFamily` has not completed:
+	 * either a commit still holds a claim on it, or the drop failed and waits
+	 * for a retry (`failed`, with RocksDB's status text in `lastError`). The
+	 * strong reference keeps the RocksDB handle alive until the drop has run;
+	 * the entry is erased by `reclaimColumnFamily` on success. Guarded by
+	 * `columnsMutex`.
+	 */
+	struct RetiringColumnFamily final {
+		std::shared_ptr<ColumnFamilyDescriptor> descriptor;
+		bool failed = false;
+		std::string lastError;
+	};
+	std::vector<RetiringColumnFamily> retiring;
+
+	/**
+	 * Signalled (without any lock) whenever a `retiring` entry changes state,
+	 * so `DBRegistry::OpenDB` can wait for a same-name generation to finish
+	 * reclaiming before creating the fresh family. Waiters poll in short
+	 * slices under `databasesMutex`, so a notify that lands between their
+	 * predicate check and their wait is bounded, not lost.
+	 */
+	std::shared_ptr<std::condition_variable> retiringCondition;
 
 	/**
 	 * Mutex to protect the columns map. Column families can be unregistered on
@@ -641,15 +666,57 @@ public:
 	void closeTransactionsByEnv(napi_env env);
 
 	/**
-	 * Removes a dropped column family from the columns map (under
-	 * `columnsMutex`) so a later open-by-name creates a fresh column family
-	 * instead of reusing the dangling dropped handle. DBHandles still holding
-	 * the descriptor keep it alive via their shared_ptr; only the by-name
-	 * lookup is removed.
+	 * Logical drop (invariant 22). Under `columnsMutex`, and only if `column`
+	 * is still the generation registered under its name, removes it from
+	 * `columns` (so a later open-by-name creates a fresh family), marks it
+	 * retired, and records it in `retiring`. Runs the physical drop right
+	 * away when no commit holds a claim, otherwise the last releasing commit
+	 * runs it. A generation that was already retired by another handle is a
+	 * no-op, except that a retired generation whose physical drop failed is
+	 * retried.
 	 *
-	 * @param columnName The name of the dropped column family.
+	 * @param retiredNow Set when this call performed the logical retirement
+	 * (the caller owns the one-time side effects, e.g. the VT sweep).
+	 * @returns The status of a physical drop attempted by this call, or OK
+	 * when the drop was deferred or nothing was done. Read-only databases
+	 * return NotSupported before any mutation.
 	 */
-	void unregisterColumnFamily(const std::string& columnName);
+	rocksdb::Status retireColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column, bool& retiredNow);
+
+	/**
+	 * Physical drop of a retired generation, from whichever thread found the
+	 * last claim released (a commit lane, a `commitSync` caller, the retiring
+	 * JS thread, or `finishClose`). Never called under `columnsMutex`. Exactly
+	 * one caller runs `DropColumnFamily` per attempt (`claimReclaim`); success
+	 * or RocksDB's own "already dropped" erases the `retiring` entry, any
+	 * other status marks it failed for retry and reports through `log.warn`.
+	 * Cannot throw: it runs from commit completions and destructors.
+	 */
+	rocksdb::Status reclaimColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept;
+
+	/**
+	 * Releases one commit claim and reclaims when it was the last on a
+	 * retired generation.
+	 */
+	void releaseCommitClaim(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept;
+
+	/**
+	 * Retries every failed physical drop. Called from the next drop on this
+	 * database and from `finishClose()`.
+	 */
+	void retryFailedReclaims() noexcept;
+
+	/**
+	 * Number of retired generations whose physical drop has not completed
+	 * (`columnFamily.pendingReclaims`).
+	 */
+	size_t pendingReclaimCount();
+
+	/**
+	 * Looks up a retiring generation by name (the name is free in `columns`
+	 * while it is here). Caller holds `columnsMutex`.
+	 */
+	RetiringColumnFamily* findRetiringLocked(const std::string& columnName);
 
 	/**
 	 * Creates a new user shared buffer or returns an existing one.
@@ -871,6 +938,20 @@ struct ColumnFamilyDescriptor final {
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 
 	/**
+	 * The column family name, copied at creation. `column->GetName()` is not
+	 * used after retirement so no path depends on a dropped handle for its
+	 * own identity.
+	 */
+	const std::string name;
+
+	/**
+	 * Retire/admit/reclaim state for this generation (invariant 22). Commits
+	 * claim it through `ColumnFamilyCommitClaim`; `Database::Drop`/`DropSync`
+	 * retire it through `DBDescriptor::retireColumnFamily`.
+	 */
+	ColumnFamilyLifetime lifetime;
+
+	/**
 	 * Map of user shared buffers by key.
 	 */
 	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;
@@ -891,8 +972,9 @@ struct ColumnFamilyDescriptor final {
 
 	ColumnFamilyDescriptor(
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,
+		std::string name,
 		int64_t maxWriteBufferSizeToMaintain
-	) : column(column), maxWriteBufferSizeToMaintain(maxWriteBufferSizeToMaintain) {}
+	) : column(column), name(std::move(name)), maxWriteBufferSizeToMaintain(maxWriteBufferSizeToMaintain) {}
 
 	~ColumnFamilyDescriptor() {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);
