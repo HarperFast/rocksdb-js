@@ -548,11 +548,20 @@ per database path can be performed at a time.
 - `options: object`
   - `start?: Key` The start key of the range to compact.
   - `end?: Key` The end key of the range to compact.
+  - `bottommost?: boolean` Also compact the bottommost level, rewriting every file in range.
+    RocksDB skips that level by default when no compaction filter is installed, and it holds most
+    of the data — so an ordinary compaction leaves it untouched. Because a changed
+    [`compression`](#compression) algorithm governs only newly written files, this is the way to
+    re-encode data that already exists. It rewrites the whole range regardless of whether RocksDB
+    considers it worthwhile, so it costs as much as the data is large. Defaults to `false`.
 
 ```typescript
 await db.compact();
 
 await db.compact({ start: 'a', end: 'z' });
+
+// Re-encode everything already on disk under the column family's current codec
+await db.compact({ bottommost: true });
 ```
 
 On a [read-only](#new-rocksdatabasepath-options) database this is a no-op: arguments are still
@@ -567,6 +576,8 @@ validates its arguments and then returns without compacting, rather than throwin
 db.compactSync();
 
 db.compactSync({ start: 'a', end: 'z' });
+
+db.compactSync({ bottommost: true });
 ```
 
 ### `db.destroy(): void`
@@ -1099,6 +1110,9 @@ In particular `0` does not disable it: `0`, negative, and unparseable values all
 The transaction callback is passed in a `Transaction` instance which contains all of the same data
 operations methods as the `RocksDatabase` instance plus:
 
+- `txn.abandonWrites(): void` Releases the staged writes' verification-table write intents without
+  closing the transaction, and bars any further writes or commit. Reads (including read-your-own-writes)
+  keep working until the transaction is aborted.
 - `txn.abort()` Rolls back and closes the transaction. This method is automatically called after the
   transaction callback returns, so you shouldn't need to call it, but it's ok to do so. Once called,
   no further transaction operations are permitted. Calling this method multiple times has no effect.
@@ -1112,6 +1126,22 @@ operations methods as the `RocksDatabase` instance plus:
   called without a timestamp, it claims a fresh monotonic value. It must be called before staging
   any write or transaction-log entry, and a supplied value must be finite, positive, and below
   `8.64e15`.
+
+#### `txn.abandonWrites(): void`
+
+Releases the staged writes' verification-table (VT) write intents without closing the transaction,
+and bars any further writes or commit (`commit()`/`commitSync()`/`put()`/`remove()`, including
+database-context writes via `{ transaction: txn }`, all reject once called). Reads — including
+read-your-own-writes — keep working until the transaction is aborted. Idempotent, and a no-op after
+`abort()`.
+
+Scope is VT intents only: RocksDB's own transaction locks (pessimistic mode) are still held until
+the transaction is aborted.
+
+This is for a transaction kept open only for its outstanding read iterators after its writes were
+already committed elsewhere (e.g. replayed onto another transaction) — it lets the intents release
+early so other writers' coordinated-retry commits stop parking on them, instead of waiting for the
+handle's eventual `abort()`.
 
 #### `txn.abort(): void`
 

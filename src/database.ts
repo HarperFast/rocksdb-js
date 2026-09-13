@@ -26,7 +26,6 @@ import type { StatsAll, StatsDefault, StatsValue } from './stats.ts';
 import {
 	type ArrayBufferWithNotify,
 	type CompactOptions,
-	type CompressionAlgorithm,
 	type CompressionInfo,
 	type CompressionOption,
 	ITERATOR_STATE_BUFFER,
@@ -365,12 +364,32 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		if (algorithm === undefined) {
 			throw new TypeError('setCompression requires a compression algorithm');
 		}
-		this.store.db.setCompression(algorithm, compressionLevel);
-		const appliedAlgorithm = algorithm as CompressionAlgorithm;
-		this.store.compression =
-			compressionLevel === undefined
-				? appliedAlgorithm
-				: { algorithm: appliedAlgorithm, level: compressionLevel };
+		try {
+			this.store.db.setCompression(algorithm, compressionLevel);
+		} catch (error) {
+			// A persist failure can still have applied the change in memory (native
+			// flags this via `appliedInMemoryOnly`); resync so a same-instance
+			// close()+open() resubmits the live value instead of the stale request.
+			if ((error as { appliedInMemoryOnly?: boolean }).appliedInMemoryOnly) {
+				this.syncStoreCompressionFromLive();
+			}
+			throw error;
+		}
+		this.syncStoreCompressionFromLive();
+	}
+
+	/**
+	 * Resyncs the store's cached open-time compression option from the live
+	 * database state after `setCompression()`. Also clears
+	 * `compressionForAllColumnFamilies`: that flag means "apply this option to
+	 * every column family opened for this database", which no longer describes
+	 * a live change scoped to a single column family — leaving it set would
+	 * restamp every other family with this algorithm on the next
+	 * same-instance `close()` + `open()`.
+	 */
+	private syncStoreCompressionFromLive(): void {
+		this.store.compression = this.compression;
+		this.store.compressionForAllColumnFamilies = false;
 	}
 
 	/**

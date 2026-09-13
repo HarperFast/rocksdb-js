@@ -690,8 +690,6 @@ describe('Compression', () => {
 					populate(db, 10_000);
 					const sizeAfterNone = dirSize(path);
 
-					// Live-mutate compression on the still-open database, then write and
-					// compact an equal volume of equally-compressible NEW data.
 					db.setCompression(realCompressor!);
 					expect(db.compression.algorithm).toBe(realCompressor);
 					const before = sizeAfterNone;
@@ -707,11 +705,8 @@ describe('Compression', () => {
 					db.compactSync();
 					const growth = dirSize(path) - before;
 
-					// The second batch is the same volume of the same highly-compressible
-					// data as the first (uncompressed) batch, so its on-disk growth must be
-					// meaningfully smaller than the first batch's uncompressed size — proof
-					// the live SetOptions change took effect on new flush/compaction output
-					// without ever closing the database.
+					// Same volume of equally-compressible data as batch 1; smaller growth
+					// confirms the live change took effect without closing the database.
 					expect(growth).toBeLessThan(sizeAfterNone * 0.9);
 				} finally {
 					db.close();
@@ -760,8 +755,7 @@ describe('Compression', () => {
 					db.close();
 				}
 
-				// Plain reopen (no explicit `compression`) inherits whatever is persisted in
-				// the OPTIONS file -- proving setCompression wrote it, not just GetOptions().
+				// A plain reopen inherits the persisted OPTIONS value, not just live memory.
 				const reopened = RocksDatabase.open(path);
 				try {
 					expect(reopened.compression.algorithm).toBe(realCompressor);
@@ -774,10 +768,8 @@ describe('Compression', () => {
 		it.skipIf(!realCompressor)(
 			'a live change is visible to the already-open-column-family conflict check',
 			() => {
-				// DBRegistry::OpenDB compares an explicit second open against the LIVE
-				// GetOptions() value. Prove setCompression's mutation is that same live
-				// state: an explicit reopen at the OLD algorithm now conflicts, and one at
-				// the NEW algorithm succeeds.
+				// DBRegistry::OpenDB compares an explicit second open against the live
+				// GetOptions() value, so it must see setCompression's mutation too.
 				const path = tempPath();
 				const dbA = RocksDatabase.open(path, { compression: 'none' });
 				let dbB: RocksDatabase | undefined;
@@ -875,6 +867,43 @@ describe('Compression', () => {
 					expect(db.compression.algorithm).toBe(realCompressor);
 				} finally {
 					db.close();
+				}
+			}
+		);
+
+		it.skipIf(!realCompressor)(
+			'does not restamp other column families on a same-instance close()+open() (compressionForAllColumnFamilies must not survive)',
+			() => {
+				// A same-instance reopen resubmits the Store's open options. If
+				// `compressionForAllColumnFamilies` survived a live per-CF change, that
+				// reopen would apply it to every family in the database, not just the
+				// one setCompression() targeted -- the same "first open dictates every
+				// CF's algorithm" class AGENTS.md documents as a caught bug.
+				const path = tempPath();
+				const db = RocksDatabase.open(path, {
+					compression: 'none',
+					compressionForAllColumnFamilies: true,
+				});
+				const other = RocksDatabase.open(path, { name: 'other', compression: 'none' });
+				try {
+					db.setCompression(realCompressor!);
+				} finally {
+					other.close();
+					db.close();
+				}
+
+				db.open();
+				try {
+					expect(db.compression.algorithm).toBe(realCompressor);
+				} finally {
+					db.close();
+				}
+
+				const reopenedOther = RocksDatabase.open(path, { name: 'other' });
+				try {
+					expect(reopenedOther.compression.algorithm).toBe('none');
+				} finally {
+					reopenedOther.close();
 				}
 			}
 		);

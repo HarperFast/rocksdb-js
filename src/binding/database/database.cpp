@@ -1360,7 +1360,13 @@ napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 		bool appliedInMemoryOnly = liveAfterFailure.compression == *type &&
 			liveAfterFailure.blob_compression_type == *type &&
 			liveAfterFailure.compression_opts.level == level;
-		(*dbHandle)->columnDescriptor->compressionPersistDirty.store(appliedInMemoryOnly);
+		// Sticky, not overwritten: a call that never touched live options (e.g. this
+		// request failed before SetOptions applied anything) must not clear a pending
+		// retry flag an earlier failed persist already set, or the next identical
+		// request takes the alreadyLive shortcut above and never retries the persist.
+		if (appliedInMemoryOnly) {
+			(*dbHandle)->columnDescriptor->compressionPersistDirty.store(true);
+		}
 		std::string msg = appliedInMemoryOnly
 			? "Set compression failed to persist (the new compression is already active "
 			  "in memory, but the on-disk OPTIONS file was not updated -- a cold reopen "
@@ -1369,6 +1375,13 @@ napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 		napi_value error = nullptr;
 		rocksdb_js::createRocksDBError(env, status, msg.c_str(), error);
 		if (error != nullptr) {
+			// Lets the JS wrapper resync its cached open-time compression option from
+			// live state when the in-memory apply succeeded despite the throw, instead
+			// of resubmitting a stale value on the next same-instance reopen.
+			napi_value appliedInMemoryOnlyValue;
+			if (::napi_get_boolean(env, appliedInMemoryOnly, &appliedInMemoryOnlyValue) == napi_ok) {
+				::napi_set_named_property(env, error, "appliedInMemoryOnly", appliedInMemoryOnlyValue);
+			}
 			::napi_throw(env, error);
 		}
 		return nullptr;
