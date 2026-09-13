@@ -373,7 +373,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			// A persist failure can still have applied the change in memory (native
 			// flags this via `appliedInMemoryOnly`); resync so a same-instance
 			// close()+open() resubmits the live value instead of the stale request.
-			if ((error as { appliedInMemoryOnly?: boolean }).appliedInMemoryOnly) {
+			if ((error as { appliedInMemoryOnly?: boolean } | null)?.appliedInMemoryOnly) {
 				this.syncStoreCompressionFromLive();
 			}
 			throw error;
