@@ -336,11 +336,14 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 	/**
 	 * Dynamically changes the compression algorithm (and optional level) for
-	 * this database's column family on an already-open database — no close,
-	 * no reopen, and no conflict with other handles that already have this
-	 * column family open. Backed by RocksDB's `DB::SetOptions()`, which
-	 * documents both `compression` and `blob_compression_type` as mutable
-	 * column family options.
+	 * this database's column family on an already-open database — no close, no
+	 * reopen, and it does not conflict with another handle that already has
+	 * this column family open (unlike an explicit open-time `compression`
+	 * mismatch). That other handle's live options change too, silently,
+	 * without notice; a later explicit reopen of it is compared against the
+	 * new value, so a stale request it still holds can then conflict. Backed
+	 * by RocksDB's `DB::SetOptions()`, which documents both `compression` and
+	 * `blob_compression_type` as mutable column family options.
 	 *
 	 * This governs only *newly written* files (the next flush and any future
 	 * compaction output) going forward; SST and blob files already on disk
@@ -386,10 +389,19 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * a live change scoped to a single column family — leaving it set would
 	 * restamp every other family with this algorithm on the next
 	 * same-instance `close()` + `open()`.
+	 *
+	 * Best-effort: a concurrent close racing this read throws "Database not
+	 * open" from the live getter, which must not replace setCompression()'s
+	 * actual outcome (the change already applied, or its own error already
+	 * describes the failure) with that unrelated one.
 	 */
 	private syncStoreCompressionFromLive(): void {
-		this.store.compression = this.compression;
-		this.store.compressionForAllColumnFamilies = false;
+		try {
+			this.store.compression = this.compression;
+			this.store.compressionForAllColumnFamilies = false;
+		} catch {
+			// Nothing left to sync if the database already closed.
+		}
 	}
 
 	/**

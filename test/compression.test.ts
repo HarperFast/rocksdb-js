@@ -645,7 +645,6 @@ describe('Compression', () => {
 				expect(db.compression.algorithm).toBe('none');
 				db.setCompression(realCompressor ?? 'none');
 				expect(db.compression.algorithm).toBe(realCompressor ?? 'none');
-				// The database is still open and usable — no reopen occurred.
 				expect(db.store.db.opened).toBe(true);
 			} finally {
 				db.close();
