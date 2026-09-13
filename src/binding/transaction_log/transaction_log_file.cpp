@@ -353,7 +353,12 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
 			fileSize = this->size.load(std::memory_order_relaxed);
 		}
 		if (fileSize == 0) {
-			fileSize = std::filesystem::file_size(this->path);
+			std::error_code sizeError;
+			fileSize = std::filesystem::file_size(this->path, sizeError);
+			if (sizeError) {
+				throw DBException("Failed to size transaction log for scan: " +
+					this->path.string() + ": " + sizeError.message());
+			}
 		}
 	}
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {

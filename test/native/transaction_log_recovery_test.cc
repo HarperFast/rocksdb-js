@@ -782,7 +782,7 @@ TEST(TransactionLogMaxEntryScan, MissingSegmentIsNotCreated) {
 	std::filesystem::remove(path, error);
 	rocksdb_js::TransactionLogFile file(path, 1);
 
-	EXPECT_ANY_THROW(file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity()));
+	EXPECT_THROW(file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity()), DBException);
 	EXPECT_FALSE(std::filesystem::exists(path));
 }
 

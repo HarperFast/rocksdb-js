@@ -20,6 +20,9 @@
 			'Release': {
 				'msvs_settings': {
 					'VCCLCompilerTool': {
+						# Repeated per configuration because a configuration's msvs_settings
+						# is merged last; see the target's own ExceptionHandling for why.
+						'ExceptionHandling': 1,
 						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
 					},
 					'VCLibrarianTool': {
@@ -27,6 +30,13 @@
 					},
 					'VCLinkerTool': {
 						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+				},
+			},
+			'Debug': {
+				'msvs_settings': {
+					'VCCLCompilerTool': {
+						'ExceptionHandling': 1,
 					},
 				},
 			},
@@ -51,9 +61,25 @@
 					'googletest/googlemock/include',
 				],
 			},
-			'cflags_cc': ['-std=c++20'],
+			# Exceptions must be enabled here, not just in the targets that include
+			# gtest's headers. node's common.gypi turns them off by default, which
+			# left GTEST_HAS_EXCEPTIONS 0 inside gtest-all.cc while the test TUs
+			# (binding.gyp enables exceptions there) compiled the same headers with
+			# it set to 1 - an ODR mismatch whose practical cost is that
+			# HandleExceptionsInMethodIfSupported gets no catch blocks, so an
+			# exception escaping a test body reaches main() unhandled. On Windows
+			# that is std::terminate -> abort -> a silent exit code 0xC0000409 with
+			# no failing-test line at all; with exceptions on, gtest reports it as a
+			# normal test failure naming the test and the exception.
+			'cflags!': ['-fno-exceptions'],
+			'cflags_cc!': ['-fno-exceptions'],
+			'cflags_cc': ['-std=c++20', '-fexceptions'],
+			'xcode_settings': {
+				'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
+			},
 			'msvs_settings': {
 				'VCCLCompilerTool': {
+					'ExceptionHandling': 1,
 					'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
 				}
 			}
