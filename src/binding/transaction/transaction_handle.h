@@ -394,8 +394,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	}
 
 	/**
-	 * Records that this transaction is about to stage a write to `column`.
-	 * Returns ColumnFamilyDropped when the generation is already retired.
+	 * ColumnFamilyDropped when `column` is retired; otherwise records it.
 	 */
 	rocksdb::Status noteTouchedColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column);
 

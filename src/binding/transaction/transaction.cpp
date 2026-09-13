@@ -311,7 +311,7 @@ struct ColumnFamilyCommitClaim final {
 				this->claimed.overflow.reserve(total - decltype(this->claimed)::inlineCapacity);
 			}
 		} catch (...) {
-			return rocksdb::Status::MemoryLimit("Transaction commit admission could not allocate");
+			return rocksdb::Status::MemoryLimit();
 		}
 		rocksdb::Status status;
 		touched.forEach([this, &status, &descriptor](const TouchedColumnFamily& touchedColumn) {
@@ -404,6 +404,19 @@ static void rejectRetryNowSetupFailure(
 }
 
 /**
+ * Pins the descriptor for the admission only, the way executeCommitWork pins
+ * it for its own stage: a DBHandle::close() whose drain timed out can reset
+ * the handle's descriptor mid-pipeline.
+ */
+static rocksdb::Status admitCommit(TransactionCommitState* state, const std::shared_ptr<TransactionHandle>& txnHandle) {
+	std::shared_ptr<DBDescriptor> descriptor = txnHandle->dbHandle->descriptor;
+	if (!descriptor) {
+		return rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	}
+	return state->claim.admit(txnHandle->touchedColumnFamilies, *descriptor);
+}
+
+/**
  * Log-lane stage of the commit: validates the handle and writes the
  * transaction-log batch (recording the committed position). Runs off the JS
  * thread — on the database's log lane, or on a libuv threadpool thread in the
@@ -425,7 +438,7 @@ static void executeLogWork(TransactionCommitState* state) {
 	} else if (!txnHandle->dbHandle->opened()) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-	} else if (rocksdb::Status admission = state->claim.admit(txnHandle->touchedColumnFamilies, *txnHandle->dbHandle->descriptor); !admission.ok()) {
+	} else if (rocksdb::Status admission = admitCommit(state, txnHandle); !admission.ok()) {
 		DEBUG_LOG("%p Transaction::Commit refused at admission for transaction %u: %s\n",
 			txnHandle.get(), txnHandle->id, admission.ToString().c_str());
 		state->status = admission;

@@ -604,7 +604,8 @@ non-transactional `putSync`/`removeSync` through such a handle is discarded.
 The **physical** RocksDB drop is deferred behind commits already inside RocksDB when the drop
 lands: a commit claims every column family its batch names before it writes its transaction-log
 batch and releases them after RocksDB has applied it, and the physical drop runs from whichever
-side releases last. With no such commit (the common case) `drop()`/`dropSync()` perform the
+side releases last (or, for a commit a mid-flight `close()` tore out of its pipeline, from the next
+drop, open of that name, or close on the database). With no such commit (the common case) `drop()`/`dropSync()` perform the
 physical drop before returning, exactly as before. This is what keeps a drop racing another
 thread's commit from latching RocksDB's fatal `Invalid column family specified in write batch`
 error on the whole database.

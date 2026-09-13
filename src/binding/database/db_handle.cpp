@@ -87,7 +87,6 @@ rocksdb::Status DBHandle::clear() {
 		DEBUG_LOG("%p Database closed during clear operation\n", this);
 		return rocksdb::Status::Aborted("Database closed during clear operation");
 	}
-	// A retired generation is dropped or discarded, never mutated (invariant 22).
 	if (this->columnDescriptor->lifetime.isRetired()) {
 		return rocksdb::Status::OK();
 	}

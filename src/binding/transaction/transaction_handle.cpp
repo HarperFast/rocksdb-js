@@ -724,7 +724,7 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(const std::shared_ptr
 			this->touchedColumnFamilies.add(column);
 		}
 	} catch (...) {
-		return rocksdb::Status::MemoryLimit("Transaction staging could not allocate");
+		return rocksdb::Status::MemoryLimit();
 	}
 	return rocksdb::Status::OK();
 }

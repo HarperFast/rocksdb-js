@@ -571,8 +571,6 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 							retryStatus.ToString()
 						);
 					}
-					// Either this open dropped it, or another thread's retry holds
-					// the claim: re-evaluate, waiting for the latter.
 					continue;
 				}
 				if (!reclaimDeadline) {

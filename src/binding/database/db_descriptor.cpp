@@ -1933,7 +1933,6 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(
 					try {
 						entry.lastError = status.ToString();
 					} catch (...) {
-						// diagnostic only; the retry reports the fresh status
 					}
 				}
 			}
@@ -1972,7 +1971,6 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(
 				status.ToString();
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ text }));
 		} catch (...) {
-			// best-effort diagnostics; the entry is already marked for retry
 		}
 	}
 	return status;
@@ -1989,9 +1987,8 @@ void DBDescriptor::retryFailedReclaims(bool duringClose) noexcept {
 	try {
 		std::lock_guard<std::mutex> lock(this->columnsMutex);
 		for (const auto& entry : this->retiring) {
-			// A Pending generation nobody claims (its commit released without a
-			// descriptor at hand, or stood down at the closing gate) is picked up
-			// here; `reclaimColumnFamily` skips one whose claim is still held.
+			// An unclaimed Pending generation is one whose commit could not
+			// reclaim (torn out mid-pipeline, or stood down at the closing gate).
 			if (duringClose || entry.state == RetiringColumnFamily::State::Failed ||
 				(entry.state == RetiringColumnFamily::State::Pending &&
 					entry.descriptor->lifetime.admitted.load() == 0)
