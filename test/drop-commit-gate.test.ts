@@ -429,7 +429,10 @@ describe.each(modes)('commit admitted before the drop begins ($mode)', ({ pessim
 			await releaser.stop();
 			doomed.close();
 			victim.close();
-			rmSync(dbPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+			// The abrupt worker.terminate() above races Windows releasing that env's
+			// native file handles, so cleanup here needs a longer EBUSY retry budget
+			// than the rest of the suite's graceful-close teardown.
+			rmSync(dbPath, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
 		}
 	}, 60_000);
 
