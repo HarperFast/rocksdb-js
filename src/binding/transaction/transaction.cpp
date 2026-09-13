@@ -280,11 +280,14 @@ static unsigned parkTimeoutMs() {
 /**
  * The claims one commit attempt holds on the generations its batch names
  * (invariant 22). Taken once at admission, before any transaction-log byte is
- * written, and released right after `txn->Commit()` returns; the destructor
- * covers every other exit so a claim can never outlive its attempt.
+ * written, and released right after `txn->Commit()` returns. Holds no
+ * reference to the descriptor: one here would make a close racing the commit
+ * skip its purge (the HarperFast/rocksdb-js#672 hazard), so the caller passes
+ * the descriptor it already holds, and the destructor — every other exit —
+ * releases the counts without reclaiming, which leaves an unclaimed Pending
+ * generation for the next retry point.
  */
 struct ColumnFamilyCommitClaim final {
-	std::shared_ptr<DBDescriptor> descriptor;
 	InlineVector<std::shared_ptr<ColumnFamilyDescriptor>, 8> claimed;
 
 	ColumnFamilyCommitClaim() = default;
@@ -292,15 +295,14 @@ struct ColumnFamilyCommitClaim final {
 	ColumnFamilyCommitClaim& operator=(const ColumnFamilyCommitClaim&) = delete;
 
 	~ColumnFamilyCommitClaim() {
-		this->release();
+		this->release(nullptr);
 	}
 
 	/**
 	 * Claims every family in `touched`. Refuses the whole commit with
 	 * ColumnFamilyDropped naming the first retired family, holding nothing.
 	 */
-	rocksdb::Status admit(const ColumnFamilySet& touched, std::shared_ptr<DBDescriptor> owner) {
-		this->descriptor = std::move(owner);
+	rocksdb::Status admit(const ColumnFamilySet& touched, DBDescriptor& descriptor) {
 		// Storage for every claim is secured before the first claim is
 		// published, so recording one can never fail after its count was taken.
 		try {
@@ -309,11 +311,10 @@ struct ColumnFamilyCommitClaim final {
 				this->claimed.overflow.reserve(total - decltype(this->claimed)::inlineCapacity);
 			}
 		} catch (...) {
-			this->descriptor.reset();
 			return rocksdb::Status::MemoryLimit("Transaction commit admission could not allocate");
 		}
 		rocksdb::Status status;
-		touched.forEach([this, &status](const TouchedColumnFamily& touchedColumn) {
+		touched.forEach([this, &status, &descriptor](const TouchedColumnFamily& touchedColumn) {
 			if (!status.ok()) {
 				return;
 			}
@@ -323,8 +324,8 @@ struct ColumnFamilyCommitClaim final {
 				this->claimed.add(std::move(column));
 				return;
 			}
-			if (column && reclaimNow && this->descriptor) {
-				this->descriptor->reclaimColumnFamily(column);
+			if (column && reclaimNow) {
+				descriptor.reclaimColumnFamily(column);
 			}
 			try {
 				status = column
@@ -335,19 +336,20 @@ struct ColumnFamilyCommitClaim final {
 			}
 		});
 		if (!status.ok()) {
-			this->release();
+			this->release(&descriptor);
 		}
 		return status;
 	}
 
-	void release() noexcept {
-		if (this->descriptor) {
-			this->claimed.forEach([this](const std::shared_ptr<ColumnFamilyDescriptor>& column) {
-				this->descriptor->releaseCommitClaim(column);
-			});
-		}
+	void release(DBDescriptor* descriptor) noexcept {
+		this->claimed.forEach([descriptor](const std::shared_ptr<ColumnFamilyDescriptor>& column) {
+			if (descriptor) {
+				descriptor->releaseCommitClaim(column);
+			} else {
+				column->lifetime.release();
+			}
+		});
 		this->claimed.clear();
-		this->descriptor.reset();
 	}
 };
 
@@ -423,7 +425,7 @@ static void executeLogWork(TransactionCommitState* state) {
 	} else if (!txnHandle->dbHandle->opened()) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-	} else if (rocksdb::Status admission = state->claim.admit(txnHandle->touchedColumnFamilies, txnHandle->dbHandle->descriptor); !admission.ok()) {
+	} else if (rocksdb::Status admission = state->claim.admit(txnHandle->touchedColumnFamilies, *txnHandle->dbHandle->descriptor); !admission.ok()) {
 		DEBUG_LOG("%p Transaction::Commit refused at admission for transaction %u: %s\n",
 			txnHandle.get(), txnHandle->id, admission.ToString().c_str());
 		state->status = admission;
@@ -469,10 +471,14 @@ static void executeCommitWork(TransactionCommitState* state) {
 		if (state->status.ok()) {
 			state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 		}
+		state->claim.release(nullptr);
 	} else {
 		auto descriptor = txnHandle->dbHandle->descriptor;
 
 		// ensure the log stage (or handle validation) hasn't errored
+		if (!state->status.ok()) {
+			state->claim.release(descriptor.get());
+		}
 		if (state->status.ok()) {
 			if (testForceTryAgain()) {
 				// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
@@ -496,7 +502,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 				}
 				state->status = txnHandle->txn->Commit();
 			}
-			state->claim.release();
+			state->claim.release(descriptor.get());
 
 			// For coordinated retry: save slot pointers before
 			// releaseIntent() clears them so the complete callback
@@ -550,7 +556,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			txnHandle->resetTransaction();
 		}
 	}
-	state->claim.release();
+	state->claim.release(nullptr);
 	// signal that execute handler is complete
 	state->signalExecuteCompleted();
 }
@@ -987,7 +993,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	ColumnFamilyCommitClaim claim;
 	{
-		rocksdb::Status admission = claim.admit((*txnHandle)->touchedColumnFamilies, (*txnHandle)->dbHandle->descriptor);
+		rocksdb::Status admission = claim.admit((*txnHandle)->touchedColumnFamilies, *(*txnHandle)->dbHandle->descriptor);
 		if (!admission.ok()) {
 			(*txnHandle)->state = TransactionState::Pending;
 			napi_value error;
@@ -997,7 +1003,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 				(*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
 			NAPI_STATUS_THROWS(::napi_throw(env, error));
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 	}
 
@@ -1022,7 +1028,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
-	claim.release();
+	claim.release((*txnHandle)->dbHandle->descriptor.get());
 
 	if (!(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();

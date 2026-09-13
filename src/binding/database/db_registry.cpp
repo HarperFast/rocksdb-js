@@ -557,7 +557,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// is only ever held by a commit inside RocksDB, never parked on this
 			// thread — and a stalled family does not block unrelated opens.
 			if (auto* retiringEntry = entry.descriptor->findRetiringLocked(name)) {
-				if (retiringEntry->state == DBDescriptor::RetiringColumnFamily::State::Failed) {
+				const bool unclaimedPending =
+					retiringEntry->state == DBDescriptor::RetiringColumnFamily::State::Pending &&
+					retiringEntry->descriptor->lifetime.admitted.load() == 0;
+				if (retiringEntry->state == DBDescriptor::RetiringColumnFamily::State::Failed || unclaimedPending) {
 					std::shared_ptr<ColumnFamilyDescriptor> failedGeneration = retiringEntry->descriptor;
 					columnsLock.unlock();
 					bool attempted = false;

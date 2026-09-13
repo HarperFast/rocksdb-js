@@ -102,7 +102,7 @@ struct ColumnFamilySet final {
 	InlineVector<TouchedColumnFamily, 8> entries;
 	ColumnFamilyDescriptor* last = nullptr;
 
-	bool contains(const ColumnFamilyDescriptor* column) const {
+	bool contains(ColumnFamilyDescriptor* column) {
 		if (column == this->last) {
 			return this->last != nullptr;
 		}
@@ -110,6 +110,9 @@ struct ColumnFamilySet final {
 		this->entries.forEach([&](const TouchedColumnFamily& entry) {
 			if (entry.raw == column) found = true;
 		});
+		if (found) {
+			this->last = column;
+		}
 		return found;
 	}
 

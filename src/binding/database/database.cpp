@@ -2501,8 +2501,8 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		writeOptions.ignore_missing_column_families = true;
-		// A retired generation is discarded to (#725) whether or not its
-		// physical drop has run yet.
+		// A write to a retired generation is discarded (#725) whether or not
+		// its physical drop has run yet.
 		if (!(*dbHandle)->columnDescriptor->lifetime.isRetired()) {
 			status = (*dbHandle)->descriptor->db->Put(
 				writeOptions,
@@ -2577,7 +2577,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		writeOptions.ignore_missing_column_families = true;
 		if (!(*dbHandle)->columnDescriptor->lifetime.isRetired()) {
 			status = (*dbHandle)->descriptor->db->Delete(
-			writeOptions,
+				writeOptions,
 				(*dbHandle)->getColumnFamilyHandle(),
 				keySlice
 			);

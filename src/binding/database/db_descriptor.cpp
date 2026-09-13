@@ -602,7 +602,7 @@ void DBDescriptor::finishClose() {
 
 	this->transactions.clear();
 
-	// Retry failed physical drops while the RocksDB instance still exists;
+	// Drop every retiring generation while the RocksDB instance still exists;
 	// what still fails stays on disk under its name (invariant 22). A claim
 	// can still be outstanding on the legacy libuv path past the closables
 	// sweep's drain timeout (#784), so the RocksDB handles of retiring
@@ -1799,8 +1799,8 @@ rocksdb::Status DBDescriptor::retireColumnFamily(
 			DEBUG_LOG("%p DBDescriptor::retireColumnFamily column \"%s\" %s\n", this, column->name.c_str(),
 				retryFailed ? "retrying failed reclaim" : (it == this->columns.end() ? "not registered" : "already replaced"));
 		} else {
-			// Every allocation happens before the generation is published as
-			// retired, so a failure leaves it registered and droppable.
+			// Allocations precede publication so a failure leaves the generation
+			// registered and droppable.
 			this->retiring.reserve(this->retiring.size() + 1);
 			const bool trackForInventory = this->attachedWriteBufferManager != nullptr;
 			if (trackForInventory) {
@@ -1854,10 +1854,9 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(
 		return rocksdb::Status::OK();
 	}
 
-	// One claimant at a time, and only while no commit holds a claim: a
-	// retirer can observe a transient claim from an admission that is about
-	// to be refused, so re-check after unclaiming rather than leave the
-	// generation to nobody.
+	// A retirer can observe the transient claim of an admission about to be
+	// refused; re-check after unclaiming so the generation is never left to
+	// nobody.
 	for (;;) {
 		if (!column->lifetime.claimReclaim()) {
 			return rocksdb::Status::OK();
@@ -1990,7 +1989,13 @@ void DBDescriptor::retryFailedReclaims(bool duringClose) noexcept {
 	try {
 		std::lock_guard<std::mutex> lock(this->columnsMutex);
 		for (const auto& entry : this->retiring) {
-			if (entry.state == RetiringColumnFamily::State::Failed) {
+			// A Pending generation nobody claims (its commit released without a
+			// descriptor at hand, or stood down at the closing gate) is picked up
+			// here; `reclaimColumnFamily` skips one whose claim is still held.
+			if (duringClose || entry.state == RetiringColumnFamily::State::Failed ||
+				(entry.state == RetiringColumnFamily::State::Pending &&
+					entry.descriptor->lifetime.admitted.load() == 0)
+			) {
 				failed.push_back(entry.descriptor);
 			}
 		}

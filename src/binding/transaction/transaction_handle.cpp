@@ -716,11 +716,15 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(const std::shared_ptr
 	if (!column->droppable) {
 		return rocksdb::Status::OK();
 	}
-	if (column->lifetime.isRetired()) {
-		return rocksdb::Status::ColumnFamilyDropped("column family \"" + column->name + "\" was dropped");
-	}
-	if (!this->touchedColumnFamilies.contains(column.get())) {
-		this->touchedColumnFamilies.add(column);
+	try {
+		if (column->lifetime.isRetired()) {
+			return rocksdb::Status::ColumnFamilyDropped("column family \"" + column->name + "\" was dropped");
+		}
+		if (!this->touchedColumnFamilies.contains(column.get())) {
+			this->touchedColumnFamilies.add(column);
+		}
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit("Transaction staging could not allocate");
 	}
 	return rocksdb::Status::OK();
 }

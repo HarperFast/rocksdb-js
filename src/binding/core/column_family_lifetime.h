@@ -78,7 +78,8 @@ struct ColumnFamilyLifetime final {
 	}
 
 	/**
-	 * Staging-time check only; admission is the ordered gate.
+	 * Advisory (staging refusal, discard of non-transactional writes);
+	 * `admit()` is the ordered gate.
 	 */
 	bool isRetired() const {
 		return this->retired.load(std::memory_order_relaxed);

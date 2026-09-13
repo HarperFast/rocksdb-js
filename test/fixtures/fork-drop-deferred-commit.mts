@@ -158,9 +158,17 @@ try {
 		'the admitted commit should defer the physical drop'
 	);
 
-	// The environment is healthy while the drop is deferred.
+	// The environment is healthy while the drop is deferred, and the retired
+	// generation is never mutated through a retained handle.
 	meta.putSync('probe-during', 1);
 	assert(meta.getLastError() === null, 'background error latched during deferral');
+	table.clearSync();
+	table.putSync('late', 'discarded');
+	assert(
+		table.getSync('seed') === 'old-generation',
+		'clear on a retired generation must be a no-op'
+	);
+	assert(table.getSync('late') === undefined, 'write to a retired generation must be discarded');
 
 	if (scenario === 'crash-reopen') {
 		// Die inside the window: the parent reopens the database and finds the

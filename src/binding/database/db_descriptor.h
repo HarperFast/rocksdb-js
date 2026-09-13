@@ -711,8 +711,8 @@ public:
 	void releaseCommitClaim(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept;
 
 	/**
-	 * Retries every failed physical drop. Called from the next drop on this
-	 * database and from `finishClose()`.
+	 * Retries every failed physical drop; from `finishClose()` (`duringClose`),
+	 * every retiring generation, since the drained lanes cannot release one.
 	 */
 	void retryFailedReclaims(bool duringClose = false) noexcept;
 
