@@ -169,7 +169,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	/**
 	 * Gate tokens of the droppable families this transaction wrote (AGENTS.md
-	 * invariant 20). Reset with the transaction; released on close.
+	 * invariant 22). Reset with the transaction; released on close.
 	 */
 	StagedColumnFamilies stagedColumns;
 

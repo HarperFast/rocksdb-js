@@ -16,7 +16,7 @@ import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
- * Column-family commit gate (#806, #726; AGENTS.md invariant 20): the
+ * Column-family commit gate (#806, #726; AGENTS.md invariant 22): the
  * observable contract on both sides of a commit/drop race, in both modes.
  */
 
@@ -333,7 +333,7 @@ describe.each(modes)('drop before commit ($mode)', ({ pessimistic }) => {
 			for (const family of families) {
 				family.close();
 			}
-			rmSync(dbPath, { recursive: true, force: true });
+			rmSync(dbPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
 		}
 	});
 });
@@ -390,7 +390,7 @@ describe.each(modes)('commit admitted before the drop begins ($mode)', ({ pessim
 			await late.stop();
 			doomed.close();
 			victim.close();
-			rmSync(dbPath, { recursive: true, force: true });
+			rmSync(dbPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
 		}
 	}, 60_000);
 
@@ -429,7 +429,7 @@ describe.each(modes)('commit admitted before the drop begins ($mode)', ({ pessim
 			await releaser.stop();
 			doomed.close();
 			victim.close();
-			rmSync(dbPath, { recursive: true, force: true });
+			rmSync(dbPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
 		}
 	}, 60_000);
 
@@ -459,7 +459,7 @@ describe.each(modes)('commit admitted before the drop begins ($mode)', ({ pessim
 			await b.stop();
 			doomed.close();
 			victim.close();
-			rmSync(dbPath, { recursive: true, force: true });
+			rmSync(dbPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
 		}
 	}, 60_000);
 });
@@ -661,7 +661,7 @@ describe('same-thread dropSync() across commit execution modes', () => {
 			});
 			child.on('close', (code, signal) => {
 				clearTimeout(watchdog);
-				rmSync(dbPath, { recursive: true, force: true });
+				rmSync(dbPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
 				if (settled) return;
 				settled = true;
 				if (code !== 0 || signal) {
