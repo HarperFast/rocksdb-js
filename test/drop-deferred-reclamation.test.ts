@@ -110,7 +110,12 @@ describe('Deferred column-family reclamation', () => {
 				async () => {
 					const dbPath = generateDBPath();
 					const result = await runFixture('crash-reopen', 'optimistic', 'sync', '1', dbPath);
-					expect(result.signal, result.stderr).toBe('SIGKILL');
+					const diedAbruptly =
+						result.signal === 'SIGKILL' ||
+						result.code === 137 ||
+						(process.platform === 'win32' && result.code === 1);
+					expect(diedAbruptly, result.stderr).toBe(true);
+					expect(result.stdout).toContain('ready');
 					const reopened = RocksDatabase.open(dbPath);
 					try {
 						expect(reopened.columns).toContain('table');

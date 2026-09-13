@@ -1,7 +1,7 @@
 import { RocksDatabase } from '../../src/index.ts';
 import { forceDropFailureForTesting } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
-import { rmSync } from 'node:fs';
+import { rmSync, writeSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 
 // Child-process scenarios for a drop racing a commit that is already admitted
@@ -167,6 +167,7 @@ try {
 	if (scenario === 'crash-reopen') {
 		// Die inside the window: the parent reopens the database and finds the
 		// retired generation on disk under its name (documented, not solved).
+		writeSync(1, 'ready\n');
 		process.kill(process.pid, 'SIGKILL');
 	}
 
