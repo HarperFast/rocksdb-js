@@ -250,6 +250,18 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `pnpm coverage:native` (lcov on Unix)
 - `test/lib/util.ts` contains Vitest utilities
 - Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
+- **`deps/gtest.gyp` must keep C++ exceptions on for gtest's own TUs.** node's `common.gypi`
+  disables them for every target (`ExceptionHandling: 0` / `-fno-exceptions`) and
+  `GTEST_HAS_EXCEPTIONS` is derived per translation unit, so without the override
+  `gtest-all.cc` compiles the shared headers with it `0` while the test TUs (which
+  `binding.gyp` does give exceptions) compile them with `1`. `HandleExceptionsInMethodIfSupported`
+  is instantiated on gtest's side, so with `0` it has no `catch` blocks and an exception that
+  escapes a test body reaches `main()` unhandled: on Windows that is `std::terminate` →
+  `abort` → exit code `0xC0000409` with the last line of output being the test's `[ RUN ]`
+  and **no failure line at all** (`__fastfail` bypasses gtest's SEH handler too). A native
+  job that dies right after a `[ RUN ]` line is that shape — gtest flushes stdout in both
+  `OnTestStart` and `OnTestEnd`, so the missing `[ OK ]` locates the crash in that test, not
+  in a later one.
 - **No `tsx`**: `.ts`/`.mts` scripts, worker files, and `src` itself run under Node's native type
   stripping (the `engines` floor `^22.18.0 || >=24.0.0` is where it's unflagged). Rules for code Node
   loads directly (i.e. outside Vitest/tsdown, which do their own resolution):
