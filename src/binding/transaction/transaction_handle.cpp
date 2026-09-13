@@ -705,7 +705,6 @@ void ColumnFamilySet::add(const std::shared_ptr<ColumnFamilyDescriptor>& column)
 	TouchedColumnFamily entry;
 	entry.descriptor = column;
 	entry.raw = column.get();
-	entry.name = column->name;
 	this->entries.add(std::move(entry));
 	this->last = column.get();
 }
@@ -714,13 +713,15 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(const std::shared_ptr
 	if (!column) {
 		return rocksdb::Status::Aborted("Database not open");
 	}
-	if (this->touchedColumnFamilies.contains(column.get())) {
+	if (!column->droppable) {
 		return rocksdb::Status::OK();
 	}
 	if (column->lifetime.isRetired()) {
 		return rocksdb::Status::ColumnFamilyDropped("column family \"" + column->name + "\" was dropped");
 	}
-	this->touchedColumnFamilies.add(column);
+	if (!this->touchedColumnFamilies.contains(column.get())) {
+		this->touchedColumnFamilies.add(column);
+	}
 	return rocksdb::Status::OK();
 }
 

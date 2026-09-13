@@ -741,18 +741,12 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Logical drop shared by `Drop` and `DropSync` (invariant 22): retires the
- * handle's generation immediately and runs the physical drop only when no
- * commit holds a claim on it. Dropping a column family bulk-deletes its data
- * exactly like clear(), so the VT is swept when this call performed the
- * retirement (a redundant drop through a second handle owns no sweep).
+ * Logical drop shared by `Drop` and `DropSync` (invariant 22). Dropping a
+ * column family bulk-deletes its data exactly like clear(), so the VT is
+ * swept by the call that performed the retirement. Earlier failed drops are
+ * retried before this one's own attempt.
  */
 static rocksdb::Status dropColumnFamily(DBHandle& dbHandle) {
-	// A physical drop that failed earlier (on any generation of this
-	// database) is retried on the next drop, so a transient failure heals
-	// without a reopen. Before this drop's own attempt, so a failure it
-	// reports stays pending for the next retry point rather than being
-	// retried, and possibly masked, inside the call that reported it.
 	dbHandle.descriptor->retryFailedReclaims();
 	bool retiredNow = false;
 	rocksdb::Status status = dbHandle.descriptor->retireColumnFamily(dbHandle.columnDescriptor, retiredNow);
@@ -2509,9 +2503,6 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (!status.ok()) {
-		// createRocksDBError carries the status code (e.g. ERR_COLUMN_FAMILY_DROPPED
-		// for a transactional write to a retired family) like the Transaction
-		// class's own putSync/removeSync do.
 		napi_value error;
 		rocksdb_js::createRocksDBError(env, status, "Put failed", error);
 		::napi_throw(env, error);
@@ -2581,9 +2572,6 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (!status.ok()) {
-		// createRocksDBError carries the status code (e.g. ERR_COLUMN_FAMILY_DROPPED
-		// for a transactional write to a retired family) like the Transaction
-		// class's own putSync/removeSync do.
 		napi_value error;
 		rocksdb_js::createRocksDBError(env, status, "Remove failed", error);
 		::napi_throw(env, error);

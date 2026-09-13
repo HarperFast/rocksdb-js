@@ -10,28 +10,49 @@ const db = RocksDatabase.open(workerData.path, {
 	pessimistic: workerData.pessimistic,
 });
 
-parentPort?.on('message', async (message: { commit?: boolean; close?: boolean }) => {
-	if (message.close) {
-		db.close();
-		parentPort?.postMessage({ closed: true });
-		return;
-	}
-	if (!message.commit) return;
+parentPort?.on(
+	'message',
+	async (message: { commit?: boolean; close?: boolean; open?: boolean }) => {
+		if (message.close) {
+			db.close();
+			parentPort?.postMessage({ closed: true });
+			return;
+		}
+		if (message.open) {
+			// Open the name fresh while the main thread retries a failed physical
+			// drop of its previous generation.
+			let error: string | undefined;
+			let seed: unknown;
+			try {
+				const fresh = RocksDatabase.open(workerData.path, {
+					name: workerData.name,
+					pessimistic: workerData.pessimistic,
+				});
+				seed = fresh.getSync('seed');
+				fresh.close();
+			} catch (e) {
+				error = (e as Error).message;
+			}
+			parentPort?.postMessage({ opened: true, error, seed });
+			return;
+		}
+		if (!message.commit) return;
 
-	const commit = db.transaction((txn) => {
-		txn.putSync('committed-before-drop', Buffer.alloc(4096, 1));
-	});
-	// Give the microtask that dispatches the commit a turn before signalling.
-	await new Promise((resolve) => setImmediate(resolve));
-	parentPort?.postMessage({ committing: true });
+		const commit = db.transaction((txn) => {
+			txn.putSync('committed-before-drop', Buffer.alloc(4096, 1));
+		});
+		// Give the microtask that dispatches the commit a turn before signalling.
+		await new Promise((resolve) => setImmediate(resolve));
+		parentPort?.postMessage({ committing: true });
 
-	let error: string | undefined;
-	try {
-		await commit;
-	} catch (e) {
-		error = (e as Error).message;
+		let error: string | undefined;
+		try {
+			await commit;
+		} catch (e) {
+			error = (e as Error).message;
+		}
+		parentPort?.postMessage({ done: true, error, lastError: db.getLastError() });
 	}
-	parentPort?.postMessage({ done: true, error, lastError: db.getLastError() });
-});
+);
 
 parentPort?.postMessage({ ready: true });

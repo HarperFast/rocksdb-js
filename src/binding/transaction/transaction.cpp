@@ -284,12 +284,11 @@ static unsigned parkTimeoutMs() {
  * The claims one commit attempt holds on the generations its batch names
  * (invariant 22). Taken once at admission, before any transaction-log byte is
  * written, and released right after `txn->Commit()` returns; the destructor
- * covers every other exit (log-write failure, N-API/queue failure,
- * cancellation, teardown) so a claim can never outlive its attempt.
+ * covers every other exit so a claim can never outlive its attempt.
  */
 struct ColumnFamilyCommitClaim final {
 	std::shared_ptr<DBDescriptor> descriptor;
-	InlineVector<std::shared_ptr<ColumnFamilyDescriptor>, 8> claimed;
+	InlineVector<std::shared_ptr<ColumnFamilyDescriptor>, 4> claimed;
 
 	ColumnFamilyCommitClaim() = default;
 	ColumnFamilyCommitClaim(const ColumnFamilyCommitClaim&) = delete;
@@ -305,6 +304,17 @@ struct ColumnFamilyCommitClaim final {
 	 */
 	rocksdb::Status admit(const ColumnFamilySet& touched, std::shared_ptr<DBDescriptor> owner) {
 		this->descriptor = std::move(owner);
+		// Storage for every claim is secured before the first claim is
+		// published, so recording one can never fail after its count was taken.
+		try {
+			const size_t total = touched.size();
+			if (total > decltype(this->claimed)::inlineCapacity) {
+				this->claimed.overflow.reserve(total - decltype(this->claimed)::inlineCapacity);
+			}
+		} catch (...) {
+			this->descriptor.reset();
+			return rocksdb::Status::MemoryLimit("Transaction commit admission could not allocate");
+		}
 		rocksdb::Status status;
 		touched.forEach([this, &status](const TouchedColumnFamily& touchedColumn) {
 			if (!status.ok()) {
@@ -319,7 +329,13 @@ struct ColumnFamilyCommitClaim final {
 			if (column && reclaimNow && this->descriptor) {
 				this->descriptor->reclaimColumnFamily(column);
 			}
-			status = rocksdb::Status::ColumnFamilyDropped("column family \"" + touchedColumn.name + "\" was dropped");
+			try {
+				status = column
+					? rocksdb::Status::ColumnFamilyDropped("column family \"" + column->name + "\" was dropped")
+					: rocksdb::Status::ColumnFamilyDropped("column family was dropped and reclaimed");
+			} catch (...) {
+				status = rocksdb::Status::ColumnFamilyDropped();
+			}
 		});
 		if (!status.ok()) {
 			this->release();
@@ -408,9 +424,6 @@ static void executeLogWork(TransactionCommitState* state) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	} else if (rocksdb::Status admission = state->claim.admit(txnHandle->touchedColumnFamilies, txnHandle->dbHandle->descriptor); !admission.ok()) {
-		// Refused before the log write, so the caller sees the dropped-family
-		// error rather than an abandonment over log bytes written for a commit
-		// that could never run.
 		DEBUG_LOG("%p Transaction::Commit refused at admission for transaction %u: %s\n",
 			txnHandle.get(), txnHandle->id, admission.ToString().c_str());
 		state->status = admission;
@@ -483,8 +496,6 @@ static void executeCommitWork(TransactionCommitState* state) {
 				}
 				state->status = txnHandle->txn->Commit();
 			}
-			// The batch is inside RocksDB or rolled back; the families it named
-			// may be reclaimed from here on.
 			state->claim.release();
 
 			// For coordinated retry: save slot pointers before
@@ -539,8 +550,6 @@ static void executeCommitWork(TransactionCommitState* state) {
 			txnHandle->resetTransaction();
 		}
 	}
-	// A skipped commit (handle torn out, log stage failed) never reached the
-	// release above.
 	state->claim.release();
 	// signal that execute handler is complete
 	state->signalExecuteCompleted();

@@ -1,4 +1,5 @@
 import { RocksDatabase } from '../../src/index.ts';
+import { forceDropFailureForTesting } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -13,9 +14,12 @@ import { Worker } from 'node:worker_threads';
 // not a Vitest worker.
 //
 //   argv: <dbPath> <scenario> <optimistic|pessimistic> <sync|async>
-//   scenario: admitted-commit | worker-terminated | open-waits
+//   scenario: admitted-commit | worker-terminated | open-waits | crash-reopen | retry-race
 //
 // Prints one JSON line on success; a failed assertion exits non-zero.
+// `crash-reopen` SIGKILLs itself inside the deferral window and leaves the
+// database for the parent to reopen; `retry-race` exercises a concurrent
+// open() and drop() retry of a failed physical drop and needs no delay seam.
 
 const [dbPath, scenario, txnMode, dropKind] = process.argv.slice(2);
 const pessimistic = txnMode === 'pessimistic';
@@ -96,6 +100,43 @@ const drop = async (): Promise<number> => {
 	return Date.now() - started;
 };
 
+if (scenario === 'retry-race') {
+	await nextMessage('ready');
+	for (let round = 0; round < 5; round++) {
+		const generation = RocksDatabase.open(dbPath, { name: 'table', pessimistic });
+		generation.putSync('seed', `generation-${round}`);
+		forceDropFailureForTesting(1);
+		let failed = false;
+		try {
+			generation.dropSync();
+		} catch {
+			failed = true;
+		}
+		forceDropFailureForTesting(0);
+		assert(failed, 'forced drop failure did not surface');
+		assert(meta.getStat('columnFamily.pendingReclaims') === 1, 'failed drop should stay pending');
+
+		// Both sides retry the same failed generation at once: the open must
+		// either perform the retry or wait for it, never report a failure that
+		// did not happen.
+		worker.postMessage({ open: true });
+		generation.dropSync();
+		const opened = await nextMessage('opened');
+		assert(opened.error === undefined, `concurrent open failed: ${opened.error}`);
+		assert(opened.seed === undefined, 'fresh family must not see the retired generation');
+		assert(meta.getStat('columnFamily.pendingReclaims') === 0, 'generation should be reclaimed');
+		generation.close();
+	}
+	worker.postMessage({ close: true });
+	await nextMessage('closed');
+	await worker.terminate();
+	console.log(JSON.stringify({ scenario, txnMode, dropKind, ok: true }));
+	table.close();
+	meta.close();
+	rmSync(dbPath, { recursive: true, force: true });
+	process.exit(0);
+}
+
 try {
 	await nextMessage('ready');
 	worker.postMessage({ commit: true });
@@ -114,6 +155,12 @@ try {
 	// The environment is healthy while the drop is deferred.
 	meta.putSync('probe-during', 1);
 	assert(meta.getLastError() === null, 'background error latched during deferral');
+
+	if (scenario === 'crash-reopen') {
+		// Die inside the window: the parent reopens the database and finds the
+		// retired generation on disk under its name (documented, not solved).
+		process.kill(process.pid, 'SIGKILL');
+	}
 
 	if (scenario === 'worker-terminated') {
 		// The worker dies with its commit admitted; the lane task still owns the

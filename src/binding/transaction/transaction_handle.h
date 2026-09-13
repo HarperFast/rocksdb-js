@@ -35,12 +35,9 @@ enum class TransactionState {
 	Aborted     // Transaction has been aborted/rolled back
 };
 
-/**
- * Fixed inline storage for the first `N` entries with a vector past that, so
- * the common case never allocates for it.
- */
 template<typename T, size_t N>
 struct InlineVector final {
+	static constexpr size_t inlineCapacity = N;
 	T inlineSlots[N];
 	std::vector<T> overflow;
 	size_t count = 0;
@@ -93,17 +90,16 @@ struct InlineVector final {
 struct TouchedColumnFamily final {
 	std::weak_ptr<ColumnFamilyDescriptor> descriptor;
 	ColumnFamilyDescriptor* raw = nullptr;
-	std::string name;
 };
 
 /**
- * The distinct generations a transaction's write batch names (its own family
- * or a `dbHandleOverride` family). The most recently touched family is
- * compared first, so a transaction writing many records to one family pays
- * one pointer compare per write.
+ * The distinct droppable generations a transaction's write batch names (its
+ * own family or a `dbHandleOverride` family). The most recently touched
+ * family is compared first, so a transaction writing many records to one
+ * family pays one pointer compare per write.
  */
 struct ColumnFamilySet final {
-	InlineVector<TouchedColumnFamily, 8> entries;
+	InlineVector<TouchedColumnFamily, 4> entries;
 	ColumnFamilyDescriptor* last = nullptr;
 
 	bool contains(const ColumnFamilyDescriptor* column) const {
@@ -242,10 +238,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	/**
 	 * Families this transaction's write batch names (invariant 22). Recorded
-	 * on the first `putSync`/`removeSync` per family; a family already retired
-	 * at that point is refused. Holds no claim: the commit claims each of
-	 * these at admission. Cleared by `resetTransaction()` (the retry restages)
-	 * and `close()`.
+	 * on the first `putSync`/`removeSync` per family; a write to a retired
+	 * family is refused. Holds no claim: the commit claims each of these at
+	 * admission. Cleared by `resetTransaction()` (the retry restages) and
+	 * `close()`.
 	 */
 	ColumnFamilySet touchedColumnFamilies;
 

@@ -14,7 +14,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const fixturePath = join(__dirname, 'fixtures', 'fork-drop-deferred-commit.mts');
 const isNode = !process.versions.bun && !process.versions.deno;
 
-type Scenario = 'admitted-commit' | 'worker-terminated' | 'open-waits';
+type Scenario =
+	| 'admitted-commit'
+	| 'worker-terminated'
+	| 'open-waits'
+	| 'crash-reopen'
+	| 'retry-race';
 type TxnMode = 'optimistic' | 'pessimistic';
 type DropKind = 'sync' | 'async';
 type CommitThread = '0' | '1' | '2';
@@ -23,20 +28,17 @@ function runFixture(
 	scenario: Scenario,
 	txnMode: TxnMode,
 	dropKind: DropKind,
-	commitThread: CommitThread
+	commitThread: CommitThread,
+	dbPath = generateDBPath()
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(
-			process.execPath,
-			[fixturePath, generateDBPath(), scenario, txnMode, dropKind],
-			{
-				env: {
-					...process.env,
-					ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '300',
-					ROCKSDB_JS_COMMIT_THREAD: commitThread,
-				},
-			}
-		);
+		const child = spawn(process.execPath, [fixturePath, dbPath, scenario, txnMode, dropKind], {
+			env: {
+				...process.env,
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '300',
+				ROCKSDB_JS_COMMIT_THREAD: commitThread,
+			},
+		});
 		let stdout = '';
 		let stderr = '';
 		child.stdout?.on('data', (chunk) => (stdout += chunk.toString()));
@@ -90,6 +92,38 @@ describe('Deferred column-family reclamation', () => {
 				'open() of the dropped name waits for the admitted commit and creates a fresh family',
 				{ timeout: 60_000 },
 				() => expectFixture('open-waits', 'optimistic', 'sync', '1')
+			);
+
+			it(
+				'open() racing a drop that retries a failed physical drop never reports a failure that did not happen',
+				{ timeout: 60_000 },
+				() => expectFixture('retry-race', 'optimistic', 'sync', '1')
+			);
+
+			// The documented cross-restart gap (AGENTS.md invariant 22): a process
+			// killed while a physical drop is deferred behind an admitted commit
+			// leaves the family on disk under its name, and the next open sees it
+			// as live with its data. Harper's catalog tombstone owns this case.
+			it(
+				'a process killed inside the deferral window leaves the family on disk',
+				{ timeout: 60_000 },
+				async () => {
+					const dbPath = generateDBPath();
+					const result = await runFixture('crash-reopen', 'optimistic', 'sync', '1', dbPath);
+					expect(result.signal, result.stderr).toBe('SIGKILL');
+					const reopened = RocksDatabase.open(dbPath);
+					try {
+						expect(reopened.columns).toContain('table');
+					} finally {
+						reopened.close();
+					}
+					const table = RocksDatabase.open(dbPath, { name: 'table' });
+					try {
+						expect(table.getSync('seed')).toBe('old-generation');
+					} finally {
+						table.close();
+					}
+				}
 			);
 		}
 	);

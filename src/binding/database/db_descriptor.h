@@ -313,16 +313,17 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::vector<DroppedColumnFamily> droppedColumns;
 
 	/**
-	 * A retired generation whose physical `DropColumnFamily` has not completed:
-	 * either a commit still holds a claim on it, or the drop failed and waits
-	 * for a retry (`failed`, with RocksDB's status text in `lastError`). The
-	 * strong reference keeps the RocksDB handle alive until the drop has run;
-	 * the entry is erased by `reclaimColumnFamily` on success. Guarded by
-	 * `columnsMutex`.
+	 * A retired generation whose physical `DropColumnFamily` has not completed.
+	 * `Pending`: a commit still holds a claim on it; `Reclaiming`: a thread is
+	 * inside `DropColumnFamily`; `Failed`: the last attempt failed (RocksDB's
+	 * status text in `lastError`) and waits for a retry. The strong reference
+	 * keeps the RocksDB handle alive until the drop has run; the entry is
+	 * erased by `reclaimColumnFamily` on success. Guarded by `columnsMutex`.
 	 */
 	struct RetiringColumnFamily final {
+		enum class State { Pending, Reclaiming, Failed };
 		std::shared_ptr<ColumnFamilyDescriptor> descriptor;
-		bool failed = false;
+		State state = State::Pending;
 		std::string lastError;
 	};
 	std::vector<RetiringColumnFamily> retiring;
@@ -687,7 +688,8 @@ public:
 	 * Physical drop of a retired generation, from whichever thread found the
 	 * last claim released (a commit lane, a `commitSync` caller, the retiring
 	 * JS thread, or `finishClose`). Never called under `columnsMutex`. Exactly
-	 * one caller runs `DropColumnFamily` per attempt (`claimReclaim`); success
+	 * one caller runs `DropColumnFamily` per attempt (`claimReclaim`), and only
+	 * while no commit holds a claim and the database is not closing; success
 	 * or RocksDB's own "already dropped" erases the `retiring` entry, any
 	 * other status marks it failed for retry and reports through `log.warn`.
 	 * Cannot throw: it runs from commit completions and destructors.
@@ -945,6 +947,12 @@ struct ColumnFamilyDescriptor final {
 	const std::string name;
 
 	/**
+	 * The default family is cleared, never dropped, so transactions do not
+	 * track it.
+	 */
+	const bool droppable;
+
+	/**
 	 * Retire/admit/reclaim state for this generation (invariant 22). Commits
 	 * claim it through `ColumnFamilyCommitClaim`; `Database::Drop`/`DropSync`
 	 * retire it through `DBDescriptor::retireColumnFamily`.
@@ -974,7 +982,8 @@ struct ColumnFamilyDescriptor final {
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,
 		std::string name,
 		int64_t maxWriteBufferSizeToMaintain
-	) : column(column), name(std::move(name)), maxWriteBufferSizeToMaintain(maxWriteBufferSizeToMaintain) {}
+	) : column(column), name(std::move(name)), droppable(this->name != rocksdb::kDefaultColumnFamilyName),
+		maxWriteBufferSizeToMaintain(maxWriteBufferSizeToMaintain) {}
 
 	~ColumnFamilyDescriptor() {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);

@@ -612,8 +612,7 @@ error on the whole database.
 Two consequences to know about:
 
 - `open()` of a name whose previous generation is still held by an admitted commit waits for
-  that commit (bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default `30000`) before creating the
-  fresh column family.
+  that commit (bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default `30000`) before creating the fresh column family; if the previous generation's physical drop failed, the open retries it once and throws with that error if it fails again.
 - A physical drop that fails (an I/O error writing the MANIFEST) keeps the name retired, is
   retried on the next drop on the database, the next `open()` of that name, or close, and is
   reported through the global `log.warn` event and the `columnFamily.pendingReclaims` stat. When

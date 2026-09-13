@@ -20,8 +20,6 @@ namespace rocksdb_js {
  * claim and leaves reclamation to its releaser, or the admitter sees the
  * retirement and refuses. `claimReclaim()` then guarantees that when both
  * sides conclude "reclaim now" only one of them runs the physical drop.
- *
- * Node-free so the ordering is GoogleTest-covered.
  */
 struct ColumnFamilyLifetime final {
 	std::atomic<bool> retired{false};
