@@ -572,8 +572,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 					}
 					if (!attempted) {
 						// Another thread holds the claim (or a commit is transiently
-						// admitted); give it a slice rather than spin on the CAS.
-						entry.descriptor->retiringCondition->wait_for(lock, std::chrono::milliseconds(20));
+						// admitted); give it a slice rather than spin on the CAS. The
+						// condition is pinned because the wait releases `databasesMutex`.
+						std::shared_ptr<std::condition_variable> retiringCondition = entry.descriptor->retiringCondition;
+						retiringCondition->wait_for(lock, std::chrono::milliseconds(20));
 					}
 					continue;
 				}
