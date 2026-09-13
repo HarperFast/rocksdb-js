@@ -1003,9 +1003,16 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	std::shared_ptr<TransactionLogStore> store = nullptr;
 	bool hasLog = false;
 
+	std::shared_ptr<DBDescriptor> descriptor = (*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr;
+	if (!descriptor) {
+		(*txnHandle)->state = TransactionState::Pending;
+		::napi_throw_error(env, nullptr, "Database not open");
+		return nullptr;
+	}
+
 	ColumnFamilyCommitClaim claim;
 	{
-		rocksdb::Status admission = claim.admit((*txnHandle)->touchedColumnFamilies, *(*txnHandle)->dbHandle->descriptor);
+		rocksdb::Status admission = claim.admit((*txnHandle)->touchedColumnFamilies, *descriptor);
 		if (!admission.ok()) {
 			(*txnHandle)->state = TransactionState::Pending;
 			napi_value error;
@@ -1040,7 +1047,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 
 	rocksdb::Status status = (*txnHandle)->txn->Commit();
-	claim.release((*txnHandle)->dbHandle->descriptor.get());
+	claim.release(descriptor.get());
 
 	if (!(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();
