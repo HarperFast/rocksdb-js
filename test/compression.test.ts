@@ -806,6 +806,20 @@ describe('Compression', () => {
 				expect(() => db.setCompression('none')).toThrow('Database not open');
 			});
 
+			it('rejects an unsupported algorithm at the native boundary too, not just in normalizeCompression', () => {
+				// The public wrapper's normalizeCompression() rejects an unsupported
+				// name before ever reaching the native call, so calling the native
+				// method directly is the only way to exercise its own validation.
+				const db = RocksDatabase.open(tempPath());
+				try {
+					expect(() => db.store.db.setCompression('gzip')).toThrow(
+						/Unsupported compression algorithm/
+					);
+				} finally {
+					db.close();
+				}
+			});
+
 			it('throws when the algorithm is omitted', () => {
 				const db = RocksDatabase.open(tempPath());
 				try {
