@@ -548,34 +548,26 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// cannot interleave and let us reuse a just-dropped column family.
 			std::unique_lock<std::mutex> columnsLock(entry.descriptor->columnsMutex);
 			// A retired generation of this name blocks the fresh family (RocksDB
-			// cannot hold two families of one name). Decided under `columnsMutex`
-			// so a drop cannot slip between the decision and the create. A failed
-			// or unclaimed physical drop is retried here, under `databasesMutex`
-			// like the create itself; one still behind an admitted commit, or one
-			// another thread is retrying, is waited for in short slices with both
-			// mutexes released — deadlock-free, because a claim is only ever held
-			// by a commit inside RocksDB, never parked on this thread.
-			if (auto* retiringEntry = entry.descriptor->findRetiringLocked(name)) {
-				const bool unclaimedPending =
-					retiringEntry->state == DBDescriptor::RetiringColumnFamily::State::Pending &&
-					retiringEntry->descriptor->lifetime.admitted.load() == 0;
-				if (retiringEntry->state == DBDescriptor::RetiringColumnFamily::State::Failed || unclaimedPending) {
-					std::shared_ptr<ColumnFamilyDescriptor> failedGeneration = retiringEntry->descriptor;
-					columnsLock.unlock();
-					bool attempted = false;
-					rocksdb::Status retryStatus = entry.descriptor->reclaimColumnFamily(failedGeneration, &attempted);
-					if (attempted && !retryStatus.ok()) {
+			// cannot hold two families of one name). Found under `columnsMutex`
+			// so a drop cannot slip between the decision and the create, then
+			// dropped here, under `databasesMutex` like the create itself —
+			// deadlock-free, because a claim is only ever held by a commit
+			// inside RocksDB, never parked on this thread. `reclaimColumnFamily`
+			// is the only thing that knows whether the drop can run now, so ask
+			// it rather than tracking a parallel state: it reports `attempted`
+			// false when a commit still holds the generation or another thread
+			// is already dropping it, and that is what we wait out.
+			if (std::shared_ptr<ColumnFamilyDescriptor> retiringGeneration =
+					entry.descriptor->findRetiringLocked(name)) {
+				columnsLock.unlock();
+				bool attempted = false;
+				rocksdb::Status retryStatus = entry.descriptor->reclaimColumnFamily(retiringGeneration, &attempted);
+				if (attempted) {
+					if (!retryStatus.ok()) {
 						throw rocksdb_js::DBException(
 							"Column family \"" + name + "\" is still being reclaimed; its previous drop failed: " +
 							retryStatus.ToString()
 						);
-					}
-					if (!attempted) {
-						// Another thread holds the claim (or a commit is transiently
-						// admitted); give it a slice rather than spin on the CAS. The
-						// condition is pinned because the wait releases `databasesMutex`.
-						std::shared_ptr<std::condition_variable> retiringCondition = entry.descriptor->retiringCondition;
-						retiringCondition->wait_for(lock, std::chrono::milliseconds(20));
 					}
 					continue;
 				}
@@ -588,8 +580,8 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 						"before the drop has not released it); retry the open"
 					);
 				}
+				// The condition is pinned because the wait releases `databasesMutex`.
 				std::shared_ptr<std::condition_variable> retiringCondition = entry.descriptor->retiringCondition;
-				columnsLock.unlock();
 				retiringCondition->wait_for(lock, std::chrono::milliseconds(20));
 				continue;
 			}

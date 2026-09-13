@@ -606,16 +606,16 @@ void DBDescriptor::finishClose() {
 	// still fails stays on disk under its name. Their handles are destroyed
 	// here, ahead of the database, because a claim can outlive the closables
 	// sweep's drain timeout on the legacy libuv path.
-	this->retryFailedReclaims(true);
+	this->retryPendingReclaims(true);
 	{
 		std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
 		this->columns.clear();
 		// The registry entry outlives this, so drop both or the inventory keeps
 		// reporting families of a closed database.
 		this->droppedColumns.clear();
-		for (auto& entry : this->retiring) {
-			if (entry.descriptor) {
-				entry.descriptor->column.reset();
+		for (const auto& entry : this->retiring) {
+			if (entry) {
+				entry->column.reset();
 			}
 		}
 		this->retiring.clear();
@@ -1757,10 +1757,10 @@ uint32_t DBDescriptor::transactionGetNextId() {
 	return ++this->nextTransactionId;
 }
 
-DBDescriptor::RetiringColumnFamily* DBDescriptor::findRetiringLocked(const std::string& columnName) {
-	for (auto& entry : this->retiring) {
-		if (entry.descriptor && entry.descriptor->name == columnName) {
-			return &entry;
+std::shared_ptr<ColumnFamilyDescriptor> DBDescriptor::findRetiringLocked(const std::string& columnName) {
+	for (const auto& entry : this->retiring) {
+		if (entry && entry->name == columnName) {
+			return entry;
 		}
 	}
 	return nullptr;
@@ -1782,18 +1782,17 @@ rocksdb::Status DBDescriptor::retireColumnFamily(
 	}
 
 	bool reclaimNow = false;
-	bool retryFailed = false;
+	bool stillRetiring = false;
 	{
 		std::lock_guard<std::mutex> lock(this->columnsMutex);
 		auto it = this->columns.find(column->name);
 		if (it == this->columns.end() || it->second != column) {
-			// Already retired by another handle (retry a failed drop), or a stale
-			// handle to a generation a recreated family has replaced (no-op).
-			RetiringColumnFamily* entry = this->findRetiringLocked(column->name);
-			retryFailed = entry != nullptr && entry->descriptor == column &&
-				entry->state == RetiringColumnFamily::State::Failed;
+			// Already retired by another handle (retry its physical drop and
+			// report the outcome), or a stale handle to a generation a recreated
+			// family has replaced (no-op).
+			stillRetiring = this->findRetiringLocked(column->name) == column;
 			DEBUG_LOG("%p DBDescriptor::retireColumnFamily column \"%s\" %s\n", this, column->name.c_str(),
-				retryFailed ? "retrying failed reclaim" : (it == this->columns.end() ? "not registered" : "already replaced"));
+				stillRetiring ? "retrying reclaim" : (it == this->columns.end() ? "not registered" : "already replaced"));
 		} else {
 			// Allocations precede publication so a failure leaves the generation
 			// registered and droppable.
@@ -1815,16 +1814,14 @@ rocksdb::Status DBDescriptor::retireColumnFamily(
 				this->droppedColumns.push_back({ column, column->maxWriteBufferSizeToMaintain });
 			}
 			this->columns.erase(it);
-			RetiringColumnFamily entry;
-			entry.descriptor = column;
-			this->retiring.push_back(std::move(entry));
+			this->retiring.push_back(column);
 			DEBUG_LOG("%p DBDescriptor::retireColumnFamily retired column \"%s\" (reclaim %s)\n",
 				this, column->name.c_str(), reclaimNow ? "now" : "deferred to last commit");
 		}
 	}
 	this->retiringCondition->notify_all();
 
-	if (reclaimNow || retryFailed) {
+	if (reclaimNow || stillRetiring) {
 		return this->reclaimColumnFamily(column);
 	}
 	return rocksdb::Status::OK();
@@ -1894,13 +1891,7 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(
 				releaseOperation();
 				return rocksdb::Status::OK();
 			}
-			for (auto& entry : this->retiring) {
-				if (entry.descriptor == column) {
-					entry.state = RetiringColumnFamily::State::Reclaiming;
-				}
-			}
 		}
-		this->retiringCondition->notify_all();
 
 		if (attempted) {
 			*attempted = true;
@@ -1916,36 +1907,16 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(
 		}
 		dropped = status.ok() || isColumnFamilyAlreadyDropped(status);
 
-		std::lock_guard<std::mutex> lock(this->columnsMutex);
+		// Membership in `retiring` is the whole of "retry me", so a failure just
+		// releases the claim and leaves the entry for the next retry point.
 		if (dropped) {
-			std::erase_if(this->retiring, [&column](const RetiringColumnFamily& entry) {
-				return entry.descriptor == column;
-			});
+			std::lock_guard<std::mutex> lock(this->columnsMutex);
+			std::erase(this->retiring, column);
 		} else {
 			column->lifetime.unclaimReclaim();
-			for (auto& entry : this->retiring) {
-				if (entry.descriptor == column) {
-					entry.state = RetiringColumnFamily::State::Failed;
-					try {
-						entry.lastError = status.ToString();
-					} catch (...) {
-					}
-				}
-			}
 		}
 	} catch (...) {
-		// Retryable state first, allocation-free: the claim is released and the
-		// entry reads Failed so the next retry point picks it up.
 		column->lifetime.unclaimReclaim();
-		try {
-			std::lock_guard<std::mutex> lock(this->columnsMutex);
-			for (auto& entry : this->retiring) {
-				if (entry.descriptor == column) {
-					entry.state = RetiringColumnFamily::State::Failed;
-				}
-			}
-		} catch (...) {
-		}
 		releaseOperation();
 		this->retiringCondition->notify_all();
 		return rocksdb::Status::IOError();
@@ -1978,22 +1949,15 @@ void DBDescriptor::releaseCommitClaim(const std::shared_ptr<ColumnFamilyDescript
 	}
 }
 
-void DBDescriptor::retryFailedReclaims(bool duringClose) noexcept {
-	std::vector<std::shared_ptr<ColumnFamilyDescriptor>> failed;
+void DBDescriptor::retryPendingReclaims(bool duringClose) noexcept {
+	std::vector<std::shared_ptr<ColumnFamilyDescriptor>> pending;
 	try {
 		std::lock_guard<std::mutex> lock(this->columnsMutex);
-		for (const auto& entry : this->retiring) {
-			if (duringClose || entry.state == RetiringColumnFamily::State::Failed ||
-				(entry.state == RetiringColumnFamily::State::Pending &&
-					entry.descriptor->lifetime.admitted.load() == 0)
-			) {
-				failed.push_back(entry.descriptor);
-			}
-		}
+		pending = this->retiring;
 	} catch (...) {
 		return;
 	}
-	for (const auto& column : failed) {
+	for (const auto& column : pending) {
 		this->reclaimColumnFamily(column, nullptr, duringClose);
 	}
 }

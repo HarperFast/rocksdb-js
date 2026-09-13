@@ -744,17 +744,27 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
  * Logical drop shared by `Drop` and `DropSync` (invariant 22). Dropping a
  * column family bulk-deletes its data exactly like clear(), so the VT is
  * swept by the call that performed the retirement. Earlier failed drops are
- * retried before this one's own attempt.
+ * retried before this one's own attempt. Reports every failure as a status so
+ * both callers report it the way their own API does.
  */
-static rocksdb::Status dropColumnFamily(DBHandle& dbHandle) {
-	dbHandle.descriptor->retryFailedReclaims();
-	bool retiredNow = false;
-	rocksdb::Status status = dbHandle.descriptor->retireColumnFamily(dbHandle.columnDescriptor, retiredNow);
-	if (retiredNow && dbHandle.enableVerificationTable) {
-		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-		if (vt) vt->settleAllSlots();
+static rocksdb::Status dropColumnFamily(DBHandle& dbHandle) noexcept {
+	try {
+		dbHandle.descriptor->retryPendingReclaims();
+		bool retiredNow = false;
+		rocksdb::Status status = dbHandle.descriptor->retireColumnFamily(dbHandle.columnDescriptor, retiredNow);
+		if (retiredNow && dbHandle.enableVerificationTable) {
+			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+			if (vt) vt->settleAllSlots();
+		}
+		return status;
+	} catch (const std::exception& e) {
+		try {
+			return rocksdb::Status::IOError(e.what());
+		} catch (...) {
+		}
+	} catch (...) {
 	}
-	return status;
+	return rocksdb::Status::IOError();
 }
 
 /**
@@ -788,16 +798,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 
 	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status;
-	try {
-		status = dropColumnFamily(**dbHandle);
-	} catch (const std::exception& e) {
-		try {
-			status = rocksdb::Status::IOError(e.what());
-		} catch (...) {
-			status = rocksdb::Status::IOError();
-		}
-	}
+	rocksdb::Status status = dropColumnFamily(**dbHandle);
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Drop failed");
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
@@ -834,16 +835,7 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 
 	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status;
-	try {
-		status = dropColumnFamily(**dbHandle);
-	} catch (const std::exception& e) {
-		try {
-			status = rocksdb::Status::IOError(e.what());
-		} catch (...) {
-			status = rocksdb::Status::IOError();
-		}
-	}
+	rocksdb::Status status = dropColumnFamily(**dbHandle);
 	if (!status.ok()) {
 		napi_value error;
 		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);

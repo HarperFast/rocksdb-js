@@ -313,24 +313,20 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::vector<DroppedColumnFamily> droppedColumns;
 
 	/**
-	 * A retired generation whose physical `DropColumnFamily` has not completed.
-	 * `Pending`: a commit still holds a claim on it; `Reclaiming`: a thread is
-	 * inside `DropColumnFamily`; `Failed`: the last attempt failed (RocksDB's
-	 * status text in `lastError`) and waits for a retry. The strong reference
-	 * keeps the RocksDB handle alive until the drop has run; the entry is
-	 * erased by `reclaimColumnFamily` on success. Guarded by `columnsMutex`.
+	 * Retired generations whose physical `DropColumnFamily` has not completed,
+	 * whether because a commit still holds a claim or because an attempt
+	 * failed. Membership is the whole state: whether one can be dropped right
+	 * now is `lifetime.admitted`/`reclaimClaimed`, which `reclaimColumnFamily`
+	 * already reads atomically, so nothing here duplicates it. The strong
+	 * reference keeps the RocksDB handle alive until the drop has run; the
+	 * entry is erased by `reclaimColumnFamily` on success. Guarded by
+	 * `columnsMutex`.
 	 */
-	struct RetiringColumnFamily final {
-		enum class State { Pending, Reclaiming, Failed };
-		std::shared_ptr<ColumnFamilyDescriptor> descriptor;
-		State state = State::Pending;
-		std::string lastError;
-	};
-	std::vector<RetiringColumnFamily> retiring;
+	std::vector<std::shared_ptr<ColumnFamilyDescriptor>> retiring;
 
 	/**
-	 * Signalled (without any lock) whenever a `retiring` entry changes state,
-	 * so `DBRegistry::OpenDB` can wait for a same-name generation to finish
+	 * Signalled (without any lock) whenever `retiring` changes, so
+	 * `DBRegistry::OpenDB` can wait for a same-name generation to finish
 	 * reclaiming before creating the fresh family. Waiters poll in short
 	 * slices under `databasesMutex`, so a notify that lands between their
 	 * predicate check and their wait is bounded, not lost.
@@ -695,8 +691,9 @@ public:
 	 * Cannot throw: it runs from commit completions and destructors.
 	 * `attempted` reports whether this call ran the drop (false when another
 	 * thread holds the claim, a commit is admitted, or the database is
-	 * closing); `duringClose` is `finishClose`'s own retry, which runs after
-	 * the closing flag is set and every commit lane is drained.
+	 * closing), which is what a caller that must report or wait keys off;
+	 * `duringClose` is `finishClose`'s own retry, which runs after the closing
+	 * flag is set and every commit lane is drained.
 	 */
 	rocksdb::Status reclaimColumnFamily(
 		const std::shared_ptr<ColumnFamilyDescriptor>& column,
@@ -711,10 +708,12 @@ public:
 	void releaseCommitClaim(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept;
 
 	/**
-	 * Retries every failed physical drop; from `finishClose()` (`duringClose`),
-	 * every retiring generation, since the drained lanes cannot release one.
+	 * Attempts the physical drop of every retiring generation. One still held
+	 * by a commit, or already being dropped by another thread, is a no-op
+	 * inside `reclaimColumnFamily`. `duringClose` is `finishClose()`'s pass,
+	 * where the drained lanes can no longer release a claim themselves.
 	 */
-	void retryFailedReclaims(bool duringClose = false) noexcept;
+	void retryPendingReclaims(bool duringClose = false) noexcept;
 
 	/**
 	 * Number of retired generations whose physical drop has not completed
@@ -724,9 +723,10 @@ public:
 
 	/**
 	 * Looks up a retiring generation by name (the name is free in `columns`
-	 * while it is here). Caller holds `columnsMutex`.
+	 * while it is here). Returned by value so a caller can release
+	 * `columnsMutex` before acting on it. Caller holds `columnsMutex`.
 	 */
-	RetiringColumnFamily* findRetiringLocked(const std::string& columnName);
+	std::shared_ptr<ColumnFamilyDescriptor> findRetiringLocked(const std::string& columnName);
 
 	/**
 	 * Creates a new user shared buffer or returns an existing one.
