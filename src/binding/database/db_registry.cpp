@@ -570,6 +570,11 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 							retryStatus.ToString()
 						);
 					}
+					if (!attempted) {
+						// Another thread holds the claim (or a commit is transiently
+						// admitted); give it a slice rather than spin on the CAS.
+						entry.descriptor->retiringCondition->wait_for(lock, std::chrono::milliseconds(20));
+					}
 					continue;
 				}
 				if (!reclaimDeadline) {
