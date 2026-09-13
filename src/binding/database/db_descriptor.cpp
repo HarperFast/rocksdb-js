@@ -1907,8 +1907,7 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(
 		}
 		dropped = status.ok() || isColumnFamilyAlreadyDropped(status);
 
-		// Membership in `retiring` is the whole of "retry me", so a failure just
-		// releases the claim and leaves the entry for the next retry point.
+		// Membership in `retiring` is the whole of "retry me".
 		if (dropped) {
 			std::lock_guard<std::mutex> lock(this->columnsMutex);
 			std::erase(this->retiring, column);
@@ -1929,16 +1928,16 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(
 		return rocksdb::Status::OK();
 	}
 
-	DEBUG_LOG("%p DBDescriptor::reclaimColumnFamily drop of column \"%s\" failed: %s\n",
-		this, column->name.c_str(), status.ToString().c_str());
-	if (GlobalEvents::hasListeners()) {
-		try {
+	try {
+		DEBUG_LOG("%p DBDescriptor::reclaimColumnFamily drop of column \"%s\" failed: %s\n",
+			this, column->name.c_str(), status.ToString().c_str());
+		if (GlobalEvents::hasListeners()) {
 			const std::string text = "Physical drop of column family \"" + column->name + "\" in database \"" +
 				this->path + "\" failed and will be retried on the next drop, open of that name, or close: " +
 				status.ToString();
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ text }));
-		} catch (...) {
 		}
+	} catch (...) {
 	}
 	return status;
 }

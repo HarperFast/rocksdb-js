@@ -698,9 +698,6 @@ void TransactionHandle::ensureSnapshot() {
 	}
 }
 
-/**
- * Put a value using the specified database handle.
- */
 void ColumnFamilySet::add(const std::shared_ptr<ColumnFamilyDescriptor>& column) {
 	TouchedColumnFamily entry;
 	entry.descriptor = column;
@@ -729,6 +726,9 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(const std::shared_ptr
 	return rocksdb::Status::OK();
 }
 
+/**
+ * Put a value using the specified database handle.
+ */
 rocksdb::Status TransactionHandle::putSync(
 	rocksdb::Slice& key,
 	rocksdb::Slice& value,

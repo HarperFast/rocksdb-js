@@ -284,8 +284,8 @@ static unsigned parkTimeoutMs() {
  * reference to the descriptor: one here would make a close racing the commit
  * skip its purge (the HarperFast/rocksdb-js#672 hazard), so the caller passes
  * the descriptor it already holds, and the destructor — every other exit —
- * releases the counts without reclaiming, which leaves an unclaimed Pending
- * generation for the next retry point.
+ * releases the counts without reclaiming, leaving the generation in `retiring`
+ * for the next retry point.
  */
 struct ColumnFamilyCommitClaim final {
 	InlineVector<std::shared_ptr<ColumnFamilyDescriptor>, 8> claimed;

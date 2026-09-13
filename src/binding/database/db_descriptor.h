@@ -668,9 +668,9 @@ public:
 	 * `columns` (so a later open-by-name creates a fresh family), marks it
 	 * retired, and records it in `retiring`. Runs the physical drop right
 	 * away when no commit holds a claim, otherwise the last releasing commit
-	 * runs it. A generation that was already retired by another handle is a
-	 * no-op, except that a retired generation whose physical drop failed is
-	 * retried.
+	 * runs it. A generation already retired by another handle retries its
+	 * physical drop and reports the outcome; a stale handle to a generation a
+	 * recreated family has replaced is a no-op.
 	 *
 	 * @param retiredNow Set when this call performed the logical retirement
 	 * (the caller owns the one-time side effects, e.g. the VT sweep).
@@ -687,7 +687,8 @@ public:
 	 * one caller runs `DropColumnFamily` per attempt (`claimReclaim`), and only
 	 * while no commit holds a claim and the database is not closing; success
 	 * or RocksDB's own "already dropped" erases the `retiring` entry, any
-	 * other status marks it failed for retry and reports through `log.warn`.
+	 * other status leaves it there for the next retry point and reports
+	 * through `log.warn`.
 	 * Cannot throw: it runs from commit completions and destructors.
 	 * `attempted` reports whether this call ran the drop (false when another
 	 * thread holds the claim, a commit is admitted, or the database is

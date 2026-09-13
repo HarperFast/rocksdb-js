@@ -550,13 +550,8 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// A retired generation of this name blocks the fresh family (RocksDB
 			// cannot hold two families of one name). Found under `columnsMutex`
 			// so a drop cannot slip between the decision and the create, then
-			// dropped here, under `databasesMutex` like the create itself —
-			// deadlock-free, because a claim is only ever held by a commit
-			// inside RocksDB, never parked on this thread. `reclaimColumnFamily`
-			// is the only thing that knows whether the drop can run now, so ask
-			// it rather than tracking a parallel state: it reports `attempted`
-			// false when a commit still holds the generation or another thread
-			// is already dropping it, and that is what we wait out.
+			// dropped here — deadlock-free, because a claim is only ever held by
+			// a commit inside RocksDB, never parked on this thread.
 			if (std::shared_ptr<ColumnFamilyDescriptor> retiringGeneration =
 					entry.descriptor->findRetiringLocked(name)) {
 				columnsLock.unlock();

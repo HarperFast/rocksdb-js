@@ -229,6 +229,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `::getenv`-vs-`process.env` caveat as `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be
   set in the environment a process is started with. `0` disables the window (every
   rising edge emits); malformed/negative falls back to the default
+- `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` - How long `open()` of a column-family name whose
+  previous generation is still awaiting its physical drop waits before throwing
+  (default `30000`). The open polls in 20 ms slices; what it waits on is a commit
+  already inside RocksDB, so the bound only matters when that write is itself
+  stalled. Read once per process via a function-local `static` — same
+  `::getenv`-vs-`process.env` caveat as `ROCKSDB_JS_PARK_TIMEOUT_MS` — so it must be
+  set in the environment a process is started with. Malformed, non-positive, or above
+  24h falls back to the default; there is no opt-out (see invariant 22)
 
 ## Test Structure
 
