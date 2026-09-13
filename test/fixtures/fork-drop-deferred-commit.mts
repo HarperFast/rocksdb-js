@@ -2,8 +2,6 @@ import { RocksDatabase } from '../../src/index.ts';
 import { forceDropFailureForTesting } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
 // Child-process scenarios for a drop racing a commit that is already admitted
@@ -28,12 +26,8 @@ if (!(delayMs >= 100)) {
 	throw new Error('ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS must be >= 100 for this fixture');
 }
 
-const workerPath = join(
-	dirname(fileURLToPath(import.meta.url)),
-	'..',
-	'workers',
-	'drop-deferred-commit-worker.mts'
-);
+// A Windows drive-letter path is not a valid Node ESM import specifier.
+const workerPath = './test/workers/drop-deferred-commit-worker.mts';
 
 function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) {
