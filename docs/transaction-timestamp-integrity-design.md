@@ -90,10 +90,10 @@ work.
 Keep `setTimestamp()` as the adoption API, reject invalid timestamp values, and reject changes once
 the transaction is no longer pending or has staged a write or log entry. Preserve the existing
 retry behavior: a reset with no durable batch clears staged writes and may adopt again, while
-`committedPosition` freezes a timestamp whose batch already landed. Remove the second-word read API,
-flag, and clock-floor-at-open implementation from this PR. The first two belong to Harper's record
-codec; the clock floor addresses a pre-existing restart/clock-rollback concern and, as specified,
-would seed from adopted origin keys as readily as from locally issued ones. The existing
+`committedPosition` freezes a timestamp whose batch already landed. Remove the second-word read API
+and flag from this PR; they belong to Harper's record codec. The clock-floor-at-open implementation
+is retained as an explicit, caller-named option: it scans only the locally originated log, and
+fails the opted-in open when it cannot prove a complete, plausible floor. The existing
 `latestTimestamp` behavior used to populate new transaction-log segment headers remains unchanged.
 
 Document what is true about log keys today, which the issue also asked for: entries are appended in
@@ -117,7 +117,59 @@ and making every read a state transition still could not prove that a producer's
 the transaction timestamp. The enforced boundary therefore remains the first native staging event;
 producer ordering is documented explicitly.
 
-Retaining the removed clock-floor branch's far-future header bound would change the append path using
-a ten-year policy introduced only for that floor. This change instead restores `latestTimestamp` and
-segment-header behavior exactly to `origin/main`; any provenance-aware clock rollback design belongs
-in separate work.
+The clock-floor scan's far-future check stays in the open path rather than changing appends: an
+implausible key refuses the explicitly opted-in open, while normal append and segment-header
+behavior remains unchanged. A floor based on unnamed logs remains out of scope because it cannot
+distinguish locally issued keys from adopted peer keys.
+
+## Clock-floor fail-closed amendment
+
+The task owner explicitly selected restart-safe key uniqueness over availability when
+`timestampFloorLog` is configured. This changes that option's failure behavior only; omitting the
+option preserves the existing process-local clock behavior.
+
+### Approaches considered
+
+#### Do less
+
+Warn and raise the floor from the readable prefix. Rejected: an unreadable segment, framing break,
+or exhausted budget can hide a durable key, leaving the next process able to issue the same key.
+
+#### Different layer
+
+Make `getMonotonicTimestamp()` persist its own global floor. Rejected: the timestamp source cannot
+know which transaction-log keys this process originated, and a global persisted value would add a
+separate durability protocol without proving it covers the caller's log.
+
+#### Deeper cause
+
+Require every transaction-log append to use an externally durable counter. Rejected: that changes
+the transaction timestamp contract and replication/replay adoption path, far beyond the opt-in
+startup safety check requested here.
+
+#### Chosen
+
+After recovery, scan every segment in the caller-named local log under the bounded deadline. Reject
+the open before raising the process-wide floor if the scan is incomplete or sees an implausibly
+future key. A recoverable read-only torn tail remains valid because its contiguous prefix covers all
+durable entries. The named-log-missing warning remains non-fatal so a fresh local log can be named
+before its first append.
+
+### Verification route
+
+The forked integration fixture writes a named log in one process and opens it in another. It verifies
+successful seeding, then independently corrupts a segment, exhausts the deadline, skips discovery,
+creates a mid-file framing break, and writes an implausible key; each unsafe case must reject the
+opted-in open. Native tests cover scan classification and the repository build/check gates validate
+the binding and TypeScript surface.
+
+### Planning review resolution
+
+The planning review found that a later handle could name `timestampFloorLog` after the first handle
+opened without it, and receive only a warning. The registry now rejects that handle: the descriptor
+cannot safely rerun its one-time seed, and accepting the request would falsely suggest restart-safe
+uniqueness. The review also proposed making the scan budget unbounded by default. That is overruled
+by the owner-selected availability boundary and the existing open-time invariant: an unbounded scan
+can hold serialized opens indefinitely; the default bounded scan instead rejects an opted-in open
+when it cannot prove the floor, and an operator who needs more time raises
+`ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS`.

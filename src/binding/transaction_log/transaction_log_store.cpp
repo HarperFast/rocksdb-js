@@ -348,6 +348,91 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	return { TRANSACTION_LOG_FILE_HEADER_SIZE, sequenceNumber + 1 };
 }
 
+TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
+	double plausibleBound,
+	std::chrono::milliseconds budget
+) {
+	std::vector<std::shared_ptr<TransactionLogFile>> files;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		files.reserve(this->sequenceFiles.size());
+		for (auto it = this->sequenceFiles.rbegin(); it != this->sequenceFiles.rend(); ++it) {
+			files.push_back(it->second);
+		}
+	}
+
+	const auto deadline = std::chrono::steady_clock::now() + budget;
+	const LogPosition flushedPosition = this->getLastFlushedPosition();
+	auto wasPurged = [this](const std::shared_ptr<TransactionLogFile>& logFile) {
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		auto it = this->sequenceFiles.find(logFile->sequenceNumber);
+		return it == this->sequenceFiles.end() || it->second != logFile;
+	};
+	DurableKeyScan result;
+	result.discoveryIncomplete = this->discoveryIncomplete;
+	result.complete = !result.discoveryIncomplete;
+
+	for (const auto& logFile : files) {
+		if (std::chrono::steady_clock::now() >= deadline) {
+			result.budgetExhausted = true;
+			result.complete = false;
+			break;
+		}
+
+		try {
+			auto fileScan = logFile->scanMaxEntryTimestamp(plausibleBound, deadline);
+			if (fileScan.maxTimestamp > result.largestKey) {
+				result.largestKey = fileScan.maxTimestamp;
+			}
+			if (fileScan.maxImplausibleTimestamp > result.refusedKey) {
+				result.refusedKey = fileScan.maxImplausibleTimestamp;
+			}
+			switch (fileScan.kind) {
+				case RecoveryScan::Kind::Clean:
+					break;
+				case RecoveryScan::Kind::MidFileCorruption:
+					result.stoppedAtBreak = true;
+					result.complete = false;
+					break;
+				case RecoveryScan::Kind::TruncateTail:
+					result.tornTail = true;
+					if (logFile->sequenceNumber < flushedPosition.logSequenceNumber ||
+						(logFile->sequenceNumber == flushedPosition.logSequenceNumber &&
+							fileScan.validEnd < flushedPosition.positionInLogFile)) {
+						result.stoppedAtBreak = true;
+						result.complete = false;
+					}
+					break;
+				case RecoveryScan::Kind::Incomplete:
+					result.budgetExhausted = true;
+					result.complete = false;
+					break;
+			}
+			if (fileScan.kind == RecoveryScan::Kind::Incomplete) {
+				break;
+			}
+		} catch (const std::exception& e) {
+			if (wasPurged(logFile)) {
+				continue;
+			}
+			result.readFailed = true;
+			result.complete = false;
+			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s: %s\n",
+				this, logFile->path.string().c_str(), e.what());
+		} catch (...) {
+			if (wasPurged(logFile)) {
+				continue;
+			}
+			result.readFailed = true;
+			result.complete = false;
+			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s\n",
+				this, logFile->path.string().c_str());
+		}
+	}
+
+	return result;
+}
+
 LogPosition TransactionLogStore::getLastFlushedPosition() {
 	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 	auto stateFilePath = this->path / "txn.state";
@@ -1198,12 +1283,15 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				// logical end. Ignoring it could expose orphaned bytes after restart.
 				throw;
 			} catch (const std::filesystem::filesystem_error& e) {
+				store->discoveryIncomplete = true;
 				DEBUG_LOG("%p TransactionLogStore::load Failed to process file (filesystem error): %s\n",
 					store.get(), e.what());
 			} catch (const std::exception& e) {
+				store->discoveryIncomplete = true;
 				DEBUG_LOG("%p TransactionLogStore::load Failed to load file: %s\n",
 					store.get(), e.what());
 			} catch (...) {
+				store->discoveryIncomplete = true;
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::load Unknown error processing file: %s\n",
@@ -1211,6 +1299,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			}
 		}
 	} catch (const std::filesystem::filesystem_error& e) {
+		store->discoveryIncomplete = true;
 		DEBUG_LOG("%p TransactionLogStore::load Failed to iterate directory: %s\n",
 			store.get(), e.what());
 	}

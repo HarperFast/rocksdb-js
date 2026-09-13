@@ -20,6 +20,9 @@
 			'Release': {
 				'msvs_settings': {
 					'VCCLCompilerTool': {
+						# Also set per configuration: a configuration's msvs_settings is
+						# merged last, so it would otherwise win over the target's.
+						'ExceptionHandling': 1,
 						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
 					},
 					'VCLibrarianTool': {
@@ -27,6 +30,13 @@
 					},
 					'VCLinkerTool': {
 						'AdditionalOptions/': [['exclude', 'flto'], ['exclude', 'lldltojobs']],
+					},
+				},
+			},
+			'Debug': {
+				'msvs_settings': {
+					'VCCLCompilerTool': {
+						'ExceptionHandling': 1,
 					},
 				},
 			},
@@ -51,9 +61,21 @@
 					'googletest/googlemock/include',
 				],
 			},
-			'cflags_cc': ['-std=c++20'],
+			# gtest's own translation units need exceptions, not just the targets
+			# that include its headers: node's common.gypi disables them by default,
+			# and GTEST_HAS_EXCEPTIONS is derived per TU, so gtest-all.cc would
+			# compile the shared headers with 0 while binding.gyp's test targets
+			# compile them with 1. See AGENTS.md ("Test Structure") for what that
+			# mismatch costs.
+			'cflags!': ['-fno-exceptions'],
+			'cflags_cc!': ['-fno-exceptions'],
+			'cflags_cc': ['-std=c++20', '-fexceptions'],
+			'xcode_settings': {
+				'GCC_ENABLE_CPP_EXCEPTIONS': 'YES',
+			},
 			'msvs_settings': {
 				'VCCLCompilerTool': {
+					'ExceptionHandling': 1,
 					'AdditionalOptions': ['/Zc:__cplusplus', '/std:c++20']
 				}
 			}

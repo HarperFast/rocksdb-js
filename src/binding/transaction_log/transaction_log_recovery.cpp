@@ -3,7 +3,9 @@
 #include "core/encoding.h"                         // readDoubleBE / readUint32BE
 #include "core/exception.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <fstream>
 #include <mutex>
 #include <vector>
 
@@ -22,15 +24,21 @@ constexpr int RESYNC_MIN_FRAMES = 8;
 // hostile to musl/small-stack threads.
 constexpr uint32_t RESYNC_WINDOW = 65536;
 
+struct ScanDeadlineReached {};
+
 struct ScanReader {
 	TransactionLogReadFn read;
 	void* context;
 	uint32_t fileSize;
+	std::optional<std::chrono::steady_clock::time_point> deadline;
 	std::vector<char> window;
 	uint32_t windowStart = 0;
 	uint32_t windowLen = 0;
 
 	void readExact(uint32_t offset, void* dest, uint32_t n) const {
+		if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+			throw ScanDeadlineReached{};
+		}
 		if (!read(context, offset, dest, n)) {
 			throw DBException("Failed to read transaction log during recovery scan");
 		}
@@ -135,59 +143,76 @@ bool validFramingResumes(ScanReader& source, uint32_t from) {
 } // namespace
 
 RecoveryScan scanTransactionLogForRecovery(
-	uint32_t fileSize, TransactionLogReadFn read, void* context
+	uint32_t fileSize,
+	TransactionLogReadFn read,
+	void* context,
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline
 ) {
 	uint32_t lastCompleteEnd = 0;
 	uint32_t tailEntries = 0;
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
+	double maxTimestamp = 0;
+	double maxImplausibleTimestamp = 0;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
-			tailEntries > 0 && tailUniformTimestamp };
+			tailEntries > 0 && tailUniformTimestamp, maxTimestamp, maxImplausibleTimestamp };
 	};
 
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		return scan(RecoveryScan::Kind::Clean, fileSize);
 	}
 
-	ScanReader source{ read, context, fileSize, {}, 0, 0 };
+	ScanReader source{ read, context, fileSize, deadline, {}, 0, 0 };
 	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 	uint32_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
-	while (true) {
-		if (pos == fileSize) {
-			return scan(RecoveryScan::Kind::Clean, fileSize);
-		}
-		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
-			return scan(RecoveryScan::Kind::TruncateTail, pos);
-		}
-		source.readHeaderAt(pos, header);
-		double timestamp = readDoubleBE(header);
-		if (timestamp == 0) {
-			// End-of-entries marker, including the zero padding of a pre-extended file.
-			return scan(RecoveryScan::Kind::Clean, pos);
-		}
-		uint32_t length = readUint32BE(header + 8);
-		if (length == 0 ||
-			static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
-			// Intact frames after the break are mid-file corruption; truncating would
-			// discard them. A torn tail has nothing valid behind it.
-			if (validFramingResumes(source, pos + 1)) {
-				return scan(RecoveryScan::Kind::MidFileCorruption, pos);
+	try {
+		while (true) {
+			if (pos == fileSize) {
+				return scan(RecoveryScan::Kind::Clean, fileSize);
 			}
-			return scan(RecoveryScan::Kind::TruncateTail, pos);
+			if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
+				return scan(RecoveryScan::Kind::TruncateTail, pos);
+			}
+			source.readHeaderAt(pos, header);
+			double timestamp = readDoubleBE(header);
+			if (timestamp == 0) {
+				if (validFramingResumes(source, pos + 1)) {
+					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
+				}
+				return scan(RecoveryScan::Kind::Clean, pos);
+			}
+			uint32_t length = readUint32BE(header + 8);
+			if (length == 0 ||
+				static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
+				if (validFramingResumes(source, pos + 1)) {
+					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
+				}
+				return scan(RecoveryScan::Kind::TruncateTail, pos);
+			}
+			bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
+			if (timestamp > plausibleBound) {
+				if (timestamp > maxImplausibleTimestamp) {
+					maxImplausibleTimestamp = timestamp;
+				}
+			} else if (timestamp > maxTimestamp) {
+				maxTimestamp = timestamp;
+			}
+			if (tailEntries++ == 0) {
+				tailTimestamp = timestamp;
+			} else if (timestamp != tailTimestamp) {
+				tailUniformTimestamp = false;
+			}
+			pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
+			if (closesTransaction) {
+				lastCompleteEnd = pos;
+				tailEntries = 0;
+				tailUniformTimestamp = true;
+			}
 		}
-		bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
-		if (tailEntries++ == 0) {
-			tailTimestamp = timestamp;
-		} else if (timestamp != tailTimestamp) {
-			tailUniformTimestamp = false;
-		}
-		pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
-		if (closesTransaction) {
-			lastCompleteEnd = pos;
-			tailEntries = 0;
-			tailUniformTimestamp = true;
-		}
+	} catch (const ScanDeadlineReached&) {
+		return scan(RecoveryScan::Kind::Incomplete, pos);
 	}
 }
 
@@ -198,10 +223,75 @@ bool readFromBuffer(void* context, uint32_t offset, void* dest, uint32_t n) {
 	return true;
 }
 
+bool readFromStream(void* context, uint32_t offset, void* dest, uint32_t n) {
+	auto& input = *static_cast<std::ifstream*>(context);
+	input.clear();
+	input.seekg(offset, std::ios::beg);
+	if (!input) {
+		return false;
+	}
+	input.read(static_cast<char*>(dest), n);
+	return input.gcount() == static_cast<std::streamsize>(n);
+}
+
 } // namespace
 
-RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) {
-	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data));
+RecoveryScan scanTransactionLogForRecovery(
+	const char* data,
+	uint32_t fileSize,
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline
+) {
+	return scanTransactionLogForRecovery(
+		fileSize, readFromBuffer, const_cast<char*>(data), plausibleBound, deadline);
+}
+
+RecoveryScan scanTransactionLogForRecovery(
+	const std::filesystem::path& path,
+	uint32_t fileSize,
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline
+) {
+	if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+		return RecoveryScan{ RecoveryScan::Kind::Incomplete, TRANSACTION_LOG_FILE_HEADER_SIZE, 0, 0, false, 0, 0 };
+	}
+	std::ifstream input(path, std::ios::binary | std::ios::in);
+	if (!input.is_open()) {
+		throw DBException("Failed to open transaction log for recovery scan: " + path.string());
+	}
+
+	char header[TRANSACTION_LOG_FILE_HEADER_SIZE];
+	if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+		return RecoveryScan{ RecoveryScan::Kind::Incomplete, TRANSACTION_LOG_FILE_HEADER_SIZE, 0, 0, false, 0, 0 };
+	}
+	if (fileSize < TRANSACTION_LOG_FILE_HEADER_SIZE ||
+		!readFromStream(&input, 0, header, TRANSACTION_LOG_FILE_HEADER_SIZE)) {
+		throw DBException("Failed to read transaction log header: " + path.string());
+	}
+	if (readUint32BE(header) != TRANSACTION_LOG_TOKEN) {
+		throw TransactionLogFormatException("Invalid transaction log file: " + path.string());
+	}
+	uint8_t version = readUint8(header + 4);
+	if (version != 1) {
+		throw TransactionLogFormatException(
+			"Unsupported transaction log file version: " + std::to_string(version));
+	}
+
+	auto scan = scanTransactionLogForRecovery(
+		fileSize, readFromStream, &input, plausibleBound, deadline);
+	uint32_t remaining = fileSize - scan.validEnd;
+	if (scan.kind == RecoveryScan::Kind::TruncateTail &&
+		remaining > 0 && remaining < TRANSACTION_LOG_ENTRY_HEADER_SIZE
+	) {
+		char padding[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+		if (!readFromStream(&input, scan.validEnd, padding, remaining)) {
+			throw DBException("Failed to read transaction log padding: " + path.string());
+		}
+		if (std::all_of(padding, padding + remaining, [](char byte) { return byte == 0; })) {
+			scan.kind = RecoveryScan::Kind::Clean;
+		}
+	}
+	return scan;
 }
 
 RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file) {

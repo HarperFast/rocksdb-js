@@ -135,6 +135,11 @@ TransactionLogFileValidation validateTransactionLogImage(
 				" with valid entries following it (mid-file corruption)"
 			);
 			break;
+		case RecoveryScan::Kind::Incomplete:
+			result.errors.push_back(
+				"Framing scan ended before offset " + offsetHex(scan.validEnd)
+			);
+			break;
 	}
 
 	// Walk the well-formed frames (everything in [header, validEnd) is framed

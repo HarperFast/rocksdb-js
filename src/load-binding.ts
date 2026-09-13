@@ -330,6 +330,27 @@ export type NativeDatabaseOptions = {
 	transactionLogRetentionMs?: number;
 	transactionLogsPath?: string;
 	/**
+	 * The name of the transaction log whose batch keys this process originates
+	 * (the log it passes to `useLog()` for its own writes).
+	 *
+	 * At open, the process-wide monotonic timestamp floor is raised above every
+	 * batch key still durable in that log, so a backward wall-clock step between
+	 * runs cannot reissue a transaction timestamp that is already a key in it.
+	 *
+	 * Name only a log this process originates. A log written under timestamps
+	 * adopted from another node (a replication receiver calling
+	 * `transaction.setTimestamp()`) is keyed by that node's clock, and seeding
+	 * from it would ratchet this process's clock to the fastest of those nodes
+	 * on every restart. Unset (the default), the floor is left alone; native
+	 * code cannot tell the two kinds of log apart.
+	 *
+	 * Safety check: an incomplete scan or a key implausibly far ahead of the
+	 * wall clock rejects this open rather than risk issuing a duplicate key.
+	 * The floor is process-wide, so it is shared by every database open in the
+	 * process.
+	 */
+	timestampFloorLog?: string;
+	/**
 	 * When true, transaction writes to this column family invalidate the
 	 * VerificationTable slot for each written key at write time (not at
 	 * commit time). Enable only for column families whose records are

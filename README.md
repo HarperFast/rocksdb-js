@@ -173,6 +173,12 @@ Creates a new database instance.
     before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults to
     `"${db.path}/transaction_logs"`.
+  - `timestampFloorLog: string` The name of the transaction log whose batch keys this process
+    originates. At open, the process-wide monotonic clock is raised above every batch key still
+    durable in that log, so a backward wall-clock step between runs cannot reissue a transaction
+    timestamp that is already a key in it. See
+    [Timestamp floor at open](#timestamp-floor-at-open). Unset by default, which leaves the clock
+    alone.
   - `verificationTable: boolean` When `true`, this column family participates in the process-global
     [Verification Table](#verification-table): transaction writes to this column family invalidate
     the verification slot for each written key. Enable this only for column families whose records
@@ -796,12 +802,34 @@ const range = db.getKeysCount({ start: 'a', end: 'z' }); // exact number of keys
 ### `db.getMonotonicTimestamp(): number`
 
 Returns the current timestamp as a monotonically increasing timestamp in milliseconds represented as
-a decimal number. This process-wide clock also supplies each transaction's initial timestamp.
+a decimal number. This process-wide clock supplies each transaction's initial timestamp, which is
+also the key of the transaction-log batch the transaction is written under.
 
 ```typescript
 const ts = db.getMonotonicTimestamp();
 console.log(ts); // 1764307857213.739
 ```
+
+#### Timestamp floor at open
+
+The clock is monotonic within a process, not across restarts: a new process reads the wall clock
+again, so a backward step between runs can reissue a timestamp that is already a batch key in this
+node's transaction log. Opening with
+[`timestampFloorLog`](#new-rocksdatabasepath-options) raises the clock
+above every batch key still durable in the named log before the database handle is returned, so no
+transaction can be constructed below it.
+
+Name only a log this process **originates**. A log written under a timestamp adopted from another
+node — a replication receiver calling [`txn.setTimestamp()`](#txnsettimestampts-number-void) — is
+keyed by that node's clock; seeding from it would ratchet this process's clock to the fastest of
+those nodes at every restart, and there is no way for the database to tell the two kinds of log
+apart on its own.
+
+The seed is fail closed. With `timestampFloorLog` set, an unreadable segment, framing break,
+exhausted scan budget, or key more than ten years ahead of the wall clock rejects the open rather
+than risk issuing a duplicate key. The floor is process-wide, so it applies to every database open
+in the process. The scan runs while the process serializes database opens and closes,
+so increasing its budget can delay unrelated opens and closes too.
 
 ### `db.getOldestSnapshotTimestamp(): number`
 

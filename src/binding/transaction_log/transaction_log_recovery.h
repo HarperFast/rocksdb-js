@@ -1,7 +1,11 @@
 #ifndef __TRANSACTION_LOG_RECOVERY_H__
 #define __TRANSACTION_LOG_RECOVERY_H__
 
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <limits>
+#include <optional>
 
 namespace rocksdb_js {
 
@@ -28,13 +32,17 @@ struct RecoveryScan final {
 		 * is surfaced instead.
 		 */
 		MidFileCorruption,
+		// A caller-supplied budget ended the walk. It must never reach recovery's
+		// truncation path because the unread bytes can contain complete entries.
+		Incomplete,
 	};
 
 	Kind kind;
 	/**
 	 * For `TruncateTail`: the offset to truncate to (end of the last valid
 	 * entry). For `MidFileCorruption`: the offset of the first broken frame.
-	 * For `Clean`: the validated end of the entries.
+	 * For `Clean`: the validated end of the entries. For `Incomplete`: the end
+	 * of the frames read before the deadline.
 	 */
 	uint32_t validEnd;
 	/**
@@ -60,6 +68,8 @@ struct RecoveryScan final {
 	 * assign repeated timestamps to separate transactions.
 	 */
 	bool unclosedTailIsOneTransaction;
+	double maxTimestamp;
+	double maxImplausibleTimestamp;
 };
 
 /**
@@ -86,13 +96,32 @@ using TransactionLogReadFn = bool (*)(void* context, uint32_t offset, void* dest
  * @param context  Passed through to `read`.
  */
 RecoveryScan scanTransactionLogForRecovery(
-	uint32_t fileSize, TransactionLogReadFn read, void* context);
+	uint32_t fileSize,
+	TransactionLogReadFn read,
+	void* context,
+	double plausibleBound = std::numeric_limits<double>::infinity(),
+	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
 
 /**
  * In-memory adapter over scanTransactionLogForRecovery(fileSize, read, context).
  * Used by validation and native tests that already hold a buffer.
  */
-RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize);
+RecoveryScan scanTransactionLogForRecovery(
+	const char* data,
+	uint32_t fileSize,
+	double plausibleBound = std::numeric_limits<double>::infinity(),
+	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+
+/**
+ * File adapter backed by a private read-only stream. It does not use or mutate
+ * a shared TransactionLogFile's handle, mapping, index, or open state. The file
+ * header is validated before its entries are scanned.
+ */
+RecoveryScan scanTransactionLogForRecovery(
+	const std::filesystem::path& path,
+	uint32_t fileSize,
+	double plausibleBound = std::numeric_limits<double>::infinity(),
+	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
 
 /**
  * File adapter: takes fileMutex, then scans via positional reads on `file`.
