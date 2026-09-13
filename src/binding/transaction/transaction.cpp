@@ -278,9 +278,6 @@ static unsigned parkTimeoutMs() {
 }
 
 /**
- * State for the `Commit` async work.
- */
-/**
  * The claims one commit attempt holds on the generations its batch names
  * (invariant 22). Taken once at admission, before any transaction-log byte is
  * written, and released right after `txn->Commit()` returns; the destructor
@@ -288,7 +285,7 @@ static unsigned parkTimeoutMs() {
  */
 struct ColumnFamilyCommitClaim final {
 	std::shared_ptr<DBDescriptor> descriptor;
-	InlineVector<std::shared_ptr<ColumnFamilyDescriptor>, 4> claimed;
+	InlineVector<std::shared_ptr<ColumnFamilyDescriptor>, 8> claimed;
 
 	ColumnFamilyCommitClaim() = default;
 	ColumnFamilyCommitClaim(const ColumnFamilyCommitClaim&) = delete;
@@ -354,6 +351,9 @@ struct ColumnFamilyCommitClaim final {
 	}
 };
 
+/**
+ * State for the `Commit` async work.
+ */
 struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	bool hasLog;
 	ColumnFamilyCommitClaim claim;

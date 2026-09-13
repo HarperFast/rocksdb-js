@@ -77,8 +77,11 @@ struct ColumnFamilyLifetime final {
 		this->reclaimClaimed.store(false);
 	}
 
+	/**
+	 * Staging-time check only; admission is the ordered gate.
+	 */
 	bool isRetired() const {
-		return this->retired.load();
+		return this->retired.load(std::memory_order_relaxed);
 	}
 };
 

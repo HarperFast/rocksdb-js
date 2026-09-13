@@ -102,7 +102,7 @@ const drop = async (): Promise<number> => {
 
 if (scenario === 'retry-race') {
 	await nextMessage('ready');
-	for (let round = 0; round < 5; round++) {
+	for (let round = 0; round < 10; round++) {
 		const generation = RocksDatabase.open(dbPath, { name: 'table', pessimistic });
 		generation.putSync('seed', `generation-${round}`);
 		forceDropFailureForTesting(1);
@@ -118,8 +118,14 @@ if (scenario === 'retry-race') {
 
 		// Both sides retry the same failed generation at once: the open must
 		// either perform the retry or wait for it, never report a failure that
-		// did not happen.
-		worker.postMessage({ open: true });
+		// did not happen. The worker parks on the barrier and opens the instant
+		// it is released, so the two retries overlap as tightly as two threads
+		// can be made to.
+		const barrier = new Int32Array(new SharedArrayBuffer(4));
+		worker.postMessage({ open: true, barrier });
+		await sleep(20);
+		Atomics.store(barrier, 0, 1);
+		Atomics.notify(barrier, 0);
 		generation.dropSync();
 		const opened = await nextMessage('opened');
 		assert(opened.error === undefined, `concurrent open failed: ${opened.error}`);

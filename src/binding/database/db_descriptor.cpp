@@ -609,7 +609,7 @@ void DBDescriptor::finishClose() {
 	// generations are destroyed here, ahead of the database, rather than by
 	// whoever releases that claim later; `reclaimColumnFamily` skips a
 	// generation whose handle is gone.
-	this->retryFailedReclaims();
+	this->retryFailedReclaims(true);
 	{
 		std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
 		this->columns.clear();
@@ -1842,7 +1842,14 @@ static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
 	return status.IsInvalidArgument() && status.ToString().find("Column family already dropped") != std::string::npos;
 }
 
-rocksdb::Status DBDescriptor::reclaimColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept {
+rocksdb::Status DBDescriptor::reclaimColumnFamily(
+	const std::shared_ptr<ColumnFamilyDescriptor>& column,
+	bool* attempted,
+	bool duringClose
+) noexcept {
+	if (attempted) {
+		*attempted = false;
+	}
 	if (!column) {
 		return rocksdb::Status::OK();
 	}
@@ -1866,14 +1873,17 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(const std::shared_ptr<ColumnFa
 
 	// Participate in the in-flight accounting so `finishClose()` either waits
 	// for this drop or this drop sees the close and stands down; the handle is
-	// then destroyed by teardown, ahead of the database.
-	++this->operationsInFlight;
-	auto releaseOperation = [this]() {
-		if (--this->operationsInFlight == 0 && this->isClosing()) {
+	// then destroyed by teardown, ahead of the database. `finishClose`'s own
+	// retry runs past both gates by construction.
+	if (!duringClose) {
+		++this->operationsInFlight;
+	}
+	auto releaseOperation = [this, duringClose]() {
+		if (!duringClose && --this->operationsInFlight == 0 && this->isClosing()) {
 			this->operationsInFlight.notify_all();
 		}
 	};
-	if (this->isClosing() || !this->db) {
+	if ((!duringClose && this->isClosing()) || !this->db) {
 		column->lifetime.unclaimReclaim();
 		releaseOperation();
 		return rocksdb::Status::OK();
@@ -1897,6 +1907,9 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(const std::shared_ptr<ColumnFa
 		}
 		this->retiringCondition->notify_all();
 
+		if (attempted) {
+			*attempted = true;
+		}
 		const int forced = testForceDropFailureMode();
 		if (forced == 1) {
 			status = rocksdb::Status::IOError("forced drop failure (test seam)");
@@ -1927,12 +1940,21 @@ rocksdb::Status DBDescriptor::reclaimColumnFamily(const std::shared_ptr<ColumnFa
 			}
 		}
 	} catch (...) {
-		// Retryable state first; the entry may still read Reclaiming, which
-		// the next retry point (drop, open, close) overwrites.
+		// Retryable state first, allocation-free: the claim is released and the
+		// entry reads Failed so the next retry point picks it up.
 		column->lifetime.unclaimReclaim();
+		try {
+			std::lock_guard<std::mutex> lock(this->columnsMutex);
+			for (auto& entry : this->retiring) {
+				if (entry.descriptor == column) {
+					entry.state = RetiringColumnFamily::State::Failed;
+				}
+			}
+		} catch (...) {
+		}
 		releaseOperation();
 		this->retiringCondition->notify_all();
-		return rocksdb::Status::IOError("DropColumnFamily bookkeeping threw");
+		return rocksdb::Status::IOError();
 	}
 	releaseOperation();
 	this->retiringCondition->notify_all();
@@ -1963,7 +1985,7 @@ void DBDescriptor::releaseCommitClaim(const std::shared_ptr<ColumnFamilyDescript
 	}
 }
 
-void DBDescriptor::retryFailedReclaims() noexcept {
+void DBDescriptor::retryFailedReclaims(bool duringClose) noexcept {
 	std::vector<std::shared_ptr<ColumnFamilyDescriptor>> failed;
 	try {
 		std::lock_guard<std::mutex> lock(this->columnsMutex);
@@ -1976,7 +1998,7 @@ void DBDescriptor::retryFailedReclaims() noexcept {
 		return;
 	}
 	for (const auto& column : failed) {
-		this->reclaimColumnFamily(column);
+		this->reclaimColumnFamily(column, nullptr, duringClose);
 	}
 }
 

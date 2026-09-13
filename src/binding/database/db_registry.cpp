@@ -1,4 +1,5 @@
 #include <chrono>
+#include <optional>
 #include <cstdlib>
 #include <vector>
 #include "database/db_registry.h"
@@ -439,8 +440,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 
 	DBKey key{identityPath, options.readOnly, options.secondaryPath};
 	auto entryIterator = instance->databases.end();
-	const auto reclaimDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(columnFamilyReclaimWaitMs());
-	bool retriedFailedReclaim = false;
+	// Armed on the first wait for a reclaiming generation, so time spent
+	// waiting for a closing database on this path does not count against it.
+	std::optional<std::chrono::steady_clock::time_point> reclaimDeadline;
 
 	// The body re-runs from the wait loop whenever the column family's
 	// previous generation is still being reclaimed (invariant 22): the wait
@@ -543,7 +545,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 
 			// manually copy the columns because we don't know which ones are valid.
 			// Hold the descriptor's columns mutex across the copy-check-insert so a
-			// concurrent drop (which erases its entry via unregisterColumnFamily)
+			// concurrent drop (which erases its entry via retireColumnFamily)
 			// cannot interleave and let us reuse a just-dropped column family.
 			std::unique_lock<std::mutex> columnsLock(entry.descriptor->columnsMutex);
 			// A retired generation of this name blocks the fresh family (RocksDB
@@ -556,19 +558,24 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// thread — and a stalled family does not block unrelated opens.
 			if (auto* retiringEntry = entry.descriptor->findRetiringLocked(name)) {
 				if (retiringEntry->state == DBDescriptor::RetiringColumnFamily::State::Failed) {
-					if (retriedFailedReclaim) {
-						throw rocksdb_js::DBException(
-							"Column family \"" + name + "\" is still being reclaimed; its previous drop failed: " +
-							retiringEntry->lastError
-						);
-					}
-					retriedFailedReclaim = true;
 					std::shared_ptr<ColumnFamilyDescriptor> failedGeneration = retiringEntry->descriptor;
 					columnsLock.unlock();
-					entry.descriptor->reclaimColumnFamily(failedGeneration);
+					bool attempted = false;
+					rocksdb::Status retryStatus = entry.descriptor->reclaimColumnFamily(failedGeneration, &attempted);
+					if (attempted && !retryStatus.ok()) {
+						throw rocksdb_js::DBException(
+							"Column family \"" + name + "\" is still being reclaimed; its previous drop failed: " +
+							retryStatus.ToString()
+						);
+					}
+					// Either this open dropped it, or another thread's retry holds
+					// the claim: re-evaluate, waiting for the latter.
 					continue;
 				}
-				if (std::chrono::steady_clock::now() >= reclaimDeadline) {
+				if (!reclaimDeadline) {
+					reclaimDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(columnFamilyReclaimWaitMs());
+				}
+				if (std::chrono::steady_clock::now() >= *reclaimDeadline) {
 					throw rocksdb_js::DBException(
 						"Column family \"" + name + "\" is still being reclaimed after a drop (a commit admitted "
 						"before the drop has not released it); retry the open"

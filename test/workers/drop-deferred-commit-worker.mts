@@ -12,7 +12,7 @@ const db = RocksDatabase.open(workerData.path, {
 
 parentPort?.on(
 	'message',
-	async (message: { commit?: boolean; close?: boolean; open?: boolean }) => {
+	async (message: { commit?: boolean; close?: boolean; open?: boolean; barrier?: Int32Array }) => {
 		if (message.close) {
 			db.close();
 			parentPort?.postMessage({ closed: true });
@@ -23,6 +23,9 @@ parentPort?.on(
 			// drop of its previous generation.
 			let error: string | undefined;
 			let seed: unknown;
+			if (message.barrier) {
+				Atomics.wait(message.barrier, 0, 0);
+			}
 			try {
 				const fresh = RocksDatabase.open(workerData.path, {
 					name: workerData.name,

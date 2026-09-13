@@ -693,8 +693,16 @@ public:
 	 * or RocksDB's own "already dropped" erases the `retiring` entry, any
 	 * other status marks it failed for retry and reports through `log.warn`.
 	 * Cannot throw: it runs from commit completions and destructors.
+	 * `attempted` reports whether this call ran the drop (false when another
+	 * thread holds the claim, a commit is admitted, or the database is
+	 * closing); `duringClose` is `finishClose`'s own retry, which runs after
+	 * the closing flag is set and every commit lane is drained.
 	 */
-	rocksdb::Status reclaimColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept;
+	rocksdb::Status reclaimColumnFamily(
+		const std::shared_ptr<ColumnFamilyDescriptor>& column,
+		bool* attempted = nullptr,
+		bool duringClose = false
+	) noexcept;
 
 	/**
 	 * Releases one commit claim and reclaims when it was the last on a
@@ -706,7 +714,7 @@ public:
 	 * Retries every failed physical drop. Called from the next drop on this
 	 * database and from `finishClose()`.
 	 */
-	void retryFailedReclaims() noexcept;
+	void retryFailedReclaims(bool duringClose = false) noexcept;
 
 	/**
 	 * Number of retired generations whose physical drop has not completed

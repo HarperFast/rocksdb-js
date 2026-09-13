@@ -379,16 +379,14 @@ describe('Deferred column-family reclamation', () => {
 				}
 			}));
 
-		it('is retried on close, and a drop that failed after RocksDB removed the family resolves as already dropped', () => {
+		it('is retried on close, which performs the real drop', () => {
 			const dbPath = generateDBPath();
 			const db = RocksDatabase.open(dbPath, { name: 'table' });
 			db.putSync('k', 'v');
-			// mode 2: the drop runs, then reports failure
-			forceDropFailureForTesting(2);
-			expect(() => db.dropSync()).toThrow(/forced post-drop failure/);
+			forceDropFailureForTesting(1);
+			expect(() => db.dropSync()).toThrow(/forced drop failure/);
 			expect(db.getStat('columnFamily.pendingReclaims')).toBe(1);
 			forceDropFailureForTesting(0);
-			// close retries: RocksDB answers "already dropped", which is success
 			db.close();
 
 			const reopened = RocksDatabase.open(dbPath);
@@ -398,5 +396,26 @@ describe('Deferred column-family reclamation', () => {
 				reopened.close();
 			}
 		});
+
+		it('resolves a drop that failed after RocksDB removed the family as already dropped on retry', () =>
+			dbRunner(
+				{ dbOptions: [{ name: 'table' }, { name: 'other' }] },
+				({ db: table, dbPath }, { db: other }) => {
+					// mode 2: the drop runs, then reports failure
+					forceDropFailureForTesting(2);
+					expect(() => table.dropSync()).toThrow(/forced post-drop failure/);
+					expect(table.getStat('columnFamily.pendingReclaims')).toBe(1);
+					forceDropFailureForTesting(0);
+					// the retry gets RocksDB's "already dropped", which is success
+					other.dropSync();
+					expect(table.getStat('columnFamily.pendingReclaims')).toBe(0);
+					const fresh = RocksDatabase.open(dbPath, { name: 'table' });
+					try {
+						expect(fresh.getKeysCount()).toBe(0);
+					} finally {
+						fresh.close();
+					}
+				}
+			));
 	});
 });

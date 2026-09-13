@@ -788,7 +788,12 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 
 	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status = dropColumnFamily(**dbHandle);
+	rocksdb::Status status;
+	try {
+		status = dropColumnFamily(**dbHandle);
+	} catch (const std::exception& e) {
+		status = rocksdb::Status::IOError(e.what());
+	}
 	if (!status.ok()) {
 		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Drop failed");
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
@@ -825,7 +830,12 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 
 	ACQUIRE_OPERATIONS_LOCK();
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status = dropColumnFamily(**dbHandle);
+	rocksdb::Status status;
+	try {
+		status = dropColumnFamily(**dbHandle);
+	} catch (const std::exception& e) {
+		status = rocksdb::Status::IOError(e.what());
+	}
 	if (!status.ok()) {
 		napi_value error;
 		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
@@ -2491,12 +2501,16 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		writeOptions.ignore_missing_column_families = true;
-		status = (*dbHandle)->descriptor->db->Put(
-			writeOptions,
-			(*dbHandle)->getColumnFamilyHandle(),
-			keySlice,
-			valueSlice
-		);
+		// A retired generation is discarded to (#725) whether or not its
+		// physical drop has run yet.
+		if (!(*dbHandle)->columnDescriptor->lifetime.isRetired()) {
+			status = (*dbHandle)->descriptor->db->Put(
+				writeOptions,
+				(*dbHandle)->getColumnFamilyHandle(),
+				keySlice,
+				valueSlice
+			);
+		}
 		if (vt && vtSlot) {
 			vt->releaseWriteIntent(vtSlot, vtTracker);
 		}
@@ -2561,11 +2575,13 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		writeOptions.ignore_missing_column_families = true;
-		status = (*dbHandle)->descriptor->db->Delete(
+		if (!(*dbHandle)->columnDescriptor->lifetime.isRetired()) {
+			status = (*dbHandle)->descriptor->db->Delete(
 			writeOptions,
-			(*dbHandle)->getColumnFamilyHandle(),
-			keySlice
-		);
+				(*dbHandle)->getColumnFamilyHandle(),
+				keySlice
+			);
+		}
 		if (vt && vtSlot) {
 			vt->releaseWriteIntent(vtSlot, vtTracker);
 		}
