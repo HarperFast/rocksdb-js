@@ -521,7 +521,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     nonzero header below `size` is a complete entry and a length overrunning it is a break.
 
     The resync scan must be bounded by the **written extent**: the live mapping-carried
-    `readableExtent`, seeded from append-owned `TransactionLogFile::size` — see invariant 5 — and
+    `readableExtent` described in invariant 23, seeded from append-owned
+    `TransactionLogFile::size` — see invariant 5 — and
     retained after the store forgets a purged segment. It must use neither the physical nor raw
     mapped size.
     An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
