@@ -212,17 +212,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::string identityPath;
 
 	/**
-	 * The `timestampFloorLog` this path was opened with, or empty. The floor is
-	 * process-global and belongs to the physical path, not to this `DBKey`: the
-	 * first descriptor for the path seeds it, a later one (including a read-only
-	 * or secondary open, which gets its own descriptor) finds the request already
-	 * resolved by TransactionLogStoreRegistry::SeedTimestampFloor, and
-	 * DBRegistry::OpenDB rejects a request that disagrees with any live
-	 * descriptor on the path rather than let it look applied.
-	 */
-	std::string timestampFloorLog;
-
-	/**
 	 * Process-unique identity for this descriptor's *open lifecycle*, used as the
 	 * database component of every VerificationTable slot address (with cfId + key).
 	 *

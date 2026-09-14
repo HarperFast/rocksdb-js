@@ -253,20 +253,24 @@ struct TransactionLogStore final {
 	bool discoveryIncomplete = false;
 
 	/**
-	 * Names of the files discovery could not register, in the order they were
-	 * skipped. The refusal they cause outlives the DEBUG_LOG that recorded them
-	 * (compiled out of release builds), so without these an operator gets
+	 * Names of the files discovery could not register, capped at
+	 * DISCOVERY_SKIPPED_NAMES (`skippedDiscoveryCount` is the true total). The
+	 * refusal they cause outlives the DEBUG_LOG that recorded them — that is
+	 * compiled out of release builds — so without these an operator gets
 	 * "discovery skipped a segment" and a directory to bisect by hand.
+	 *
+	 * Written only by markDiscoverySkipped() from load(), before the store is
+	 * published, and read-only afterwards: that, not a lock, is the whole
+	 * contract, exactly as for `discoveryIncomplete` beside it.
 	 */
+	static constexpr size_t DISCOVERY_SKIPPED_NAMES = 8;
 	std::vector<std::string> discoverySkipped;
+	size_t skippedDiscoveryCount = 0;
 
-	/**
-	 * Latches `discoveryIncomplete` and records the file's name. Called only from
-	 * load(), before the store is published, so it needs no lock.
-	 */
 	void markDiscoverySkipped(const std::filesystem::path& file) {
 		discoveryIncomplete = true;
-		if (discoverySkipped.size() < 8) {
+		skippedDiscoveryCount++;
+		if (discoverySkipped.size() < DISCOVERY_SKIPPED_NAMES) {
 			discoverySkipped.push_back(file.filename().string());
 		}
 	}
@@ -510,6 +514,7 @@ struct TransactionLogStore final {
 		bool readFailed = false;
 		bool discoveryIncomplete = false;
 		std::vector<std::string> discoverySkipped;
+		size_t skippedDiscoveryCount = 0;
 		/**
 		 * Segments walked, segments the store holds, and the bytes those walks
 		 * read. Reported with a budget failure so an operator can size

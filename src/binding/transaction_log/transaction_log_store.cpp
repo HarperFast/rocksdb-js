@@ -372,10 +372,8 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 	result.discoveryIncomplete = this->discoveryIncomplete;
 	result.complete = !result.discoveryIncomplete;
 	result.segmentsTotal = files.size();
-	{
-		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-		result.discoverySkipped = this->discoverySkipped;
-	}
+	result.discoverySkipped = this->discoverySkipped;
+	result.skippedDiscoveryCount = this->skippedDiscoveryCount;
 
 	for (const auto& logFile : files) {
 		// Refusal is already decided, and DBRegistry::OpenDB holds databasesMutex

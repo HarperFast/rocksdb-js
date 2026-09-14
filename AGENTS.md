@@ -898,9 +898,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     see a partial append and refuse a legitimate open, or clear a region the writer fills
     immediately after. The resolved name is memoized on the `TransactionLogStoreRegistryEntry`
     (refcounted with the path, so it is gone once the last descriptor closes and a fresh open seeds
-    again), and `DBRegistry::OpenDB` rejects a request that disagrees with **any** live descriptor on
-    the path — checking only this key's descriptor let a read-only open assert restart-safe
-    uniqueness that a writable handle on the same path had already violated.
+    again), and `DBRegistry::OpenDB` rejects a request that disagrees with **that memo** once the
+    path is open at all. Checking this key's descriptor let a read-only open assert restart-safe
+    uniqueness a writable handle on the same path had already violated; checking _every_ descriptor's
+    copy of the name is the mirror-image bug, because an open that carried no option stamps an empty
+    name on its own descriptor without changing what the path was seeded from, and would then lock
+    the path out of exactly the log it was seeded from. The memo is the only thing that knows.
 
 ## Debugging native heap corruption
 
