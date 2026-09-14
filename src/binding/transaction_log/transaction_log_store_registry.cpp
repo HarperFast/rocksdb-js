@@ -330,6 +330,10 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 				for (size_t i = 0; i < scan.discoverySkipped.size(); ++i) {
 					detail << (i == 0 ? "" : ", ") << scan.discoverySkipped[i];
 				}
+				if (scan.skippedDiscoveryCount > scan.discoverySkipped.size()) {
+					detail << ", and " << (scan.skippedDiscoveryCount - scan.discoverySkipped.size())
+						   << " more";
+				}
 				detail << ")";
 			}
 			reasons.emplace_back(detail.str());

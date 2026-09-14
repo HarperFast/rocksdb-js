@@ -1197,8 +1197,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     bytes are all zero or too short for a frame. Its extent comes from that open stream, capped by a
     retired segment's append boundary, never from `TransactionLogFile::size`, which Windows open
     normalizes at the first zero timestamp and could otherwise hide durable suffixes. The resolved
-    floor-log name is memoized per physical transaction-log store and checked against every live
-    descriptor for the same path; `DBKey` also contains read-only and secondary state, so guarding
+    floor-log name is memoized per physical transaction-log store, which is the source of truth for
+    every descriptor on that path; `DBKey` also contains read-only and secondary state, so guarding
     only one descriptor would allow a concurrent open to rescan a writer's active log.
 
 23. **A queued unlock callback belongs to its env and is released by that env's cleanup hook**:
