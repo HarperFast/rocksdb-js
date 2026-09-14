@@ -97,9 +97,9 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 	(*dbHandle)->descriptor->transactionAdd(*txnHandle);
 
 	DEBUG_LOG(
-		"%p Transaction::Constructor Initializing transaction %u (dbHandle=%p, dbDescriptor=%p, use_count=%ld)\n",
+		"%p Transaction::Constructor Initializing transaction %llu (dbHandle=%p, dbDescriptor=%p, use_count=%ld)\n",
 		(*txnHandle).get(),
-		(*txnHandle)->id,
+		(unsigned long long)(*txnHandle)->id,
 		(*txnHandle)->dbHandle.get(),
 		(*txnHandle)->dbHandle->descriptor.get(),
 		(*txnHandle)->dbHandle.use_count()
@@ -156,7 +156,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	(*txnHandle)->state = TransactionState::Aborted;
 
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
-	DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%u\n", (*txnHandle).get(), (*txnHandle)->id);
+	DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
 	(*txnHandle)->close();
 
 	if (hadLogWrites) {
@@ -349,8 +349,8 @@ static void executeLogWork(TransactionCommitState* state) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	} else if (txnHandle->logEntryBatch) {
-		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %u\n",
-			txnHandle.get(), txnHandle->id);
+		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %llu\n",
+			txnHandle.get(), (unsigned long long)txnHandle->id);
 		auto store = txnHandle->boundLogStore.lock();
 		if (store) {
 			try {
@@ -360,11 +360,11 @@ static void executeLogWork(TransactionCommitState* state) {
 				txnHandle->logEntryBatch.reset();
 				state->hasLog = true;
 			} catch (const std::exception& e) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %u: %s\n", txnHandle.get(), txnHandle->id, e.what());
+				DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %llu: %s\n", txnHandle.get(), (unsigned long long)txnHandle->id, e.what());
 				state->status = rocksdb::Status::Aborted(e.what());
 			}
 		} else {
-			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %u\n", txnHandle.get(), txnHandle->id);
+			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %llu\n", txnHandle.get(), (unsigned long long)txnHandle->id);
 			state->status = rocksdb::Status::Aborted("Log store not found for transaction");
 		}
 	}
@@ -447,13 +447,13 @@ static void executeCommitWork(TransactionCommitState* state) {
 			if (store) {
 				store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
 			} else {
-				DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", txnHandle.get(), txnHandle->committedPosition.logSequenceNumber, txnHandle->id);
+				DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %llu\n", txnHandle.get(), txnHandle->committedPosition.logSequenceNumber, (unsigned long long)txnHandle->id);
 				state->status = rocksdb::Status::Aborted("Log store not found for transaction");
 			}
 		}
 
 		if (state->status.ok()) {
-			DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%u)\n", txnHandle.get(), txnHandle->id);
+			DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%llu)\n", txnHandle.get(), (unsigned long long)txnHandle->id);
 			txnHandle->state = TransactionState::Committed;
 			descriptor->notify("committed", nullptr);
 		} else if (state->status.IsBusy() || state->status.IsTryAgain()) {
@@ -486,9 +486,9 @@ static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* co
 static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 	if (state->status.ok()) {
 		if (state->handle) {
-			DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%u)\n", state->handle.get(), state->handle->id);
+			DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%llu)\n", state->handle.get(), (unsigned long long)state->handle->id);
 			state->handle->close();
-			DEBUG_LOG("%p Transaction::Commit Complete closed (txnId=%u)\n", state->handle.get(), state->handle->id);
+			DEBUG_LOG("%p Transaction::Commit Complete closed (txnId=%llu)\n", state->handle.get(), (unsigned long long)state->handle->id);
 		} else {
 			DEBUG_LOG("%p Transaction::Commit Complete, but handle is null!\n", state->handle.get());
 		}
@@ -858,7 +858,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 
 			DEBUG_LOG("%p Transaction::Commit Complete callback entered (status=%d, txnId=%d)\n",
-				state->handle.get(), status, state->handle ? state->handle->id : 0);
+				state->handle.get(), status, state->handle ? (unsigned long long)state->handle->id : 0ULL);
 
 			state->deleteAsyncWork();
 
@@ -905,8 +905,8 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	bool hasLog = false;
 
 	if ((*txnHandle)->logEntryBatch) {
-		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %u\n",
-			(*txnHandle).get(), (*txnHandle)->id);
+		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %llu\n",
+			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
 		store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
 			hasLog = true;
@@ -919,7 +919,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			// free the batch after writing to avoid memory leak
 			(*txnHandle)->logEntryBatch.reset();
 		} else {
-			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %u\n", (*txnHandle).get(), (*txnHandle)->id);
+			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
 			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
 		}
 	}
@@ -940,17 +940,17 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		if (store) {
 			store->commitFinished((*txnHandle)->committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
 		} else {
-			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %u\n", (*txnHandle).get(), (*txnHandle)->committedPosition.logSequenceNumber, (*txnHandle)->id);
+			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %llu\n", (*txnHandle).get(), (*txnHandle)->committedPosition.logSequenceNumber, (unsigned long long)(*txnHandle)->id);
 			status = rocksdb::Status::Aborted("Log store not found for transaction");
 		}
 	}
 
 	if (status.ok()) {
-		DEBUG_LOG("%p Transaction::CommitSync Emitted committed event (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id);
+		DEBUG_LOG("%p Transaction::CommitSync Emitted committed event (txnId=%llu)\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
 		(*txnHandle)->state = TransactionState::Committed;
 		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
-		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%u)\n", (*txnHandle).get(), (*txnHandle)->id);
+		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%llu)\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
 		(*txnHandle)->close();
 	} else {
 		if (status.IsBusy() || status.IsTryAgain()) {
@@ -1234,9 +1234,10 @@ napi_value Transaction::Id(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_HANDLE("Id");
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_uint32(
+	// Exposed as a double: ids are 64-bit internally and exact in a double up to 2^53.
+	NAPI_STATUS_THROWS(::napi_create_double(
 		env,
-		(*txnHandle)->id,
+		static_cast<double>((*txnHandle)->id),
 		&result
 	));
 	return result;
@@ -1432,8 +1433,8 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 		}
 		(*txnHandle)->boundLogStore = store;
 		store->pendingTransactionCount++;
-		DEBUG_LOG("%p Transaction::UseLog Binding transaction %u to log store \"%s\"\n",
-			(*txnHandle).get(), (*txnHandle)->id, name.c_str());
+		DEBUG_LOG("%p Transaction::UseLog Binding transaction %llu to log store \"%s\"\n",
+			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id, name.c_str());
 	}
 
 	// this needs to create a new TransactionLog instance that is not tracked by
@@ -1445,7 +1446,7 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	args[0] = argv[1];
 
 	NAPI_STATUS_THROWS_ERROR(::napi_create_string_utf8(env, name.c_str(), name.size(), &args[1]), "Invalid log name");
-	NAPI_STATUS_THROWS_ERROR(::napi_create_uint32(env, (*txnHandle)->id, &args[2]), "Failed to create transaction id argument");
+	NAPI_STATUS_THROWS_ERROR(::napi_create_double(env, static_cast<double>((*txnHandle)->id), &args[2]), "Failed to create transaction id argument");
 
 	napi_value instance;
 	NAPI_STATUS_THROWS_ERROR(::napi_new_instance(env, transactionLogCtor, 3, args, &instance), "Failed to create new TransactionLog instance");

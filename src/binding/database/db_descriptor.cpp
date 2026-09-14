@@ -1674,7 +1674,7 @@ void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) 
 /**
  * Retrieves a transaction from the registry.
  */
-std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
+std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint64_t id) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	auto it = this->transactions.find(id);
 	if (it != this->transactions.end()) {
@@ -1696,7 +1696,7 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 	auto it = this->transactions.find(txnHandle->id);
 	if (it != this->transactions.end()) {
 		if (it->second != txnHandle) {
-			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %u mismatch! expected %p, got %p\n", this, txnHandle->id, it->second.get(), txnHandle.get());
+			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %llu mismatch! expected %p, got %p\n", this, (unsigned long long)txnHandle->id, it->second.get(), txnHandle.get());
 		}
 		this->transactions.erase(it);
 	}
@@ -1723,7 +1723,7 @@ void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 	}
 
 	for (auto& txnHandle : toClose) {
-		DEBUG_LOG("%p DBDescriptor::closeTransactionsByEnv closing transaction %u (env=%p)\n", this, txnHandle->id, env);
+		DEBUG_LOG("%p DBDescriptor::closeTransactionsByEnv closing transaction %llu (env=%p)\n", this, (unsigned long long)txnHandle->id, env);
 		txnHandle->close();
 		// close() can only self-remove while it can still reach this descriptor
 		// through its DBHandle, and a handle closed earlier by the user has
@@ -1738,7 +1738,7 @@ void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 /**
  * Generates the next unique transaction ID for this database.
  */
-uint32_t DBDescriptor::transactionGetNextId() {
+uint64_t DBDescriptor::transactionGetNextId() {
 	return ++this->nextTransactionId;
 }
 

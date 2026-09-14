@@ -1194,6 +1194,29 @@ describe('Transaction Log', () => {
 					expect(() => log.addEntry(Buffer.from('hello'), [] as any)).toThrow(
 						new TypeError('Invalid argument, transaction id must be a non-negative integer')
 					);
+					for (const notAnId of [-1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 2]) {
+						expect(() => log.addEntry(Buffer.from('hello'), notAnId)).toThrow(
+							/transaction id must be a non-negative integer/
+						);
+					}
+				});
+			}));
+
+		// Transaction ids are a 64-bit counter surfaced to JS as a double. They used to be
+		// read back with ToInt32 semantics, so every id at or above 2^31 arrived negative
+		// and was rejected as invalid — which permanently broke log writes for the life of
+		// the process once a database passed ~2.1 billion transactions. Ids this large are
+		// only reachable after 2^31 allocations, so assert at the argument boundary: these
+		// must get past validation and fail the registry lookup instead.
+		it('should accept transaction ids at or above 2^31', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				await db.transaction(async (_txn) => {
+					for (const id of [2 ** 31, 2 ** 32 + 5, Number.MAX_SAFE_INTEGER]) {
+						expect(() => log.addEntry(Buffer.from('hello'), id)).toThrow(
+							`Transaction id ${id} not found`
+						);
+					}
 				});
 			}));
 

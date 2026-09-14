@@ -722,7 +722,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			// txnsMutex covers the map's membership, not a handle's mutable fields. id and age are
 			// fixed before the handle is published to the registry.
 			struct TxnSummary {
-				uint32_t id;
+				uint64_t id;
 				double ageMs;
 			};
 			std::vector<TxnSummary> txnSummaries;
@@ -753,7 +753,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				napi_value detail;
 				NAPI_STATUS_THROWS(::napi_create_object(env, &detail));
 				napi_value value;
-				NAPI_STATUS_THROWS(::napi_create_uint32(env, summary.id, &value));
+				NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(summary.id), &value));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "id", value));
 				NAPI_STATUS_THROWS(::napi_create_double(env, summary.ageMs, &value));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, detail, "ageMs", value));
