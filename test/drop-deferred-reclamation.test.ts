@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * Deferred, reference-counted column-family reclamation (AGENTS.md invariant
- * 22, HarperFast/rocksdb-js#806 / #726): a drop retires the family logically
+ * 23, HarperFast/rocksdb-js#806 / #726): a drop retires the family logically
  * and returns; the physical drop runs when no admitted commit names it.
  */
 
