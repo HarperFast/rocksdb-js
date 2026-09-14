@@ -3,12 +3,15 @@
 #include <limits>
 #include <string>
 #include "core/platform.h"
+#include "transaction_log/transaction_log_file.h"
 
 using rocksdb_js::getMonotonicTimestamp;
 using rocksdb_js::getWallClockTimestamp;
 using rocksdb_js::MAX_CLOCK_FLOOR_SKEW_MS;
 using rocksdb_js::MAX_TIMESTAMP_MS;
+using rocksdb_js::budgetNearlyExhausted;
 using rocksdb_js::parseDurationMs;
+using rocksdb_js::parseTransactionLogSegmentName;
 using rocksdb_js::raiseMonotonicTimestampFloor;
 
 // Tests share the process-global floor, so they derive targets from its current value.
@@ -101,4 +104,49 @@ TEST(ParseDurationMs, RequiresFullConsumption) {
 TEST(ParseDurationMs, FallsBackOnNothingToParse) {
 	EXPECT_EQ(parseDurationMs(nullptr, 2000, 86400000), 2000u);
 	EXPECT_EQ(parseDurationMs("", 2000, 86400000), 2000u);
+}
+
+TEST(BudgetNearlyExhausted, ReportsAtThreeQuartersAndAbove) {
+	EXPECT_TRUE(budgetNearlyExhausted(1500, 2000));
+	EXPECT_TRUE(budgetNearlyExhausted(2000, 2000));
+	EXPECT_TRUE(budgetNearlyExhausted(4000, 2000));
+}
+
+TEST(BudgetNearlyExhausted, StaysQuietBelowIt) {
+	EXPECT_FALSE(budgetNearlyExhausted(1499, 2000));
+	EXPECT_FALSE(budgetNearlyExhausted(0, 2000));
+}
+
+TEST(BudgetNearlyExhausted, AZeroBudgetIsNotPressure) {
+	// `0` means scan nothing and refuse, which is not a log growing into trouble.
+	EXPECT_FALSE(budgetNearlyExhausted(0, 0));
+	EXPECT_FALSE(budgetNearlyExhausted(5, 0));
+}
+
+TEST(ParseTransactionLogSegmentName, AcceptsWhatTheWriterProduces) {
+	uint32_t sequence = 0;
+	EXPECT_TRUE(parseTransactionLogSegmentName("1.txnlog", sequence));
+	EXPECT_EQ(sequence, 1u);
+	EXPECT_TRUE(parseTransactionLogSegmentName("4294967295.txnlog", sequence));
+	EXPECT_EQ(sequence, 4294967295u);
+}
+
+TEST(ParseTransactionLogSegmentName, RejectsAPrefixThatWouldShadowARealSegment) {
+	uint32_t sequence = 0;
+	EXPECT_FALSE(parseTransactionLogSegmentName("1 copy.txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName("01.txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName("1-backup.txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName("1.txnlog.bak", sequence));
+}
+
+TEST(ParseTransactionLogSegmentName, RejectsWhatIsOutsideTheSequenceDomain) {
+	uint32_t sequence = 0;
+	EXPECT_FALSE(parseTransactionLogSegmentName("0.txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName("4294967296.txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName("99999999999999999999.txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName("-1.txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName("+1.txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName(" 1.txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName(".txnlog", sequence));
+	EXPECT_FALSE(parseTransactionLogSegmentName("txnlog", sequence));
 }

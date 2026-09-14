@@ -307,6 +307,22 @@ One consequence worth stating: a read-only or secondary open runs no recovery (i
 live primary's logs), so a crash-torn tail it finds is refused unless it is shorter than an entry
 header. A writable open recovers such a tail before the walk runs and is unaffected.
 
+Discovery only registers segments whose filename is one the writer could have produced —
+`<sequence>.txnlog`, a positive decimal with no padding or suffix. A `.txnlog` that is not, or a
+second file claiming a sequence already registered, is ignored and counted as a segment discovery
+could not place, which refuses an opted-in open and names the file. This matters because the
+filename _is_ the segment's identity: a `1 copy.txnlog` next to `1.txnlog` used to take its place in
+the registry, so the real segment was never read and the floor was raised without its keys. **An
+ordinary open is affected too** — such a file used to be exposed as a real segment and could be
+recovered or appended relative to; it is now ignored, so a directory holding manually renamed or
+copied segments starts from the canonical sequence state instead. Rename only after establishing
+which file is canonical. Note that a canonical name is a syntax check, not provenance: a valid
+`9.txnlog` copied in from another node passes it, so directory integrity and naming the log this
+process originates stay the caller's responsibility.
+
+A scan that succeeds after using most of its budget warns, so the growth that would otherwise turn
+into a refusal on some later restart is visible before it does.
+
 A `timestampFloorLog` naming a log the database does not have warns — including on a database with no
 logs at all, which is where a misspelled name is most likely: a newly named locally originated log has
 no existing keys to seed. Callers that need restart-safe uniqueness must provision and name their

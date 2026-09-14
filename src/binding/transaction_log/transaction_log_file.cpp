@@ -1,9 +1,11 @@
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <fstream>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 #include "napi/global_events.h"
@@ -19,6 +21,29 @@
 #endif
 
 namespace rocksdb_js {
+
+bool parseTransactionLogSegmentName(const std::string& filename, uint32_t& sequenceNumber) {
+	constexpr std::string_view extension = ".txnlog";
+	if (filename.size() <= extension.size() ||
+		filename.compare(filename.size() - extension.size(), extension.size(), extension) != 0
+	) {
+		return false;
+	}
+	const char* first = filename.data();
+	const char* last = first + (filename.size() - extension.size());
+	if (first == last || (last - first > 1 && *first == '0')) {
+		return false;
+	}
+	uint64_t parsed = 0;
+	auto [stop, error] = std::from_chars(first, last, parsed);
+	if (stop != last || error != std::errc() || parsed == 0 ||
+		parsed > std::numeric_limits<uint32_t>::max()
+	) {
+		return false;
+	}
+	sequenceNumber = static_cast<uint32_t>(parsed);
+	return true;
+}
 
 std::filesystem::path transactionLogAppendBoundaryMarkerPath(
 	const std::filesystem::path& logPath) {

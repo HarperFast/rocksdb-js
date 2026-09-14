@@ -217,29 +217,15 @@ TransactionLogStoreValidation validateTransactionLogStore(
 			continue;
 		}
 
-		// the file name must be `<sequence>.txnlog` where sequence is a positive
-		// integer without leading zeros — anything else was not written by the
-		// store (and "01.txnlog" would duplicate "1.txnlog"'s sequence)
-		const std::string stem = filename.substr(0, filename.size() - 7);
-		uint64_t sequence = 0;
-		bool validName =
-			!stem.empty() && stem.size() <= 10 && !(stem.size() > 1 && stem[0] == '0');
-		for (size_t i = 0; validName && i < stem.size(); i++) {
-			if (stem[i] < '0' || stem[i] > '9') {
-				validName = false;
-			}
-		}
-		if (validName) {
-			sequence = std::stoull(stem);
-		}
-		if (!validName || sequence == 0 || sequence > UINT32_MAX) {
+		uint32_t sequence = 0;
+		if (!parseTransactionLogSegmentName(filename, sequence)) {
 			store.errors.push_back("Malformed transaction log file name: " + filename);
 			continue;
 		}
 
 		TransactionLogStoreFileValidation fileValidation;
 		fileValidation.file = filename;
-		fileValidation.sequenceNumber = static_cast<uint32_t>(sequence);
+		fileValidation.sequenceNumber = sequence;
 		uint32_t retiredBoundary = 0;
 		try {
 			retiredBoundary = readTransactionLogAppendBoundaryMarker(dirEntry.path());
