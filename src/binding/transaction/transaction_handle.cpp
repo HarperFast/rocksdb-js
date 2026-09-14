@@ -142,8 +142,8 @@ TransactionHandle::~TransactionHandle() {
  * ```
  */
 void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) {
-	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %u (size=%zu)\n",
-		this, entry->store->name.c_str(), this->id, entry->size);
+	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
+		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
 	// #668 (defense in depth): the write-ahead log is write-once per transaction. If
 	// committedPosition is already set, this transaction's batch was durably written by a
@@ -156,9 +156,9 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	// suppress the re-log on retry (e.g. harper's DatabaseTransaction.isRetry), but enforce
 	// write-once here too so a stray re-stage from any caller cannot corrupt the watermark.
 	if (this->committedPosition.logSequenceNumber > 0) {
-		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %u "
+		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %llu "
 			"(WAL already written at seq %u)\n",
-			this, this->id, this->committedPosition.logSequenceNumber);
+			this, (unsigned long long)this->id, this->committedPosition.logSequenceNumber);
 		return;
 	}
 
@@ -181,8 +181,8 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 		}
 		this->boundLogStore = entry->store;
 		entry->store->pendingTransactionCount++;
-		DEBUG_LOG("%p TransactionHandle::addLogEntry Binding transaction %u to log store \"%s\"\n",
-			this, this->id, entry->store->name.c_str());
+		DEBUG_LOG("%p TransactionHandle::addLogEntry Binding transaction %llu to log store \"%s\"\n",
+			this, (unsigned long long)this->id, entry->store->name.c_str());
 	}
 
 	if (!this->logEntryBatch) {
@@ -323,7 +323,7 @@ void TransactionHandle::closeOrphanIfUnused() {
 	}
 
 	if (this->state == TransactionState::Committing) {
-		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Commit in flight, deferring close (txnId=%u)\n", this, this->id);
+		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Commit in flight, deferring close (txnId=%llu)\n", this, (unsigned long long)this->id);
 		return;
 	}
 
@@ -331,13 +331,13 @@ void TransactionHandle::closeOrphanIfUnused() {
 	const int32_t activeAsyncWork = this->activeAsyncWorkCount.load();
 	const uint32_t activeIterators = this->activeIteratorCount.load(std::memory_order_relaxed);
 	if (activeAsyncWork > 0 || activeIterators > 0) {
-		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Deferring close (txnId=%u, async=%d, iterators=%u)\n",
-			this, this->id, activeAsyncWork, activeIterators);
+		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Deferring close (txnId=%llu, async=%d, iterators=%u)\n",
+			this, (unsigned long long)this->id, activeAsyncWork, activeIterators);
 		return;
 	}
 
-	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%u, state=%d)\n",
-		this, this->id, static_cast<int>(this->state));
+	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%llu, state=%d)\n",
+		this, (unsigned long long)this->id, static_cast<int>(this->state));
 	// transactionRemove() can drop the registry's last reference. Keep this
 	// object alive until close() returns even when the final dependent releases
 	// on a worker thread.

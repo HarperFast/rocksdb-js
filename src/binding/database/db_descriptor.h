@@ -330,7 +330,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	/**
 	 * Map of transaction id to transaction handle.
 	 */
-	std::unordered_map<uint32_t, std::shared_ptr<TransactionHandle>> transactions;
+	std::unordered_map<uint64_t, std::shared_ptr<TransactionHandle>> transactions;
 
 	/**
 	 * Atomic counter for generating unique transaction IDs for this RocksDB
@@ -338,7 +338,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * implementation-dependent and are assigned lazily with a default of 0
 	 * causing collisions in the transactions map.
 	 */
-	std::atomic<uint32_t> nextTransactionId{1};
+	std::atomic<uint64_t> nextTransactionId{1};
 
 	/**
 	 * Mutex to protect the transactions map and closables set.
@@ -618,9 +618,9 @@ public:
 	void onCallbackComplete(const std::string& key);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
-	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
+	std::shared_ptr<TransactionHandle> transactionGet(uint64_t id);
 	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
-	uint32_t transactionGetNextId();
+	uint64_t transactionGetNextId();
 
 	/**
 	 * Closes every registered transaction whose owning DBHandle was created by

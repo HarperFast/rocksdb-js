@@ -79,7 +79,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/**
 	 * The transaction id assigned by the database descriptor.
 	 */
-	uint32_t id;
+	uint64_t id;
 
 	/**
 	 * Whether a snapshot has been set.

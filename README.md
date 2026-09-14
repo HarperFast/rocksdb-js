@@ -1160,8 +1160,8 @@ uses this timestamp as the batch key; producers may also encode it into their ow
 
 Type: `number`
 
-The transaction ID represented as a 32-bit unsigned integer. Transaction IDs are unique to the
-RocksDB database path, regardless the database name/column family.
+The transaction ID, a positive integer no greater than `Number.MAX_SAFE_INTEGER`. Transaction IDs
+are unique to the RocksDB database path, regardless the database name/column family.
 
 #### `txn.setTimestamp(ts?: number): void`
 

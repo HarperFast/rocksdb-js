@@ -35,7 +35,7 @@ struct TransactionLogHandle final : Closable {
 	/**
 	 * The transaction id.
 	 */
-	uint32_t transactionId;
+	uint64_t transactionId;
 
 	/**
 	 * Creates a new transaction log handle.
@@ -55,7 +55,7 @@ struct TransactionLogHandle final : Closable {
 	 * Adds an entry to the transaction log.
 	 */
 	void addEntry(
-		uint32_t transactionId,
+		uint64_t transactionId,
 		char* data,
 		uint32_t size
 	);
