@@ -70,30 +70,24 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@26.5.0)(@vitest/coverage-v8@4.1.11)(vite@8.1.4(@types/node@26.5.0)(esbuild@0.28.2)(tsx@4.23.11))
     optionalDependencies:
-      '@harperfast/rocksdb-js-darwin-arm64':
-        specifier: 2.9.0
-        version: 2.9.0
       '@harperfast/rocksdb-js-darwin-x64':
-        specifier: 2.9.0
-        version: 2.9.0
+        specifier: 2.9.1
+        version: 2.9.1
       '@harperfast/rocksdb-js-linux-arm64-glibc':
-        specifier: 2.9.0
-        version: 2.9.0
+        specifier: 2.9.1
+        version: 2.9.1
       '@harperfast/rocksdb-js-linux-arm64-musl':
-        specifier: 2.9.0
-        version: 2.9.0
+        specifier: 2.9.1
+        version: 2.9.1
       '@harperfast/rocksdb-js-linux-x64-glibc':
-        specifier: 2.9.0
-        version: 2.9.0
-      '@harperfast/rocksdb-js-linux-x64-musl':
-        specifier: 2.9.0
-        version: 2.9.0
+        specifier: 2.9.1
+        version: 2.9.1
       '@harperfast/rocksdb-js-win32-arm64':
-        specifier: 2.9.0
-        version: 2.9.0
+        specifier: 2.9.1
+        version: 2.9.1
       '@harperfast/rocksdb-js-win32-x64':
-        specifier: 2.9.0
-        version: 2.9.0
+        specifier: 2.9.1
+        version: 2.9.1
 
 packages:
 
@@ -289,54 +283,41 @@ packages:
   '@harperfast/extended-iterable@1.0.3':
     resolution: {integrity: sha512-sSAYhQca3rDWtQUHSAPeO7axFIUJOI6hn1gjRC5APVE1a90tuyT8f5WIgRsFhhWA7htNkju2veB9eWL6YHi/Lw==}
 
-  '@harperfast/rocksdb-js-darwin-arm64@2.9.0':
-    resolution: {integrity: sha512-zgBjJKkHlyjiKJP+FkstFj1znZ/O8qXE9yIXIyKhTtxDeayobFY2x6M/KOWd9N1kaa8GrAQXGawUEXZnV1U+qw==}
-    engines: {node: ^22.18.0 || >=24.0.0}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@harperfast/rocksdb-js-darwin-x64@2.9.0':
-    resolution: {integrity: sha512-OfAtdB7GDjkKYaq6Db3mDfoRKnrnjXS1X4OaF4xFsQUoZRtmMvF3OTP9w4N8c2vvEff2kjlGqpj2Dewab1uGNQ==}
+  '@harperfast/rocksdb-js-darwin-x64@2.9.1':
+    resolution: {integrity: sha512-zo53r+Y7mdb/yjlcCcAA0ASYD4Xue7SVgNVJuNrMB13iLCftpITqe3uEBm60P9TArDO+Ug0bSU8skMb0NfFP9A==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [darwin]
 
-  '@harperfast/rocksdb-js-linux-arm64-glibc@2.9.0':
-    resolution: {integrity: sha512-/CnIr6vy+D5M4c2WOAyoC9/2TKSEYCvvsyzz0AoWw3taUmEX6fR308eHMA0iKFHPp7xSI3fyz0fBOd+3TO250A==}
+  '@harperfast/rocksdb-js-linux-arm64-glibc@2.9.1':
+    resolution: {integrity: sha512-gbpMzMVxcPQ2IDSI+/8zv3zqLgdqOQ4xJkVIeANoIFfhClzbx8ZFG+VdszbMZq7wUsqO62XPydEWj9Fx4iSawQ==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [linux]
     libc: [glibc]
 
-  '@harperfast/rocksdb-js-linux-arm64-musl@2.9.0':
-    resolution: {integrity: sha512-MBM4Vv4ERdRgbmXZXQrGPhgmTmb0EX22dwDEFrq57mpn5IEuuXU4S/RXGAcsoEmYqYb86lvtukD5AnvxcefoSA==}
+  '@harperfast/rocksdb-js-linux-arm64-musl@2.9.1':
+    resolution: {integrity: sha512-edj0Mj9+Vq7rTp0JBVUNHHRVzeu/WINgg/fnTB5Dvvn3HZQAtCQXb3YIqDOu1h4WPJXjSPZPH5gl26CuVX5hdg==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [linux]
     libc: [musl]
 
-  '@harperfast/rocksdb-js-linux-x64-glibc@2.9.0':
-    resolution: {integrity: sha512-rhIoInrDAzwMx7N2H0K1mM8x/hY2D/NF2rhd8ERT2w2GoK4NqdBtPldVY8ein8fmtDdYaS6CpHmRSmq+xlhqhw==}
+  '@harperfast/rocksdb-js-linux-x64-glibc@2.9.1':
+    resolution: {integrity: sha512-x2NdHcr4WU7WvJWbBkwa4fdtN5E4WZIlPtGn6TEH97x0zGe/r61Bwnxpr4+SgjG7ooFT66Jqv/lbSOi08xBTGA==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [linux]
     libc: [glibc]
 
-  '@harperfast/rocksdb-js-linux-x64-musl@2.9.0':
-    resolution: {integrity: sha512-D/MfsqycP7ijIAAptUcITsMMzn7cnawdL3H1XUqe+h9fgNP7+y0gXk/9KxVA5D6cKPw1TkEDaeLuuBsiI2vFUA==}
-    engines: {node: ^22.18.0 || >=24.0.0}
-    cpu: [x64]
-    os: [linux]
-    libc: [musl]
-
-  '@harperfast/rocksdb-js-win32-arm64@2.9.0':
-    resolution: {integrity: sha512-76PILBAErw0R9enoprg83FdyHk0UNG63pII4klFV5Xlrfj0gmJ0iqLEbocEwC+d2RTGkpgkUPjoNMw4BbMpyTA==}
+  '@harperfast/rocksdb-js-win32-arm64@2.9.1':
+    resolution: {integrity: sha512-Tn66YO/6e8BOwKLERig9GkBftLqgqLpCv0MkpIjc9WcVMHObeZmosTyhXzvU3KtxBDRQs6nAC+VgYSH8LJAOnw==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [arm64]
     os: [win32]
 
-  '@harperfast/rocksdb-js-win32-x64@2.9.0':
-    resolution: {integrity: sha512-BRPIzbvx1NlOhA6vwAnUwFYuIQykmdsjGxnblb5ejvdf9HFw0b6durdKQfPyk8L+RO2uiXqpfkK4Da8V0vhgdQ==}
+  '@harperfast/rocksdb-js-win32-x64@2.9.1':
+    resolution: {integrity: sha512-vgsNVv7mwXpGPlba11fgcLgM3cLubwxr8aUIN9RoXx+PWLcoQLEQJ/fhSrtctdlkIWNGHjM5i3gvuv0jbqWxmw==}
     engines: {node: ^22.18.0 || >=24.0.0}
     cpu: [x64]
     os: [win32]
@@ -2043,28 +2024,22 @@ snapshots:
 
   '@harperfast/extended-iterable@1.0.3': {}
 
-  '@harperfast/rocksdb-js-darwin-arm64@2.9.0':
+  '@harperfast/rocksdb-js-darwin-x64@2.9.1':
     optional: true
 
-  '@harperfast/rocksdb-js-darwin-x64@2.9.0':
+  '@harperfast/rocksdb-js-linux-arm64-glibc@2.9.1':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-arm64-glibc@2.9.0':
+  '@harperfast/rocksdb-js-linux-arm64-musl@2.9.1':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-arm64-musl@2.9.0':
+  '@harperfast/rocksdb-js-linux-x64-glibc@2.9.1':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-x64-glibc@2.9.0':
+  '@harperfast/rocksdb-js-win32-arm64@2.9.1':
     optional: true
 
-  '@harperfast/rocksdb-js-linux-x64-musl@2.9.0':
-    optional: true
-
-  '@harperfast/rocksdb-js-win32-arm64@2.9.0':
-    optional: true
-
-  '@harperfast/rocksdb-js-win32-x64@2.9.0':
+  '@harperfast/rocksdb-js-win32-x64@2.9.1':
     optional: true
 
   '@isaacs/fs-minipass@4.0.1':
