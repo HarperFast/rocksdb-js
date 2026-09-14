@@ -5,7 +5,7 @@ import { rmSync, writeSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 
 // Child-process scenarios for a drop racing a commit that is already admitted
-// (AGENTS.md invariant 22). Run with ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS set so
+// (AGENTS.md invariant 23). Run with ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS set so
 // the worker's commit parks after admission, before `txn->Commit()`, and with
 // ROCKSDB_JS_COMMIT_THREAD selecting the commit execution mode. Both are read
 // once per process through ::getenv, which is why this is a child process and

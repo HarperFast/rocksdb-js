@@ -240,7 +240,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
 
 	/**
-	 * Families this transaction's write batch names (invariant 22). Recorded
+	 * Families this transaction's write batch names (invariant 23). Recorded
 	 * on the first `putSync`/`removeSync` per family; a write to a retired
 	 * family is refused. Holds no claim: the commit claims each of these at
 	 * admission. Cleared by `resetTransaction()` (the retry restages) and

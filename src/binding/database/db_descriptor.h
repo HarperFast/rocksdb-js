@@ -663,7 +663,7 @@ public:
 	void closeTransactionsByEnv(napi_env env);
 
 	/**
-	 * Logical drop (invariant 22). Under `columnsMutex`, and only if `column`
+	 * Logical drop (invariant 23). Under `columnsMutex`, and only if `column`
 	 * is still the generation registered under its name, removes it from
 	 * `columns` (so a later open-by-name creates a fresh family), marks it
 	 * retired, and records it in `retiring`. Runs the physical drop right
@@ -962,7 +962,7 @@ struct ColumnFamilyDescriptor final {
 	const bool droppable;
 
 	/**
-	 * Retire/admit/reclaim state for this generation (invariant 22). Commits
+	 * Retire/admit/reclaim state for this generation (invariant 23). Commits
 	 * claim it through `ColumnFamilyCommitClaim`; `Database::Drop`/`DropSync`
 	 * retire it through `DBDescriptor::retireColumnFamily`.
 	 */

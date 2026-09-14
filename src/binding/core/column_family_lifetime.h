@@ -7,7 +7,7 @@
 namespace rocksdb_js {
 
 /**
- * Lifetime protocol for one column-family generation (AGENTS.md invariant 22).
+ * Lifetime protocol for one column-family generation (AGENTS.md invariant 23).
  *
  * A drop retires the generation logically and returns; the physical
  * `DropColumnFamily` runs only when no commit holds a claim on it. A commit

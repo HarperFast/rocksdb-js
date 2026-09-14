@@ -236,7 +236,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   stalled. Read once per process via a function-local `static` — same
   `::getenv`-vs-`process.env` caveat as `ROCKSDB_JS_PARK_TIMEOUT_MS` — so it must be
   set in the environment a process is started with. Malformed, non-positive, or above
-  24h falls back to the default; there is no opt-out (see invariant 22)
+  24h falls back to the default; there is no opt-out (see invariant 23)
 
 ## Test Structure
 

@@ -741,7 +741,7 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Logical drop shared by `Drop` and `DropSync` (invariant 22). Dropping a
+ * Logical drop shared by `Drop` and `DropSync` (invariant 23). Dropping a
  * column family bulk-deletes its data exactly like clear(), so the VT is
  * swept by the call that performed the retirement. Earlier pending drops are
  * retried before this one's own attempt.
@@ -772,7 +772,7 @@ static rocksdb::Status dropColumnFamily(DBHandle& dbHandle) noexcept {
  *
  * The name is retired before this returns; the physical drop is deferred
  * behind any commit already admitted on the family (see AGENTS.md
- * invariant 22), so a rejection here reports a physical drop this call ran
+ * invariant 23), so a rejection here reports a physical drop this call ran
  * itself and that will be retried, never a family that is still reachable.
  *
  * @example

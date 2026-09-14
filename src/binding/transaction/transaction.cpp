@@ -279,7 +279,7 @@ static unsigned parkTimeoutMs() {
 
 /**
  * The claims one commit attempt holds on the generations its batch names
- * (invariant 22). Taken once at admission, before any transaction-log byte is
+ * (invariant 23). Taken once at admission, before any transaction-log byte is
  * written, and released right after `txn->Commit()` returns. Holds no
  * reference to the descriptor: one here would make a close racing the commit
  * skip its purge (the HarperFast/rocksdb-js#672 hazard), so the caller passes

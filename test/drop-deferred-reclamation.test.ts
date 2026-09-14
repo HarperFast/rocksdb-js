@@ -100,7 +100,7 @@ describe('Deferred column-family reclamation', () => {
 				() => expectFixture('retry-race', 'optimistic', 'sync', '1')
 			);
 
-			// The documented cross-restart gap (AGENTS.md invariant 22): a process
+			// The documented cross-restart gap (AGENTS.md invariant 23): a process
 			// killed while a physical drop is deferred behind an admitted commit
 			// leaves the family on disk under its name, and the next open sees it
 			// as live with its data. Harper's catalog tombstone owns this case.
