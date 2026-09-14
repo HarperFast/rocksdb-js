@@ -1108,9 +1108,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
       JS caches.
     - **Only the convergence is portable — do not assert an outcome for one purge run on
       Windows.** POSIX always unlinks. Windows CI on this branch has shown both outcomes for the
-      same test: a segment a reader still mapped was refused at one head (`9a8606a8`) and removed
-      at the next (`c8e790a0`), with no change to the mapping's lifetime in between; which one
-      happens is not currently explained. So `removeFile()` uses the non-throwing
+      same test: a segment a reader still mapped was refused in one CI run and removed in the next,
+      with no change to the mapping's lifetime in between; which one happens is not currently
+      explained. So `removeFile()` uses the non-throwing
       `std::filesystem::remove` overloads on both platforms (a sharing violation used to unwind a
       C++ exception through the N-API purge boundary), a refused segment stays registered and is
       reported once per run via `log.warn`, and the next run after the mapping is released reclaims

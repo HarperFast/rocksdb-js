@@ -936,9 +936,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		}
 		if (!this->hasAppendedSinceOpen.load()) {
 			this->size = this->lastIndexedPosition;
-			memoryMap->readableExtent.store(
-				std::min(this->lastIndexedPosition, memoryMap->mapSize),
-				std::memory_order_release);
+			this->publishReadableExtentLocked();
 		}
 	}
 	// now do the actual search: just a search for the lower bound
