@@ -18,7 +18,7 @@ namespace {
 constexpr int RESYNC_MIN_FRAMES = 8;
 
 // Sequential window for nearby success-path headers and for the corruption-only
-// byte search in validFramingResumes. Heap-allocated: 64 KiB on the stack is
+// byte search in findFramingResumeOffset. Heap-allocated: 64 KiB on the stack is
 // hostile to musl/small-stack threads.
 constexpr uint32_t RESYNC_WINDOW = 65536;
 
@@ -35,6 +35,35 @@ struct ScanReader {
 			throw DBException("Failed to read transaction log during recovery scan");
 		}
 	}
+
+	// End of the nonzero bytes: where a pre-extended file's zero padding starts. A
+	// frame chain landing exactly here is as conclusive as one landing on EOF,
+	// which padding never lets it reach. Computed on first use, reading backwards.
+	uint32_t nonzeroEnd() {
+		if (nonzeroEndKnown) {
+			return nonzeroEndValue;
+		}
+		std::vector<char> tail(RESYNC_WINDOW);
+		uint32_t end = fileSize;
+		while (end > 0) {
+			uint32_t len = std::min(RESYNC_WINDOW, end);
+			readExact(end - len, tail.data(), len);
+			for (uint32_t i = len; i > 0; --i) {
+				if (tail[i - 1] != 0) {
+					nonzeroEndValue = end - len + i;
+					nonzeroEndKnown = true;
+					return nonzeroEndValue;
+				}
+			}
+			end -= len;
+		}
+		nonzeroEndValue = 0;
+		nonzeroEndKnown = true;
+		return 0;
+	}
+
+	bool nonzeroEndKnown = false;
+	uint32_t nonzeroEndValue = 0;
 
 	// Sequential headers within 64 KiB of the current window refill from the
 	// next header. A larger gap is a payload skip: read exactly 13 bytes so
@@ -78,16 +107,22 @@ bool headerLooksLikeFrame(const char* header, uint32_t pos, uint32_t fileSize) {
 	return static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length <= fileSize;
 }
 
-// Returns true if valid log data resumes at some offset in [from, fileSize):
+// Returns the first offset in [from, fileSize) where valid log data resumes:
 // either a run of at least RESYNC_MIN_FRAMES well-formed frames, or any run that
-// lands exactly on EOF. Sequential candidate offsets are served from a 64 KiB
-// window; chain hops (HEADER+length) read a 13-byte header so a large payload is
-// not pulled in. A failed read throws — it must not look like "no resume".
-bool validFramingResumes(ScanReader& source, uint32_t from) {
+// lands exactly on the written extent (EOF, or the start of a pre-extended
+// file's zero padding). Returns 0 when nothing resumes. Sequential candidate
+// offsets are served from a 64 KiB window; chain hops (HEADER+length) read a
+// 13-byte header so a large payload is not pulled in. A failed read throws — it
+// must not look like "no resume".
+uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from, bool endIsWrittenExtent) {
 	std::vector<char> window(RESYNC_WINDOW);
 	uint32_t windowStart = 0;
 	uint32_t windowLen = 0;
 	char headerBuf[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+
+	auto reachesWrittenExtent = [&](uint32_t pos) -> bool {
+		return endIsWrittenExtent && (pos == source.fileSize || pos == source.nonzeroEnd());
+	};
 
 	auto loadHeader = [&](uint32_t pos, const char*& out) -> bool {
 		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > source.fileSize) {
@@ -119,20 +154,31 @@ bool validFramingResumes(ScanReader& source, uint32_t from) {
 
 		uint32_t pos = start + TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(header + 8);
 		int frames = 1;
-		if (frames >= RESYNC_MIN_FRAMES || pos == source.fileSize) {
-			return true;
+		if (frames >= RESYNC_MIN_FRAMES || reachesWrittenExtent(pos)) {
+			return start;
 		}
 		while (loadHeader(pos, header) && headerLooksLikeFrame(header, pos, source.fileSize)) {
 			pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(header + 8);
-			if (++frames >= RESYNC_MIN_FRAMES || pos == source.fileSize) {
-				return true;
+			if (++frames >= RESYNC_MIN_FRAMES || reachesWrittenExtent(pos)) {
+				return start;
 			}
 		}
 	}
-	return false;
+	return 0;
 }
 
 } // namespace
+
+uint32_t findFramingResumeOffset(
+	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from,
+	bool endIsWrittenExtent
+) {
+	if (from == 0 || from >= fileSize) {
+		return 0;
+	}
+	ScanReader source{ read, context, fileSize, {}, 0, 0 };
+	return findFramingResumeOffset(source, from, endIsWrittenExtent);
+}
 
 RecoveryScan scanTransactionLogForRecovery(
 	uint32_t fileSize, TransactionLogReadFn read, void* context
@@ -141,7 +187,12 @@ RecoveryScan scanTransactionLogForRecovery(
 	uint32_t tailEntries = 0;
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
+	uint32_t firstBreak = 0;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
+		if (firstBreak != 0) {
+			kind = RecoveryScan::Kind::MidFileCorruption;
+			validEnd = firstBreak;
+		}
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
 			tailEntries > 0 && tailUniformTimestamp };
 	};
@@ -170,11 +221,19 @@ RecoveryScan scanTransactionLogForRecovery(
 		if (length == 0 ||
 			static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
 			// Intact frames after the break are mid-file corruption; truncating would
-			// discard them. A torn tail has nothing valid behind it.
-			if (validFramingResumes(source, pos + 1)) {
-				return scan(RecoveryScan::Kind::MidFileCorruption, pos);
+			// discard them, and the committed watermark must still reach them, so the
+			// walk resumes where framing does. A torn tail has nothing valid behind it.
+			uint32_t resume = findFramingResumeOffset(source, pos + 1, /*endIsWrittenExtent=*/true);
+			if (resume == 0) {
+				return scan(RecoveryScan::Kind::TruncateTail, pos);
 			}
-			return scan(RecoveryScan::Kind::TruncateTail, pos);
+			if (firstBreak == 0) {
+				firstBreak = pos;
+			}
+			pos = resume;
+			tailEntries = 0;
+			tailUniformTimestamp = true;
+			continue;
 		}
 		bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
 		if (tailEntries++ == 0) {
@@ -202,6 +261,13 @@ bool readFromBuffer(void* context, uint32_t offset, void* dest, uint32_t n) {
 
 RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) {
 	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data));
+}
+
+uint32_t findFramingResumeOffset(
+	const char* data, uint32_t fileSize, uint32_t from, bool endIsWrittenExtent
+) {
+	return findFramingResumeOffset(
+		fileSize, readFromBuffer, const_cast<char*>(data), from, endIsWrittenExtent);
 }
 
 RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file) {
