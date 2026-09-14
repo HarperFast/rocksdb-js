@@ -418,14 +418,18 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 							logBuffer = nextLogBuffer;
 							dataView = logBuffer.dataView;
-							const cachedSize = logBuffer.size;
-							if (cachedSize === undefined) {
-								size = readableExtent(logBuffer);
-								if (!readUncommitted) {
-									logBuffer.size = size;
-								}
+							if (latestLogId === logBuffer.logId) {
+								size = latestSize;
 							} else {
-								size = cachedSize;
+								const cachedSize = logBuffer.size;
+								if (cachedSize === undefined) {
+									size = readableExtent(logBuffer);
+									if (!readUncommitted) {
+										logBuffer.size = size;
+									}
+								} else {
+									size = cachedSize;
+								}
 							}
 							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 						}
