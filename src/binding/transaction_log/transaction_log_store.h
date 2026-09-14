@@ -256,12 +256,10 @@ struct TransactionLogStore final {
 	 * Names of the files discovery could not register, capped at
 	 * DISCOVERY_SKIPPED_NAMES (`skippedDiscoveryCount` is the true total). The
 	 * refusal they cause outlives the DEBUG_LOG that recorded them — that is
-	 * compiled out of release builds — so without these an operator gets
-	 * "discovery skipped a segment" and a directory to bisect by hand.
+	 * compiled out of release builds.
 	 *
-	 * Written only by markDiscoverySkipped() from load(), before the store is
-	 * published, and read-only afterwards: that, not a lock, is the whole
-	 * contract, exactly as for `discoveryIncomplete` beside it.
+	 * Written only from load(), before the store is published: that, not a lock,
+	 * is the whole contract, as for `discoveryIncomplete` beside it.
 	 */
 	static constexpr size_t DISCOVERY_SKIPPED_NAMES = 8;
 	std::vector<std::string> discoverySkipped;

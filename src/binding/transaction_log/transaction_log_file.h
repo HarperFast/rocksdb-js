@@ -419,10 +419,11 @@ struct TransactionLogFile final {
 	/**
 	 * The largest batch key still durable in this file, for the monotonic clock
 	 * floor. It must run *after* open-time recovery — a key that recoverTail()
-	 * truncated away is no longer durable and must not reach the floor — and it
-	 * takes no file lock and reads no shared state: the extent and the bytes both
-	 * come from the private stream scanTransactionLogForFloor() opens, under that
-	 * function's stricter termination proof. Throws DBException on I/O failure.
+	 * truncated away is no longer durable and must not reach the floor. It takes
+	 * no file lock: the only shared state it reads is the retired append boundary
+	 * (one atomic load), and the extent and bytes both come from the private
+	 * stream scanTransactionLogForFloor() opens, under that function's stricter
+	 * termination proof. Throws DBException on I/O failure.
 	 */
 	MaxEntryScan scanMaxEntryTimestamp(
 		double plausibleBound,

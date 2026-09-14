@@ -344,7 +344,7 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
 	double plausibleBound,
 	std::optional<std::chrono::steady_clock::time_point> deadline
 ) {
-	// `size` is append-owned, and openFile()'s index scan shortens it to the first
+	// openFile()'s index scan shortens the append-owned `size` to the first
 	// zero-timestamp word, which would hide any suffix past it.
 	RecoveryScan scan;
 	try {

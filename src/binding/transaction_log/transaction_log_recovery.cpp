@@ -369,10 +369,9 @@ RecoveryScan scanTransactionLogForFloor(
 	if (scan.kind == RecoveryScan::Kind::TruncateTail &&
 		remaining > 0 && remaining < TRANSACTION_LOG_ENTRY_HEADER_SIZE
 	) {
-		// Too short to hold a frame either way, so the floor is safe. Zeros there
-		// are the end-of-entries marker (Windows pads a segment to its mapped
-		// size), not a torn write, and reporting a torn tail would emit a warning
-		// about a healthy file.
+		// Zeros here are the end-of-entries marker of a Windows segment padded to
+		// its mapped size, not a torn write; a torn-tail warning about one would be
+		// a warning about a healthy file.
 		char padding[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 		if (!readFromStream(&input, scan.validEnd, padding, remaining)) {
 			throw DBException("Failed to read transaction log padding: " + path.string());

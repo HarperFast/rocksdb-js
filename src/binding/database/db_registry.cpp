@@ -423,12 +423,10 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 	};
 
 	// Only the first open of a physical path seeds the process-global clock, and
-	// `DBKey` splits one path into several entries by read-only mode and secondary
-	// workspace. So this asks the transaction-log registry what the path actually
-	// resolved, never a peer descriptor's copy: an open that carried no option
-	// stamps an empty name on its own descriptor without changing what was seeded,
-	// and rejecting against that empty copy would lock the path out of the very log
-	// it was seeded from.
+	// `DBKey` splits one path into several entries. Ask the transaction-log
+	// registry what the path resolved, never a descriptor's copy of the name: an
+	// open that carried no option stamps an empty one without changing what was
+	// seeded.
 	auto rejectConflictingTimestampFloorLog = [&]() {
 		if (options.timestampFloorLog.empty()) {
 			return;
