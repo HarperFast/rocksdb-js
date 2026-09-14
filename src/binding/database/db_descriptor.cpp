@@ -1205,7 +1205,7 @@ void DBDescriptor::lockEnqueueCallback(
 		NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback));
 
 		// Create LockCallback and add to queue
-		lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, deferred));
+		lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, deferred, env));
 	}
 }
 
@@ -1224,23 +1224,25 @@ bool DBDescriptor::lockExistsByKey(std::string& key) {
  * Releases a lock by key. Called by `db.unlock()`.
  */
 bool DBDescriptor::lockReleaseByKey(std::string& key) {
-	std::queue<LockCallback> threadsafeCallbacks;
+	// The callbacks are called while `locksMutex` is held: a worker env whose
+	// callback is queued here can be torn down concurrently, and its cleanup hook
+	// (`releaseLockCallbacksByEnv`) takes the same mutex, so it either removes the
+	// callback before this call or waits until the call has returned -- Node
+	// cannot free the tsfn out from under `napi_call_threadsafe_function`.
+	// Calling a tsfn only enqueues onto its env's loop, so nothing re-enters here.
+	std::lock_guard<std::mutex> lock(this->locksMutex);
+	auto lockHandle = this->locks.find(key);
 
-	{
-		std::lock_guard<std::mutex> lock(this->locksMutex);
-		auto lockHandle = this->locks.find(key);
-
-		if (lockHandle == this->locks.end()) {
-			// no lock found
-			DEBUG_LOG("%p DBDescriptor::lockReleaseByKey no lock found\n", this);
-			return false;
-		}
-
-		// lock found, remove it
-		threadsafeCallbacks = std::move(lockHandle->second->threadsafeCallbacks);
-		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey removing lock\n", this);
-		this->locks.erase(key);
+	if (lockHandle == this->locks.end()) {
+		// no lock found
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey no lock found\n", this);
+		return false;
 	}
+
+	// lock found, remove it
+	std::queue<LockCallback> threadsafeCallbacks = std::move(lockHandle->second->threadsafeCallbacks);
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByKey removing lock\n", this);
+	this->locks.erase(key);
 
 	DEBUG_LOG("%p DBDescriptor::lockReleaseByKey calling %zu unlock callbacks\n", this, threadsafeCallbacks.size());
 
@@ -1260,27 +1262,52 @@ bool DBDescriptor::lockReleaseByKey(std::string& key) {
 }
 
 /**
+ * Env-cleanup hook (see `Binding::Init`): a worker that is terminated never
+ * closes its handles in order, so an unlock callback it queued on a lock held
+ * by another env would still be called by that env's `unlock()` after Node has
+ * freed the tsfn -- on Node 22 that aborts the process (rocksdb-js#848). Drop
+ * such callbacks under `locksMutex`, the same mutex the release paths hold
+ * while calling, so a call that already started completes before the tsfn goes.
+ */
+void DBDescriptor::releaseLockCallbacksByEnv(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->locksMutex);
+	for (auto& [_key, lockHandle] : this->locks) {
+		std::queue<LockCallback> kept;
+		while (!lockHandle->threadsafeCallbacks.empty()) {
+			LockCallback lockCallback = lockHandle->threadsafeCallbacks.front();
+			lockHandle->threadsafeCallbacks.pop();
+			if (lockCallback.env == env) {
+				DEBUG_LOG("%p DBDescriptor::releaseLockCallbacksByEnv dropping callback %p of dying env\n", this, lockCallback.callback);
+				::napi_release_threadsafe_function(lockCallback.callback, napi_tsfn_release);
+			} else {
+				kept.push(lockCallback);
+			}
+		}
+		lockHandle->threadsafeCallbacks = std::move(kept);
+	}
+}
+
+/**
  * Releases all locks owned by the given handle. Called by `db.close()`.
  */
 void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 	std::set<napi_threadsafe_function> threadsafeCallbacks;
 
-	{
-		std::lock_guard<std::mutex> lock(this->locksMutex);
-			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %zu locks if they are owned handle %p\n", this, this->locks.size(), owner);
-		for (auto it = this->locks.begin(); it != this->locks.end();) {
-			auto lockOwner = it->second->owner.lock();
-			if (!lockOwner || lockOwner.get() == owner) {
-				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %zu callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size());
-				// move all callbacks from the queue
-				while (!it->second->threadsafeCallbacks.empty()) {
-					threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front().callback);
-					it->second->threadsafeCallbacks.pop();
-				}
-				it = this->locks.erase(it);
-			} else {
-				++it;
+	// Held across the calls for the same reason as lockReleaseByKey.
+	std::lock_guard<std::mutex> lock(this->locksMutex);
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %zu locks if they are owned handle %p\n", this, this->locks.size(), owner);
+	for (auto it = this->locks.begin(); it != this->locks.end();) {
+		auto lockOwner = it->second->owner.lock();
+		if (!lockOwner || lockOwner.get() == owner) {
+			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %zu callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size());
+			// move all callbacks from the queue
+			while (!it->second->threadsafeCallbacks.empty()) {
+				threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front().callback);
+				it->second->threadsafeCallbacks.pop();
 			}
+			it = this->locks.erase(it);
+		} else {
+			++it;
 		}
 	}
 

@@ -872,6 +872,24 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
     and the runner's own timeout cannot fire (#781 item 2).
 
+22. **A queued unlock callback belongs to its env and is released by that env's cleanup hook**:
+    `tryLock(key, callback)` on a held key queues the callback as a threadsafe function of the
+    caller's env on the shared `LockHandle` (`DBDescriptor::lockEnqueueCallback`), and only the
+    holder's `unlock()` (`lockReleaseByKey`) or `db.close()` (`lockReleaseByOwner`) ever calls it. A
+    `worker_threads` env that is `terminate()`d never closes its handles in order, so its callback
+    stayed queued on a lock another env held; that env's later `unlock()` then called a tsfn Node had
+    already freed — Node 24 returns `napi_closing`, Node 22 aborts the process (rocksdb-js#848;
+    harper's derived-index runner kept exactly such a waiter on every non-owner worker, and Harper's
+    thread manager terminates workers on restart). Every `LockCallback` now records its `napi_env`,
+    and `DBRegistry::ReleaseLockCallbacksByEnv` → `DBDescriptor::releaseLockCallbacksByEnv`, wired
+    into the module env-cleanup hook beside `ReleaseParkTimeoutsByEnv`, releases (never calls) the
+    dying env's callbacks. The release paths hold `locksMutex` **across** their tsfn calls for the
+    same reason `EventEmitter::notify` holds its mutex (harper#1370): the cleanup hook takes that
+    mutex too, so it either removes a callback before the call or waits until the call has returned,
+    and Node cannot free the tsfn under `napi_call_threadsafe_function`. Calling a tsfn only enqueues
+    onto its env's loop, so holding the mutex across it cannot re-enter. `test/lock-teardown-abort.test.ts`
+    is the child-process repro; it also proves a live waiter is still woken.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

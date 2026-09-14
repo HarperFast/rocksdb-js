@@ -232,6 +232,9 @@ NAPI_MODULE_INIT() {
 		// tsfns, so the descriptor's park-timeout thread never fires into a
 		// torn-down env.
 		rocksdb_js::DBRegistry::ReleaseParkTimeoutsByEnv(dyingEnv);
+		// And this env's queued unlock callbacks: a lock another env holds would
+		// otherwise call them after Node freed their tsfns (rocksdb-js#848).
+		rocksdb_js::DBRegistry::ReleaseLockCallbacksByEnv(dyingEnv);
 
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
