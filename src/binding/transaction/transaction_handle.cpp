@@ -727,7 +727,7 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
 	}
 	try {
 		if (column->lifetime.isRetired()) {
-			return rocksdb::Status::ColumnFamilyDropped("column family \"" + column->name + "\" was dropped");
+			return rocksdb::Status::ColumnFamilyDropped("Column family \"" + column->name + "\" was dropped");
 		}
 		if (!this->touchedColumnFamilies.contains(column.get())) {
 			this->touchedColumnFamilies.add(column);

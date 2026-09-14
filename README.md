@@ -597,7 +597,7 @@ db.close();
 A drop retires the column family **logically** before it returns: the name is gone from
 `db.columns`, a later `open()` with the same name creates a fresh, empty column family, and any
 transaction that then stages a write to a handle of the dropped family, or commits one it staged
-earlier, is refused whole with `ERR_COLUMN_FAMILY_DROPPED` (`column family "users" was dropped`).
+earlier, is refused whole with `ERR_COLUMN_FAMILY_DROPPED` (`Column family "users" was dropped`).
 That terminal refusal releases the transaction's verification-table intents and bars further
 writes or commit attempts; retained reads continue until the caller aborts the transaction.
 Handles other threads still hold keep **reading** the dropped data until they close; a

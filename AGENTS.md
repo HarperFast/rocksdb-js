@@ -941,7 +941,23 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     returns; a drop **retires** the generation under `columnsMutex` (`DBDescriptor::retireColumnFamily`:
     identity-checked erase from `columns`, `retired = true`, entry in `retiring`) and runs the
     physical drop itself only when `admitted == 0`, otherwise the last releasing commit runs it
-    (`reclaimColumnFamily`). Both sides are seq_cst two-phase (`retired` store then `admitted` load, versus `admitted` increment then `retired` load), so at least one side observes the other, and `claimReclaim()` makes exactly one of them run `DropColumnFamily` — after re-checking `admitted == 0` under the claim (a retirer can observe the transient claim of an admission about to be refused; it unclaims, re-reads, and either retries or leaves the drop to that admission's release, so the generation is never left to nobody). Staging only **records** the families a transaction touched (`TransactionHandle::touchedColumnFamilies`: **weak** references plus a raw pointer for comparison, inline for 2, most-recent slot compared first, the never-droppable default family skipped, cleared by `resetTransaction()` because the retry callback may touch a different set) and refuses every write to a retired family; it holds no claim. Weak, not strong: a transaction can outlive its database (an aborted handle JS still references after `close()`), and a strong reference there destroyed the RocksDB column-family handle after `finishClose()` had destroyed the database (SIGSEGV in `test/txn-close-commit-uaf.test.ts`). The commit locks them only for its claim, with the overflow storage reserved before the first claim is published so recording one cannot fail after its count was taken; a lock that fails is a dropped-and-reclaimed generation and refuses the commit like a retired one. That is deliberate: a staged-but-idle, abandoned, or drain-timeout-leaked (#784)
+    (`reclaimColumnFamily`). Both sides are seq_cst two-phase (`retired` store then `admitted`
+    load, versus `admitted` increment then `retired` load), so at least one side observes the other,
+    and `claimReclaim()` makes exactly one of them run `DropColumnFamily` — after re-checking
+    `admitted == 0` under the claim (a retirer can observe the transient claim of an admission about
+    to be refused; it unclaims, re-reads, and either retries or leaves the drop to that admission's
+    release, so the generation is never left to nobody). Staging only **records** the families a
+    transaction touched (`TransactionHandle::touchedColumnFamilies`: **weak** references plus a raw
+    pointer for comparison, inline for 2, most-recent slot compared first, the never-droppable
+    default family skipped, cleared by `resetTransaction()` because the retry callback may touch a
+    different set) and refuses every write to a retired family; it holds no claim. Weak, not strong:
+    a transaction can outlive its database (an aborted handle JS still references after `close()`),
+    and a strong reference there destroyed the RocksDB column-family handle after `finishClose()`
+    had destroyed the database (SIGSEGV in `test/txn-close-commit-uaf.test.ts`). The commit locks
+    them only for its claim, with the overflow storage reserved before the first claim is published
+    so recording one cannot fail after its count was taken; a lock that fails is a
+    dropped-and-reclaimed generation and refuses the commit like a retired one. That is deliberate:
+    a staged-but-idle, abandoned, or drain-timeout-leaked (#784)
     transaction must not be able to block reclamation or a same-name recreate, and Harper calls
     `dropSync()` from a synchronous schema section with transactions staged on that same thread.
 
@@ -968,18 +984,36 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     Caller-visible contract: the name is gone from `db.columns` and reopenable as a fresh family
     before `drop()` returns; a transaction that stages a write to a retired family, or commits one
     it staged before the retire, is refused whole with `ERR_COLUMN_FAMILY_DROPPED`
-    (`column family "x" was dropped`). On the first attempt that decision precedes every log byte;
+    (`Column family "x" was dropped`). On the first attempt that decision precedes every log byte;
     after an `IsBusy`/`TryAgain` retry, the original attempt's write-once log position survives, so a
-    later refusal is correctly reported as `ERR_TRANSACTION_ABANDONED`. A commit admitted before the retire lands in
-    the dying generation, linearized before the drop; reads through retained handles continue;
-    non-transactional writes keep #725's silent discard. `DBRegistry::OpenDB` finds a `retiring` entry for the name under `columnsMutex` (so a drop cannot slip between the decision and the create), then simply asks `reclaimColumnFamily` to run the physical drop, under `databasesMutex` like the create itself — deadlock-free because a claim is only ever held by a commit inside RocksDB on a lane, a libuv thread, or another thread's `commitSync`, never parked on the opener's event loop. `attempted` is the whole decision: true and failed throws, true and OK creates the fresh family, false means a commit still holds the generation or another thread is already dropping it, so the open waits in 20 ms slices bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` (default 30 s). **Do not reintroduce a status enum on the `retiring` entry.** An earlier revision tracked `Pending`/`Reclaiming`/`Failed` there, which duplicated `lifetime.admitted`/`reclaimClaimed` in a second place that had to be kept in step under a different lock; asking the one function that already reads those atomics is both shorter and impossible to desynchronize.
+    later refusal is correctly reported as `ERR_TRANSACTION_ABANDONED`. A commit admitted before
+    the retire lands in the dying generation, linearized before the drop; reads through retained
+    handles continue; non-transactional writes keep #725's silent discard. `DBRegistry::OpenDB`
+    finds a `retiring` entry for the name under `columnsMutex` (so a drop cannot slip between the
+    decision and the create), then simply asks `reclaimColumnFamily` to run the physical drop, under
+    `databasesMutex` like the create itself — deadlock-free because a claim is only ever held by a
+    commit inside RocksDB on a lane, a libuv thread, or another thread's `commitSync`, never parked
+    on the opener's event loop. `attempted` is the whole decision: true and failed throws, true and
+    OK creates the fresh family, false means a commit still holds the generation or another thread
+    is already dropping it, so the open waits in 20 ms slices bounded by
+    `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` (default 30 s). **Do not reintroduce a status enum on the
+    `retiring` entry.** An earlier revision tracked `Pending`/`Reclaiming`/`Failed` there, which
+    duplicated `lifetime.admitted`/`reclaimClaimed` in a second place that had to be kept in step
+    under a different lock; asking the one function that already reads those atomics is both shorter
+    and impossible to desynchronize.
 
     Reclamation is retryable and never silently lost: membership in `retiring` IS "retry me", so a
     failed `DropColumnFamily` only has to release its reclaim claim and leave the entry in place
     (the whole path is `noexcept` because it runs from commit completions and destructors, and the
     claim is released before any diagnostic allocation). It reports through the global `log.warn`
     event and `columnFamily.pendingReclaims`,
-    and is retried on the next drop on the database, the next `open()` of that name (retried inline with `columnsMutex` released; a second failure throws), and `finishClose()`, which then destroys the RocksDB handle of every generation still in `retiring` ahead of the database: on the legacy libuv path a claim can outlive the closables sweep's drain timeout (#784), and `reclaimColumnFamily` — which also participates in `operationsInFlight` and stands down once the descriptor is closing — skips a generation whose handle is gone rather than drop into a destroyed database. Retry is idempotent
+    and is retried on the next drop on the database, the next `open()` of that name (retried inline
+    with `columnsMutex` released; a second failure throws), and `finishClose()`, which then destroys
+    the RocksDB handle of every generation still in `retiring` ahead of the database: on the legacy
+    libuv path a claim can outlive the closables sweep's drain timeout (#784), and
+    `reclaimColumnFamily` — which also participates in `operationsInFlight` and stands down once the
+    descriptor is closing — skips a generation whose handle is gone rather than drop into a
+    destroyed database. Retry is idempotent
     because RocksDB removes the family (`LogAndApply`, `SetDropped`) before it persists OPTIONS, so a
     drop that failed past the MANIFEST publish retries as "Column family already dropped", which is
     success. The retired name is never reinserted. A second handle to the same retired generation

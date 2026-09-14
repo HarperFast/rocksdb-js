@@ -329,8 +329,8 @@ struct ColumnFamilyCommitClaim final {
 			}
 			try {
 				status = column
-					? rocksdb::Status::ColumnFamilyDropped("column family \"" + column->name + "\" was dropped")
-					: rocksdb::Status::ColumnFamilyDropped("column family was dropped and reclaimed");
+					? rocksdb::Status::ColumnFamilyDropped("Column family \"" + column->name + "\" was dropped")
+					: rocksdb::Status::ColumnFamilyDropped("Column family was dropped and reclaimed");
 			} catch (...) {
 				status = rocksdb::Status::ColumnFamilyDropped();
 			}

@@ -190,7 +190,7 @@ describe('Drop', () => {
 					'ERR_COLUMN_FAMILY_DROPPED'
 				);
 				expect(staleResult.status === 'rejected' && staleResult.reason.message).toMatch(
-					/column family "doomed" was dropped/
+					/Column family "doomed" was dropped/
 				);
 
 				expect(victim.getSync('b')).toBe('2');
