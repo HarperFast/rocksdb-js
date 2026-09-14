@@ -151,8 +151,9 @@ startup safety check requested here.
 
 After recovery, scan every segment in the caller-named local log under the bounded deadline. Reject
 the open before raising the process-wide floor if the scan is incomplete or sees an implausibly
-future key. A recoverable read-only torn tail remains valid because its contiguous prefix covers all
-durable entries. The named-log-missing warning remains non-fatal so a fresh local log can be named
+future key. A read-only torn tail shorter than an entry header remains valid: no frame can begin in it, so its
+contiguous prefix provably covers every durable entry. A longer one is refused, because nothing
+distinguishes a partial append from corruption hiding a complete higher-keyed frame. The named-log-missing warning remains non-fatal so a fresh local log can be named
 before its first append.
 
 ### Verification route

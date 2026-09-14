@@ -406,6 +406,17 @@ describe('monotonic clock floor', () => {
 		expect(JSON.parse(reopened.stdout).clock).toBeGreaterThan(key);
 	}, 60000);
 
+	it('allows a later seeded open after an option-less handle on the same path', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		const reopened = await runFixture('reopen-after-unseeded-handle', dbPath, key);
+		expect(reopened.code, reopened.stderr).toBe(0);
+		expect(JSON.parse(reopened.stdout).clock).toBeGreaterThan(key);
+	}, 60000);
+
 	it('covers a key the seeded clock itself wrote', async () => {
 		const dbPath = newDBPath();
 		const key = aheadOfNow();

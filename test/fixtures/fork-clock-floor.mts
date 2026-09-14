@@ -132,6 +132,19 @@ try {
 		if (!(clock > key!)) {
 			fail(`clock ${clock} did not clear the durable key ${key}`);
 		}
+	} else if (mode === 'reopen-after-unseeded-handle') {
+		// An option-less open stamps an empty name on its own descriptor. That says
+		// nothing about what the path was seeded from, so a later open naming the
+		// same log must still be allowed.
+		const unseeded = RocksDatabase.open(dbPath, { readOnly: true });
+		const third = RocksDatabase.open(dbPath, { name: 'other', timestampFloorLog: log });
+		const clock = third.getMonotonicTimestamp();
+		third.close();
+		unseeded.close();
+		console.log(JSON.stringify({ clock, key }));
+		if (!(clock > key!)) {
+			fail(`clock ${clock} did not clear the durable key ${key}`);
+		}
 	} else if (mode === 'seed-then-write') {
 		// No setTimestamp: the batch key comes from the seeded clock, so reopening
 		// must find it in the log and seed above it.
