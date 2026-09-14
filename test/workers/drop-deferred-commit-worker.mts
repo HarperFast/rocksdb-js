@@ -1,4 +1,5 @@
 import { RocksDatabase } from '../../src/index.ts';
+import { NativeTransaction } from '../../src/load-binding.ts';
 import { parentPort, workerData } from 'node:worker_threads';
 
 // Commits one transaction on the family the main thread is about to drop. The
@@ -9,12 +10,14 @@ const db = RocksDatabase.open(workerData.path, {
 	name: workerData.name,
 	pessimistic: workerData.pessimistic,
 });
+let closed = false;
 
 parentPort?.on(
 	'message',
 	async (message: { commit?: boolean; close?: boolean; open?: boolean; barrier?: Int32Array }) => {
 		if (message.close) {
 			db.close();
+			closed = true;
 			parentPort?.postMessage({ closed: true });
 			return;
 		}
@@ -41,10 +44,16 @@ parentPort?.on(
 		}
 		if (!message.commit) return;
 
-		const commit = db.transaction((txn) => {
-			txn.putSync('committed-before-drop', Buffer.alloc(4096, 1));
-		});
-		// Give the microtask that dispatches the commit a turn before signalling.
+		const commit =
+			workerData.scenario === 'handle-closed'
+				? (() => {
+						const txn = new NativeTransaction(db.store.db);
+						txn.putSync(Buffer.from('committed-before-drop'), Buffer.alloc(4096, 1));
+						return new Promise<void>((resolve, reject) => txn.commit(() => resolve(), reject));
+					})()
+				: db.transaction((txn) => {
+						txn.putSync('committed-before-drop', Buffer.alloc(4096, 1));
+					});
 		await new Promise((resolve) => setImmediate(resolve));
 		parentPort?.postMessage({ committing: true });
 
@@ -54,7 +63,7 @@ parentPort?.on(
 		} catch (e) {
 			error = (e as Error).message;
 		}
-		parentPort?.postMessage({ done: true, error, lastError: db.getLastError() });
+		parentPort?.postMessage({ done: true, error, lastError: closed ? null : db.getLastError() });
 	}
 );
 

@@ -23,6 +23,7 @@ function removeDBPath(dbPath: string): void {
 
 type Scenario =
 	| 'admitted-commit'
+	| 'handle-closed'
 	| 'worker-terminated'
 	| 'open-waits'
 	| 'crash-reopen'
@@ -92,6 +93,11 @@ describe('Deferred column-family reclamation', () => {
 					`reclaims after the committing worker is terminated (commit thread ${commitThread})`,
 					{ timeout: 60_000 },
 					() => expectFixture('worker-terminated', 'optimistic', 'sync', commitThread)
+				);
+				it(
+					`reclaims after the committing handle closes (commit thread ${commitThread})`,
+					{ timeout: 60_000 },
+					() => expectFixture('handle-closed', 'optimistic', 'sync', commitThread)
 				);
 			}
 

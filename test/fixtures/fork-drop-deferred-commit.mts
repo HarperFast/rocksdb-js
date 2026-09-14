@@ -12,7 +12,7 @@ import { Worker } from 'node:worker_threads';
 // not a Vitest worker.
 //
 //   argv: <dbPath> <scenario> <optimistic|pessimistic> <sync|async>
-//   scenario: admitted-commit | worker-terminated | open-waits | crash-reopen | retry-race
+//   scenario: admitted-commit | handle-closed | worker-terminated | open-waits | crash-reopen | retry-race
 //
 // Prints one JSON line on success; a failed assertion exits non-zero.
 // `crash-reopen` SIGKILLs itself inside the deferral window and leaves the
@@ -57,7 +57,7 @@ table.putSync('seed', 'old-generation');
 
 const worker = new Worker(createWorkerBootstrapScript(workerPath), {
 	eval: true,
-	workerData: { path: dbPath, name: 'table', pessimistic },
+	workerData: { path: dbPath, name: 'table', pessimistic, scenario },
 });
 const messages: Record<string, unknown>[] = [];
 const waiters: Array<(m: Record<string, unknown>) => void> = [];
@@ -175,6 +175,11 @@ try {
 		// The worker dies with its commit admitted; the lane task still owns the
 		// transaction handle, finishes, and releases the claim.
 		await worker.terminate();
+	} else if (scenario === 'handle-closed') {
+		worker.postMessage({ close: true });
+		await nextMessage('closed');
+		const done = await nextMessage('done');
+		assert(done.error === undefined, `admitted commit should have succeeded: ${done.error}`);
 	} else if (scenario === 'open-waits') {
 		const started = Date.now();
 		const fresh = RocksDatabase.open(dbPath, { name: 'table', pessimistic });
@@ -223,8 +228,10 @@ try {
 	}
 
 	if (scenario !== 'worker-terminated') {
-		worker.postMessage({ close: true });
-		await nextMessage('closed');
+		if (scenario !== 'handle-closed') {
+			worker.postMessage({ close: true });
+			await nextMessage('closed');
+		}
 		await worker.terminate();
 	}
 	console.log(JSON.stringify({ scenario, txnMode, dropKind, dropElapsed, ok: true }));

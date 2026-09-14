@@ -6,21 +6,7 @@
 
 namespace rocksdb_js {
 
-/**
- * Lifetime protocol for one column-family generation (AGENTS.md invariant 23).
- *
- * A drop retires the generation logically and returns; the physical
- * `DropColumnFamily` runs only when no commit holds a claim on it. A commit
- * claims every family its batch names once, at admission (before the
- * transaction-log write), and releases after `txn->Commit()` returns.
- *
- * Every operation is sequentially consistent, so for a retire (`retired =
- * true`, then read `admitted`) racing an admission (`admitted++`, then read
- * `retired`) at least one side observes the other: either the retirer sees a
- * claim and leaves reclamation to its releaser, or the admitter sees the
- * retirement and refuses. `claimReclaim()` then guarantees that when both
- * sides conclude "reclaim now" only one of them runs the physical drop.
- */
+/** Lifetime protocol for one column-family generation; see AGENTS.md invariant 23. */
 struct ColumnFamilyLifetime final {
 	std::atomic<bool> retired{false};
 	std::atomic<uint32_t> admitted{0};

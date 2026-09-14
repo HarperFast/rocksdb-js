@@ -359,6 +359,7 @@ struct ColumnFamilyCommitClaim final {
 struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	bool hasLog;
 	ColumnFamilyCommitClaim claim;
+	std::weak_ptr<DBDescriptor> descriptor;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
@@ -369,6 +370,7 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	) :
 		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
 		hasLog(false),
+		descriptor(handle && handle->dbHandle ? handle->dbHandle->descriptor : nullptr),
 		parkTimeouts(
 			handle && handle->coordinatedRetry && handle->dbHandle && handle->dbHandle->descriptor
 				? handle->dbHandle->descriptor->parkTimeouts
@@ -402,13 +404,8 @@ static void rejectRetryNowSetupFailure(
 	}
 	state->callReject(error);
 }
-
-/**
- * Pins the descriptor for the admission only, as executeCommitWork does for
- * its own stage.
- */
 static rocksdb::Status admitCommit(TransactionCommitState* state, const std::shared_ptr<TransactionHandle>& txnHandle) {
-	std::shared_ptr<DBDescriptor> descriptor = txnHandle->dbHandle->descriptor;
+	std::shared_ptr<DBDescriptor> descriptor = state->descriptor.lock();
 	if (!descriptor) {
 		return rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	}
@@ -475,18 +472,17 @@ static void executeLogWork(TransactionCommitState* state) {
  */
 static void executeCommitWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
+	auto descriptor = state->descriptor.lock();
 	// The log stage already failed the commit on any invalid-handle condition,
 	// but the handle can also be torn out between the stages (e.g. a timed-out
 	// DBHandle::close() resetting the descriptor mid-pipeline). Never let a
 	// commit that was skipped here resolve as success.
-	if (!txnHandle || !txnHandle->dbHandle || !txnHandle->dbHandle->descriptor) {
+	if (!txnHandle || !descriptor) {
 		if (state->status.ok()) {
 			state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 		}
 		state->claim.release(nullptr);
 	} else {
-		auto descriptor = txnHandle->dbHandle->descriptor;
-
 		// ensure the log stage (or handle validation) hasn't errored
 		if (!state->status.ok()) {
 			state->claim.release(descriptor.get());
@@ -783,8 +779,7 @@ static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* co
 		// txn handle (dropping the state's references), but we still need the
 		// descriptor for the pending accounting below. The state pins it here
 		// (state -> txnHandle -> dbHandle -> descriptor).
-		std::shared_ptr<DBDescriptor> descriptor =
-			(state->handle && state->handle->dbHandle) ? state->handle->dbHandle->descriptor : nullptr;
+		std::shared_ptr<DBDescriptor> descriptor = state->descriptor.lock();
 		completeCommitWork(env, state);
 		if (descriptor) {
 			descriptor->finishCommitCompletion(env);

@@ -547,11 +547,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			// concurrent drop (which erases its entry via retireColumnFamily)
 			// cannot interleave and let us reuse a just-dropped column family.
 			std::unique_lock<std::mutex> columnsLock(entry.descriptor->columnsMutex);
-			// A retired generation of this name blocks the fresh family (RocksDB
-			// cannot hold two families of one name). Found under `columnsMutex`
-			// so a drop cannot slip between the decision and the create, then
-			// dropped here — deadlock-free, because a claim is only ever held by
-			// a commit inside RocksDB, never parked on this thread.
+			// RocksDB cannot hold two column families with the same name.
 			if (std::shared_ptr<ColumnFamilyDescriptor> retiringGeneration =
 					entry.descriptor->findRetiringLocked(name)) {
 				columnsLock.unlock();
