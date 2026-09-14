@@ -490,6 +490,12 @@ static void executeCommitWork(TransactionCommitState* state) {
 		// ensure the log stage (or handle validation) hasn't errored
 		if (!state->status.ok()) {
 			state->claim.release(descriptor.get());
+			if (state->status.IsColumnFamilyDropped()) {
+				txnHandle->writesAbandoned = true;
+				if (!txnHandle->lockedVTSlots.empty()) {
+					txnHandle->releaseIntent();
+				}
+			}
 		}
 		if (state->status.ok()) {
 			if (testForceTryAgain()) {
@@ -1015,6 +1021,12 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		rocksdb::Status admission = claim.admit((*txnHandle)->touchedColumnFamilies, *descriptor);
 		if (!admission.ok()) {
 			(*txnHandle)->state = TransactionState::Pending;
+			if (admission.IsColumnFamilyDropped()) {
+				(*txnHandle)->writesAbandoned = true;
+				if (!(*txnHandle)->lockedVTSlots.empty()) {
+					(*txnHandle)->releaseIntent();
+				}
+			}
 			napi_value error;
 			ROCKSDB_CREATE_ERROR_LIKE_VOID(error, admission, "Transaction commit failed");
 			napi_value hasLogValue;
@@ -1036,12 +1048,14 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 				store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
 			} catch (const std::exception& e) {
 				(*txnHandle)->state = TransactionState::Pending;
+				claim.release(descriptor.get());
 				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
 			}
 			// free the batch after writing to avoid memory leak
 			(*txnHandle)->logEntryBatch.reset();
 		} else {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
+			claim.release(descriptor.get());
 			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
 		}
 	}

@@ -706,7 +706,19 @@ void ColumnFamilySet::add(const std::shared_ptr<ColumnFamilyDescriptor>& column)
 	this->last = column.get();
 }
 
-rocksdb::Status TransactionHandle::noteTouchedColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column) {
+void ColumnFamilySet::removeLast(ColumnFamilyDescriptor* column) {
+	if (this->entries.size() == 0 || this->entries.back().raw != column) {
+		return;
+	}
+	this->entries.popBack();
+	this->last = this->entries.size() == 0 ? nullptr : this->entries.back().raw;
+}
+
+rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
+	const std::shared_ptr<ColumnFamilyDescriptor>& column,
+	bool& added
+) {
+	added = false;
 	if (!column) {
 		return rocksdb::Status::Aborted("Database not open");
 	}
@@ -719,6 +731,7 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(const std::shared_ptr
 		}
 		if (!this->touchedColumnFamilies.contains(column.get())) {
 			this->touchedColumnFamilies.add(column);
+			added = true;
 		}
 	} catch (...) {
 		return rocksdb::Status::MemoryLimit();
@@ -749,12 +762,16 @@ rocksdb::Status TransactionHandle::putSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor);
+	bool addedTouch = false;
+	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
 	if (!touched.ok()) {
 		return touched;
 	}
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Put(column, key, value);
+	if (!status.ok() && addedTouch) {
+		this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+	}
 
 	// Lock the VT slot for this key immediately on write. This ensures that
 	// any cached version of the key is invalidated as soon as it enters the
@@ -790,12 +807,16 @@ rocksdb::Status TransactionHandle::removeSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor);
+	bool addedTouch = false;
+	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
 	if (!touched.ok()) {
 		return touched;
 	}
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Delete(column, key);
+	if (!status.ok() && addedTouch) {
+		this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+	}
 
 	if (status.ok() && dbHandle->enableVerificationTable) {
 		this->lockVTSlot(dbHandle, key);

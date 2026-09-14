@@ -1,7 +1,8 @@
-import { RocksDatabase } from '../src/index.ts';
+import { RocksDatabase, Transaction } from '../src/index.ts';
 import { forceDropFailureForTesting, forceTryAgainForTesting } from '../src/load-binding.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,6 +14,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-drop-deferred-commit.mts');
 const isNode = !process.versions.bun && !process.versions.deno;
+
+function removeDBPath(dbPath: string): void {
+	if (!process.env.KEEP_FILES) {
+		rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+	}
+}
 
 type Scenario =
 	| 'admitted-commit'
@@ -109,24 +116,28 @@ describe('Deferred column-family reclamation', () => {
 				{ timeout: 60_000 },
 				async () => {
 					const dbPath = generateDBPath();
-					const result = await runFixture('crash-reopen', 'optimistic', 'sync', '1', dbPath);
-					const diedAbruptly =
-						result.signal === 'SIGKILL' ||
-						result.code === 137 ||
-						(process.platform === 'win32' && result.code === 1);
-					expect(diedAbruptly, result.stderr).toBe(true);
-					expect(result.stdout).toContain('ready');
-					const reopened = RocksDatabase.open(dbPath);
 					try {
-						expect(reopened.columns).toContain('table');
+						const result = await runFixture('crash-reopen', 'optimistic', 'sync', '1', dbPath);
+						const diedAbruptly =
+							result.signal === 'SIGKILL' ||
+							result.code === 137 ||
+							(process.platform === 'win32' && result.code === 1);
+						expect(diedAbruptly, result.stderr).toBe(true);
+						expect(result.stdout).toContain('ready');
+						const reopened = RocksDatabase.open(dbPath);
+						try {
+							expect(reopened.columns).toContain('table');
+						} finally {
+							reopened.close();
+						}
+						const table = RocksDatabase.open(dbPath, { name: 'table' });
+						try {
+							expect(table.getSync('seed')).toBe('old-generation');
+						} finally {
+							table.close();
+						}
 					} finally {
-						reopened.close();
-					}
-					const table = RocksDatabase.open(dbPath, { name: 'table' });
-					try {
-						expect(table.getSync('seed')).toBe('old-generation');
-					} finally {
-						table.close();
+						removeDBPath(dbPath);
 					}
 				}
 			);
@@ -212,6 +223,66 @@ describe('Deferred column-family reclamation', () => {
 				).rejects.toMatchObject({ code: 'ERR_COLUMN_FAMILY_DROPPED' });
 				expect(home.getSync('live')).toBeUndefined();
 				expect(home.getLastError()).toBeNull();
+			}
+		));
+
+	for (const commitKind of ['async', 'sync'] as const) {
+		it(`releases verification-table intents after ${commitKind} admission refusal`, () =>
+			dbRunner(
+				{
+					dbOptions: [
+						{ name: 'live', verificationTable: true },
+						{ name: 'retired', verificationTable: true },
+						{ name: 'retired', verificationTable: true },
+					],
+				},
+				async ({ db: live }, { db: retired }, { db: dropper }) => {
+					live.putSync('key', 'old');
+					live.populateVersion('key', 1.5e12);
+					const txn = new Transaction(live.store);
+					txn.putSync('key', 'new');
+					retired.putSync('other', 'value', { transaction: txn });
+					dropper.dropSync();
+
+					if (commitKind === 'async') {
+						await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_COLUMN_FAMILY_DROPPED' });
+					} else {
+						expect(() => txn.commitSync()).toThrowError(
+							expect.objectContaining({ code: 'ERR_COLUMN_FAMILY_DROPPED' })
+						);
+					}
+
+					live.populateVersion('key', 1.6e12);
+					expect(live.verifyVersion('key', 1.6e12)).toBe(true);
+					expect(() => txn.putSync('later', 'value')).toThrow(/abandoned/);
+					txn.abort();
+				}
+			));
+	}
+
+	it('forgets a family when a pessimistic write fails before entering the batch', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ name: 'live', pessimistic: true },
+					{ name: 'contended', pessimistic: true },
+					{ name: 'contended', pessimistic: true },
+				],
+			},
+			async ({ db: live }, { db: contended }, { db: dropper }) => {
+				const holder = new Transaction(contended.store);
+				holder.putSync('locked', 'holder');
+
+				const txn = new Transaction(live.store);
+				expect(() => contended.putSync('locked', 'candidate', { transaction: txn })).toThrow(
+					/timed out|busy/i
+				);
+				txn.putSync('landed', 'value');
+				dropper.dropSync();
+				await txn.commit();
+
+				expect(live.getSync('landed')).toBe('value');
+				holder.abort();
 			}
 		));
 
@@ -386,19 +457,24 @@ describe('Deferred column-family reclamation', () => {
 
 		it('is retried on close, which performs the real drop', () => {
 			const dbPath = generateDBPath();
-			const db = RocksDatabase.open(dbPath, { name: 'table' });
-			db.putSync('k', 'v');
-			forceDropFailureForTesting(1);
-			expect(() => db.dropSync()).toThrow(/forced drop failure/);
-			expect(db.getStat('columnFamily.pendingReclaims')).toBe(1);
-			forceDropFailureForTesting(0);
-			db.close();
-
-			const reopened = RocksDatabase.open(dbPath);
 			try {
-				expect(reopened.columns).toEqual(['default']);
+				const db = RocksDatabase.open(dbPath, { name: 'table' });
+				db.putSync('k', 'v');
+				forceDropFailureForTesting(1);
+				expect(() => db.dropSync()).toThrow(/forced drop failure/);
+				expect(db.getStat('columnFamily.pendingReclaims')).toBe(1);
+				forceDropFailureForTesting(0);
+				db.close();
+
+				const reopened = RocksDatabase.open(dbPath);
+				try {
+					expect(reopened.columns).toEqual(['default']);
+				} finally {
+					reopened.close();
+				}
 			} finally {
-				reopened.close();
+				forceDropFailureForTesting(0);
+				removeDBPath(dbPath);
 			}
 		});
 

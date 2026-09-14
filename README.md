@@ -598,12 +598,14 @@ A drop retires the column family **logically** before it returns: the name is go
 `db.columns`, a later `open()` with the same name creates a fresh, empty column family, and any
 transaction that then stages a write to a handle of the dropped family, or commits one it staged
 earlier, is refused whole with `ERR_COLUMN_FAMILY_DROPPED` (`column family "users" was dropped`).
+That terminal refusal releases the transaction's verification-table intents and bars further
+writes or commit attempts; retained reads continue until the caller aborts the transaction.
 Handles other threads still hold keep **reading** the dropped data until they close; a
 non-transactional `putSync`/`removeSync` through such a handle is discarded.
 
-The **physical** RocksDB drop is deferred behind commits already inside RocksDB when the drop
-lands: a commit claims every column family its batch names before it writes its transaction-log
-batch and releases them after RocksDB has applied it, and the physical drop runs from whichever
+The **physical** RocksDB drop is deferred behind commits already admitted when the drop lands: a
+commit claims every column family its batch names before it writes its transaction-log batch and
+releases them after RocksDB has applied it, and the physical drop runs from whichever
 side releases last (or, for a commit a mid-flight `close()` tore out of its pipeline, from the next
 drop, open of that name, or close on the database). With no such commit (the common case) `drop()`/`dropSync()` perform the
 physical drop before returning, exactly as before. This is what keeps a drop racing another
@@ -612,8 +614,10 @@ error on the whole database.
 
 Two consequences to know about:
 
-- `open()` of a name whose previous generation is still held by an admitted commit waits for
-  that commit (bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default `30000`) before creating the fresh column family; if the previous generation's physical drop failed, the open retries it once and throws with that error if it fails again.
+- `open()` of a name whose previous generation is still held by an admitted commit waits for the
+  full admission-to-reclamation interval (bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default
+  `30000`) before creating the fresh column family; if the previous generation's physical drop
+  failed, the open retries it once and throws with that error if it fails again.
 - A physical drop that fails (an I/O error writing the MANIFEST) keeps the name retired, is
   retried on the next drop on the database, the next `open()` of that name, or close, and is
   reported through the global `log.warn` event and the `columnFamily.pendingReclaims` stat. When

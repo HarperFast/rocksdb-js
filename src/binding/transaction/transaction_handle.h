@@ -53,6 +53,21 @@ struct InlineVector final {
 		return this->overflow.back();
 	}
 
+	const T& back() const {
+		return this->count <= N
+			? this->inlineSlots[this->count - 1]
+			: this->overflow.back();
+	}
+
+	void popBack() {
+		if (this->count <= N) {
+			this->inlineSlots[this->count - 1] = T();
+		} else {
+			this->overflow.pop_back();
+		}
+		this->count--;
+	}
+
 	template<typename Fn>
 	void forEach(Fn&& fn) const {
 		const size_t inlineCount = this->count < N ? this->count : N;
@@ -117,6 +132,7 @@ struct ColumnFamilySet final {
 	}
 
 	void add(const std::shared_ptr<ColumnFamilyDescriptor>& column);
+	void removeLast(ColumnFamilyDescriptor* column);
 
 	template<typename Fn>
 	void forEach(Fn&& fn) const {
@@ -396,7 +412,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/**
 	 * ColumnFamilyDropped when `column` is retired; otherwise records it.
 	 */
-	rocksdb::Status noteTouchedColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column);
+	rocksdb::Status noteTouchedColumnFamily(
+		const std::shared_ptr<ColumnFamilyDescriptor>& column,
+		bool& added
+	);
 
 	rocksdb::Status putSync(
 		rocksdb::Slice& key,

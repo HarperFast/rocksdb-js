@@ -319,7 +319,7 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 
 	DBStats::getInstance().setWriteBufferManagerStatsOnObject(env, result);
 
-	// commit-pipeline queue depths
+	// database-local gauges not supplied by RocksDB statistics
 	{
 		napi_value jsValue;
 		if (::napi_create_double(env, static_cast<double>(this->descriptor->logWorker.depth()), &jsValue) == napi_ok) {

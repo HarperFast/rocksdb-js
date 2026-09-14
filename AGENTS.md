@@ -231,9 +231,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   rising edge emits); malformed/negative falls back to the default
 - `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` - How long `open()` of a column-family name whose
   previous generation is still awaiting its physical drop waits before throwing
-  (default `30000`). The open polls in 20 ms slices; what it waits on is a commit
-  already inside RocksDB, so the bound only matters when that write is itself
-  stalled. Read once per process via a function-local `static` — same
+  (default `30000`). The open polls in 20 ms slices; the bound covers the full
+  interval from commit admission through transaction-log work, commit-lane queuing,
+  the RocksDB write, and reclamation. Read once per process via a function-local `static` — same
   `::getenv`-vs-`process.env` caveat as `ROCKSDB_JS_PARK_TIMEOUT_MS` — so it must be
   set in the environment a process is started with. Malformed, non-positive, or above
   24h falls back to the default; there is no opt-out (see invariant 23)
@@ -957,11 +957,20 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     worker's JS handle closes or is collected, breaking immediate same-name recreate and making
     correctness depend on GC.
 
+    A staging call reserves its touched-set entry before calling RocksDB so allocation can never
+    leave an untracked write in the batch, but removes that new entry again when `Put`/`Delete`
+    fails before accepting the mutation. A terminal admission refusal marks the transaction's writes
+    abandoned and releases its VT intents, so a caller retaining the transaction for reads cannot
+    leave coordinated-retry writers parked. Every explicit log-stage claim release passes the live
+    descriptor — including synchronous log-write failure — so the last release retries reclamation
+    immediately rather than waiting for an unrelated drop/open/close.
+
     Caller-visible contract: the name is gone from `db.columns` and reopenable as a fresh family
     before `drop()` returns; a transaction that stages a write to a retired family, or commits one
     it staged before the retire, is refused whole with `ERR_COLUMN_FAMILY_DROPPED`
-    (`column family "x" was dropped`), decided before any log byte is written so it surfaces as
-    that error and not as `ERR_TRANSACTION_ABANDONED`; a commit admitted before the retire lands in
+    (`column family "x" was dropped`). On the first attempt that decision precedes every log byte;
+    after an `IsBusy`/`TryAgain` retry, the original attempt's write-once log position survives, so a
+    later refusal is correctly reported as `ERR_TRANSACTION_ABANDONED`. A commit admitted before the retire lands in
     the dying generation, linearized before the drop; reads through retained handles continue;
     non-transactional writes keep #725's silent discard. `DBRegistry::OpenDB` finds a `retiring` entry for the name under `columnsMutex` (so a drop cannot slip between the decision and the create), then simply asks `reclaimColumnFamily` to run the physical drop, under `databasesMutex` like the create itself — deadlock-free because a claim is only ever held by a commit inside RocksDB on a lane, a libuv thread, or another thread's `commitSync`, never parked on the opener's event loop. `attempted` is the whole decision: true and failed throws, true and OK creates the fresh family, false means a commit still holds the generation or another thread is already dropping it, so the open waits in 20 ms slices bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` (default 30 s). **Do not reintroduce a status enum on the `retiring` entry.** An earlier revision tracked `Pending`/`Reclaiming`/`Failed` there, which duplicated `lifetime.admitted`/`reclaimClaimed` in a second place that had to be kept in step under a different lock; asking the one function that already reads those atomics is both shorter and impossible to desynchronize.
 
