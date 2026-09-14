@@ -266,9 +266,21 @@ against the same database opened without the option:
 | 25,000 entries, 99 MB, 7 segments | ~31 ms                   |
 | 250,000 entries, 19 MB            | ~273 ms                  |
 
-Roughly a millisecond per thousand entries. Retention bounds a log's age, not its entry count, so
+Roughly a millisecond per thousand entries. There is a second term on Windows only. A segment there
+is pre-extended to `transactionLogMaxSize` when it is mapped and keeps that physical size for life —
+rotation does not truncate it — so a segment's bytes past its last entry are zero padding, and the
+walk has to read that padding to prove nothing durable hides in it (see fail closed, below). So on
+Windows the walk also scales with `segments x transactionLogMaxSize`. Measured on Linux against
+deliberately Windows-shaped segments, 80 MiB of padding across 5 segments added ~148 ms to the open
+with a warm page cache; a cold cache or slower storage is proportionally worse, and this has not been
+measured on Windows itself. Size the budget below with that in mind before enabling the option on a
+Windows deployment with a long retention window.
+
+Retention bounds a log's age, not its entry count, so
 the walk is bounded directly instead: `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` (default `2000`) caps it,
-newest segment first, and a walk that runs out of budget rejects an open that names the log.
+newest segment first, and a walk that runs out of budget rejects an open that names the log. The
+rejection reports the segments and bytes the walk covered, so the budget can be sized from what the
+store actually costs.
 The deadline is checked before each physical read; sequential headers share a 64 KiB window, so the
 small amount of already-buffered header parsing can finish after the deadline but one large segment
 cannot run unbounded.
@@ -280,17 +292,37 @@ A database opened without `timestampFloorLog` pays none of it. The walk runs whi
 and closes are serialized process-wide, so increasing its budget can delay unrelated opens and
 closes too.
 
-The seed is fail closed when `timestampFloorLog` is set. A segment that cannot be opened or scanned,
-a framing break (the entries past it can still be durable — `query()` resyncs to them — but this walk
-stops there), an exhausted budget, or a key more than ten years ahead of the wall clock rejects the
-open rather than risk issuing a duplicate key. A `timestampFloorLog` naming a log the database does
-not have still warns: a newly named locally originated log has no existing keys to seed. Callers
-that need restart-safe uniqueness must provision and name their local log consistently before its
-first write; a missing name can otherwise be a configuration mistake that leaves no key to scan.
+The seed is fail closed when `timestampFloorLog` is set, and it asks a stronger question of each
+segment than recovery does. Recovery decides where it is safe to truncate; this has to establish that
+it observed every durable key, so the walk may stop short of a segment's extent only on a proof that
+no complete frame can remain: the framed entries reach the extent, or everything past them is zero,
+or fewer than 13 bytes remain (too few to open an entry header). Anything else — a framing break, a
+declared length that overruns, bytes that are neither framed nor padding — rejects the open, as does a
+segment that cannot be opened or scanned, an exhausted budget, or a key more than ten years ahead of
+the wall clock. Entries past a break can still be durable and `query()` resyncs to them, which is
+exactly why this walk cannot treat them as absent.
 
-The option is fixed at the first open of a path in the process — the database descriptor is shared
-across handles and `worker_threads` envs — so a later open of the same path that names a log cannot
-re-run the seed and rejects rather than appearing to work.
+One consequence worth stating: a read-only or secondary open runs no recovery (it must not mutate a
+live primary's logs), so a crash-torn tail it finds is refused unless it is shorter than an entry
+header. A writable open recovers such a tail before the walk runs and is unaffected.
+
+A `timestampFloorLog` naming a log the database does not have warns — including on a database with no
+logs at all, which is where a misspelled name is most likely: a newly named locally originated log has
+no existing keys to seed. Callers that need restart-safe uniqueness must provision and name their
+local log consistently before its first write; a missing name can otherwise be a configuration mistake
+that leaves no key to scan.
+
+A floor raised more than a second above the wall clock also warns. Only a backward clock step puts
+durable keys ahead of now, and from that point the process issues timestamps off the floor rather than
+tracking wall time — and each restart re-seeds from the keys it just wrote — so it stays ahead until
+the clock catches up.
+
+The seed belongs to the physical database path, not to one handle. The first open of a path resolves
+it; a later open of the same path — including a read-only or secondary open, which gets its own
+descriptor — finds it already resolved and does not walk the log again, which also means it never
+scans a store the first handle may be appending to. An open that names a _different_ log than the one
+already resolved for the path, or names one when the path was opened without it, is rejected rather
+than appearing to work.
 
 ### Sequential Read
 

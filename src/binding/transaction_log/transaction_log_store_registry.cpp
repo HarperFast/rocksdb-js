@@ -12,6 +12,7 @@
 #include <cstring>
 #include <string>
 #include <filesystem>
+#include <iomanip>
 #include <sstream>
 #include <vector>
 
@@ -223,20 +224,10 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath, bool
 namespace {
 
 std::chrono::milliseconds timestampFloorScanBudget() {
-	static const std::chrono::milliseconds budget = [] {
-		const char* raw = ::getenv("ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS");
-		if (raw != nullptr && *raw != '\0') {
-			try {
-				size_t consumed = 0;
-				long long parsed = std::stoll(raw, &consumed);
-				constexpr long long maxBudgetMs = 24LL * 60LL * 60LL * 1000LL;
-				if (consumed == std::strlen(raw) && parsed >= 0) {
-					return std::chrono::milliseconds(std::min(parsed, maxBudgetMs));
-				}
-			} catch (const std::exception&) {}
-		}
-		return std::chrono::milliseconds(2000);
-	}();
+	static const std::chrono::milliseconds budget(parseDurationMs(
+		::getenv("ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS"),
+		/*defaultMs=*/2000,
+		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL));
 	return budget;
 }
 
@@ -250,33 +241,47 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		return;
 	}
 
+	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 	std::shared_ptr<TransactionLogStore> store;
-	bool namedStoreMissing = false;
-	bool otherStores = false;
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 		auto it = instance->entries.find(dbPath);
 		if (it == instance->entries.end()) {
 			return;
 		}
-		std::lock_guard<std::mutex> storeLock(it->second->storesMutex);
-		auto storeIt = it->second->stores.find(logName);
-		if (storeIt == it->second->stores.end()) {
-			otherStores = !it->second->stores.empty();
-			namedStoreMissing = true;
-		} else {
+		entry = it->second;
+		// The floor is a property of the physical path, and this path's request
+		// was already resolved by the descriptor that opened first. Re-running it
+		// here would scan a store that descriptor may be appending to right now
+		// (DBRegistry serializes registry opens, not commits), so the walk could
+		// see a partial append and refuse a legitimate open, or clear a region the
+		// writer fills immediately after. DBRegistry::OpenDB has already rejected a
+		// request that disagrees with the resolved one, so agreement is all that
+		// reaches here.
+		if (entry->seededFloorLog == logName) {
+			return;
+		}
+		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+		auto storeIt = entry->stores.find(logName);
+		if (storeIt != entry->stores.end()) {
 			store = storeIt->second;
 		}
 	}
 
-	if (namedStoreMissing) {
-		if (otherStores) {
-			std::ostringstream msg;
-			msg << "timestampFloorLog names transaction log \"" << logName << "\", which database "
-				<< dbPath << " does not have; the monotonic timestamp floor was not seeded.";
-			DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
-			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
-		}
+	// Resolving the request — including resolving it to "there is nothing to
+	// scan" — is what a later open must not repeat.
+	auto markResolved = [&]() {
+		std::lock_guard<std::mutex> lock(instance->entriesMutex);
+		entry->seededFloorLog = logName;
+	};
+
+	if (!store) {
+		std::ostringstream msg;
+		msg << "timestampFloorLog names transaction log \"" << logName << "\", which database "
+			<< dbPath << " does not have; the monotonic timestamp floor was not seeded.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		markResolved();
 		return;
 	}
 
@@ -300,14 +305,19 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 	if (!scan.complete) {
 		std::vector<std::string> reasons;
 		if (scan.budgetExhausted) {
-			reasons.emplace_back(
-				"the timestamp floor scan budget ran out (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS)");
+			std::ostringstream detail;
+			detail << "the timestamp floor scan budget ran out"
+				   << " (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS=" << timestampFloorScanBudget().count()
+				   << "ms covered " << scan.segmentsScanned << " of " << scan.segmentsTotal
+				   << " segment(s), " << scan.bytesScanned << " byte(s))";
+			reasons.emplace_back(detail.str());
 		}
 		if (scan.stoppedAtBreak) {
 			reasons.emplace_back(
-				"a segment's framing breaks partway through, so any entry after the break — durable"
-				" when the break sits inside a flushed prefix, and reported by a query as a corrupt"
-				" frame — was not read");
+				"a segment ends without proof that nothing durable follows — its framing breaks"
+				" partway through, or bytes past its last entry are neither a complete frame this"
+				" walk could read nor zero padding. A query resyncs past such a frame and can still"
+				" return the entries after it, so this walk cannot treat them as absent");
 		}
 		if (scan.discoveryIncomplete) {
 			reasons.emplace_back("transaction-log discovery skipped a segment at open");
@@ -339,7 +349,25 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 	if (raiseMonotonicTimestampFloor(scan.largestKey, plausibleBound)) {
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor Raised clock floor to %f from log \"%s\" of \"%s\"\n",
 			instance.get(), scan.largestKey, logName.c_str(), dbPath.c_str());
+		double ahead = scan.largestKey - getWallClockTimestamp();
+		if (ahead > CLOCK_FLOOR_AHEAD_WARN_MS) {
+			// Only a backward clock step puts durable keys ahead of now, and from
+			// here getMonotonicTimestamp() issues nextafter() increments off the
+			// floor instead of tracking wall time — so every timestamp this process
+			// mints, and every restart that re-seeds from them, stays ahead by at
+			// least this much until the wall clock catches up.
+			std::ostringstream msg;
+			msg << "Transaction log \"" << logName << "\" of database " << dbPath
+				<< " holds a batch key " << std::fixed << std::setprecision(0) << ahead
+				<< " ms ahead of the wall clock; the monotonic timestamp floor was raised to it,"
+				   " so transaction timestamps will run ahead of wall time until the clock catches"
+				   " up. Check this node's clock.";
+			DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		}
 	}
+
+	markResolved();
 }
 
 /**

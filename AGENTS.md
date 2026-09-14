@@ -1189,6 +1189,14 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     named log is fail closed: an unreadable segment, framing break, exhausted scan budget, or
     implausibly future key refuses that open rather than risk reissuing a durable batch key. The
     caller can omit `timestampFloorLog` only when its writes do not need restart-safe uniqueness.
+    **The floor walk needs proof of completeness, not recovery's repair heuristic.** It reads through
+    a private stream in strict mode: ending before the extent is accepted only when the remaining
+    bytes are all zero or too short for a frame. Its extent comes from that open stream, capped by a
+    retired segment's append boundary, never from `TransactionLogFile::size`, which Windows open
+    normalizes at the first zero timestamp and could otherwise hide durable suffixes. The resolved
+    floor-log name is memoized per physical transaction-log store and checked against every live
+    descriptor for the same path; `DBKey` also contains read-only and secondary state, so guarding
+    only one descriptor would allow a concurrent open to rescan a writer's active log.
 
 23. **A queued unlock callback belongs to its env and is released by that env's cleanup hook**:
     `tryLock(key, callback)` on a held key queues the callback as a threadsafe function of the
