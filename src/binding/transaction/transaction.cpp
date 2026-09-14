@@ -288,7 +288,7 @@ static unsigned parkTimeoutMs() {
  * for the next retry point.
  */
 struct ColumnFamilyCommitClaim final {
-	InlineVector<std::shared_ptr<ColumnFamilyDescriptor>, 8> claimed;
+	InlineVector<std::shared_ptr<ColumnFamilyDescriptor>, 2> claimed;
 
 	ColumnFamilyCommitClaim() = default;
 	ColumnFamilyCommitClaim(const ColumnFamilyCommitClaim&) = delete;

@@ -993,8 +993,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     (only while a commit admitted before the drop is still inside RocksDB) or after one failed leaves
     the family on disk under its name, and the next open lists it as live; a backup or checkpoint
     taken inside that window copies it. The immediate drop had the same exposure after a failure and
-    none during the window, which did not exist. A durable tombstone belongs to the caller (Harper
-    stamps physical names per generation and records one in its catalog). This subsumes the
+    none during the window, which did not exist. A durable tombstone belongs to the caller; an
+    integration must retain or recover it until physical completion before claiming crash durability.
+    This subsumes the
     commit-time admission gate of PR #843: that gate's drop waited for admitted commits and closed
     admission around `txn->Commit()` only; here the same admission is taken once, earlier, and the
     wait is replaced by deferral to the last releaser, so no immediate-drop path remains for the gate

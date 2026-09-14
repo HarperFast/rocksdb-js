@@ -42,7 +42,7 @@ function runFixture(
 		const child = spawn(process.execPath, [fixturePath, dbPath, scenario, txnMode, dropKind], {
 			env: {
 				...process.env,
-				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '300',
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '1000',
 				ROCKSDB_JS_COMMIT_THREAD: commitThread,
 			},
 		});
@@ -108,9 +108,7 @@ describe('Deferred column-family reclamation', () => {
 			);
 
 			// The documented cross-restart gap (AGENTS.md invariant 23): a process
-			// killed while a physical drop is deferred behind an admitted commit
-			// leaves the family on disk under its name, and the next open sees it
-			// as live with its data. Harper's catalog tombstone owns this case.
+			// killed while a physical drop is deferred leaves the old family live on disk.
 			it(
 				'a process killed inside the deferral window leaves the family on disk',
 				{ timeout: 60_000 },
@@ -434,7 +432,10 @@ describe('Deferred column-family reclamation', () => {
 			dbRunner({ dbOptions: [{ name: 'table' }] }, async ({ db, dbPath }) => {
 				db.putSync('k', 'v');
 				forceDropFailureForTesting(1);
-				await expect(db.drop()).rejects.toThrow(/forced drop failure/);
+				await expect(db.drop()).rejects.toMatchObject({
+					code: 'ERR_IO_ERROR',
+					message: expect.stringMatching(/forced drop failure/),
+				});
 				expect(db.getStat('columnFamily.pendingReclaims')).toBe(1);
 
 				// still failing: the open reports it and creates nothing
@@ -482,7 +483,6 @@ describe('Deferred column-family reclamation', () => {
 			dbRunner(
 				{ dbOptions: [{ name: 'table' }, { name: 'other' }] },
 				({ db: table, dbPath }, { db: other }) => {
-					// mode 2: the drop runs, then reports failure
 					forceDropFailureForTesting(2);
 					expect(() => table.dropSync()).toThrow(/forced post-drop failure/);
 					expect(table.getStat('columnFamily.pendingReclaims')).toBe(1);

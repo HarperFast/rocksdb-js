@@ -799,7 +799,8 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	rocksdb::Status status = dropColumnFamily(**dbHandle);
 	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Drop failed");
+		napi_value error;
+		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 			env, global, reject, 1, &error, nullptr
 		), "Failed to call reject function");

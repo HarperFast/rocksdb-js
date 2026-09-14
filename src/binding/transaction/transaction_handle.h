@@ -114,7 +114,7 @@ struct TouchedColumnFamily final {
  * family pays one pointer compare per write.
  */
 struct ColumnFamilySet final {
-	InlineVector<TouchedColumnFamily, 8> entries;
+	InlineVector<TouchedColumnFamily, 2> entries;
 	ColumnFamilyDescriptor* last = nullptr;
 
 	bool contains(ColumnFamilyDescriptor* column) {

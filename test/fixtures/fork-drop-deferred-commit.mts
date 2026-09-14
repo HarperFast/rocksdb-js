@@ -141,8 +141,8 @@ try {
 	await nextMessage('ready');
 	worker.postMessage({ commit: true });
 	await nextMessage('committing');
-	// The commit is now admitted and parked in the execute-delay seam.
-	await sleep(Math.min(50, delayMs / 4));
+	// Libuv mode only queues the commit before this message; leave scheduler headroom for admission.
+	await sleep(Math.min(200, delayMs / 4));
 
 	const dropElapsed = await drop();
 	assert(dropElapsed < delayMs / 2, `drop blocked for ${dropElapsed}ms behind the admitted commit`);
