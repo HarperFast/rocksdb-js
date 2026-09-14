@@ -1026,8 +1026,10 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[3], txnId)) {
+			return nullptr;
+		}
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
@@ -1326,8 +1328,10 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
 
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[1], txnId)) {
+			return nullptr;
+		}
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
@@ -1769,8 +1773,10 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	// so the TOCTOU does not apply.
 	std::shared_ptr<TransactionHandle> txnHandle;
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[2], txnId)) {
+			return nullptr;
+		}
 		txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			std::string errorMsg = "Get sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
@@ -2461,8 +2467,10 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	DEBUG_LOG_KEY_LN(valueSlice);
 
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[2], txnId)) {
+			return nullptr;
+		}
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
@@ -2544,8 +2552,10 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[1], txnId)) {
+			return nullptr;
+		}
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {

@@ -795,6 +795,20 @@ for (const { name, options, txnOptions } of testOptions) {
 					'Invalid transaction'
 				);
 			}));
+
+		it('should resolve transaction ids above 2^32 without wrapping', () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				for (const id of [2 ** 31, 2 ** 32 + 5, Number.MAX_SAFE_INTEGER]) {
+					const transaction = { id, store: db.store } as any;
+					const notFound = `Transaction not found (txnId: ${id})`;
+					await expect(db.get('foo', { transaction })).rejects.toThrow(notFound);
+					expect(() => db.getSync('foo', { transaction })).toThrow(notFound);
+					expect(() => db.getKeysCount({ transaction })).toThrow(notFound);
+					expect(() => db.putSync('foo', 'bar', { transaction })).toThrow(notFound);
+					expect(() => db.removeSync('foo', { transaction })).toThrow(notFound);
+					expect(() => db.getRange({ transaction })).toThrow(notFound);
+				}
+			}));
 	});
 }
 

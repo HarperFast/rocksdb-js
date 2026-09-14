@@ -23,7 +23,7 @@ TransactionLogHandle::~TransactionLogHandle() {
 }
 
 void TransactionLogHandle::addEntry(
-	uint32_t transactionId,
+	uint64_t transactionId,
 	char* data,
 	uint32_t size
 ) {
@@ -34,7 +34,7 @@ void TransactionLogHandle::addEntry(
 
 	auto txnHandle = dbHandle->descriptor->transactionGet(transactionId);
 	if (!txnHandle) {
-		DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %u not found\n", this, transactionId);
+		DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %llu not found\n", this, (unsigned long long)transactionId);
 		throw rocksdb_js::DBException("Transaction id " + std::to_string(transactionId) + " not found");
 	}
 
