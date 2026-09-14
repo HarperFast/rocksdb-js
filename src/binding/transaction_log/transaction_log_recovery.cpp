@@ -204,7 +204,8 @@ uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from, bool endIsWr
 		uint32_t pos = start + TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(header + 8);
 		int frames = 1;
 		auto reachesExtent = [&] {
-			return endIsWrittenExtent && (pos == source.fileSize || pos == source.nonzeroEnd());
+			return endIsWrittenExtent &&
+				(pos == source.fileSize || (frames >= 2 && pos == source.nonzeroEnd()));
 		};
 		if (frames >= RESYNC_MIN_FRAMES || reachesExtent()) {
 			return start;
@@ -249,6 +250,7 @@ RecoveryScan scanTransactionLogForRecovery(
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
 	uint32_t firstBreak = 0;
+	bool afterBreak = false;
 	double maxTimestamp = 0;
 	double maxImplausibleTimestamp = 0;
 	ScanReader source{ read, context, fileSize, deadline, {}, 0, 0 };
@@ -291,7 +293,7 @@ RecoveryScan scanTransactionLogForRecovery(
 				if (requirePaddedTail) {
 					return terminate(RecoveryScan::Kind::Clean, pos);
 				}
-				if (findFramingResumeOffset(source, pos + 1, /*endIsWrittenExtent=*/true) != 0) {
+				if (validFramingResumes(source, pos + 1)) {
 					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
 				}
 				return scan(RecoveryScan::Kind::Clean, pos);
@@ -310,16 +312,17 @@ RecoveryScan scanTransactionLogForRecovery(
 					firstBreak = pos;
 				}
 				pos = resume;
+				afterBreak = true;
 				tailEntries = 0;
 				tailUniformTimestamp = true;
 				continue;
 			}
 			bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
-			if (timestamp > plausibleBound) {
+			if (!afterBreak && timestamp > plausibleBound) {
 				if (timestamp > maxImplausibleTimestamp) {
 					maxImplausibleTimestamp = timestamp;
 				}
-			} else if (timestamp > maxTimestamp) {
+			} else if (!afterBreak && timestamp > maxTimestamp) {
 				maxTimestamp = timestamp;
 			}
 			if (tailEntries++ == 0) {
