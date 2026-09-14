@@ -752,7 +752,7 @@ static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
 }
 
 /**
- * AGENTS.md invariant 22. Already-dropped is success (Harper broadcasts drops
+ * AGENTS.md invariant 23. Already-dropped is success (Harper broadcasts drops
  * to every worker). Any other failure leaves the gate closed: RocksDB may have
  * removed the family before reporting the error (OPTIONS persistence follows
  * the drop), and the retry then lands on the already-dropped path, whose

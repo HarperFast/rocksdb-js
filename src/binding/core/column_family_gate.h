@@ -16,7 +16,7 @@ namespace rocksdb_js {
 /**
  * Per-column-family admission gate that serializes `DropColumnFamily` against
  * transaction commits naming the family (HarperFast/rocksdb-js#806, #726;
- * AGENTS.md invariant 22).
+ * AGENTS.md invariant 23).
  *
  * A commit admitted past optimistic validation (or any pessimistic commit)
  * that reaches the memtable inserter after the family was dropped fails with

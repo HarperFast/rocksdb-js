@@ -896,7 +896,7 @@ struct ColumnFamilyDescriptor final {
 	const int64_t maxWriteBufferSizeToMaintain;
 
 	/**
-	 * Commit/drop admission gate (AGENTS.md invariant 22); null for the default
+	 * Commit/drop admission gate (AGENTS.md invariant 23); null for the default
 	 * family, which is cleared rather than dropped.
 	 */
 	const std::shared_ptr<ColumnFamilyGate> gate;

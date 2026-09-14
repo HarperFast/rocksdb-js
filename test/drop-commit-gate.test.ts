@@ -16,7 +16,7 @@ import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
- * Column-family commit gate (#806, #726; AGENTS.md invariant 22): the
+ * Column-family commit gate (#806, #726; AGENTS.md invariant 23): the
  * observable contract on both sides of a commit/drop race, in both modes.
  */
 
