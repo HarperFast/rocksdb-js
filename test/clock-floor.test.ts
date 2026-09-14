@@ -1,6 +1,14 @@
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { closeSync, openSync, readdirSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import {
+	appendFileSync,
+	closeSync,
+	openSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+	writeSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -306,6 +314,139 @@ describe('monotonic clock floor', () => {
 		});
 		expect(read.code, read.stderr).toBe(0);
 		expect(JSON.parse(read.stdout).clock).toBeGreaterThan(key);
+
+		// Past `long long`, where the parser used to throw and silently fall back
+		// to the 2 s default instead of the documented one-day clamp.
+		const overflowed = await runFixture('read', dbPath, key, LOG, {
+			ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS: '9'.repeat(100),
+		});
+		expect(overflowed.code, overflowed.stderr).toBe(0);
+	}, 60000);
+
+	// A complete frame whose key beats everything before it, planted past an
+	// end-of-entries marker. It reaches neither the eight-frame resync threshold
+	// nor EOF, so the framing heuristic alone reads the segment as cleanly ended.
+	function hiddenFrame(timestamp: number, payload = 8): Buffer {
+		const frame = Buffer.alloc(TXNLOG_ENTRY_HEADER + payload);
+		frame.writeDoubleBE(timestamp, 0);
+		frame.writeUInt32BE(payload, 8);
+		frame.writeUInt8(1, 12);
+		frame.fill(0xab, TXNLOG_ENTRY_HEADER);
+		return frame;
+	}
+
+	function segmentPath(dbPath: string): string {
+		const logDir = join(dbPath, 'transaction_logs', LOG);
+		return join(
+			logDir,
+			readdirSync(logDir).find((name) => name.endsWith('.txnlog'))!
+		);
+	}
+
+	it('refuses to open when a durable frame hides past an end-of-entries marker', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+		appendFileSync(
+			segmentPath(dbPath),
+			Buffer.concat([
+				Buffer.alloc(TXNLOG_ENTRY_HEADER), // the marker the walk used to stop at
+				hiddenFrame(key + 60 * 60 * 1000),
+				Buffer.alloc(4096), // padding, so the frame chain never lands on EOF
+			])
+		);
+
+		const refused = await runFixture('read', dbPath, key);
+		expect(refused.code).not.toBe(0);
+		expect(refused.stderr).toContain('without proof that nothing durable follows');
+	}, 60000);
+
+	it('refuses a read-only open when a durable frame hides past a malformed length', async () => {
+		// Read-only, because a writable open recovers the torn tail away before the
+		// floor is scanned; a follower runs no recovery at all (invariant 18), so it
+		// is the open that has to decide the suffix is unreadable rather than absent.
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+		const broken = Buffer.alloc(TXNLOG_ENTRY_HEADER + 8);
+		broken.writeDoubleBE(key, 0);
+		broken.writeUInt32BE(100000, 8); // declares far more than is present
+		broken.writeUInt8(1, 12);
+		appendFileSync(
+			segmentPath(dbPath),
+			Buffer.concat([broken, hiddenFrame(key + 60 * 60 * 1000), Buffer.alloc(4096)])
+		);
+
+		const refused = await runFixture('warn-read-only', dbPath, key);
+		expect(refused.code).not.toBe(0);
+		expect(refused.stderr).toContain('without proof that nothing durable follows');
+	}, 60000);
+
+	it('refuses a read-only open that cannot apply timestampFloorLog', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write-unseeded', dbPath, key)).code).toBe(0);
+
+		const refused = await runFixture('reopen-refuse-read-only', dbPath, key);
+		expect(refused.code, refused.stderr).toBe(0);
+		expect(JSON.parse(refused.stdout).error).toContain('monotonic timestamp floor was not seeded');
+	}, 60000);
+
+	it('does not rescan the log for a second open naming the same one', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		const reopened = await runFixture('reopen-same-log', dbPath, key);
+		expect(reopened.code, reopened.stderr).toBe(0);
+		expect(JSON.parse(reopened.stdout).clock).toBeGreaterThan(key);
+	}, 60000);
+
+	it('covers a key the seeded clock itself wrote', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		const wrote = await runFixture('seed-then-write', dbPath, key);
+		expect(wrote.code, wrote.stderr).toBe(0);
+		const { written } = JSON.parse(wrote.stdout);
+
+		const read = await runFixture('read', dbPath, written);
+		expect(read.code, read.stderr).toBe(0);
+	}, 60000);
+
+	it('warns when the seeded clock runs ahead of the wall clock', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		const warned = await runFixture('warn', dbPath, key, LOG, {}, 'ahead of the wall clock');
+		expect(warned.code, warned.stderr).toBe(0);
+		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('Check this node');
+	}, 60000);
+
+	it('stays quiet when the log is behind the wall clock', async () => {
+		const dbPath = newDBPath();
+		const key = Date.now() - 60 * 60 * 1000;
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		const quiet = await runFixture('warn-absent', dbPath, key, LOG, {}, 'ahead of the wall clock');
+		expect(quiet.code, quiet.stderr).toBe(0);
+	}, 60000);
+
+	it('warns for a named log on a database with no logs at all', async () => {
+		const dbPath = newDBPath();
+
+		const warned = await runFixture('warn', dbPath, Date.now(), LOG, {}, 'does not have');
+		expect(warned.code, warned.stderr).toBe(0);
+		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('does not have');
 	}, 60000);
 
 	it('leaves the clock alone when no log is named', async () => {

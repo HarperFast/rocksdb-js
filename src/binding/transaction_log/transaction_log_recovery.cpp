@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <vector>
 
@@ -42,6 +43,33 @@ struct ScanReader {
 		if (!read(context, offset, dest, n)) {
 			throw DBException("Failed to read transaction log during recovery scan");
 		}
+	}
+
+	// True when no complete frame can begin anywhere in [from, fileSize): either
+	// the region is too short to hold an entry header, or every byte in it is
+	// zero (a frame's header opens with a non-zero big-endian timestamp). Reads
+	// in fixed RESYNC_WINDOW blocks through readExact, so the deadline is
+	// checked before each and no tail-sized buffer is ever allocated.
+	bool tailCannotHoldAFrame(uint32_t from) {
+		if (fileSize - from < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
+			return true;
+		}
+		if (window.size() < RESYNC_WINDOW) {
+			window.resize(RESYNC_WINDOW);
+		}
+		for (uint32_t at = from; at < fileSize; ) {
+			uint32_t chunk = std::min(RESYNC_WINDOW, fileSize - at);
+			readExact(at, window.data(), chunk);
+			windowStart = at;
+			windowLen = chunk;
+			for (uint32_t i = 0; i < chunk; ++i) {
+				if (window[i] != 0) {
+					return false;
+				}
+			}
+			at += chunk;
+		}
+		return true;
 	}
 
 	// Sequential headers within 64 KiB of the current window refill from the
@@ -147,7 +175,8 @@ RecoveryScan scanTransactionLogForRecovery(
 	TransactionLogReadFn read,
 	void* context,
 	double plausibleBound,
-	std::optional<std::chrono::steady_clock::time_point> deadline
+	std::optional<std::chrono::steady_clock::time_point> deadline,
+	bool requirePaddedTail
 ) {
 	uint32_t lastCompleteEnd = 0;
 	uint32_t tailEntries = 0;
@@ -157,7 +186,8 @@ RecoveryScan scanTransactionLogForRecovery(
 	double maxImplausibleTimestamp = 0;
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
-			tailEntries > 0 && tailUniformTimestamp, maxTimestamp, maxImplausibleTimestamp };
+			tailEntries > 0 && tailUniformTimestamp, maxTimestamp, maxImplausibleTimestamp,
+			fileSize };
 	};
 
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
@@ -167,17 +197,31 @@ RecoveryScan scanTransactionLogForRecovery(
 	ScanReader source{ read, context, fileSize, deadline, {}, 0, 0 };
 	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 	uint32_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	// A floor scan stops short of the extent only on a proof that no complete
+	// frame can remain; recovery's heuristics answer a different question (where
+	// it is safe to truncate) and cannot carry that proof.
+	auto terminate = [&](RecoveryScan::Kind kind, uint32_t at) {
+		if (requirePaddedTail && !source.tailCannotHoldAFrame(at)) {
+			return scan(RecoveryScan::Kind::MidFileCorruption, at);
+		}
+		return scan(kind, at);
+	};
 	try {
 		while (true) {
 			if (pos == fileSize) {
 				return scan(RecoveryScan::Kind::Clean, fileSize);
 			}
 			if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
-				return scan(RecoveryScan::Kind::TruncateTail, pos);
+				return terminate(RecoveryScan::Kind::TruncateTail, pos);
 			}
 			source.readHeaderAt(pos, header);
 			double timestamp = readDoubleBE(header);
 			if (timestamp == 0) {
+				// Under the floor's proof an all-zero tail settles this outright:
+				// a resume cannot hide in zeros, so the per-byte search is skipped.
+				if (requirePaddedTail) {
+					return terminate(RecoveryScan::Kind::Clean, pos);
+				}
 				if (validFramingResumes(source, pos + 1)) {
 					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
 				}
@@ -186,6 +230,9 @@ RecoveryScan scanTransactionLogForRecovery(
 			uint32_t length = readUint32BE(header + 8);
 			if (length == 0 ||
 				static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
+				if (requirePaddedTail) {
+					return terminate(RecoveryScan::Kind::TruncateTail, pos);
+				}
 				if (validFramingResumes(source, pos + 1)) {
 					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
 				}
@@ -240,31 +287,72 @@ RecoveryScan scanTransactionLogForRecovery(
 	const char* data,
 	uint32_t fileSize,
 	double plausibleBound,
-	std::optional<std::chrono::steady_clock::time_point> deadline
+	std::optional<std::chrono::steady_clock::time_point> deadline,
+	bool requirePaddedTail
 ) {
-	return scanTransactionLogForRecovery(
-		fileSize, readFromBuffer, const_cast<char*>(data), plausibleBound, deadline);
+	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data),
+		plausibleBound, deadline, requirePaddedTail);
 }
 
-RecoveryScan scanTransactionLogForRecovery(
+namespace {
+
+// The extent of an already-open stream, so the bytes classified are the bytes
+// of the object the handle refers to. A stat of the path followed by an open is
+// two different objects.
+uint32_t streamExtent(std::ifstream& input, const std::filesystem::path& path) {
+	input.clear();
+	input.seekg(0, std::ios::end);
+	if (!input) {
+		throw DBException("Failed to size transaction log for scan: " + path.string());
+	}
+	std::streamoff extent = input.tellg();
+	if (extent < 0) {
+		throw DBException("Failed to size transaction log for scan: " + path.string());
+	}
+	if (static_cast<uint64_t>(extent) > std::numeric_limits<uint32_t>::max()) {
+		throw DBException("Transaction log is too large to scan: " + path.string());
+	}
+	return static_cast<uint32_t>(extent);
+}
+
+} // namespace
+
+RecoveryScan scanTransactionLogForFloor(
 	const std::filesystem::path& path,
-	uint32_t fileSize,
+	uint32_t retiredAppendBoundary,
 	double plausibleBound,
 	std::optional<std::chrono::steady_clock::time_point> deadline
 ) {
+	auto outOfTime = [](uint32_t extent) {
+		return RecoveryScan{ RecoveryScan::Kind::Incomplete, TRANSACTION_LOG_FILE_HEADER_SIZE,
+			0, 0, false, 0, 0, extent };
+	};
 	if (deadline && std::chrono::steady_clock::now() >= *deadline) {
-		return RecoveryScan{ RecoveryScan::Kind::Incomplete, TRANSACTION_LOG_FILE_HEADER_SIZE, 0, 0, false, 0, 0 };
+		return outOfTime(0);
 	}
 	std::ifstream input(path, std::ios::binary | std::ios::in);
 	if (!input.is_open()) {
 		throw DBException("Failed to open transaction log for recovery scan: " + path.string());
 	}
 
+	uint32_t extent = streamExtent(input, path);
+	if (retiredAppendBoundary > 0) {
+		if (retiredAppendBoundary > extent) {
+			throw TransactionLogAppendBoundaryException(
+				"Transaction log append boundary exceeds physical extent: " + path.string());
+		}
+		extent = retiredAppendBoundary;
+	}
+	if (extent == 0) {
+		// A just-created segment has no keys yet, and no header to validate.
+		return RecoveryScan{ RecoveryScan::Kind::Clean, 0, 0, 0, false, 0, 0, 0 };
+	}
+
 	char header[TRANSACTION_LOG_FILE_HEADER_SIZE];
 	if (deadline && std::chrono::steady_clock::now() >= *deadline) {
-		return RecoveryScan{ RecoveryScan::Kind::Incomplete, TRANSACTION_LOG_FILE_HEADER_SIZE, 0, 0, false, 0, 0 };
+		return outOfTime(extent);
 	}
-	if (fileSize < TRANSACTION_LOG_FILE_HEADER_SIZE ||
+	if (extent < TRANSACTION_LOG_FILE_HEADER_SIZE ||
 		!readFromStream(&input, 0, header, TRANSACTION_LOG_FILE_HEADER_SIZE)) {
 		throw DBException("Failed to read transaction log header: " + path.string());
 	}
@@ -277,12 +365,16 @@ RecoveryScan scanTransactionLogForRecovery(
 			"Unsupported transaction log file version: " + std::to_string(version));
 	}
 
-	auto scan = scanTransactionLogForRecovery(
-		fileSize, readFromStream, &input, plausibleBound, deadline);
-	uint32_t remaining = fileSize - scan.validEnd;
+	auto scan = scanTransactionLogForRecovery(extent, readFromStream, &input, plausibleBound,
+		deadline, /*requirePaddedTail=*/true);
+	uint32_t remaining = extent - scan.validEnd;
 	if (scan.kind == RecoveryScan::Kind::TruncateTail &&
 		remaining > 0 && remaining < TRANSACTION_LOG_ENTRY_HEADER_SIZE
 	) {
+		// Too short to hold a frame either way, so the floor is safe. Zeros there
+		// are the end-of-entries marker (Windows pads a segment to its mapped
+		// size), not a torn write, and reporting a torn tail would emit a warning
+		// about a healthy file.
 		char padding[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 		if (!readFromStream(&input, scan.validEnd, padding, remaining)) {
 			throw DBException("Failed to read transaction log padding: " + path.string());

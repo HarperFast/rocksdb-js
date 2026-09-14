@@ -70,6 +70,8 @@ struct RecoveryScan final {
 	bool unclosedTailIsOneTransaction;
 	double maxTimestamp;
 	double maxImplausibleTimestamp;
+	/** The extent this classification covers, i.e. the bytes the walk was given. */
+	uint32_t extent;
 };
 
 /**
@@ -91,6 +93,10 @@ using TransactionLogReadFn = bool (*)(void* context, uint32_t offset, void* dest
  * exactly one 13-byte header so the payload is not pulled in. A failed `read`
  * throws DBException — it is not reported as TruncateTail or MidFileCorruption.
  *
+ * `requirePaddedTail` switches the terminal classifications from recovery's
+ * repair question to the clock floor's uniqueness question — see
+ * scanTransactionLogForFloor().
+ *
  * @param fileSize Number of bytes in the log image (append-owned extent).
  * @param read     Positional reader; see TransactionLogReadFn.
  * @param context  Passed through to `read`.
@@ -100,7 +106,8 @@ RecoveryScan scanTransactionLogForRecovery(
 	TransactionLogReadFn read,
 	void* context,
 	double plausibleBound = std::numeric_limits<double>::infinity(),
-	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt,
+	bool requirePaddedTail = false);
 
 /**
  * In-memory adapter over scanTransactionLogForRecovery(fileSize, read, context).
@@ -110,17 +117,34 @@ RecoveryScan scanTransactionLogForRecovery(
 	const char* data,
 	uint32_t fileSize,
 	double plausibleBound = std::numeric_limits<double>::infinity(),
-	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt,
+	bool requirePaddedTail = false);
 
 /**
- * File adapter backed by a private read-only stream. It does not use or mutate
- * a shared TransactionLogFile's handle, mapping, index, or open state. The file
- * header is validated before its entries are scanned.
+ * Scans a segment for the monotonic clock floor seed, which needs a stronger
+ * statement than recovery does: recovery asks "where may I safely truncate",
+ * this asks "did I observe every durable key in this segment". So the walk may
+ * stop only on a proof that no complete frame can remain — the framed end
+ * reaches the extent, the whole remaining suffix is zero, or the suffix is
+ * shorter than an entry header. Anything else is reported as
+ * `MidFileCorruption` at the stopping offset, which the caller refuses on.
+ *
+ * The extent is derived from the private read-only stream this opens, not from
+ * a separate stat of `path`: a stat followed by an open is two different
+ * objects, and a segment replaced or grown in between would let a short bound
+ * report a clean end while omitting a higher-keyed suffix. It also never uses
+ * or mutates a shared TransactionLogFile's handle, mapping, index or open
+ * state (a live writer's `size` is append-owned; see invariant 5).
+ *
+ * @param retiredAppendBoundary The segment's authoritative logical extent when
+ *   it has been retired, else 0. Bytes past a retired boundary are orphaned and
+ *   can never be appended to again, so they hold nothing durable. A boundary
+ *   above the handle's own extent is corruption and throws.
  */
-RecoveryScan scanTransactionLogForRecovery(
+RecoveryScan scanTransactionLogForFloor(
 	const std::filesystem::path& path,
-	uint32_t fileSize,
-	double plausibleBound = std::numeric_limits<double>::infinity(),
+	uint32_t retiredAppendBoundary,
+	double plausibleBound,
 	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
 
 /**

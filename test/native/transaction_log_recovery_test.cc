@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -711,7 +712,7 @@ void writeLogImage(const std::filesystem::path& path, const LogImage& image) {
 
 } // namespace
 
-TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
+TEST(TransactionLogMaxEntryScan, AnUnprovedTornTailStopsTheWalkAndSaysSo) {
 	auto path = uniqueMaxEntryScanPath();
 	{
 		LogImage img;
@@ -730,7 +731,9 @@ TEST(TransactionLogMaxEntryScan, ATornTailStopsTheWalkAndSaysSo) {
 	std::error_code error;
 	std::filesystem::remove(path, error);
 
-	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
+	// 21 bytes of non-zero remainder: room for a complete frame, so the floor
+	// scan cannot call this the end of the log the way recovery may.
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
 }
 
@@ -827,7 +830,10 @@ TEST(TransactionLogFloorScan, ProtectedTornTailIsIncomplete) {
 		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
 		EXPECT_FALSE(scan.complete);
 		EXPECT_TRUE(scan.stoppedAtBreak);
-		EXPECT_TRUE(scan.tornTail);
+		// The entries after the malformed length are the ones carrying the high
+		// keys, so the walk refuses on the break itself rather than relying on the
+		// flushed position to notice.
+		EXPECT_FALSE(scan.tornTail);
 		EXPECT_DOUBLE_EQ(scan.largestKey, 500.0);
 	}
 
@@ -862,9 +868,261 @@ TEST(TransactionLogFloorScan, OlderProtectedTornTailIsIncomplete) {
 		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
 		EXPECT_FALSE(scan.complete);
 		EXPECT_TRUE(scan.stoppedAtBreak);
-		EXPECT_TRUE(scan.tornTail);
+		EXPECT_FALSE(scan.tornTail);
 		EXPECT_DOUBLE_EQ(scan.largestKey, 700.0);
 	}
 
 	std::filesystem::remove_all(storePath);
+}
+
+// Strict mode: the floor's completeness proof, at the buffer level so both the
+// proved and unproved shapes are pinned against ordinary recovery's answer for
+// the same bytes.
+
+namespace {
+
+RecoveryScan floorScan(const LogImage& img) {
+	return scanTransactionLogForRecovery(img.data(), img.size(),
+		std::numeric_limits<double>::infinity(), std::nullopt, /*requirePaddedTail=*/true);
+}
+
+} // namespace
+
+TEST(TransactionLogStrictScan, ZeroPaddedTailIsProvedClean) {
+	LogImage img;
+	img.entry(10, 1, 500.0).entry(20, 1, 900.0);
+	uint32_t entriesEnd = img.size();
+	img.zeros(4096);
+
+	auto scan = floorScan(img);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_EQ(scan.validEnd, entriesEnd);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 900.0);
+	EXPECT_EQ(scan.extent, img.size());
+}
+
+TEST(TransactionLogStrictScan, FrameHiddenPastAZeroMarkerIsABreak) {
+	// One complete frame after the marker satisfies neither the eight-frame
+	// resync threshold nor EOF, so the heuristic reports Clean and drops its key.
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	uint32_t marker = img.size();
+	img.zeros(TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+	img.entry(10, 1, 9000.0);
+	img.zeros(4096);
+
+	auto recovery = scanTransactionLogForRecovery(img.data(), img.size());
+	ASSERT_EQ(recovery.kind, RecoveryScan::Kind::Clean);
+	ASSERT_DOUBLE_EQ(recovery.maxTimestamp, 500.0);
+
+	auto scan = floorScan(img);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, marker);
+}
+
+TEST(TransactionLogStrictScan, FrameHiddenPastAMalformedLengthIsABreak) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	uint32_t broken = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 700.0);
+	img.entry(10, 1, 9000.0);
+	img.zeros(4096);
+
+	auto recovery = scanTransactionLogForRecovery(img.data(), img.size());
+	ASSERT_EQ(recovery.kind, RecoveryScan::Kind::TruncateTail);
+
+	auto scan = floorScan(img);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, broken);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
+TEST(TransactionLogStrictScan, SubHeaderRemainderIsProvedWithoutBeingZero) {
+	// Fewer than 13 bytes cannot open a frame, so a one-byte crash-torn tail is
+	// provably harmless to the floor and keeps recovery's classification.
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	uint32_t entriesEnd = img.size();
+	img.raw({ 1 });
+
+	auto scan = floorScan(img);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::TruncateTail);
+	EXPECT_EQ(scan.validEnd, entriesEnd);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
+}
+
+TEST(TransactionLogStrictScan, NonZeroBytesPastTheEntriesAreABreak) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	uint32_t entriesEnd = img.size();
+	img.zeros(TRANSACTION_LOG_ENTRY_HEADER_SIZE).raw({ 0, 0, 7, 0, 0 }).zeros(64);
+
+	auto scan = floorScan(img);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, entriesEnd);
+}
+
+TEST(TransactionLogStrictScan, DefaultModeKeepsRecoveryClassification) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	uint32_t entriesEnd = img.size();
+	img.zeros(TRANSACTION_LOG_ENTRY_HEADER_SIZE).raw({ 0, 0, 7, 0, 0 }).zeros(64);
+
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_EQ(scan.validEnd, entriesEnd);
+}
+
+TEST(TransactionLogStrictScan, TailProofReadsInFixedBlocks) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	img.zeros(300 * 1024);
+
+	CountingRead counted{ img.data(), img.size() };
+	auto scan = scanTransactionLogForRecovery(img.size(), countingRead, &counted,
+		std::numeric_limits<double>::infinity(), std::nullopt, /*requirePaddedTail=*/true);
+
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	// 64 KiB blocks: never one tail-sized read, and more than one of them.
+	EXPECT_LE(counted.maxN, 65536u);
+	EXPECT_GE(counted.reads, 4u);
+}
+
+TEST(TransactionLogStrictScan, TailProofStopsAtTheDeadline) {
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	img.zeros(300 * 1024);
+
+	auto deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size(),
+		std::numeric_limits<double>::infinity(), deadline, /*requirePaddedTail=*/true);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Incomplete);
+}
+
+TEST(TransactionLogFloorScan, UnprovedTailPastTheFlushedPositionStillRefuses) {
+	// The break sits above txn.state, so the flushed-position check does not fire.
+	// Before the completeness proof this warned and opened, seeding the floor
+	// below the 9000 key the hidden frame carries.
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	auto logPath = storePath / "1.txnlog";
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	rocksdb_js::LogPosition flushedPosition(img.size(), 1);
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 1, 700.0);
+	img.entry(10, 1, 9000.0);
+	img.zeros(4096);
+	writeLogImage(logPath, img);
+	{
+		std::ofstream state(storePath / "txn.state", std::ios::binary | std::ios::trunc);
+		state.write(reinterpret_cast<const char*>(&flushedPosition), sizeof(flushedPosition));
+	}
+
+	{
+		rocksdb_js::TransactionLogStore store(
+			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(logPath, 1));
+		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
+		EXPECT_FALSE(scan.complete);
+		EXPECT_TRUE(scan.stoppedAtBreak);
+		EXPECT_DOUBLE_EQ(scan.largestKey, 500.0);
+	}
+
+	std::filesystem::remove_all(storePath);
+}
+
+TEST(TransactionLogFloorScan, ADoomedNewestSegmentStopsTheWalk) {
+	// The older segment holds an implausible key. Reaching it would set
+	// refusedKey; leaving it unset is the proof the walk stopped on the newest
+	// segment's break rather than spending the rest of the budget.
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	auto previousPath = storePath / "1.txnlog";
+	auto currentPath = storePath / "2.txnlog";
+	LogImage previous;
+	previous.entry(10, 1, 5000.0);
+	LogImage current;
+	current.entry(10, 1, 500.0);
+	current.zeros(TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+	current.entry(10, 1, 900.0);
+	current.zeros(4096);
+	writeLogImage(previousPath, previous);
+	writeLogImage(currentPath, current);
+
+	{
+		rocksdb_js::TransactionLogStore store(
+			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(previousPath, 1));
+		store.sequenceFiles.emplace(2, std::make_shared<TransactionLogFile>(currentPath, 2));
+		auto scan = store.scanLargestDurableKey(/*plausibleBound=*/1000.0, std::chrono::seconds(1));
+		EXPECT_FALSE(scan.complete);
+		EXPECT_TRUE(scan.stoppedAtBreak);
+		EXPECT_DOUBLE_EQ(scan.refusedKey, 0.0);
+		EXPECT_EQ(scan.segmentsScanned, 1u);
+		EXPECT_EQ(scan.segmentsTotal, 2u);
+		EXPECT_EQ(scan.bytesScanned, current.size());
+	}
+
+	std::filesystem::remove_all(storePath);
+}
+
+TEST(TransactionLogMaxEntryScan, ARetiredBoundaryAboveThePhysicalExtentIsRejected) {
+	auto path = uniqueMaxEntryScanPath();
+	{
+		LogImage img;
+		img.entry(10, 1, 500.0);
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out.write(img.data(), img.size());
+	}
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	file.retiredAppendBoundary.store(1u << 20, std::memory_order_relaxed);
+	EXPECT_THROW(file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity()),
+		rocksdb_js::TransactionLogAppendBoundaryException);
+	std::error_code error;
+	std::filesystem::remove(path, error);
+}
+
+TEST(TransactionLogMaxEntryScan, AnEmptySegmentHasNoKeys) {
+	auto path = uniqueMaxEntryScanPath();
+	{ std::ofstream out(path, std::ios::binary | std::ios::trunc); }
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
+	std::error_code error;
+	std::filesystem::remove(path, error);
+
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 0.0);
+}
+
+TEST(TransactionLogMaxEntryScan, AHeaderOnlySegmentHasNoKeys) {
+	auto path = uniqueMaxEntryScanPath();
+	{
+		LogImage img;
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		out.write(img.data(), img.size());
+	}
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	auto scan = file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity());
+	std::error_code error;
+	std::filesystem::remove(path, error);
+
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 0.0);
+}
+
+TEST(TransactionLogMaxEntryScan, ASegmentShorterThanItsHeaderIsRejected) {
+	auto path = uniqueMaxEntryScanPath();
+	{
+		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		const char partial[4] = { 'F', 'O', 'O', 'W' };
+		out.write(partial, sizeof(partial));
+	}
+
+	rocksdb_js::TransactionLogFile file(path, 1);
+	EXPECT_THROW(file.scanMaxEntryTimestamp(std::numeric_limits<double>::infinity()), DBException);
+	std::error_code error;
+	std::filesystem::remove(path, error);
 }

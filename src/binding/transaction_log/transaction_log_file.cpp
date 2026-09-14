@@ -344,42 +344,27 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
 	double plausibleBound,
 	std::optional<std::chrono::steady_clock::time_point> deadline
 ) {
-	MaxEntryScan result;
-	uint64_t fileSize;
-	{
-		std::lock_guard<std::mutex> fileLock(this->fileMutex);
-		fileSize = this->retiredAppendBoundary.load(std::memory_order_relaxed);
-		if (fileSize == 0) {
-			fileSize = this->size.load(std::memory_order_relaxed);
-		}
-		if (fileSize == 0) {
-			std::error_code sizeError;
-			fileSize = std::filesystem::file_size(this->path, sizeError);
-			if (sizeError) {
-				throw DBException("Failed to size transaction log for scan: " +
-					this->path.string() + ": " + sizeError.message());
-			}
-		}
-	}
-	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
-		return result;
-	}
-	if (fileSize > std::numeric_limits<uint32_t>::max()) {
-		throw DBException("Transaction log is too large to scan: " + this->path.string());
-	}
-
+	// No fileMutex and no read of `size`: the floor walk reads the segment
+	// through its own private stream, and `size` is append-owned state that
+	// openFile()'s index scan shortens to the first zero-timestamp word
+	// (findPositionByTimestamp below), which would hide any suffix past it.
 	RecoveryScan scan;
 	try {
-		scan = scanTransactionLogForRecovery(
-			this->path, static_cast<uint32_t>(fileSize), plausibleBound, deadline);
+		scan = scanTransactionLogForFloor(
+			this->path,
+			this->retiredAppendBoundary.load(std::memory_order_relaxed),
+			plausibleBound,
+			deadline);
 	} catch (const DBException& error) {
 		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
 
+	MaxEntryScan result;
 	result.maxTimestamp = scan.maxTimestamp;
 	result.maxImplausibleTimestamp = scan.maxImplausibleTimestamp;
 	result.kind = scan.kind;
 	result.validEnd = scan.validEnd;
+	result.scannedBytes = scan.extent;
 	return result;
 }
 

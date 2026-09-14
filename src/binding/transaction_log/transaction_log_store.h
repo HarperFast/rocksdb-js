@@ -490,6 +490,15 @@ struct TransactionLogStore final {
 		bool tornTail = false;
 		bool readFailed = false;
 		bool discoveryIncomplete = false;
+		/**
+		 * Segments walked, segments the store holds, and the bytes those walks
+		 * covered. Reported with a budget failure so an operator can size
+		 * `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` from what this store actually
+		 * costs rather than by trial.
+		 */
+		size_t segmentsScanned = 0;
+		size_t segmentsTotal = 0;
+		uint64_t bytesScanned = 0;
 	};
 
 	DurableKeyScan scanLargestDurableKey(

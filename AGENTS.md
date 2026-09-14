@@ -230,7 +230,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   Honored literally, `0` included (scan
   nothing, refuse); there is no unbounded setting, so a deployment that would rather wait raises the
   value (capped at a day: the deadline is a `steady_clock` time point, and a larger value overflows
-  its resolution and wraps into the past, scanning nothing). Read once per process
+  its resolution and wraps into the past, scanning nothing). The cap is applied by
+  `parseDurationMs` (`core/platform.cpp`, GoogleTest-covered) rather than a bare `std::stoll`, which
+  threw `out_of_range` above `long long` and silently produced the 2s default instead of the
+  documented one-day clamp; an unsigned parse has the mirror-image bug (a huge negative reads as
+  overflow and selects the cap), so a sign is rejected outright. Read once per process
   (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
   `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is started with
 - `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` - Rate-limit window (default `1000`) for the
@@ -855,6 +859,45 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     named log is fail closed: an unreadable segment, framing break, exhausted scan budget, or
     implausibly future key refuses that open rather than risk reissuing a durable batch key. The
     caller can omit `timestampFloorLog` only when its writes do not need restart-safe uniqueness.
+
+    **Fail closed means the walk needs a proof of completeness, which recovery does not.** Recovery
+    decides where it is safe to truncate and may stop on a heuristic; this walk must establish that
+    it observed every durable key, so `scanTransactionLogForFloor` runs the shared framing walker in
+    a strict mode (`requirePaddedTail`) where stopping short of the extent requires one of: the
+    framed entries reach the extent, the whole remaining suffix is zero, or the suffix is shorter
+    than `TRANSACTION_LOG_ENTRY_HEADER_SIZE` and so cannot open a frame. Anything else is reported
+    as a break and refuses. Without that, one complete higher-keyed frame followed by zero padding
+    satisfies neither `RESYNC_MIN_FRAMES` nor a chain landing on EOF, so `validFramingResumes`
+    returns false and the segment reads as cleanly ended with that key dropped — and `Clean` is the
+    one classification the floor path accepts with no further check (`TruncateTail` still consults
+    the `txn.state` flushed position). The same hole exists behind a malformed length.
+    The strict walk pays for this by reading the bytes past the last entry: nothing on POSIX, where
+    healthy segments end at the extent, but up to `transactionLogMaxSize` per segment on Windows,
+    where a segment is pre-extended when mapped and never truncated. It is bounded by the scan
+    budget, and a budget failure reports segments and bytes so the knob can be sized.
+    It also costs a behavior change with no recovery to fall back on: a read-only or secondary open
+    runs none (invariant 18), so a crash-torn tail of 13 bytes or more now refuses instead of
+    warning.
+
+    **The extent comes from the private stream, never from `TransactionLogFile::size`.** `size` is
+    append-owned (invariant 5) and `openFile()` -> `findPositionByTimestamp` shortens it to the first
+    zero-timestamp word — on Windows at every open, which is exactly the normalization the padding
+    convention needs there and exactly what would hide a suffix from this walk. A separate
+    `file_size(path)` is not a substitute: a stat followed by an open are two objects, and a segment
+    replaced or grown in between lets a short bound report a clean end. A retired segment's
+    `retiredAppendBoundary` caps the extent (bytes past it can never be appended to again) and is
+    validated against the handle's own extent.
+
+    **The seed is per physical path, not per `DBKey`.** `DBKey` is `{path, readOnly, secondaryPath}`
+    (invariant 18), so a read-only or secondary open of an already-open path builds its own
+    descriptor and would otherwise re-run `SeedTimestampFloor` against a store the live writable
+    handle is appending to — `DBRegistry` serializes registry opens, not commits, so that walk can
+    see a partial append and refuse a legitimate open, or clear a region the writer fills
+    immediately after. The resolved name is memoized on the `TransactionLogStoreRegistryEntry`
+    (refcounted with the path, so it is gone once the last descriptor closes and a fresh open seeds
+    again), and `DBRegistry::OpenDB` rejects a request that disagrees with **any** live descriptor on
+    the path — checking only this key's descriptor let a read-only open assert restart-safe
+    uniqueness that a writable handle on the same path had already violated.
 
 ## Debugging native heap corruption
 

@@ -421,6 +421,37 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		}
 	};
 
+	// A `timestampFloorLog` is a claim about the process-global monotonic clock,
+	// and the clock was seeded (or not) by whichever handle opened this physical
+	// path first. `DBKey` splits one path into separate entries by read-only mode
+	// and secondary workspace, so checking only this key's descriptor would let a
+	// read-only open assert restart-safe uniqueness that a writable handle on the
+	// same path already violated by minting timestamps below the durable keys.
+	auto rejectConflictingTimestampFloorLog = [&]() {
+		if (options.timestampFloorLog.empty()) {
+			return;
+		}
+		for (const auto& [existingKey, existingEntry] : instance->databases) {
+			if (existingKey.path != identityPath || !existingEntry.descriptor ||
+				existingEntry.descriptor->timestampFloorLog == options.timestampFloorLog
+			) {
+				continue;
+			}
+			std::ostringstream msg;
+			msg << "Database \"" << path << "\" is already open"
+				<< (!existingKey.secondaryPath.empty()
+					? " as a secondary"
+					: (existingKey.readOnly ? " read-only" : ""))
+				<< (existingEntry.descriptor->timestampFloorLog.empty()
+					? " without a timestampFloorLog"
+					: " with timestampFloorLog \"" + existingEntry.descriptor->timestampFloorLog + "\"")
+				<< "; cannot open it with timestampFloorLog \"" << options.timestampFloorLog
+				<< "\" because the monotonic timestamp floor was not seeded from it. Close every "
+				   "handle for this path, then reopen with timestampFloorLog.";
+			throw rocksdb_js::DBException(msg.str());
+		}
+	};
+
 	DBKey key{identityPath, options.readOnly, options.secondaryPath};
 	auto entryIterator = instance->databases.end();
 
@@ -449,6 +480,7 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			continue;
 		}
 		rejectConflictingSecondaryWorkspace();
+		rejectConflictingTimestampFloorLog();
 		entryIterator = instance->databases.find(key);
 		if (entryIterator == instance->databases.end()) {
 			entryIterator = instance->databases.emplace(key, DBRegistryEntry()).first;
@@ -482,20 +514,6 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 				(entry.descriptor->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
 				"' mode"
 			);
-		}
-
-		if (!options.timestampFloorLog.empty() &&
-			options.timestampFloorLog != entry.descriptor->timestampFloorLog
-		) {
-			std::ostringstream msg;
-			msg << "Database \"" << path << "\" is already open"
-				<< (entry.descriptor->timestampFloorLog.empty()
-					? " without a timestampFloorLog"
-					: " with timestampFloorLog \"" + entry.descriptor->timestampFloorLog + "\"")
-				<< "; cannot reopen it with timestampFloorLog \"" << options.timestampFloorLog
-				<< "\" because the monotonic timestamp floor was not seeded from it. Close every "
-				   "handle for this path, then reopen with timestampFloorLog.";
-			throw rocksdb_js::DBException(msg.str());
 		}
 
 		// max_log_file_size and info_log_level are DB-wide (`DBOptions`) settings

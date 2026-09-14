@@ -371,8 +371,18 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 	DurableKeyScan result;
 	result.discoveryIncomplete = this->discoveryIncomplete;
 	result.complete = !result.discoveryIncomplete;
+	result.segmentsTotal = files.size();
 
 	for (const auto& logFile : files) {
+		// Every outcome that clears `complete`, and an implausible key, refuses
+		// the open, so an older segment can only add detail to a decision already
+		// made — while DBRegistry::OpenDB holds databasesMutex across
+		// DBDescriptor::open, so the rest of the budget would be spent stalling
+		// unrelated opens and closes. The cost is that an implausible key in an
+		// older segment no longer upgrades the message to the refusedKey wording.
+		if (!result.complete || result.refusedKey > 0) {
+			break;
+		}
 		if (std::chrono::steady_clock::now() >= deadline) {
 			result.budgetExhausted = true;
 			result.complete = false;
@@ -381,6 +391,8 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 
 		try {
 			auto fileScan = logFile->scanMaxEntryTimestamp(plausibleBound, deadline);
+			result.segmentsScanned++;
+			result.bytesScanned += fileScan.scannedBytes;
 			if (fileScan.maxTimestamp > result.largestKey) {
 				result.largestKey = fileScan.maxTimestamp;
 			}
@@ -407,9 +419,6 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 					result.budgetExhausted = true;
 					result.complete = false;
 					break;
-			}
-			if (fileScan.kind == RecoveryScan::Kind::Incomplete) {
-				break;
 			}
 		} catch (const std::exception& e) {
 			if (wasPurged(logFile)) {

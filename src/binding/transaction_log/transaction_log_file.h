@@ -412,14 +412,17 @@ struct TransactionLogFile final {
 		double maxImplausibleTimestamp = 0;
 		RecoveryScan::Kind kind = RecoveryScan::Kind::Clean;
 		uint32_t validEnd = 0;
+		/** Extent handed to the walk, reported so a budget failure can be sized. */
+		uint32_t scannedBytes = 0;
 	};
 
 	/**
-	 * The largest batch key still durable in this file. Walks the same framing as
-	 * scanForLastCompleteTransactionEnd() over the file's current extent, so it
-	 * must run *after* open-time recovery: a key that recoverTail() truncated away
-	 * is no longer durable and must not reach the clock floor. Throws DBException
-	 * on I/O failure.
+	 * The largest batch key still durable in this file, for the monotonic clock
+	 * floor. It must run *after* open-time recovery — a key that recoverTail()
+	 * truncated away is no longer durable and must not reach the floor — and it
+	 * takes no file lock and reads no shared state: the extent and the bytes both
+	 * come from the private stream scanTransactionLogForFloor() opens, under that
+	 * function's stricter termination proof. Throws DBException on I/O failure.
 	 */
 	MaxEntryScan scanMaxEntryTimestamp(
 		double plausibleBound,

@@ -42,6 +42,14 @@ constexpr double MAX_TIMESTAMP_MS = 8.64e15;
 
 constexpr double MAX_CLOCK_FLOOR_SKEW_MS = 10.0 * 365.25 * 24.0 * 3600.0 * 1000.0;
 
+/**
+ * How far a seeded clock floor may sit ahead of the wall clock before it is
+ * reported. A key written moments before a restart can land a hair ahead
+ * legitimately; anything past a second means the clock stepped backward, which
+ * is worth a line on every restart until it is fixed.
+ */
+constexpr double CLOCK_FLOOR_AHEAD_WARN_MS = 1000.0;
+
 double getWallClockTimestamp();
 
 double getMonotonicTimestamp();
@@ -73,6 +81,17 @@ bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::pa
 bool raiseMonotonicTimestampFloor(double floor);
 
 bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
+
+/**
+ * Reads a millisecond duration out of an environment variable's raw value.
+ * Anything that is not a fully consumed non-negative decimal integer yields
+ * `defaultMs`; a value above `maxMs` — including one too large for the integer
+ * type — yields `maxMs`. That last case is the reason this is not a bare
+ * `std::stoll`: an overflowing positive silently became the default, which
+ * contradicts a documented cap, while an unsigned parse would read a huge
+ * negative as overflow and select the cap instead.
+ */
+uint64_t parseDurationMs(const char* raw, uint64_t defaultMs, uint64_t maxMs);
 
 void tryCreateDirectory(
 	const std::filesystem::path& path,

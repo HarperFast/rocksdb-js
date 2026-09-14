@@ -1,3 +1,4 @@
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <atomic>
@@ -233,6 +234,28 @@ bool raiseMonotonicTimestampFloor(double floor, double plausibleBound) {
 		}
 	}
 	return false;
+}
+
+uint64_t parseDurationMs(const char* raw, uint64_t defaultMs, uint64_t maxMs) {
+	if (raw == nullptr || *raw == '\0') {
+		return defaultMs;
+	}
+	const char* end = raw + std::strlen(raw);
+	unsigned long long parsed = 0;
+	// from_chars on an unsigned type rejects a sign and leading whitespace
+	// outright, so "-1" and " 5" land on the default rather than being read as
+	// magnitudes.
+	auto [stop, error] = std::from_chars(raw, end, parsed);
+	if (stop != end) {
+		return defaultMs;
+	}
+	if (error == std::errc::result_out_of_range) {
+		return maxMs;
+	}
+	if (error != std::errc()) {
+		return defaultMs;
+	}
+	return parsed > maxMs ? maxMs : static_cast<uint64_t>(parsed);
 }
 
 void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {

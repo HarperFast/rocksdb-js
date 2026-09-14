@@ -70,6 +70,16 @@ struct TransactionLogStoreRegistryEntry final {
 	 */
 	size_t refCount = 0;
 
+	/**
+	 * The `timestampFloorLog` already resolved for this physical path, or empty.
+	 * The clock floor is process-global and the seed is a property of the path,
+	 * not of a `DBKey`, so a second descriptor for the same path (a read-only or
+	 * secondary open) must not rescan a store the first one may be appending to.
+	 * Guarded by `entriesMutex`, and gone with this entry when the last
+	 * descriptor for the path closes — so a fresh open seeds again.
+	 */
+	std::string seededFloorLog;
+
 	TransactionLogStoreRegistryEntry() = default;
 
 	TransactionLogStoreRegistryEntry(const TransactionLogStoreConfig& cfg)
