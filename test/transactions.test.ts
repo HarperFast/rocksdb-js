@@ -795,6 +795,25 @@ for (const { name, options, txnOptions } of testOptions) {
 					'Invalid transaction'
 				);
 			}));
+
+		// Every id entry point reads the id as a double. Read with a fixed-width N-API
+		// helper instead, ToUint32 wraps these to 0, 5 and 4294967295, and the lookup
+		// either misses or resolves whichever live transaction holds the wrapped id.
+		it('should resolve transaction ids above 2^32 without wrapping', () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				for (const id of [2 ** 31, 2 ** 32 + 5, Number.MAX_SAFE_INTEGER]) {
+					const transaction = { id, store: db.store } as any;
+					expect(() => db.getSync('foo', { transaction })).toThrow(
+						`Transaction not found (txnId: ${id})`
+					);
+					await expect(db.get('foo', { transaction })).rejects.toThrow(
+						`Transaction not found (txnId: ${id})`
+					);
+					expect(() => db.getRange({ transaction })).toThrow(
+						`Transaction not found (txnId: ${id})`
+					);
+				}
+			}));
 	});
 }
 

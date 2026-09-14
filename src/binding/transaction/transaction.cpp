@@ -857,7 +857,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 
-			DEBUG_LOG("%p Transaction::Commit Complete callback entered (status=%d, txnId=%d)\n",
+			DEBUG_LOG("%p Transaction::Commit Complete callback entered (status=%d, txnId=%llu)\n",
 				state->handle.get(), status, state->handle ? (unsigned long long)state->handle->id : 0ULL);
 
 			state->deleteAsyncWork();
@@ -1234,7 +1234,6 @@ napi_value Transaction::Id(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_HANDLE("Id");
 
 	napi_value result;
-	// Exposed as a double: ids are 64-bit internally and exact in a double up to 2^53.
 	NAPI_STATUS_THROWS(::napi_create_double(
 		env,
 		static_cast<double>((*txnHandle)->id),

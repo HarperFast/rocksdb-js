@@ -8,7 +8,6 @@
 #include "napi/async.h"
 #include <stdlib.h>
 #include <fcntl.h>
-#include <cmath>
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = nullptr; \
@@ -21,32 +20,6 @@
 	} while (0)
 
 namespace rocksdb_js {
-
-/**
- * Reads a transaction id out of a JS number.
- *
- * Ids come from `DBDescriptor::transactionGetNextId()`, a 64-bit counter handed
- * to JS as a double, so they must be read back as a double. `napi_get_value_int32`
- * applies JS ToInt32 semantics — it wraps modulo 2^32, so every id at or above
- * 2^31 arrives negative and was rejected as invalid, permanently breaking log
- * writes for the life of the process once a database passed ~2.1 billion
- * transactions.
- */
-static bool readTransactionId(napi_env env, napi_value value, uint64_t& transactionId) {
-	double raw;
-	if (::napi_get_value_double(env, value, &raw) != napi_ok) {
-		::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
-		return false;
-	}
-	// MAX_SAFE_INTEGER is the ceiling: past it doubles stop representing
-	// consecutive integers, so two ids could collide in the registry.
-	if (std::isnan(raw) || raw != std::trunc(raw) || raw < 0.0 || raw > 9007199254740991.0) {
-		::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer no greater than Number.MAX_SAFE_INTEGER");
-		return false;
-	}
-	transactionId = static_cast<uint64_t>(raw);
-	return true;
-}
 
 /**
  * Constructor for the `NativeTransactionLog` class.
@@ -85,7 +58,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 	uint64_t transactionId = 0;
 	napi_valuetype thirdArgType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &thirdArgType));
-	if (thirdArgType == napi_number && !readTransactionId(env, argv[2], transactionId)) {
+	if (thirdArgType == napi_number && !rocksdb_js::readTransactionId(env, argv[2], transactionId)) {
 		return nullptr;
 	}
 
@@ -179,7 +152,7 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 			::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
 			return nullptr;
 		}
-		if (!readTransactionId(env, argv[1], transactionId)) {
+		if (!rocksdb_js::readTransactionId(env, argv[1], transactionId)) {
 			return nullptr;
 		}
 	} else if (transactionId == 0) {
