@@ -178,10 +178,10 @@ void TransactionLogFile::flush() {
 	this->lastFlushedSize = currentSize;
 }
 
-void TransactionLogFile::openFile() {
+bool TransactionLogFile::openFile(bool createIfMissing) {
 	if (this->fileHandle != INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::openFile File already open: %s\n", this, this->path.string().c_str());
-		return;
+		return true;
 	}
 
 	// Fresh (re)open: until the first append, a zero timestamp seen while indexing is a genuine
@@ -197,7 +197,7 @@ void TransactionLogFile::openFile() {
 	// the primary is creating right now, and the follower would rewrite its DACL.
 	// Mirrors the POSIX sibling.
 	bool fileExisted = true;
-	if (!this->readOnly) {
+	if (!this->readOnly && createIfMissing) {
 		// ensure parent directory exists (may have been deleted by purge())
 		auto parentPath = this->path.parent_path();
 		if (!parentPath.empty()) {
@@ -229,6 +229,10 @@ void TransactionLogFile::openFile() {
 		);
 		if (this->fileHandle == INVALID_HANDLE_VALUE) {
 			DWORD error = ::GetLastError();
+			if (!createIfMissing &&
+				(error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) {
+				return false;
+			}
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read: %s (error=%lu: %s)\n",
 				this, this->path.string().c_str(), error, errorMessage.c_str());
@@ -241,13 +245,17 @@ void TransactionLogFile::openFile() {
 			GENERIC_READ | GENERIC_WRITE,
 			FILE_SHARE_READ | FILE_SHARE_WRITE,
 			nullptr,
-			OPEN_ALWAYS,
+			createIfMissing ? OPEN_ALWAYS : OPEN_EXISTING,
 			FILE_ATTRIBUTE_NORMAL,
 			nullptr
 		);
 
 		if (this->fileHandle == INVALID_HANDLE_VALUE) {
 			DWORD error = ::GetLastError();
+			if (!createIfMissing &&
+				(error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) {
+				return false;
+			}
 			std::string errorMessage = getWindowsErrorMessage(error);
 			DEBUG_LOG("%p TransactionLogFile::openFile Failed to open sequence file for read/write: %s (error=%lu: %s)\n",
 				this, this->path.string().c_str(), error, errorMessage.c_str());
@@ -355,6 +363,7 @@ void TransactionLogFile::openFile() {
 		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
 			this, size, this->path.string().c_str());
 	}
+	return true;
 }
 
 // Precondition: caller holds fileMutex (the guard for this->memoryMap /
@@ -390,6 +399,9 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 			// existing memory map will work
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Returning existing memory map (map size=%u)\n", this, memoryMap->mapSize);
 			this->memoryMap->fileSize = fileSize;
+			this->memoryMap->readableExtent.store(
+				std::min(this->size.load(std::memory_order_relaxed), this->memoryMap->mapSize),
+				std::memory_order_release);
 			return this->memoryMap;
 		} else {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map was too small, creating new map (map size=%u)\n", this, memoryMap->mapSize);
@@ -487,7 +499,9 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	::CloseHandle(mh);
 
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap Mapped to: %p\n", this, map);
-	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize);
+	this->memoryMap = std::make_shared<MemoryMap>(
+		map, fileSize,
+		std::min(this->size.load(std::memory_order_relaxed), fileSize));
 
 	return this->memoryMap;
 }
@@ -521,14 +535,23 @@ bool TransactionLogFile::removeFileLocked() {
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::removeFile Removing file: %s\n", this, this->path.string().c_str());
-	auto removed = std::filesystem::remove(this->path);
+	std::error_code removeError;
+	auto removed = std::filesystem::remove(this->path, removeError);
+	this->lastRemoveError = removeError;
+	if (removeError) {
+		DEBUG_LOG("%p TransactionLogFile::removeFile Failed to remove file %s: %s\n",
+			this, this->path.string().c_str(), removeError.message().c_str());
+		return false;
+	}
 	if (!removed) {
 		DEBUG_LOG("%p TransactionLogFile::removeFile File does not exist: %s\n",
 			this, this->path.string().c_str());
 		return false;
 	}
 
-	if (std::filesystem::exists(this->path)) {
+	std::error_code existsError;
+	if (std::filesystem::exists(this->path, existsError) || existsError) {
+		this->lastRemoveError = existsError ? existsError : std::make_error_code(std::errc::device_or_resource_busy);
 		DEBUG_LOG("%p TransactionLogFile::removeFile File still exists: %s\n", this, this->path.string().c_str());
 		return false;
 	}
@@ -678,6 +701,7 @@ bool TransactionLogFile::retireAfterFailedZeroTail(uint32_t newSize, const char*
 	DEBUG_LOG("%p TransactionLogFile::zeroTailLocked %s failed for %s (error=%lu); retiring the segment at %u\n",
 		this, stage, this->path.string().c_str(), ::GetLastError(), newSize);
 	this->size.store(newSize, std::memory_order_relaxed);
+	this->publishReadableExtentLocked();
 	this->appendBoundaryLost.store(true, std::memory_order_relaxed);
 	return false;
 }
