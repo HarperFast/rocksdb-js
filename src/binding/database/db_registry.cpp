@@ -763,12 +763,25 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "refCount", refCount));
 			napi_value columnFamilies;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
-			for (auto& [name, columnDescriptor] : entry.descriptor->columns) {
+			std::vector<std::pair<std::string, std::shared_ptr<ColumnFamilyDescriptor>>> columns;
+			{
+				std::lock_guard<std::mutex> columnsLock(entry.descriptor->columnsMutex);
+				columns.reserve(entry.descriptor->columns.size());
+				for (auto& column : entry.descriptor->columns) {
+					columns.push_back(column);
+				}
+			}
+			for (auto& [name, columnDescriptor] : columns) {
 				napi_value columnDescriptorValue;
 				NAPI_STATUS_THROWS(::napi_create_object(env, &columnDescriptorValue));
 
 				napi_value userSharedBuffers;
-				NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(columnDescriptor->userSharedBuffers.size()), &userSharedBuffers));
+				size_t userSharedBufferCount;
+				{
+					std::lock_guard<std::mutex> buffersLock(columnDescriptor->userSharedBuffersMutex);
+					userSharedBufferCount = columnDescriptor->userSharedBuffers.size();
+				}
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(userSharedBufferCount), &userSharedBuffers));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnDescriptorValue, "userSharedBuffers", userSharedBuffers));
 
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnFamilies, name.c_str(), columnDescriptorValue));

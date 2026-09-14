@@ -1,5 +1,5 @@
 import { RocksDatabase } from '../../src/index.ts';
-import { forceDropFailureForTesting } from '../../src/load-binding.ts';
+import { forceDropFailureForTesting, forceTryAgainForTesting } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { rmSync, writeSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
@@ -12,7 +12,7 @@ import { Worker } from 'node:worker_threads';
 // not a Vitest worker.
 //
 //   argv: <dbPath> <scenario> <optimistic|pessimistic> <sync|async>
-//   scenario: admitted-commit | handle-closed | worker-terminated | open-waits | crash-reopen | retry-race
+//   scenario: admitted-commit | handle-closed | handle-closed-retry | worker-terminated | open-waits | crash-reopen | retry-race
 //
 // Prints one JSON line on success; a failed assertion exits non-zero.
 // `crash-reopen` SIGKILLs itself inside the deferral window and leaves the
@@ -143,6 +143,9 @@ try {
 	await nextMessage('committing');
 	// Libuv mode only queues the commit before this message; leave scheduler headroom for admission.
 	await sleep(Math.min(200, delayMs / 4));
+	if (scenario === 'handle-closed-retry') {
+		forceTryAgainForTesting(1);
+	}
 
 	const dropElapsed = await drop();
 	assert(dropElapsed < delayMs / 2, `drop blocked for ${dropElapsed}ms behind the admitted commit`);
@@ -175,11 +178,15 @@ try {
 		// The worker dies with its commit admitted; the lane task still owns the
 		// transaction handle, finishes, and releases the claim.
 		await worker.terminate();
-	} else if (scenario === 'handle-closed') {
+	} else if (scenario === 'handle-closed' || scenario === 'handle-closed-retry') {
 		worker.postMessage({ close: true });
 		await nextMessage('closed');
 		const done = await nextMessage('done');
-		assert(done.error === undefined, `admitted commit should have succeeded: ${done.error}`);
+		if (scenario === 'handle-closed-retry') {
+			assert(done.errorCode === 'ERR_ABORTED', `retry should abort safely: ${done.error}`);
+		} else {
+			assert(done.error === undefined, `admitted commit should have succeeded: ${done.error}`);
+		}
 	} else if (scenario === 'open-waits') {
 		const started = Date.now();
 		const fresh = RocksDatabase.open(dbPath, { name: 'table', pessimistic });
@@ -228,7 +235,7 @@ try {
 	}
 
 	if (scenario !== 'worker-terminated') {
-		if (scenario !== 'handle-closed') {
+		if (scenario !== 'handle-closed' && scenario !== 'handle-closed-retry') {
 			worker.postMessage({ close: true });
 			await nextMessage('closed');
 		}

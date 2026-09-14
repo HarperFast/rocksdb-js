@@ -494,6 +494,16 @@ static void executeCommitWork(TransactionCommitState* state) {
 			}
 		}
 		if (state->status.ok()) {
+			// Test seam: stall immediately before the RocksDB commit, with the
+			// async work still registered and `txn` about to be dereferenced.
+			// This is the window TransactionHandle::close()'s bounded drain is
+			// supposed to protect: if close() gives up and destroys `txn`, this
+			// thread then commits through a destroyed transaction. Distinct from
+			// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
+			// therefore cannot exercise the drain at all. Noop in production.
+			if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
+			}
 			if (testForceTryAgain()) {
 				// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
 				// so the retry path (reset onto a fresh snapshot + re-run) is exercised. A failed
@@ -504,16 +514,6 @@ static void executeCommitWork(TransactionCommitState* state) {
 					? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
 					: rollbackStatus;
 			} else {
-				// Test seam: stall immediately before the RocksDB commit, with the
-				// async work still registered and `txn` about to be dereferenced.
-				// This is the window TransactionHandle::close()'s bounded drain is
-				// supposed to protect: if close() gives up and destroys `txn`, this
-				// thread then commits through a destroyed transaction. Distinct from
-				// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
-				// therefore cannot exercise the drain at all. Noop in production.
-				if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
-					std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
-				}
 				state->status = txnHandle->txn->Commit();
 			}
 			state->claim.release(descriptor.get());
@@ -567,7 +567,11 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// history forever (harper#1695) — converges because the re-run reads and validates
 			// against current state instead. The caller must re-run the transaction body so the
 			// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
-			txnHandle->resetTransaction();
+			if (txnHandle->dbHandle && !txnHandle->dbHandle->isCancelled()) {
+				txnHandle->resetTransaction(descriptor);
+			} else {
+				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+			}
 		}
 	}
 	state->claim.release(nullptr);
@@ -1090,7 +1094,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 				(*txnHandle).get(), status.IsBusy() ? "IsBusy" : "TryAgain");
 			// Reset onto a fresh snapshot so the retry re-drives the commit against current state
 			// (committedPosition survives, keeping the WAL write-once, #668). See async Commit.
-			(*txnHandle)->resetTransaction();
+			(*txnHandle)->resetTransaction(descriptor);
 		}
 		if ((*txnHandle)->state == TransactionState::Committing) {
 			(*txnHandle)->state = TransactionState::Pending;

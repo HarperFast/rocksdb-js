@@ -87,14 +87,14 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	state(TransactionState::Pending),
 	txn(nullptr),
 	committedPosition(0, 0) {
-	this->resetTransaction();
+	this->resetTransaction(this->dbHandle->descriptor);
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 	this->createdAt = std::chrono::steady_clock::now();
 }
 
-void TransactionHandle::resetTransaction(){
+void TransactionHandle::resetTransaction(const std::shared_ptr<DBDescriptor>& descriptor) {
 	// clear/delete the previous transaction and create a new transaction so that it can be retried
 	this->closeIterators();
 	if (this->txn) {
@@ -110,12 +110,12 @@ void TransactionHandle::resetTransaction(){
 	rocksdb::WriteOptions writeOptions;
 	writeOptions.disableWAL = dbHandle->disableWAL;
 
-	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
-		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
+	if (descriptor->mode == DBMode::Pessimistic) {
+		auto* tdb = static_cast<rocksdb::TransactionDB*>(descriptor->db.get());
 		rocksdb::TransactionOptions txnOptions;
 		this->txn = tdb->BeginTransaction(writeOptions, txnOptions);
-	} else if (dbHandle->descriptor->mode == DBMode::Optimistic) {
-		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(dbHandle->descriptor->db.get());
+	} else if (descriptor->mode == DBMode::Optimistic) {
+		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(descriptor->db.get());
 		rocksdb::OptimisticTransactionOptions txnOptions;
 		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
 	} else {

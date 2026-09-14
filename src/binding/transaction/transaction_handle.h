@@ -292,7 +292,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
-	void resetTransaction();
+	void resetTransaction(const std::shared_ptr<DBDescriptor>& descriptor);
 
 	/**
 	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),

@@ -45,10 +45,13 @@ parentPort?.on(
 		if (!message.commit) return;
 
 		const commit =
-			workerData.scenario === 'handle-closed'
+			workerData.scenario === 'handle-closed' || workerData.scenario === 'handle-closed-retry'
 				? (() => {
 						const txn = new NativeTransaction(db.store.db);
-						txn.putSync(Buffer.from('committed-before-drop'), Buffer.alloc(4096, 1));
+						txn.putSync(
+							Buffer.from(db.store.encodeKey('committed-before-drop')),
+							Buffer.alloc(4096, 1)
+						);
 						return new Promise<void>((resolve, reject) => txn.commit(() => resolve(), reject));
 					})()
 				: db.transaction((txn) => {
@@ -58,12 +61,19 @@ parentPort?.on(
 		parentPort?.postMessage({ committing: true });
 
 		let error: string | undefined;
+		let errorCode: string | undefined;
 		try {
 			await commit;
 		} catch (e) {
 			error = (e as Error).message;
+			errorCode = (e as Error & { code?: string }).code;
 		}
-		parentPort?.postMessage({ done: true, error, lastError: closed ? null : db.getLastError() });
+		parentPort?.postMessage({
+			done: true,
+			error,
+			errorCode,
+			lastError: closed ? null : db.getLastError(),
+		});
 	}
 );
 
