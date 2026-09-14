@@ -1155,7 +1155,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
       different store's file. That is a cache-key identity problem, not a purge-coherence one; it is
       pre-existing and Harper does not call `destroy` in production.
 
-23. **`databaseFlushed()` persists and verifies `txn.state` by pathname**: a stream kept open across
+24. **`databaseFlushed()` persists and verifies `txn.state` by pathname**: a stream kept open across
     flushes still describes the old inode after the file is unlinked or replaced, so a successful
     write can be invisible to `getLastFlushedPosition()` — which reads by path — and retention never
     advances. Today only `purgeLogs({ destroy: true })` removes the directory in-process, and Harper
