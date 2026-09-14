@@ -1202,12 +1202,8 @@ describe('Transaction Log', () => {
 				});
 			}));
 
-		// Transaction ids are a 64-bit counter surfaced to JS as a double. They used to be
-		// read back with ToInt32 semantics, so every id at or above 2^31 arrived negative
-		// and was rejected as invalid — which permanently broke log writes for the life of
-		// the process once a database passed ~2.1 billion transactions. Ids this large are
-		// only reachable after 2^31 allocations, so assert at the argument boundary: these
-		// must get past validation and fail the registry lookup instead.
+		// Ids this large are only reachable after 2^31 allocations, so assert at the
+		// argument boundary: they must get past validation and fail the lookup instead.
 		it('should accept transaction ids at or above 2^31', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');

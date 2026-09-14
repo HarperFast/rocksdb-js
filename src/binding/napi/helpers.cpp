@@ -420,7 +420,7 @@ bool readTransactionId(napi_env env, napi_value value, uint64_t& transactionId) 
 	}
 	// Past MAX_SAFE_INTEGER doubles stop representing consecutive integers, so
 	// two ids could collide in the registry.
-	if (std::isnan(raw) || raw != std::trunc(raw) || raw < 0.0 || raw > 9007199254740991.0) {
+	if (raw != std::trunc(raw) || raw < 0.0 || raw > 9007199254740991.0) {
 		::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer no greater than Number.MAX_SAFE_INTEGER");
 		return false;
 	}
