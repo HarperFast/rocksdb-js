@@ -361,7 +361,8 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 		}
 	}
 
-	const auto deadline = std::chrono::steady_clock::now() + budget;
+	const auto scanStarted = std::chrono::steady_clock::now();
+	const auto deadline = scanStarted + budget;
 	const LogPosition flushedPosition = this->getLastFlushedPosition();
 	auto wasPurged = [this](const std::shared_ptr<TransactionLogFile>& logFile) {
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
@@ -390,13 +391,16 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 
 		try {
 			auto fileScan = logFile->scanMaxEntryTimestamp(plausibleBound, deadline);
-			result.segmentsScanned++;
 			result.bytesScanned += fileScan.scannedBytes;
+			if (fileScan.kind != RecoveryScan::Kind::Incomplete) {
+				result.segmentsScanned++;
+			}
 			if (fileScan.maxTimestamp > result.largestKey) {
 				result.largestKey = fileScan.maxTimestamp;
 			}
 			if (fileScan.maxImplausibleTimestamp > result.refusedKey) {
 				result.refusedKey = fileScan.maxImplausibleTimestamp;
+				result.refusedKeySegment = logFile->path.filename().string();
 			}
 			switch (fileScan.kind) {
 				case RecoveryScan::Kind::Clean:
@@ -438,6 +442,8 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 		}
 	}
 
+	result.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - scanStarted);
 	return result;
 }
 
@@ -905,8 +911,17 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	}
 }
 
-void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
+bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+
+	// Before any marker read or file construction: a duplicate carrying a corrupt
+	// marker would otherwise throw the fatal boundary exception instead of being
+	// reported as a segment discovery could not place.
+	if (this->sequenceFiles.count(sequenceNumber)) {
+		DEBUG_LOG("%p TransactionLogStore::registerLogFile Sequence %u already registered, ignoring %s\n",
+			this, sequenceNumber, path.string().c_str());
+		return false;
+	}
 
 	uint32_t retiredBoundary = readTransactionLogAppendBoundaryMarker(path);
 	auto logFile = std::make_shared<TransactionLogFile>(
@@ -961,6 +976,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	DEBUG_LOG("%p TransactionLogStore::registerLogFile Added log file: %s (seq=%u)\n",
 		this, path.string().c_str(), sequenceNumber);
+	return true;
 }
 
 void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
@@ -1279,12 +1295,19 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				if (fileEntry.is_regular_file() && fileEntry.path().extension() == ".txnlog") {
 					auto filePath = fileEntry.path();
 					auto filename = filePath.filename().string();
-
-					std::string sequenceNumberStr = filename.substr(0, filename.size() - 7);
 					uint32_t sequenceNumber = 0;
-
-					sequenceNumber = std::stoul(sequenceNumberStr);
-					store->registerLogFile(filePath, sequenceNumber);
+					if (!parseTransactionLogSegmentName(filename, sequenceNumber)) {
+						// A name the writer could not have produced. Registering it
+						// would give a foreign file a real segment's identity, and
+						// "1 copy.txnlog" would take "1.txnlog"'s slot.
+						store->markDiscoverySkipped(filePath);
+						DEBUG_LOG("%p TransactionLogStore::load Ignoring non-canonical segment name: %s\n",
+							store.get(), filename.c_str());
+						continue;
+					}
+					if (!store->registerLogFile(filePath, sequenceNumber)) {
+						store->markDiscoverySkipped(filePath);
+					}
 				}
 			} catch (const TransactionLogAppendBoundaryException&) {
 				// The marker is the only authoritative record of a retired file's

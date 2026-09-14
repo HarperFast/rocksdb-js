@@ -505,6 +505,8 @@ struct TransactionLogStore final {
 	struct DurableKeyScan final {
 		double largestKey = 0;
 		double refusedKey = 0;
+		/** Segment the refused key came from, so the message can name it. */
+		std::string refusedKeySegment;
 		bool complete = true;
 		bool budgetExhausted = false;
 		bool stoppedAtBreak = false;
@@ -522,6 +524,8 @@ struct TransactionLogStore final {
 		size_t segmentsScanned = 0;
 		size_t segmentsTotal = 0;
 		uint64_t bytesScanned = 0;
+		/** Wall time the whole walk took, one sample per scan, never per frame. */
+		std::chrono::milliseconds elapsed{ 0 };
 	};
 
 	DurableKeyScan scanLargestDurableKey(
@@ -569,7 +573,12 @@ struct TransactionLogStore final {
 	 * @param path The path to the log file to register.
 	 * @param sequenceNumber The sequence number of the log file to register.
 	 */
-	void registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber);
+	/**
+	 * Registers a discovered segment. Returns false — without touching the
+	 * registry, reading its marker or opening it — when this sequence is already
+	 * registered; the caller records that as a segment discovery could not place.
+	 */
+	bool registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber);
 
 	/**
 	 * Writes a batch of transaction log entries to the store.

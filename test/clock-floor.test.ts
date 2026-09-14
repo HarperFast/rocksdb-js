@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import {
 	appendFileSync,
 	closeSync,
+	copyFileSync,
 	openSync,
 	readdirSync,
 	rmSync,
@@ -382,6 +383,35 @@ describe('monotonic clock floor', () => {
 		const refused = await runFixture('warn-read-only', dbPath, key);
 		expect(refused.code).not.toBe(0);
 		expect(refused.stderr).toContain('without proof that nothing durable follows');
+	}, 60000);
+
+	it('refuses to open when a stray name shadows a real segment', async () => {
+		// `std::stoul` prefix-parsed this into sequence 1 and it replaced the real
+		// 1.txnlog, so the shadowed segment's keys were silently missing from a
+		// scan that still reported itself complete.
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+		const segment = segmentPath(dbPath);
+		copyFileSync(segment, join(dirname(segment), '1 copy.txnlog'));
+
+		const refused = await runFixture('read', dbPath, key);
+		expect(refused.code).not.toBe(0);
+		expect(refused.stderr).toContain('discovery skipped a segment');
+		expect(refused.stderr).toContain('1 copy.txnlog');
+	}, 60000);
+
+	it('ignores a stray name on an ordinary open', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write-unseeded', dbPath, key)).code).toBe(0);
+		const segment = segmentPath(dbPath);
+		copyFileSync(segment, join(dirname(segment), '1 copy.txnlog'));
+
+		const read = await runFixture('read-unseeded', dbPath, key, '');
+		expect(read.code, read.stderr).toBe(0);
 	}, 60000);
 
 	it('refuses a read-only open that cannot apply timestampFloorLog', async () => {

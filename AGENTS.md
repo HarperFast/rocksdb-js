@@ -891,6 +891,19 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     `retiredAppendBoundary` caps the extent (bytes past it can never be appended to again) and is
     validated against the handle's own extent.
 
+    **A segment's filename is its identity, so discovery only accepts names the writer could have
+    produced.** `parseTransactionLogSegmentName` (`transaction_log_file.cpp`, GoogleTest-covered) is
+    the one parser for `<positive uint32>.txnlog`, shared with `transaction_log_validation.cpp`,
+    which had already defined that grammar — the two had drifted, and `std::stoul` in `load()`
+    prefix-parsed `1 copy.txnlog` to sequence 1 while `registerLogFile` assigned into
+    `sequenceFiles` unconditionally, so a stray file took the real segment's slot, was never walked,
+    recorded no skip, and let the floor scan report `complete`. Registration is now non-replacing and
+    checks the duplicate _before_ reading the append-boundary marker or opening the file, so a
+    duplicate with a corrupt marker is reported as an unplaceable segment rather than throwing the
+    fatal boundary exception. Both rejections latch `discoveryIncomplete`, which only the floor scan
+    consumes — but the registration change is visible to every open: a non-canonical file used to be
+    exposed as a real segment and could be recovered or appended relative to.
+
     **The seed is per physical path, not per `DBKey`.** `DBKey` is `{path, readOnly, secondaryPath}`
     (invariant 18), so a read-only or secondary open of an already-open path builds its own
     descriptor and would otherwise re-run `SeedTimestampFloor` against a store the live writable

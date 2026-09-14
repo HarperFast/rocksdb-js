@@ -297,9 +297,15 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		msg << "Transaction log \"" << logName << "\" of database " << dbPath
 			<< " holds a batch key more than "
 			<< static_cast<long long>(MAX_CLOCK_FLOOR_SKEW_MS / 86400000.0)
-			<< " days ahead of the wall clock (" << std::fixed << scan.refusedKey
-			<< "). Refusing to open with timestampFloorLog; repair the wall clock or transaction"
-			   " log before retrying.";
+			<< " days ahead of the wall clock (" << std::fixed << scan.refusedKey << ")";
+		if (!scan.refusedKeySegment.empty()) {
+			msg << " in segment " << scan.refusedKeySegment;
+		}
+		msg << ". Refusing to open with timestampFloorLog. If this node's clock is wrong, correct it"
+			   " and retry. Otherwise the key is durable, and the only ways past it are to open"
+			   " without timestampFloorLog — which forfeits restart-safe timestamp uniqueness for"
+			   " this process — or to discard that segment, which discards every entry in it and is"
+			   " safe only if none is still needed for replay, replication or audit.";
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
 		throw rocksdb_js::DBException(msg.str());
 	}
@@ -358,6 +364,20 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		msg << "Transaction log \"" << logName << "\" of database " << dbPath
 			<< " ends in a partial entry this handle cannot recover; it may be an in-flight "
 			   "append from another writer. Its contiguous framed prefix was scanned.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	}
+
+	if (budgetNearlyExhausted(static_cast<uint64_t>(scan.elapsed.count()),
+			static_cast<uint64_t>(timestampFloorScanBudget().count()))) {
+		std::ostringstream msg;
+		msg << "The monotonic timestamp floor scan of transaction log \"" << logName
+			<< "\" of database " << dbPath << " used " << scan.elapsed.count() << "ms of its "
+			<< timestampFloorScanBudget().count()
+			<< "ms budget (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS) reading " << scan.bytesScanned
+			<< " byte(s) across " << scan.segmentsTotal
+			<< " segment(s). This log is close to the size at which an opted-in open is refused;"
+			   " raise the budget or reduce the log's retention before it gets there.";
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	}

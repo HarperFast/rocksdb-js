@@ -258,6 +258,14 @@ uint64_t parseDurationMs(const char* raw, uint64_t defaultMs, uint64_t maxMs) {
 	return parsed > maxMs ? maxMs : static_cast<uint64_t>(parsed);
 }
 
+bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs) {
+	if (budgetMs == 0) {
+		return false;
+	}
+	return static_cast<double>(elapsedMs) >=
+		static_cast<double>(budgetMs) * BUDGET_PRESSURE_FRACTION;
+}
+
 void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {
 	if (std::filesystem::exists(path)) {
 		return;

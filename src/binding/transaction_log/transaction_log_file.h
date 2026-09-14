@@ -53,6 +53,16 @@
 namespace rocksdb_js {
 
 /**
+ * Parses a transaction-log segment filename into its sequence number. The only
+ * accepted form is what the writer produces — `<sequence>.txnlog`, a positive
+ * decimal uint32 with no leading zeros, sign or padding — so a name this store
+ * could not have written is rejected rather than prefix-parsed into an identity
+ * that collides with a real segment's. Non-throwing and allocation-free:
+ * discovery runs it on every `.txnlog` of every open, floor option or not.
+ */
+bool parseTransactionLogSegmentName(const std::string& filename, uint32_t& sequenceNumber);
+
+/**
  * Path of the fixed-size append-boundary marker paired with a transaction-log
  * segment. Markers live outside the store directory so existing directory
  * listings and backup enumeration continue to contain only log data.

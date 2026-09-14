@@ -1126,3 +1126,109 @@ TEST(TransactionLogMaxEntryScan, ASegmentShorterThanItsHeaderIsRejected) {
 	std::error_code error;
 	std::filesystem::remove(path, error);
 }
+
+TEST(TransactionLogDiscovery, AShadowNameDoesNotTakeACanonicalSegmentsSlot) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	LogImage canonical;
+	canonical.entry(10, 1, 500.0);
+	LogImage shadow;
+	shadow.entry(10, 1, 9000.0);
+	writeLogImage(storePath / "1.txnlog", canonical);
+	writeLogImage(storePath / "1 copy.txnlog", shadow);
+
+	auto store = rocksdb_js::TransactionLogStore::load(
+		storePath, 0, std::chrono::milliseconds(0), 0, /*readOnly=*/true);
+	ASSERT_TRUE(store);
+	EXPECT_TRUE(store->discoveryIncomplete);
+	ASSERT_EQ(store->discoverySkipped.size(), 1u);
+	EXPECT_EQ(store->discoverySkipped[0], "1 copy.txnlog");
+	ASSERT_EQ(store->sequenceFiles.count(1), 1u);
+	EXPECT_EQ(store->sequenceFiles[1]->path.filename().string(), "1.txnlog");
+	store->close();
+
+	std::filesystem::remove_all(storePath);
+}
+
+TEST(TransactionLogDiscovery, ANonCanonicalNameWithNoCollisionIsNotRegistered) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	LogImage canonical;
+	canonical.entry(10, 1, 500.0);
+	LogImage foreign;
+	foreign.entry(10, 1, 9000.0);
+	writeLogImage(storePath / "1.txnlog", canonical);
+	writeLogImage(storePath / "9 copy.txnlog", foreign);
+
+	auto store = rocksdb_js::TransactionLogStore::load(
+		storePath, 0, std::chrono::milliseconds(0), 0, /*readOnly=*/true);
+	ASSERT_TRUE(store);
+	EXPECT_TRUE(store->discoveryIncomplete);
+	EXPECT_EQ(store->sequenceFiles.count(9), 0u);
+	EXPECT_EQ(store->sequenceFiles.size(), 1u);
+	store->close();
+
+	std::filesystem::remove_all(storePath);
+}
+
+TEST(TransactionLogDiscovery, ACanonicalDirectoryStaysComplete) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	LogImage first;
+	first.entry(10, 1, 500.0);
+	LogImage second;
+	second.entry(10, 1, 900.0);
+	writeLogImage(storePath / "1.txnlog", first);
+	writeLogImage(storePath / "2.txnlog", second);
+
+	auto store = rocksdb_js::TransactionLogStore::load(
+		storePath, 0, std::chrono::milliseconds(0), 0, /*readOnly=*/true);
+	ASSERT_TRUE(store);
+	EXPECT_FALSE(store->discoveryIncomplete);
+	EXPECT_EQ(store->sequenceFiles.size(), 2u);
+	store->close();
+
+	std::filesystem::remove_all(storePath);
+}
+
+TEST(TransactionLogDiscovery, ASecondFileForARegisteredSequenceIsRefused) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	LogImage first;
+	first.entry(10, 1, 500.0);
+	writeLogImage(storePath / "1.txnlog", first);
+	writeLogImage(storePath / "elsewhere.txnlog", first);
+
+	rocksdb_js::TransactionLogStore store(
+		"store", storePath, 0, std::chrono::milliseconds(0), 0);
+	EXPECT_TRUE(store.registerLogFile(storePath / "1.txnlog", 1));
+	// The registry, not the filename, is what refuses here.
+	EXPECT_FALSE(store.registerLogFile(storePath / "elsewhere.txnlog", 1));
+	EXPECT_EQ(store.sequenceFiles[1]->path.filename().string(), "1.txnlog");
+
+	std::filesystem::remove_all(storePath);
+}
+
+TEST(TransactionLogFloorScan, AnAbandonedSegmentIsNotCountedAsCovered) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	auto logPath = storePath / "1.txnlog";
+	LogImage img;
+	img.entry(10, 1, 500.0);
+	writeLogImage(logPath, img);
+
+	{
+		rocksdb_js::TransactionLogStore store(
+			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(logPath, 1));
+		// A zero budget expires before the first segment is walked.
+		auto scan = store.scanLargestDurableKey(
+			std::numeric_limits<double>::infinity(), std::chrono::milliseconds(0));
+		EXPECT_FALSE(scan.complete);
+		EXPECT_TRUE(scan.budgetExhausted);
+		EXPECT_EQ(scan.segmentsScanned, 0u);
+		EXPECT_EQ(scan.segmentsTotal, 1u);
+	}
+
+	std::filesystem::remove_all(storePath);
+}

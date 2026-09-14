@@ -93,6 +93,16 @@ bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
  */
 uint64_t parseDurationMs(const char* raw, uint64_t defaultMs, uint64_t maxMs);
 
+/**
+ * Fraction of a bounded budget a successful run may use before it is worth
+ * reporting. Past this the next growth of the same input crosses into a hard
+ * refusal, and the successful run is the only chance to say so first.
+ */
+constexpr double BUDGET_PRESSURE_FRACTION = 0.75;
+
+/** True when `elapsedMs` used at least BUDGET_PRESSURE_FRACTION of `budgetMs`. */
+bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs);
+
 void tryCreateDirectory(
 	const std::filesystem::path& path,
 	std::filesystem::perms permissions =
