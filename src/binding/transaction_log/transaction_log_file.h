@@ -412,8 +412,8 @@ struct TransactionLogFile final {
 		double maxImplausibleTimestamp = 0;
 		RecoveryScan::Kind kind = RecoveryScan::Kind::Clean;
 		uint32_t validEnd = 0;
-		/** Extent handed to the walk, reported so a budget failure can be sized. */
-		uint32_t scannedBytes = 0;
+		/** Bytes this walk read, reported so a budget failure can be sized. */
+		uint64_t scannedBytes = 0;
 	};
 
 	/**

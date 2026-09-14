@@ -344,10 +344,8 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
 	double plausibleBound,
 	std::optional<std::chrono::steady_clock::time_point> deadline
 ) {
-	// No fileMutex and no read of `size`: the floor walk reads the segment
-	// through its own private stream, and `size` is append-owned state that
-	// openFile()'s index scan shortens to the first zero-timestamp word
-	// (findPositionByTimestamp below), which would hide any suffix past it.
+	// `size` is append-owned, and openFile()'s index scan shortens it to the first
+	// zero-timestamp word, which would hide any suffix past it.
 	RecoveryScan scan;
 	try {
 		scan = scanTransactionLogForFloor(
@@ -364,7 +362,7 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
 	result.maxImplausibleTimestamp = scan.maxImplausibleTimestamp;
 	result.kind = scan.kind;
 	result.validEnd = scan.validEnd;
-	result.scannedBytes = scan.extent;
+	result.scannedBytes = scan.bytesRead;
 	return result;
 }
 

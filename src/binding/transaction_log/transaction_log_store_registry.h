@@ -196,6 +196,15 @@ public:
 	static void SeedTimestampFloor(const std::string& dbPath, const std::string& logName);
 
 	/**
+	 * The `timestampFloorLog` already resolved for this physical path, or empty
+	 * when the path has none. This — not a peer descriptor's copy of the name — is
+	 * what a later open must be checked against: descriptors are per `DBKey`, and
+	 * an open that carried no option stamps an empty name on its own descriptor
+	 * without changing what the path was seeded from.
+	 */
+	static std::string ResolvedTimestampFloorLog(const std::string& dbPath);
+
+	/**
 	 * Resolves (finds or creates) a transaction log store by name for the
 	 * given database path.
 	 *

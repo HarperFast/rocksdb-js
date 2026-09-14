@@ -253,6 +253,25 @@ struct TransactionLogStore final {
 	bool discoveryIncomplete = false;
 
 	/**
+	 * Names of the files discovery could not register, in the order they were
+	 * skipped. The refusal they cause outlives the DEBUG_LOG that recorded them
+	 * (compiled out of release builds), so without these an operator gets
+	 * "discovery skipped a segment" and a directory to bisect by hand.
+	 */
+	std::vector<std::string> discoverySkipped;
+
+	/**
+	 * Latches `discoveryIncomplete` and records the file's name. Called only from
+	 * load(), before the store is published, so it needs no lock.
+	 */
+	void markDiscoverySkipped(const std::filesystem::path& file) {
+		discoveryIncomplete = true;
+		if (discoverySkipped.size() < 8) {
+			discoverySkipped.push_back(file.filename().string());
+		}
+	}
+
+	/**
 	 * The current sequence number of the transaction log file. Atomic because it
 	 * is written on the write path (under writeMutex) but read on the read path
 	 * (getMemoryMap/findPositionByTimestamp under dataSetsMutex) — different
@@ -490,9 +509,10 @@ struct TransactionLogStore final {
 		bool tornTail = false;
 		bool readFailed = false;
 		bool discoveryIncomplete = false;
+		std::vector<std::string> discoverySkipped;
 		/**
 		 * Segments walked, segments the store holds, and the bytes those walks
-		 * covered. Reported with a budget failure so an operator can size
+		 * read. Reported with a budget failure so an operator can size
 		 * `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` from what this store actually
 		 * costs rather than by trial.
 		 */

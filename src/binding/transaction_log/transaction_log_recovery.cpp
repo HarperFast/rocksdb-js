@@ -35,21 +35,21 @@ struct ScanReader {
 	std::vector<char> window;
 	uint32_t windowStart = 0;
 	uint32_t windowLen = 0;
+	uint64_t bytesRead = 0;
 
-	void readExact(uint32_t offset, void* dest, uint32_t n) const {
+	void readExact(uint32_t offset, void* dest, uint32_t n) {
 		if (deadline && std::chrono::steady_clock::now() >= *deadline) {
 			throw ScanDeadlineReached{};
 		}
 		if (!read(context, offset, dest, n)) {
 			throw DBException("Failed to read transaction log during recovery scan");
 		}
+		bytesRead += n;
 	}
 
-	// True when no complete frame can begin anywhere in [from, fileSize): either
-	// the region is too short to hold an entry header, or every byte in it is
-	// zero (a frame's header opens with a non-zero big-endian timestamp). Reads
-	// in fixed RESYNC_WINDOW blocks through readExact, so the deadline is
-	// checked before each and no tail-sized buffer is ever allocated.
+	// True when no complete frame can begin in [from, fileSize): too short to hold
+	// a header, or all zero (a frame header opens with a non-zero big-endian
+	// timestamp). Fixed-block reads, so one tail never becomes one allocation.
 	bool tailCannotHoldAFrame(uint32_t from) {
 		if (fileSize - from < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
 			return true;
@@ -184,22 +184,21 @@ RecoveryScan scanTransactionLogForRecovery(
 	bool tailUniformTimestamp = true;
 	double maxTimestamp = 0;
 	double maxImplausibleTimestamp = 0;
+	ScanReader source{ read, context, fileSize, deadline, {}, 0, 0 };
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
 			tailEntries > 0 && tailUniformTimestamp, maxTimestamp, maxImplausibleTimestamp,
-			fileSize };
+			fileSize, source.bytesRead };
 	};
 
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		return scan(RecoveryScan::Kind::Clean, fileSize);
 	}
 
-	ScanReader source{ read, context, fileSize, deadline, {}, 0, 0 };
 	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 	uint32_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
-	// A floor scan stops short of the extent only on a proof that no complete
-	// frame can remain; recovery's heuristics answer a different question (where
-	// it is safe to truncate) and cannot carry that proof.
+	// Recovery's heuristics answer where it is safe to truncate, which is not a
+	// proof that no durable key remains.
 	auto terminate = [&](RecoveryScan::Kind kind, uint32_t at) {
 		if (requirePaddedTail && !source.tailCannotHoldAFrame(at)) {
 			return scan(RecoveryScan::Kind::MidFileCorruption, at);
@@ -217,8 +216,7 @@ RecoveryScan scanTransactionLogForRecovery(
 			source.readHeaderAt(pos, header);
 			double timestamp = readDoubleBE(header);
 			if (timestamp == 0) {
-				// Under the floor's proof an all-zero tail settles this outright:
-				// a resume cannot hide in zeros, so the per-byte search is skipped.
+				// A resume cannot hide in zeros, so the per-byte search is skipped.
 				if (requirePaddedTail) {
 					return terminate(RecoveryScan::Kind::Clean, pos);
 				}
@@ -325,7 +323,7 @@ RecoveryScan scanTransactionLogForFloor(
 ) {
 	auto outOfTime = [](uint32_t extent) {
 		return RecoveryScan{ RecoveryScan::Kind::Incomplete, TRANSACTION_LOG_FILE_HEADER_SIZE,
-			0, 0, false, 0, 0, extent };
+			0, 0, false, 0, 0, extent, 0 };
 	};
 	if (deadline && std::chrono::steady_clock::now() >= *deadline) {
 		return outOfTime(0);
@@ -345,7 +343,7 @@ RecoveryScan scanTransactionLogForFloor(
 	}
 	if (extent == 0) {
 		// A just-created segment has no keys yet, and no header to validate.
-		return RecoveryScan{ RecoveryScan::Kind::Clean, 0, 0, 0, false, 0, 0, 0 };
+		return RecoveryScan{ RecoveryScan::Kind::Clean, 0, 0, 0, false, 0, 0, 0, 0 };
 	}
 
 	char header[TRANSACTION_LOG_FILE_HEADER_SIZE];

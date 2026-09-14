@@ -290,7 +290,8 @@ would rather wait raises the number. Above a day it is clamped, because the dead
 clock time point and a larger value overflows its resolution and wraps into the past.
 A database opened without `timestampFloorLog` pays none of it. The walk runs while database opens
 and closes are serialized process-wide, so increasing its budget can delay unrelated opens and
-closes too.
+closes too — and the budget is **per database path**, not per process, so a process that opens twenty
+opted-in databases can spend twenty times the number set here, serialized.
 
 The seed is fail closed when `timestampFloorLog` is set, and it asks a stronger question of each
 segment than recovery does. Recovery decides where it is safe to truncate; this has to establish that

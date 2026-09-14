@@ -372,14 +372,15 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 	result.discoveryIncomplete = this->discoveryIncomplete;
 	result.complete = !result.discoveryIncomplete;
 	result.segmentsTotal = files.size();
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		result.discoverySkipped = this->discoverySkipped;
+	}
 
 	for (const auto& logFile : files) {
-		// Every outcome that clears `complete`, and an implausible key, refuses
-		// the open, so an older segment can only add detail to a decision already
-		// made — while DBRegistry::OpenDB holds databasesMutex across
-		// DBDescriptor::open, so the rest of the budget would be spent stalling
-		// unrelated opens and closes. The cost is that an implausible key in an
-		// older segment no longer upgrades the message to the refusedKey wording.
+		// Refusal is already decided, and DBRegistry::OpenDB holds databasesMutex
+		// across DBDescriptor::open — the rest of the budget would stall unrelated
+		// opens and closes to add detail nobody reads.
 		if (!result.complete || result.refusedKey > 0) {
 			break;
 		}
@@ -1292,15 +1293,15 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				// logical end. Ignoring it could expose orphaned bytes after restart.
 				throw;
 			} catch (const std::filesystem::filesystem_error& e) {
-				store->discoveryIncomplete = true;
+				store->markDiscoverySkipped(fileEntry.path());
 				DEBUG_LOG("%p TransactionLogStore::load Failed to process file (filesystem error): %s\n",
 					store.get(), e.what());
 			} catch (const std::exception& e) {
-				store->discoveryIncomplete = true;
+				store->markDiscoverySkipped(fileEntry.path());
 				DEBUG_LOG("%p TransactionLogStore::load Failed to load file: %s\n",
 					store.get(), e.what());
 			} catch (...) {
-				store->discoveryIncomplete = true;
+				store->markDiscoverySkipped(fileEntry.path());
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::load Unknown error processing file: %s\n",

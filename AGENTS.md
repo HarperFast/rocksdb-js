@@ -223,7 +223,10 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   the calling thread inside `RocksDatabase.open()`, and a log's retention window bounds its age
   rather than its entry count, so without a bound a large log is an open that does not return. It
   goes newest segment first and rejects the explicitly opted-in open when it cannot cover every
-  durable key. Historical segments are scanned through a private read-only stream;
+  durable key. It is a budget **per database path**, not per process — the deadline is computed on
+  each `scanLargestDurableKey` call and the seed runs once per new descriptor — so raising it
+  multiplies by the number of opted-in databases a process opens, all of them serialized behind
+  `databasesMutex`. Historical segments are scanned through a private read-only stream;
   the floor walk must not open, close, map, or index the shared `TransactionLogFile`, since the same
   store can concurrently serve another database descriptor. It runs while database opens and closes
   are serialized process-wide, so increasing its budget can delay unrelated opens and closes.

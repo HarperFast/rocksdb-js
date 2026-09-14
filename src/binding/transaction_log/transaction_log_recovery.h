@@ -72,6 +72,14 @@ struct RecoveryScan final {
 	double maxImplausibleTimestamp;
 	/** The extent this classification covers, i.e. the bytes the walk was given. */
 	uint32_t extent;
+	/**
+	 * Bytes the walk asked its reader for. Not the extent: a walk that stops at a
+	 * break or a deadline reads only a prefix, and a budget failure reported in
+	 * extents would overstate the scan's cost and undersize the next budget. It
+	 * can exceed the extent, because overlapping header windows are re-read — that
+	 * is work done, which is what a budget is spent on.
+	 */
+	uint64_t bytesRead;
 };
 
 /**

@@ -233,6 +233,15 @@ std::chrono::milliseconds timestampFloorScanBudget() {
 
 } // namespace
 
+std::string TransactionLogStoreRegistry::ResolvedTimestampFloorLog(const std::string& dbPath) {
+	if (!instance) {
+		return {};
+	}
+	std::lock_guard<std::mutex> lock(instance->entriesMutex);
+	auto it = instance->entries.find(dbPath);
+	return it == instance->entries.end() ? std::string() : it->second->seededFloorLog;
+}
+
 void TransactionLogStoreRegistry::SeedTimestampFloor(
 	const std::string& dbPath,
 	const std::string& logName
@@ -250,14 +259,8 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 			return;
 		}
 		entry = it->second;
-		// The floor is a property of the physical path, and this path's request
-		// was already resolved by the descriptor that opened first. Re-running it
-		// here would scan a store that descriptor may be appending to right now
-		// (DBRegistry serializes registry opens, not commits), so the walk could
-		// see a partial append and refuse a legitimate open, or clear a region the
-		// writer fills immediately after. DBRegistry::OpenDB has already rejected a
-		// request that disagrees with the resolved one, so agreement is all that
-		// reaches here.
+		// Rescanning here would walk a store the first descriptor may be appending
+		// to right now: DBRegistry serializes registry opens, not commits.
 		if (entry->seededFloorLog == logName) {
 			return;
 		}
@@ -268,8 +271,7 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		}
 	}
 
-	// Resolving the request — including resolving it to "there is nothing to
-	// scan" — is what a later open must not repeat.
+	// Resolving the request to "there is nothing to scan" also counts as resolved.
 	auto markResolved = [&]() {
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 		entry->seededFloorLog = logName;
@@ -308,8 +310,9 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 			std::ostringstream detail;
 			detail << "the timestamp floor scan budget ran out"
 				   << " (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS=" << timestampFloorScanBudget().count()
-				   << "ms covered " << scan.segmentsScanned << " of " << scan.segmentsTotal
-				   << " segment(s), " << scan.bytesScanned << " byte(s))";
+				   << "ms read " << scan.bytesScanned << " byte(s) across " << scan.segmentsScanned
+				   << " of " << scan.segmentsTotal << " segment(s); the budget is per database path,"
+				   << " so raising it multiplies by the number of opted-in databases)";
 			reasons.emplace_back(detail.str());
 		}
 		if (scan.stoppedAtBreak) {
@@ -320,7 +323,16 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 				" return the entries after it, so this walk cannot treat them as absent");
 		}
 		if (scan.discoveryIncomplete) {
-			reasons.emplace_back("transaction-log discovery skipped a segment at open");
+			std::ostringstream detail;
+			detail << "transaction-log discovery skipped a segment at open";
+			if (!scan.discoverySkipped.empty()) {
+				detail << " (";
+				for (size_t i = 0; i < scan.discoverySkipped.size(); ++i) {
+					detail << (i == 0 ? "" : ", ") << scan.discoverySkipped[i];
+				}
+				detail << ")";
+			}
+			reasons.emplace_back(detail.str());
 		}
 		if (scan.readFailed || reasons.empty()) {
 			reasons.emplace_back("a segment could not be read at open");
@@ -351,11 +363,6 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 			instance.get(), scan.largestKey, logName.c_str(), dbPath.c_str());
 		double ahead = scan.largestKey - getWallClockTimestamp();
 		if (ahead > CLOCK_FLOOR_AHEAD_WARN_MS) {
-			// Only a backward clock step puts durable keys ahead of now, and from
-			// here getMonotonicTimestamp() issues nextafter() increments off the
-			// floor instead of tracking wall time — so every timestamp this process
-			// mints, and every restart that re-seeds from them, stays ahead by at
-			// least this much until the wall clock catches up.
 			std::ostringstream msg;
 			msg << "Transaction log \"" << logName << "\" of database " << dbPath
 				<< " holds a batch key " << std::fixed << std::setprecision(0) << ahead

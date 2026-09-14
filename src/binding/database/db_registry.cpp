@@ -9,6 +9,7 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "napi/global_events.h"
+#include "transaction_log/transaction_log_store_registry.h"
 #include "rocksdb/table.h"
 
 namespace rocksdb_js {
@@ -421,35 +422,41 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 		}
 	};
 
-	// A `timestampFloorLog` is a claim about the process-global monotonic clock,
-	// and the clock was seeded (or not) by whichever handle opened this physical
-	// path first. `DBKey` splits one path into separate entries by read-only mode
-	// and secondary workspace, so checking only this key's descriptor would let a
-	// read-only open assert restart-safe uniqueness that a writable handle on the
-	// same path already violated by minting timestamps below the durable keys.
+	// Only the first open of a physical path seeds the process-global clock, and
+	// `DBKey` splits one path into several entries by read-only mode and secondary
+	// workspace. So this asks the transaction-log registry what the path actually
+	// resolved, never a peer descriptor's copy: an open that carried no option
+	// stamps an empty name on its own descriptor without changing what was seeded,
+	// and rejecting against that empty copy would lock the path out of the very log
+	// it was seeded from.
 	auto rejectConflictingTimestampFloorLog = [&]() {
 		if (options.timestampFloorLog.empty()) {
 			return;
 		}
+		bool pathIsOpen = false;
 		for (const auto& [existingKey, existingEntry] : instance->databases) {
-			if (existingKey.path != identityPath || !existingEntry.descriptor ||
-				existingEntry.descriptor->timestampFloorLog == options.timestampFloorLog
-			) {
-				continue;
+			if (existingKey.path == identityPath && existingEntry.descriptor) {
+				pathIsOpen = true;
+				break;
 			}
-			std::ostringstream msg;
-			msg << "Database \"" << path << "\" is already open"
-				<< (!existingKey.secondaryPath.empty()
-					? " as a secondary"
-					: (existingKey.readOnly ? " read-only" : ""))
-				<< (existingEntry.descriptor->timestampFloorLog.empty()
-					? " without a timestampFloorLog"
-					: " with timestampFloorLog \"" + existingEntry.descriptor->timestampFloorLog + "\"")
-				<< "; cannot open it with timestampFloorLog \"" << options.timestampFloorLog
-				<< "\" because the monotonic timestamp floor was not seeded from it. Close every "
-				   "handle for this path, then reopen with timestampFloorLog.";
-			throw rocksdb_js::DBException(msg.str());
 		}
+		if (!pathIsOpen) {
+			return; // this open seeds the path
+		}
+		std::string resolved =
+			TransactionLogStoreRegistry::ResolvedTimestampFloorLog(identityPath);
+		if (resolved == options.timestampFloorLog) {
+			return;
+		}
+		std::ostringstream msg;
+		msg << "Database \"" << path << "\" is already open"
+			<< (resolved.empty()
+				? " without a timestampFloorLog"
+				: " with timestampFloorLog \"" + resolved + "\"")
+			<< "; cannot open it with timestampFloorLog \"" << options.timestampFloorLog
+			<< "\" because the monotonic timestamp floor was not seeded from it. Close every "
+			   "handle for this path, then reopen with timestampFloorLog.";
+		throw rocksdb_js::DBException(msg.str());
 	};
 
 	DBKey key{identityPath, options.readOnly, options.secondaryPath};
