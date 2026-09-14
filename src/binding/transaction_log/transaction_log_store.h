@@ -568,15 +568,10 @@ struct TransactionLogStore final {
 	);
 
 	/**
-	 * Registers a log file for the given sequence number.
-	 *
-	 * @param path The path to the log file to register.
-	 * @param sequenceNumber The sequence number of the log file to register.
-	 */
-	/**
-	 * Registers a discovered segment. Returns false — without touching the
-	 * registry, reading its marker or opening it — when this sequence is already
-	 * registered; the caller records that as a segment discovery could not place.
+	 * Registers a discovered segment for `sequenceNumber`. Returns false — without
+	 * touching the registry, reading its marker or opening it — when that sequence
+	 * is already registered; the caller records that as a segment discovery could
+	 * not place.
 	 */
 	bool registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber);
 

@@ -197,10 +197,9 @@ public:
 
 	/**
 	 * The `timestampFloorLog` already resolved for this physical path, or empty
-	 * when the path has none. This — not a peer descriptor's copy of the name — is
-	 * what a later open must be checked against: descriptors are per `DBKey`, and
-	 * an open that carried no option stamps an empty name on its own descriptor
-	 * without changing what the path was seeded from.
+	 * when the path has none. Descriptors are per `DBKey` and an open carrying no
+	 * option stamps an empty name on its own, so a descriptor's copy cannot answer
+	 * this.
 	 */
 	static std::string ResolvedTimestampFloorLog(const std::string& dbPath);
 

@@ -86,10 +86,7 @@ bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
  * Reads a millisecond duration out of an environment variable's raw value.
  * Anything that is not a fully consumed non-negative decimal integer yields
  * `defaultMs`; a value above `maxMs` — including one too large for the integer
- * type — yields `maxMs`. That last case is the reason this is not a bare
- * `std::stoll`: an overflowing positive silently became the default, which
- * contradicts a documented cap, while an unsigned parse would read a huge
- * negative as overflow and select the cap instead.
+ * type — yields `maxMs`.
  */
 uint64_t parseDurationMs(const char* raw, uint64_t defaultMs, uint64_t maxMs);
 

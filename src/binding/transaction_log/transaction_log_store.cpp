@@ -1297,9 +1297,6 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					auto filename = filePath.filename().string();
 					uint32_t sequenceNumber = 0;
 					if (!parseTransactionLogSegmentName(filename, sequenceNumber)) {
-						// A name the writer could not have produced. Registering it
-						// would give a foreign file a real segment's identity, and
-						// "1 copy.txnlog" would take "1.txnlog"'s slot.
 						store->markDiscoverySkipped(filePath);
 						DEBUG_LOG("%p TransactionLogStore::load Ignoring non-canonical segment name: %s\n",
 							store.get(), filename.c_str());
