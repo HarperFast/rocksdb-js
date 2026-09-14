@@ -10,7 +10,7 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 - `pnpm build:binding:debug` - Incremental build C++ binding only (debug)
 - `pnpm build:bundle` - TypeScript only (unminified)
 - `pnpm build:bundle:minify` - TypeScript only (minified)
-- `pnpm rebuild` - Configure and build C++ binding only (production)
+- `pnpm run rebuild` - Configure and build C++ binding only (production; `run` is required — pnpm 11 resolves a bare `pnpm rebuild` to its built-in dependency rebuild, which never runs node-gyp here)
 - `pnpm rebuild:debug` - Native C++ binding only (with debug logging and coverage)
 
 ### Testing
@@ -889,6 +889,73 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     and Node cannot free the tsfn under `napi_call_threadsafe_function`. Calling a tsfn only enqueues
     onto its env's loop, so holding the mutex across it cannot re-enter. `test/lock-teardown-abort.test.ts`
     is the child-process repro; it also proves a live waiter is still woken.
+23. **A drop closes a column family's commit gate before it waits, and a commit holds that gate
+    only across `Transaction::Commit()`**: a transaction commit that reaches RocksDB naming a family
+    another thread has just dropped fails inside `MemTableInserter::SeekToColumnFamily`, and RocksDB
+    latches that as a FATAL background error on the whole database — every later write on every
+    family fails until reopen/`resume()` (HarperFast/rocksdb-js#806, #726). Under the default
+    optimistic `kValidateParallel` the conflict check runs before the commit enters the write thread
+    and cannot see the drop; pessimistic commits have no check at all. The binding interlocks the two
+    itself: `ColumnFamilyDescriptor::gate` (`core/column_family_gate.h`; one per family, shared by
+    every handle and env on the process-global descriptor; null for the default family, which is
+    cleared, never dropped) is a single atomic word whose commit side is `tryAdmit`/`release` and
+    whose drop side is `beginDrop` → `waitForAdmitted` → `DropColumnFamily` → `markDropped`
+    (`dropColumnFamilyGated` in database.cpp). Admission is one read-modify-write, so a commit
+    either lands its increment before the dropping flag (the drop then waits for its release) or
+    observes the flag and is refused with `Status::ColumnFamilyDropped` (JS `code`
+    `'ERR_COLUMN_FAMILY_DROPPED'`, message `column family "<name>" is being dropped` /
+    `was dropped`) before `DBImpl::Write`, all-or-nothing across every family in the batch
+    (`ColumnFamilyAdmission` releases what it already took on the first refusal). Rules that keep it
+    deadlock- and leak-free:
+    - **Admission is taken at commit, never at staging.** `TransactionHandle::stagedColumns` only
+      _records_ which droppable families the transaction successfully wrote — gate tokens, inline
+      and without a lock or an allocation for up to 8 distinct families, then in a heap vector
+      allocated once at the ninth (deriving the set from the write batch at commit was tried
+      instead and rejected: it re-parses the whole batch on the serialized commit lane). A staged,
+      idle transaction holds nothing: Harper calls `dropSync()` from inside a synchronous exclusive
+      schema section while transactions staged on that thread are still open, and a staging-time hold
+      would deadlock the drop against the only event loop that could release it. The commit stage on
+      the commit lane / libuv pool needs nothing from the JS thread blocked in `dropSync()`, so a
+      thread waiting on its own admitted commit is safe in every commit execution mode
+      (`test/fixtures/fork-drop-commit-race.mts`).
+    - **The admission is a C++ scope object around `txn->Commit()`** in both `executeCommitWork`
+      and `CommitSync`: released before the log publish, the VT release and the completion dispatch,
+      and on the exception path (`admitStagedColumnFamilies` turns a throw into a rejected commit). No
+      JS callback can leave a count behind, so a drop cannot wedge on a lost release. The log stage
+      additionally runs an _advisory_ `firstDropping()` pre-check before `writeBatch`, so the common
+      drop-wins case refuses before any log bytes exist (a caller sees the refusal, not an
+      abandonment); only admission is authoritative.
+    - **Transactions pin gate tokens, never `ColumnFamilyDescriptor`s.** A token is the atomic word
+      plus the family's name, so a transaction that outlives its family — or, on the drain-timeout
+      leak path in `TransactionHandle::close()`, the whole database — touches no RocksDB state when
+      the token goes. Do not put a RocksDB handle on the token.
+    - **A drop is idempotent and its gate never reopens.** Two handles dropping one family both
+      flip, both wait, both call `DropColumnFamily`; the second gets "already dropped", which is
+      success (Harper broadcasts drops to every worker). A drop RocksDB reports as _failed_ may still
+      have removed the family — `DBImpl::DropColumnFamily` persists the OPTIONS file _after_ the
+      drop — so the gate stays closed and the by-name entry is retired by whichever call next lands on
+      the already-dropped path. `unregisterColumnFamily(name, dropped)` is identity-checked, so that
+      retirement can never erase a recreated same-name family (`forceDropFailureForTesting`
+      reproduces the failed-then-retried shape).
+    - **Both `Drop` and `DropSync` hold the operations lock** across the wait, so a descriptor close
+      cannot begin underneath it. The wait is bounded only by commits already inside `Commit()` — the
+      same bound `DBImpl::DropColumnFamilyImpl` imposes through the write thread — so a stalled
+      commit (invariant 16) stalls the drop, and the JS thread with it (`drop()` runs on the calling
+      thread too).
+    - The refusal is a hard commit error like any other: the transaction is left open for the caller
+      to abort, `db.transaction()` does not retry it, and one that had already written its log batch
+      surfaces as `TransactionAbandonedError` with the refusal attached as `cause`.
+    - Ordering tests observe rather than sleep: `setCommitHoldForTesting`,
+      `getCommitGateCountersForTesting` (`commitsAdmitted`/`dropsBegun`) and
+      `forceDropFailureForTesting` (core/test_seam.h, process-global like `forceTryAgainForTesting`)
+      exist for `test/drop-commit-gate.test.ts`. The counters and hold are inert until the first
+      counter read or a hold arms them, so a production commit pays one relaxed load and never a
+      read-modify-write on a shared cache line. The `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` seam sits
+      inside the admitted window.
+
+    Non-transactional `putSync`/`removeSync` are not gated: #725's `ignore_missing_column_families`
+    keeps them from poisoning, and that flag stays off the transactional path on purpose — there it
+    turns a commit spanning a live and a dropped family into a silent partial commit.
 
 ## Debugging native heap corruption
 

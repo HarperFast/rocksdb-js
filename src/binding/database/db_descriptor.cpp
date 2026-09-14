@@ -1749,8 +1749,17 @@ uint32_t DBDescriptor::transactionGetNextId() {
  * shared_ptr and can continue reading until they close; only the by-name
  * lookup is removed.
  */
-void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
+bool DBDescriptor::unregisterColumnFamily(
+	const std::string& columnName,
+	const std::shared_ptr<ColumnFamilyDescriptor>& dropped
+) {
 	std::lock_guard<std::mutex> lock(this->columnsMutex);
+	auto it = this->columns.find(columnName);
+	if (it == this->columns.end() || it->second != dropped) {
+		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" %s\n",
+			this, columnName.c_str(), it == this->columns.end() ? "not found" : "already replaced");
+		return false;
+	}
 	// Retire debounce state so the map stays bounded and a recreated CF of the
 	// same name starts fresh rather than inheriting a stale reported-stalled bit.
 	this->writeStallDebounce.forget(columnName);
@@ -1762,21 +1771,16 @@ void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
 			return dropped.descriptor.expired();
 		});
 	}
-	auto it = this->columns.find(columnName);
-	if (it == this->columns.end()) {
-		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" not found\n",
-			this, columnName.c_str());
-		return;
-	}
-	std::weak_ptr<ColumnFamilyDescriptor> dropped = it->second;
+	std::weak_ptr<ColumnFamilyDescriptor> droppedWeak = it->second;
 	const int64_t maxWriteBufferSizeToMaintain =
 		it->second ? it->second->maxWriteBufferSizeToMaintain : 0;
 	this->columns.erase(it);
-	if (trackForInventory && !dropped.expired()) {
-		this->droppedColumns.push_back({ std::move(dropped), maxWriteBufferSizeToMaintain });
+	if (trackForInventory && !droppedWeak.expired()) {
+		this->droppedColumns.push_back({ std::move(droppedWeak), maxWriteBufferSizeToMaintain });
 	}
 	DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
 		this, columnName.c_str());
+	return true;
 }
 
 /**
