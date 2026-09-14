@@ -438,8 +438,8 @@ static void executeLogWork(TransactionCommitState* state) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	} else if (rocksdb::Status admission = admitCommit(state, txnHandle); !admission.ok()) {
-		DEBUG_LOG("%p Transaction::Commit refused at admission for transaction %u: %s\n",
-			txnHandle.get(), txnHandle->id, admission.ToString().c_str());
+		DEBUG_LOG("%p Transaction::Commit refused at admission for transaction %llu: %s\n",
+			txnHandle.get(), (unsigned long long)txnHandle->id, admission.ToString().c_str());
 		state->status = admission;
 	} else if (txnHandle->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %llu\n",
