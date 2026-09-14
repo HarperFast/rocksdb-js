@@ -1202,8 +1202,6 @@ describe('Transaction Log', () => {
 				});
 			}));
 
-		// Ids this large are only reachable after 2^31 allocations, so assert at the
-		// argument boundary: they must get past validation and fail the lookup instead.
 		it('should accept transaction ids at or above 2^31', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
