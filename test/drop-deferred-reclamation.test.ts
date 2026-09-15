@@ -316,6 +316,9 @@ describe('Deferred column-family reclamation', () => {
 
 					live.populateVersion('key', 1.6e12);
 					expect(live.verifyVersion('key', 1.6e12)).toBe(true);
+					// Admission refusal restores Pending for both commit APIs: reads
+					// remain available even though writes and another commit are barred.
+					expect(txn.getSync('key')).toBe('new');
 					expect(() => txn.putSync('later', 'value')).toThrow(/abandoned/);
 					txn.abort();
 				}

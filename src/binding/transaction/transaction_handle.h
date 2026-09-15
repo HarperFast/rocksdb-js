@@ -1,6 +1,7 @@
 #ifndef __TRANSACTION_HANDLE_H__
 #define __TRANSACTION_HANDLE_H__
 
+#include <cassert>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -54,12 +55,16 @@ struct InlineVector final {
 	}
 
 	const T& back() const {
+		assert(this->count > 0);
 		return this->count <= N
 			? this->inlineSlots[this->count - 1]
 			: this->overflow.back();
 	}
 
 	void popBack() {
+		if (this->count == 0) {
+			return;
+		}
 		if (this->count <= N) {
 			this->inlineSlots[this->count - 1] = T();
 		} else {
@@ -293,7 +298,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
-	void resetTransaction(const std::shared_ptr<DBDescriptor>& descriptor);
+	void resetTransaction(DBDescriptor* descriptor);
 
 	/**
 	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),
@@ -410,10 +415,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 			: nullptr;
 	}
 
-	/**
-	 * ColumnFamilyDropped when `column` is retired, abandoning the
-	 * transaction's writes; otherwise records `column`.
-	 */
+	/** The relaxed retirement check is advisory; commit admission is authoritative. */
 	rocksdb::Status noteTouchedColumnFamily(
 		const std::shared_ptr<ColumnFamilyDescriptor>& column,
 		bool& added

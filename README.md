@@ -619,6 +619,10 @@ error on the whole database.
 
 Two consequences to know about:
 
+- A commit admitted before the drop completes successfully into the retiring generation, then the
+  physical drop removes that generation. Its caller sees a successful commit, but those writes are
+  intentionally discarded with the rest of the dropped column family; a same-name reopen creates
+  a fresh, empty generation.
 - `open()` of a name whose previous generation is still held by an admitted commit waits for the
   full admission-to-reclamation interval (bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default
   `30000`) before creating the fresh column family; if the previous generation's physical drop

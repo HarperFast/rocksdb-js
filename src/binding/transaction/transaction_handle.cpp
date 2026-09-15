@@ -102,14 +102,14 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	state(TransactionState::Pending),
 	txn(nullptr),
 	committedPosition(0, 0) {
-	this->resetTransaction(this->dbHandle->descriptor);
+	this->resetTransaction(this->dbHandle->descriptor.get());
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 	this->createdAt = std::chrono::steady_clock::now();
 }
 
-void TransactionHandle::resetTransaction(const std::shared_ptr<DBDescriptor>& descriptor) {
+void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	// clear/delete the previous transaction and create a new transaction so that it can be retried
 	this->closeIterators();
 	if (this->txn) {

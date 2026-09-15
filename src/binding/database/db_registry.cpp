@@ -551,6 +551,9 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 			if (std::shared_ptr<ColumnFamilyDescriptor> retiringGeneration =
 					entry.descriptor->findRetiringLocked(name)) {
 				columnsLock.unlock();
+				// Keep databasesMutex across this rare MANIFEST write: unlocking
+				// requires a descriptor pin that can make a last-handle close skip
+				// its only registry purge (AGENTS invariant 23).
 				bool attempted = false;
 				rocksdb::Status retryStatus = entry.descriptor->reclaimColumnFamily(retiringGeneration, &attempted);
 				if (attempted) {

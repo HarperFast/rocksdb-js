@@ -509,7 +509,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	// Set (under commitMutex) by finishClose()'s release pass. Blocks any
 	// later registerCommitCompletion from re-creating a tsfn that would never
 	// be released (which would pin that env's event loop forever); a commit
-	// racing the close falls back to the legacy libuv path instead.
+	// racing the close is rejected before dispatch.
 	bool commitCompletionsClosed = false;
 
 	/**
@@ -518,7 +518,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * env goes from idle to busy. Call on the env's own JS thread before
 	 * enqueuing the commit. Sets `closed` (leaving the maps untouched) when the
 	 * descriptor's completion plumbing has already shut down — the caller must
-	 * then use the legacy commit path.
+	 * then reject the commit.
 	 */
 	napi_status registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed);
 

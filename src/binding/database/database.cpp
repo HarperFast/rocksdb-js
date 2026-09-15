@@ -799,8 +799,11 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	rocksdb::Status status = dropColumnFamily(**dbHandle);
 	if (!status.ok()) {
-		napi_value error;
+		napi_value error = nullptr;
 		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
+		if (error == nullptr) {
+			return nullptr;
+		}
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 			env, global, reject, 1, &error, nullptr
 		), "Failed to call reject function");
@@ -837,9 +840,11 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	rocksdb::Status status = dropColumnFamily(**dbHandle);
 	if (!status.ok()) {
-		napi_value error;
+		napi_value error = nullptr;
 		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
-		::napi_throw(env, error);
+		if (error != nullptr) {
+			::napi_throw(env, error);
+		}
 		return nullptr;
 	}
 
@@ -2525,9 +2530,11 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (!status.ok()) {
-		napi_value error;
+		napi_value error = nullptr;
 		rocksdb_js::createRocksDBError(env, status, "Put failed", error);
-		::napi_throw(env, error);
+		if (error != nullptr) {
+			::napi_throw(env, error);
+		}
 		return nullptr;
 	}
 
@@ -2600,9 +2607,11 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (!status.ok()) {
-		napi_value error;
+		napi_value error = nullptr;
 		rocksdb_js::createRocksDBError(env, status, "Remove failed", error);
-		::napi_throw(env, error);
+		if (error != nullptr) {
+			::napi_throw(env, error);
+		}
 		return nullptr;
 	}
 

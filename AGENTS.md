@@ -955,7 +955,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     returns; a drop **retires** the generation under `columnsMutex` (`DBDescriptor::retireColumnFamily`:
     identity-checked erase from `columns`, `retired = true`, entry in `retiring`) and runs the
     physical drop itself only when `admitted == 0`, otherwise the last releasing commit runs it
-    (`reclaimColumnFamily`). Both sides are seq_cst two-phase (`retired` store then `admitted`
+    (`reclaimColumnFamily`). In the deferred case that last release runs `DropColumnFamily` inline:
+    an async commit lane pays the MANIFEST write/fsync before dispatching its completion and commits
+    queued behind it wait too, while `commitSync()` pays it on its calling JS thread. Moving
+    reclamation elsewhere would need a new lifetime owner.
+    Both sides are seq_cst two-phase (`retired` store then `admitted`
     load, versus `admitted` increment then `retired` load), so at least one side observes the other,
     and `claimReclaim()` makes exactly one of them run `DropColumnFamily` — after re-checking
     `admitted == 0` under the claim (a retirer can observe the transient claim of an admission about
@@ -1024,7 +1028,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     decision and the create), then simply asks `reclaimColumnFamily` to run the physical drop, under
     `databasesMutex` like the create itself — deadlock-free because a claim is only ever held by a
     commit inside RocksDB on a lane, a libuv thread, or another thread's `commitSync`, never parked
-    on the opener's event loop. `attempted` is the whole decision: true and failed throws, true and
+    on the opener's event loop. This deliberately serializes that rare retry's MANIFEST write/fsync
+    with process-wide open/close/destroy; unlocking would require a strong descriptor pin whose
+    transient ref can make a concurrent last-handle close skip its only registry purge. `attempted`
+    is the whole decision: true and failed throws, true and
     OK creates the fresh family, false means a commit still holds the generation or another thread
     is already dropping it, so the open waits in 20 ms slices bounded by
     `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` (default 30 s). **Do not reintroduce a status enum on the

@@ -356,11 +356,14 @@ struct ColumnFamilyCommitClaim final {
 /**
  * State for the `Commit` async work.
  */
+static void purgeAfterCommit(std::shared_ptr<DBDescriptor> descriptor) noexcept;
+
 struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	bool hasLog;
 	ColumnFamilyCommitClaim claim;
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
+	DBDescriptor* operationDescriptor = nullptr;
 	bool descriptorOperationActive = false;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
@@ -381,7 +384,12 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 
 	void registerDescriptorOperation(std::shared_ptr<DBDescriptor> descriptor) {
 		this->libuvDescriptor = std::move(descriptor);
-		++this->libuvDescriptor->operationsInFlight;
+		this->registerDescriptorOperation(this->libuvDescriptor.get());
+	}
+
+	void registerDescriptorOperation(DBDescriptor* descriptor) {
+		this->operationDescriptor = descriptor;
+		++this->operationDescriptor->operationsInFlight;
 		this->descriptorOperationActive = true;
 	}
 
@@ -390,34 +398,31 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 			return;
 		}
 		this->descriptorOperationActive = false;
-		if (--this->libuvDescriptor->operationsInFlight == 0 && this->libuvDescriptor->isClosing()) {
-			this->libuvDescriptor->operationsInFlight.notify_all();
+		DBDescriptor* descriptor = this->operationDescriptor;
+		this->operationDescriptor = nullptr;
+		if (--descriptor->operationsInFlight == 0 && descriptor->isClosing()) {
+			descriptor->operationsInFlight.notify_all();
 		}
 	}
 
 	~TransactionCommitState() override {
 		this->releaseDescriptorOperation();
-		if (!this->libuvDescriptor) {
-			return;
-		}
-
-		// The registry plus this state are the last two expected references when
-		// a handle close deferred its purge behind this commit.
-		if (this->libuvDescriptor.use_count() > 2) {
-			this->libuvDescriptor.reset();
-			return;
-		}
-		try {
-			DBKey key = descriptorKey(*this->libuvDescriptor);
-			this->libuvDescriptor.reset();
-			DBRegistry::PurgeIfUnreferenced(key);
-		} catch (...) {
-			// A completion destructor must never terminate the process because a
-			// best-effort deferred close failed.
-			this->libuvDescriptor.reset();
-		}
+		purgeAfterCommit(std::move(this->libuvDescriptor));
 	}
 };
+
+static void purgeAfterCommit(std::shared_ptr<DBDescriptor> descriptor) noexcept {
+	if (!descriptor) {
+		return;
+	}
+	try {
+		DBKey key = descriptorKey(*descriptor);
+		descriptor.reset();
+		DBRegistry::PurgeIfUnreferenced(key);
+	} catch (...) {
+		// Commit completion cannot report a deferred close failure.
+	}
+}
 
 /** Owns commit setup until work is successfully handed to a native executor. */
 struct PendingTransactionCommitState final {
@@ -491,7 +496,7 @@ static void rejectRetryNowSetupFailure(
 	state->callReject(error);
 }
 static rocksdb::Status admitCommit(TransactionCommitState* state, const std::shared_ptr<TransactionHandle>& txnHandle) {
-	std::shared_ptr<DBDescriptor> descriptor = state->descriptor.lock();
+	DBDescriptor* descriptor = state->operationDescriptor;
 	if (!descriptor) {
 		return rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	}
@@ -558,7 +563,7 @@ static void executeLogWork(TransactionCommitState* state) {
  */
 static void executeCommitWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
-	auto descriptor = state->descriptor.lock();
+	DBDescriptor* descriptor = state->operationDescriptor;
 	// The log stage already failed the commit on any invalid-handle condition,
 	// but the handle can also be torn out between the stages (e.g. a timed-out
 	// DBHandle::close() resetting the descriptor mid-pipeline). Never let a
@@ -571,7 +576,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 	} else {
 		// ensure the log stage (or handle validation) hasn't errored
 		if (!state->status.ok()) {
-			state->claim.release(descriptor.get());
+			state->claim.release(descriptor);
 			if (state->status.IsColumnFamilyDropped()) {
 				txnHandle->writesAbandoned = true;
 				if (!txnHandle->lockedVTSlots.empty()) {
@@ -604,7 +609,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			} else {
 				state->status = txnHandle->txn->Commit();
 			}
-			state->claim.release(descriptor.get());
+			state->claim.release(descriptor);
 
 			// For coordinated retry: save slot pointers before
 			// releaseIntent() clears them so the complete callback
@@ -863,15 +868,12 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
  */
 static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* context, void* data) {
 	TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
+	std::shared_ptr<DBDescriptor> descriptor;
 
 	// env is nullptr when the env is tearing down; nothing left to resolve and
 	// the descriptor's per-env tsfn is being released — do not touch napi.
 	if (env != nullptr) {
-		// Pin the descriptor across completion: completeCommitWork may close the
-		// txn handle (dropping the state's references), but we still need the
-		// descriptor for the pending accounting below. The state pins it here
-		// (state -> txnHandle -> dbHandle -> descriptor).
-		std::shared_ptr<DBDescriptor> descriptor = state->descriptor.lock();
+		descriptor = state->descriptor.lock();
 		completeCommitWork(env, state);
 		if (descriptor) {
 			descriptor->finishCommitCompletion(env);
@@ -886,6 +888,9 @@ static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* co
 	}
 
 	delete state;
+	if (env != nullptr) {
+		purgeAfterCommit(std::move(descriptor));
+	}
 }
 
 /**
@@ -974,29 +979,34 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	auto descriptor = state->descriptor.lock();
 	bool completionsClosed = false;
 	if (mode != CommitThreadMode::Legacy && descriptor) {
-		// Keep the descriptor alive until every queued stage has completed. Worker
-		// teardown can close the transaction handle between the log and commit
-		// stages, releasing its DBHandle and its descriptor reference. The registry
-		// retains its reference until it drains and joins these lanes, so this task
-		// capture cannot be the last descriptor reference on a worker thread.
+		// The workers are descriptor members, and every descriptor close drains and
+		// joins the log lane before the commit lane. Their tasks therefore use a raw
+		// pointer to their owner: a shared_ptr capture would make CloseDB skip its
+		// purge, then could still be alive when the JS completion retries it.
+		DBDescriptor* descriptorOwner = descriptor.get();
 		// Ensure this env has a completion tsfn and account the dispatch (refs
 		// the tsfn as the env goes idle->busy so the event loop stays alive).
-		// When the descriptor's completion plumbing has already shut down (a
-		// commit racing another env's close), fall through to the legacy path
-		// below rather than re-creating a tsfn the close will never release.
+		// Closed completion plumbing means finishClose() has already drained the
+		// lanes; the commit is rejected below rather than dispatched elsewhere.
 		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs, completionsClosed));
 		if (!completionsClosed) {
+			// Publish an operation claim before the DBHandle work registration:
+			// CloseDB may claim the last-handle purge while the task runs, but
+			// finishClose then waits here before draining the owning lanes.
+			state->registerDescriptorOperation(descriptorOwner);
 			// register the commit with the transaction handle so close() can wait
 			(*txnHandle)->registerAsyncWork();
+			stateOwner.asyncWorkRegistered = true;
 
 			// Commit-lane stage: RocksDB commit, then marshal the completion
 			// back to the originating env.
-			auto commitStage = [descriptor, state]() {
+			auto commitStage = [descriptorOwner, state]() {
 				executeCommitWork(state);
+				state->releaseDescriptorOperation();
 				if (unsigned delay = commitDelayMs()) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(delay));
 				}
-				if (!descriptor->dispatchCommitCompletion(state->env, state)) {
+				if (!descriptorOwner->dispatchCommitCompletion(state->env, state)) {
 					// Env torn down (e.g. worker terminate) — the completion has
 					// nowhere to run. Close the txn handle (cross-thread safe) so
 					// the shared descriptor doesn't retain the transaction, then
@@ -1013,9 +1023,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				// Two-lane pipeline: the log lane writes the transaction-log
 				// batch, then forwards to the commit lane. Every commit passes
 				// through both lanes so total order is preserved.
-				descriptor->logWorker.enqueue([descriptor, state, commitStage]() {
+				descriptor->logWorker.enqueue([descriptorOwner, state, commitStage]() {
 					executeLogWork(state);
-					descriptor->commitWorker.enqueue(commitStage);
+					descriptorOwner->commitWorker.enqueue(commitStage);
 				});
 			} else {
 				// Single lane (default): both stages run back to back on the
@@ -1207,7 +1217,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 				(*txnHandle).get(), status.IsBusy() ? "IsBusy" : "TryAgain");
 			// Reset onto a fresh snapshot so the retry re-drives the commit against current state
 			// (committedPosition survives, keeping the WAL write-once, #668). See async Commit.
-			(*txnHandle)->resetTransaction(descriptor);
+			(*txnHandle)->resetTransaction(descriptor.get());
 		}
 		if ((*txnHandle)->state == TransactionState::Committing) {
 			(*txnHandle)->state = TransactionState::Pending;

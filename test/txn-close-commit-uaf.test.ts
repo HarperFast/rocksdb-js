@@ -57,37 +57,81 @@ describe('TransactionHandle::close() vs async-commit complete callback', () => {
 		() => expectSurvives()
 	);
 
-	it('finishes a last-handle close deferred by a legacy commit', { timeout: 30_000 }, async () => {
-		const dbPath = generateDBPath();
-		try {
-			const result = await new Promise<{
-				code: number | null;
-				signal: NodeJS.Signals | null;
-				stdout: string;
-				stderr: string;
-			}>((resolve, reject) => {
-				const child = spawn(process.execPath, [legacyLastHandleFixturePath, dbPath], {
-					env: {
-						...process.env,
-						ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '6000',
-						ROCKSDB_JS_COMMIT_THREAD: '0',
-					},
-				});
-				let stdout = '';
-				let stderr = '';
-				child.stdout?.on('data', (chunk) => (stdout += chunk.toString()));
-				child.stderr?.on('data', (chunk) => (stderr += chunk.toString()));
-				child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
-				child.on('error', reject);
-			});
+	for (const commitThread of ['0', '1'] as const) {
+		it(
+			`finishes a last-handle close deferred by commit mode ${commitThread}`,
+			{ timeout: 30_000 },
+			async () => {
+				const dbPath = generateDBPath();
+				try {
+					const result = await new Promise<{
+						code: number | null;
+						signal: NodeJS.Signals | null;
+						stdout: string;
+						stderr: string;
+					}>((resolve, reject) => {
+						const child = spawn(process.execPath, [legacyLastHandleFixturePath, dbPath], {
+							env: {
+								...process.env,
+								ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '6000',
+								ROCKSDB_JS_COMMIT_THREAD: commitThread,
+							},
+						});
+						let stdout = '';
+						let stderr = '';
+						child.stdout?.on('data', (chunk) => (stdout += chunk.toString()));
+						child.stderr?.on('data', (chunk) => (stderr += chunk.toString()));
+						child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+						child.on('error', reject);
+					});
 
-			expect(result.signal, result.stderr).toBeNull();
-			expect(result.code, result.stderr).toBe(0);
-			expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({ ok: true });
-		} finally {
-			if (!process.env.KEEP_FILES) {
-				rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
+					expect(result.signal, result.stderr).toBeNull();
+					expect(result.code, result.stderr).toBe(0);
+					expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({ ok: true });
+				} finally {
+					if (!process.env.KEEP_FILES) {
+						rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
+					}
+				}
+			}
+		);
+	}
+
+	it(
+		'finishes a last-handle close when a commit-lane env is terminated',
+		{ timeout: 30_000 },
+		async () => {
+			const dbPath = generateDBPath();
+			try {
+				const result = await new Promise<{
+					code: number | null;
+					signal: NodeJS.Signals | null;
+					stdout: string;
+					stderr: string;
+				}>((resolve, reject) => {
+					const child = spawn(process.execPath, [legacyLastHandleFixturePath, dbPath, 'worker'], {
+						env: {
+							...process.env,
+							ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '6000',
+							ROCKSDB_JS_COMMIT_THREAD: '1',
+						},
+					});
+					let stdout = '';
+					let stderr = '';
+					child.stdout?.on('data', (chunk) => (stdout += chunk.toString()));
+					child.stderr?.on('data', (chunk) => (stderr += chunk.toString()));
+					child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+					child.on('error', reject);
+				});
+
+				expect(result.signal, result.stderr).toBeNull();
+				expect(result.code, result.stderr).toBe(0);
+				expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({ ok: true });
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
+				}
 			}
 		}
-	});
+	);
 });
