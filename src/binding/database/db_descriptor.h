@@ -334,8 +334,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::shared_ptr<std::condition_variable> retiringCondition;
 
 	/**
-	 * Mutex to protect the columns map. Column families can be unregistered on
-	 * drop (see `unregisterColumnFamily`) while other threads iterate the map:
+	 * Mutex to protect the columns map. Column families can be retired on drop
+	 * (see `retireColumnFamily`) while other threads iterate the map:
 	 * the JS thread via the `columns` getter or `DBRegistry::OpenDB`, libuv
 	 * worker threads via `flush()`, and a closing thread via `close()`. Lock
 	 * ordering: when both are held, `DBRegistry::databasesMutex` is acquired

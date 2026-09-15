@@ -958,7 +958,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     (`reclaimColumnFamily`). In the deferred case that last release runs `DropColumnFamily` inline:
     an async commit lane pays the MANIFEST write/fsync before dispatching its completion and commits
     queued behind it wait too, while `commitSync()` pays it on its calling JS thread. Moving
-    reclamation elsewhere would need a new lifetime owner.
+    reclamation elsewhere would need a new lifetime owner. An admitted commit's transaction-log
+    entries are published even though the subsequent physical drop discards its data; downstream
+    consumers must order the schema drop after those entries.
     Both sides are seq_cst two-phase (`retired` store then `admitted`
     load, versus `admitted` increment then `retired` load), so at least one side observes the other,
     and `claimReclaim()` makes exactly one of them run `DropColumnFamily` — after re-checking

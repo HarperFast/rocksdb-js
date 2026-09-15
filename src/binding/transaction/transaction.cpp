@@ -298,10 +298,6 @@ struct ColumnFamilyCommitClaim final {
 		this->release(nullptr);
 	}
 
-	/**
-	 * Claims every family in `touched`. Refuses the whole commit with
-	 * ColumnFamilyDropped naming the first retired family, holding nothing.
-	 */
 	rocksdb::Status admit(const ColumnFamilySet& touched, DBDescriptor& descriptor) {
 		// Storage for every claim is secured before the first claim is
 		// published, so recording one can never fail after its count was taken.

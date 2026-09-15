@@ -617,12 +617,13 @@ physical drop before returning, exactly as before. This is what keeps a drop rac
 thread's commit from latching RocksDB's fatal `Invalid column family specified in write batch`
 error on the whole database.
 
-Two consequences to know about:
+Consequences to know about:
 
 - A commit admitted before the drop completes successfully into the retiring generation, then the
   physical drop removes that generation. Its caller sees a successful commit, but those writes are
   intentionally discarded with the rest of the dropped column family; a same-name reopen creates
-  a fresh, empty generation.
+  a fresh, empty generation. If the transaction writes to a transaction log, its entries are still
+  published; consumers must order the schema drop after those entries.
 - `open()` of a name whose previous generation is still held by an admitted commit waits for the
   full admission-to-reclamation interval (bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default
   `30000`) before creating the fresh column family; if the previous generation's physical drop

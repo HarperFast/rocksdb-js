@@ -525,7 +525,7 @@ void DBDescriptor::finishClose() {
 		this->commitCompletions.clear();
 		// Block any later registerCommitCompletion (a commit racing this close
 		// from another env) from re-creating a tsfn that would never be
-		// released; such commits fall back to the legacy libuv path.
+		// released; such commits are rejected before dispatch.
 		this->commitCompletionsClosed = true;
 	}
 

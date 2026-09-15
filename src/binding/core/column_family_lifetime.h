@@ -27,20 +27,10 @@ struct ColumnFamilyLifetime final {
 		return false;
 	}
 
-	/**
-	 * Releases one claim. Returns true when this was the last claim on a
-	 * retired generation: the caller owns the physical drop (subject to
-	 * `claimReclaim()`).
-	 */
 	bool release() {
 		return this->admitted.fetch_sub(1) == 1 && this->retired.load();
 	}
 
-	/**
-	 * Logical drop. Returns false when the generation was already retired
-	 * (idempotent re-drop). `reclaimNow` reports whether no claim is held, in
-	 * which case the caller owns the physical drop.
-	 */
 	bool retire(bool& reclaimNow) {
 		reclaimNow = false;
 		if (this->retired.exchange(true)) {
@@ -50,10 +40,6 @@ struct ColumnFamilyLifetime final {
 		return true;
 	}
 
-	/**
-	 * Exactly-once gate for the physical drop. A failed attempt calls
-	 * `unclaimReclaim()` so a later retry can claim again.
-	 */
 	bool claimReclaim() {
 		bool expected = false;
 		return this->reclaimClaimed.compare_exchange_strong(expected, true);
