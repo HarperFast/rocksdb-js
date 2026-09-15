@@ -13,6 +13,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
  */
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-drop-deferred-commit.mts');
+// The child matrix depends on Node's N-API worker teardown and process-signal
+// behavior. Bun and Deno still run the in-process contract cases below; Deno's
+// related worker-env teardown failures are tracked in #746.
 const isNode = !process.versions.bun && !process.versions.deno;
 
 function removeDBPath(dbPath: string): void {
