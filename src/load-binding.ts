@@ -868,6 +868,10 @@ export const setTransactionStagingDelayForTesting: (countdown: number, delayMs: 
 export const isTransactionStagingDelayedForTesting: () => boolean =
 	binding.isTransactionStagingDelayedForTesting;
 
+/** Reports whether a transaction is parked at the native commit seam. */
+export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
+	binding.isTransactionCommitExecuteDelayedForTesting;
+
 /** Delays one selected watchdog join in the concurrent-shutdown regression test. */
 export const setWriteBufferManagerJoinDelayForTesting: (
 	countdown: number,

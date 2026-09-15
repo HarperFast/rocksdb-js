@@ -102,6 +102,17 @@ napi_value IsTransactionStagingDelayedForTesting(napi_env env, napi_callback_inf
 	return result;
 }
 
+napi_value IsTransactionCommitExecuteDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(
+		env,
+		transactionCommitExecuteDelayActive().load(std::memory_order_acquire),
+		&result
+	));
+	return result;
+}
+
 napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	int32_t countdown = 0;
@@ -357,6 +368,22 @@ NAPI_MODULE_INIT() {
 		exports,
 		"isTransactionStagingDelayedForTesting",
 		isTransactionStagingDelayedFn
+	));
+
+	napi_value isTransactionCommitExecuteDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"isTransactionCommitExecuteDelayedForTesting",
+		NAPI_AUTO_LENGTH,
+		IsTransactionCommitExecuteDelayedForTesting,
+		nullptr,
+		&isTransactionCommitExecuteDelayedFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"isTransactionCommitExecuteDelayedForTesting",
+		isTransactionCommitExecuteDelayedFn
 	));
 
 	napi_value setWriteBufferManagerJoinDelayFn;

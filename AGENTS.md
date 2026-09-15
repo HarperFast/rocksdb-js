@@ -187,6 +187,17 @@ hook (`DBRegistry::ReleaseCommitCompletionsByEnv`) — the same env-teardown
 discipline as `EventEmitter::notify` above. A per-commit tsfn acquire is NOT
 sufficient (env teardown does not honor tsfn acquire counts); see
 `test/commit-teardown.test.ts` and the `ROCKSDB_JS_COMMIT_DELAY_MS` test seam.
+The legacy libuv path registers each native execute in the descriptor's
+`operationsInFlight` count before queueing and rechecks `isClosing()` afterward,
+then releases only after the transaction's async-work registration is cleared.
+This makes direct shutdown wait for the native commit rather than destroy RocksDB
+after the transaction handle's bounded drain expires. The commit state also pins
+the descriptor through its JS completion and retries `PurgeIfUnreferenced()` when
+that pin was why a last-handle `close()` deferred teardown. Direct shutdown can
+therefore wait without a bound for a stalled legacy commit; releasing the counter
+from the libuv execute thread, rather than its JS completion, keeps that wait
+deadlock-free. The unified admission/drain contract tracked by #784 remains the
+larger cleanup; legacy mode stays as the documented operational escape hatch.
 
 ## Environment Variables
 
@@ -199,6 +210,9 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `2` = experimental two-lane pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
+- `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` - Test-only: delay immediately before a
+  native transaction commit while its async work and descriptor operation remain
+  registered (widens close-vs-execute race windows)
 - `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only: delay a transaction's cold-cache async get before
   it reads (exercises orphan cleanup past the async-work wait timeout)
 - `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
@@ -1026,11 +1040,13 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     event and `columnFamily.pendingReclaims`,
     and is retried on the next drop on the database, the next `open()` of that name (retried inline
     with `columnsMutex` released; a second failure throws), and `finishClose()`, which then destroys
-    the RocksDB handle of every generation still in `retiring` ahead of the database: on the legacy
-    libuv path a claim can outlive the closables sweep's drain timeout (#784), and
-    `reclaimColumnFamily` — which also participates in `operationsInFlight` and stands down once the
-    descriptor is closing — skips a generation whose handle is gone rather than drop into a
-    destroyed database. Retry is idempotent
+    the RocksDB handle of every generation still in `retiring` ahead of the database. Legacy libuv
+    commits participate in the descriptor's `operationsInFlight` accounting, so close cannot reach
+    this retry until their commit claims and transaction async-work registrations have been
+    released; destroying any remaining handles before the database is still the final defense.
+    `reclaimColumnFamily` also participates in that accounting and stands down once the descriptor
+    is closing, skipping a generation whose handle is gone rather than dropping into a destroyed
+    database. Retry is idempotent
     because RocksDB removes the family (`LogAndApply`, `SetDropped`) before it persists OPTIONS, so a
     drop that failed past the MANIFEST publish retries as "Column family already dropped", which is
     success. The retired name is never reinserted. A second handle to the same retired generation

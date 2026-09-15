@@ -360,6 +360,8 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	bool hasLog;
 	ColumnFamilyCommitClaim claim;
 	std::weak_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<DBDescriptor> libuvDescriptor;
+	bool descriptorOperationActive = false;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
@@ -376,6 +378,90 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 				? handle->dbHandle->descriptor->parkTimeouts
 				: std::shared_ptr<ParkTimeoutRegistry>()
 		) {}
+
+	void registerDescriptorOperation(std::shared_ptr<DBDescriptor> descriptor) {
+		this->libuvDescriptor = std::move(descriptor);
+		++this->libuvDescriptor->operationsInFlight;
+		this->descriptorOperationActive = true;
+	}
+
+	void releaseDescriptorOperation() noexcept {
+		if (!this->descriptorOperationActive) {
+			return;
+		}
+		this->descriptorOperationActive = false;
+		if (--this->libuvDescriptor->operationsInFlight == 0 && this->libuvDescriptor->isClosing()) {
+			this->libuvDescriptor->operationsInFlight.notify_all();
+		}
+	}
+
+	~TransactionCommitState() override {
+		this->releaseDescriptorOperation();
+		if (!this->libuvDescriptor) {
+			return;
+		}
+
+		// The registry plus this state are the last two expected references when
+		// a handle close deferred its purge behind this commit.
+		if (this->libuvDescriptor.use_count() > 2) {
+			this->libuvDescriptor.reset();
+			return;
+		}
+		try {
+			DBKey key = descriptorKey(*this->libuvDescriptor);
+			this->libuvDescriptor.reset();
+			DBRegistry::PurgeIfUnreferenced(key);
+		} catch (...) {
+			// A completion destructor must never terminate the process because a
+			// best-effort deferred close failed.
+			this->libuvDescriptor.reset();
+		}
+	}
+};
+
+/** Owns commit setup until work is successfully handed to a native executor. */
+struct PendingTransactionCommitState final {
+	napi_env env;
+	std::unique_ptr<TransactionCommitState> state;
+	bool asyncWorkRegistered = false;
+
+	PendingTransactionCommitState(napi_env env, std::unique_ptr<TransactionCommitState> state)
+		: env(env), state(std::move(state)) {}
+
+	~PendingTransactionCommitState() {
+		if (!this->state) {
+			return;
+		}
+		if (this->state->handle && this->state->handle->state == TransactionState::Committing) {
+			this->state->handle->state = TransactionState::Pending;
+		}
+		if (this->state->resolveRef) {
+			::napi_delete_reference(this->env, this->state->resolveRef);
+			this->state->resolveRef = nullptr;
+		}
+		if (this->state->rejectRef) {
+			::napi_delete_reference(this->env, this->state->rejectRef);
+			this->state->rejectRef = nullptr;
+		}
+		if (this->state->asyncWork) {
+			this->state->deleteAsyncWork();
+		}
+		if (this->asyncWorkRegistered) {
+			// Unregister before ~TransactionCommitState releases its descriptor
+			// pin; a deferred purge may immediately enter the closables sweep.
+			this->state->signalExecuteCompleted();
+		} else {
+			this->state->completed.store(true);
+		}
+	}
+
+	TransactionCommitState* get() const {
+		return this->state.get();
+	}
+
+	TransactionCommitState* release() {
+		return this->state.release();
+	}
 };
 
 static void rejectRetryNowSetupFailure(
@@ -502,7 +588,9 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
 			// therefore cannot exercise the drain at all. Noop in production.
 			if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
+				transactionCommitExecuteDelayActive().store(true, std::memory_order_release);
 				std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
+				transactionCommitExecuteDelayActive().store(false, std::memory_order_release);
 			}
 			if (testForceTryAgain()) {
 				// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
@@ -871,24 +959,26 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->closeIterators();
 
-	TransactionCommitState* state = new TransactionCommitState(env, *txnHandle);
+	auto stateOwner = PendingTransactionCommitState(
+		env,
+		std::make_unique<TransactionCommitState>(env, *txnHandle)
+	);
+	TransactionCommitState* state = stateOwner.get();
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
 	DEBUG_LOG("%p Transaction::Commit Setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id);
 	(*txnHandle)->state = TransactionState::Committing;
 
-	auto dbHandle = (*txnHandle)->dbHandle;
 	CommitThreadMode mode = commitThreadMode();
+	auto descriptor = state->descriptor.lock();
 	bool completionsClosed = false;
-	if (mode != CommitThreadMode::Legacy && dbHandle && dbHandle->descriptor) {
+	if (mode != CommitThreadMode::Legacy && descriptor) {
 		// Keep the descriptor alive until every queued stage has completed. Worker
 		// teardown can close the transaction handle between the log and commit
 		// stages, releasing its DBHandle and its descriptor reference. The registry
 		// retains its reference until it drains and joins these lanes, so this task
 		// capture cannot be the last descriptor reference on a worker thread.
-		auto descriptor = dbHandle->descriptor;
-
 		// Ensure this env has a completion tsfn and account the dispatch (refs
 		// the tsfn as the env goes idle->busy so the event loop stays alive).
 		// When the descriptor's completion plumbing has already shut down (a
@@ -936,11 +1026,26 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				});
 			}
 
+			stateOwner.release();
 			NAPI_RETURN_UNDEFINED();
 		}
 	}
+	if (mode != CommitThreadMode::Legacy || !descriptor) {
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+		completeCommitWork(env, state);
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	// Legacy path: dispatch the commit to the libuv threadpool.
+	state->registerDescriptorOperation(descriptor);
+	// Publish the operation before checking closing, as in the checkpoint path:
+	// teardown either waits for us or this check observes that it already won.
+	if (descriptor->isClosing()) {
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+		completeCommitWork(env, state);
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
 		env,
@@ -957,6 +1062,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
 			executeLogWork(state);
 			executeCommitWork(state);
+			// executeCommitWork unregisters the transaction work first, so a
+			// closing descriptor cannot reach its closables sweep too early.
+			state->releaseDescriptorOperation();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
@@ -965,6 +1073,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				state->handle.get(), status, state->handle ? (unsigned long long)state->handle->id : 0ULL);
 
 			state->deleteAsyncWork();
+			// A cancelled item never entered executeCommitWork, so clear the
+			// transaction registration before its descriptor pin can be released.
+			state->signalExecuteCompleted();
 
 			// only process result if the work wasn't cancelled
 			if (status != napi_cancelled) {
@@ -979,8 +1090,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 	// register the async work with the transaction handle
 	(*txnHandle)->registerAsyncWork();
+	stateOwner.asyncWorkRegistered = true;
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	stateOwner.release();
 
 	NAPI_RETURN_UNDEFINED();
 }
