@@ -599,7 +599,10 @@ A drop retires the column family **logically** before it returns: the name is go
 transaction that then stages a write to a handle of the dropped family, or commits one it staged
 earlier, is refused whole with `ERR_COLUMN_FAMILY_DROPPED` (`Column family "users" was dropped`).
 That terminal refusal releases the transaction's verification-table intents and bars further
-writes or commit attempts; retained reads continue until the caller aborts the transaction.
+writes or commit attempts; retained reads continue until the caller aborts the transaction, and
+they still serve that transaction's own staged writes — values no commit will ever produce. A
+caller that catches the refusal instead of letting it propagate must not read a value back through
+the transaction and carry it forward.
 Handles other threads still hold keep **reading** the dropped data until they close; a
 non-transactional `putSync`/`removeSync` through such a handle is discarded.
 

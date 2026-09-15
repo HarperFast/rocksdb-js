@@ -975,16 +975,31 @@ sufficient (env teardown does not honor tsfn acquire counts); see
 
     A staging call reserves its touched-set entry before calling RocksDB so allocation can never
     leave an untracked write in the batch, but removes that new entry again when `Put`/`Delete`
-    fails before accepting the mutation. A terminal admission refusal marks the transaction's writes
-    abandoned and releases its VT intents, so a caller retaining the transaction for reads cannot
-    leave coordinated-retry writers parked. Every explicit log-stage claim release passes the live
+    fails before accepting the mutation. **Both sides of a dropped-family refusal — staging and a
+    terminal admission — mark the transaction's writes abandoned and release its VT intents**, so a
+    caller retaining the transaction for reads cannot leave coordinated-retry writers parked, and
+    one that catches the staging error cannot then commit the families it wrote before it. They must
+    not diverge: which side catches a write naming a dropped family is decided by when the drop
+    landed relative to that write, a race the caller cannot observe, so a per-operation refusal on
+    one side and a whole-transaction refusal on the other would make the contract depend on timing.
+    A staging refusal is the one failure in `putSync`/`removeSync` that is fatal to the transaction
+    rather than to the call, and it abandons before anything on that path can throw so a failure
+    still fails closed (the commit is refused as `ERR_WRITES_ABANDONED` instead). `writesAbandoned`
+    gates writes and commits only, never reads: an abandoned transaction keeps serving its own
+    staged writes, so a caller that catches either refusal rather than letting it propagate must not
+    read a value back through that transaction and carry it forward. That is deliberate — reads stay
+    valid so a caller can inspect state before aborting — but unlike `abandonWrites()` the state is
+    now reachable as a side effect of a failed write, so it is the caller-visible half worth knowing. Every explicit log-stage claim release passes the live
     descriptor — including synchronous log-write failure — so the last release retries reclamation
     immediately rather than waiting for an unrelated drop/open/close.
 
     Caller-visible contract: the name is gone from `db.columns` and reopenable as a fresh family
     before `drop()` returns; a transaction that stages a write to a retired family, or commits one
     it staged before the retire, is refused whole with `ERR_COLUMN_FAMILY_DROPPED`
-    (`Column family "x" was dropped`). On the first attempt that decision precedes every log byte;
+    (`Column family "x" was dropped`). "Refused whole" holds even for a caller that catches the
+    staging error: the transaction's writes are abandoned at that point, so its later `commit()`
+    throws `ERR_WRITES_ABANDONED` rather than applying the families it wrote first. On the first
+    attempt that decision precedes every log byte;
     after an `IsBusy`/`TryAgain` retry, the original attempt's write-once log position survives, so a
     later refusal is correctly reported as `ERR_TRANSACTION_ABANDONED`. A commit admitted before
     the retire lands in the dying generation, linearized before the drop; reads through retained

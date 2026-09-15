@@ -220,6 +220,41 @@ describe('Deferred column-family reclamation', () => {
 			}
 		));
 
+	it('abandons the transaction and releases its intents when a staging refusal is caught', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{ name: 'live', verificationTable: true },
+					{ name: 'retired', verificationTable: true },
+					{ name: 'retired', verificationTable: true },
+				],
+			},
+			async ({ db: live }, { db: retired }, { db: dropper }) => {
+				live.putSync('key', 'old');
+				live.populateVersion('key', 1.5e12);
+				const txn = new Transaction(live.store);
+				txn.putSync('key', 'new');
+				dropper.dropSync();
+
+				expect(() => retired.putSync('other', 'value', { transaction: txn })).toThrowError(
+					expect.objectContaining({ code: 'ERR_COLUMN_FAMILY_DROPPED' })
+				);
+
+				live.populateVersion('key', 1.6e12);
+				expect(live.verifyVersion('key', 1.6e12)).toBe(true);
+
+				// abandoned bars writes and commits, not reads, so the transaction
+				// still serves the staged value no commit will ever produce
+				expect(live.getSync('key', { transaction: txn })).toBe('new');
+
+				expect(() => txn.commitSync()).toThrowError(
+					expect.objectContaining({ code: 'ERR_WRITES_ABANDONED' })
+				);
+				expect(live.getSync('key')).toBe('old');
+				txn.abort();
+			}
+		));
+
 	it('refuses a commit whose override family was dropped after staging, whole', () =>
 		dbRunner(
 			{ dbOptions: [{ name: 'home' }, { name: 'other' }, { name: 'other' }] },

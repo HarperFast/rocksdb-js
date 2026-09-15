@@ -184,7 +184,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	bool coordinatedRetry;
 
 	/**
-	 * Set by Transaction::AbandonWrites: the VT write intents were released
+	 * Set by Transaction::AbandonWrites and by both sides of a dropped-family
+	 * refusal (staging, commit admission): the VT write intents were released
 	 * early, so this handle must never commit or write again — reads remain
 	 * valid until it is aborted.
 	 */
@@ -410,7 +411,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	}
 
 	/**
-	 * ColumnFamilyDropped when `column` is retired; otherwise records it.
+	 * ColumnFamilyDropped when `column` is retired, abandoning the
+	 * transaction's writes; otherwise records `column`.
 	 */
 	rocksdb::Status noteTouchedColumnFamily(
 		const std::shared_ptr<ColumnFamilyDescriptor>& column,

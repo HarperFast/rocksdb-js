@@ -725,10 +725,19 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
 	if (!column->droppable) {
 		return rocksdb::Status::OK();
 	}
-	try {
-		if (column->lifetime.isRetired()) {
+	if (column->lifetime.isRetired()) {
+		// Fatal to the transaction, not to this call (invariant 23). Abandoning
+		// before anything here can throw keeps a failure fail-closed: the commit
+		// is still refused, as ERR_WRITES_ABANDONED.
+		this->writesAbandoned = true;
+		try {
+			this->releaseIntent();
 			return rocksdb::Status::ColumnFamilyDropped("Column family \"" + column->name + "\" was dropped");
+		} catch (...) {
+			return rocksdb::Status::MemoryLimit();
 		}
+	}
+	try {
 		if (!this->touchedColumnFamilies.contains(column.get())) {
 			this->touchedColumnFamilies.add(column);
 			added = true;
