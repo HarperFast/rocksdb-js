@@ -97,7 +97,12 @@ describe('TransactionHandle::close() vs async-commit complete callback', () => {
 		);
 	}
 
-	it(
+	// Deno's Node-compat Worker termination does not run the addon's env
+	// cleanup/finalizers: even after the delayed commit finishes it retains the
+	// worker's DB closable. This case specifically verifies the N-API env cleanup
+	// contract on Node and Bun; the other commit/close cases still run on Deno.
+	// Related Deno worker-env teardown failures are tracked in #746.
+	it.skipIf(Boolean(process.versions.deno))(
 		'finishes a last-handle close when a commit-lane env is terminated',
 		{ timeout: 30_000 },
 		async () => {
