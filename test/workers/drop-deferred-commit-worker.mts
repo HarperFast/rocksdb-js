@@ -1,5 +1,5 @@
-import { RocksDatabase } from '../../src/index.ts';
-import { NativeTransaction } from '../../src/load-binding.ts';
+import { RocksDatabase, Transaction } from '../../src/index.ts';
+import { NativeTransaction, setTransactionStagingDelayForTesting } from '../../src/load-binding.ts';
 import { parentPort, workerData } from 'node:worker_threads';
 
 // Commits one transaction on the family the main thread is about to drop. The
@@ -11,14 +11,73 @@ const db = RocksDatabase.open(workerData.path, {
 	pessimistic: workerData.pessimistic,
 });
 let closed = false;
+let stagingTransaction: Transaction | undefined;
+let stagingDatabase: RocksDatabase | undefined;
 
 parentPort?.on(
 	'message',
-	async (message: { commit?: boolean; close?: boolean; open?: boolean; barrier?: Int32Array }) => {
+	async (message: {
+		commit?: boolean;
+		close?: boolean;
+		open?: boolean;
+		barrier?: Int32Array;
+		stage?: 'put' | 'delete' | 'timeout';
+		finishStage?: boolean;
+	}) => {
 		if (message.close) {
+			stagingDatabase?.close();
 			db.close();
 			closed = true;
 			parentPort?.postMessage({ closed: true });
+			return;
+		}
+		if (message.stage) {
+			stagingDatabase = RocksDatabase.open(workerData.path, {
+				name: 'meta',
+				pessimistic: true,
+				verificationTable: true,
+			});
+			stagingTransaction = new Transaction(stagingDatabase.store);
+			stagingTransaction.putSync('key', 'new');
+			if (message.stage === 'timeout') {
+				parentPort?.postMessage({ stagingStarted: true });
+			} else {
+				setTransactionStagingDelayForTesting(1, 30_000);
+			}
+			let error: string | undefined;
+			let errorCode: string | undefined;
+			const started = Date.now();
+			try {
+				if (message.stage === 'put') {
+					db.putSync('raced', 'value', { transaction: stagingTransaction });
+				} else if (message.stage === 'timeout') {
+					db.putSync('locked', 'candidate', { transaction: stagingTransaction });
+				} else {
+					db.removeSync('seed', { transaction: stagingTransaction });
+				}
+			} catch (e) {
+				error = (e as Error).message;
+				errorCode = (e as Error & { code?: string }).code;
+			}
+			parentPort?.postMessage({ staged: true, error, errorCode, elapsedMs: Date.now() - started });
+			return;
+		}
+		if (message.finishStage && stagingTransaction && stagingDatabase) {
+			let commitError: string | undefined;
+			let commitErrorCode: string | undefined;
+			const readThrough = stagingDatabase.getSync('key', { transaction: stagingTransaction });
+			try {
+				stagingTransaction.commitSync();
+			} catch (e) {
+				commitError = (e as Error).message;
+				commitErrorCode = (e as Error & { code?: string }).code;
+			}
+			parentPort?.postMessage({
+				stageFinished: true,
+				commitError,
+				commitErrorCode,
+				readThrough,
+			});
 			return;
 		}
 		if (message.open) {

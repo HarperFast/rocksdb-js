@@ -28,7 +28,10 @@ type Scenario =
 	| 'worker-terminated'
 	| 'open-waits'
 	| 'crash-reopen'
-	| 'retry-race';
+	| 'retry-race'
+	| 'staging-put'
+	| 'staging-delete'
+	| 'staging-timeout';
 type TxnMode = 'optimistic' | 'pessimistic';
 type DropKind = 'sync' | 'async';
 type CommitThread = '0' | '1' | '2';
@@ -153,6 +156,20 @@ describe('Deferred column-family reclamation', () => {
 			);
 		}
 	);
+
+	describe.skipIf(!isNode)('drop between a pessimistic staging precheck and RocksDB', () => {
+		for (const operation of ['put', 'delete'] as const) {
+			it(
+				`abandons the whole transaction when ${operation} reaches a physically dropped family`,
+				{ timeout: 60_000 },
+				() => expectFixture(`staging-${operation}`, 'pessimistic', 'sync', '1')
+			);
+		}
+
+		it('abandons when an ordinary lock timeout overlaps retirement', { timeout: 60_000 }, () =>
+			expectFixture('staging-timeout', 'pessimistic', 'sync', '1')
+		);
+	});
 
 	it('exposes columnFamily.pendingReclaims in getStat() and getStats()', () =>
 		dbRunner({ dbOptions: [{ name: 'table' }] }, ({ db }) => {

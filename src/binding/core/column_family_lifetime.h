@@ -70,6 +70,11 @@ struct ColumnFamilyLifetime final {
 	bool isRetired() const {
 		return this->retired.load(std::memory_order_relaxed);
 	}
+
+	/** The physical drop follows retire(), so a post-RocksDB-failure recheck is authoritative. */
+	bool isRetiredOrdered() const {
+		return this->retired.load();
+	}
 };
 
 } // namespace rocksdb_js

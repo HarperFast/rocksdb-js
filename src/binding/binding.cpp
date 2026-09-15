@@ -81,6 +81,27 @@ napi_value ForceDropFailureForTesting(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value SetTransactionStagingDelayForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	int32_t countdown = 0;
+	int32_t delayMs = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &countdown));
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &delayMs));
+	setTransactionStagingDelayForTesting(std::max(countdown, 0), std::max(delayMs, 0));
+	NAPI_RETURN_UNDEFINED();
+}
+
+napi_value IsTransactionStagingDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(
+		env,
+		transactionStagingDelayActive().load(std::memory_order_acquire),
+		&result
+	));
+	return result;
+}
+
 napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	int32_t countdown = 0;
@@ -305,6 +326,38 @@ NAPI_MODULE_INIT() {
 	napi_value forceDropFailureFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceDropFailureForTesting", NAPI_AUTO_LENGTH, ForceDropFailureForTesting, nullptr, &forceDropFailureFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceDropFailureForTesting", forceDropFailureFn));
+
+	napi_value setTransactionStagingDelayFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"setTransactionStagingDelayForTesting",
+		NAPI_AUTO_LENGTH,
+		SetTransactionStagingDelayForTesting,
+		nullptr,
+		&setTransactionStagingDelayFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"setTransactionStagingDelayForTesting",
+		setTransactionStagingDelayFn
+	));
+
+	napi_value isTransactionStagingDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"isTransactionStagingDelayedForTesting",
+		NAPI_AUTO_LENGTH,
+		IsTransactionStagingDelayedForTesting,
+		nullptr,
+		&isTransactionStagingDelayedFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"isTransactionStagingDelayedForTesting",
+		isTransactionStagingDelayedFn
+	));
 
 	napi_value setWriteBufferManagerJoinDelayFn;
 	NAPI_STATUS_THROWS(::napi_create_function(

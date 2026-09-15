@@ -860,6 +860,14 @@ export const forceTryAgainForTesting: (count: number) => void = binding.forceTry
 export const forceDropFailureForTesting: (mode: 0 | 1 | 2) => void =
 	binding.forceDropFailureForTesting;
 
+/** Parks one selected transaction write after its retirement precheck. */
+export const setTransactionStagingDelayForTesting: (countdown: number, delayMs: number) => void =
+	binding.setTransactionStagingDelayForTesting;
+
+/** Reports whether the selected transaction write is parked. */
+export const isTransactionStagingDelayedForTesting: () => boolean =
+	binding.isTransactionStagingDelayedForTesting;
+
 /** Delays one selected watchdog join in the concurrent-shutdown regression test. */
 export const setWriteBufferManagerJoinDelayForTesting: (
 	countdown: number,

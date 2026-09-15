@@ -603,6 +603,8 @@ writes or commit attempts; retained reads continue until the caller aborts the t
 they still serve that transaction's own staged writes — values no commit will ever produce. A
 caller that catches the refusal instead of letting it propagate must not read a value back through
 the transaction and carry it forward.
+If a staging call fails while the generation is being retired, retirement takes precedence and the
+transaction is refused whole even when the immediate RocksDB failure was a pessimistic lock timeout.
 Handles other threads still hold keep **reading** the dropped data until they close; a
 non-transactional `putSync`/`removeSync` through such a handle is discarded.
 

@@ -982,9 +982,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     not diverge: which side catches a write naming a dropped family is decided by when the drop
     landed relative to that write, a race the caller cannot observe, so a per-operation refusal on
     one side and a whole-transaction refusal on the other would make the contract depend on timing.
-    A staging refusal is the one failure in `putSync`/`removeSync` that is fatal to the transaction
-    rather than to the call, and it abandons before anything on that path can throw so a failure
-    still fails closed (the commit is refused as `ERR_WRITES_ABANDONED` instead). `writesAbandoned`
+    A failure from `putSync`/`removeSync` is fatal to the transaction when the generation is retired
+    by the time RocksDB returns, even if the immediate failure (such as a pessimistic lock timeout)
+    was not itself caused by the drop. This deliberately keeps the contract independent of an
+    unobservable race. It abandons before anything on that path can throw so a failure still fails
+    closed (the commit is refused as `ERR_WRITES_ABANDONED` instead). `writesAbandoned`
     gates writes and commits only, never reads: an abandoned transaction keeps serving its own
     staged writes, so a caller that catches either refusal rather than letting it propagate must not
     read a value back through that transaction and carry it forward. That is deliberate — reads stay

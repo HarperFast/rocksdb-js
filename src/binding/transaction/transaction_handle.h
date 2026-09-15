@@ -419,6 +419,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		bool& added
 	);
 
+	/** Abandons before fallible cleanup so a failure still refuses commit. */
+	rocksdb::Status abandonForDroppedColumnFamily(
+		const std::shared_ptr<ColumnFamilyDescriptor>& column
+	) noexcept;
+
 	rocksdb::Status putSync(
 		rocksdb::Slice& key,
 		rocksdb::Slice& value,

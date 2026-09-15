@@ -74,6 +74,21 @@ struct PendingAsyncState {
 	PendingAsyncState& operator=(const PendingAsyncState&) = delete;
 };
 
+inline void delayTransactionStagingForTesting() {
+	const int timeoutMs = consumeTransactionStagingDelayForTesting();
+	if (timeoutMs <= 0) {
+		return;
+	}
+	transactionStagingDelayActive().store(true, std::memory_order_release);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+	while (transactionStagingDelayActive().load(std::memory_order_acquire) &&
+		std::chrono::steady_clock::now() < deadline
+	) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	transactionStagingDelayActive().store(false, std::memory_order_release);
+}
+
 } // namespace
 
 /**
@@ -714,6 +729,20 @@ void ColumnFamilySet::removeLast(ColumnFamilyDescriptor* column) {
 	this->last = this->entries.size() == 0 ? nullptr : this->entries.back().raw;
 }
 
+rocksdb::Status TransactionHandle::abandonForDroppedColumnFamily(
+	const std::shared_ptr<ColumnFamilyDescriptor>& column
+) noexcept {
+	this->writesAbandoned = true;
+	try {
+		if (!this->lockedVTSlots.empty()) {
+			this->releaseIntent();
+		}
+		return rocksdb::Status::ColumnFamilyDropped("Column family \"" + column->name + "\" was dropped");
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit();
+	}
+}
+
 rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
 	const std::shared_ptr<ColumnFamilyDescriptor>& column,
 	bool& added
@@ -726,16 +755,7 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
 		return rocksdb::Status::OK();
 	}
 	if (column->lifetime.isRetired()) {
-		// Fatal to the transaction, not to this call (invariant 23). Abandoning
-		// before anything here can throw keeps a failure fail-closed: the commit
-		// is still refused, as ERR_WRITES_ABANDONED.
-		this->writesAbandoned = true;
-		try {
-			this->releaseIntent();
-			return rocksdb::Status::ColumnFamilyDropped("Column family \"" + column->name + "\" was dropped");
-		} catch (...) {
-			return rocksdb::Status::MemoryLimit();
-		}
+		return this->abandonForDroppedColumnFamily(column);
 	}
 	try {
 		if (!this->touchedColumnFamilies.contains(column.get())) {
@@ -776,10 +796,16 @@ rocksdb::Status TransactionHandle::putSync(
 	if (!touched.ok()) {
 		return touched;
 	}
+	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Put(column, key, value);
-	if (!status.ok() && addedTouch) {
-		this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+	if (!status.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
+			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);
+		}
 	}
 
 	// Lock the VT slot for this key immediately on write. This ensures that
@@ -821,10 +847,16 @@ rocksdb::Status TransactionHandle::removeSync(
 	if (!touched.ok()) {
 		return touched;
 	}
+	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Delete(column, key);
-	if (!status.ok() && addedTouch) {
-		this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+	if (!status.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
+			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);
+		}
 	}
 
 	if (status.ok() && dbHandle->enableVerificationTable) {

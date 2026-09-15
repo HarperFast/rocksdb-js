@@ -1,5 +1,10 @@
-import { RocksDatabase } from '../../src/index.ts';
-import { forceDropFailureForTesting, forceTryAgainForTesting } from '../../src/load-binding.ts';
+import { RocksDatabase, Transaction } from '../../src/index.ts';
+import {
+	forceDropFailureForTesting,
+	forceTryAgainForTesting,
+	isTransactionStagingDelayedForTesting,
+	setTransactionStagingDelayForTesting,
+} from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { rmSync, writeSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
@@ -12,7 +17,8 @@ import { Worker } from 'node:worker_threads';
 // not a Vitest worker.
 //
 //   argv: <dbPath> <scenario> <optimistic|pessimistic> <sync|async>
-//   scenario: admitted-commit | handle-closed | handle-closed-retry | worker-terminated | open-waits | crash-reopen | retry-race
+//   scenario: admitted-commit | handle-closed | handle-closed-retry | worker-terminated | open-waits
+//     | crash-reopen | retry-race | staging-put | staging-delete | staging-timeout
 //
 // Prints one JSON line on success; a failed assertion exits non-zero.
 // `crash-reopen` SIGKILLs itself inside the deferral window and leaves the
@@ -51,7 +57,13 @@ async function pendingReclaims(
 	}
 }
 
-const meta = RocksDatabase.open(dbPath, { name: 'meta', pessimistic });
+const stagingScenario =
+	scenario === 'staging-put' || scenario === 'staging-delete' || scenario === 'staging-timeout';
+const meta = RocksDatabase.open(dbPath, {
+	name: 'meta',
+	pessimistic,
+	verificationTable: stagingScenario,
+});
 const table = RocksDatabase.open(dbPath, { name: 'table', pessimistic });
 table.putSync('seed', 'old-generation');
 
@@ -93,6 +105,70 @@ const drop = async (): Promise<number> => {
 	}
 	return Date.now() - started;
 };
+
+if (stagingScenario) {
+	await nextMessage('ready');
+	meta.putSync('key', 'old');
+	meta.populateVersion('key', 1.5e12);
+	let holder: Transaction | undefined;
+	if (scenario === 'staging-timeout') {
+		holder = new Transaction(table.store);
+		holder.putSync('locked', 'holder');
+		worker.postMessage({ stage: 'timeout' });
+		await nextMessage('stagingStarted');
+		await sleep(100);
+	} else {
+		worker.postMessage({ stage: scenario === 'staging-put' ? 'put' : 'delete' });
+		const deadline = Date.now() + 5000;
+		while (!isTransactionStagingDelayedForTesting()) {
+			assert(Date.now() < deadline, 'transaction write did not reach the staging delay');
+			await sleep(5);
+		}
+	}
+	try {
+		table.dropSync();
+	} finally {
+		if (scenario !== 'staging-timeout') {
+			setTransactionStagingDelayForTesting(0, 0);
+		}
+	}
+
+	const staged = await nextMessage('staged');
+	assert(
+		staged.errorCode === 'ERR_COLUMN_FAMILY_DROPPED',
+		`staging should report the retired family: ${staged.errorCode} ${staged.error}`
+	);
+	if (scenario === 'staging-timeout') {
+		assert(Number(staged.elapsedMs) >= 9000, `lock wait returned after only ${staged.elapsedMs}ms`);
+	}
+	meta.populateVersion('key', 1.6e12);
+	assert(
+		meta.verifyVersion('key', 1.6e12),
+		'staging refusal should release the live-key VT intent'
+	);
+
+	worker.postMessage({ finishStage: true });
+	const finished = await nextMessage('stageFinished');
+	assert(
+		finished.commitErrorCode === 'ERR_WRITES_ABANDONED',
+		`commit should refuse abandoned writes: ${finished.commitErrorCode} ${finished.commitError}`
+	);
+	assert(
+		finished.readThrough === 'new',
+		'abandoned transaction should retain read-your-own-writes'
+	);
+	assert(meta.getSync('key') === 'old', 'the earlier write must not commit');
+	holder?.abort();
+
+	worker.postMessage({ close: true });
+	await nextMessage('closed');
+	await worker.terminate();
+	console.log(JSON.stringify({ scenario, txnMode, dropKind, ok: true }));
+	table.close();
+	meta.close();
+	rmSync(dbPath, { recursive: true, force: true });
+	process.exit(0);
+}
 
 if (scenario === 'retry-race') {
 	await nextMessage('ready');
