@@ -583,8 +583,8 @@ console.log(fs.existsSync(db.path)); // false
 
 ### `db.drop(): Promise<void>`
 
-Removes all entries in the database. If the database was opened with a `name`, the database will be
-deleted on close.
+Drops the column family the database was opened with (`name`). For the default column family this
+clears all entries instead.
 
 ```typescript
 const db = RocksDatabase.open('path/to/db', { name: 'users' });
@@ -592,9 +592,56 @@ await db.drop();
 db.close();
 ```
 
+#### Dropping column families
+
+A drop retires the column family **logically** before it returns: the name is gone from
+`db.columns`, a later `open()` with the same name creates a fresh, empty column family, and any
+transaction that then stages a write to a handle of the dropped family, or commits one it staged
+earlier, is refused whole with `ERR_COLUMN_FAMILY_DROPPED` (`Column family "users" was dropped`).
+That terminal refusal releases the transaction's verification-table intents and bars further
+writes or commit attempts; retained reads continue until the caller aborts the transaction, and
+they still serve that transaction's own staged writes — values no commit will ever produce. A
+caller that catches the refusal instead of letting it propagate must not read a value back through
+the transaction and carry it forward.
+If a staging call fails while the generation is being retired, retirement takes precedence and the
+transaction is refused whole even when the immediate RocksDB failure was a pessimistic lock timeout.
+Handles other threads still hold keep **reading** the dropped data until they close; a
+non-transactional `putSync`/`removeSync` through such a handle is discarded.
+
+The **physical** RocksDB drop is deferred behind commits already admitted when the drop lands: a
+commit claims every column family its batch names before it writes its transaction-log batch and
+releases them after RocksDB has applied it, and the physical drop runs from whichever
+side releases last (or, for a commit a mid-flight `close()` tore out of its pipeline, from the next
+drop, open of that name, or close on the database). With no such commit (the common case) `drop()`/`dropSync()` perform the
+physical drop before returning, exactly as before. This is what keeps a drop racing another
+thread's commit from latching RocksDB's fatal `Invalid column family specified in write batch`
+error on the whole database.
+
+Consequences to know about:
+
+- A commit admitted before the drop completes successfully into the retiring generation, then the
+  physical drop removes that generation. Its caller sees a successful commit, but those writes are
+  intentionally discarded with the rest of the dropped column family; a same-name reopen creates
+  a fresh, empty generation. If the transaction writes to a transaction log, its entries are still
+  published; consumers must order the schema drop after those entries.
+- `open()` of a name whose previous generation is still held by an admitted commit waits for the
+  full admission-to-reclamation interval (bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default
+  `30000`) before creating the fresh column family; if the previous generation's physical drop
+  failed, the open retries it once and throws with that error if it fails again.
+- A physical drop that fails (an I/O error writing the MANIFEST) keeps the name retired, is
+  retried on the next drop on the database, the next `open()` of that name, or close, and is
+  reported through the global `log.warn` event and the `columnFamily.pendingReclaims` stat. When
+  the failing drop was the one `drop()` itself ran, the call rejects with that error as well.
+
+What is **not** guaranteed: a process that exits while a physical drop is still pending, or
+after one failed, leaves the column family on disk under its name, and the next open of the
+database opens it as a live column family. A backup or checkpoint taken inside that window copies
+it. Callers that need a drop to survive a crash record their own durable tombstone before
+acknowledging it.
+
 ### `db.dropSync(): void`
 
-Synchronous version of `db.drop()`.
+Synchronous version of `db.drop()`, with the same deferral contract.
 
 ```typescript
 const db = RocksDatabase.open('path/to/db');

@@ -20,6 +20,7 @@
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/utilities/options_util.h"
 #include "options/db_options.h"
+#include "core/column_family_lifetime.h"
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
@@ -312,8 +313,29 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::vector<DroppedColumnFamily> droppedColumns;
 
 	/**
-	 * Mutex to protect the columns map. Column families can be unregistered on
-	 * drop (see `unregisterColumnFamily`) while other threads iterate the map:
+	 * Retired generations whose physical `DropColumnFamily` has not completed,
+	 * whether because a commit still holds a claim or because an attempt
+	 * failed. Membership is the whole state: whether one can be dropped right
+	 * now is `lifetime.admitted`/`reclaimClaimed`, which `reclaimColumnFamily`
+	 * already reads atomically, so nothing here duplicates it. The strong
+	 * reference keeps the RocksDB handle alive until the drop has run; the
+	 * entry is erased by `reclaimColumnFamily` on success. Guarded by
+	 * `columnsMutex`.
+	 */
+	std::vector<std::shared_ptr<ColumnFamilyDescriptor>> retiring;
+
+	/**
+	 * Signalled (without any lock) whenever `retiring` changes, so
+	 * `DBRegistry::OpenDB` can wait for a same-name generation to finish
+	 * reclaiming before creating the fresh family. Waiters poll in short
+	 * slices under `databasesMutex`, so a notify that lands between their
+	 * predicate check and their wait is bounded, not lost.
+	 */
+	std::shared_ptr<std::condition_variable> retiringCondition;
+
+	/**
+	 * Mutex to protect the columns map. Column families can be retired on drop
+	 * (see `retireColumnFamily`) while other threads iterate the map:
 	 * the JS thread via the `columns` getter or `DBRegistry::OpenDB`, libuv
 	 * worker threads via `flush()`, and a closing thread via `close()`. Lock
 	 * ordering: when both are held, `DBRegistry::databasesMutex` is acquired
@@ -487,7 +509,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	// Set (under commitMutex) by finishClose()'s release pass. Blocks any
 	// later registerCommitCompletion from re-creating a tsfn that would never
 	// be released (which would pin that env's event loop forever); a commit
-	// racing the close falls back to the legacy libuv path instead.
+	// racing the close is rejected before dispatch.
 	bool commitCompletionsClosed = false;
 
 	/**
@@ -496,7 +518,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * env goes from idle to busy. Call on the env's own JS thread before
 	 * enqueuing the commit. Sets `closed` (leaving the maps untouched) when the
 	 * descriptor's completion plumbing has already shut down — the caller must
-	 * then use the legacy commit path.
+	 * then reject the commit.
 	 */
 	napi_status registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed);
 
@@ -641,15 +663,71 @@ public:
 	void closeTransactionsByEnv(napi_env env);
 
 	/**
-	 * Removes a dropped column family from the columns map (under
-	 * `columnsMutex`) so a later open-by-name creates a fresh column family
-	 * instead of reusing the dangling dropped handle. DBHandles still holding
-	 * the descriptor keep it alive via their shared_ptr; only the by-name
-	 * lookup is removed.
+	 * Logical drop (invariant 23). Under `columnsMutex`, and only if `column`
+	 * is still the generation registered under its name, removes it from
+	 * `columns` (so a later open-by-name creates a fresh family), marks it
+	 * retired, and records it in `retiring`. Runs the physical drop right
+	 * away when no commit holds a claim, otherwise the last releasing commit
+	 * runs it. A generation already retired by another handle retries its
+	 * physical drop and reports the outcome; a stale handle to a generation a
+	 * recreated family has replaced is a no-op.
 	 *
-	 * @param columnName The name of the dropped column family.
+	 * @param retiredNow Set when this call performed the logical retirement
+	 * (the caller owns the one-time side effects, e.g. the VT sweep).
+	 * @returns The status of a physical drop attempted by this call, or OK
+	 * when the drop was deferred or nothing was done. Read-only databases
+	 * return NotSupported before any mutation.
 	 */
-	void unregisterColumnFamily(const std::string& columnName);
+	rocksdb::Status retireColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column, bool& retiredNow);
+
+	/**
+	 * Physical drop of a retired generation, from whichever thread found the
+	 * last claim released (a commit lane, a `commitSync` caller, the retiring
+	 * JS thread, or `finishClose`). Never called under `columnsMutex`. Exactly
+	 * one caller runs `DropColumnFamily` per attempt (`claimReclaim`), and only
+	 * while no commit holds a claim and the database is not closing; success
+	 * or RocksDB's own "already dropped" erases the `retiring` entry, any
+	 * other status leaves it there for the next retry point and reports
+	 * through `log.warn`.
+	 * Cannot throw: it runs from commit completions and destructors.
+	 * `attempted` reports whether this call ran the drop (false when another
+	 * thread holds the claim, a commit is admitted, or the database is
+	 * closing), which is what a caller that must report or wait keys off;
+	 * `duringClose` is `finishClose`'s own retry, which runs after the closing
+	 * flag is set and every commit lane is drained.
+	 */
+	rocksdb::Status reclaimColumnFamily(
+		const std::shared_ptr<ColumnFamilyDescriptor>& column,
+		bool* attempted = nullptr,
+		bool duringClose = false
+	) noexcept;
+
+	/**
+	 * Releases one commit claim and reclaims when it was the last on a
+	 * retired generation.
+	 */
+	void releaseCommitClaim(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept;
+
+	/**
+	 * Attempts the physical drop of every retiring generation. One still held
+	 * by a commit, or already being dropped by another thread, is a no-op
+	 * inside `reclaimColumnFamily`. `duringClose` is `finishClose()`'s pass,
+	 * where the drained lanes can no longer release a claim themselves.
+	 */
+	void retryPendingReclaims(bool duringClose = false) noexcept;
+
+	/**
+	 * Number of retired generations whose physical drop has not completed
+	 * (`columnFamily.pendingReclaims`).
+	 */
+	size_t pendingReclaimCount();
+
+	/**
+	 * Looks up a retiring generation by name (the name is free in `columns`
+	 * while it is here). Returned by value so a caller can release
+	 * `columnsMutex` before acting on it. Caller holds `columnsMutex`.
+	 */
+	std::shared_ptr<ColumnFamilyDescriptor> findRetiringLocked(const std::string& columnName);
 
 	/**
 	 * Creates a new user shared buffer or returns an existing one.
@@ -871,6 +949,26 @@ struct ColumnFamilyDescriptor final {
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 
 	/**
+	 * The column family name, copied at creation. `column->GetName()` is not
+	 * used after retirement so no path depends on a dropped handle for its
+	 * own identity.
+	 */
+	const std::string name;
+
+	/**
+	 * The default family is cleared, never dropped, so transactions do not
+	 * track it.
+	 */
+	const bool droppable;
+
+	/**
+	 * Retire/admit/reclaim state for this generation (invariant 23). Commits
+	 * claim it through `ColumnFamilyCommitClaim`; `Database::Drop`/`DropSync`
+	 * retire it through `DBDescriptor::retireColumnFamily`.
+	 */
+	ColumnFamilyLifetime lifetime;
+
+	/**
 	 * Map of user shared buffers by key.
 	 */
 	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;
@@ -891,8 +989,10 @@ struct ColumnFamilyDescriptor final {
 
 	ColumnFamilyDescriptor(
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,
+		std::string name,
 		int64_t maxWriteBufferSizeToMaintain
-	) : column(column), maxWriteBufferSizeToMaintain(maxWriteBufferSizeToMaintain) {}
+	) : column(column), name(std::move(name)), droppable(this->name != rocksdb::kDefaultColumnFamilyName),
+		maxWriteBufferSizeToMaintain(maxWriteBufferSizeToMaintain) {}
 
 	~ColumnFamilyDescriptor() {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);

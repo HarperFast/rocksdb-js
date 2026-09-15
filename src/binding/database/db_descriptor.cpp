@@ -2,6 +2,7 @@
 #include "core/file_lock.h"
 #include "core/open_status.h"
 #include "core/platform.h"
+#include "core/test_seam.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
 #include "napi/global_events.h"
@@ -453,6 +454,7 @@ DBDescriptor::DBDescriptor(
 	db(db),
 	attachedWriteBufferManager(attachedWriteBufferManager),
 	columns(std::move(columns)),
+	retiringCondition(std::make_shared<std::condition_variable>()),
 	statistics(statistics)
 {
 	// Resolve the debounce window here (JS thread, open path) so the emit path on
@@ -523,7 +525,7 @@ void DBDescriptor::finishClose() {
 		this->commitCompletions.clear();
 		// Block any later registerCommitCompletion (a commit racing this close
 		// from another env) from re-creating a tsfn that would never be
-		// released; such commits fall back to the legacy libuv path.
+		// released; such commits are rejected before dispatch.
 		this->commitCompletionsClosed = true;
 	}
 
@@ -599,13 +601,26 @@ void DBDescriptor::finishClose() {
 	TransactionLogStoreRegistry::Unregister(this->identityPath);
 
 	this->transactions.clear();
+
+	// Drop every retiring generation while the RocksDB instance exists; what
+	// still fails stays on disk under its name. Their handles are destroyed
+	// here, ahead of the database, because a claim can outlive the closables
+	// sweep's drain timeout on the legacy libuv path.
+	this->retryPendingReclaims(true);
 	{
 		std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
 		this->columns.clear();
 		// The registry entry outlives this, so drop both or the inventory keeps
 		// reporting families of a closed database.
 		this->droppedColumns.clear();
+		for (const auto& entry : this->retiring) {
+			if (entry) {
+				entry->column.reset();
+			}
+		}
+		this->retiring.clear();
 	}
+	this->retiringCondition->notify_all();
 
 	this->events.releaseAll();
 
@@ -1603,7 +1618,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	for (size_t n = 0; n < cfHandles.size(); ++n) {
 		auto column = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
-			column, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+			column, cfDescriptors[n].name, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
 		);
 		columns[cfDescriptors[n].name] = columnDescriptor;
 		if (cfDescriptors[n].name == options.name) {
@@ -1625,7 +1640,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		}
 		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, cfo);
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
-			column, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+			column, options.name, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
 		);
 		columns[options.name] = columnDescriptor;
 	}
@@ -1742,41 +1757,213 @@ uint64_t DBDescriptor::transactionGetNextId() {
 	return ++this->nextTransactionId;
 }
 
-/**
- * Removes a dropped column family from the columns map so a later open-by-name
- * creates a fresh column family instead of reusing the dangling dropped
- * handle. DBHandles still holding the descriptor keep it alive via their
- * shared_ptr and can continue reading until they close; only the by-name
- * lookup is removed.
- */
-void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
-	std::lock_guard<std::mutex> lock(this->columnsMutex);
-	// Retire debounce state so the map stays bounded and a recreated CF of the
-	// same name starts fresh rather than inheriting a stale reported-stalled bit.
-	this->writeStallDebounce.forget(columnName);
-	// Attachment is decided once, at open, so an unattached database never reaches
-	// the stall inventory and tracks nothing.
-	const bool trackForInventory = this->attachedWriteBufferManager != nullptr;
-	if (trackForInventory) {
-		std::erase_if(this->droppedColumns, [](const DroppedColumnFamily& dropped) {
-			return dropped.descriptor.expired();
-		});
+std::shared_ptr<ColumnFamilyDescriptor> DBDescriptor::findRetiringLocked(const std::string& columnName) {
+	for (const auto& entry : this->retiring) {
+		if (entry && entry->name == columnName) {
+			return entry;
+		}
 	}
-	auto it = this->columns.find(columnName);
-	if (it == this->columns.end()) {
-		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" not found\n",
-			this, columnName.c_str());
+	return nullptr;
+}
+
+rocksdb::Status DBDescriptor::retireColumnFamily(
+	const std::shared_ptr<ColumnFamilyDescriptor>& column,
+	bool& retiredNow
+) {
+	retiredNow = false;
+	if (!column) {
+		return rocksdb::Status::InvalidArgument("Column family is not open");
+	}
+	if (this->readOnly) {
+		// RocksDB's own wording for a read-only DropColumnFamily, returned
+		// before any registry mutation so a read-only handle cannot hide a
+		// family it could never drop.
+		return rocksdb::Status::NotSupported("Not supported operation in read only mode");
+	}
+
+	bool reclaimNow = false;
+	bool stillRetiring = false;
+	{
+		std::lock_guard<std::mutex> lock(this->columnsMutex);
+		auto it = this->columns.find(column->name);
+		if (it == this->columns.end() || it->second != column) {
+			// Already retired by another handle (retry its physical drop and
+			// report the outcome), or a stale handle to a generation a recreated
+			// family has replaced (no-op).
+			stillRetiring = this->findRetiringLocked(column->name) == column;
+			DEBUG_LOG("%p DBDescriptor::retireColumnFamily column \"%s\" %s\n", this, column->name.c_str(),
+				stillRetiring ? "retrying reclaim" : (it == this->columns.end() ? "not registered" : "already replaced"));
+		} else {
+			// Allocations precede publication so a failure leaves the generation
+			// registered and droppable.
+			this->retiring.reserve(this->retiring.size() + 1);
+			const bool trackForInventory = this->attachedWriteBufferManager != nullptr;
+			if (trackForInventory) {
+				std::erase_if(this->droppedColumns, [](const DroppedColumnFamily& dropped) {
+					return dropped.descriptor.expired();
+				});
+				this->droppedColumns.reserve(this->droppedColumns.size() + 1);
+			}
+			this->writeStallDebounce.forget(column->name);
+
+			if (!column->lifetime.retire(reclaimNow)) {
+				return rocksdb::Status::OK();
+			}
+			retiredNow = true;
+			if (trackForInventory) {
+				this->droppedColumns.push_back({ column, column->maxWriteBufferSizeToMaintain });
+			}
+			this->columns.erase(it);
+			this->retiring.push_back(column);
+			DEBUG_LOG("%p DBDescriptor::retireColumnFamily retired column \"%s\" (reclaim %s)\n",
+				this, column->name.c_str(), reclaimNow ? "now" : "deferred to last commit");
+		}
+	}
+	this->retiringCondition->notify_all();
+
+	if (reclaimNow || stillRetiring) {
+		return this->reclaimColumnFamily(column);
+	}
+	return rocksdb::Status::OK();
+}
+
+// RocksDB rejects dropping a column family that has already been dropped with
+// Status::InvalidArgument("Column family already dropped!"). A retry after a
+// drop that failed past its MANIFEST publish (RocksDB removes the family
+// before it persists OPTIONS) lands here, so it is the success outcome.
+static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
+	return status.IsInvalidArgument() && status.ToString().find("Column family already dropped") != std::string::npos;
+}
+
+rocksdb::Status DBDescriptor::reclaimColumnFamily(
+	const std::shared_ptr<ColumnFamilyDescriptor>& column,
+	bool* attempted,
+	bool duringClose
+) noexcept {
+	if (attempted) {
+		*attempted = false;
+	}
+	if (!column) {
+		return rocksdb::Status::OK();
+	}
+
+	// A retirer can observe the transient claim of an admission about to be
+	// refused; re-check after unclaiming so the generation is never left to
+	// nobody.
+	for (;;) {
+		if (!column->lifetime.claimReclaim()) {
+			return rocksdb::Status::OK();
+		}
+		if (column->lifetime.admitted.load() == 0) {
+			break;
+		}
+		column->lifetime.unclaimReclaim();
+		if (column->lifetime.admitted.load() != 0) {
+			return rocksdb::Status::OK();
+		}
+	}
+
+	// Participate in the in-flight accounting so `finishClose()` either waits
+	// for this drop or this drop sees the close and stands down; the handle is
+	// then destroyed by teardown, ahead of the database. `finishClose`'s own
+	// retry runs past both gates by construction.
+	if (!duringClose) {
+		++this->operationsInFlight;
+	}
+	auto releaseOperation = [this, duringClose]() {
+		if (!duringClose && --this->operationsInFlight == 0 && this->isClosing()) {
+			this->operationsInFlight.notify_all();
+		}
+	};
+	if ((!duringClose && this->isClosing()) || !this->db) {
+		column->lifetime.unclaimReclaim();
+		releaseOperation();
+		return rocksdb::Status::OK();
+	}
+
+	rocksdb::Status status;
+	bool dropped = false;
+	try {
+		{
+			std::lock_guard<std::mutex> lock(this->columnsMutex);
+			if (!column->column) {
+				column->lifetime.unclaimReclaim();
+				releaseOperation();
+				return rocksdb::Status::OK();
+			}
+		}
+
+		if (attempted) {
+			*attempted = true;
+		}
+		const int forced = testForceDropFailureMode();
+		if (forced == 1) {
+			status = rocksdb::Status::IOError("forced drop failure (test seam)");
+		} else {
+			status = this->db->DropColumnFamily(column->column.get());
+			if (forced == 2 && status.ok()) {
+				status = rocksdb::Status::IOError("forced post-drop failure (test seam)");
+			}
+		}
+		dropped = status.ok() || isColumnFamilyAlreadyDropped(status);
+
+		// Membership in `retiring` is the whole of "retry me".
+		if (dropped) {
+			std::lock_guard<std::mutex> lock(this->columnsMutex);
+			std::erase(this->retiring, column);
+		} else {
+			column->lifetime.unclaimReclaim();
+		}
+	} catch (...) {
+		column->lifetime.unclaimReclaim();
+		releaseOperation();
+		this->retiringCondition->notify_all();
+		return rocksdb::Status::IOError();
+	}
+	releaseOperation();
+	this->retiringCondition->notify_all();
+
+	if (dropped) {
+		DEBUG_LOG("%p DBDescriptor::reclaimColumnFamily dropped column \"%s\"\n", this, column->name.c_str());
+		return rocksdb::Status::OK();
+	}
+
+	try {
+		DEBUG_LOG("%p DBDescriptor::reclaimColumnFamily drop of column \"%s\" failed: %s\n",
+			this, column->name.c_str(), status.ToString().c_str());
+		if (GlobalEvents::hasListeners()) {
+			const std::string text = "Physical drop of column family \"" + column->name + "\" in database \"" +
+				this->path + "\" failed and will be retried on the next drop, open of that name, or close: " +
+				status.ToString();
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ text }));
+		}
+	} catch (...) {
+	}
+	return status;
+}
+
+void DBDescriptor::releaseCommitClaim(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept {
+	if (column && column->lifetime.release()) {
+		this->reclaimColumnFamily(column);
+	}
+}
+
+void DBDescriptor::retryPendingReclaims(bool duringClose) noexcept {
+	std::vector<std::shared_ptr<ColumnFamilyDescriptor>> pending;
+	try {
+		std::lock_guard<std::mutex> lock(this->columnsMutex);
+		pending = this->retiring;
+	} catch (...) {
 		return;
 	}
-	std::weak_ptr<ColumnFamilyDescriptor> dropped = it->second;
-	const int64_t maxWriteBufferSizeToMaintain =
-		it->second ? it->second->maxWriteBufferSizeToMaintain : 0;
-	this->columns.erase(it);
-	if (trackForInventory && !dropped.expired()) {
-		this->droppedColumns.push_back({ std::move(dropped), maxWriteBufferSizeToMaintain });
+	for (const auto& column : pending) {
+		this->reclaimColumnFamily(column, nullptr, duringClose);
 	}
-	DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
-		this, columnName.c_str());
+}
+
+size_t DBDescriptor::pendingReclaimCount() {
+	std::lock_guard<std::mutex> lock(this->columnsMutex);
+	return this->retiring.size();
 }
 
 /**
