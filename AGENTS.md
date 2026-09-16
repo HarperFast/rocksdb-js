@@ -187,16 +187,23 @@ hook (`DBRegistry::ReleaseCommitCompletionsByEnv`) — the same env-teardown
 discipline as `EventEmitter::notify` above. A per-commit tsfn acquire is NOT
 sufficient (env teardown does not honor tsfn acquire counts); see
 `test/commit-teardown.test.ts` and the `ROCKSDB_JS_COMMIT_DELAY_MS` test seam.
-The legacy libuv path registers each native execute in the descriptor's
-`operationsInFlight` count before queueing and rechecks `isClosing()` afterward,
-then releases only after the transaction's async-work registration is cleared.
-This makes direct shutdown wait for the native commit rather than destroy RocksDB
-after the transaction handle's bounded drain expires. The commit state also pins
+Every path registers its native execute in the descriptor's
+`operationsInFlight` count before queueing and rechecks `isClosing()` afterward
+(publish-then-check, so teardown either waits for the operation or the commit
+observes the close and rejects), then releases only after the transaction's
+async-work registration is cleared — legacy from its libuv execute thread, the
+lane modes at the end of the commit stage. This makes direct shutdown wait for
+the native commit rather than destroy RocksDB after the transaction handle's
+bounded drain expires. The recheck is not redundant with
+`commitCompletionsClosed`, which `finishClose()` sets only after it has passed
+the drain gate and stopped both lanes; a commit that registered its completion
+just before that would otherwise reach `CommitWorker::enqueue` on a stopped
+lane, which runs the task inline. The commit state also pins
 the descriptor through its JS completion and retries `PurgeIfUnreferenced()` when
 that pin was why a last-handle `close()` deferred teardown. Direct shutdown can
-therefore wait without a bound for a stalled legacy commit; releasing the counter
-from the libuv execute thread, rather than its JS completion, keeps that wait
-deadlock-free. The unified admission/drain contract tracked by #784 remains the
+therefore wait without a bound for a stalled commit; releasing the counter from
+the thread that ran the commit, rather than from its JS completion, keeps that
+wait deadlock-free. The unified admission/drain contract tracked by #784 remains the
 larger cleanup; legacy mode stays as the documented operational escape hatch.
 
 ## Environment Variables
