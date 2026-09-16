@@ -990,20 +990,18 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 			// CloseDB may claim the last-handle purge while the task runs, but
 			// finishClose then waits here before draining the owning lanes.
 			state->registerDescriptorOperation(descriptorOwner);
-			// Publish before checking closing, as the legacy path below does:
-			// teardown either waits for this operation or this check observes
-			// that it already won. `commitCompletionsClosed` is set only after
-			// finishClose() has passed its drain gate and stopped both lanes,
-			// so without this recheck a close racing this env could pass that
-			// gate between the registration above and this publish, and
-			// CommitWorker::enqueue would then run the commit inline against a
-			// database being torn down.
+			// Publish before checking closing, as the legacy path below does
+			// (AGENTS.md "Commit execution").
 			if (descriptorOwner->isClosing()) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 				completeCommitWork(env, state);
 				// Balance the registerCommitCompletion above; nothing will
 				// dispatch through the tsfn to unref it otherwise.
 				descriptor->finishCommitCompletion(env);
+				// Release while `descriptor` still pins the descriptor:
+				// ~TransactionCommitState runs from `stateOwner`, declared
+				// ahead of that pin and so destroyed after it.
+				state->releaseDescriptorOperation();
 				NAPI_RETURN_UNDEFINED();
 			}
 			// register the commit with the transaction handle so close() can wait
