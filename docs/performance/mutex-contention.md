@@ -68,7 +68,7 @@ separate unprofiled trials below determine the throughput claim.
 
 ## Paired throughput comparison
 
-Five independent 3-second trials per version/workload; baseline/candidate order alternates by repetition. Each trial counts completed transactions. Runs were unprofiled and did not overlap tests or builds. The baseline is the supplied Release binding from the base checkout; the candidate was rebuilt locally. Binary SHA-256 identities and every trial are retained in [the raw results](mutex-contention-2026-09-16.json).
+Five independent 3-second trials per version/workload; baseline/candidate order alternates by repetition. Each trial counts completed transactions. Runs were unprofiled and did not overlap tests or builds. The baseline is the supplied Release binding from the base checkout; the candidate was rebuilt locally. Binary SHA-256 identities and every trial are retained in [the raw results](mutex-contention-2026-09-16.json), where candidate trials use the label `cached`.
 
 | Workload         | Base median txns/s (range) | Candidate median txns/s (range) | Median change |
 | ---------------- | -------------------------: | ------------------------------: | ------------: |
@@ -154,3 +154,16 @@ the DB-instance stress test awaits an empty promise array in its worker-close ph
 That test passed locally, but its close acknowledgement gap limits what the pass proves.
 The logged-transaction stress test's title says 10k while its worker count is 1,000;
 results should be interpreted using the executed count (30,000 total).
+
+Outside review also identified [#861](https://github.com/HarperFast/rocksdb-js/issues/861):
+the native teardown test's parent does not kill/reap a hung fixture when Vitest times
+out. The successful run here does not exercise that failure path. The broader
+transaction close/admission contract remains [#784](https://github.com/HarperFast/rocksdb-js/issues/784);
+a foreign descriptor shutdown can still race transaction entry before operation
+registration. This optimization preserves completion exclusion but does not solve that
+pre-existing lifecycle problem, which remains a human review consideration.
+
+The separate read-heavy work in [#545](https://github.com/HarperFast/rocksdb-js/pull/545)
+and its baseline [#546](https://github.com/HarperFast/rocksdb-js/pull/546) was not evaluated
+by this change. Those subscriber/short-range workloads are a distinct follow-up to the
+commit-side profile here.
