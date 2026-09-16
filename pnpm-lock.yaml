@@ -1564,8 +1564,8 @@ packages:
     resolution: {integrity: sha512-Dbl4A/VfiVGLgQv29URL9xshU8XDY1GeLy+fsaZ1AA8JDSfjvr5P5+pzRbWqRSBxk6/DW7MIh8lTM/PaGnP2kg==}
     engines: {node: '>=8'}
 
-  obug@2.1.4:
-    resolution: {integrity: sha512-4a+OsYv9UktOJKE+l1A4OufDgdRF9PifWj+tJnHURo/P+WOxpG4GzUFL9qCalmWauao6ogiG+QvnCovwPoyAWA==}
+  obug@2.2.1:
+    resolution: {integrity: sha512-XrsrhT5sybtKI6wakr2SPOlGZWWYbUXZ7a0jT8/QOeAPau+1X/bSegNe5YR75oJmEZQbKningirmGOEJCIk61Q==}
     engines: {node: '>=12.20.0'}
 
   once@1.4.0:
@@ -2444,7 +2444,7 @@ snapshots:
       istanbul-lib-report: 3.0.1
       istanbul-reports: 3.2.0
       magicast: 0.5.4
-      obug: 2.1.4
+      obug: 2.2.1
       std-env: 4.2.0
       tinyrainbow: 3.1.1
       vitest: 4.1.11(@types/node@26.5.1)(@vitest/coverage-v8@4.1.11)(vite@8.1.4(@types/node@26.5.1)(esbuild@0.28.2)(tsx@4.23.11))
@@ -2898,7 +2898,7 @@ snapshots:
     dependencies:
       path-key: 3.1.1
 
-  obug@2.1.4: {}
+  obug@2.2.1: {}
 
   once@1.4.0:
     dependencies:
@@ -2998,7 +2998,7 @@ snapshots:
     dependencies:
       dts-resolver: 3.0.0
       get-tsconfig: 5.0.0-beta.6
-      obug: 2.1.4
+      obug: 2.2.1
       rolldown: 1.2.7
       yuku-ast: 0.9.4
       yuku-codegen: 0.9.4
@@ -3123,7 +3123,7 @@ snapshots:
       empathic: 2.0.1
       hookable: 6.1.1
       import-without-cache: 0.4.0
-      obug: 2.1.4
+      obug: 2.2.1
       picomatch: 4.0.7
       rolldown: 1.2.7
       rolldown-plugin-dts: 0.28.5(rolldown@1.2.7)(typescript@7.0.2)
@@ -3211,7 +3211,7 @@ snapshots:
       es-module-lexer: 2.3.2
       expect-type: 1.4.0
       magic-string: 0.30.21
-      obug: 2.1.4
+      obug: 2.2.1
       pathe: 2.0.3
       picomatch: 4.0.5
       std-env: 4.2.0
