@@ -1,6 +1,6 @@
 import { RocksDatabase, shutdown } from '../dist/index.mjs';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { parseArgs } from 'node:util';
@@ -26,7 +26,8 @@ assert(mode === 'log' || mode === 'put', 'mode must be log or put');
 type Result = { done: true; count: number };
 
 if (isMainThread) {
-	const path = mkdtempSync(resolve('benchmark/mutex-contention-'));
+	mkdirSync(resolve('benchmark/data'), { recursive: true });
+	const path = mkdtempSync(resolve('benchmark/data/mutex-contention-'));
 	const db = RocksDatabase.open(path, { disableWAL: true });
 	const states: Array<{ worker: Worker; ready: Promise<void>; done: Promise<Result> }> = [];
 	const deadline = setTimeout(
@@ -92,11 +93,11 @@ if (isMainThread) {
 			})
 		);
 	} finally {
-		clearTimeout(deadline);
 		await Promise.all(states.map((state) => state.worker.terminate()));
 		db.close();
 		shutdown();
 		rmSync(path, { recursive: true, force: true });
+		clearTimeout(deadline);
 	}
 } else {
 	const { path, id, seconds, concurrency, mode } = workerData;

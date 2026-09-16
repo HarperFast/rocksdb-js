@@ -504,6 +504,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::unordered_map<napi_env, std::shared_ptr<CommitCompletion>> commitCompletions;
 	bool commitCompletionsClosed = false;
 
+	// Called on env's JS thread. completion is this env/descriptor pair's cache,
+	// reset on DBHandle reopen. A closed result rejects without registration.
 	napi_status registerCommitCompletion(
 		napi_env env,
 		napi_threadsafe_function_call_js callJs,

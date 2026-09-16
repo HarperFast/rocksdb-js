@@ -1,0 +1,684 @@
+{
+  "date": "2026-09-16",
+  "baseSource": "b4d104562e7d5353b6d7a4412e0a8b48ee805062",
+  "candidateSource": "b7a23da2",
+  "environment": {
+    "os": "macOS 26.6.2",
+    "arch": "arm64",
+    "logicalCPUs": 14,
+    "memoryGiB": 36,
+    "node": "24.16.0",
+    "rocksdb": "11.8.1",
+    "binding": "Release",
+    "storage": "local APFS"
+  },
+  "method": {
+    "repetitions": 5,
+    "seconds": 3,
+    "concurrencyPerWorker": 8,
+    "order": "alternating baseline/candidate by repetition",
+    "baseline": "supplied prebuilt main checkout Release binding",
+    "candidate": "locally rebuilt Release binding",
+    "profiled": false,
+    "warmup": false
+  },
+  "trials": [
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 806801,
+      "elapsed": 3.0003562919999998,
+      "opsPerSecond": 268901.7308215074,
+      "cpu": {
+        "user": 3661678,
+        "system": 1658440
+      },
+      "label": "baseline",
+      "repeat": 0,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 897610,
+      "elapsed": 3.000522583,
+      "opsPerSecond": 299151.222885497,
+      "cpu": {
+        "user": 3735354,
+        "system": 1654779
+      },
+      "label": "cached",
+      "repeat": 0,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 1026359,
+      "elapsed": 3.0002911250000004,
+      "opsPerSecond": 342086.47002547124,
+      "cpu": {
+        "user": 8170860,
+        "system": 4227615
+      },
+      "label": "baseline",
+      "repeat": 0,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 988415,
+      "elapsed": 3.000413792,
+      "opsPerSecond": 329426.22868732637,
+      "cpu": {
+        "user": 8090457,
+        "system": 3728740
+      },
+      "label": "cached",
+      "repeat": 0,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 555242,
+      "elapsed": 3.0007678749999998,
+      "opsPerSecond": 185033.30585009014,
+      "cpu": {
+        "user": 7065631,
+        "system": 7683066
+      },
+      "label": "baseline",
+      "repeat": 0,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 775744,
+      "elapsed": 3.0011731249999998,
+      "opsPerSecond": 258480.25678292054,
+      "cpu": {
+        "user": 9832018,
+        "system": 9776424
+      },
+      "label": "cached",
+      "repeat": 0,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1425947,
+      "elapsed": 3.000233209,
+      "opsPerSecond": 475278.7202416437,
+      "cpu": {
+        "user": 12364974,
+        "system": 1849008
+      },
+      "label": "baseline",
+      "repeat": 0,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1523994,
+      "elapsed": 3.000297292,
+      "opsPerSecond": 507947.66374105035,
+      "cpu": {
+        "user": 12835991,
+        "system": 1550003
+      },
+      "label": "cached",
+      "repeat": 0,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 897480,
+      "elapsed": 3.00040225,
+      "opsPerSecond": 299119.8930076792,
+      "cpu": {
+        "user": 3690603,
+        "system": 1690525
+      },
+      "label": "cached",
+      "repeat": 1,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 857502,
+      "elapsed": 3.0002095419999995,
+      "opsPerSecond": 285814.0366517107,
+      "cpu": {
+        "user": 3675504,
+        "system": 1650026
+      },
+      "label": "baseline",
+      "repeat": 1,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 1038533,
+      "elapsed": 3.000368292,
+      "opsPerSecond": 346135.1737281991,
+      "cpu": {
+        "user": 8109202,
+        "system": 3714085
+      },
+      "label": "cached",
+      "repeat": 1,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 1018450,
+      "elapsed": 3.000258917,
+      "opsPerSecond": 339454.0365264082,
+      "cpu": {
+        "user": 8105245,
+        "system": 4249170
+      },
+      "label": "baseline",
+      "repeat": 1,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 769837,
+      "elapsed": 3.0004899999999997,
+      "opsPerSecond": 256570.4268302844,
+      "cpu": {
+        "user": 9518342,
+        "system": 9172905
+      },
+      "label": "cached",
+      "repeat": 1,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 537002,
+      "elapsed": 3.000509333,
+      "opsPerSecond": 178970.28150986924,
+      "cpu": {
+        "user": 7050614,
+        "system": 7051248
+      },
+      "label": "baseline",
+      "repeat": 1,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1437010,
+      "elapsed": 3.000257584,
+      "opsPerSecond": 478962.20899945236,
+      "cpu": {
+        "user": 12627014,
+        "system": 1656368
+      },
+      "label": "cached",
+      "repeat": 1,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1458006,
+      "elapsed": 3.000226084,
+      "opsPerSecond": 485965.3770012354,
+      "cpu": {
+        "user": 12533585,
+        "system": 1734610
+      },
+      "label": "baseline",
+      "repeat": 1,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 855947,
+      "elapsed": 3.000187375,
+      "opsPerSecond": 285297.8474386121,
+      "cpu": {
+        "user": 3653090,
+        "system": 1638252
+      },
+      "label": "baseline",
+      "repeat": 2,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 861611,
+      "elapsed": 3.000192208,
+      "opsPerSecond": 287185.2668980734,
+      "cpu": {
+        "user": 3672752,
+        "system": 1677301
+      },
+      "label": "cached",
+      "repeat": 2,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 996461,
+      "elapsed": 3.000281208,
+      "opsPerSecond": 332122.534828742,
+      "cpu": {
+        "user": 7936989,
+        "system": 4255087
+      },
+      "label": "baseline",
+      "repeat": 2,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 1011155,
+      "elapsed": 3.00031425,
+      "opsPerSecond": 337016.36420251644,
+      "cpu": {
+        "user": 7895224,
+        "system": 3671403
+      },
+      "label": "cached",
+      "repeat": 2,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 557637,
+      "elapsed": 3.0006965,
+      "opsPerSecond": 185835.8551089722,
+      "cpu": {
+        "user": 7036817,
+        "system": 7319141
+      },
+      "label": "baseline",
+      "repeat": 2,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 785491,
+      "elapsed": 3.000508292,
+      "opsPerSecond": 261785.97876042797,
+      "cpu": {
+        "user": 9913540,
+        "system": 9601346
+      },
+      "label": "cached",
+      "repeat": 2,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1447007,
+      "elapsed": 3.000294167,
+      "opsPerSecond": 482288.37555847573,
+      "cpu": {
+        "user": 12540066,
+        "system": 1773125
+      },
+      "label": "baseline",
+      "repeat": 2,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1503588,
+      "elapsed": 3.000345292,
+      "opsPerSecond": 501138.3203157005,
+      "cpu": {
+        "user": 12892304,
+        "system": 1459401
+      },
+      "label": "cached",
+      "repeat": 2,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 866136,
+      "elapsed": 3.000206875,
+      "opsPerSecond": 288692.09227447025,
+      "cpu": {
+        "user": 3674107,
+        "system": 1672001
+      },
+      "label": "cached",
+      "repeat": 3,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 890537,
+      "elapsed": 3.0005052910000005,
+      "opsPerSecond": 296795.6772718118,
+      "cpu": {
+        "user": 3692749,
+        "system": 1668087
+      },
+      "label": "baseline",
+      "repeat": 3,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 960833,
+      "elapsed": 3.000368209,
+      "opsPerSecond": 320238.3617843486,
+      "cpu": {
+        "user": 7858054,
+        "system": 3637367
+      },
+      "label": "cached",
+      "repeat": 3,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 1010277,
+      "elapsed": 3.0003176249999997,
+      "opsPerSecond": 336723.3494153807,
+      "cpu": {
+        "user": 7948574,
+        "system": 4299997
+      },
+      "label": "baseline",
+      "repeat": 3,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 766611,
+      "elapsed": 3.0013183329999995,
+      "opsPerSecond": 255424.7550388052,
+      "cpu": {
+        "user": 9482669,
+        "system": 8655890
+      },
+      "label": "cached",
+      "repeat": 3,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 559897,
+      "elapsed": 3.000535542,
+      "opsPerSecond": 186599.02279537803,
+      "cpu": {
+        "user": 7164733,
+        "system": 7252267
+      },
+      "label": "baseline",
+      "repeat": 3,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1501350,
+      "elapsed": 3.000396292,
+      "opsPerSecond": 500383.900621085,
+      "cpu": {
+        "user": 12864045,
+        "system": 1515252
+      },
+      "label": "cached",
+      "repeat": 3,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1427616,
+      "elapsed": 3.0003219590000003,
+      "opsPerSecond": 475820.9350558567,
+      "cpu": {
+        "user": 12442442,
+        "system": 1793296
+      },
+      "label": "baseline",
+      "repeat": 3,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 858725,
+      "elapsed": 3.0002887919999996,
+      "opsPerSecond": 286214.11455114355,
+      "cpu": {
+        "user": 3664082,
+        "system": 1667524
+      },
+      "label": "baseline",
+      "repeat": 4,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 1,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 889239,
+      "elapsed": 3.000248917,
+      "opsPerSecond": 296388.40796221845,
+      "cpu": {
+        "user": 3701244,
+        "system": 1666236
+      },
+      "label": "cached",
+      "repeat": 4,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 1052081,
+      "elapsed": 3.0003482089999998,
+      "opsPerSecond": 350652.9664937301,
+      "cpu": {
+        "user": 8214629,
+        "system": 4219457
+      },
+      "label": "baseline",
+      "repeat": 4,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 989174,
+      "elapsed": 3.0004090000000003,
+      "opsPerSecond": 329679.72033146146,
+      "cpu": {
+        "user": 7941465,
+        "system": 3669760
+      },
+      "label": "cached",
+      "repeat": 4,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 564938,
+      "elapsed": 3.0006372499999996,
+      "opsPerSecond": 188272.6744127435,
+      "cpu": {
+        "user": 7139476,
+        "system": 7505227
+      },
+      "label": "baseline",
+      "repeat": 4,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 8,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "log",
+      "count": 853248,
+      "elapsed": 3.001219,
+      "opsPerSecond": 284300.47923860274,
+      "cpu": {
+        "user": 10749226,
+        "system": 11635193
+      },
+      "label": "cached",
+      "repeat": 4,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1391885,
+      "elapsed": 3.0002652079999996,
+      "opsPerSecond": 463920.6548436568,
+      "cpu": {
+        "user": 12408785,
+        "system": 1774388
+      },
+      "label": "baseline",
+      "repeat": 4,
+      "binarySha256": "a981a3e5819e483cf3d71f07b1646de49802d00fcad427fb48c26892b19777b7"
+    },
+    {
+      "workers": 4,
+      "concurrency": 8,
+      "seconds": 3,
+      "mode": "put",
+      "count": 1477748,
+      "elapsed": 3.000391458,
+      "opsPerSecond": 492518.3999107359,
+      "cpu": {
+        "user": 12695908,
+        "system": 1584898
+      },
+      "label": "cached",
+      "repeat": 4,
+      "binarySha256": "2d547e57b775e4fa42b90f8f8abca8b36bda907700c8b0b21b1a72da7638a377"
+    }
+  ],
+  "profiles": {
+    "method": "Apple sample requested interval 1 ms; attach ~1s after process launch; up to 15s, process runs 10s workload; thread samples, not CPU percentages",
+    "baseline": {
+      "mainThreadSamples": 7620,
+      "mutexWaitThreadSamples": 8081,
+      "completionWaitThreadSamples": 5192,
+      "transactionRegistryWaitThreadSamples": 2529,
+      "completedTransactions": 2958027
+    },
+    "candidate": {
+      "mainThreadSamples": 7428,
+      "mutexWaitThreadSamples": 2373,
+      "completionWaitThreadSamples": 128,
+      "transactionRegistryWaitThreadSamples": 1935,
+      "completedTransactions": 2917655
+    }
+  }
+}

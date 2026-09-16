@@ -666,8 +666,8 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 			nullptr,
 			nullptr,
 			resourceName,
-			0,
-			1,
+			0, // unlimited queue
+			1, // the commit lane owns the initial thread count
 			nullptr,
 			nullptr,
 			nullptr,
