@@ -921,7 +921,7 @@ void DBRegistry::RemoveListenersByEnv(napi_env env) {
  * leave a threadsafe-fn the shared commit thread would later call into a
  * torn-down env. Mirrors RemoveListenersByEnv: snapshot the descriptors under
  * databasesMutex, then release outside the lock (releaseCommitCompletionsByEnv
- * takes each descriptor's own commitMutex).
+ * takes the descriptor registry mutex, then the completion mutex).
  */
 void DBRegistry::ReleaseCommitCompletionsByEnv(napi_env env) {
 	if (!instance) {

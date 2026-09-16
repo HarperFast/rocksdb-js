@@ -34,6 +34,10 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 */
 	std::shared_ptr<DBDescriptor> descriptor;
 
+	// Accessed only by this handle's env thread; reset on reopen, never from
+	// cross-env close. The registry owns TSFN release independently of this cache.
+	std::shared_ptr<DBDescriptor::CommitCompletion> commitCompletion;
+
 	/**
 	 * The RocksDB column family descriptor.
 	 */

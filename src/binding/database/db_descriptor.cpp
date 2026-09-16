@@ -509,24 +509,13 @@ void DBDescriptor::finishClose() {
 	this->logWorker.shutdown();
 	this->commitWorker.shutdown();
 
-	// Release any remaining per-env commit-completion tsfns. An in-flight
-	// commit pins this descriptor (state -> txnHandle -> dbHandle -> descriptor),
-	// so reaching here means no commit is in flight; only idle (unref'd) tsfns
-	// for still-living envs can remain, and those envs will issue no further
-	// commits to this descriptor. Queued completions already handed to a tsfn
-	// are still delivered (napi_tsfn_release, not abort).
 	{
 		std::lock_guard<std::mutex> lock(this->commitMutex);
+		this->commitCompletionsClosed = true;
 		for (auto& [env, completion] : this->commitCompletions) {
-			if (completion.tsfn) {
-				::napi_release_threadsafe_function(completion.tsfn, napi_tsfn_release);
-			}
+			completion->release();
 		}
 		this->commitCompletions.clear();
-		// Block any later registerCommitCompletion (a commit racing this close
-		// from another env) from re-creating a tsfn that would never be
-		// released; such commits are rejected before dispatch.
-		this->commitCompletionsClosed = true;
 	}
 
 	// We want to ensure that all in-memory data is written to disk. Keeps the waiting default on
@@ -635,66 +624,90 @@ void DBDescriptor::finishClose() {
 	}
 }
 
-napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed) {
-	std::lock_guard<std::mutex> lock(this->commitMutex);
-	closed = this->commitCompletionsClosed;
+napi_status DBDescriptor::registerCommitCompletion(
+	napi_env env,
+	napi_threadsafe_function_call_js callJs,
+	bool& closed,
+	std::shared_ptr<CommitCompletion>& completion
+) {
+	if (!completion) {
+		std::lock_guard<std::mutex> lock(this->commitMutex);
+		closed = this->commitCompletionsClosed;
+		if (closed) {
+			return napi_ok;
+		}
+		auto& entry = this->commitCompletions[env];
+		if (!entry) {
+			entry = std::make_shared<CommitCompletion>();
+		}
+		completion = entry;
+	}
+	return completion->registerCommit(env, callJs, closed);
+}
+
+napi_status DBDescriptor::CommitCompletion::registerCommit(
+	napi_env env,
+	napi_threadsafe_function_call_js callJs,
+	bool& closed
+) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	closed = this->closed;
 	if (closed) {
 		return napi_ok;
 	}
-	CommitCompletion& completion = this->commitCompletions[env];
-	if (completion.tsfn == nullptr) {
+	if (this->tsfn == nullptr) {
 		napi_value resourceName;
 		napi_status status = ::napi_create_string_utf8(env, "rocksdb.commit", NAPI_AUTO_LENGTH, &resourceName);
 		if (status != napi_ok) {
 			return status;
 		}
-		// Created ref'd (thread count 1 for the commit thread), which is what we
-		// want with a commit about to be dispatched.
 		status = ::napi_create_threadsafe_function(
 			env,
-			nullptr,   // func: callJs does all the work
-			nullptr,   // async_resource
+			nullptr,
+			nullptr,
 			resourceName,
-			0,         // unlimited queue
-			1,         // initial thread count: the commit thread
-			nullptr,   // finalize data
-			nullptr,   // finalize cb
-			nullptr,   // context
+			0,
+			1,
+			nullptr,
+			nullptr,
+			nullptr,
 			callJs,
-			&completion.tsfn
+			&this->tsfn
 		);
 		if (status != napi_ok) {
-			this->commitCompletions.erase(env);
 			return status;
 		}
-	} else if (completion.pending == 0) {
-		// Waking from idle: keep the event loop alive until completion.
-		napi_status status = ::napi_ref_threadsafe_function(env, completion.tsfn);
+	} else if (this->pending == 0) {
+		napi_status status = ::napi_ref_threadsafe_function(env, this->tsfn);
 		if (status != napi_ok) {
 			return status;
 		}
 	}
-	completion.pending++;
+	this->pending++;
 	return napi_ok;
 }
 
-bool DBDescriptor::dispatchCommitCompletion(napi_env env, void* state) {
-	std::lock_guard<std::mutex> lock(this->commitMutex);
-	auto it = this->commitCompletions.find(env);
-	if (it == this->commitCompletions.end() || it->second.tsfn == nullptr) {
-		// env was torn down / released; the caller drops the state.
+bool DBDescriptor::CommitCompletion::dispatch(void* state) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	if (this->closed || this->tsfn == nullptr) {
 		return false;
 	}
-	napi_status status = ::napi_call_threadsafe_function(it->second.tsfn, state, napi_tsfn_nonblocking);
-	return status == napi_ok;
+	return ::napi_call_threadsafe_function(this->tsfn, state, napi_tsfn_nonblocking) == napi_ok;
 }
 
-void DBDescriptor::finishCommitCompletion(napi_env env) {
-	std::lock_guard<std::mutex> lock(this->commitMutex);
-	auto it = this->commitCompletions.find(env);
-	if (it != this->commitCompletions.end() && --it->second.pending == 0 && it->second.tsfn != nullptr) {
-		// Idle: allow the event loop to exit.
-		::napi_unref_threadsafe_function(env, it->second.tsfn);
+void DBDescriptor::CommitCompletion::finish(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	if (!this->closed && --this->pending == 0 && this->tsfn != nullptr) {
+		::napi_unref_threadsafe_function(env, this->tsfn);
+	}
+}
+
+void DBDescriptor::CommitCompletion::release() {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	this->closed = true;
+	if (this->tsfn != nullptr) {
+		::napi_release_threadsafe_function(this->tsfn, napi_tsfn_release);
+		this->tsfn = nullptr;
 	}
 }
 
@@ -702,10 +715,7 @@ void DBDescriptor::releaseCommitCompletionsByEnv(napi_env env) {
 	std::lock_guard<std::mutex> lock(this->commitMutex);
 	auto it = this->commitCompletions.find(env);
 	if (it != this->commitCompletions.end()) {
-		if (it->second.tsfn != nullptr) {
-			// Queued completions are still delivered before the tsfn finalizes.
-			::napi_release_threadsafe_function(it->second.tsfn, napi_tsfn_release);
-		}
+		it->second->release();
 		this->commitCompletions.erase(it);
 	}
 }
@@ -799,7 +809,7 @@ void ParkTimeoutRegistry::runLoop() {
 			this->cv.wait_until(lock, earliest);
 			continue;
 		}
-		// Fire while still holding the mutex, like dispatchCommitCompletion.
+		// Exclude env cleanup while calling each due TSFN.
 		while (!this->deadlines.empty() && this->deadlines.begin()->first <= now) {
 			auto deadlineIt = this->deadlines.begin();
 			auto parkIt = this->parks.find(deadlineIt->second);

@@ -368,6 +368,7 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	auto handleParams = DBRegistry::OpenDB(path, options);
 	this->columnDescriptor = std::move(handleParams->columnDescriptor);
 	this->descriptor = std::move(handleParams->descriptor);
+	this->commitCompletion.reset();
 	this->identityPath = this->descriptor->identityPath;
 	this->disableWAL = options.disableWAL;
 	this->enableVerificationTable = options.verificationTable;

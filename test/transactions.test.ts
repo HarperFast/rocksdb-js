@@ -16,6 +16,16 @@ const testOptions = [
 
 for (const { name, options, txnOptions } of testOptions) {
 	describe(`transaction() (${name})`, () => {
+		it(`${name} async commits survive reopening the same database handle`, () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				for (let round = 0; round < 3; round++) {
+					await db.transaction((txn) => txn.putSync('reopened', round), txnOptions);
+					expect(db.getSync('reopened')).toBe(round);
+					db.close();
+					db.open();
+				}
+			}));
+
 		it(`${name} async should error if callback is not a function`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				await expect(db.transaction('foo' as any, txnOptions)).rejects.toThrow(

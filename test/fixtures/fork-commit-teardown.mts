@@ -18,9 +18,9 @@
  * Crash-safety comes from the persistent per-env tsfn on
  * `DBDescriptor::commitCompletions`: the module env-cleanup hook
  * (`DBRegistry::ReleaseCommitCompletionsByEnv`) releases the worker's entry
- * under `commitMutex` before Node frees the env's tsfns, and the commit
- * thread only calls a completion under that same mutex — so it either
- * delivers safely or observes the entry gone and drops it. A per-commit
+ * under the completion's mutex before Node frees the env's tsfns, and the
+ * commit thread calls under that same mutex — so it either delivers safely
+ * or observes the completion closed and drops it. A per-commit
  * `napi_acquire_threadsafe_function` would NOT close this window (env
  * teardown does not honor the tsfn-level acquire count).
  * Exit 0 = survived; a crash exits via signal / non-zero.
@@ -78,7 +78,12 @@ async function run(): Promise<void> {
 		// Let commits start landing on the commit thread, then tear the env down
 		// with commits still queued/in-flight.
 		await delay(3);
+		const survivor = db.transaction((txn) => txn.putSync('survivor', round));
 		await committer.terminate();
+		await survivor;
+		if (db.getSync('survivor') !== round) {
+			throw new Error(`Live environment lost its commit in round ${round}`);
+		}
 	}
 
 	db.close();
