@@ -1392,10 +1392,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			currentFile->appendBoundaryMarkerEnabled = true;
 			bool activated = true;
 			try {
-				// Non-creating: a plain open() here would recreate a header-only
-				// ghost if the file vanished between directory discovery and this
-				// call (out-of-band deletion, or a concurrent purge in another
-				// process) — the same resurrection this PR closed on the read path.
+				// Non-creating: a file that vanished between directory discovery
+				// and this call must stay absent, not come back as a header-only
+				// ghost.
 				if (!currentFile->isOpen() && !currentFile->openExisting(store->latestTimestamp)) {
 					DEBUG_LOG("%p TransactionLogStore::load Current log file vanished before open: %s\n",
 						store.get(), currentFile->path.string().c_str());
@@ -1467,10 +1466,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		auto& logFile = it->second;
 		const bool openedForScan = !logFile->isOpen();
 		try {
-			// Non-creating: a plain open() here would recreate a header-only
-			// ghost if the file vanished between directory discovery and this
-			// scan (out-of-band deletion, or a concurrent purge in another
-			// process) — skip it like any other unreadable older segment instead.
+			// Non-creating: a segment that vanished before this scan must be
+			// skipped, not recreated as a header-only ghost.
 			bool vanished = openedForScan && !logFile->openExisting(store->latestTimestamp);
 			if (!vanished) {
 				// The current file's cached boundary is a product of recoverTail's

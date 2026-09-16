@@ -1968,13 +1968,15 @@ Transaction log files are read through read-only memory maps. Understanding how 
 with system memory helps when interpreting [`log.getStats()`](#loggetstats-transactionlogstats)
 figures and process memory usage:
 
-- **Maps are created lazily and live until the file is closed.** Writing log entries does not map
-  anything; a log file is mapped the first time a `log.query()` reads from it. The native layer
-  holds each file's map for the life of the file — it is released when the log file is purged or
-  the database is closed, not by garbage collection. JS `Buffer` views over the map (including
-  `entry.data`) hold an additional reference, so the underlying memory is never unmapped while a
-  view is still reachable. `stats.memory.activeMaps` counts the maps currently held by the native
-  layer.
+- **Maps are created lazily; only the current (still-being-written) file's map is held natively.**
+  Writing log entries does not map anything; a log file is mapped the first time a `log.query()`
+  reads from it. The native layer holds the current file's map for as long as it stays current —
+  released when the log file rotates, is purged, or the database is closed. Once a file rotates out
+  or is purged, the native layer keeps only a weak reference: the mapping survives solely through JS
+  `Buffer` views over it (including `entry.data`) and is released by garbage collection once none
+  remain, independent of purge or close. `stats.memory.activeMaps` counts only the current file's
+  strongly-held map; a frozen file's map is weakly held and not counted, even while a JS `Buffer`
+  view keeps it alive.
 - **Mapped bytes are virtual, not resident.** Creating a map reserves address space only. A page
   consumes physical RAM (RSS) when it is first read (demand paging). Querying a multi-gigabyte log
   can show `memory.mappedBytes` in the gigabytes while actual memory usage barely moves.
