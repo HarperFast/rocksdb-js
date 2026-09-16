@@ -332,7 +332,7 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	// sequence is a hole, not the bottom of the log — a segment can be purged, or deleted out
 	// of band and never registered at load — and `find(--sequenceNumber)` ended the walk at
 	// the first one, so every older survivor below it became unreachable and a reader asking
-	// for an old timestamp silently got only the newest contiguous run (invariant 23).
+	// for an old timestamp silently got only the newest contiguous run (invariant 24).
 	//
 	// `above` is the registered sequence one step newer than the entry being examined, so the
 	// two "the timestamp belongs further up" exits can name a segment that exists instead of
