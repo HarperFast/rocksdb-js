@@ -751,6 +751,11 @@ static rocksdb::Status dropColumnFamily(DBHandle& dbHandle) noexcept {
 		}
 		return status;
 	} catch (const std::exception& e) {
+		// `Status::IOError(msg)` heap-copies the message, so building the
+		// status can itself throw `std::bad_alloc`. This function is
+		// `noexcept` (invariant 23: reclamation runs from commit completions
+		// and destructors), so that second failure has to fall through to the
+		// message-free status below rather than terminate the process.
 		try {
 			return rocksdb::Status::IOError(e.what());
 		} catch (...) {

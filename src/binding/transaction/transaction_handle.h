@@ -36,6 +36,19 @@ enum class TransactionState {
 	Aborted     // Transaction has been aborted/rolled back
 };
 
+/**
+ * A vector that holds its first `N` elements inline and spills the rest into
+ * heap storage. Both users — the set of column-family generations a
+ * transaction has staged a write to, and a commit's claim over that set — are
+ * rebuilt per transaction on paths that run for every staged write, and a
+ * transaction almost always names one or two families, so the inline slots
+ * keep the common case allocation-free.
+ *
+ * `overflow` is public so a caller can `reserve()` it before publishing
+ * anything: `ColumnFamilyCommitClaim::admit` secures storage for every claim
+ * up front, so recording one can never fail after its count was taken
+ * (invariant 23).
+ */
 template<typename T, size_t N>
 struct InlineVector final {
 	static constexpr size_t inlineCapacity = N;
