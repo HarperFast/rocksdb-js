@@ -851,6 +851,27 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
  */
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
 
+/**
+ * Test-only seam: makes the physical column-family drop report failure.
+ * `0` = inert, `1` = fail without dropping (the retry performs the drop),
+ * `2` = drop for real and then report failure (the retry resolves as
+ * "already dropped"). Process-global, like `forceTryAgainForTesting`.
+ */
+export const forceDropFailureForTesting: (mode: 0 | 1 | 2) => void =
+	binding.forceDropFailureForTesting;
+
+/** Parks one selected transaction write after its retirement precheck. */
+export const setTransactionStagingDelayForTesting: (countdown: number, delayMs: number) => void =
+	binding.setTransactionStagingDelayForTesting;
+
+/** Reports whether the selected transaction write is parked. */
+export const isTransactionStagingDelayedForTesting: () => boolean =
+	binding.isTransactionStagingDelayedForTesting;
+
+/** Reports whether a transaction is parked at the native commit seam. */
+export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
+	binding.isTransactionCommitExecuteDelayedForTesting;
+
 /** Delays one selected watchdog join in the concurrent-shutdown regression test. */
 export const setWriteBufferManagerJoinDelayForTesting: (
 	countdown: number,

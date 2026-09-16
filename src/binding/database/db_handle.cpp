@@ -14,6 +14,7 @@ namespace {
 // Commit-pipeline queue-depth gauges (see docs/stats.md).
 constexpr const char* COMMIT_PIPELINE_LOG_QUEUE_DEPTH_KEY = "commitPipeline.logQueueDepth";
 constexpr const char* COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY = "commitPipeline.commitQueueDepth";
+constexpr const char* COLUMN_FAMILY_PENDING_RECLAIMS_KEY = "columnFamily.pendingReclaims";
 
 bool lookupTxnlogSummaryStat(
 	const std::string& statName,
@@ -85,6 +86,9 @@ rocksdb::Status DBHandle::clear() {
 	if (!this->opened() || this->isCancelled()) {
 		DEBUG_LOG("%p Database closed during clear operation\n", this);
 		return rocksdb::Status::Aborted("Database closed during clear operation");
+	}
+	if (this->columnDescriptor->lifetime.isRetired()) {
+		return rocksdb::Status::OK();
 	}
 
 	// compact the database to reclaim space
@@ -186,6 +190,12 @@ napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
 			// unknown commitPipeline.* key: never a RocksDB ticker/property
 			NAPI_STATUS_THROWS(::napi_get_undefined(env, &jsValue));
 		}
+		return jsValue;
+	}
+
+	if (statName == COLUMN_FAMILY_PENDING_RECLAIMS_KEY) {
+		napi_value jsValue;
+		NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(this->descriptor->pendingReclaimCount()), &jsValue));
 		return jsValue;
 	}
 
@@ -309,7 +319,7 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 
 	DBStats::getInstance().setWriteBufferManagerStatsOnObject(env, result);
 
-	// commit-pipeline queue depths
+	// database-local gauges not supplied by RocksDB statistics
 	{
 		napi_value jsValue;
 		if (::napi_create_double(env, static_cast<double>(this->descriptor->logWorker.depth()), &jsValue) == napi_ok) {
@@ -317,6 +327,9 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 		}
 		if (::napi_create_double(env, static_cast<double>(this->descriptor->commitWorker.depth()), &jsValue) == napi_ok) {
 			::napi_set_named_property(env, result, COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY, jsValue);
+		}
+		if (::napi_create_double(env, static_cast<double>(this->descriptor->pendingReclaimCount()), &jsValue) == napi_ok) {
+			::napi_set_named_property(env, result, COLUMN_FAMILY_PENDING_RECLAIMS_KEY, jsValue);
 		}
 	}
 

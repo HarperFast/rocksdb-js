@@ -1,6 +1,7 @@
 #ifndef __TRANSACTION_HANDLE_H__
 #define __TRANSACTION_HANDLE_H__
 
+#include <cassert>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -33,6 +34,137 @@ enum class TransactionState {
 	Committing, // Transaction is in the process of committing (async only)
 	Committed,  // Transaction has been successfully committed
 	Aborted     // Transaction has been aborted/rolled back
+};
+
+/**
+ * A vector that holds its first `N` elements inline and spills the rest into
+ * heap storage. Both users — the set of column-family generations a
+ * transaction has staged a write to, and a commit's claim over that set — are
+ * rebuilt per transaction on paths that run for every staged write, and a
+ * transaction almost always names one or two families, so the inline slots
+ * keep the common case allocation-free.
+ *
+ * `overflow` is public so a caller can `reserve()` it before publishing
+ * anything: `ColumnFamilyCommitClaim::admit` secures storage for every claim
+ * up front, so recording one can never fail after its count was taken
+ * (invariant 23).
+ */
+template<typename T, size_t N>
+struct InlineVector final {
+	static constexpr size_t inlineCapacity = N;
+	T inlineSlots[N];
+	std::vector<T> overflow;
+	size_t count = 0;
+
+	T& add(T value) {
+		if (this->count < N) {
+			this->inlineSlots[this->count] = std::move(value);
+			this->count++;
+			return this->inlineSlots[this->count - 1];
+		}
+		this->overflow.push_back(std::move(value));
+		this->count++;
+		return this->overflow.back();
+	}
+
+	const T& back() const {
+		assert(this->count > 0);
+		return this->count <= N
+			? this->inlineSlots[this->count - 1]
+			: this->overflow.back();
+	}
+
+	void popBack() {
+		if (this->count == 0) {
+			return;
+		}
+		if (this->count <= N) {
+			this->inlineSlots[this->count - 1] = T();
+		} else {
+			this->overflow.pop_back();
+		}
+		this->count--;
+	}
+
+	template<typename Fn>
+	void forEach(Fn&& fn) const {
+		const size_t inlineCount = this->count < N ? this->count : N;
+		for (size_t i = 0; i < inlineCount; i++) {
+			fn(this->inlineSlots[i]);
+		}
+		for (const auto& entry : this->overflow) {
+			fn(entry);
+		}
+	}
+
+	void clear() {
+		const size_t inlineCount = this->count < N ? this->count : N;
+		for (size_t i = 0; i < inlineCount; i++) {
+			this->inlineSlots[i] = T();
+		}
+		this->overflow.clear();
+		this->count = 0;
+	}
+
+	size_t size() const {
+		return this->count;
+	}
+};
+
+/**
+ * One column-family generation a transaction has staged a write to. Weak,
+ * never strong: a transaction can outlive the database (an aborted handle JS
+ * still references after `close()`), and a strong reference here would
+ * destroy the RocksDB column-family handle after the database it belongs to.
+ * The commit locks it for the duration of its claim; a lock that fails means
+ * the generation was dropped and reclaimed, which refuses the commit exactly
+ * like a retired one. `raw` is only compared, never dereferenced.
+ */
+struct TouchedColumnFamily final {
+	std::weak_ptr<ColumnFamilyDescriptor> descriptor;
+	ColumnFamilyDescriptor* raw = nullptr;
+};
+
+/**
+ * The distinct droppable generations a transaction's write batch names (its
+ * own family or a `dbHandleOverride` family). The most recently touched
+ * family is compared first, so a transaction writing many records to one
+ * family pays one pointer compare per write.
+ */
+struct ColumnFamilySet final {
+	InlineVector<TouchedColumnFamily, 2> entries;
+	ColumnFamilyDescriptor* last = nullptr;
+
+	bool contains(ColumnFamilyDescriptor* column) {
+		if (column == this->last) {
+			return this->last != nullptr;
+		}
+		bool found = false;
+		this->entries.forEach([&](const TouchedColumnFamily& entry) {
+			if (entry.raw == column) found = true;
+		});
+		if (found) {
+			this->last = column;
+		}
+		return found;
+	}
+
+	void add(const std::shared_ptr<ColumnFamilyDescriptor>& column);
+	void removeLast(ColumnFamilyDescriptor* column);
+
+	template<typename Fn>
+	void forEach(Fn&& fn) const {
+		this->entries.forEach(std::forward<Fn>(fn));
+	}
+
+	void clear() {
+		this->entries.clear();
+		this->last = nullptr;
+	}
+
+	size_t size() const {
+		return this->entries.size();
+	}
 };
 
 /**
@@ -70,7 +202,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	bool coordinatedRetry;
 
 	/**
-	 * Set by Transaction::AbandonWrites: the VT write intents were released
+	 * Set by Transaction::AbandonWrites and by both sides of a dropped-family
+	 * refusal (staging, commit admission): the VT write intents were released
 	 * early, so this handle must never commit or write again — reads remain
 	 * valid until it is aborted.
 	 */
@@ -142,6 +275,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
 
 	/**
+	 * Families this transaction's write batch names (invariant 23). Recorded
+	 * on the first `putSync`/`removeSync` per family; a write to a retired
+	 * family is refused. Holds no claim: the commit claims each of these at
+	 * admission. Cleared by `resetTransaction()` (the retry restages) and
+	 * `close()`.
+	 */
+	ColumnFamilySet touchedColumnFamilies;
+
+	/**
 	 * VT slots locked by this transaction. Parallel to heldTrackers.
 	 * Populated by lockVTSlot() at putSync/removeSync time (main JS thread);
 	 * cleared by releaseIntent() from the execute thread or close().
@@ -169,7 +311,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
-	void resetTransaction();
+	void resetTransaction(DBDescriptor* descriptor);
 
 	/**
 	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),
@@ -285,6 +427,17 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 			? this->txn->GetSnapshot()
 			: nullptr;
 	}
+
+	/** The relaxed retirement check is advisory; commit admission is authoritative. */
+	rocksdb::Status noteTouchedColumnFamily(
+		const std::shared_ptr<ColumnFamilyDescriptor>& column,
+		bool& added
+	);
+
+	/** Abandons before fallible cleanup so a failure still refuses commit. */
+	rocksdb::Status abandonForDroppedColumnFamily(
+		const std::shared_ptr<ColumnFamilyDescriptor>& column
+	) noexcept;
 
 	rocksdb::Status putSync(
 		rocksdb::Slice& key,

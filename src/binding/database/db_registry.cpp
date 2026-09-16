@@ -1,4 +1,6 @@
 #include <chrono>
+#include <optional>
+#include <cstdlib>
 #include <vector>
 #include "database/db_registry.h"
 #include "transaction/transaction_handle.h"
@@ -341,6 +343,24 @@ bool DBRegistry::CollectWriteBufferManagerInventory(
 }
 
 /**
+ * Bound on how long an open waits for a same-name generation's physical drop
+ * (`ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default 30000; malformed or non-positive
+ * falls back). A commit claims at admission, before its transaction-log write
+ * and before it is queued on the commit lane, so the bound covers that whole
+ * interval and not just the RocksDB write.
+ */
+static unsigned columnFamilyReclaimWaitMs() {
+	static const unsigned ms = []() -> unsigned {
+		const char* v = ::getenv("ROCKSDB_JS_CF_RECLAIM_WAIT_MS");
+		if (v == nullptr) return 30000u;
+		char* end = nullptr;
+		const long parsed = ::strtol(v, &end, 10);
+		return (end == v || *end != '\0' || parsed <= 0 || parsed > 86400000L) ? 30000u : static_cast<unsigned>(parsed);
+	}();
+	return ms;
+}
+
+/**
  * Initialize the singleton instance of the registry.
  */
 void DBRegistry::Init(napi_env env, napi_value exports) {
@@ -421,198 +441,241 @@ std::unique_ptr<DBHandleParams> DBRegistry::OpenDB(const std::string& path, cons
 
 	DBKey key{identityPath, options.readOnly, options.secondaryPath};
 	auto entryIterator = instance->databases.end();
+	// Armed on the first wait for a reclaiming generation, so time spent
+	// waiting for a closing database on this path does not count against it.
+	std::optional<std::chrono::steady_clock::time_point> reclaimDeadline;
 
-	// Wait for any closing database on this path to be fully removed. The map
-	// node must not be held across the wait: DestroyDB erases every entry for
-	// the path, so a reference into it would dangle and its condition variable
-	// would be destroyed with this thread still parked on it. Re-find the entry
-	// after every wake and park on whatever condition the CURRENT entry has —
-	// an entry erased and re-created while we waited carries a new condition,
-	// and staying on the old one would miss its notify.
-	while (true) {
-		// Destroy closes every handle kind for one physical path. A new key (for
-		// example, a fresh secondary workspace) must wait too, or it can open
-		// during finishClose() and be deleted before it ever joined the claim.
-		std::shared_ptr<std::condition_variable> pathClosingCondition;
-		for (const auto& [existingKey, existingEntry] : instance->databases) {
-			if (existingKey.path == identityPath && existingEntry.descriptor &&
-				existingEntry.descriptor->isClosing()
-			) {
-				pathClosingCondition = existingEntry.condition;
-				break;
+	// Re-entered after every reclaim wait: the slice releases `databasesMutex`,
+	// so the entry must be re-found.
+	for (;;) {
+		// Wait for any closing database on this path to be fully removed. The map
+		// node must not be held across the wait: DestroyDB erases every entry for
+		// the path, so a reference into it would dangle and its condition variable
+		// would be destroyed with this thread still parked on it. Re-find the entry
+		// after every wake and park on whatever condition the CURRENT entry has —
+		// an entry erased and re-created while we waited carries a new condition,
+		// and staying on the old one would miss its notify.
+		while (true) {
+			// Destroy closes every handle kind for one physical path. A new key (for
+			// example, a fresh secondary workspace) must wait too, or it can open
+			// during finishClose() and be deleted before it ever joined the claim.
+			std::shared_ptr<std::condition_variable> pathClosingCondition;
+			for (const auto& [existingKey, existingEntry] : instance->databases) {
+				if (existingKey.path == identityPath && existingEntry.descriptor &&
+					existingEntry.descriptor->isClosing()
+				) {
+					pathClosingCondition = existingEntry.condition;
+					break;
+				}
 			}
+			if (pathClosingCondition) {
+				pathClosingCondition->wait(lock);
+				continue;
+			}
+			rejectConflictingSecondaryWorkspace();
+			entryIterator = instance->databases.find(key);
+			if (entryIterator == instance->databases.end()) {
+				entryIterator = instance->databases.emplace(key, DBRegistryEntry()).first;
+				break; // no database on this path: proceed to open
+			}
+			auto& current = entryIterator->second;
+			if (!current.descriptor) {
+				break; // entry exists but holds no database
+			}
+			if (!current.descriptor->isClosing()) {
+				break; // database exists and is not closing
+			}
+			DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str());
+			// Keep the descriptor visible so a spurious wake cannot reopen early.
+			std::shared_ptr<std::condition_variable> condition = current.condition;
+			condition->wait(lock);
 		}
-		if (pathClosingCondition) {
-			pathClosingCondition->wait(lock);
-			continue;
+
+		auto& entry = entryIterator->second;
+
+		// at this point, either:
+		// 1. descriptor is set to a valid, non-closing database, or
+		// 2. descriptor is nullptr (database doesn't exist)
+
+		if (entry.descriptor) {
+			// database exists and is not closing, proceed with existing logic
+			// check if the database is already open with a different mode
+			if (options.mode != entry.descriptor->mode) {
+				throw rocksdb_js::DBException(
+					"Database already open in '" +
+					(entry.descriptor->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
+					"' mode"
+				);
+			}
+
+			// max_log_file_size and info_log_level are DB-wide (`DBOptions`) settings
+			// fixed at first open; the process-global descriptor is reused across
+			// handles/envs, so a second open can't change them. Reject an explicitly
+			// different request rather than silently ignore it — but let a plain
+			// reopen (non-explicit default / unset) inherit the live value, so a
+			// default-carrying reopen after a custom first open does NOT falsely
+			// reject (mirrors the compression discipline below).
+			{
+				rocksdb::DBOptions current = entry.descriptor->db->GetDBOptions();
+				// Widen the live size_t to uint64_t rather than narrowing the request to
+				// size_t: on a 32-bit build narrowing would truncate a >4GB request and
+				// could falsely compare equal (skipping a real conflict).
+				if (options.maxLogFileSizeExplicit &&
+					static_cast<uint64_t>(current.max_log_file_size) != options.maxLogFileSize
+				) {
+					throw rocksdb_js::DBException(
+						"Database \"" + path + "\" is already open with maxLogFileSize " +
+						std::to_string(current.max_log_file_size) + " bytes; cannot reopen it with " +
+						std::to_string(options.maxLogFileSize) + " bytes"
+					);
+				}
+				if (options.infoLogLevel.has_value() &&
+					static_cast<int>(current.info_log_level) != static_cast<int>(*options.infoLogLevel)
+				) {
+					throw rocksdb_js::DBException(
+						"Database \"" + path + "\" is already open with infoLogLevel " +
+						std::to_string(static_cast<int>(current.info_log_level)) + "; cannot reopen it with " +
+						std::to_string(static_cast<int>(*options.infoLogLevel))
+					);
+				}
+			}
+
+			DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());
+			DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str());
+
+			// manually copy the columns because we don't know which ones are valid.
+			// Hold the descriptor's columns mutex across the copy-check-insert so a
+			// concurrent drop (which erases its entry via retireColumnFamily)
+			// cannot interleave and let us reuse a just-dropped column family.
+			std::unique_lock<std::mutex> columnsLock(entry.descriptor->columnsMutex);
+			// RocksDB cannot hold two column families with the same name.
+			if (std::shared_ptr<ColumnFamilyDescriptor> retiringGeneration =
+					entry.descriptor->findRetiringLocked(name)) {
+				columnsLock.unlock();
+				// Keep databasesMutex across this rare MANIFEST write: unlocking
+				// requires a descriptor pin that can make a last-handle close skip
+				// its only registry purge (AGENTS invariant 23).
+				bool attempted = false;
+				rocksdb::Status retryStatus = entry.descriptor->reclaimColumnFamily(retiringGeneration, &attempted);
+				if (attempted) {
+					if (!retryStatus.ok()) {
+						throw rocksdb_js::DBException(
+							"Column family \"" + name + "\" is still being reclaimed; its previous drop failed: " +
+							retryStatus.ToString()
+						);
+					}
+					continue;
+				}
+				if (!reclaimDeadline) {
+					reclaimDeadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(columnFamilyReclaimWaitMs());
+				}
+				if (std::chrono::steady_clock::now() >= *reclaimDeadline) {
+					throw rocksdb_js::DBException(
+						"Column family \"" + name + "\" is still being reclaimed after a drop (a commit admitted "
+						"before the drop has not released it); retry the open"
+					);
+				}
+				// The condition is pinned because the wait releases `databasesMutex`.
+				std::shared_ptr<std::condition_variable> retiringCondition = entry.descriptor->retiringCondition;
+				retiringCondition->wait_for(lock, std::chrono::milliseconds(20));
+				continue;
+			}
+			bool columnExists = false;
+			for (auto& it : entry.descriptor->columns) {
+				columns[it.first] = it.second;
+				if (it.first == name) {
+					DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" already exists\n", instance.get(), name.c_str());
+					columnExists = true;
+				}
+			}
+			if (!columnExists) {
+				if (entry.descriptor->readOnly) {
+					throw rocksdb_js::DBException("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
+				}
+				DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
+				// Preserve retained settings while applying every per-CF option from
+				// the handle creating this family. "Attached" is the descriptor's own record, not
+				// RocksDB's sanitized DBOptions: SanitizeOptions fills a missing manager with a
+				// disabled WriteBufferManager(0), so GetDBOptions().write_buffer_manager is never
+				// null post-open and would clamp every late family regardless of whether one was
+				// ever configured (#823).
+				auto cfOptions = buildColumnFamilyOptions(
+					options,
+					entry.descriptor->attachedWriteBufferManager != nullptr,
+					entry.descriptor->cfOptions
+				);
+				if (options.compression) {
+					cfOptions.compression = *options.compression;
+					cfOptions.blob_compression_type = *options.compression;
+					cfOptions.compression_opts.level = options.compressionLevel
+						? *options.compressionLevel
+						: rocksdb::CompressionOptions::kDefaultCompressionLevel;
+				}
+				auto column = rocksdb_js::createRocksDBColumnFamily(
+					entry.descriptor->db, name, cfOptions
+				);
+				auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
+					column,
+					name,
+					entry.descriptor->db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+				);
+				columns[name] = columnDescriptor;
+				entry.descriptor->columns[name] = columnDescriptor;
+			} else if (options.compressionExplicit && options.compression) {
+				// The column family is already open in this process (the DBDescriptor
+				// is process-global and shared across handles/envs). Compression is
+				// fixed per column family at creation, so a second open explicitly
+				// asking for a different algorithm or level cannot take effect on the
+				// reused handle — reject it rather than silently ignore the request. A
+				// plain reopen (compression defaulted, not explicit) inherits the live
+				// setting and skips this check.
+				rocksdb::ColumnFamilyHandle* cf = columns[name]->column.get();
+				rocksdb::Options current = entry.descriptor->db->GetOptions(cf);
+				// The effective request omitting a level is "the algorithm's default
+				// level" (see applyCompression in db_descriptor.cpp), so compare against
+				// the default sentinel rather than skipping the level check — otherwise
+				// reopening a zstd-level-19 CF as plain zstd would silently inherit 19.
+				int requestedLevel = options.compressionLevel
+					? *options.compressionLevel
+					: rocksdb::CompressionOptions::kDefaultCompressionLevel;
+				bool algorithmDiffers = current.compression != *options.compression;
+				// The request applies the algorithm to blob files too, so a live CF whose
+				// blobs are at a different algorithm (e.g. a legacy CF opened plainly with
+				// block=snappy but blob=none) is also a conflict — otherwise values at the
+				// 2KB blob threshold would stay uncompressed while the open appears to succeed.
+				bool blobDiffers = current.blob_compression_type != *options.compression;
+				bool levelDiffers = current.compression_opts.level != requestedLevel;
+				if (algorithmDiffers || blobDiffers || levelDiffers) {
+					std::string requested = rocksdb_js::compressionNameFromType(*options.compression);
+					if (options.compressionLevel) {
+						requested += " (level " + std::to_string(*options.compressionLevel) + ")";
+					}
+					throw rocksdb_js::DBException(
+						"Column family \"" + name + "\" is already open with compression \"" +
+						rocksdb_js::compressionNameFromType(current.compression) + " (blob " +
+						rocksdb_js::compressionNameFromType(current.blob_compression_type) + ", level " +
+						std::to_string(current.compression_opts.level) + ")\"; cannot reopen it with \"" +
+						requested + "\""
+					);
+				}
+			}
+		} else {
+			try {
+				entry.descriptor = DBDescriptor::open(path, identityPath, options);
+			} catch (...) {
+				// Remove the stale entry (null descriptor) so it does not pollute the
+				// registry and cause null-dereference crashes in callers such as
+				// RegistryStatus that iterate every entry without guarding for null.
+				instance->databases.erase(entryIterator);
+				throw;
+			}
+			DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
+			columns = entry.descriptor->columns;
 		}
-		rejectConflictingSecondaryWorkspace();
-		entryIterator = instance->databases.find(key);
-		if (entryIterator == instance->databases.end()) {
-			entryIterator = instance->databases.emplace(key, DBRegistryEntry()).first;
-			break; // no database on this path: proceed to open
-		}
-		auto& current = entryIterator->second;
-		if (!current.descriptor) {
-			break; // entry exists but holds no database
-		}
-		if (!current.descriptor->isClosing()) {
-			break; // database exists and is not closing
-		}
-		DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str());
-		// Keep the descriptor visible so a spurious wake cannot reopen early.
-		std::shared_ptr<std::condition_variable> condition = current.condition;
-		condition->wait(lock);
+		break;
 	}
 
 	auto& entry = entryIterator->second;
-
-	// at this point, either:
-	// 1. descriptor is set to a valid, non-closing database, or
-	// 2. descriptor is nullptr (database doesn't exist)
-
-	if (entry.descriptor) {
-		// database exists and is not closing, proceed with existing logic
-		// check if the database is already open with a different mode
-		if (options.mode != entry.descriptor->mode) {
-			throw rocksdb_js::DBException(
-				"Database already open in '" +
-				(entry.descriptor->mode == DBMode::Optimistic ? std::string("optimistic") : std::string("pessimistic")) +
-				"' mode"
-			);
-		}
-
-		// max_log_file_size and info_log_level are DB-wide (`DBOptions`) settings
-		// fixed at first open; the process-global descriptor is reused across
-		// handles/envs, so a second open can't change them. Reject an explicitly
-		// different request rather than silently ignore it — but let a plain
-		// reopen (non-explicit default / unset) inherit the live value, so a
-		// default-carrying reopen after a custom first open does NOT falsely
-		// reject (mirrors the compression discipline below).
-		{
-			rocksdb::DBOptions current = entry.descriptor->db->GetDBOptions();
-			// Widen the live size_t to uint64_t rather than narrowing the request to
-			// size_t: on a 32-bit build narrowing would truncate a >4GB request and
-			// could falsely compare equal (skipping a real conflict).
-			if (options.maxLogFileSizeExplicit &&
-				static_cast<uint64_t>(current.max_log_file_size) != options.maxLogFileSize
-			) {
-				throw rocksdb_js::DBException(
-					"Database \"" + path + "\" is already open with maxLogFileSize " +
-					std::to_string(current.max_log_file_size) + " bytes; cannot reopen it with " +
-					std::to_string(options.maxLogFileSize) + " bytes"
-				);
-			}
-			if (options.infoLogLevel.has_value() &&
-				static_cast<int>(current.info_log_level) != static_cast<int>(*options.infoLogLevel)
-			) {
-				throw rocksdb_js::DBException(
-					"Database \"" + path + "\" is already open with infoLogLevel " +
-					std::to_string(static_cast<int>(current.info_log_level)) + "; cannot reopen it with " +
-					std::to_string(static_cast<int>(*options.infoLogLevel))
-				);
-			}
-		}
-
-		DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());
-		DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str());
-
-		// manually copy the columns because we don't know which ones are valid.
-		// Hold the descriptor's columns mutex across the copy-check-insert so a
-		// concurrent drop (which erases its entry via unregisterColumnFamily)
-		// cannot interleave and let us reuse a just-dropped column family.
-		std::lock_guard<std::mutex> columnsLock(entry.descriptor->columnsMutex);
-		bool columnExists = false;
-		for (auto& it : entry.descriptor->columns) {
-			columns[it.first] = it.second;
-			if (it.first == name) {
-				DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" already exists\n", instance.get(), name.c_str());
-				columnExists = true;
-			}
-		}
-		if (!columnExists) {
-			if (entry.descriptor->readOnly) {
-				throw rocksdb_js::DBException("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
-			}
-			DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
-			// Preserve retained settings while applying every per-CF option from
-			// the handle creating this family. "Attached" is the descriptor's own record, not
-			// RocksDB's sanitized DBOptions: SanitizeOptions fills a missing manager with a
-			// disabled WriteBufferManager(0), so GetDBOptions().write_buffer_manager is never
-			// null post-open and would clamp every late family regardless of whether one was
-			// ever configured (#823).
-			auto cfOptions = buildColumnFamilyOptions(
-				options,
-				entry.descriptor->attachedWriteBufferManager != nullptr,
-				entry.descriptor->cfOptions
-			);
-			if (options.compression) {
-				cfOptions.compression = *options.compression;
-				cfOptions.blob_compression_type = *options.compression;
-				cfOptions.compression_opts.level = options.compressionLevel
-					? *options.compressionLevel
-					: rocksdb::CompressionOptions::kDefaultCompressionLevel;
-			}
-			auto column = rocksdb_js::createRocksDBColumnFamily(
-				entry.descriptor->db, name, cfOptions
-			);
-			auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
-				column,
-				entry.descriptor->db->GetOptions(column.get()).max_write_buffer_size_to_maintain
-			);
-			columns[name] = columnDescriptor;
-			entry.descriptor->columns[name] = columnDescriptor;
-		} else if (options.compressionExplicit && options.compression) {
-			// The column family is already open in this process (the DBDescriptor
-			// is process-global and shared across handles/envs). Compression is
-			// fixed per column family at creation, so a second open explicitly
-			// asking for a different algorithm or level cannot take effect on the
-			// reused handle — reject it rather than silently ignore the request. A
-			// plain reopen (compression defaulted, not explicit) inherits the live
-			// setting and skips this check.
-			rocksdb::ColumnFamilyHandle* cf = columns[name]->column.get();
-			rocksdb::Options current = entry.descriptor->db->GetOptions(cf);
-			// The effective request omitting a level is "the algorithm's default
-			// level" (see applyCompression in db_descriptor.cpp), so compare against
-			// the default sentinel rather than skipping the level check — otherwise
-			// reopening a zstd-level-19 CF as plain zstd would silently inherit 19.
-			int requestedLevel = options.compressionLevel
-				? *options.compressionLevel
-				: rocksdb::CompressionOptions::kDefaultCompressionLevel;
-			bool algorithmDiffers = current.compression != *options.compression;
-			// The request applies the algorithm to blob files too, so a live CF whose
-			// blobs are at a different algorithm (e.g. a legacy CF opened plainly with
-			// block=snappy but blob=none) is also a conflict — otherwise values at the
-			// 2KB blob threshold would stay uncompressed while the open appears to succeed.
-			bool blobDiffers = current.blob_compression_type != *options.compression;
-			bool levelDiffers = current.compression_opts.level != requestedLevel;
-			if (algorithmDiffers || blobDiffers || levelDiffers) {
-				std::string requested = rocksdb_js::compressionNameFromType(*options.compression);
-				if (options.compressionLevel) {
-					requested += " (level " + std::to_string(*options.compressionLevel) + ")";
-				}
-				throw rocksdb_js::DBException(
-					"Column family \"" + name + "\" is already open with compression \"" +
-					rocksdb_js::compressionNameFromType(current.compression) + " (blob " +
-					rocksdb_js::compressionNameFromType(current.blob_compression_type) + ", level " +
-					std::to_string(current.compression_opts.level) + ")\"; cannot reopen it with \"" +
-					requested + "\""
-				);
-			}
-		}
-	} else {
-		try {
-			entry.descriptor = DBDescriptor::open(path, identityPath, options);
-		} catch (...) {
-			// Remove the stale entry (null descriptor) so it does not pollute the
-			// registry and cause null-dereference crashes in callers such as
-			// RegistryStatus that iterate every entry without guarding for null.
-			instance->databases.erase(entryIterator);
-			throw;
-		}
-		DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
-		columns = entry.descriptor->columns;
-	}
 
 	// handle the column family
 	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor;
@@ -704,12 +767,25 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "refCount", refCount));
 			napi_value columnFamilies;
 			NAPI_STATUS_THROWS(::napi_create_object(env, &columnFamilies));
-			for (auto& [name, columnDescriptor] : entry.descriptor->columns) {
+			std::vector<std::pair<std::string, std::shared_ptr<ColumnFamilyDescriptor>>> columns;
+			{
+				std::lock_guard<std::mutex> columnsLock(entry.descriptor->columnsMutex);
+				columns.reserve(entry.descriptor->columns.size());
+				for (auto& column : entry.descriptor->columns) {
+					columns.push_back(column);
+				}
+			}
+			for (auto& [name, columnDescriptor] : columns) {
 				napi_value columnDescriptorValue;
 				NAPI_STATUS_THROWS(::napi_create_object(env, &columnDescriptorValue));
 
 				napi_value userSharedBuffers;
-				NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(columnDescriptor->userSharedBuffers.size()), &userSharedBuffers));
+				size_t userSharedBufferCount;
+				{
+					std::lock_guard<std::mutex> buffersLock(columnDescriptor->userSharedBuffersMutex);
+					userSharedBufferCount = columnDescriptor->userSharedBuffers.size();
+				}
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, static_cast<uint32_t>(userSharedBufferCount), &userSharedBuffers));
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnDescriptorValue, "userSharedBuffers", userSharedBuffers));
 
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, columnFamilies, name.c_str(), columnDescriptorValue));

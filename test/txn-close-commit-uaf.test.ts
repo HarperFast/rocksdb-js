@@ -1,9 +1,11 @@
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-close-commit-uaf.mts');
+const legacyLastHandleFixturePath = join(__dirname, 'fixtures', 'fork-legacy-commit-close.mts');
 // Deno/macOS has a pre-existing worker-env teardown abort (#746); use the
 // established single-retry policy from commit-teardown.test.ts on that runner.
 const retry = process.versions.deno && process.platform === 'darwin' ? 1 : 0;
@@ -53,5 +55,88 @@ describe('TransactionHandle::close() vs async-commit complete callback', () => {
 		'should survive DBDescriptor::close() racing the commit complete callback (harper#1370)',
 		{ retry, timeout: 60_000 },
 		() => expectSurvives()
+	);
+
+	for (const commitThread of ['0', '1'] as const) {
+		it(
+			`finishes a last-handle close deferred by commit mode ${commitThread}`,
+			{ timeout: 30_000 },
+			async () => {
+				const dbPath = generateDBPath();
+				try {
+					const result = await new Promise<{
+						code: number | null;
+						signal: NodeJS.Signals | null;
+						stdout: string;
+						stderr: string;
+					}>((resolve, reject) => {
+						const child = spawn(process.execPath, [legacyLastHandleFixturePath, dbPath], {
+							env: {
+								...process.env,
+								ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '6000',
+								ROCKSDB_JS_COMMIT_THREAD: commitThread,
+							},
+						});
+						let stdout = '';
+						let stderr = '';
+						child.stdout?.on('data', (chunk) => (stdout += chunk.toString()));
+						child.stderr?.on('data', (chunk) => (stderr += chunk.toString()));
+						child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+						child.on('error', reject);
+					});
+
+					expect(result.signal, result.stderr).toBeNull();
+					expect(result.code, result.stderr).toBe(0);
+					expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({ ok: true });
+				} finally {
+					if (!process.env.KEEP_FILES) {
+						rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
+					}
+				}
+			}
+		);
+	}
+
+	// Deno's Node-compat Worker termination does not run the addon's env
+	// cleanup/finalizers: even after the delayed commit finishes it retains the
+	// worker's DB closable. This case specifically verifies the N-API env cleanup
+	// contract on Node and Bun; the other commit/close cases still run on Deno.
+	// Related Deno worker-env teardown failures are tracked in #746.
+	it.skipIf(Boolean(process.versions.deno))(
+		'finishes a last-handle close when a commit-lane env is terminated',
+		{ timeout: 30_000 },
+		async () => {
+			const dbPath = generateDBPath();
+			try {
+				const result = await new Promise<{
+					code: number | null;
+					signal: NodeJS.Signals | null;
+					stdout: string;
+					stderr: string;
+				}>((resolve, reject) => {
+					const child = spawn(process.execPath, [legacyLastHandleFixturePath, dbPath, 'worker'], {
+						env: {
+							...process.env,
+							ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '6000',
+							ROCKSDB_JS_COMMIT_THREAD: '1',
+						},
+					});
+					let stdout = '';
+					let stderr = '';
+					child.stdout?.on('data', (chunk) => (stdout += chunk.toString()));
+					child.stderr?.on('data', (chunk) => (stderr += chunk.toString()));
+					child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+					child.on('error', reject);
+				});
+
+				expect(result.signal, result.stderr).toBeNull();
+				expect(result.code, result.stderr).toBe(0);
+				expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({ ok: true });
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 100 });
+				}
+			}
+		}
 	);
 });
