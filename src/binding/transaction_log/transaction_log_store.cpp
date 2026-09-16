@@ -1392,8 +1392,15 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			currentFile->appendBoundaryMarkerEnabled = true;
 			bool activated = true;
 			try {
-				if (!currentFile->isOpen()) {
-					currentFile->open(store->latestTimestamp);
+				// Non-creating: a plain open() here would recreate a header-only
+				// ghost if the file vanished between directory discovery and this
+				// call (out-of-band deletion, or a concurrent purge in another
+				// process) — the same resurrection this PR closed on the read path.
+				if (!currentFile->isOpen() && !currentFile->openExisting(store->latestTimestamp)) {
+					DEBUG_LOG("%p TransactionLogStore::load Current log file vanished before open: %s\n",
+						store.get(), currentFile->path.string().c_str());
+					currentFile->appendBoundaryMarkerEnabled = false;
+					activated = false;
 				}
 			} catch (const TransactionLogAppendBoundaryException&) {
 				// The marker is authoritative; a segment we cannot reconcile with it
@@ -1460,20 +1467,24 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		auto& logFile = it->second;
 		const bool openedForScan = !logFile->isOpen();
 		try {
-			if (openedForScan) {
-				logFile->open(store->latestTimestamp);
-			}
-			// The current file's cached boundary is a product of recoverTail's
-			// scan; a read-only load skipped recovery, so scan here instead.
-			uint32_t completeEnd = isCurrent && !readOnly
-				? logFile->lastCompleteTransactionEnd.load(std::memory_order_relaxed)
-				: logFile->scanForLastCompleteTransactionEnd();
-			if (openedForScan) {
-				logFile->close();
-			}
-			if (completeEnd > 0) {
-				recoveredPosition = { completeEnd, it->first };
-				break;
+			// Non-creating: a plain open() here would recreate a header-only
+			// ghost if the file vanished between directory discovery and this
+			// scan (out-of-band deletion, or a concurrent purge in another
+			// process) — skip it like any other unreadable older segment instead.
+			bool vanished = openedForScan && !logFile->openExisting(store->latestTimestamp);
+			if (!vanished) {
+				// The current file's cached boundary is a product of recoverTail's
+				// scan; a read-only load skipped recovery, so scan here instead.
+				uint32_t completeEnd = isCurrent && !readOnly
+					? logFile->lastCompleteTransactionEnd.load(std::memory_order_relaxed)
+					: logFile->scanForLastCompleteTransactionEnd();
+				if (openedForScan) {
+					logFile->close();
+				}
+				if (completeEnd > 0) {
+					recoveredPosition = { completeEnd, it->first };
+					break;
+				}
 			}
 		} catch (const std::exception& e) {
 			if (openedForScan && logFile->isOpen()) {

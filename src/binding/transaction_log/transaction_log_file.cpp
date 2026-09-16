@@ -776,7 +776,16 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, b
 }
 
 void TransactionLogFile::publishReadableExtentLocked() {
-	auto map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
+	// Called on every append (the commit hot path), so the common case (a live
+	// this->memoryMap) must not pay a shared_ptr copy's atomic refcount traffic;
+	// only the frozen-file fallback needs one, since weak_ptr::lock() has no
+	// raw-pointer equivalent.
+	std::shared_ptr<MemoryMap> frozen;
+	MemoryMap* map = this->memoryMap.get();
+	if (!map) {
+		frozen = this->frozenMapCache.lock();
+		map = frozen.get();
+	}
 	if (map) {
 		map->readableExtent.store(
 			std::min(this->size.load(std::memory_order_relaxed), map->mapSize),
