@@ -345,8 +345,9 @@ bool DBRegistry::CollectWriteBufferManagerInventory(
 /**
  * Bound on how long an open waits for a same-name generation's physical drop
  * (`ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default 30000; malformed or non-positive
- * falls back). The claim it waits on is a commit already inside RocksDB, so
- * the bound only matters when that write is itself stalled.
+ * falls back). A commit claims at admission, before its transaction-log write
+ * and before it is queued on the commit lane, so the bound covers that whole
+ * interval and not just the RocksDB write.
  */
 static unsigned columnFamilyReclaimWaitMs() {
 	static const unsigned ms = []() -> unsigned {
