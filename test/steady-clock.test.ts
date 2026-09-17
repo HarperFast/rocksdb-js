@@ -80,7 +80,9 @@ describe('steadyClockNow', () => {
 			const after = steadyClockNow();
 			for (const [index, { first, second }] of results.entries()) {
 				expect(first, `worker ${index}`).toBeGreaterThanOrEqual(before + STAGGER_MS - TOLERANCE_MS);
-				expect(second, `worker ${index}`).toBeGreaterThanOrEqual(first);
+				expect(second - first, `worker ${index}`).toBeGreaterThanOrEqual(
+					WORKER_SLEEP_MS - TOLERANCE_MS
+				);
 				expect(second, `worker ${index}`).toBeLessThanOrEqual(after);
 			}
 		} finally {
