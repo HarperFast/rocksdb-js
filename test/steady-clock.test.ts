@@ -1,9 +1,8 @@
 import { steadyClockNow } from '../src/index.ts';
 import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -201,14 +200,18 @@ describe('steadyClockNow', () => {
 	const distDir = join(__dirname, '..', 'dist');
 	it.skipIf(!existsSync(join(distDir, 'index.mjs')) || !existsSync(join(distDir, 'index.cjs')))(
 		'is exported from the built ESM and CJS entry points',
-		async () => {
-			const esm = await import(pathToFileURL(join(distDir, 'index.mjs')).href);
-			expect(esm.steadyClockNow).toBeTypeOf('function');
-			expect(esm.steadyClockNow()).toBeTypeOf('number');
-
-			const cjs = createRequire(import.meta.url)(join(distDir, 'index.cjs'));
-			expect(cjs.steadyClockNow).toBeTypeOf('function');
-			expect(cjs.steadyClockNow()).toBeTypeOf('number');
+		() => {
+			// Each entry point must load alone: src and dist decorate the same native
+			// prototypes, so mixing builds in one env would redefine those properties.
+			const scripts = [
+				`import(${JSON.stringify(pathToFileURL(join(distDir, 'index.mjs')).href)}).then(m => console.log(m.steadyClockNow()))`,
+				`import('node:module').then(({ createRequire }) => console.log(createRequire(${JSON.stringify(pathToFileURL(join(distDir, 'index.cjs')).href)})(${JSON.stringify(join(distDir, 'index.cjs'))}).steadyClockNow()))`,
+			];
+			for (const script of scripts) {
+				const args = process.versions.deno ? ['eval', script] : ['--eval', script];
+				const output = execFileSync(process.execPath, args, { encoding: 'utf8', timeout: 15000 });
+				expect(Number.isFinite(Number(output.trim()))).toBe(true);
+			}
 		}
 	);
 });
