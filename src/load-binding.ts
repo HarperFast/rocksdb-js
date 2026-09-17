@@ -822,6 +822,22 @@ export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;
 
 /**
+ * Reads the process-wide steady clock: `std::chrono::steady_clock` as
+ * fractional milliseconds from an unspecified origin that is fixed for the life
+ * of the process. Every sample in the process — main thread and every
+ * `worker_threads` worker, whenever started or restarted, on Node, Bun and Deno
+ * — is in one domain, and the difference between two samples is real elapsed
+ * time unaffected by wall-clock steps. Non-decreasing but not unique (two
+ * samples may be equal; treat `==` as "not later"). Windows QPC samples from
+ * different threads within one native tick also have ambiguous ordering.
+ * Clock readings alone do not prove causality. Not comparable with
+ * `Date.now()`, `db.getMonotonicTimestamp()` or transaction timestamps, and not
+ * meaningful across processes or restarts. Time spent in host suspend is
+ * platform-defined. No open database is needed.
+ */
+export const steadyClockNow: () => number = binding.steadyClockNow;
+
+/**
  * Advises the kernel that the file-backed pages of every mapped transaction log
  * are cold (Linux MADV_COLD), so they are reclaimed first under memory pressure
  * without being freed — useful during replication catch-up, where a full read of

@@ -850,6 +850,12 @@ const ts = db.getMonotonicTimestamp();
 console.log(ts); // 1764307857213.739
 ```
 
+It is a wall-clock (Unix epoch) value made strictly increasing: on a tie or a backward step of the
+host clock it advances by one floating-point ulp per call until the wall clock catches up. That
+keeps transaction timestamps ordered and durable, but it does not measure elapsed time — after a
+backward step, differences between two calls understate real time. Use
+[`steadyClockNow()`](#steadyclocknow-number) for elapsed durations and deadlines.
+
 ### `db.getOldestSnapshotTimestamp(): number`
 
 Returns a number representing a unix timestamp of the oldest unreleased snapshot.
@@ -2258,6 +2264,51 @@ Options:
 
 Validating a store that is being actively appended to can spuriously report a torn tail for the
 current log file — the tail of an in-flight append is indistinguishable from a crash artifact.
+
+### `steadyClockNow(): number`
+
+Reads the process-wide steady clock. No database handle is needed.
+
+```typescript
+import { steadyClockNow } from '@harperfast/rocksdb-js';
+
+const start = steadyClockNow();
+// ... work, possibly on other worker threads ...
+const elapsedMs = steadyClockNow() - start;
+```
+
+Contract:
+
+- **Units / type**: milliseconds with a fractional part, as a `number`. Read from
+  `std::chrono::steady_clock` (`CLOCK_MONOTONIC` on Linux, `CLOCK_MONOTONIC_RAW` on macOS,
+  `QueryPerformanceCounter` on Windows).
+- **Origin and lifetime**: the origin is unspecified and fixed for the life of the process. Every
+  sample taken in the process is in one domain — the main thread and every `worker_threads` worker,
+  including workers started or restarted at any later time, under Node, Bun and Deno alike. Samples
+  are not meaningful across processes or restarts, and are unrelated to the Unix epoch: never compare
+  them with `Date.now()`, `db.getMonotonicTimestamp()` or transaction timestamps.
+- **Monotonic, not unique**: a sample taken after another (in real time, on any thread) is `>=` it.
+  Two samples can be equal — in the same clock tick, or when two distinct readings round to the same
+  double — so treat `==` as "not later" and pair the sample with a sequence number if strict ordering
+  is required. On Windows, QPC samples from different threads within ±1 native counter tick also
+  have ambiguous ordering; do not use near-equal clock samples alone to prove causality. No
+  wall-clock ratchet is applied.
+- **Precision**: the double's spacing grows with distance from the origin: about 2 ns at 100 days,
+  61 ns at 10 years, 0.49 µs at 100 years. Conversion error is below 0.51 µs per sample through
+  100 years from the native origin. This is representation precision, not clock accuracy. Rounding is
+  monotone, so distinct readings can only collapse to equality, never invert. The clock's own
+  resolution is platform-defined (the C++ duration period is 1 ns on these platforms; actual clock
+  resolution can be coarser). The native signed 64-bit nanosecond range is about 292 years in either
+  direction from its origin; conversion to `number` does not narrow it.
+- **Independent of the wall clock**: `settimeofday`/NTP steps in either direction do not move it. NTP
+  frequency slew is platform-defined (`CLOCK_MONOTONIC` is slewed; `CLOCK_MONOTONIC_RAW` and
+  `QueryPerformanceCounter` are not).
+- **Suspend**: whether time the host spends suspended counts is platform-defined — `CLOCK_MONOTONIC`
+  excludes it on Linux; current macOS `CLOCK_MONOTONIC_RAW` and Windows QPC include it. Do not
+  assume runtime timers (`setTimeout`) use the same suspend policy. Portable suspend-inclusive
+  deadlines are not provided by this API.
+- **Cost**: one clock read and a double conversion; no lock, no native allocation, no wall-clock read,
+  no database or log I/O, no per-worker calibration. Safe from any thread. The runtime may allocate a boxed JS number.
 
 ### `currentThreadId(): number`
 
