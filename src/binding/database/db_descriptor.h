@@ -987,6 +987,9 @@ struct ColumnFamilyDescriptor final {
 	 */
 	const int64_t maxWriteBufferSizeToMaintain;
 
+	// Forces a persist retry after SetOptions changes memory but not OPTIONS.
+	std::atomic<bool> compressionPersistDirty{false};
+
 	ColumnFamilyDescriptor(
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,
 		std::string name,
