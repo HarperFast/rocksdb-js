@@ -181,16 +181,30 @@ so slow commits cannot starve fs/dns/crypto/async-get work sharing the libuv
 pool. `ROCKSDB_JS_COMMIT_THREAD` selects the mode (`0`/`false` = legacy libuv
 path, default = single lane, `2` = experimental two-lane txnlog→commit
 pipeline). Completions are marshalled back to the originating env via per-env
-tsfns held on the descriptor under `commitMutex`; the commit thread calls them
-under that mutex and a dying env's tsfn is released from the module env-cleanup
-hook (`DBRegistry::ReleaseCommitCompletionsByEnv`) — the same env-teardown
-discipline as `EventEmitter::notify` above. A per-commit tsfn acquire is NOT
+tsfns in per-env `CommitCompletion` objects. `commitMutex` protects only the
+registry lookup/creation and removal. Each DBHandle caches its env's completion
+on the owning JS thread and resets that cache on reopen; cross-env close leaves
+it alone. An in-flight commit retains its completion
+object and calls/finishes under that object's mutex, so independent envs do not
+serialize on the descriptor for dispatch and accounting. A dying env's tsfn is
+released under the same completion mutex from the module env-cleanup hook
+(`DBRegistry::ReleaseCommitCompletionsByEnv`) — the same env-teardown discipline
+as `EventEmitter::notify` above. Registry removal holds `commitMutex` through
+completion release (registry → completion is the only nested lock order): removing
+an entry before releasing its TSFN lets concurrent env cleanup miss that entry and
+return before the TSFN is safe. A retained completion object does not pin the Node
+env; its terminal closed flag prevents a delayed registration or dispatch from
+reviving the released TSFN. A per-commit tsfn acquire is NOT
 sufficient (env teardown does not honor tsfn acquire counts); see
 `test/commit-teardown.test.ts` and the `ROCKSDB_JS_COMMIT_DELAY_MS` test seam.
 Every path registers its native execute in the descriptor's
 `operationsInFlight` count before queueing and rechecks `isClosing()` afterward
 (publish-then-check, so teardown either waits for the operation or the commit
-observes the close and rejects), then releases only after the transaction's
+observes the close and rejects). In the lane modes this must precede the
+`DBHandle` completion-cache access: foreign shutdown can reset the transaction's
+`dbHandle` before admission. The local descriptor pin is declared before the pending
+commit state so setup-error cleanup releases its operation count while the descriptor
+is still alive. The operation releases only after the transaction's
 async-work registration is cleared — legacy from its libuv execute thread, the
 lane modes at the end of the commit stage. This makes direct shutdown wait for
 the native commit rather than destroy RocksDB after the transaction handle's
@@ -198,7 +212,7 @@ bounded drain expires. The recheck is not redundant with
 `commitCompletionsClosed`, which `finishClose()` sets only after it has passed
 the drain gate and stopped both lanes; a commit that registered its completion
 just before that would otherwise reach `CommitWorker::enqueue` on a stopped
-lane, which runs the task inline. The commit state also pins
+lane, which runs the task inline. The legacy commit state also pins
 the descriptor through its JS completion and retries `PurgeIfUnreferenced()` when
 that pin was why a last-handle `close()` deferred teardown. Direct shutdown can
 therefore wait without a bound for a stalled commit; releasing the counter from

@@ -113,6 +113,25 @@ napi_value IsTransactionCommitExecuteDelayedForTesting(napi_env env, napi_callba
 	return result;
 }
 
+napi_value SetTransactionCommitAdmissionDelayForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t delayMs = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &delayMs));
+	setTransactionCommitAdmissionDelayForTesting(std::clamp(delayMs, 0, 60000));
+	NAPI_RETURN_UNDEFINED();
+}
+
+napi_value IsTransactionCommitAdmissionDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(
+		env,
+		transactionCommitAdmissionDelayActive().load(std::memory_order_acquire),
+		&result
+	));
+	return result;
+}
+
 napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	int32_t countdown = 0;
@@ -401,6 +420,13 @@ NAPI_MODULE_INIT() {
 		"setWriteBufferManagerJoinDelayForTesting",
 		setWriteBufferManagerJoinDelayFn
 	));
+
+	napi_value setCommitAdmissionDelayFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "setTransactionCommitAdmissionDelayForTesting", NAPI_AUTO_LENGTH, SetTransactionCommitAdmissionDelayForTesting, nullptr, &setCommitAdmissionDelayFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setTransactionCommitAdmissionDelayForTesting", setCommitAdmissionDelayFn));
+	napi_value isCommitAdmissionDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCommitAdmissionDelayedForTesting", NAPI_AUTO_LENGTH, IsTransactionCommitAdmissionDelayedForTesting, nullptr, &isCommitAdmissionDelayedFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isTransactionCommitAdmissionDelayedForTesting", isCommitAdmissionDelayedFn));
 
 	// currentThreadId function
 	napi_value currentThreadIdFn;

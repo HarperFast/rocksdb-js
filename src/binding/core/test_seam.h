@@ -21,6 +21,23 @@ inline std::atomic<bool>& transactionCommitExecuteDelayActive() {
 	return active;
 }
 
+inline std::atomic<int>& transactionCommitAdmissionDelayMs() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
+inline std::atomic<bool>& transactionCommitAdmissionDelayActive() {
+	static std::atomic<bool> active{false};
+	return active;
+}
+
+inline void setTransactionCommitAdmissionDelayForTesting(int delayMs) {
+	transactionCommitAdmissionDelayMs().store(delayMs, std::memory_order_relaxed);
+	if (delayMs == 0) {
+		transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
+	}
+}
+
 // Deterministic one-shot(-per-N) seam for the stranded-snapshot retry path: forces the next N
 // transaction commits to fail with TryAgain (the caller rolls back so no data is committed),
 // reproducing an ERR_TRY_AGAIN that a real memtable flush would cause but that is finicky to

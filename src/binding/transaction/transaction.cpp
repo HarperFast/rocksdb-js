@@ -356,6 +356,7 @@ static void purgeAfterCommit(std::shared_ptr<DBDescriptor> descriptor) noexcept;
 
 struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
 	bool hasLog;
+	std::shared_ptr<DBDescriptor::CommitCompletion> completion;
 	ColumnFamilyCommitClaim claim;
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
@@ -871,9 +872,7 @@ static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* co
 	if (env != nullptr) {
 		descriptor = state->descriptor.lock();
 		completeCommitWork(env, state);
-		if (descriptor) {
-			descriptor->finishCommitCompletion(env);
-		}
+		state->completion->finish(env);
 	} else if (state->handle) {
 		// Still close the txn handle so it is removed from the descriptor's
 		// transactions map and the native RocksDB transaction is destroyed —
@@ -960,6 +959,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->closeIterators();
 
+	// Keep the descriptor pin alive until setup cleanup releases its operation
+	// claim: locals are destroyed in reverse declaration order, so stateOwner
+	// must be destroyed before descriptor, including on N-API setup failures.
+	std::shared_ptr<DBDescriptor> descriptor;
 	auto stateOwner = PendingTransactionCommitState(
 		env,
 		std::make_unique<TransactionCommitState>(env, *txnHandle)
@@ -972,7 +975,19 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	(*txnHandle)->state = TransactionState::Committing;
 
 	CommitThreadMode mode = commitThreadMode();
-	auto descriptor = state->descriptor.lock();
+	descriptor = state->descriptor.lock();
+	if (transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) > 0) {
+		const int delayMs = transactionCommitAdmissionDelayMs().exchange(0, std::memory_order_relaxed);
+		if (delayMs > 0) {
+			transactionCommitAdmissionDelayActive().store(true, std::memory_order_release);
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
+			while (transactionCommitAdmissionDelayActive().load(std::memory_order_acquire) &&
+				std::chrono::steady_clock::now() < deadline) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
+		}
+	}
 	bool completionsClosed = false;
 	if (mode != CommitThreadMode::Legacy && descriptor) {
 		// The workers are descriptor members, and every descriptor close drains and
@@ -980,43 +995,37 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		// pointer to their owner: a shared_ptr capture would make CloseDB skip its
 		// purge, then could still be alive when the JS completion retries it.
 		DBDescriptor* descriptorOwner = descriptor.get();
+		// Publish before checking closing and before touching the handle cache:
+		// teardown either waits for this claim or rejects admission here.
+		// CloseDB may claim the last-handle purge while the task runs, but
+		// finishClose waits on this operation before draining the owning lanes.
+		state->registerDescriptorOperation(descriptorOwner);
+		if (descriptorOwner->isClosing()) {
+			state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+			completeCommitWork(env, state);
+			NAPI_RETURN_UNDEFINED();
+		}
 		// Ensure this env has a completion tsfn and account the dispatch (refs
 		// the tsfn as the env goes idle->busy so the event loop stays alive).
 		// Closed completion plumbing means finishClose() has already drained the
 		// lanes; the commit is rejected below rather than dispatched elsewhere.
-		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs, completionsClosed));
+		auto& completion = (*txnHandle)->dbHandle->commitCompletion;
+		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs, completionsClosed, completion));
+		state->completion = completion;
 		if (!completionsClosed) {
-			// Publish an operation claim before the DBHandle work registration:
-			// CloseDB may claim the last-handle purge while the task runs, but
-			// finishClose then waits here before draining the owning lanes.
-			state->registerDescriptorOperation(descriptorOwner);
-			// Publish before checking closing, as the legacy path below does
-			// (AGENTS.md "Commit execution").
-			if (descriptorOwner->isClosing()) {
-				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-				completeCommitWork(env, state);
-				// Balance the registerCommitCompletion above; nothing will
-				// dispatch through the tsfn to unref it otherwise.
-				descriptor->finishCommitCompletion(env);
-				// Release while `descriptor` still pins the descriptor:
-				// ~TransactionCommitState runs from `stateOwner`, declared
-				// ahead of that pin and so destroyed after it.
-				state->releaseDescriptorOperation();
-				NAPI_RETURN_UNDEFINED();
-			}
 			// register the commit with the transaction handle so close() can wait
 			(*txnHandle)->registerAsyncWork();
 			stateOwner.asyncWorkRegistered = true;
 
 			// Commit-lane stage: RocksDB commit, then marshal the completion
 			// back to the originating env.
-			auto commitStage = [descriptorOwner, state]() {
+			auto commitStage = [state]() {
 				executeCommitWork(state);
 				state->releaseDescriptorOperation();
 				if (unsigned delay = commitDelayMs()) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(delay));
 				}
-				if (!descriptorOwner->dispatchCommitCompletion(state->env, state)) {
+				if (!state->completion->dispatch(state)) {
 					// Env torn down (e.g. worker terminate) — the completion has
 					// nowhere to run. Close the txn handle (cross-thread safe) so
 					// the shared descriptor doesn't retain the transaction, then

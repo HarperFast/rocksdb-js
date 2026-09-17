@@ -487,53 +487,88 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * must run on the env that issued it — so completions are marshalled back
 	 * via a threadsafe function created lazily per env.
 	 *
-	 * `commitMutex` guards both the commit thread's tsfn call
-	 * (`dispatchCommitCompletion`) and the release of an env's tsfn
-	 * (`releaseCommitCompletionsByEnv`, run from the module env-cleanup hook
-	 * when a worker env exits). Making the call while holding the mutex is what
-	 * keeps it safe against env teardown: a dying env's cleanup hook must take
-	 * the same mutex to release, and Node runs that hook before freeing the
-	 * env's tsfns — so the tsfn cannot be freed mid-call. This is the same
-	 * discipline `EventEmitter::notify` uses (HarperFast/harper#1370). A
-	 * per-commit `napi_acquire_threadsafe_function` does NOT close this window
-	 * (env teardown does not honor the tsfn-level acquire count).
+	 * `completionStateMutex` guards both the commit thread's tsfn call
+	 * (`dispatch`) and the release of the env's tsfn (`release`, called by
+	 * `releaseCommitCompletionsByEnv` from the module env-cleanup hook when a
+	 * worker env exits, or by `finishClose`). Making the call while holding
+	 * the mutex is what keeps it safe against env teardown: a dying env's
+	 * cleanup hook must take the same mutex to release, and Node runs that
+	 * hook before freeing the env's tsfns — so the tsfn cannot be freed
+	 * mid-call. This is the same discipline `EventEmitter::notify` uses
+	 * (HarperFast/harper#1370). A per-commit `napi_acquire_threadsafe_function`
+	 * does NOT close this window (env teardown does not honor the tsfn-level
+	 * acquire count).
 	 */
 	struct CommitCompletion {
+		// Guards this environment's TSFN, pending count, and closed flag.
+		// N-API calls and env-cleanup release take the same lock: shared_ptr
+		// pins this object, not the Node env/TSFN, and TSFN acquire counts do
+		// not prevent env teardown. Other environments have their own lock.
+		std::mutex completionStateMutex;
 		napi_threadsafe_function tsfn = nullptr;
 		// In-flight commits for this env; drives ref/unref so the event loop is
 		// kept alive until completions run, but can still exit when idle.
 		uint32_t pending = 0;
+		// Terminal even while a DBHandle or in-flight commit retains this object:
+		// a cached registration must never recreate a released env's TSFN.
+		bool closed = false;
+
+		/**
+		 * JS thread. Ensures a completion tsfn exists (created with `callJs`)
+		 * and accounts a newly dispatched commit, ref-ing the tsfn as the env
+		 * goes from idle to busy. Call on the env's own JS thread before
+		 * enqueuing the commit. Sets `closed` without registering when this
+		 * completion has been released — the caller must then reject the commit.
+		 */
+		napi_status registerCommit(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed);
+
+		/**
+		 * Commit thread. Delivers a completed commit's `state` to its originating
+		 * env. Returns false if the tsfn is gone (env torn down or released),
+		 * or the N-API call fails — the caller then drops the state.
+		 */
+		bool dispatch(void* state);
+
+		/**
+		 * JS thread (completion callback). Accounts a finished commit, unref-ing
+		 * the tsfn when the env goes idle so the event loop can exit. A callback
+		 * queued before release may still run; it must leave the closed tsfn alone.
+		 */
+		void finish(napi_env env);
+
+		/**
+		 * Module env-cleanup hook or descriptor close, with commitMutex held.
+		 * Excludes dispatch while releasing the tsfn. Queued completions are
+		 * still delivered before finalization (napi_tsfn_release, not abort).
+		 */
+		void release();
 	};
+	// Registry -> completion is the only nested lock order. Keep entries
+	// reachable until release finishes: otherwise env cleanup could miss a
+	// detached entry and let Node free its TSFN before the releasing thread.
 	std::mutex commitMutex;
-	std::unordered_map<napi_env, CommitCompletion> commitCompletions;
+	std::unordered_map<napi_env, std::shared_ptr<CommitCompletion>> commitCompletions;
 	// Set (under commitMutex) by finishClose()'s release pass. Blocks any
-	// later registerCommitCompletion from re-creating a tsfn that would never
-	// be released (which would pin that env's event loop forever); a commit
-	// racing the close is rejected before dispatch.
+	// later registry lookup from re-creating a tsfn that would never be
+	// released (which would pin that env's event loop forever); a commit
+	// racing the close is rejected before dispatch. Cached completions use
+	// their own terminal closed flag to reject without a registry lookup.
 	bool commitCompletionsClosed = false;
 
 	/**
-	 * JS thread. Ensures a completion tsfn exists for `env` (created with
-	 * `callJs`) and accounts a newly dispatched commit, ref-ing the tsfn as the
-	 * env goes from idle to busy. Call on the env's own JS thread before
-	 * enqueuing the commit. Sets `closed` (leaving the maps untouched) when the
-	 * descriptor's completion plumbing has already shut down — the caller must
-	 * then reject the commit.
+	 * JS thread. Finds or creates this env's shared completion on first use,
+	 * then registers the commit on that object. `completion` is the DBHandle's
+	 * env/descriptor cache, reset on reopen; a warm cache skips the registry
+	 * lock. Call before enqueuing the commit, on the env's own JS thread.
+	 * Sets `closed` without registering when either the registry or cached
+	 * completion has shut down — the caller must then reject the commit.
 	 */
-	napi_status registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed);
-
-	/**
-	 * Commit thread. Delivers a completed commit's `state` to its originating
-	 * env. Returns false if that env's completion tsfn is gone (env torn down
-	 * or released) — the caller then drops the state.
-	 */
-	bool dispatchCommitCompletion(napi_env env, void* state);
-
-	/**
-	 * JS thread (completion callback). Accounts a finished commit, unref-ing the
-	 * tsfn when the env goes idle so the event loop can exit.
-	 */
-	void finishCommitCompletion(napi_env env);
+	napi_status registerCommitCompletion(
+		napi_env env,
+		napi_threadsafe_function_call_js callJs,
+		bool& closed,
+		std::shared_ptr<CommitCompletion>& completion
+	);
 
 	/**
 	 * Module env-cleanup hook. Releases and forgets a dying env's completion
