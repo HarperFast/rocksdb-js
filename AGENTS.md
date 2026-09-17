@@ -200,7 +200,11 @@ sufficient (env teardown does not honor tsfn acquire counts); see
 Every path registers its native execute in the descriptor's
 `operationsInFlight` count before queueing and rechecks `isClosing()` afterward
 (publish-then-check, so teardown either waits for the operation or the commit
-observes the close and rejects), then releases only after the transaction's
+observes the close and rejects). In the lane modes this must precede the
+`DBHandle` completion-cache access: foreign shutdown can reset the transaction's
+`dbHandle` before admission. The local descriptor pin is declared before the pending
+commit state so setup-error cleanup releases its operation count while the descriptor
+is still alive. The operation releases only after the transaction's
 async-work registration is cleared — legacy from its libuv execute thread, the
 lane modes at the end of the commit stage. This makes direct shutdown wait for
 the native commit rather than destroy RocksDB after the transaction handle's
@@ -208,7 +212,7 @@ bounded drain expires. The recheck is not redundant with
 `commitCompletionsClosed`, which `finishClose()` sets only after it has passed
 the drain gate and stopped both lanes; a commit that registered its completion
 just before that would otherwise reach `CommitWorker::enqueue` on a stopped
-lane, which runs the task inline. The commit state also pins
+lane, which runs the task inline. The legacy commit state also pins
 the descriptor through its JS completion and retries `PurgeIfUnreferenced()` when
 that pin was why a last-handle `close()` deferred teardown. Direct shutdown can
 therefore wait without a bound for a stalled commit; releasing the counter from

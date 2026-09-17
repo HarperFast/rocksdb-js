@@ -872,6 +872,12 @@ export const isTransactionStagingDelayedForTesting: () => boolean =
 export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
 	binding.isTransactionCommitExecuteDelayedForTesting;
 
+export const setTransactionCommitAdmissionDelayForTesting: (delayMs: number) => void =
+	binding.setTransactionCommitAdmissionDelayForTesting;
+
+export const isTransactionCommitAdmissionDelayedForTesting: () => boolean =
+	binding.isTransactionCommitAdmissionDelayedForTesting;
+
 /** Delays one selected watchdog join in the concurrent-shutdown regression test. */
 export const setWriteBufferManagerJoinDelayForTesting: (
 	countdown: number,

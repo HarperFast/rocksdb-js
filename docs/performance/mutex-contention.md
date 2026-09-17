@@ -70,6 +70,11 @@ separate unprofiled trials below determine the throughput claim.
 
 Five independent 3-second trials per version/workload; baseline/candidate order alternates by repetition. Each trial counts completed transactions. Runs were unprofiled and did not overlap tests or builds. The baseline is the supplied Release binding from the base checkout; the candidate was rebuilt locally. Binary SHA-256 identities and every trial are retained in [the raw results](mutex-contention-2026-09-16.json), where candidate trials use the label `cached`.
 
+The measured candidate source was `b7a23da2`. Through `f9f87aa5`, production changes
+after that measurement were comments and the `completionStateMutex` member rename.
+The subsequent admission-order fix is described below; the table is the original
+measurement, not a fresh measurement of that fix.
+
 | Workload         | Base median txns/s (range) | Candidate median txns/s (range) | Median change |
 | ---------------- | -------------------------: | ------------------------------: | ------------: |
 | log, 1 worker(s) |  285,814 (268,902–296,796) |       296,388 (287,185–299,151) |         +3.7% |
@@ -158,10 +163,17 @@ results should be interpreted using the executed count (30,000 total).
 Outside review also identified [#861](https://github.com/HarperFast/rocksdb-js/issues/861):
 the native teardown test's parent does not kill/reap a hung fixture when Vitest times
 out. The successful run here does not exercise that failure path. The broader
-transaction close/admission contract remains [#784](https://github.com/HarperFast/rocksdb-js/issues/784);
-a foreign descriptor shutdown can still race transaction entry before operation
-registration. This optimization preserves completion exclusion but does not solve that
-pre-existing lifecycle problem, which remains a human review consideration.
+transaction close/admission contract remains [#784](https://github.com/HarperFast/rocksdb-js/issues/784).
+Follow-up review found that this PR's cache dereference added a crash point within that
+window. A deterministic child/worker regression pauses the commit after capturing its
+descriptor, completes foreign `shutdown()`, then resumes admission. The old PR head
+`f9f87aa5`, with only the test seam added, crashed with SIGSEGV in all four combinations
+of cold/warm cache and single/two-lane mode. Admission now publishes the descriptor
+operation count and checks closing before accessing the cache. A winning shutdown
+therefore rejects before dereferencing the reset handle; a winning commit makes shutdown
+wait. Setup cleanup also retains the descriptor pin until its operation count is released.
+This fixes the new cache access, while earlier transaction-entry reads and the broader
+#784 admission contract remain outside this patch's guarantee.
 
 The separate read-heavy work in [#545](https://github.com/HarperFast/rocksdb-js/pull/545)
 and its baseline [#546](https://github.com/HarperFast/rocksdb-js/pull/546) was not evaluated
