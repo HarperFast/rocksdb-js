@@ -509,8 +509,16 @@ void DBDescriptor::finishClose() {
 	this->logWorker.shutdown();
 	this->commitWorker.shutdown();
 
+	// Release any remaining per-env commit-completion tsfns. The native
+	// operation drain and lane shutdown above prevent further commit dispatch,
+	// but JS completions already handed to a tsfn can still be queued. They
+	// are still delivered (napi_tsfn_release, not abort); finish() observes the
+	// completion's closed flag and leaves the released tsfn alone.
 	{
 		std::lock_guard<std::mutex> lock(this->commitMutex);
+		// Block later cold registrations from re-creating a tsfn that would
+		// never be released. release() also closes each cached completion so
+		// a warm registration racing this close rejects before dispatch.
 		this->commitCompletionsClosed = true;
 		for (auto& [env, completion] : this->commitCompletions) {
 			completion->release();
@@ -661,16 +669,18 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 		if (status != napi_ok) {
 			return status;
 		}
+		// Created ref'd: this first pending commit must keep the event loop
+		// alive until its completion runs.
 		status = ::napi_create_threadsafe_function(
 			env,
-			nullptr,
-			nullptr,
+			nullptr,   // func: callJs does all the work
+			nullptr,   // async_resource
 			resourceName,
-			0, // unlimited queue
-			1, // the commit lane owns the initial thread count
-			nullptr,
-			nullptr,
-			nullptr,
+			0,         // unlimited queue
+			1,         // initial thread count: the commit lane
+			nullptr,   // finalize data
+			nullptr,   // finalize cb
+			nullptr,   // context
 			callJs,
 			&this->tsfn
 		);
@@ -678,6 +688,7 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 			return status;
 		}
 	} else if (this->pending == 0) {
+		// Waking from idle: keep the event loop alive until completion.
 		napi_status status = ::napi_ref_threadsafe_function(env, this->tsfn);
 		if (status != napi_ok) {
 			return status;
@@ -690,6 +701,7 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 bool DBDescriptor::CommitCompletion::dispatch(void* state) {
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	if (this->closed || this->tsfn == nullptr) {
+		// Env was torn down / released; the caller drops the state.
 		return false;
 	}
 	return ::napi_call_threadsafe_function(this->tsfn, state, napi_tsfn_nonblocking) == napi_ok;
@@ -698,6 +710,7 @@ bool DBDescriptor::CommitCompletion::dispatch(void* state) {
 void DBDescriptor::CommitCompletion::finish(napi_env env) {
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	if (!this->closed && --this->pending == 0 && this->tsfn != nullptr) {
+		// Idle: allow the event loop to exit.
 		::napi_unref_threadsafe_function(env, this->tsfn);
 	}
 }
@@ -706,7 +719,8 @@ void DBDescriptor::CommitCompletion::release() {
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	this->closed = true;
 	if (this->tsfn != nullptr) {
-		// Release still delivers queued completions; finish() then observes closed.
+		// Queued completions are still delivered before the tsfn finalizes
+		// (release, not abort); finish() then observes closed.
 		::napi_release_threadsafe_function(this->tsfn, napi_tsfn_release);
 		this->tsfn = nullptr;
 	}
@@ -810,7 +824,8 @@ void ParkTimeoutRegistry::runLoop() {
 			this->cv.wait_until(lock, earliest);
 			continue;
 		}
-		// Exclude env cleanup while calling each due TSFN.
+		// Fire while still holding the mutex, like CommitCompletion::dispatch,
+		// to exclude env cleanup while calling each due TSFN.
 		while (!this->deadlines.empty() && this->deadlines.begin()->first <= now) {
 			auto deadlineIt = this->deadlines.begin();
 			auto parkIt = this->parks.find(deadlineIt->second);

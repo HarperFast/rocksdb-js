@@ -959,7 +959,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 	(*txnHandle)->closeIterators();
 
-	// Keep the descriptor pin alive until setup cleanup releases its operation claim.
+	// Keep the descriptor pin alive until setup cleanup releases its operation
+	// claim: locals are destroyed in reverse declaration order, so stateOwner
+	// must be destroyed before descriptor, including on N-API setup failures.
 	std::shared_ptr<DBDescriptor> descriptor;
 	auto stateOwner = PendingTransactionCommitState(
 		env,
@@ -995,6 +997,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		DBDescriptor* descriptorOwner = descriptor.get();
 		// Publish before checking closing and before touching the handle cache:
 		// teardown either waits for this claim or rejects admission here.
+		// CloseDB may claim the last-handle purge while the task runs, but
+		// finishClose waits on this operation before draining the owning lanes.
 		state->registerDescriptorOperation(descriptorOwner);
 		if (descriptorOwner->isClosing()) {
 			state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
