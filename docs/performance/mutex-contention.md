@@ -86,6 +86,28 @@ The eight-worker log result improves substantially across all five trials. The s
 
 The cost is one cached shared pointer per database handle, one shared pointer per in-flight native commit, and a mutex-bearing object per active descriptor/environment pair. These references do not keep a Node environment alive; TSFN pending accounting retains that responsibility.
 
+### Admission-order fix follow-up
+
+On 2026-09-17 UTC, the same driver compared locally built Release bindings from
+`f9f87aa5` (before the admission-order fix) and `16a98614` (after it), on the same
+host described above. Five alternating 3-second trials per version/workload used
+eight outstanding transactions per worker, with no overlapping tests or builds.
+[All 40 trials and binary identities](mutex-contention-admission-2026-09-17.json)
+are retained separately from the original main-versus-candidate measurements.
+
+| Workload       | Before fix median txns/s (range) | After fix median txns/s (range) | Median change |
+| -------------- | -------------------------------: | ------------------------------: | ------------: |
+| log, 1 worker  |        303,080 (295,717–309,402) |       302,419 (300,443–303,889) |         -0.2% |
+| log, 4 workers |        359,899 (355,036–364,464) |       354,747 (344,170–356,092) |         -1.4% |
+| log, 8 workers |        269,078 (257,075–273,362) |       283,706 (276,600–288,097) |         +5.4% |
+| put, 4 workers |        509,108 (502,560–547,630) |       526,417 (495,881–547,885) |         +3.4% |
+
+This measures the incremental fix, including the disabled test seam's relaxed
+atomic load. It does not remeasure the optimization against main. Results are
+mixed, with overlapping ranges except for eight-worker logs; small differences
+remain workload/host-sensitive. No general speedup is attributed to reordering
+admission, and these changes must not be added to the original percentages.
+
 ## Remaining synchronization decisions
 
 | Area                                                      | Decision and reason                                                                                                                                                                                                           |
@@ -138,10 +160,11 @@ deadlocks. The changed protocol still requires its lock-order and env-lifetime p
 Linux/Windows/runtime coverage belongs to CI; no ThreadSanitizer result is claimed from
 this macOS investigation.
 
-Executed candidate validation: `pnpm test` passed 69 files / 1,002 tests (8 skipped);
+Validation at `16a98614`: `pnpm test` passed 70 files / 1,010 tests (8 skipped);
 `pnpm test:native` passed 221 tests (3 platform-specific skips); `pnpm test:stress`
-passed all 5 files / 9 tests; `pnpm check` passed. The new reopen test ran across
-all four transaction-option variants. The teardown fixture also verified that a live
+passed all 5 files / 9 tests; `pnpm check` passed. Same-environment multi-handle
+accounting and reopen tests ran across all four transaction-option variants.
+The teardown fixture also verified that a live
 environment's commit completes while another worker environment is terminated.
 
 A separate native reproduction confirmed [#860](https://github.com/HarperFast/rocksdb-js/issues/860):
@@ -164,8 +187,8 @@ Outside review also identified [#861](https://github.com/HarperFast/rocksdb-js/i
 the native teardown test's parent does not kill/reap a hung fixture when Vitest times
 out. The successful run here does not exercise that failure path. The broader
 transaction close/admission contract remains [#784](https://github.com/HarperFast/rocksdb-js/issues/784).
-Follow-up review found that this PR's cache dereference added a crash point within that
-window. A deterministic child/worker regression pauses the commit after capturing its
+The completion-cache dereference must follow operation admission to avoid a crash
+within that window. A deterministic child/worker regression pauses the commit after capturing its
 descriptor, completes foreign `shutdown()`, then resumes admission. The old PR head
 `f9f87aa5`, with only the test seam added, crashed with SIGSEGV in all four combinations
 of cold/warm cache and single/two-lane mode. Admission now publishes the descriptor

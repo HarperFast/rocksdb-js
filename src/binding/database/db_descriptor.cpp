@@ -706,6 +706,7 @@ void DBDescriptor::CommitCompletion::release() {
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	this->closed = true;
 	if (this->tsfn != nullptr) {
+		// Release still delivers queued completions; finish() then observes closed.
 		::napi_release_threadsafe_function(this->tsfn, napi_tsfn_release);
 		this->tsfn = nullptr;
 	}
