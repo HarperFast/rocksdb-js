@@ -8,17 +8,19 @@ import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
 if (isMainThread) {
 	const [path, cache] = process.argv.slice(2);
 	assert(path);
 	const db = RocksDatabase.open(path);
-	const worker = new Worker(createWorkerBootstrapScript(fileURLToPath(import.meta.url)), {
-		eval: true,
-		workerData: { path, cache },
-	});
+	const worker = new Worker(
+		createWorkerBootstrapScript('./test/fixtures/fork-commit-admission-shutdown.mts'),
+		{
+			eval: true,
+			workerData: { path, cache },
+		}
+	);
 	try {
 		assert.deepEqual(await once(worker, 'message'), ['ready']);
 		const result = once(worker, 'message');
