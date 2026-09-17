@@ -38,34 +38,15 @@ void setThreadName(const char* name);
 
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
 
-/**
- * Process-wide wall-clock ratchet: Unix-epoch milliseconds, strictly increasing
- * across every call in the process (`nextafter` on a backward step or a tie).
- * This is the transaction timestamp and log batch key, so it must stay in the
- * epoch domain; after a backward wall step it can only advance one ulp per call
- * until the wall catches up, so it does not measure elapsed time. Use
- * `getSteadyClockNow()` for that.
- */
+// Epoch milliseconds ratcheted strictly increasing for durable transaction/log
+// identities. Rollback can stall elapsed deltas; never substitute the steady clock.
 double getMonotonicTimestamp();
 
-/**
- * Converts a `steady_clock` duration since its origin to fractional
- * milliseconds. Positive scaling followed by IEEE round-to-nearest is
- * non-decreasing, so distinct readings never invert order; they can collapse to
- * equality once the double's spacing exceeds the clock's period (about 2 ns of
- * spacing at 100 days from the origin, 60 ns at 10 years).
- */
+// Positive scaling preserves non-decreasing order, but rounded samples can be equal.
 double steadyClockMilliseconds(std::chrono::steady_clock::duration sinceOrigin);
 
-/**
- * `std::chrono::steady_clock::now()` as fractional milliseconds from an
- * unspecified origin that is fixed for the life of the process. Comparable
- * across every thread and env in the process; not comparable across processes
- * or restarts, and unrelated to the epoch (never compare with
- * `getMonotonicTimestamp()` or wall time). Non-decreasing, not unique, and
- * unaffected by wall-clock steps. Whether time spent in host suspend counts is
- * platform-defined. Stateless: one clock read, no addon lock.
- */
+// Process-local steady milliseconds, comparable across threads, unrelated to the
+// epoch clock. Suspend behavior is platform-defined; there is no uniqueness ratchet.
 double getSteadyClockNow();
 
 /**
