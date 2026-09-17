@@ -481,13 +481,12 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	CommitWorker commitWorker{"rocksdb-commit"};
 	CommitWorker logWorker{"rocksdb-txnlog"};
 
-	/**
-	 * A completion's mutex excludes TSFN calls from env-cleanup release. A
-	 * shared_ptr pins this object, not the Node env or the TSFN: env teardown
-	 * ignores TSFN acquire counts, so dispatch must still hold the mutex.
-	 */
 	struct CommitCompletion {
-		std::mutex mutex;
+		// Guards this environment's TSFN, pending count, and closed flag.
+		// N-API calls and env-cleanup release take the same lock: shared_ptr
+		// pins this object, not the Node env/TSFN, and TSFN acquire counts do
+		// not prevent env teardown. Other environments have their own lock.
+		std::mutex completionStateMutex;
 		napi_threadsafe_function tsfn = nullptr;
 		uint32_t pending = 0;
 		bool closed = false;

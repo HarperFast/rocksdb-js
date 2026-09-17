@@ -650,7 +650,7 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 	napi_threadsafe_function_call_js callJs,
 	bool& closed
 ) {
-	std::lock_guard<std::mutex> lock(this->mutex);
+	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	closed = this->closed;
 	if (closed) {
 		return napi_ok;
@@ -688,7 +688,7 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 }
 
 bool DBDescriptor::CommitCompletion::dispatch(void* state) {
-	std::lock_guard<std::mutex> lock(this->mutex);
+	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	if (this->closed || this->tsfn == nullptr) {
 		return false;
 	}
@@ -696,14 +696,14 @@ bool DBDescriptor::CommitCompletion::dispatch(void* state) {
 }
 
 void DBDescriptor::CommitCompletion::finish(napi_env env) {
-	std::lock_guard<std::mutex> lock(this->mutex);
+	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	if (!this->closed && --this->pending == 0 && this->tsfn != nullptr) {
 		::napi_unref_threadsafe_function(env, this->tsfn);
 	}
 }
 
 void DBDescriptor::CommitCompletion::release() {
-	std::lock_guard<std::mutex> lock(this->mutex);
+	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	this->closed = true;
 	if (this->tsfn != nullptr) {
 		::napi_release_threadsafe_function(this->tsfn, napi_tsfn_release);
