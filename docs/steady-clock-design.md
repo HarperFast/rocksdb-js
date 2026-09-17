@@ -1,115 +1,114 @@
 # Process-wide steady clock
 
-## Intent
+## Intent and invariant
 
-Harper's native HNSW plane (HarperFast/harper#2658) needs one temporal domain shared by the main
-thread and every `worker_threads` worker so that an index owner can publish "coverage boundary
-captured at T" and a query worker can decide whether its view is more than N ms behind. Two
-properties are needed at once: cross-worker comparability (a sample taken in worker A is ordered
-against a sample taken later in worker B) and real elapsed time (a 3 000 ms lag bound or a
-30 000 ms deadline measures 3 or 30 real seconds regardless of what the wall clock does).
+HarperFast/harper#2658 needs to compare coverage boundaries between workers and measure elapsed
+lag and deadlines independently of wall-clock steps. Every sample must share one steady temporal
+domain within the process, including workers created later. Suspend behavior is platform-defined;
+this API does not promise a portable suspend-inclusive deadline.
 
-Neither property is available from the JS runtimes uniformly. `process.hrtime.bigint()`,
-`performance.now()`, `Bun.nanoseconds()` and `process.uptime()` all share an origin across
-workers under Node but are per-worker under Bun (a fresh worker read about 12 ms while its
-parent read about 2.1 s). `Date.now()` is shared but steps with the host clock. rocksdb-js's own
-`getMonotonicTimestamp()` is shared and strictly increasing, but it is a wall-clock ratchet: after
-a backward step it advances one `nextafter` per call until the wall catches up, so elapsed time
-measured from it stalls and deadlines stretch.
-
-## Invariant this change enforces
-
-A steady-clock sample taken anywhere in the process — any thread, any Node/Bun/Deno env that has
-loaded this `.node` — is comparable with every other sample in the process, and the difference
-between two samples is real elapsed time, independent of wall-clock steps. The existing
-`getMonotonicTimestamp()` contract (wall-clock epoch milliseconds, strictly increasing
-process-wide, the source of transaction timestamps and log batch keys) is untouched: the two
-clocks are separate values with separate contracts, and nothing routes one through the other.
+Bun 1.3.14/1.4.0 worker-local runtime clocks do not provide this common domain (the motivating
+probe read about 2.1 seconds in the parent and 12 milliseconds in a new worker). The existing
+`getMonotonicTimestamp()` reads `system_clock` and ratchets ties/rollback with `nextafter`
+(`src/binding/core/platform.cpp`). It orders transaction timestamps but can stall after rollback.
+That epoch-based contract and all transaction/log paths must remain unchanged.
 
 ## Chosen
 
-Add a **module-level export** `steadyClockNow(): number` to the binding root (next to
-`currentThreadId`, `tryFileLock` — no `RocksDatabase` instance or open handle required) that
-returns `std::chrono::steady_clock::now()` converted to **fractional milliseconds** as a JS
-`number`.
+Expose `steadyClockNow(): number` at the module root, requiring no database handle. The native
+helper reads `std::chrono::steady_clock::now().time_since_epoch()` and converts its duration to
+`std::chrono::duration<double, std::milli>`. There is no per-worker initialization, shared mutable
+state, addon lock, wall-clock read, database/log I/O or native allocation. The N-API callback checks
+`napi_create_double` with `NAPI_STATUS_THROWS`; engines may allocate a boxed JS number.
 
-Native shape, all in the Node-free `core/platform.{h,cpp}` so GoogleTest covers it:
+Values are fractional milliseconds from an unspecified origin fixed throughout the process.
+Comparisons are meaningful across all workers of that process, but not across processes, restarts
+or hosts, nor against epoch/transaction timestamps. Samples are non-decreasing, not unique.
+Equality cannot establish strict ordering: treat equal boundaries as "not later", or use a separate
+sequence number. No atomic ratchet is applied to this clock.
 
-```cpp
-int64_t steadyClockNanoseconds();                 // steady_clock::now() since its (unspecified) origin
-double  steadyClockMilliseconds(int64_t nanoseconds); // pure conversion, tested for range/precision
-double  getSteadyClockNow();                       // = steadyClockMilliseconds(steadyClockNanoseconds())
-```
+### Representation, range and precision
 
-One N-API function `steadyClockNow` in `binding.cpp` calls `getSteadyClockNow()` and returns a
-double. `load-binding.ts` declares and re-exports it; `index.ts` exports it publicly.
+`number` matches this package's millisecond duration APIs and avoids bigint arithmetic for the
+consumer's 3000 ms lag bound. Bigint nanoseconds would retain every represented native tick, but
+this API permits equality and does not require nanosecond-exact identities. Neither representation
+is promised allocation-free at the JS boundary.
 
-### Contract (what the README will state)
+The selected standard libraries use signed 64-bit nanosecond durations (about 292 years in either
+direction from their origin). Conversion to double does not narrow that range. Positive conversion
+and scaling preserve non-decreasing order, though adjacent ticks can collapse to equality.
+The output spacing is about 1.9 ns at 100 days from the origin, 61 ns at 10 years and 0.49 µs at
+100 years. Integer-to-double rounding also contributes conversion error: at 100 years its half-ulp
+is 256 ns, followed by up to 244 ns of millisecond rounding, less than 0.51 µs total per sample.
+This is representation precision, not an accuracy or resolution guarantee. Precision depends on
+distance from the native origin, not time since JS startup.
 
-| Property | Value |
-|---|---|
-| Units / return type | milliseconds with a fractional part, `number` (IEEE double) |
-| Origin | unspecified, fixed for the life of the OS boot session (Linux/macOS/Windows all read a since-boot counter). **Not** the Unix epoch; never compare with `Date.now()` or `getMonotonicTimestamp()` |
-| Lifetime of comparability | every sample in one process is comparable, across all worker threads and all envs that load the binding, including workers started or restarted at any later time. Not durable, not comparable across process restarts or hosts. (On the listed platforms the counter is host-wide, so same-host processes happen to agree; this is not part of the contract.) |
-| Monotonicity | non-decreasing across all threads: a sample taken after another (in real time) is `>=` it |
-| Uniqueness | **not** unique. Two samples in the same clock tick, or two distinct nanosecond readings that round to the same double, are equal. Consumers that need "strictly later" must treat `==` as "not later" or pair the sample with a sequence number. No wall-time ratchet is substituted |
-| Resolution | the platform clock's: 1 ns on Linux (`CLOCK_MONOTONIC`) and macOS (`CLOCK_MONOTONIC_RAW`), 100 ns typical on Windows (`QueryPerformanceCounter`) |
-| Precision of the double | the value is milliseconds since boot, so its ulp grows with uptime: 15 ps at 1 day, 3.8 ns at 1 year, 61 ns at 10 years, 0.5 µs at 100 years. Sub-microsecond for any realistic uptime; nanosecond-exact for the first 104 days (2^53 ns). Rounding is monotone, so ordering of distinct readings is never inverted, only occasionally collapsed to equality |
-| Range | `int64` nanoseconds covers 292 years of uptime before the native reading itself would overflow |
-| Wall-clock independence | the value is a function of the steady clock only: `settimeofday`/NTP steps forward or backward do not move it. NTP frequency slew is platform-defined (`CLOCK_MONOTONIC` is slewed; `CLOCK_MONOTONIC_RAW` and QPC are not) |
-| Suspend | platform-defined and **not** part of the contract: Linux `CLOCK_MONOTONIC` and macOS `CLOCK_MONOTONIC_RAW` do not advance while the host is suspended; Windows QPC behavior across sleep is not guaranteed by this API. Elapsed time across a host suspend is unspecified |
-| Thread safety | a single clock read, no shared state, safe from any thread |
-| Cost | one `clock_gettime`/QPC call plus a double conversion; no allocation, no lock, no wall-clock read, no database or log I/O, no per-worker calibration |
-| Runtimes / platforms | Node, Bun, Deno on Linux, macOS, Windows (the CI matrix); the native reading is the standard library's `steady_clock`, so any platform the binding builds on is supported |
-| Open handle required | no |
+### Supported platforms
 
-### Why milliseconds as `number` rather than bigint nanoseconds
+Node, Bun and Deno all call the same compiled native function on Linux, macOS and Windows.
+The standard library owns the clock source; runtime VM startup does not reset it.
 
-The binding's entire public time surface is `number` milliseconds (`getMonotonicTimestamp()`,
-`getOldestSnapshotTimestamp()`, `Date.now()`-shaped options), and the only bigint anywhere in the
-addon is a generic key-decoding branch in `napi/helpers.cpp`. A bigint result would (a) allocate a
-heap BigInt per call on the hot path, (b) force consumers into bigint arithmetic for a 3 000 ms
-compare and a `BigInt64Array` to share a boundary through a `SharedArrayBuffer`, and (c) be the
-first bigint in the API. The precision table above shows the double loses nothing a consumer can
-use: the platform clocks resolve to 1 ns (Linux/macOS) or 100 ns (Windows), and the double keeps
-sub-µs precision for a century of uptime. The rounding is proven monotone in a GoogleTest, so the
-ordering guarantee is not weakened.
+- Linux libstdc++ uses `CLOCK_MONOTONIC`, which excludes suspend and can be frequency-slewed by NTP.
+  [GCC implementation](https://github.com/gcc-mirror/gcc/blob/master/libstdc%2B%2B-v3/src/c%2B%2B11/chrono.cc)
+- Apple libc++ uses `CLOCK_MONOTONIC_RAW`, which includes suspend on macOS. Do not infer Apple's
+  semantics from the identically named Linux clock.
+  [libc++ implementation](https://github.com/llvm/llvm-project/blob/main/libcxx/src/chrono.cpp)
+- Windows MSVC uses `QueryPerformanceCounter` converted to nanoseconds; the counter frequency
+  determines actual resolution (a common 10 MHz counter ticks every 100 ns, but the C++ duration's
+  period is 1 ns). QPC includes standby/hibernate and is independent of UTC adjustments.
+  [MSVC implementation](https://github.com/microsoft/STL/blob/main/stl/inc/__msvc_chrono.hpp),
+  [QPC contract](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)
+
+These sources were inspected on 2026-09-17. None supplies a portable nanosecond accuracy guarantee.
+Wall-clock steps do not affect these sources; frequency adjustment and suspend semantics are
+separate properties. No promise is made that runtime timers use the same suspend policy.
 
 ## Approaches considered
 
-| Axis | Candidate | Fact that rejects it |
-|---|---|---|
-| **Different layer** — fix in the JS runtime or the consumer | Use `performance.timeOrigin + performance.now()` (or hrtime) and reconcile origins across workers in Harper | Bun samples `Instant::now()` and `SystemTime` separately per VM (bun-v1.4.0 `src/jsc/VirtualMachine.rs`, `Performance.cpp`), so `timeOrigin` is a wall-clock reading taken at worker start: a worker created after a wall step has an origin off by the step. The runtime does not expose a shared steady origin at all; only native code can read the OS clock directly |
-| **Deeper cause** — make the existing clock steady | Change `getMonotonicTimestamp()` to derive from `steady_clock` (or add a steady floor to its ratchet) | Its value is persisted: it is the transaction timestamp, the transaction-log batch key, and replication/replay adopt it via `setTimestamp()` (docs/transaction-timestamp-integrity-design.md; rocksdb-js#825 seeds its floor from retained logs). It must stay Unix-epoch milliseconds comparable across processes and restarts. A since-boot steady value is neither; the two contracts are incompatible in one number, and the task settles that this API is not changed |
-| **Do less** — existing mechanism / accept-and-detect | Keep `getMonotonicTimestamp()` and either document that lag is understated after a backward step, or replace the elapsed bound with strict-ordering-only checks; or build a calibration/heartbeat protocol over `Date.now()` | Understated lag after a step defeats the 3 000 ms bound the consumer exists to enforce (deadlines stretch until the wall catches up). Strict-only checks cannot express "no more than 3 s behind". A calibration protocol re-derives, in JS with message latency, what one `clock_gettime` already provides shared across threads. The requester explicitly rejected weakening the guarantee (task context) |
-| **Chosen** | Additive module-level `steadyClockNow(): number` over `std::chrono::steady_clock` | One OS clock read gives both properties (shared domain, real elapsed) with no state, no I/O and no protocol. Additive, so every existing contract is preserved by construction |
+- **Different layer:** repair Bun or calibrate clocks in Harper. A Bun fix is unavailable to
+  already-deployed runtimes; wall-time calibration reintroduces step sensitivity and an independent
+  cross-worker calibration protocol adds synchronization error to every boundary.
+- **Deeper cause:** make `getMonotonicTimestamp()` steady. Its values are durable epoch transaction
+  identities and log keys; changing their domain breaks the persisted/replay contract. Another
+  alternative is explicit suspend-inclusive OS clocks, but that changes the requested portable
+  `steady_clock` contract and requires separate clock selection on each platform.
+- **Do less:** reuse the wall-clock ratchet or enforce only strict coverage. The former stalls
+  elapsed lag after rollback; the latter discards the approved bounded-lag behavior. Runtime-local
+  timers alone cannot compare two workers' coverage samples on Bun.
+- **Chosen:** additive native steady accessor. One native domain supplies the missing cross-worker
+  elapsed measurement without altering durable identities. Fractional milliseconds preserve far
+  more precision than the consumer's millisecond budget; equality is explicitly not strict order.
 
-Representation sub-choice, considered on the same facts: `bigint` nanoseconds (rejected above),
-`number` nanoseconds (loses ns exactness at 104 days and is an unfamiliar unit next to every other
-ms API here), `number` microseconds (no precision advantage over ms in a double — same 53-bit
-mantissa — and a third unit). Milliseconds as `number` is consistent with the rest of the surface
-and provably sufficient.
+## Verification
 
-## Verification plan
+The end-to-end route is the real N-API export through `src/index.ts`, parent/worker bracketing on
+Node and Bun, staggered/restarted and concurrent workers, elapsed progression, and built ESM/CJS
+exports. A synthetic worker-local clock control must be rejected by the same brackets without
+assuming a particular runtime's future clock behavior.
 
-- **GoogleTest** (`test/native/steady_clock_test.cc`, Node-free): conversion exactness and
-  monotone rounding (including 1 µs steps strictly increasing at 10- and 100-year offsets),
-  elapsed across a sleep matches a direct `steady_clock` bracket, samples from N threads fall inside
-  the main thread's before/after brackets, a tight loop never decreases, and a regression that
-  `getMonotonicTimestamp()` still returns strictly increasing epoch milliseconds when interleaved
-  with steady samples.
-- **Vitest** (`test/steady-clock.test.ts`, Node/Bun/Deno): parent samples bracket staggered and
-  restarted workers' samples, with the stagger delay itself asserted (`worker >= parentBefore +
-  stagger`) so a worker-relative origin fails; worker-internal elapsed progression across a sleep;
-  parallel workers all inside the bracket; a control showing `performance.now()` from a worker
-  fails the same bracket. Regression: `db.getMonotonicTimestamp()` and transaction timestamps stay
-  in the epoch domain and strictly increasing with steady samples interleaved.
-- **Wall-clock independence**: proven structurally (the accessor reads only `steady_clock`; the
-  GoogleTest pins the accessor to a direct `steady_clock` reading) and, where `libfaketime` is
-  available, by an opt-in child-process test (`ROCKSDB_JS_FAKETIME_LIB`) in which the child's
-  `Date.now()` and `getMonotonicTimestamp()` are shifted by a day while its `steadyClockNow()`
-  still falls inside the parent's bracket. The host clock is never modified. A `Date.now` stub is
-  not used as evidence.
-- Platform coverage: the CI matrix runs the native and JS suites on Linux, macOS and Windows for
-  Node, Bun and Deno. Local validation is Linux/Node/Bun only; macOS and Windows results come from
-  CI and are reported as such.
+GoogleTest covers conversion boundaries (including long durations, adjacent ticks and equal
+rounded samples), native thread brackets and elapsed progression. Native and JS tests interleave
+steady reads with the unchanged transaction timestamp ratchet. Existing transaction and log suites
+cover allocation/adoption, replay and ordering.
+
+An opt-in Linux/Node test uses libfaketime in an isolated child, with monotonic clocks left real.
+It steps the child's wall clock backward and forward and observes both `Date.now()` and the native
+transaction timestamp. Steady deltas must still measure the intervening sleep. This exercises
+native clock selection, not a JS Date stub; it never changes the host clock. CI installs libfaketime
+for the Linux Node 24 run so this regression does not silently remain local-only.
+
+Run this repository's full `pnpm build`, `pnpm check`, `pnpm test:native`, `pnpm test` and
+`pnpm test:bun` gates. Local Windows/macOS execution is unavailable; their existing CI matrices
+exercise native and runtime worker tests. Record actual results and limitations in the PR.
+
+## Planning review and rollout
+
+The initial design at `75caf59d` received `Framing-Verdict: chosen-approach-sound` from the prior
+session's planning review. Its allocation, precision, built-export and within-process testing
+findings were adopted. Resume review uses the authorized no-Claude CLI policy; the final PR records
+that verdict. Source inspection corrected the earlier draft's Windows period and macOS suspend
+claims; the API's platform-defined suspend contract is unchanged.
+
+Harper must consume matching JS declarations/bundles and native prebuilds from a release containing
+this change, or build this branch from source. Existing 2.9.1 binaries do not provide the export.
+No package is published here and Harper consumer changes remain in HarperFast/harper#2658.
