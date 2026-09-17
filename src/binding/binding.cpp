@@ -152,6 +152,12 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value SteadyClockNow(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, getSteadyClockNow(), &result));
+	return result;
+}
+
 /**
  * Takes a file lock by opening and locking the given file (see
  * `tryAcquireFileLock`) — exclusive by default, shared when the optional second
@@ -432,6 +438,10 @@ NAPI_MODULE_INIT() {
 	napi_value currentThreadIdFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "currentThreadId", NAPI_AUTO_LENGTH, CurrentThreadId, nullptr, &currentThreadIdFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "currentThreadId", currentThreadIdFn));
+
+	napi_value steadyClockNowFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "steadyClockNow", NAPI_AUTO_LENGTH, SteadyClockNow, nullptr, &steadyClockNowFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "steadyClockNow", steadyClockNowFn));
 
 	// file lock functions (see src/backup.ts)
 	napi_value tryFileLockFn;

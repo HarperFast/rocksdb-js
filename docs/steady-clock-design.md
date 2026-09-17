@@ -7,7 +7,8 @@ lag and deadlines independently of wall-clock steps. Every sample must share one
 domain within the process, including workers created later. Suspend behavior is platform-defined;
 this API does not promise a portable suspend-inclusive deadline.
 
-Bun 1.3.14/1.4.0 worker-local runtime clocks do not provide this common domain (the motivating
+Bun 1.3.14/1.4.0 worker-local runtime clocks (`process.hrtime.bigint()`, `process.uptime()`,
+`performance.now()` and `Bun.nanoseconds()`) do not provide this common domain (the motivating
 probe read about 2.1 seconds in the parent and 12 milliseconds in a new worker). The existing
 `getMonotonicTimestamp()` reads `system_clock` and ratchets ties/rollback with `nextafter`
 (`src/binding/core/platform.cpp`). It orders transaction timestamps but can stall after rollback.
@@ -15,8 +16,8 @@ That epoch-based contract and all transaction/log paths must remain unchanged.
 
 ## Chosen
 
-Expose `steadyClockNow(): number` at the module root, requiring no database handle. The native
-helper reads `std::chrono::steady_clock::now().time_since_epoch()` and converts its duration to
+Expose `steadyClockNow(): number` at the module root, requiring no database handle. The Node-free native helpers `getSteadyClockNow()` and `steadyClockMilliseconds(duration)`
+allow deterministic conversion tests to call the production conversion. The former reads `std::chrono::steady_clock::now().time_since_epoch()` and converts its duration to
 `std::chrono::duration<double, std::milli>`. There is no per-worker initialization, shared mutable
 state, addon lock, wall-clock read, database/log I/O or native allocation. The N-API callback checks
 `napi_create_double` with `NAPI_STATUS_THROWS`; engines may allocate a boxed JS number.
@@ -59,6 +60,10 @@ The standard library owns the clock source; runtime VM startup does not reset it
   [MSVC implementation](https://github.com/microsoft/STL/blob/main/stl/inc/__msvc_chrono.hpp),
   [QPC contract](https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps)
 
+Windows documents ±1 QPC tick of ordering ambiguity between threads. Near-equal values cannot
+prove causality; strict coverage handoff needs synchronization or a separate sequence, even when
+numeric samples differ. The accessor does not hide hardware uncertainty behind a synthetic ratchet.
+
 These sources were inspected on 2026-09-17. None supplies a portable nanosecond accuracy guarantee.
 Wall-clock steps do not affect these sources; frequency adjustment and suspend semantics are
 separate properties. No promise is made that runtime timers use the same suspend policy.
@@ -82,9 +87,10 @@ separate properties. No promise is made that runtime timers use the same suspend
 ## Verification
 
 The end-to-end route is the real N-API export through `src/index.ts`, parent/worker bracketing on
-Node and Bun, staggered/restarted and concurrent workers, elapsed progression, and built ESM/CJS
-exports. A synthetic worker-local clock control must be rejected by the same brackets without
-assuming a particular runtime's future clock behavior.
+Node, Bun and Deno, staggered/restarted and concurrent workers (including `workerFirst >= parentBefore + stagger - tolerance`), elapsed
+progression, and built ESM/CJS
+exports. Temporarily substituting a worker-local clock must make those brackets fail, proving
+they reject the motivating defect.
 
 GoogleTest covers conversion boundaries (including long durations, adjacent ticks and equal
 rounded samples), native thread brackets and elapsed progression. Native and JS tests interleave
@@ -105,8 +111,9 @@ exercise native and runtime worker tests. Record actual results and limitations 
 
 The initial design at `75caf59d` received `Framing-Verdict: chosen-approach-sound` from the prior
 session's planning review. Its allocation, precision, built-export and within-process testing
-findings were adopted. Resume review uses the authorized no-Claude CLI policy; the final PR records
-that verdict. Source inspection corrected the earlier draft's Windows period and macOS suspend
+findings were adopted. The resumed planning review also cleared `Framing-Verdict: chosen-approach-sound`
+with Gemini and Cursor Composer. Its requests for a tested conversion helper, stagger-magnitude
+assertions, CI wall-step coverage and README/Deno parity are included in this implementation. Source inspection corrected the earlier draft's Windows period and macOS suspend
 claims; the API's platform-defined suspend contract is unchanged.
 
 Harper must consume matching JS declarations/bundles and native prebuilds from a release containing

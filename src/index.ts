@@ -31,6 +31,7 @@ export {
 	registryStatus,
 	stats,
 	shutdown,
+	steadyClockNow,
 	supportedCompression,
 	TransactionLog,
 	type FlushOptions,
