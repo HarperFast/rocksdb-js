@@ -975,8 +975,11 @@ Returns a new `ArrayBuffer` with two additional methods:
 - `cancel()` - Removes the callback; future `notify()` calls do nothing
 
 Note: If a shared buffer already exists for the given `key`, the returned `ArrayBuffer` will
-reference this existing shared buffer. Once all `ArrayBuffer` instances have gone out of scope and
-garbage collected, the underlying memory and notify callback will be freed.
+reference this existing shared buffer. The buffer lives as long as the database is open: it is
+process-wide state, so a thread dropping or garbage collecting its own view (or exiting) never
+resets it for the others. Because nothing is ever evicted, key the buffer on a small fixed set of
+names rather than on unbounded data such as record ids. The notify callback is removed when the
+`ArrayBuffer` it was registered with is garbage collected, or by `cancel()`.
 
 ```typescript
 const buffer = new Uint8Array(db.getUserSharedBuffer('isDone', new ArrayBuffer(1)));

@@ -1098,6 +1098,17 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     wait is replaced by deferral to the last releaser, so no immediate-drop path remains for the gate
     to protect.
 
+24. **A user shared buffer lives as long as its column family is open, never as long as some view
+    of it**: `getUserSharedBuffer` used to erase the map entry once the last external `ArrayBuffer`
+    for a key was collected, and the next call re-seeded the key from the caller's default. Every
+    consumer keys boot-lifetime process state on it — id counters, a branch's claim word, blob hold
+    counts, replication status — and the only holders of a view are the workers that happen to have
+    resolved it, so a worker exiting or a GC after the last local view dropped silently reset state
+    the other workers were still relying on (harper#2690 and harper-pro#431 each grew a retention
+    layer to defeat it). The map keeps its entry until the column family is torn down; the
+    finalizer only removes the listener registered with that view. The corollary is the
+    documented contract: key buffers on a small fixed set of names, because nothing evicts them.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
