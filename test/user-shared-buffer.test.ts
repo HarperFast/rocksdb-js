@@ -143,6 +143,34 @@ describe('User Shared Buffer', () => {
 				).toThrow('Callback must be a function');
 			}));
 
+		it.skipIf(!globalThis.gc)(
+			'should keep the buffer contents after every view of it is collected',
+			() =>
+				dbRunner(async ({ db }) => {
+					// The buffer is process state shared between workers, so a worker holding no view of
+					// it (or a worker that exited) must not cost the others their data.
+					let collected = 0;
+					const registry = new FinalizationRegistry(() => {
+						collected++;
+					});
+					(() => {
+						const view = db.getUserSharedBuffer('boot-state', new BigInt64Array([0n]).buffer);
+						Atomics.store(new BigInt64Array(view), 0, 42n);
+						registry.register(view, 'boot-state');
+					})();
+					for (let round = 0; round < 50 && collected === 0; round++) {
+						globalThis.gc!();
+						await new Promise((done) => setImmediate(done));
+					}
+					expect(collected, 'the collection this test depends on never happened').toBe(1);
+
+					const view = new BigInt64Array(
+						db.getUserSharedBuffer('boot-state', new BigInt64Array([0n]).buffer)
+					);
+					expect(Atomics.load(view, 0)).toBe(42n);
+				})
+		);
+
 		it('should not crash if you close while holding a reference to the buffer', () =>
 			dbRunner(async ({ db }) => {
 				const sharedBuffer = db.getUserSharedBuffer('foo', new ArrayBuffer(1));
