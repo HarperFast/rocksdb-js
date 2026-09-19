@@ -2409,9 +2409,6 @@ static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint)
 		DEBUG_LOG_KEY_LN(finalizeData->key);
 	}
 
-	// Destroying finalizeData drops this ArrayBuffer's strong ref to the shared
-	// data. The map's own ref keeps the storage while the column family is open;
-	// after teardown the storage goes with the last retained ArrayBuffer.
 	delete finalizeData;
 }
 
