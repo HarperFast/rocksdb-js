@@ -419,9 +419,10 @@ describe('Secondary Instances', () => {
 			// registry, so it would prove nothing about teardown. destroy() on the
 			// primary claims and closes every descriptor for the path, including
 			// this follower, so finishClose() waits on the catch-up's in-flight
-			// claim and then throws because that operation still holds a
-			// descriptor reference.
-			expect(() => primary.destroy()).toThrow();
+			// claim before resetting the native DB. The async state's own
+			// descriptor reference can outlive that -- same as an in-flight
+			// checkpoint/backup -- so it must not fail the destroy.
+			expect(() => primary.destroy()).not.toThrow();
 			await expect(settled).resolves.toBe('settled');
 
 			// The claim was released exactly once, so this close returns instead
@@ -433,26 +434,45 @@ describe('Secondary Instances', () => {
 			// Nothing of this database is left in the process-global registry: a
 			// descriptor still registered here would keep its RocksDB open for the
 			// life of the worker and surface in another file's registry assertions
-			// rather than this one's (HarperFast/rocksdb-js#672).
+			// rather than this one's (HarperFast/rocksdb-js#672). destroy() above
+			// physically deleted the primary's files (it no longer throws with the
+			// catch-up in flight), so the rest of this test uses a fresh pair.
 			expect(registryStatus().filter((entry) => entry.path === dbPath)).toEqual([]);
 
-			// The other half of #672, which the destroy above cannot reach because
+			// The other half of #672, which a forced destroy() cannot reach because
 			// it erases the entries itself: a plain close() while a catch-up is
 			// still running skips the purge (the operation holds a descriptor
 			// reference), so the async state's destructor has to retry it on
 			// release. Without that retry the entry — and its RocksDB, and the
-			// follower's workspace lock — outlive every handle.
-			const reopened = new RocksDatabase(dbPath, { secondaryPath });
-			reopened.open();
-			const racing = reopened.catchUpWithPrimary().then(
-				() => 'settled',
-				() => 'settled'
-			);
-			reopened.close();
-			await expect(racing).resolves.toBe('settled');
-			await vi.waitFor(() =>
-				expect(registryStatus().filter((entry) => entry.path === dbPath)).toEqual([])
-			);
+			// follower's workspace lock — outlive every handle. Needs its own live
+			// primary since the one above no longer exists on disk.
+			const freshPath = generateDBPath();
+			const freshSecondaryPath = `${freshPath}.secondary`;
+			const freshPrimary = new RocksDatabase(freshPath);
+			try {
+				freshPrimary.open();
+				freshPrimary.putSync('key', 'value');
+				freshPrimary.flushSync();
+
+				const reopened = new RocksDatabase(freshPath, { secondaryPath: freshSecondaryPath });
+				reopened.open();
+				const racing = reopened.catchUpWithPrimary().then(
+					() => 'settled',
+					() => 'settled'
+				);
+				reopened.close();
+				await expect(racing).resolves.toBe('settled');
+				// Close the primary's own handle too so the wait below (mirroring
+				// the first half's post-close assertion) checks for nothing left at
+				// all, not just the still-open primary's own entry.
+				freshPrimary.close();
+				await vi.waitFor(() =>
+					expect(registryStatus().filter((entry) => entry.path === freshPath)).toEqual([])
+				);
+			} finally {
+				freshPrimary.close();
+				cleanup(freshPath, freshSecondaryPath);
+			}
 		} finally {
 			secondary.close();
 			primary.close();

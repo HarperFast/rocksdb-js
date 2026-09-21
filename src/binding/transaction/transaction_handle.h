@@ -47,7 +47,7 @@ enum class TransactionState {
  * `overflow` is public so a caller can `reserve()` it before publishing
  * anything: `ColumnFamilyCommitClaim::admit` secures storage for every claim
  * up front, so recording one can never fail after its count was taken
- * (invariant 23).
+ * (invariant 24).
  */
 template<typename T, size_t N>
 struct InlineVector final {
@@ -275,7 +275,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::unique_ptr<TransactionLogEntryBatch> logEntryBatch;
 
 	/**
-	 * Families this transaction's write batch names (invariant 23). Recorded
+	 * Families this transaction's write batch names (invariant 24). Recorded
 	 * on the first `putSync`/`removeSync` per family; a write to a retired
 	 * family is refused. Holds no claim: the commit claims each of these at
 	 * admission. Cleared by `resetTransaction()` (the retry restages) and
@@ -389,8 +389,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * @param dbHandleOverride - Database handle override to use instead of the
 	 * transaction's database handle when called via the `NativeDatabase` with
 	 * the `transaction` property set.
+	 * @returns False when the descriptor began closing mid-scan; see
+	 * `DBIteratorHandle::countRemaining()`.
 	 */
-	void getCount(
+	[[nodiscard]] bool getCount(
 		DBIteratorOptions& itOptions,
 		uint64_t& count,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr

@@ -6,7 +6,7 @@
 
 namespace rocksdb_js {
 
-/** Lifetime protocol for one column-family generation; see AGENTS.md invariant 23. */
+/** Lifetime protocol for one column-family generation; see AGENTS.md invariant 24. */
 struct ColumnFamilyLifetime final {
 	std::atomic<bool> retired{false};
 	std::atomic<uint32_t> admitted{0};

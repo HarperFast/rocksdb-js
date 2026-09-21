@@ -1,6 +1,8 @@
 #include "iterator/db_iterator_handle.h"
 #include "database/db_descriptor.h"
 #include <rocksdb/version.h>
+#include "core/test_seam.h"
+#include <chrono>
 #include <thread>
 
 namespace rocksdb_js {
@@ -80,17 +82,21 @@ DBIteratorHandle::~DBIteratorHandle() {
 }
 
 void DBIteratorHandle::close() {
-	std::lock_guard<std::mutex> lock(this->closeMutex);
+	this->closeIfOpen();
+}
+
+bool DBIteratorHandle::closeIfOpen() {
+	std::lock_guard<std::mutex> lock(this->iteratorMutex);
 	DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
-	if (this->iterator) {
-		this->iterator->Reset();
-		this->iterator.reset();
-	}
+	if (!this->iterator) return false;
+	this->iterator->Reset();
+	this->iterator.reset();
 	if (this->txnHandle && this->transactionRegistered) {
 		this->transactionRegistered = false;
 		auto txnHandle = std::move(this->txnHandle);
 		txnHandle->unregisterIterator(this);
 	}
+	return true;
 }
 
 void DBIteratorHandle::init(DBIteratorOptions& options) {
@@ -118,6 +124,26 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 	} else {
 		DEBUG_LOG("%p DBIteratorHandle::init No end key\n", this);
 	}
+}
+
+bool DBIteratorHandle::countRemaining(uint64_t& count) {
+	std::lock_guard<std::mutex> lock(this->iteratorMutex);
+	const DBDescriptor* descriptor = this->dbHandle->descriptor.get();
+	// Test-only: stretch the scan so a fixture can land a foreign destroy()
+	// inside it rather than only before or after.
+	const int rowDelayMs = countScanDelayMsFlag().load(std::memory_order_relaxed);
+	count = 0;
+	while (this->valid()) {
+		if (descriptor->isClosing()) {
+			return false;
+		}
+		if (rowDelayMs > 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(rowDelayMs));
+		}
+		++count;
+		this->advance();
+	}
+	return true;
 }
 
 void DBIteratorHandle::seek(DBIteratorOptions& options) {

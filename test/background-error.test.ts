@@ -35,7 +35,19 @@ describe('background error', () => {
 			} catch {
 				/* best effort */
 			}
-			db.close();
+			try {
+				// destroy(), not close(): a recorded background error is sticky, so
+				// the close-time flush keeps failing and would leave the descriptor
+				// quarantined in the registry for the rest of the process (the
+				// registry then reports it again at exit). destroy() forces teardown.
+				if (process.env.KEEP_FILES) {
+					db.close();
+				} else {
+					db.destroy();
+				}
+			} catch {
+				/* best effort */
+			}
 			if (!process.env.KEEP_FILES) {
 				rmSync(path, { force: true, recursive: true, maxRetries: 3 });
 			}

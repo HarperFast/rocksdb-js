@@ -125,7 +125,7 @@ describe('Deferred column-family reclamation', () => {
 				() => expectFixture('retry-race', 'optimistic', 'sync', '1')
 			);
 
-			// The documented cross-restart gap (AGENTS.md invariant 23): a process
+			// The documented cross-restart gap (AGENTS.md invariant 24): a process
 			// killed while a physical drop is deferred leaves the old family live on disk.
 			it(
 				'a process killed inside the deferral window leaves the family on disk',

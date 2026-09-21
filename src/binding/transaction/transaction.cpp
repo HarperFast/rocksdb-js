@@ -279,7 +279,7 @@ static unsigned parkTimeoutMs() {
 
 /**
  * The claims one commit attempt holds on the generations its batch names
- * (invariant 23). Taken once at admission, before any transaction-log byte is
+ * (invariant 24). Taken once at admission, before any transaction-log byte is
  * written, and released right after `txn->Commit()` returns. Holds no
  * reference to the descriptor: one here would make a close racing the commit
  * skip its purge (the HarperFast/rocksdb-js#672 hazard), so the caller passes
@@ -589,7 +589,8 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// thread then commits through a destroyed transaction. Distinct from
 			// ROCKSDB_JS_COMMIT_DELAY_MS, which fires after execute completes and
 			// therefore cannot exercise the drain at all. Noop in production.
-			if (const int executeDelayMs = testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"); executeDelayMs > 0) {
+			if (const int executeDelayMs = commitExecuteDelayMsFlag().load(std::memory_order_relaxed);
+				executeDelayMs > 0) {
 				transactionCommitExecuteDelayActive().store(true, std::memory_order_release);
 				std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
 				transactionCommitExecuteDelayActive().store(false, std::memory_order_release);
@@ -1013,8 +1014,21 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs, completionsClosed, completion));
 		state->completion = completion;
 		if (!completionsClosed) {
-			// register the commit with the transaction handle so close() can wait
-			(*txnHandle)->registerAsyncWork();
+			// Register the commit with the transaction handle so close() can wait.
+			// Refusal means a concurrent close() already published cancellation (and,
+			// by the same happens-before edge, already forced state to Aborted) —
+			// undo the completion registration just above and reject rather than
+			// dispatching into a transaction that is being torn down. `stateOwner`
+			// still owns the state, so its destructor performs the rest of the
+			// unwind (nothing was registered, so it marks the state completed
+			// rather than signalling an execute that never ran).
+			if (!(*txnHandle)->registerAsyncWork()) {
+				state->completion->finish(env);
+				napi_value error;
+				rocksdb_js::createJSError(env, "ERR_TRANSACTION_CLOSING", "Transaction is closing", error);
+				state->callReject(error);
+				NAPI_RETURN_UNDEFINED();
+			}
 			stateOwner.asyncWorkRegistered = true;
 
 			// Commit-lane stage: RocksDB commit, then marshal the completion
@@ -1117,11 +1131,29 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		&state->asyncWork // -> result
 	));
 
-	// register the async work with the transaction handle
-	(*txnHandle)->registerAsyncWork();
+	// Register the async work with the transaction handle. Refusal means a
+	// concurrent close() already published cancellation; `stateOwner` still owns
+	// the state, so rejecting and returning lets its destructor delete the async
+	// work and mark the state completed (nothing was registered to run down).
+	if (!(*txnHandle)->registerAsyncWork()) {
+		napi_value error;
+		rocksdb_js::createJSError(env, "ERR_TRANSACTION_CLOSING", "Transaction is closing", error);
+		state->callReject(error);
+		NAPI_RETURN_UNDEFINED();
+	}
 	stateOwner.asyncWorkRegistered = true;
 
-	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	// A queue failure leaves the admission above with nothing to run it down, so
+	// it cannot simply throw: `stateOwner` unwinds it (signalExecuteCompleted()
+	// releases the real claim and the handle returns to Pending). Without that
+	// release the stranded claim blocks this handle's close forever, and with it
+	// every later OpenDB() for the path.
+	if (::napi_queue_async_work(env, state->asyncWork) != napi_ok) {
+		napi_value error;
+		rocksdb_js::createJSError(env, "ERR_COMMIT_QUEUE_FAILED", "Failed to queue commit work", error);
+		state->callReject(error);
+		NAPI_RETURN_UNDEFINED();
+	}
 	stateOwner.release();
 
 	NAPI_RETURN_UNDEFINED();
@@ -1332,13 +1364,37 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_TRANSACTION_HANDLE("GetCount");
 
+	// Without this claim finishClose()'s drain returns immediately and its
+	// closables sweep rolls back the transaction while the scan is parked
+	// between rows, leaving the iterator reading freed memory.
+	// A copy, not a reference: TransactionHandle::close() resets `dbHandle` from
+	// whichever thread drives a forced teardown, so a reference could be nulled
+	// between the check below and the descriptor read after it.
+	std::shared_ptr<DBHandle> txnDbHandle = (*txnHandle)->dbHandle;
+	if (!txnDbHandle) {
+		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
+		NAPI_RETURN_UNDEFINED();
+	}
+	if (!txnDbHandle->descriptor) {
+		::napi_throw_error(env, nullptr, "Get count failed: Database not open");
+		NAPI_RETURN_UNDEFINED();
+	}
+	OperationGuard operationGuard(txnDbHandle->descriptor);
+	if (txnDbHandle->descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
+
 	DBIteratorOptions itOptions;
 	itOptions.initFromNapiObject(env, argv[0]);
 	itOptions.values = false;
 
 	uint64_t count = 0;
 	try {
-		(*txnHandle)->getCount(itOptions, count);
+		if (!(*txnHandle)->getCount(itOptions, count)) {
+			::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+			NAPI_RETURN_UNDEFINED();
+		}
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		NAPI_RETURN_UNDEFINED();
