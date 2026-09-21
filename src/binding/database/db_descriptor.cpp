@@ -2516,9 +2516,8 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	napi_value defaultBuffer,
 	std::shared_ptr<ListenerCallback> listener
 ) {
-	// The caller already registered `listener` (if any) before calling in; only
-	// a successful return hands its removal off to userSharedBufferFinalize, so
-	// every early return here must remove it itself or it outlives this call.
+	// The caller already registered `listener` before calling in; every early
+	// return here must remove it.
 	struct ListenerCleanup {
 		DBDescriptor* self;
 		std::string& key;
