@@ -158,8 +158,10 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 				::napi_throw_type_error(env, nullptr, "Invalid transaction");
 				return nullptr;
 			}
-			uint32_t txnId = 0;
-			NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[6], &txnId));
+			uint64_t txnId = 0;
+			if (!rocksdb_js::readTransactionId(env, argv[6], txnId)) {
+				return nullptr;
+			}
 			txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 			if (!txnHandle) {
 				std::string errorMsg = "Iterator failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";

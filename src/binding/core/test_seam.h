@@ -47,6 +47,16 @@ inline std::atomic<int>& iteratorNextDelayMsFlag() {
 	return delayMs;
 }
 
+inline std::atomic<bool>& transactionCommitExecuteDelayActive() {
+	static std::atomic<bool> active{false};
+	return active;
+}
+
+inline std::atomic<int>& transactionCommitAdmissionDelayMs() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
 // Per-row delay for DBIteratorHandle::countRemaining(), snapshotted for the
 // same reason.
 inline std::atomic<int>& countScanDelayMsFlag() {
@@ -176,6 +186,18 @@ inline bool testConsumeCloseFlushFailure() {
 	return false;
 }
 
+inline std::atomic<bool>& transactionCommitAdmissionDelayActive() {
+	static std::atomic<bool> active{false};
+	return active;
+}
+
+inline void setTransactionCommitAdmissionDelayForTesting(int delayMs) {
+	transactionCommitAdmissionDelayMs().store(delayMs, std::memory_order_relaxed);
+	if (delayMs == 0) {
+		transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
+	}
+}
+
 // Deterministic one-shot(-per-N) seam for the stranded-snapshot retry path: forces the next N
 // transaction commits to fail with TryAgain (the caller rolls back so no data is committed),
 // reproducing an ERR_TRY_AGAIN that a real memtable flush would cause but that is finicky to
@@ -200,6 +222,56 @@ inline bool testForceTryAgain() {
 		}
 	}
 	return false;
+}
+
+// Forces DBDescriptor::reclaimColumnFamily to report failure. 0 = inert; 1 = fail without
+// calling DropColumnFamily (the family stays live for the retry); 2 = perform the real drop and
+// then report failure (the retry must resolve as "already dropped"). Set from JS via
+// `forceDropFailureForTesting(mode)`; process-global like forceTryAgainCounter().
+inline std::atomic<int>& forceDropFailureMode() {
+	static std::atomic<int> mode{0};
+	return mode;
+}
+
+inline int testForceDropFailureMode() {
+	return forceDropFailureMode().load(std::memory_order_relaxed);
+}
+
+// Parks one selected transactional Put/Delete after its advisory retirement
+// precheck so another worker can physically drop the generation first.
+inline std::atomic<int>& transactionStagingDelayCountdown() {
+	static std::atomic<int> countdown{0};
+	return countdown;
+}
+
+inline std::atomic<int>& transactionStagingDelayMs() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
+inline std::atomic<bool>& transactionStagingDelayActive() {
+	static std::atomic<bool> active{false};
+	return active;
+}
+
+inline void setTransactionStagingDelayForTesting(int countdown, int delayMs) {
+	if (countdown == 0) {
+		transactionStagingDelayActive().store(false, std::memory_order_release);
+	}
+	transactionStagingDelayMs().store(delayMs > 60000 ? 60000 : delayMs, std::memory_order_relaxed);
+	transactionStagingDelayCountdown().store(countdown, std::memory_order_relaxed);
+}
+
+inline int consumeTransactionStagingDelayForTesting() {
+	int remaining = transactionStagingDelayCountdown().load(std::memory_order_relaxed);
+	while (remaining > 0) {
+		if (transactionStagingDelayCountdown().compare_exchange_weak(
+				remaining, remaining - 1, std::memory_order_relaxed
+			)) {
+			return remaining == 1 ? transactionStagingDelayMs().load(std::memory_order_relaxed) : 0;
+		}
+	}
+	return 0;
 }
 
 inline std::atomic<int>& writeBufferManagerJoinDelayCountdown() {

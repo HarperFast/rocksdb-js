@@ -88,6 +88,67 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value ForceDropFailureForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t mode = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &mode));
+	forceDropFailureMode().store(mode, std::memory_order_relaxed);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
+napi_value SetTransactionStagingDelayForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	int32_t countdown = 0;
+	int32_t delayMs = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &countdown));
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &delayMs));
+	setTransactionStagingDelayForTesting(std::max(countdown, 0), std::max(delayMs, 0));
+	NAPI_RETURN_UNDEFINED();
+}
+
+napi_value IsTransactionStagingDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(
+		env,
+		transactionStagingDelayActive().load(std::memory_order_acquire),
+		&result
+	));
+	return result;
+}
+
+napi_value IsTransactionCommitExecuteDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(
+		env,
+		transactionCommitExecuteDelayActive().load(std::memory_order_acquire),
+		&result
+	));
+	return result;
+}
+
+napi_value SetTransactionCommitAdmissionDelayForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t delayMs = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &delayMs));
+	setTransactionCommitAdmissionDelayForTesting(std::clamp(delayMs, 0, 60000));
+	NAPI_RETURN_UNDEFINED();
+}
+
+napi_value IsTransactionCommitAdmissionDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(
+		env,
+		transactionCommitAdmissionDelayActive().load(std::memory_order_acquire),
+		&result
+	));
+	return result;
+}
+
 napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	int32_t countdown = 0;
@@ -105,6 +166,12 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 	napi_value result;
 	auto threadId = getThreadId();
 	NAPI_STATUS_THROWS(::napi_create_int64(env, threadId, &result));
+	return result;
+}
+
+napi_value SteadyClockNow(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, getSteadyClockNow(), &result));
 	return result;
 }
 
@@ -254,6 +321,9 @@ NAPI_MODULE_INIT() {
 		// tsfns, so the descriptor's park-timeout thread never fires into a
 		// torn-down env.
 		rocksdb_js::DBRegistry::ReleaseParkTimeoutsByEnv(dyingEnv);
+		// And this env's queued unlock callbacks: a lock another env holds would
+		// otherwise call them after Node freed their tsfns (rocksdb-js#848).
+		rocksdb_js::DBRegistry::ReleaseLockCallbacksByEnv(dyingEnv);
 
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
@@ -328,6 +398,58 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
 
+	napi_value forceDropFailureFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "forceDropFailureForTesting", NAPI_AUTO_LENGTH, ForceDropFailureForTesting, nullptr, &forceDropFailureFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceDropFailureForTesting", forceDropFailureFn));
+
+	napi_value setTransactionStagingDelayFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"setTransactionStagingDelayForTesting",
+		NAPI_AUTO_LENGTH,
+		SetTransactionStagingDelayForTesting,
+		nullptr,
+		&setTransactionStagingDelayFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"setTransactionStagingDelayForTesting",
+		setTransactionStagingDelayFn
+	));
+
+	napi_value isTransactionStagingDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"isTransactionStagingDelayedForTesting",
+		NAPI_AUTO_LENGTH,
+		IsTransactionStagingDelayedForTesting,
+		nullptr,
+		&isTransactionStagingDelayedFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"isTransactionStagingDelayedForTesting",
+		isTransactionStagingDelayedFn
+	));
+
+	napi_value isTransactionCommitExecuteDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"isTransactionCommitExecuteDelayedForTesting",
+		NAPI_AUTO_LENGTH,
+		IsTransactionCommitExecuteDelayedForTesting,
+		nullptr,
+		&isTransactionCommitExecuteDelayedFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"isTransactionCommitExecuteDelayedForTesting",
+		isTransactionCommitExecuteDelayedFn
+	));
+
 	napi_value setWriteBufferManagerJoinDelayFn;
 	NAPI_STATUS_THROWS(::napi_create_function(
 		env,
@@ -344,10 +466,21 @@ NAPI_MODULE_INIT() {
 		setWriteBufferManagerJoinDelayFn
 	));
 
+	napi_value setCommitAdmissionDelayFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "setTransactionCommitAdmissionDelayForTesting", NAPI_AUTO_LENGTH, SetTransactionCommitAdmissionDelayForTesting, nullptr, &setCommitAdmissionDelayFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setTransactionCommitAdmissionDelayForTesting", setCommitAdmissionDelayFn));
+	napi_value isCommitAdmissionDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCommitAdmissionDelayedForTesting", NAPI_AUTO_LENGTH, IsTransactionCommitAdmissionDelayedForTesting, nullptr, &isCommitAdmissionDelayedFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isTransactionCommitAdmissionDelayedForTesting", isCommitAdmissionDelayedFn));
+
 	// currentThreadId function
 	napi_value currentThreadIdFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "currentThreadId", NAPI_AUTO_LENGTH, CurrentThreadId, nullptr, &currentThreadIdFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "currentThreadId", currentThreadIdFn));
+
+	napi_value steadyClockNowFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "steadyClockNow", NAPI_AUTO_LENGTH, SteadyClockNow, nullptr, &steadyClockNowFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "steadyClockNow", steadyClockNowFn));
 
 	// file lock functions (see src/backup.ts)
 	napi_value tryFileLockFn;

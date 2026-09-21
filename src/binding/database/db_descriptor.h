@@ -20,6 +20,7 @@
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/utilities/options_util.h"
 #include "options/db_options.h"
+#include "core/column_family_lifetime.h"
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
@@ -312,8 +313,29 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::vector<DroppedColumnFamily> droppedColumns;
 
 	/**
-	 * Mutex to protect the columns map. Column families can be unregistered on
-	 * drop (see `unregisterColumnFamily`) while other threads iterate the map:
+	 * Retired generations whose physical `DropColumnFamily` has not completed,
+	 * whether because a commit still holds a claim or because an attempt
+	 * failed. Membership is the whole state: whether one can be dropped right
+	 * now is `lifetime.admitted`/`reclaimClaimed`, which `reclaimColumnFamily`
+	 * already reads atomically, so nothing here duplicates it. The strong
+	 * reference keeps the RocksDB handle alive until the drop has run; the
+	 * entry is erased by `reclaimColumnFamily` on success. Guarded by
+	 * `columnsMutex`.
+	 */
+	std::vector<std::shared_ptr<ColumnFamilyDescriptor>> retiring;
+
+	/**
+	 * Signalled (without any lock) whenever `retiring` changes, so
+	 * `DBRegistry::OpenDB` can wait for a same-name generation to finish
+	 * reclaiming before creating the fresh family. Waiters poll in short
+	 * slices under `databasesMutex`, so a notify that lands between their
+	 * predicate check and their wait is bounded, not lost.
+	 */
+	std::shared_ptr<std::condition_variable> retiringCondition;
+
+	/**
+	 * Mutex to protect the columns map. Column families can be retired on drop
+	 * (see `retireColumnFamily`) while other threads iterate the map:
 	 * the JS thread via the `columns` getter or `DBRegistry::OpenDB`, libuv
 	 * worker threads via `flush()`, and a closing thread via `close()`. Lock
 	 * ordering: when both are held, `DBRegistry::databasesMutex` is acquired
@@ -330,7 +352,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	/**
 	 * Map of transaction id to transaction handle.
 	 */
-	std::unordered_map<uint32_t, std::shared_ptr<TransactionHandle>> transactions;
+	std::unordered_map<uint64_t, std::shared_ptr<TransactionHandle>> transactions;
 
 	/**
 	 * Atomic counter for generating unique transaction IDs for this RocksDB
@@ -338,7 +360,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * implementation-dependent and are assigned lazily with a default of 0
 	 * causing collisions in the transactions map.
 	 */
-	std::atomic<uint32_t> nextTransactionId{1};
+	std::atomic<uint64_t> nextTransactionId{1};
 
 	/**
 	 * Mutex to protect the transactions map and closables set. When both are
@@ -515,53 +537,88 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * must run on the env that issued it — so completions are marshalled back
 	 * via a threadsafe function created lazily per env.
 	 *
-	 * `commitMutex` guards both the commit thread's tsfn call
-	 * (`dispatchCommitCompletion`) and the release of an env's tsfn
-	 * (`releaseCommitCompletionsByEnv`, run from the module env-cleanup hook
-	 * when a worker env exits). Making the call while holding the mutex is what
-	 * keeps it safe against env teardown: a dying env's cleanup hook must take
-	 * the same mutex to release, and Node runs that hook before freeing the
-	 * env's tsfns — so the tsfn cannot be freed mid-call. This is the same
-	 * discipline `EventEmitter::notify` uses (HarperFast/harper#1370). A
-	 * per-commit `napi_acquire_threadsafe_function` does NOT close this window
-	 * (env teardown does not honor the tsfn-level acquire count).
+	 * `completionStateMutex` guards both the commit thread's tsfn call
+	 * (`dispatch`) and the release of the env's tsfn (`release`, called by
+	 * `releaseCommitCompletionsByEnv` from the module env-cleanup hook when a
+	 * worker env exits, or by `finishClose`). Making the call while holding
+	 * the mutex is what keeps it safe against env teardown: a dying env's
+	 * cleanup hook must take the same mutex to release, and Node runs that
+	 * hook before freeing the env's tsfns — so the tsfn cannot be freed
+	 * mid-call. This is the same discipline `EventEmitter::notify` uses
+	 * (HarperFast/harper#1370). A per-commit `napi_acquire_threadsafe_function`
+	 * does NOT close this window (env teardown does not honor the tsfn-level
+	 * acquire count).
 	 */
 	struct CommitCompletion {
+		// Guards this environment's TSFN, pending count, and closed flag.
+		// N-API calls and env-cleanup release take the same lock: shared_ptr
+		// pins this object, not the Node env/TSFN, and TSFN acquire counts do
+		// not prevent env teardown. Other environments have their own lock.
+		std::mutex completionStateMutex;
 		napi_threadsafe_function tsfn = nullptr;
 		// In-flight commits for this env; drives ref/unref so the event loop is
 		// kept alive until completions run, but can still exit when idle.
 		uint32_t pending = 0;
+		// Terminal even while a DBHandle or in-flight commit retains this object:
+		// a cached registration must never recreate a released env's TSFN.
+		bool closed = false;
+
+		/**
+		 * JS thread. Ensures a completion tsfn exists (created with `callJs`)
+		 * and accounts a newly dispatched commit, ref-ing the tsfn as the env
+		 * goes from idle to busy. Call on the env's own JS thread before
+		 * enqueuing the commit. Sets `closed` without registering when this
+		 * completion has been released — the caller must then reject the commit.
+		 */
+		napi_status registerCommit(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed);
+
+		/**
+		 * Commit thread. Delivers a completed commit's `state` to its originating
+		 * env. Returns false if the tsfn is gone (env torn down or released),
+		 * or the N-API call fails — the caller then drops the state.
+		 */
+		bool dispatch(void* state);
+
+		/**
+		 * JS thread (completion callback). Accounts a finished commit, unref-ing
+		 * the tsfn when the env goes idle so the event loop can exit. A callback
+		 * queued before release may still run; it must leave the closed tsfn alone.
+		 */
+		void finish(napi_env env);
+
+		/**
+		 * Module env-cleanup hook or descriptor close, with commitMutex held.
+		 * Excludes dispatch while releasing the tsfn. Queued completions are
+		 * still delivered before finalization (napi_tsfn_release, not abort).
+		 */
+		void release();
 	};
+	// Registry -> completion is the only nested lock order. Keep entries
+	// reachable until release finishes: otherwise env cleanup could miss a
+	// detached entry and let Node free its TSFN before the releasing thread.
 	std::mutex commitMutex;
-	std::unordered_map<napi_env, CommitCompletion> commitCompletions;
+	std::unordered_map<napi_env, std::shared_ptr<CommitCompletion>> commitCompletions;
 	// Set (under commitMutex) by finishClose()'s release pass. Blocks any
-	// later registerCommitCompletion from re-creating a tsfn that would never
-	// be released (which would pin that env's event loop forever); a commit
-	// racing the close falls back to the legacy libuv path instead.
+	// later registry lookup from re-creating a tsfn that would never be
+	// released (which would pin that env's event loop forever); a commit
+	// racing the close is rejected before dispatch. Cached completions use
+	// their own terminal closed flag to reject without a registry lookup.
 	bool commitCompletionsClosed = false;
 
 	/**
-	 * JS thread. Ensures a completion tsfn exists for `env` (created with
-	 * `callJs`) and accounts a newly dispatched commit, ref-ing the tsfn as the
-	 * env goes from idle to busy. Call on the env's own JS thread before
-	 * enqueuing the commit. Sets `closed` (leaving the maps untouched) when the
-	 * descriptor's completion plumbing has already shut down — the caller must
-	 * then use the legacy commit path.
+	 * JS thread. Finds or creates this env's shared completion on first use,
+	 * then registers the commit on that object. `completion` is the DBHandle's
+	 * env/descriptor cache, reset on reopen; a warm cache skips the registry
+	 * lock. Call before enqueuing the commit, on the env's own JS thread.
+	 * Sets `closed` without registering when either the registry or cached
+	 * completion has shut down — the caller must then reject the commit.
 	 */
-	napi_status registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed);
-
-	/**
-	 * Commit thread. Delivers a completed commit's `state` to its originating
-	 * env. Returns false if that env's completion tsfn is gone (env torn down
-	 * or released) — the caller then drops the state.
-	 */
-	bool dispatchCommitCompletion(napi_env env, void* state);
-
-	/**
-	 * JS thread (completion callback). Accounts a finished commit, unref-ing the
-	 * tsfn when the env goes idle so the event loop can exit.
-	 */
-	void finishCommitCompletion(napi_env env);
+	napi_status registerCommitCompletion(
+		napi_env env,
+		napi_threadsafe_function_call_js callJs,
+		bool& closed,
+		std::shared_ptr<CommitCompletion>& completion
+	);
 
 	/**
 	 * Module env-cleanup hook. Releases and forgets a dying env's completion
@@ -668,12 +725,18 @@ public:
 	bool lockExistsByKey(std::string& key);
 	bool lockReleaseByKey(std::string& key);
 	void lockReleaseByOwner(DBHandle* owner);
+
+	/**
+	 * Env-cleanup hook: release every queued unlock callback that a dying env
+	 * registered, on every lock this descriptor tracks. Never calls them.
+	 */
+	void releaseLockCallbacksByEnv(napi_env env);
 	void onCallbackComplete(const std::string& key);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
-	std::shared_ptr<TransactionHandle> transactionGet(uint32_t id);
+	std::shared_ptr<TransactionHandle> transactionGet(uint64_t id);
 	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
-	uint32_t transactionGetNextId();
+	uint64_t transactionGetNextId();
 
 	/**
 	 * Closes every registered transaction whose owning DBHandle was created by
@@ -708,15 +771,71 @@ public:
 	void releaseLogRefsByEnv(napi_env env);
 
 	/**
-	 * Removes a dropped column family from the columns map (under
-	 * `columnsMutex`) so a later open-by-name creates a fresh column family
-	 * instead of reusing the dangling dropped handle. DBHandles still holding
-	 * the descriptor keep it alive via their shared_ptr; only the by-name
-	 * lookup is removed.
+	 * Logical drop (invariant 24). Under `columnsMutex`, and only if `column`
+	 * is still the generation registered under its name, removes it from
+	 * `columns` (so a later open-by-name creates a fresh family), marks it
+	 * retired, and records it in `retiring`. Runs the physical drop right
+	 * away when no commit holds a claim, otherwise the last releasing commit
+	 * runs it. A generation already retired by another handle retries its
+	 * physical drop and reports the outcome; a stale handle to a generation a
+	 * recreated family has replaced is a no-op.
 	 *
-	 * @param columnName The name of the dropped column family.
+	 * @param retiredNow Set when this call performed the logical retirement
+	 * (the caller owns the one-time side effects, e.g. the VT sweep).
+	 * @returns The status of a physical drop attempted by this call, or OK
+	 * when the drop was deferred or nothing was done. Read-only databases
+	 * return NotSupported before any mutation.
 	 */
-	void unregisterColumnFamily(const std::string& columnName);
+	rocksdb::Status retireColumnFamily(const std::shared_ptr<ColumnFamilyDescriptor>& column, bool& retiredNow);
+
+	/**
+	 * Physical drop of a retired generation, from whichever thread found the
+	 * last claim released (a commit lane, a `commitSync` caller, the retiring
+	 * JS thread, or `finishClose`). Never called under `columnsMutex`. Exactly
+	 * one caller runs `DropColumnFamily` per attempt (`claimReclaim`), and only
+	 * while no commit holds a claim and the database is not closing; success
+	 * or RocksDB's own "already dropped" erases the `retiring` entry, any
+	 * other status leaves it there for the next retry point and reports
+	 * through `log.warn`.
+	 * Cannot throw: it runs from commit completions and destructors.
+	 * `attempted` reports whether this call ran the drop (false when another
+	 * thread holds the claim, a commit is admitted, or the database is
+	 * closing), which is what a caller that must report or wait keys off;
+	 * `duringClose` is `finishClose`'s own retry, which runs after the closing
+	 * flag is set and every commit lane is drained.
+	 */
+	rocksdb::Status reclaimColumnFamily(
+		const std::shared_ptr<ColumnFamilyDescriptor>& column,
+		bool* attempted = nullptr,
+		bool duringClose = false
+	) noexcept;
+
+	/**
+	 * Releases one commit claim and reclaims when it was the last on a
+	 * retired generation.
+	 */
+	void releaseCommitClaim(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept;
+
+	/**
+	 * Attempts the physical drop of every retiring generation. One still held
+	 * by a commit, or already being dropped by another thread, is a no-op
+	 * inside `reclaimColumnFamily`. `duringClose` is `finishClose()`'s pass,
+	 * where the drained lanes can no longer release a claim themselves.
+	 */
+	void retryPendingReclaims(bool duringClose = false) noexcept;
+
+	/**
+	 * Number of retired generations whose physical drop has not completed
+	 * (`columnFamily.pendingReclaims`).
+	 */
+	size_t pendingReclaimCount();
+
+	/**
+	 * Looks up a retiring generation by name (the name is free in `columns`
+	 * while it is here). Returned by value so a caller can release
+	 * `columnsMutex` before acting on it. Caller holds `columnsMutex`.
+	 */
+	std::shared_ptr<ColumnFamilyDescriptor> findRetiringLocked(const std::string& columnName);
 
 	/**
 	 * Creates a new user shared buffer or returns an existing one.
@@ -846,11 +965,18 @@ struct LockCallbackCompletionData final {
  * Holds a threadsafe callback and its associated deferred promise (if any).
  */
 struct LockCallback final {
-	LockCallback(napi_threadsafe_function callback, napi_deferred deferred = nullptr)
-		: callback(callback), deferred(deferred) {}
+	LockCallback(napi_threadsafe_function callback, napi_deferred deferred = nullptr, napi_env env = nullptr)
+		: callback(callback), deferred(deferred), env(env) {}
 
 	napi_threadsafe_function callback;
 	napi_deferred deferred;
+
+	/**
+	 * The env that queued this callback. A worker's env can be torn down while
+	 * its callback still waits on a lock another env holds; `releaseLockCallbacksByEnv`
+	 * drops it then, because calling the tsfn after Node freed it aborts the process.
+	 */
+	napi_env env;
 };
 
 /**
@@ -964,6 +1090,26 @@ struct ColumnFamilyDescriptor final {
 	std::shared_ptr<rocksdb::ColumnFamilyHandle> column;
 
 	/**
+	 * The column family name, copied at creation. `column->GetName()` is not
+	 * used after retirement so no path depends on a dropped handle for its
+	 * own identity.
+	 */
+	const std::string name;
+
+	/**
+	 * The default family is cleared, never dropped, so transactions do not
+	 * track it.
+	 */
+	const bool droppable;
+
+	/**
+	 * Retire/admit/reclaim state for this generation (invariant 24). Commits
+	 * claim it through `ColumnFamilyCommitClaim`; `Database::Drop`/`DropSync`
+	 * retire it through `DBDescriptor::retireColumnFamily`.
+	 */
+	ColumnFamilyLifetime lifetime;
+
+	/**
 	 * Map of user shared buffers by key.
 	 */
 	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;
@@ -986,8 +1132,10 @@ struct ColumnFamilyDescriptor final {
 
 	ColumnFamilyDescriptor(
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,
+		std::string name,
 		int64_t maxWriteBufferSizeToMaintain
-	) : column(column), maxWriteBufferSizeToMaintain(maxWriteBufferSizeToMaintain) {}
+	) : column(column), name(std::move(name)), droppable(this->name != rocksdb::kDefaultColumnFamilyName),
+		maxWriteBufferSizeToMaintain(maxWriteBufferSizeToMaintain) {}
 
 	~ColumnFamilyDescriptor() {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);

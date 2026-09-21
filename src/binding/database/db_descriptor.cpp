@@ -455,6 +455,7 @@ DBDescriptor::DBDescriptor(
 	db(db),
 	attachedWriteBufferManager(attachedWriteBufferManager),
 	columns(std::move(columns)),
+	retiringCondition(std::make_shared<std::condition_variable>()),
 	statistics(statistics)
 {
 	// Resolve the debounce window here (JS thread, open path) so the emit path on
@@ -533,24 +534,27 @@ void DBDescriptor::finishClose(bool destroying) {
 		DEBUG_LOG("%p DBDescriptor::close All operations complete \"%s\"\n", this, this->path.c_str());
 
 		// Drain the commit pipeline before flushing so its data is included in
-		// the flush. The log lane feeds the commit lane, so it must drain first.
+		// the flush. The log lane feeds the commit lane, so it must drain first;
+		// its final tasks enqueue onto the still-running commit lane (or run
+		// inline once that lane stops).
 		this->logWorker.shutdown();
 		this->commitWorker.shutdown();
 
-		// An in-flight commit pins this descriptor through its transaction and DB
-		// handles, so reaching this release pass means only idle per-env TSFNs remain.
-		// Release rather than abort: queued completions are still delivered before
-		// finalization, while a later registration observes commitCompletionsClosed
-		// and falls back to the legacy libuv path.
+		// Release any remaining per-env commit-completion tsfns. The native
+		// operation drain and lane shutdown above prevent further commit dispatch,
+		// but JS completions already handed to a tsfn can still be queued. They
+		// are still delivered (napi_tsfn_release, not abort); finish() observes the
+		// completion's closed flag and leaves the released tsfn alone.
 		{
 			std::lock_guard<std::mutex> lock(this->commitMutex);
+			// Block later cold registrations from re-creating a tsfn that would
+			// never be released. release() also closes each cached completion so
+			// a warm registration racing this close rejects before dispatch.
+			this->commitCompletionsClosed = true;
 			for (auto& [env, completion] : this->commitCompletions) {
-				if (completion.tsfn) {
-					::napi_release_threadsafe_function(completion.tsfn, napi_tsfn_release);
-				}
+				completion->release();
 			}
 			this->commitCompletions.clear();
-			this->commitCompletionsClosed = true;
 		}
 		this->closeWorkersStopped = true;
 	}
@@ -667,13 +671,26 @@ void DBDescriptor::finishClose(bool destroying) {
 	}
 
 	this->transactions.clear();
+
+	// Drop every retiring generation while the RocksDB instance exists; what
+	// still fails stays on disk under its name. Their handles are destroyed
+	// here, ahead of the database, because a claim can outlive the closables
+	// sweep's drain timeout on the legacy libuv path.
+	this->retryPendingReclaims(true);
 	{
 		std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
 		this->columns.clear();
 		// The registry entry outlives this, so drop both or the inventory keeps
 		// reporting families of a closed database.
 		this->droppedColumns.clear();
+		for (const auto& entry : this->retiring) {
+			if (entry) {
+				entry->column.reset();
+			}
+		}
+		this->retiring.clear();
 	}
+	this->retiringCondition->notify_all();
 
 	this->events.releaseAll();
 
@@ -691,66 +708,97 @@ void DBDescriptor::finishClose(bool destroying) {
 	}
 }
 
-napi_status DBDescriptor::registerCommitCompletion(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed) {
-	std::lock_guard<std::mutex> lock(this->commitMutex);
-	closed = this->commitCompletionsClosed;
+napi_status DBDescriptor::registerCommitCompletion(
+	napi_env env,
+	napi_threadsafe_function_call_js callJs,
+	bool& closed,
+	std::shared_ptr<CommitCompletion>& completion
+) {
+	if (!completion) {
+		std::lock_guard<std::mutex> lock(this->commitMutex);
+		closed = this->commitCompletionsClosed;
+		if (closed) {
+			return napi_ok;
+		}
+		auto& entry = this->commitCompletions[env];
+		if (!entry) {
+			entry = std::make_shared<CommitCompletion>();
+		}
+		completion = entry;
+	}
+	return completion->registerCommit(env, callJs, closed);
+}
+
+napi_status DBDescriptor::CommitCompletion::registerCommit(
+	napi_env env,
+	napi_threadsafe_function_call_js callJs,
+	bool& closed
+) {
+	std::lock_guard<std::mutex> lock(this->completionStateMutex);
+	closed = this->closed;
 	if (closed) {
 		return napi_ok;
 	}
-	CommitCompletion& completion = this->commitCompletions[env];
-	if (completion.tsfn == nullptr) {
+	if (this->tsfn == nullptr) {
 		napi_value resourceName;
 		napi_status status = ::napi_create_string_utf8(env, "rocksdb.commit", NAPI_AUTO_LENGTH, &resourceName);
 		if (status != napi_ok) {
 			return status;
 		}
-		// Created ref'd (thread count 1 for the commit thread), which is what we
-		// want with a commit about to be dispatched.
+		// Created ref'd: this first pending commit must keep the event loop
+		// alive until its completion runs.
 		status = ::napi_create_threadsafe_function(
 			env,
 			nullptr,   // func: callJs does all the work
 			nullptr,   // async_resource
 			resourceName,
 			0,         // unlimited queue
-			1,         // initial thread count: the commit thread
+			1,         // initial thread count: the commit lane
 			nullptr,   // finalize data
 			nullptr,   // finalize cb
 			nullptr,   // context
 			callJs,
-			&completion.tsfn
+			&this->tsfn
 		);
 		if (status != napi_ok) {
-			this->commitCompletions.erase(env);
 			return status;
 		}
-	} else if (completion.pending == 0) {
+	} else if (this->pending == 0) {
 		// Waking from idle: keep the event loop alive until completion.
-		napi_status status = ::napi_ref_threadsafe_function(env, completion.tsfn);
+		napi_status status = ::napi_ref_threadsafe_function(env, this->tsfn);
 		if (status != napi_ok) {
 			return status;
 		}
 	}
-	completion.pending++;
+	this->pending++;
 	return napi_ok;
 }
 
-bool DBDescriptor::dispatchCommitCompletion(napi_env env, void* state) {
-	std::lock_guard<std::mutex> lock(this->commitMutex);
-	auto it = this->commitCompletions.find(env);
-	if (it == this->commitCompletions.end() || it->second.tsfn == nullptr) {
-		// env was torn down / released; the caller drops the state.
+bool DBDescriptor::CommitCompletion::dispatch(void* state) {
+	std::lock_guard<std::mutex> lock(this->completionStateMutex);
+	if (this->closed || this->tsfn == nullptr) {
+		// Env was torn down / released; the caller drops the state.
 		return false;
 	}
-	napi_status status = ::napi_call_threadsafe_function(it->second.tsfn, state, napi_tsfn_nonblocking);
-	return status == napi_ok;
+	return ::napi_call_threadsafe_function(this->tsfn, state, napi_tsfn_nonblocking) == napi_ok;
 }
 
-void DBDescriptor::finishCommitCompletion(napi_env env) {
-	std::lock_guard<std::mutex> lock(this->commitMutex);
-	auto it = this->commitCompletions.find(env);
-	if (it != this->commitCompletions.end() && --it->second.pending == 0 && it->second.tsfn != nullptr) {
+void DBDescriptor::CommitCompletion::finish(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->completionStateMutex);
+	if (!this->closed && --this->pending == 0 && this->tsfn != nullptr) {
 		// Idle: allow the event loop to exit.
-		::napi_unref_threadsafe_function(env, it->second.tsfn);
+		::napi_unref_threadsafe_function(env, this->tsfn);
+	}
+}
+
+void DBDescriptor::CommitCompletion::release() {
+	std::lock_guard<std::mutex> lock(this->completionStateMutex);
+	this->closed = true;
+	if (this->tsfn != nullptr) {
+		// Queued completions are still delivered before the tsfn finalizes
+		// (release, not abort); finish() then observes closed.
+		::napi_release_threadsafe_function(this->tsfn, napi_tsfn_release);
+		this->tsfn = nullptr;
 	}
 }
 
@@ -758,10 +806,7 @@ void DBDescriptor::releaseCommitCompletionsByEnv(napi_env env) {
 	std::lock_guard<std::mutex> lock(this->commitMutex);
 	auto it = this->commitCompletions.find(env);
 	if (it != this->commitCompletions.end()) {
-		if (it->second.tsfn != nullptr) {
-			// Queued completions are still delivered before the tsfn finalizes.
-			::napi_release_threadsafe_function(it->second.tsfn, napi_tsfn_release);
-		}
+		it->second->release();
 		this->commitCompletions.erase(it);
 	}
 }
@@ -855,7 +900,8 @@ void ParkTimeoutRegistry::runLoop() {
 			this->cv.wait_until(lock, earliest);
 			continue;
 		}
-		// Fire while still holding the mutex, like dispatchCommitCompletion.
+		// Fire while still holding the mutex, like CommitCompletion::dispatch,
+		// to exclude env cleanup while calling each due TSFN.
 		while (!this->deadlines.empty() && this->deadlines.begin()->first <= now) {
 			auto deadlineIt = this->deadlines.begin();
 			auto parkIt = this->parks.find(deadlineIt->second);
@@ -1276,7 +1322,7 @@ void DBDescriptor::lockEnqueueCallback(
 		NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback));
 
 		// Create LockCallback and add to queue
-		lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, deferred));
+		lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, deferred, env));
 	}
 }
 
@@ -1295,23 +1341,25 @@ bool DBDescriptor::lockExistsByKey(std::string& key) {
  * Releases a lock by key. Called by `db.unlock()`.
  */
 bool DBDescriptor::lockReleaseByKey(std::string& key) {
-	std::queue<LockCallback> threadsafeCallbacks;
+	// The callbacks are called while `locksMutex` is held: a worker env whose
+	// callback is queued here can be torn down concurrently, and its cleanup hook
+	// (`releaseLockCallbacksByEnv`) takes the same mutex, so it either removes the
+	// callback before this call or waits until the call has returned -- Node
+	// cannot free the tsfn out from under `napi_call_threadsafe_function`.
+	// Calling a tsfn only enqueues onto its env's loop, so nothing re-enters here.
+	std::lock_guard<std::mutex> lock(this->locksMutex);
+	auto lockHandle = this->locks.find(key);
 
-	{
-		std::lock_guard<std::mutex> lock(this->locksMutex);
-		auto lockHandle = this->locks.find(key);
-
-		if (lockHandle == this->locks.end()) {
-			// no lock found
-			DEBUG_LOG("%p DBDescriptor::lockReleaseByKey no lock found\n", this);
-			return false;
-		}
-
-		// lock found, remove it
-		threadsafeCallbacks = std::move(lockHandle->second->threadsafeCallbacks);
-		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey removing lock\n", this);
-		this->locks.erase(key);
+	if (lockHandle == this->locks.end()) {
+		// no lock found
+		DEBUG_LOG("%p DBDescriptor::lockReleaseByKey no lock found\n", this);
+		return false;
 	}
+
+	// lock found, remove it
+	std::queue<LockCallback> threadsafeCallbacks = std::move(lockHandle->second->threadsafeCallbacks);
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByKey removing lock\n", this);
+	this->locks.erase(key);
 
 	DEBUG_LOG("%p DBDescriptor::lockReleaseByKey calling %zu unlock callbacks\n", this, threadsafeCallbacks.size());
 
@@ -1331,27 +1379,52 @@ bool DBDescriptor::lockReleaseByKey(std::string& key) {
 }
 
 /**
+ * Env-cleanup hook (see `Binding::Init`): a worker that is terminated never
+ * closes its handles in order, so an unlock callback it queued on a lock held
+ * by another env would still be called by that env's `unlock()` after Node has
+ * freed the tsfn -- on Node 22 that aborts the process (rocksdb-js#848). Drop
+ * such callbacks under `locksMutex`, the same mutex the release paths hold
+ * while calling, so a call that already started completes before the tsfn goes.
+ */
+void DBDescriptor::releaseLockCallbacksByEnv(napi_env env) {
+	std::lock_guard<std::mutex> lock(this->locksMutex);
+	for (auto& [_key, lockHandle] : this->locks) {
+		std::queue<LockCallback> kept;
+		while (!lockHandle->threadsafeCallbacks.empty()) {
+			LockCallback lockCallback = lockHandle->threadsafeCallbacks.front();
+			lockHandle->threadsafeCallbacks.pop();
+			if (lockCallback.env == env) {
+				DEBUG_LOG("%p DBDescriptor::releaseLockCallbacksByEnv dropping callback %p of dying env\n", this, lockCallback.callback);
+				::napi_release_threadsafe_function(lockCallback.callback, napi_tsfn_release);
+			} else {
+				kept.push(lockCallback);
+			}
+		}
+		lockHandle->threadsafeCallbacks = std::move(kept);
+	}
+}
+
+/**
  * Releases all locks owned by the given handle. Called by `db.close()`.
  */
 void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
 	std::set<napi_threadsafe_function> threadsafeCallbacks;
 
-	{
-		std::lock_guard<std::mutex> lock(this->locksMutex);
-			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %zu locks if they are owned handle %p\n", this, this->locks.size(), owner);
-		for (auto it = this->locks.begin(); it != this->locks.end();) {
-			auto lockOwner = it->second->owner.lock();
-			if (!lockOwner || lockOwner.get() == owner) {
-				DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %zu callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size());
-				// move all callbacks from the queue
-				while (!it->second->threadsafeCallbacks.empty()) {
-					threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front().callback);
-					it->second->threadsafeCallbacks.pop();
-				}
-				it = this->locks.erase(it);
-			} else {
-				++it;
+	// Held across the calls for the same reason as lockReleaseByKey.
+	std::lock_guard<std::mutex> lock(this->locksMutex);
+	DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner checking %zu locks if they are owned handle %p\n", this, this->locks.size(), owner);
+	for (auto it = this->locks.begin(); it != this->locks.end();) {
+		auto lockOwner = it->second->owner.lock();
+		if (!lockOwner || lockOwner.get() == owner) {
+			DEBUG_LOG("%p DBDescriptor::lockReleaseByOwner found lock %p with %zu callbacks\n", this, it->second.get(), it->second->threadsafeCallbacks.size());
+			// move all callbacks from the queue
+			while (!it->second->threadsafeCallbacks.empty()) {
+				threadsafeCallbacks.insert(it->second->threadsafeCallbacks.front().callback);
+				it->second->threadsafeCallbacks.pop();
 			}
+			it = this->locks.erase(it);
+		} else {
+			++it;
 		}
 	}
 
@@ -1647,7 +1720,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	for (size_t n = 0; n < cfHandles.size(); ++n) {
 		auto column = std::shared_ptr<rocksdb::ColumnFamilyHandle>(cfHandles[n]);
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
-			column, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+			column, cfDescriptors[n].name, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
 		);
 		columns[cfDescriptors[n].name] = columnDescriptor;
 		if (cfDescriptors[n].name == options.name) {
@@ -1669,7 +1742,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		}
 		auto column = rocksdb_js::createRocksDBColumnFamily(db, options.name, cfo);
 		auto columnDescriptor = std::make_shared<ColumnFamilyDescriptor>(
-			column, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
+			column, options.name, db->GetOptions(column.get()).max_write_buffer_size_to_maintain
 		);
 		columns[options.name] = columnDescriptor;
 	}
@@ -1718,7 +1791,7 @@ void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) 
 /**
  * Retrieves a transaction from the registry.
  */
-std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint32_t id) {
+std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint64_t id) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	auto it = this->transactions.find(id);
 	if (it != this->transactions.end()) {
@@ -1740,7 +1813,7 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 	auto it = this->transactions.find(txnHandle->id);
 	if (it != this->transactions.end()) {
 		if (it->second != txnHandle) {
-			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %u mismatch! expected %p, got %p\n", this, txnHandle->id, it->second.get(), txnHandle.get());
+			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %llu mismatch! expected %p, got %p\n", this, (unsigned long long)txnHandle->id, it->second.get(), txnHandle.get());
 		}
 		this->transactions.erase(it);
 	}
@@ -1767,7 +1840,7 @@ void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 	}
 
 	for (auto& txnHandle : toClose) {
-		DEBUG_LOG("%p DBDescriptor::closeTransactionsByEnv closing transaction %u (env=%p)\n", this, txnHandle->id, env);
+		DEBUG_LOG("%p DBDescriptor::closeTransactionsByEnv closing transaction %llu (env=%p)\n", this, (unsigned long long)txnHandle->id, env);
 		txnHandle->close();
 		// close() can only self-remove while it can still reach this descriptor
 		// through its DBHandle, and a handle closed earlier by the user has
@@ -1807,45 +1880,217 @@ void DBDescriptor::releaseLogRefsByEnv(napi_env env) {
 /**
  * Generates the next unique transaction ID for this database.
  */
-uint32_t DBDescriptor::transactionGetNextId() {
+uint64_t DBDescriptor::transactionGetNextId() {
 	return ++this->nextTransactionId;
 }
 
-/**
- * Removes a dropped column family from the columns map so a later open-by-name
- * creates a fresh column family instead of reusing the dangling dropped
- * handle. DBHandles still holding the descriptor keep it alive via their
- * shared_ptr and can continue reading until they close; only the by-name
- * lookup is removed.
- */
-void DBDescriptor::unregisterColumnFamily(const std::string& columnName) {
-	std::lock_guard<std::mutex> lock(this->columnsMutex);
-	// Retire debounce state so the map stays bounded and a recreated CF of the
-	// same name starts fresh rather than inheriting a stale reported-stalled bit.
-	this->writeStallDebounce.forget(columnName);
-	// Attachment is decided once, at open, so an unattached database never reaches
-	// the stall inventory and tracks nothing.
-	const bool trackForInventory = this->attachedWriteBufferManager != nullptr;
-	if (trackForInventory) {
-		std::erase_if(this->droppedColumns, [](const DroppedColumnFamily& dropped) {
-			return dropped.descriptor.expired();
-		});
+std::shared_ptr<ColumnFamilyDescriptor> DBDescriptor::findRetiringLocked(const std::string& columnName) {
+	for (const auto& entry : this->retiring) {
+		if (entry && entry->name == columnName) {
+			return entry;
+		}
 	}
-	auto it = this->columns.find(columnName);
-	if (it == this->columns.end()) {
-		DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily column \"%s\" not found\n",
-			this, columnName.c_str());
+	return nullptr;
+}
+
+rocksdb::Status DBDescriptor::retireColumnFamily(
+	const std::shared_ptr<ColumnFamilyDescriptor>& column,
+	bool& retiredNow
+) {
+	retiredNow = false;
+	if (!column) {
+		return rocksdb::Status::InvalidArgument("Column family is not open");
+	}
+	if (this->readOnly) {
+		// RocksDB's own wording for a read-only DropColumnFamily, returned
+		// before any registry mutation so a read-only handle cannot hide a
+		// family it could never drop.
+		return rocksdb::Status::NotSupported("Not supported operation in read only mode");
+	}
+
+	bool reclaimNow = false;
+	bool stillRetiring = false;
+	{
+		std::lock_guard<std::mutex> lock(this->columnsMutex);
+		auto it = this->columns.find(column->name);
+		if (it == this->columns.end() || it->second != column) {
+			// Already retired by another handle (retry its physical drop and
+			// report the outcome), or a stale handle to a generation a recreated
+			// family has replaced (no-op).
+			stillRetiring = this->findRetiringLocked(column->name) == column;
+			DEBUG_LOG("%p DBDescriptor::retireColumnFamily column \"%s\" %s\n", this, column->name.c_str(),
+				stillRetiring ? "retrying reclaim" : (it == this->columns.end() ? "not registered" : "already replaced"));
+		} else {
+			// Allocations precede publication so a failure leaves the generation
+			// registered and droppable.
+			this->retiring.reserve(this->retiring.size() + 1);
+			const bool trackForInventory = this->attachedWriteBufferManager != nullptr;
+			if (trackForInventory) {
+				std::erase_if(this->droppedColumns, [](const DroppedColumnFamily& dropped) {
+					return dropped.descriptor.expired();
+				});
+				this->droppedColumns.reserve(this->droppedColumns.size() + 1);
+			}
+			this->writeStallDebounce.forget(column->name);
+
+			if (!column->lifetime.retire(reclaimNow)) {
+				return rocksdb::Status::OK();
+			}
+			retiredNow = true;
+			if (trackForInventory) {
+				this->droppedColumns.push_back({ column, column->maxWriteBufferSizeToMaintain });
+			}
+			this->columns.erase(it);
+			this->retiring.push_back(column);
+			DEBUG_LOG("%p DBDescriptor::retireColumnFamily retired column \"%s\" (reclaim %s)\n",
+				this, column->name.c_str(), reclaimNow ? "now" : "deferred to last commit");
+		}
+	}
+	this->retiringCondition->notify_all();
+
+	if (reclaimNow || stillRetiring) {
+		return this->reclaimColumnFamily(column);
+	}
+	return rocksdb::Status::OK();
+}
+
+// RocksDB rejects dropping a column family that has already been dropped with
+// Status::InvalidArgument("Column family already dropped!"). A retry after a
+// drop that failed past its MANIFEST publish (RocksDB removes the family
+// before it persists OPTIONS) lands here, so it is the success outcome.
+static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
+	return status.IsInvalidArgument() && status.ToString().find("Column family already dropped") != std::string::npos;
+}
+
+rocksdb::Status DBDescriptor::reclaimColumnFamily(
+	const std::shared_ptr<ColumnFamilyDescriptor>& column,
+	bool* attempted,
+	bool duringClose
+) noexcept {
+	if (attempted) {
+		*attempted = false;
+	}
+	if (!column) {
+		return rocksdb::Status::OK();
+	}
+
+	// A retirer can observe the transient claim of an admission about to be
+	// refused; re-check after unclaiming so the generation is never left to
+	// nobody.
+	for (;;) {
+		if (!column->lifetime.claimReclaim()) {
+			return rocksdb::Status::OK();
+		}
+		if (column->lifetime.admitted.load() == 0) {
+			break;
+		}
+		column->lifetime.unclaimReclaim();
+		if (column->lifetime.admitted.load() != 0) {
+			return rocksdb::Status::OK();
+		}
+	}
+
+	// Participate in the in-flight accounting so `finishClose()` either waits
+	// for this drop or this drop sees the close and stands down; the handle is
+	// then destroyed by teardown, ahead of the database. `finishClose`'s own
+	// retry runs past both gates by construction.
+	if (!duringClose) {
+		++this->operationsInFlight;
+	}
+	auto releaseOperation = [this, duringClose]() {
+		if (!duringClose && --this->operationsInFlight == 0 && this->isClosing()) {
+			this->operationsInFlight.notify_all();
+		}
+	};
+	if ((!duringClose && this->isClosing()) || !this->db) {
+		column->lifetime.unclaimReclaim();
+		releaseOperation();
+		return rocksdb::Status::OK();
+	}
+
+	rocksdb::Status status;
+	bool dropped = false;
+	try {
+		{
+			std::lock_guard<std::mutex> lock(this->columnsMutex);
+			if (!column->column) {
+				column->lifetime.unclaimReclaim();
+				releaseOperation();
+				return rocksdb::Status::OK();
+			}
+		}
+
+		if (attempted) {
+			*attempted = true;
+		}
+		const int forced = testForceDropFailureMode();
+		if (forced == 1) {
+			status = rocksdb::Status::IOError("forced drop failure (test seam)");
+		} else {
+			status = this->db->DropColumnFamily(column->column.get());
+			if (forced == 2 && status.ok()) {
+				status = rocksdb::Status::IOError("forced post-drop failure (test seam)");
+			}
+		}
+		dropped = status.ok() || isColumnFamilyAlreadyDropped(status);
+
+		// Membership in `retiring` is the whole of "retry me".
+		if (dropped) {
+			std::lock_guard<std::mutex> lock(this->columnsMutex);
+			std::erase(this->retiring, column);
+		} else {
+			column->lifetime.unclaimReclaim();
+		}
+	} catch (...) {
+		column->lifetime.unclaimReclaim();
+		releaseOperation();
+		this->retiringCondition->notify_all();
+		return rocksdb::Status::IOError();
+	}
+	releaseOperation();
+	this->retiringCondition->notify_all();
+
+	if (dropped) {
+		DEBUG_LOG("%p DBDescriptor::reclaimColumnFamily dropped column \"%s\"\n", this, column->name.c_str());
+		return rocksdb::Status::OK();
+	}
+
+	try {
+		DEBUG_LOG("%p DBDescriptor::reclaimColumnFamily drop of column \"%s\" failed: %s\n",
+			this, column->name.c_str(), status.ToString().c_str());
+		if (GlobalEvents::hasListeners()) {
+			const std::string text = "Physical drop of column family \"" + column->name + "\" in database \"" +
+				this->path + "\" failed and will be retried on the next drop, open of that name, or close: " +
+				status.ToString();
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ text }));
+		}
+	} catch (...) {
+	}
+	return status;
+}
+
+void DBDescriptor::releaseCommitClaim(const std::shared_ptr<ColumnFamilyDescriptor>& column) noexcept {
+	if (column && column->lifetime.release()) {
+		this->reclaimColumnFamily(column);
+	}
+}
+
+void DBDescriptor::retryPendingReclaims(bool duringClose) noexcept {
+	std::vector<std::shared_ptr<ColumnFamilyDescriptor>> pending;
+	try {
+		std::lock_guard<std::mutex> lock(this->columnsMutex);
+		pending = this->retiring;
+	} catch (...) {
 		return;
 	}
-	std::weak_ptr<ColumnFamilyDescriptor> dropped = it->second;
-	const int64_t maxWriteBufferSizeToMaintain =
-		it->second ? it->second->maxWriteBufferSizeToMaintain : 0;
-	this->columns.erase(it);
-	if (trackForInventory && !dropped.expired()) {
-		this->droppedColumns.push_back({ std::move(dropped), maxWriteBufferSizeToMaintain });
+	for (const auto& column : pending) {
+		this->reclaimColumnFamily(column, nullptr, duringClose);
 	}
-	DEBUG_LOG("%p DBDescriptor::unregisterColumnFamily unregistered column \"%s\"\n",
-		this, columnName.c_str());
+}
+
+size_t DBDescriptor::pendingReclaimCount() {
+	std::lock_guard<std::mutex> lock(this->columnsMutex);
+	return this->retiring.size();
 }
 
 /**

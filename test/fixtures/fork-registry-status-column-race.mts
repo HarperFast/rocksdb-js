@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 
 // `registryStatus()` walks `DBDescriptor::columns`, and `databasesMutex` does NOT
-// cover that map: `unregisterColumnFamily()` (a `dropSync()`) erases from it under
+// cover that map: `retireColumnFamily()` (a `dropSync()`) erases from it under
 // `columnsMutex`, and `finishClose()` clears it, both from whichever thread drives
 // them. Without a snapshot under that mutex the walk reads a freed map node and
 // `napi_set_named_property()` strlen()s its key -- a SIGSEGV on the JS thread.

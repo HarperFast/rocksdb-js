@@ -796,19 +796,39 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED();
 }
 
-// RocksDB rejects dropping a column family that has already been dropped with
-// Status::InvalidArgument("Column family already dropped!"). When two handles
-// to the same shared column family race to drop it — e.g. Harper worker
-// threads that each hold their own handle and all react to a drop broadcast —
-// the second DropColumnFamily call hits this. The family is gone, which is the
-// intended result, so the drop is idempotent: callers treat this as success.
-static bool isColumnFamilyAlreadyDropped(const rocksdb::Status& status) {
-	return status.IsInvalidArgument() && status.ToString().find("Column family already dropped") != std::string::npos;
+static rocksdb::Status dropColumnFamily(DBHandle& dbHandle) noexcept {
+	try {
+		dbHandle.descriptor->retryPendingReclaims();
+		bool retiredNow = false;
+		rocksdb::Status status = dbHandle.descriptor->retireColumnFamily(dbHandle.columnDescriptor, retiredNow);
+		if (retiredNow && dbHandle.enableVerificationTable) {
+			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+			if (vt) vt->settleAllSlots();
+		}
+		return status;
+	} catch (const std::exception& e) {
+		// `Status::IOError(msg)` heap-copies the message, so building the
+		// status can itself throw `std::bad_alloc`. This function is
+		// `noexcept` (invariant 24: reclamation runs from commit completions
+		// and destructors), so that second failure has to fall through to the
+		// message-free status below rather than terminate the process.
+		try {
+			return rocksdb::Status::IOError(e.what());
+		} catch (...) {
+		}
+	} catch (...) {
+	}
+	return rocksdb::Status::IOError();
 }
 
 /**
  * Drops the RocksDB database column family asynchronously. If the column family
  * is the default, it will clear the database instead.
+ *
+ * The name is retired before this returns; the physical drop is deferred
+ * behind any commit already admitted on the family (see AGENTS.md
+ * invariant 24), so a rejection here reports a physical drop this call ran
+ * itself and that will be retried, never a family that is still reachable.
  *
  * @example
  * ```typescript
@@ -832,32 +852,17 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
 
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
-	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Drop failed");
+	rocksdb::Status status = dropColumnFamily(**dbHandle);
+	if (!status.ok()) {
+		napi_value error = nullptr;
+		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
+		if (error == nullptr) {
+			return nullptr;
+		}
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
 			env, global, reject, 1, &error, nullptr
 		), "Failed to call reject function");
 		return nullptr;
-	}
-
-	if (status.ok()) {
-		// We performed the drop; remove its by-name registry entry so a later
-		// open with the same name creates a fresh column family instead of
-		// reusing this dangling handle (which poisons write batches with
-		// "Invalid column family specified in write batch"). On the
-		// already-dropped path another handle already dropped this family and
-		// owns the unregister; the name may now point to a freshly-created
-		// family, so unregistering here would corrupt the registry.
-		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
-		// Dropping a column family bulk-deletes its data exactly like clear();
-		// sweep the VT so pre-drop versions can no longer verify FRESH (see
-		// DBHandle::clear). Only on the ok path — on already-dropped, the
-		// handle that performed the drop owns the sweep.
-		if ((*dbHandle)->enableVerificationTable) {
-			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-			if (vt) vt->settleAllSlots();
-		}
 	}
 
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
@@ -869,7 +874,8 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 
 /**
  * Drops the RocksDB database column family. If the column family is the
- * default, it will clear the database instead.
+ * default, it will clear the database instead. Same deferral contract as
+ * `drop()`.
  *
  * @example
  * ```typescript
@@ -887,31 +893,14 @@ napi_value Database::DropSync(napi_env env, napi_callback_info info) {
 	}
 
 	DEBUG_LOG("%p Database::DropSync dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
-	rocksdb::Status status = (*dbHandle)->descriptor->db->DropColumnFamily((*dbHandle)->getColumnFamilyHandle());
-	if (!status.ok() && !isColumnFamilyAlreadyDropped(status)) {
-		napi_value error;
+	rocksdb::Status status = dropColumnFamily(**dbHandle);
+	if (!status.ok()) {
+		napi_value error = nullptr;
 		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
-		::napi_throw(env, error);
-		return nullptr;
-	}
-
-	if (status.ok()) {
-		// We performed the drop; remove its by-name registry entry so a later
-		// open with the same name creates a fresh column family instead of
-		// reusing this dangling handle (which poisons write batches with
-		// "Invalid column family specified in write batch"). On the
-		// already-dropped path another handle already dropped this family and
-		// owns the unregister; the name may now point to a freshly-created
-		// family, so unregistering here would corrupt the registry.
-		(*dbHandle)->descriptor->unregisterColumnFamily((*dbHandle)->getColumnFamilyName());
-		// Dropping a column family bulk-deletes its data exactly like clear();
-		// sweep the VT so pre-drop versions can no longer verify FRESH (see
-		// DBHandle::clear). Only on the ok path — on already-dropped, the
-		// handle that performed the drop owns the sweep.
-		if ((*dbHandle)->enableVerificationTable) {
-			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-			if (vt) vt->settleAllSlots();
+		if (error != nullptr) {
+			::napi_throw(env, error);
 		}
+		return nullptr;
 	}
 
 	DEBUG_LOG("%p Database::DropSync dropped database\n", dbHandle->get());
@@ -1104,8 +1093,10 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[3], txnId)) {
+			return nullptr;
+		}
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
@@ -1414,8 +1405,10 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &txnIdType));
 
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[1], txnId)) {
+			return nullptr;
+		}
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
@@ -1865,8 +1858,10 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	// so the TOCTOU does not apply.
 	std::shared_ptr<TransactionHandle> txnHandle;
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[2], txnId)) {
+			return nullptr;
+		}
 		txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
 			std::string errorMsg = "Get sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
@@ -2567,8 +2562,10 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 	DEBUG_LOG_KEY_LN(valueSlice);
 
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[2], txnId)) {
+			return nullptr;
+		}
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
@@ -2606,20 +2603,27 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		writeOptions.ignore_missing_column_families = true;
-		status = (*dbHandle)->descriptor->db->Put(
-			writeOptions,
-			(*dbHandle)->getColumnFamilyHandle(),
-			keySlice,
-			valueSlice
-		);
+		if (!(*dbHandle)->columnDescriptor->droppable ||
+			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
+		) {
+			status = (*dbHandle)->descriptor->db->Put(
+				writeOptions,
+				(*dbHandle)->getColumnFamilyHandle(),
+				keySlice,
+				valueSlice
+			);
+		}
 		if (vt && vtSlot) {
 			vt->releaseWriteIntent(vtSlot, vtTracker);
 		}
 	}
 
 	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Put failed");
-		::napi_throw(env, error);
+		napi_value error = nullptr;
+		rocksdb_js::createRocksDBError(env, status, "Put failed", error);
+		if (error != nullptr) {
+			::napi_throw(env, error);
+		}
 		return nullptr;
 	}
 
@@ -2645,8 +2649,10 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 
 	if (txnIdType == napi_number) {
-		uint32_t txnId;
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[1], &txnId));
+		uint64_t txnId;
+		if (!rocksdb_js::readTransactionId(env, argv[1], txnId)) {
+			return nullptr;
+		}
 
 		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
 		if (!txnHandle) {
@@ -2675,19 +2681,26 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		rocksdb::WriteOptions writeOptions;
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		writeOptions.ignore_missing_column_families = true;
-		status = (*dbHandle)->descriptor->db->Delete(
-			writeOptions,
-			(*dbHandle)->getColumnFamilyHandle(),
-			keySlice
-		);
+		if (!(*dbHandle)->columnDescriptor->droppable ||
+			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
+		) {
+			status = (*dbHandle)->descriptor->db->Delete(
+				writeOptions,
+				(*dbHandle)->getColumnFamilyHandle(),
+				keySlice
+			);
+		}
 		if (vt && vtSlot) {
 			vt->releaseWriteIntent(vtSlot, vtTracker);
 		}
 	}
 
 	if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Remove failed");
-		::napi_throw(env, error);
+		napi_value error = nullptr;
+		rocksdb_js::createRocksDBError(env, status, "Remove failed", error);
+		if (error != nullptr) {
+			::napi_throw(env, error);
+		}
 		return nullptr;
 	}
 

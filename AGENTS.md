@@ -181,12 +181,44 @@ so slow commits cannot starve fs/dns/crypto/async-get work sharing the libuv
 pool. `ROCKSDB_JS_COMMIT_THREAD` selects the mode (`0`/`false` = legacy libuv
 path, default = single lane, `2` = experimental two-lane txnlog→commit
 pipeline). Completions are marshalled back to the originating env via per-env
-tsfns held on the descriptor under `commitMutex`; the commit thread calls them
-under that mutex and a dying env's tsfn is released from the module env-cleanup
-hook (`DBRegistry::ReleaseCommitCompletionsByEnv`) — the same env-teardown
-discipline as `EventEmitter::notify` above. A per-commit tsfn acquire is NOT
+tsfns in per-env `CommitCompletion` objects. `commitMutex` protects only the
+registry lookup/creation and removal. Each DBHandle caches its env's completion
+on the owning JS thread and resets that cache on reopen; cross-env close leaves
+it alone. An in-flight commit retains its completion
+object and calls/finishes under that object's mutex, so independent envs do not
+serialize on the descriptor for dispatch and accounting. A dying env's tsfn is
+released under the same completion mutex from the module env-cleanup hook
+(`DBRegistry::ReleaseCommitCompletionsByEnv`) — the same env-teardown discipline
+as `EventEmitter::notify` above. Registry removal holds `commitMutex` through
+completion release (registry → completion is the only nested lock order): removing
+an entry before releasing its TSFN lets concurrent env cleanup miss that entry and
+return before the TSFN is safe. A retained completion object does not pin the Node
+env; its terminal closed flag prevents a delayed registration or dispatch from
+reviving the released TSFN. A per-commit tsfn acquire is NOT
 sufficient (env teardown does not honor tsfn acquire counts); see
 `test/commit-teardown.test.ts` and the `ROCKSDB_JS_COMMIT_DELAY_MS` test seam.
+Every path registers its native execute in the descriptor's
+`operationsInFlight` count before queueing and rechecks `isClosing()` afterward
+(publish-then-check, so teardown either waits for the operation or the commit
+observes the close and rejects). In the lane modes this must precede the
+`DBHandle` completion-cache access: foreign shutdown can reset the transaction's
+`dbHandle` before admission. The local descriptor pin is declared before the pending
+commit state so setup-error cleanup releases its operation count while the descriptor
+is still alive. The operation releases only after the transaction's
+async-work registration is cleared — legacy from its libuv execute thread, the
+lane modes at the end of the commit stage. This makes direct shutdown wait for
+the native commit rather than destroy RocksDB after the transaction handle's
+bounded drain expires. The recheck is not redundant with
+`commitCompletionsClosed`, which `finishClose()` sets only after it has passed
+the drain gate and stopped both lanes; a commit that registered its completion
+just before that would otherwise reach `CommitWorker::enqueue` on a stopped
+lane, which runs the task inline. The legacy commit state also pins
+the descriptor through its JS completion and retries `PurgeIfUnreferenced()` when
+that pin was why a last-handle `close()` deferred teardown. Direct shutdown can
+therefore wait without a bound for a stalled commit; releasing the counter from
+the thread that ran the commit, rather than from its JS completion, keeps that
+wait deadlock-free. The unified admission/drain contract tracked by #784 remains the
+larger cleanup; legacy mode stays as the documented operational escape hatch.
 
 ## Environment Variables
 
@@ -199,10 +231,12 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   `2` = experimental two-lane pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
-- `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` / `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only delays before
-  a transaction commits or its cold-cache async get reads. Both are snapshotted in
-  `initializeTestSeams()` before native worker execution, so they must be set in the environment
-  that starts the process (not through an in-process `process.env` write).
+- `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` / `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only delays
+  immediately before a native transaction commit (while its async work and descriptor operation
+  remain registered, widening close-vs-execute race windows) and before a transaction's
+  cold-cache async get reads (exercising orphan cleanup past the async-work wait timeout). Both
+  are snapshotted in `initializeTestSeams()` before native worker execution, so they must be set
+  in the environment that starts the process (not through an in-process `process.env` write).
 - `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
   coordinated-retry commit parked on a conflicting holder's VT lock resolves
   RETRY_NOW unconditionally, in case the holder never releases (see
@@ -253,7 +287,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
 - `ROCKSDB_JS_CLOSE_FLUSH_FAILURE` - Test-only: number of close-time flushes to fail with an
   injected `IOError` (a **count**, not a flag; `1` is one failure). More than one is what leaves a
   descriptor still quarantined at process exit, since the exit-time `DBRegistry::Shutdown()`
-  consumes a failure of its own on the retry — see invariant 22
+  consumes a failure of its own on the retry — see invariant 26
 - `ROCKSDB_JS_CLOSE_FAILURE` / `ROCKSDB_JS_DESTROY_FAILURE` - Test-only: inject a one-shot native
   close failure, or fail every physical `DestroyDB` for the life of the process. Both are fault
   **flags**, so both are snapshotted in `initializeTestSeams()` rather than re-read: `::getenv`
@@ -274,6 +308,14 @@ sufficient (env teardown does not honor tsfn acquire counts); see
   iterator construction and transaction close. Both are snapshotted in `initializeTestSeams()`, so
   they must be set in the environment that starts the process rather than through an in-process
   `process.env` write.
+- `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` - How long `open()` of a column-family name whose
+  previous generation is still awaiting its physical drop waits before throwing
+  (default `30000`). The open polls in 20 ms slices; the bound covers the full
+  interval from commit admission through transaction-log work, commit-lane queuing,
+  the RocksDB write, and reclamation. Read once per process via a function-local `static` — same
+  `::getenv`-vs-`process.env` caveat as `ROCKSDB_JS_PARK_TIMEOUT_MS` — so it must be
+  set in the environment a process is started with. Malformed, non-positive, or above
+  24h falls back to the default; there is no opt-out (see invariant 24)
 
 ## Test Structure
 
@@ -349,7 +391,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    **The physical extent tracks `size` on POSIX only.** There the fd is `O_APPEND`,
    so writes go to physical EOF, not to `size`, and leaving orphaned bytes makes every later
    append land after a partial entry: a mid-file framing break that `recoverTail()` deliberately
-   will not repair, so every entry after it is unreachable (HarperFast/rocksdb-js#748). On
+   will not repair and every later read must resync past (invariant 11; HarperFast/rocksdb-js#748). On
    Windows `size` is the logical end of entries only — an active segment is pre-extended to
    `maxFileSize` with `SetEndOfFile` so it can be mapped (`getMemoryMapLocked`), its physical
    size stays `maxFileSize` for its whole life with a zero-padded tail, and end-of-entries is
@@ -435,7 +477,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    closing would permanently kill manual compaction for every other handle sharing the
    process-global descriptor. That is also what makes it safe for `finishClose()` to arm handles
    this thread does not own: the per-handle token _is_ cleared, by `DBRegistry::OpenDB()`, and only
-   after the new descriptor is adopted (see invariant 23). Neither token is ever aliased onto
+   after the new descriptor is adopted (see invariant 27). Neither token is ever aliased onto
    `closing` itself: RocksDB writes through the pointer it is given
    (`DisableManualCompaction()` sets the caller's atomic), and `closing` means the registry has an
    owner committed to running `finishClose()`, which RocksDB must not be able to publish.
@@ -464,7 +506,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
    **`databasesMutex` covers the registry map, not a descriptor's own maps.** `registryStatus()`
    walks every entry under it and then reaches into each descriptor, but `columns` is guarded by
    `columnsMutex` and `locks` by `locksMutex` — both mutated from whichever thread drives a
-   `dropSync()` (`unregisterColumnFamily`) or a teardown (`finishClose()`'s `columns.clear()`,
+   `dropSync()` (`retireColumnFamily`) or a teardown (`finishClose()`'s `columns.clear()`,
    `lockReleaseByOwner`), which for a cross-env `destroy()`/`shutdown()` is not the thread
    reporting. Walking `columns` unguarded is a use-after-free, not a torn count: the map node is
    freed while the loop still holds its key, and `napi_set_named_property()` `strlen()`s that key
@@ -623,12 +665,22 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     entries appended _after_ it; `recoverTail()` deliberately leaves such a file alone rather than
     discard them, and rotated files are never rescanned at all. `query()` therefore reports the
     break as a `CorruptFrameError` carrying `resyncPosition` (where framing resumes, per the same
-    heuristic as `validFramingResumes()`) and **leaves iteration positioned there**, so a caller
+    heuristic as `findFramingResumeOffset()`) and **leaves iteration positioned there**, so a caller
     that calls `next()` again recovers the entries past it. Treating the throw as terminal amputates
     every later entry in the file permanently — each drain restarts from the same resume cursor and
     re-throws at the same offset, which is how HarperFast/harper#2016 lost 2.2 days of acknowledged
     writes and #2063 starved a replication stream for 11 days. Keep `RESYNC_MIN_FRAMES` in
     `transaction-log-reader.ts` and `transaction_log_recovery.cpp` in step.
+
+    The engine owes the same discipline, or the reader's resync is moot. Every native walk of the
+    framing — the open-time recovery scan and `findPositionByTimestamp`'s index walk — resumes at
+    `findFramingResumeOffset()` instead of stopping at the break, so the committed-read watermark
+    (`lastCompleteTransactionEnd`, which may therefore exceed `validEnd` for `MidFileCorruption`)
+    and the timestamp index both cover the entries past it. Stopping at the break clamped every
+    committed read to the entries _before_ it (39 of 60 rows reached the replica) and froze the index
+    so every seek at or after the break reported "past this file". Striding through a broken frame's
+    declared length is never an in-flight append: `size` is bumped only after the bytes land, so a
+    nonzero header below `size` is a complete entry and a length overrunning it is a break.
 
     The resync scan must be bounded by the **written extent** (`getLogFileSize`, which returns the
     append-owned `TransactionLogFile::size` — see invariant 5 — not the physical or mapped size).
@@ -636,7 +688,28 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
     if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
     Resolve it only on a break — `getLogFileSize` crosses into native and takes the store mutex, so
-    a per-frame call would tax every healthy read.
+    a per-frame call would tax every healthy read. The native walks run before `size` has been
+    corrected on a pre-extended (Windows) segment, so `findFramingResumeOffset()` also accepts a
+    chain landing exactly on the **end of the nonzero bytes** — a single offset, as conclusive as
+    EOF — otherwise a run shorter than `RESYNC_MIN_FRAMES` in front of the padding classifies as a
+    torn tail and recovery truncates its committed entries.
+
+    A resync that finds nothing is only conclusive over the bytes it could actually read. The index
+    walk searches the mapped region (`min(size, mapSize)`), which is short of the written extent
+    whenever one batch exceeded `transactionLogMaxSize` or the limit was lowered, so an empty result
+    there means "not in this map", not "not in this file". It must then stay at the break and report
+    an unindexed tail — the same treatment the walk already gives a header the map does not cover —
+    and only park `lastIndexedPosition` at the written extent when the whole extent was searchable
+    and the break is therefore a torn tail. A short map also disqualifies the "chain lands on the
+    written extent" signal (`endIsWrittenExtent`): the region ends on an arbitrary cut, so a chain
+    landing there proves nothing, and accepting one lets a garbage chain in the corrupt gap pass as
+    the resume — whose bogus timestamp then caps this running-maxima index and hides every real
+    entry behind it. The frame-run signal is the only one left. Skipping to the extent is permanent: a later, larger map
+    resumes from `lastIndexedPosition` and never looks below it, so those entries stay unindexed and
+    every seek into them reports "past this file". Staying at the break costs nothing per seek: the
+    extent that failed is remembered (`resyncSearchedExtent`), since only a larger map can change
+    the answer and the byte-wise search spans the whole corrupt gap under the store's
+    `dataSetsMutex`.
 
 12. **Coordinated retry parks on a lock, bounded by a descriptor-owned timeout**: a `coordinatedRetry`
     commit that loses a conflict (`IsBusy`) parks instead of rejecting immediately —
@@ -1063,7 +1136,175 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
     and the runner's own timeout cannot fire (#781 item 2).
 
-23. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
+23. **A queued unlock callback belongs to its env and is released by that env's cleanup hook**:
+    `tryLock(key, callback)` on a held key queues the callback as a threadsafe function of the
+    caller's env on the shared `LockHandle` (`DBDescriptor::lockEnqueueCallback`), and only the
+    holder's `unlock()` (`lockReleaseByKey`) or `db.close()` (`lockReleaseByOwner`) ever calls it. A
+    `worker_threads` env that is `terminate()`d never closes its handles in order, so its callback
+    stayed queued on a lock another env held; that env's later `unlock()` then called a tsfn Node had
+    already freed — Node 24 returns `napi_closing`, Node 22 aborts the process (rocksdb-js#848;
+    harper's derived-index runner kept exactly such a waiter on every non-owner worker, and Harper's
+    thread manager terminates workers on restart). Every `LockCallback` now records its `napi_env`,
+    and `DBRegistry::ReleaseLockCallbacksByEnv` → `DBDescriptor::releaseLockCallbacksByEnv`, wired
+    into the module env-cleanup hook beside `ReleaseParkTimeoutsByEnv`, releases (never calls) the
+    dying env's callbacks. The release paths hold `locksMutex` **across** their tsfn calls for the
+    same reason `EventEmitter::notify` holds its mutex (harper#1370): the cleanup hook takes that
+    mutex too, so it either removes a callback before the call or waits until the call has returned,
+    and Node cannot free the tsfn under `napi_call_threadsafe_function`. Calling a tsfn only enqueues
+    onto its env's loop, so holding the mutex across it cannot re-enter. `test/lock-teardown-abort.test.ts`
+    is the child-process repro; it also proves a live waiter is still woken.
+24. **A column family is dropped logically at once and physically only when no admitted commit
+    names it**: `Database::Drop`/`DropSync` used to call `DropColumnFamily` immediately, and a
+    transaction commit already inside RocksDB naming that family — past optimistic validation
+    under the default `kValidateParallel`, or any pessimistic commit — failed in the memtable
+    inserter with `Invalid column family specified in write batch`, which `HandleMemTableInsertFailure`
+    latches as a fatal background error on the whole database (#806, #726; harper#1381). The rule
+    now (`core/column_family_lifetime.h`, GoogleTest-covered): a commit **claims** every family
+    its batch names once, at admission in `executeLogWork`/`CommitSync` **before** the
+    transaction-log write (`ColumnFamilyCommitClaim`, RAII so a log-write failure, N-API/queue
+    failure, cancellation or teardown releases it), and releases right after `txn->Commit()`
+    returns; a drop **retires** the generation under `columnsMutex` (`DBDescriptor::retireColumnFamily`:
+    identity-checked erase from `columns`, `retired = true`, entry in `retiring`) and runs the
+    physical drop itself only when `admitted == 0`, otherwise the last releasing commit runs it
+    (`reclaimColumnFamily`). In the deferred case that last release runs `DropColumnFamily` inline:
+    an async commit lane pays the MANIFEST write/fsync before dispatching its completion and commits
+    queued behind it wait too, while `commitSync()` pays it on its calling JS thread. Moving
+    reclamation elsewhere would need a new lifetime owner. An admitted commit's transaction-log
+    entries are published even though the subsequent physical drop discards its data; downstream
+    consumers must order the schema drop after those entries.
+    Both sides are seq_cst two-phase (`retired` store then `admitted`
+    load, versus `admitted` increment then `retired` load), so at least one side observes the other,
+    and `claimReclaim()` makes exactly one of them run `DropColumnFamily` — after re-checking
+    `admitted == 0` under the claim (a retirer can observe the transient claim of an admission about
+    to be refused; it unclaims, re-reads, and either retries or leaves the drop to that admission's
+    release, so the generation is never left to nobody). Staging only **records** the families a
+    transaction touched (`TransactionHandle::touchedColumnFamilies`: **weak** references plus a raw
+    pointer for comparison, inline for 2, most-recent slot compared first, the never-droppable
+    default family skipped, cleared by `resetTransaction()` because the retry callback may touch a
+    different set) and refuses every write to a retired family; it holds no claim. Weak, not strong:
+    a transaction can outlive its database (an aborted handle JS still references after `close()`),
+    and a strong reference there destroyed the RocksDB column-family handle after `finishClose()`
+    had destroyed the database (SIGSEGV in `test/txn-close-commit-uaf.test.ts`). The commit locks
+    them only for its claim, with the overflow storage reserved before the first claim is published
+    so recording one cannot fail after its count was taken; a lock that fails is a
+    dropped-and-reclaimed generation and refuses the commit like a retired one. That is deliberate:
+    a staged-but-idle, abandoned, or drain-timeout-leaked (#784)
+    transaction must not be able to block reclamation or a same-name recreate, and Harper calls
+    `dropSync()` from a synchronous schema section with transactions staged on that same thread.
+
+    **Only write batches need this.** Verified on the pinned build: after a physical drop, a
+    retained handle still serves `get`, iteration and counts for every key (RocksDB's own handle
+    refcount keeps the dropped `ColumnFamilyData` readable until the handle is destroyed), a
+    non-transactional write is discarded by `ignore_missing_column_families` (#725), and a
+    transaction staged after the drop fails at validation. The only hazard is a batch naming the
+    id entering the write thread after `SetDropped()` removed the id from the column-family set.
+    So handles, iterators, async reads and user shared buffers do not pin the generation — an
+    "every owner pins" design (drop in `~ColumnFamilyDescriptor`) was rejected because RocksDB
+    cannot hold two families of one name, so it blocks `open()` of the dropped name until every
+    worker's JS handle closes or is collected, breaking immediate same-name recreate and making
+    correctness depend on GC.
+
+    A staging call reserves its touched-set entry before calling RocksDB so allocation can never
+    leave an untracked write in the batch, but removes that new entry again when `Put`/`Delete`
+    fails before accepting the mutation. **Both sides of a dropped-family refusal — staging and a
+    terminal admission — mark the transaction's writes abandoned and release its VT intents**, so a
+    caller retaining the transaction for reads cannot leave coordinated-retry writers parked, and
+    one that catches the staging error cannot then commit the families it wrote before it. They must
+    not diverge: which side catches a write naming a dropped family is decided by when the drop
+    landed relative to that write, a race the caller cannot observe, so a per-operation refusal on
+    one side and a whole-transaction refusal on the other would make the contract depend on timing.
+    A failure from `putSync`/`removeSync` is fatal to the transaction when the generation is retired
+    by the time RocksDB returns, even if the immediate failure (such as a pessimistic lock timeout)
+    was not itself caused by the drop. This deliberately keeps the contract independent of an
+    unobservable race. It abandons before anything on that path can throw so a failure still fails
+    closed (the commit is refused as `ERR_WRITES_ABANDONED` instead). `writesAbandoned`
+    gates writes and commits only, never reads: an abandoned transaction keeps serving its own
+    staged writes, so a caller that catches either refusal rather than letting it propagate must not
+    read a value back through that transaction and carry it forward. That is deliberate — reads stay
+    valid so a caller can inspect state before aborting — but unlike `abandonWrites()` the state is
+    now reachable as a side effect of a failed write, so it is the caller-visible half worth knowing. Every explicit log-stage claim release passes the live
+    descriptor — including synchronous log-write failure — so the last release retries reclamation
+    immediately rather than waiting for an unrelated drop/open/close.
+
+    Caller-visible contract: the name is gone from `db.columns` and reopenable as a fresh family
+    before `drop()` returns; a transaction that stages a write to a retired family, or commits one
+    it staged before the retire, is refused whole with `ERR_COLUMN_FAMILY_DROPPED`
+    (`Column family "x" was dropped`). "Refused whole" holds even for a caller that catches the
+    staging error: the transaction's writes are abandoned at that point, so its later `commit()`
+    throws `ERR_WRITES_ABANDONED` rather than applying the families it wrote first. On the first
+    attempt that decision precedes every log byte;
+    after an `IsBusy`/`TryAgain` retry, the original attempt's write-once log position survives, so a
+    later refusal is correctly reported as `ERR_TRANSACTION_ABANDONED`. A commit admitted before
+    the retire lands in the dying generation, linearized before the drop; reads through retained
+    handles continue; non-transactional writes keep #725's silent discard. `DBRegistry::OpenDB`
+    finds a `retiring` entry for the name under `columnsMutex` (so a drop cannot slip between the
+    decision and the create), then simply asks `reclaimColumnFamily` to run the physical drop, under
+    `databasesMutex` like the create itself — deadlock-free because a claim is only ever held by a
+    commit inside RocksDB on a lane, a libuv thread, or another thread's `commitSync`, never parked
+    on the opener's event loop. This deliberately serializes that rare retry's MANIFEST write/fsync
+    with process-wide open/close/destroy; unlocking would require a strong descriptor pin whose
+    transient ref can make a concurrent last-handle close skip its only registry purge. `attempted`
+    is the whole decision: true and failed throws, true and
+    OK creates the fresh family, false means a commit still holds the generation or another thread
+    is already dropping it, so the open waits in 20 ms slices bounded by
+    `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` (default 30 s). **Do not reintroduce a status enum on the
+    `retiring` entry.** An earlier revision tracked `Pending`/`Reclaiming`/`Failed` there, which
+    duplicated `lifetime.admitted`/`reclaimClaimed` in a second place that had to be kept in step
+    under a different lock; asking the one function that already reads those atomics is both shorter
+    and impossible to desynchronize.
+
+    Reclamation is retryable and never silently lost: membership in `retiring` IS "retry me", so a
+    failed `DropColumnFamily` only has to release its reclaim claim and leave the entry in place
+    (the whole path is `noexcept` because it runs from commit completions and destructors, and the
+    claim is released before any diagnostic allocation). It reports through the global `log.warn`
+    event and `columnFamily.pendingReclaims`,
+    and is retried on the next drop on the database, the next `open()` of that name (retried inline
+    with `columnsMutex` released; a second failure throws), and `finishClose()`, which then destroys
+    the RocksDB handle of every generation still in `retiring` ahead of the database. Legacy libuv
+    commits participate in the descriptor's `operationsInFlight` accounting, so close cannot reach
+    this retry until their commit claims and transaction async-work registrations have been
+    released; destroying any remaining handles before the database is still the final defense.
+    `reclaimColumnFamily` also participates in that accounting and stands down once the descriptor
+    is closing, skipping a generation whose handle is gone rather than dropping into a destroyed
+    database. Retry is idempotent
+    because RocksDB removes the family (`LogAndApply`, `SetDropped`) before it persists OPTIONS, so a
+    drop that failed past the MANIFEST publish retries as "Column family already dropped", which is
+    success. The retired name is never reinserted. A second handle to the same retired generation
+    retries a failed drop on its own `drop()`; a stale handle to an older generation is a no-op that
+    can never touch a recreated family (the identity check). `reclaimColumnFamily` is never called
+    under `columnsMutex`, `txnsMutex` or the VT `writerMutex_`; every caller already holds a strong
+    `DBDescriptor` (the commit lane's task capture, the JS handle, `finishClose` itself), so the
+    column-family descriptor carries no back-reference and the ownership graph stays acyclic.
+
+    **Not guaranteed across a restart**: a process that exits while a physical drop is pending
+    (only while a commit admitted before the drop is still inside RocksDB) or after one failed leaves
+    the family on disk under its name, and the next open lists it as live; a backup or checkpoint
+    taken inside that window copies it. The immediate drop had the same exposure after a failure and
+    none during the window, which did not exist. A durable tombstone belongs to the caller; an
+    integration must retain or recover it until physical completion before claiming crash durability.
+    This subsumes the
+    commit-time admission gate of PR #843: that gate's drop waited for admitted commits and closed
+    admission around `txn->Commit()` only; here the same admission is taken once, earlier, and the
+    wait is replaced by deferral to the last releaser, so no immediate-drop path remains for the gate
+    to protect.
+
+25. **Two process-wide clocks, two contracts — never route one through the other**:
+    `getMonotonicTimestamp()` (`core/platform.cpp`) is a wall-clock ratchet: Unix-epoch
+    milliseconds made strictly increasing with `nextafter` on a tie or a backward host-clock step.
+    It is the transaction timestamp and transaction-log batch key, so it must stay in the epoch
+    domain and comparable across processes and restarts (docs/transaction-timestamp-integrity-design.md,
+    #825). The price is that after a backward step it advances one ulp per call until the wall
+    catches up, so a difference between two calls understates real elapsed time and a deadline
+    computed from it stretches. `steadyClockNow()` (module-level export, `getSteadyClockNow()` in
+    `core/platform.cpp`, docs/steady-clock-design.md) is `std::chrono::steady_clock` as fractional
+    milliseconds from an unspecified per-process origin: one domain across every thread and env in the
+    process (Bun gives each worker its own `performance.timeOrigin`/`hrtime` origin, which is why the
+    native layer owns this), non-decreasing but **not unique**, unaffected by wall steps, and not
+    meaningful across processes or restarts. Neither substitutes for the other: making the ratchet
+    steady would break the durable epoch contract, and adding a ratchet to the steady clock would
+    distort elapsed measurement under contention. Whether host suspend counts is platform-defined
+    (Linux excludes it; current macOS and Windows implementations include it).
+26. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
     namespace-scope `static`, so anything still in `instance->databases` when the hook returns is
     destroyed from an `atexit` handler. Closing a RocksDB database there runs
     `DBImpl::CancelAllBackgroundWork()` → `PeriodicTaskScheduler::Unregister()` **after** RocksDB's
@@ -1081,7 +1322,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
     which is why its fixtures now tear down with `destroy()` rather than `close()`).
 
-24. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
+27. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
     lifecycle waits**:
     `DBHandle::close()` publishes `cancelled` (and, per invariant 6, the per-handle compaction
     token), and every async admission refuses while either stands — so `DBHandle::open()` has to
@@ -1097,7 +1338,7 @@ sufficient (env teardown does not honor tsfn acquire counts); see
     release their descriptor before the base destructor unregisters async work, preserving that
     order.
 
-25. **Handle adoption and descriptor attachment are one registry-locked publication**:
+28. **Handle adoption and descriptor attachment are one registry-locked publication**:
     `DBRegistry::OpenDB()` selects the descriptor and column family, clears stale close cancellation,
     publishes every descriptor-backed handle field, and inserts the handle into
     `DBDescriptor::closables` before releasing `databasesMutex`. The owner-thread-only `path` is set

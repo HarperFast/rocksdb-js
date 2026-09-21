@@ -604,8 +604,8 @@ console.log(fs.existsSync(db.path)); // false
 
 ### `db.drop(): Promise<void>`
 
-Removes all entries in the database. If the database was opened with a `name`, the database will be
-deleted on close.
+Drops the column family the database was opened with (`name`). For the default column family this
+clears all entries instead.
 
 ```typescript
 const db = RocksDatabase.open('path/to/db', { name: 'users' });
@@ -613,9 +613,56 @@ await db.drop();
 db.close();
 ```
 
+#### Dropping column families
+
+A drop retires the column family **logically** before it returns: the name is gone from
+`db.columns`, a later `open()` with the same name creates a fresh, empty column family, and any
+transaction that then stages a write to a handle of the dropped family, or commits one it staged
+earlier, is refused whole with `ERR_COLUMN_FAMILY_DROPPED` (`Column family "users" was dropped`).
+That terminal refusal releases the transaction's verification-table intents and bars further
+writes or commit attempts; retained reads continue until the caller aborts the transaction, and
+they still serve that transaction's own staged writes — values no commit will ever produce. A
+caller that catches the refusal instead of letting it propagate must not read a value back through
+the transaction and carry it forward.
+If a staging call fails while the generation is being retired, retirement takes precedence and the
+transaction is refused whole even when the immediate RocksDB failure was a pessimistic lock timeout.
+Handles other threads still hold keep **reading** the dropped data until they close; a
+non-transactional `putSync`/`removeSync` through such a handle is discarded.
+
+The **physical** RocksDB drop is deferred behind commits already admitted when the drop lands: a
+commit claims every column family its batch names before it writes its transaction-log batch and
+releases them after RocksDB has applied it, and the physical drop runs from whichever
+side releases last (or, for a commit a mid-flight `close()` tore out of its pipeline, from the next
+drop, open of that name, or close on the database). With no such commit (the common case) `drop()`/`dropSync()` perform the
+physical drop before returning, exactly as before. This is what keeps a drop racing another
+thread's commit from latching RocksDB's fatal `Invalid column family specified in write batch`
+error on the whole database.
+
+Consequences to know about:
+
+- A commit admitted before the drop completes successfully into the retiring generation, then the
+  physical drop removes that generation. Its caller sees a successful commit, but those writes are
+  intentionally discarded with the rest of the dropped column family; a same-name reopen creates
+  a fresh, empty generation. If the transaction writes to a transaction log, its entries are still
+  published; consumers must order the schema drop after those entries.
+- `open()` of a name whose previous generation is still held by an admitted commit waits for the
+  full admission-to-reclamation interval (bounded by `ROCKSDB_JS_CF_RECLAIM_WAIT_MS`, default
+  `30000`) before creating the fresh column family; if the previous generation's physical drop
+  failed, the open retries it once and throws with that error if it fails again.
+- A physical drop that fails (an I/O error writing the MANIFEST) keeps the name retired, is
+  retried on the next drop on the database, the next `open()` of that name, or close, and is
+  reported through the global `log.warn` event and the `columnFamily.pendingReclaims` stat. When
+  the failing drop was the one `drop()` itself ran, the call rejects with that error as well.
+
+What is **not** guaranteed: a process that exits while a physical drop is still pending, or
+after one failed, leaves the column family on disk under its name, and the next open of the
+database opens it as a live column family. A backup or checkpoint taken inside that window copies
+it. Callers that need a drop to survive a crash record their own durable tombstone before
+acknowledging it.
+
 ### `db.dropSync(): void`
 
-Synchronous version of `db.drop()`.
+Synchronous version of `db.drop()`, with the same deferral contract.
 
 ```typescript
 const db = RocksDatabase.open('path/to/db');
@@ -823,6 +870,12 @@ a decimal number. This process-wide clock also supplies each transaction's initi
 const ts = db.getMonotonicTimestamp();
 console.log(ts); // 1764307857213.739
 ```
+
+It is a wall-clock (Unix epoch) value made strictly increasing: on a tie or a backward step of the
+host clock it advances by one floating-point ulp per call until the wall clock catches up. That
+keeps transaction timestamps ordered and durable, but it does not measure elapsed time — after a
+backward step, differences between two calls understate real time. Use
+[`steadyClockNow()`](#steadyclocknow-number) for elapsed durations and deadlines.
 
 ### `db.getOldestSnapshotTimestamp(): number`
 
@@ -1181,8 +1234,8 @@ uses this timestamp as the batch key; producers may also encode it into their ow
 
 Type: `number`
 
-The transaction ID represented as a 32-bit unsigned integer. Transaction IDs are unique to the
-RocksDB database path, regardless the database name/column family.
+The transaction ID, a positive integer no greater than `Number.MAX_SAFE_INTEGER`. Transaction IDs
+are unique to the RocksDB database path, regardless the database name/column family.
 
 #### `txn.setTimestamp(ts?: number): void`
 
@@ -2232,6 +2285,51 @@ Options:
 
 Validating a store that is being actively appended to can spuriously report a torn tail for the
 current log file — the tail of an in-flight append is indistinguishable from a crash artifact.
+
+### `steadyClockNow(): number`
+
+Reads the process-wide steady clock. No database handle is needed.
+
+```typescript
+import { steadyClockNow } from '@harperfast/rocksdb-js';
+
+const start = steadyClockNow();
+// ... work, possibly on other worker threads ...
+const elapsedMs = steadyClockNow() - start;
+```
+
+Contract:
+
+- **Units / type**: milliseconds with a fractional part, as a `number`. Read from
+  `std::chrono::steady_clock` (`CLOCK_MONOTONIC` on Linux, `CLOCK_MONOTONIC_RAW` on macOS,
+  `QueryPerformanceCounter` on Windows).
+- **Origin and lifetime**: the origin is unspecified and fixed for the life of the process. Every
+  sample taken in the process is in one domain — the main thread and every `worker_threads` worker,
+  including workers started or restarted at any later time, under Node, Bun and Deno alike. Samples
+  are not meaningful across processes or restarts, and are unrelated to the Unix epoch: never compare
+  them with `Date.now()`, `db.getMonotonicTimestamp()` or transaction timestamps.
+- **Monotonic, not unique**: a sample taken after another (in real time, on any thread) is `>=` it.
+  Two samples can be equal — in the same clock tick, or when two distinct readings round to the same
+  double — so treat `==` as "not later" and pair the sample with a sequence number if strict ordering
+  is required. On Windows, QPC samples from different threads within ±1 native counter tick also
+  have ambiguous ordering; do not use near-equal clock samples alone to prove causality. No
+  wall-clock ratchet is applied.
+- **Precision**: the double's spacing grows with distance from the origin: about 2 ns at 100 days,
+  61 ns at 10 years, 0.49 µs at 100 years. Conversion error is below 0.51 µs per sample through
+  100 years from the native origin. This is representation precision, not clock accuracy. Rounding is
+  monotone, so distinct readings can only collapse to equality, never invert. The clock's own
+  resolution is platform-defined (the C++ duration period is 1 ns on these platforms; actual clock
+  resolution can be coarser). The native signed 64-bit nanosecond range is about 292 years in either
+  direction from its origin; conversion to `number` does not narrow it.
+- **Independent of the wall clock**: `settimeofday`/NTP steps in either direction do not move it. NTP
+  frequency slew is platform-defined (`CLOCK_MONOTONIC` is slewed; `CLOCK_MONOTONIC_RAW` and
+  `QueryPerformanceCounter` are not).
+- **Suspend**: whether time the host spends suspended counts is platform-defined — `CLOCK_MONOTONIC`
+  excludes it on Linux; current macOS `CLOCK_MONOTONIC_RAW` and Windows QPC include it. Do not
+  assume runtime timers (`setTimeout`) use the same suspend policy. Portable suspend-inclusive
+  deadlines are not provided by this API.
+- **Cost**: one clock read and a double conversion; no lock, no native allocation, no wall-clock read,
+  no database or log I/O, no per-worker calibration. Safe from any thread. The runtime may allocate a boxed JS number.
 
 ### `currentThreadId(): number`
 

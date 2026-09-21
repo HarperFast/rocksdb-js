@@ -55,11 +55,11 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[1], name, "Transaction log store name is required");
 
 	// optional 3rd arg: transactionId (set when created via txn.useLog())
-	uint32_t transactionId = 0;
+	uint64_t transactionId = 0;
 	napi_valuetype thirdArgType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[2], &thirdArgType));
-	if (thirdArgType == napi_number) {
-		NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[2], &transactionId));
+	if (thirdArgType == napi_number && !rocksdb_js::readTransactionId(env, argv[2], transactionId)) {
+		return nullptr;
 	}
 
 	// Constructing the handle resolves the store, which throws a DBException —
@@ -144,20 +144,15 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	uint32_t transactionId = (*txnLogHandle)->transactionId;
+	uint64_t transactionId = (*txnLogHandle)->transactionId;
 	napi_valuetype type;
 	NAPI_STATUS_THROWS_ERROR(::napi_typeof(env, argv[1], &type), "Failed to get log entry transaction id type");
 	if (type != napi_undefined) {
-		if (type == napi_number) {
-			int32_t signedTransactionId;
-			NAPI_STATUS_THROWS_ERROR(::napi_get_value_int32(env, argv[1], &signedTransactionId), "Failed to get log entry transaction id");
-			if (signedTransactionId < 0) {
-				::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
-				return nullptr;
-			}
-			transactionId = static_cast<uint32_t>(signedTransactionId);
-		} else {
+		if (type != napi_number) {
 			::napi_throw_type_error(env, nullptr, "Invalid argument, transaction id must be a non-negative integer");
+			return nullptr;
+		}
+		if (!rocksdb_js::readTransactionId(env, argv[1], transactionId)) {
 			return nullptr;
 		}
 	} else if (transactionId == 0) {

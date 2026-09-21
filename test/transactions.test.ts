@@ -16,6 +16,36 @@ const testOptions = [
 
 for (const { name, options, txnOptions } of testOptions) {
 	describe(`transaction() (${name})`, () => {
+		it(`${name} async commits share completion accounting across handles in one environment`, () =>
+			dbRunner({ dbOptions: [options, options] }, async ({ db }, { db: second }) => {
+				for (let round = 0; round < 3; round++) {
+					await Promise.all(
+						Array.from({ length: 16 }, (_, index) =>
+							(index % 2 ? db : second).transaction(
+								(txn) => txn.putSync(`shared-${index}`, round),
+								txnOptions
+							)
+						)
+					);
+					for (let index = 0; index < 16; index++) {
+						expect(db.getSync(`shared-${index}`)).toBe(round);
+					}
+				}
+				second.close();
+				await db.transaction((txn) => txn.putSync('survivor', true), txnOptions);
+				expect(db.getSync('survivor')).toBe(true);
+			}));
+
+		it(`${name} async commits survive reopening the same database handle`, () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				for (let round = 0; round < 3; round++) {
+					await db.transaction((txn) => txn.putSync('reopened', round), txnOptions);
+					expect(db.getSync('reopened')).toBe(round);
+					db.close();
+					db.open();
+				}
+			}));
+
 		it(`${name} async should error if callback is not a function`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				await expect(db.transaction('foo' as any, txnOptions)).rejects.toThrow(
@@ -794,6 +824,20 @@ for (const { name, options, txnOptions } of testOptions) {
 				await expect(db.get('foo', { transaction: { id: 9926 } as any })).rejects.toThrow(
 					'Invalid transaction'
 				);
+			}));
+
+		it('should resolve transaction ids above 2^32 without wrapping', () =>
+			dbRunner({ dbOptions: [options] }, async ({ db }) => {
+				for (const id of [2 ** 31, 2 ** 32 + 5, Number.MAX_SAFE_INTEGER]) {
+					const transaction = { id, store: db.store } as any;
+					const notFound = `Transaction not found (txnId: ${id})`;
+					await expect(db.get('foo', { transaction })).rejects.toThrow(notFound);
+					expect(() => db.getSync('foo', { transaction })).toThrow(notFound);
+					expect(() => db.getKeysCount({ transaction })).toThrow(notFound);
+					expect(() => db.putSync('foo', 'bar', { transaction })).toThrow(notFound);
+					expect(() => db.removeSync('foo', { transaction })).toThrow(notFound);
+					expect(() => db.getRange({ transaction })).toThrow(notFound);
+				}
 			}));
 	});
 }

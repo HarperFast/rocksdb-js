@@ -156,11 +156,10 @@ describe('Drop', () => {
 			}
 		));
 
-	// Transactions deliberately do NOT get `ignore_missing_column_families`. In
-	// optimistic mode - the default -
-	// conflict validation rejects a commit naming a dropped family early, with an
-	// error that names the family, so the transaction is lost whole rather than
-	// discarded in part.
+	// Transactions deliberately do NOT get `ignore_missing_column_families`. A
+	// write staged on a retired family is refused at staging with an error that
+	// names the family (ERR_COLUMN_FAMILY_DROPPED), so the transaction is lost
+	// whole rather than discarded in part.
 	it('should reject only the dropped-family commit when transactions race a drop', () =>
 		dbRunner(
 			{ dbOptions: [{ name: 'victim' }, { name: 'doomed' }, { name: 'doomed' }] },
@@ -187,8 +186,11 @@ describe('Drop', () => {
 				// the rejection identifies the column family it could not reach,
 				// instead of the unattributable environment-wide message
 				const [staleResult] = results;
+				expect(staleResult.status === 'rejected' && staleResult.reason.code).toBe(
+					'ERR_COLUMN_FAMILY_DROPPED'
+				);
 				expect(staleResult.status === 'rejected' && staleResult.reason.message).toMatch(
-					/Could not access column family \d+/
+					/Column family "doomed" was dropped/
 				);
 
 				expect(victim.getSync('b')).toBe('2');
@@ -208,13 +210,10 @@ describe('Drop', () => {
 	// a silent partial commit reported as success, which the transaction log
 	// would then mark committed.
 	//
-	// Losing the whole transaction is the correct outcome. (In this mode the
-	// commit also poisons the environment on its way out; that is a separate,
-	// pre-existing bug tracked as
-	// https://github.com/HarperFast/rocksdb-js/issues/726 (needs the drop
-	// interlocked against in-flight transactions), so this test asserts only
-	// atomicity and verifies that the poisoned environment is reported while
-	// still completing native teardown.)
+	// Losing the whole transaction is the correct outcome. The drop lands while
+	// the writes are staged but before the commit is admitted, so the commit is
+	// refused at admission (ERR_COLUMN_FAMILY_DROPPED) and the environment stays
+	// writable (HarperFast/rocksdb-js#726).
 	it('should not partially apply a pessimistic transaction spanning a dropped column family', () =>
 		dbRunner(
 			{
@@ -224,7 +223,7 @@ describe('Drop', () => {
 					{ name: 'doomed', pessimistic: true },
 				],
 			},
-			async ({ db: victim, dbPath }, { db: doomed }, { db: stale }) => {
+			async ({ db: victim }, { db: doomed }, { db: stale }) => {
 				await expect(
 					stale.transaction(async (txn: Transaction) => {
 						await victim.put('live', 'A', { transaction: txn });
@@ -232,18 +231,15 @@ describe('Drop', () => {
 						// the drop lands after both writes are staged
 						doomed.dropSync();
 					})
-				).rejects.toThrow();
+				).rejects.toMatchObject({ code: 'ERR_COLUMN_FAMILY_DROPPED' });
 
 				// the live half must NOT have been applied
 				expect(victim.getSync('live')).toBeUndefined();
 
-				stale.close();
-				doomed.close();
-				expect(() => victim.close()).toThrow('Failed to flush database during close');
-				expect(() => RocksDatabase.open(dbPath)).toThrow('previous close failed');
-				victim.destroy();
-				const reopened = RocksDatabase.open(dbPath);
-				reopened.close();
+				// and the environment is still writable afterwards
+				victim.putSync('after', 'C');
+				expect(victim.getSync('after')).toBe('C');
+				expect(victim.getLastError()).toBeNull();
 			}
 		));
 

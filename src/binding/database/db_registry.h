@@ -93,15 +93,6 @@ struct DBRegistryEntry final {
 		: descriptor(std::move(desc)), condition(std::make_shared<std::condition_variable>()) {}
 };
 
-
-struct DBHandleParams final {
-	std::shared_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor;
-
-	DBHandleParams(std::shared_ptr<DBDescriptor> descriptor, std::shared_ptr<ColumnFamilyDescriptor> columnDescriptor)
-		: descriptor(std::move(descriptor)), columnDescriptor(std::move(columnDescriptor)) {}
-};
-
 /**
  * Outcome of a close-family call (`CloseDB`, `PurgeIfUnreferenced`). `error` is
  * empty on a clean close. `quarantined` means the entry was left in the
@@ -210,6 +201,7 @@ public:
 	static void ReleaseCommitCompletionsByEnv(napi_env env);
 	static void ReleaseParkTimeoutsByEnv(napi_env env);
 	static void ReleaseLogRefsByEnv(napi_env env);
+	static void ReleaseLockCallbacksByEnv(napi_env env);
 	static void Shutdown();
 	/**
 	 * Releases every remaining registry entry. Called from the module env

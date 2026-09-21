@@ -38,7 +38,16 @@ void setThreadName(const char* name);
 
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
 
+// Epoch milliseconds ratcheted strictly increasing for durable transaction/log
+// identities. Rollback can stall elapsed deltas; never substitute the steady clock.
 double getMonotonicTimestamp();
+
+// Positive scaling preserves non-decreasing order, but rounded samples can be equal.
+double steadyClockMilliseconds(std::chrono::steady_clock::duration sinceOrigin);
+
+// Process-local steady milliseconds, comparable across threads, unrelated to the
+// epoch clock. Suspend behavior is platform-defined; there is no uniqueness ratchet.
+double getSteadyClockNow();
 
 /**
  * Resolves a path to the one spelling this process uses to identify it:

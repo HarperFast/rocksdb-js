@@ -154,6 +154,14 @@ double getMonotonicTimestamp() {
 	return result;
 }
 
+double steadyClockMilliseconds(std::chrono::steady_clock::duration sinceOrigin) {
+	return std::chrono::duration<double, std::milli>(sinceOrigin).count();
+}
+
+double getSteadyClockNow() {
+	return steadyClockMilliseconds(std::chrono::steady_clock::now().time_since_epoch());
+}
+
 std::filesystem::path resolveIdentityPath(const std::string& path) {
 	if (path.empty()) {
 		// Never resolve nothing into something: libc++ implements

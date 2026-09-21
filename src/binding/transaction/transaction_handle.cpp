@@ -87,6 +87,21 @@ struct PendingAsyncState {
 	PendingAsyncState& operator=(const PendingAsyncState&) = delete;
 };
 
+inline void delayTransactionStagingForTesting() {
+	const int timeoutMs = consumeTransactionStagingDelayForTesting();
+	if (timeoutMs <= 0) {
+		return;
+	}
+	transactionStagingDelayActive().store(true, std::memory_order_release);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+	while (transactionStagingDelayActive().load(std::memory_order_acquire) &&
+		std::chrono::steady_clock::now() < deadline
+	) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	transactionStagingDelayActive().store(false, std::memory_order_release);
+}
+
 } // namespace
 
 /**
@@ -100,14 +115,14 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	state(TransactionState::Pending),
 	txn(nullptr),
 	committedPosition(0, 0) {
-	this->resetTransaction();
+	this->resetTransaction(this->dbHandle->descriptor.get());
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 	this->createdAt = std::chrono::steady_clock::now();
 }
 
-void TransactionHandle::resetTransaction(){
+void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	// clear/delete the previous transaction and create a new transaction so that it can be retried
 	this->closeIterators();
 	if (this->txn) {
@@ -116,18 +131,19 @@ void TransactionHandle::resetTransaction(){
 	}
 
 	this->logEntryBatch.reset();
+	this->touchedColumnFamilies.clear();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
 	auto dbHandle = this->dbHandle;
 	rocksdb::WriteOptions writeOptions;
 	writeOptions.disableWAL = dbHandle->disableWAL;
 
-	if (dbHandle->descriptor->mode == DBMode::Pessimistic) {
-		auto* tdb = static_cast<rocksdb::TransactionDB*>(dbHandle->descriptor->db.get());
+	if (descriptor->mode == DBMode::Pessimistic) {
+		auto* tdb = static_cast<rocksdb::TransactionDB*>(descriptor->db.get());
 		rocksdb::TransactionOptions txnOptions;
 		this->txn = tdb->BeginTransaction(writeOptions, txnOptions);
-	} else if (dbHandle->descriptor->mode == DBMode::Optimistic) {
-		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(dbHandle->descriptor->db.get());
+	} else if (descriptor->mode == DBMode::Optimistic) {
+		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(descriptor->db.get());
 		rocksdb::OptimisticTransactionOptions txnOptions;
 		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
 	} else {
@@ -155,8 +171,8 @@ TransactionHandle::~TransactionHandle() {
  * ```
  */
 void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) {
-	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %u (size=%zu)\n",
-		this, entry->store->name.c_str(), this->id, entry->size);
+	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
+		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
 	// #668 (defense in depth): the write-ahead log is write-once per transaction. If
 	// committedPosition is already set, this transaction's batch was durably written by a
@@ -169,9 +185,9 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	// suppress the re-log on retry (e.g. harper's DatabaseTransaction.isRetry), but enforce
 	// write-once here too so a stray re-stage from any caller cannot corrupt the watermark.
 	if (this->committedPosition.logSequenceNumber > 0) {
-		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %u "
+		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %llu "
 			"(WAL already written at seq %u)\n",
-			this, this->id, this->committedPosition.logSequenceNumber);
+			this, (unsigned long long)this->id, this->committedPosition.logSequenceNumber);
 		return;
 	}
 
@@ -194,8 +210,8 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 		}
 		this->boundLogStore = entry->store;
 		entry->store->pendingTransactionCount++;
-		DEBUG_LOG("%p TransactionHandle::addLogEntry Binding transaction %u to log store \"%s\"\n",
-			this, this->id, entry->store->name.c_str());
+		DEBUG_LOG("%p TransactionHandle::addLogEntry Binding transaction %llu to log store \"%s\"\n",
+			this, (unsigned long long)this->id, entry->store->name.c_str());
 	}
 
 	if (!this->logEntryBatch) {
@@ -336,7 +352,7 @@ void TransactionHandle::closeOrphanIfUnused() {
 	}
 
 	if (this->state == TransactionState::Committing) {
-		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Commit in flight, deferring close (txnId=%u)\n", this, this->id);
+		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Commit in flight, deferring close (txnId=%llu)\n", this, (unsigned long long)this->id);
 		return;
 	}
 
@@ -344,13 +360,13 @@ void TransactionHandle::closeOrphanIfUnused() {
 	const int32_t activeAsyncWork = this->activeAsyncWorkCount.load();
 	const uint32_t activeIterators = this->activeIteratorCount.load(std::memory_order_relaxed);
 	if (activeAsyncWork > 0 || activeIterators > 0) {
-		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Deferring close (txnId=%u, async=%d, iterators=%u)\n",
-			this, this->id, activeAsyncWork, activeIterators);
+		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Deferring close (txnId=%llu, async=%d, iterators=%u)\n",
+			this, (unsigned long long)this->id, activeAsyncWork, activeIterators);
 		return;
 	}
 
-	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%u, state=%d)\n",
-		this, this->id, static_cast<int>(this->state));
+	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%llu, state=%d)\n",
+		this, (unsigned long long)this->id, static_cast<int>(this->state));
 	// transactionRemove() can drop the registry's last reference. Keep this
 	// object alive until close() returns even when the final dependent releases
 	// on a worker thread.
@@ -442,6 +458,7 @@ void TransactionHandle::close() {
 	this->txn->ClearSnapshot();
 	delete this->txn;
 	this->txn = nullptr;
+	this->touchedColumnFamilies.clear();
 
 	// Note: close() is deliberately napi-free. The transaction holds no napi
 	// refs (the JS database is passed to UseLog by the TS layer per-call), so
@@ -696,6 +713,61 @@ void TransactionHandle::ensureSnapshot() {
 	}
 }
 
+void ColumnFamilySet::add(const std::shared_ptr<ColumnFamilyDescriptor>& column) {
+	TouchedColumnFamily entry;
+	entry.descriptor = column;
+	entry.raw = column.get();
+	this->entries.add(std::move(entry));
+	this->last = column.get();
+}
+
+void ColumnFamilySet::removeLast(ColumnFamilyDescriptor* column) {
+	if (this->entries.size() == 0 || this->entries.back().raw != column) {
+		return;
+	}
+	this->entries.popBack();
+	this->last = this->entries.size() == 0 ? nullptr : this->entries.back().raw;
+}
+
+rocksdb::Status TransactionHandle::abandonForDroppedColumnFamily(
+	const std::shared_ptr<ColumnFamilyDescriptor>& column
+) noexcept {
+	this->writesAbandoned = true;
+	try {
+		if (!this->lockedVTSlots.empty()) {
+			this->releaseIntent();
+		}
+		return rocksdb::Status::ColumnFamilyDropped("Column family \"" + column->name + "\" was dropped");
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit();
+	}
+}
+
+rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
+	const std::shared_ptr<ColumnFamilyDescriptor>& column,
+	bool& added
+) {
+	added = false;
+	if (!column) {
+		return rocksdb::Status::Aborted("Database not open");
+	}
+	if (!column->droppable) {
+		return rocksdb::Status::OK();
+	}
+	if (column->lifetime.isRetired()) {
+		return this->abandonForDroppedColumnFamily(column);
+	}
+	try {
+		if (!this->touchedColumnFamilies.contains(column.get())) {
+			this->touchedColumnFamilies.add(column);
+			added = true;
+		}
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit();
+	}
+	return rocksdb::Status::OK();
+}
+
 /**
  * Put a value using the specified database handle.
  */
@@ -719,8 +791,22 @@ rocksdb::Status TransactionHandle::putSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	bool addedTouch = false;
+	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
+	if (!touched.ok()) {
+		return touched;
+	}
+	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Put(column, key, value);
+	if (!status.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
+			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);
+		}
+	}
 
 	// Lock the VT slot for this key immediately on write. This ensures that
 	// any cached version of the key is invalidated as soon as it enters the
@@ -756,8 +842,22 @@ rocksdb::Status TransactionHandle::removeSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	bool addedTouch = false;
+	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
+	if (!touched.ok()) {
+		return touched;
+	}
+	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Delete(column, key);
+	if (!status.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
+			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);
+		}
+	}
 
 	if (status.ok() && dbHandle->enableVerificationTable) {
 		this->lockVTSlot(dbHandle, key);

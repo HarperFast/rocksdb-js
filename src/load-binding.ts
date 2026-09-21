@@ -857,6 +857,22 @@ export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;
 
 /**
+ * Reads the process-wide steady clock: `std::chrono::steady_clock` as
+ * fractional milliseconds from an unspecified origin that is fixed for the life
+ * of the process. Every sample in the process — main thread and every
+ * `worker_threads` worker, whenever started or restarted, on Node, Bun and Deno
+ * — is in one domain, and the difference between two samples is real elapsed
+ * time unaffected by wall-clock steps. Non-decreasing but not unique (two
+ * samples may be equal; treat `==` as "not later"). Windows QPC samples from
+ * different threads within one native tick also have ambiguous ordering.
+ * Clock readings alone do not prove causality. Not comparable with
+ * `Date.now()`, `db.getMonotonicTimestamp()` or transaction timestamps, and not
+ * meaningful across processes or restarts. Time spent in host suspend is
+ * platform-defined. No open database is needed.
+ */
+export const steadyClockNow: () => number = binding.steadyClockNow;
+
+/**
  * Advises the kernel that the file-backed pages of every mapped transaction log
  * are cold (Linux MADV_COLD), so they are reclaimed first under memory pressure
  * without being freed — useful during replication catch-up, where a full read of
@@ -885,6 +901,33 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
  * disarm. Used by the ERR_TRY_AGAIN retry regression test.
  */
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
+
+/**
+ * Test-only seam: makes the physical column-family drop report failure.
+ * `0` = inert, `1` = fail without dropping (the retry performs the drop),
+ * `2` = drop for real and then report failure (the retry resolves as
+ * "already dropped"). Process-global, like `forceTryAgainForTesting`.
+ */
+export const forceDropFailureForTesting: (mode: 0 | 1 | 2) => void =
+	binding.forceDropFailureForTesting;
+
+/** Parks one selected transaction write after its retirement precheck. */
+export const setTransactionStagingDelayForTesting: (countdown: number, delayMs: number) => void =
+	binding.setTransactionStagingDelayForTesting;
+
+/** Reports whether the selected transaction write is parked. */
+export const isTransactionStagingDelayedForTesting: () => boolean =
+	binding.isTransactionStagingDelayedForTesting;
+
+/** Reports whether a transaction is parked at the native commit seam. */
+export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
+	binding.isTransactionCommitExecuteDelayedForTesting;
+
+export const setTransactionCommitAdmissionDelayForTesting: (delayMs: number) => void =
+	binding.setTransactionCommitAdmissionDelayForTesting;
+
+export const isTransactionCommitAdmissionDelayedForTesting: () => boolean =
+	binding.isTransactionCommitAdmissionDelayedForTesting;
 
 /** Delays one selected watchdog join in the concurrent-shutdown regression test. */
 export const setWriteBufferManagerJoinDelayForTesting: (

@@ -219,6 +219,13 @@ template <typename T>
 	return getValue(env, value, result);
 }
 
+/**
+ * Ids are a 64-bit counter surfaced to JS as a double, so every id entry point
+ * must read them through this: the fixed-width `napi_get_value_int32`/`uint32`
+ * helpers apply JS ToInt32/ToUint32 and wrap modulo 2^32.
+ */
+bool readTransactionId(napi_env env, napi_value value, uint64_t& transactionId);
+
 } // namespace rocksdb_js
 
 #endif
