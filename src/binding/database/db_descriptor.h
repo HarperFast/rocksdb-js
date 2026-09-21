@@ -1055,9 +1055,8 @@ struct UserSharedBufferData final {
  * Holds a strong reference to the underlying `UserSharedBufferData` so the
  * backing storage outlives any ColumnFamilyDescriptor / DBDescriptor teardown
  * until JS releases every retained ArrayBuffer for the key. The map entry is
- * never evicted while the column family is open: the buffer is shared process
- * state, and a thread collecting its view says nothing about the others. The
- * weak `DBHandle` is used to remove the listener when the handle is still alive.
+ * never evicted while the column family is open. The weak `DBHandle` is used
+ * to remove the listener when the handle is still alive.
  *
  * The listener is held as a `weak_ptr` (not the raw `napi_ref`): the ref's
  * ownership belongs to the listener's threadsafe function, which deletes it

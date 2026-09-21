@@ -1003,9 +1003,10 @@ Returns a new `ArrayBuffer` with two additional methods:
 
 Note: If a shared buffer already exists for the given `key`, the returned `ArrayBuffer` will
 reference this existing shared buffer. The buffer lives as long as its column family is open (a
-`drop()` discards it with the column family): it is process-wide state, so a thread dropping or
-garbage collecting its own view (or exiting) never resets it for the others. Because nothing is
-ever evicted, key the buffer on a small fixed set of names rather than on unbounded data such as
+`drop()` discards it with the column family — except the default column family, which `drop()`
+only clears, so its buffers survive): it is process-wide state, so a thread dropping or garbage
+collecting its own view (or exiting) never resets it for the others. Because nothing is ever
+evicted, key the buffer on a small fixed set of names rather than on unbounded data such as
 record ids. The notify callback is removed when the `ArrayBuffer` it was registered with is
 garbage collected, or by `cancel()`.
 

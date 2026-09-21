@@ -2484,10 +2484,8 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 /**
  * Finalize callback for when a user shared ArrayBuffer is garbage collected.
  * It removes the event listener registered with that ArrayBuffer, if any. The
- * buffer itself is not touched: it is process-wide state owned by the column
- * family's `userSharedBuffers` map for as long as the database is open, so one
- * thread collecting (or exiting with) its view must not reset the value every
- * other thread reads through the same key.
+ * buffer itself is not touched: it is owned by the column family's
+ * `userSharedBuffers` map for as long as the database is open.
  */
 static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);

@@ -147,8 +147,6 @@ describe('User Shared Buffer', () => {
 			'should keep the buffer contents after every view of it is collected',
 			() =>
 				dbRunner(async ({ db }) => {
-					// The buffer is process state shared between workers, so a worker holding no view of
-					// it (or a worker that exited) must not cost the others their data.
 					let collected = 0;
 					const registry = new FinalizationRegistry(() => {
 						collected++;
