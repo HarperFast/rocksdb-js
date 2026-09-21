@@ -444,7 +444,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 
 /**
  * Maps the next readable segment after `fromLogId`, skipping a run retention has deleted —
- * stopping at the hole wedges the iterator there for every later poll (invariant 29).
+ * stopping at the hole wedges the iterator there for every later poll (invariant 30).
  *
  * The jump target is `_nextLogId()`, the successor over the store's registered segments — *not*
  * `_findPosition(0)`, which names the bottom of the contiguous run ending at the current segment
