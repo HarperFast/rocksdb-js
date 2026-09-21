@@ -1971,12 +1971,15 @@ figures and process memory usage:
 - **Maps are created lazily; only the current (still-being-written) file's map is held natively.**
   Writing log entries does not map anything; a log file is mapped the first time a `log.query()`
   reads from it. The native layer holds the current file's map for as long as it stays current —
-  released when the log file rotates, is purged, or the database is closed. Once a file rotates out
-  or is purged, the native layer keeps only a weak reference: the mapping survives solely through JS
-  `Buffer` views over it (including `entry.data`) and is released by garbage collection once none
-  remain, independent of purge or close. `stats.memory.activeMaps` counts only the current file's
-  strongly-held map; a frozen file's map is weakly held and not counted, even while a JS `Buffer`
-  view keeps it alive.
+  released when the log file rotates, is purged, or the database is closed. On POSIX, once a file
+  rotates out or is purged, the native layer keeps only a weak reference: the mapping survives
+  solely through JS `Buffer` views over it (including `entry.data`) and is released by garbage
+  collection once none remain, independent of purge or close, and `stats.memory.activeMaps` counts
+  only the current file's strongly-held map — a frozen file's map is weakly held and not counted,
+  even while a JS `Buffer` view keeps it alive. **On Windows this weak-ownership optimization does
+  not apply**: every frozen read re-creates the mapping and re-pins it strongly for the rest of the
+  file's life, so `stats.memory.activeMaps`/`mappedBytes` count every frozen map a process has read,
+  not just the current file's.
 - **Mapped bytes are virtual, not resident.** Creating a map reserves address space only. A page
   consumes physical RAM (RSS) when it is first read (demand paging). Querying a multi-gigabyte log
   can show `memory.mappedBytes` in the gigabytes while actual memory usage barely moves.
