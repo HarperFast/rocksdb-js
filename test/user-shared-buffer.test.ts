@@ -1,3 +1,4 @@
+import { registryStatus } from '../src/index.ts';
 import { withResolvers } from '../src/util.ts';
 import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
@@ -120,6 +121,18 @@ describe('User Shared Buffer', () => {
 				expect(() => db.getUserSharedBuffer('incrementer-test', 'hello' as any)).toThrow(
 					'Default buffer must be an ArrayBuffer'
 				);
+			}));
+
+		it('should not leave a listener registered when the default buffer is invalid', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const before =
+					registryStatus().find((entry) => entry.path === dbPath)?.listenerCallbacks ?? 0;
+				expect(() =>
+					db.getUserSharedBuffer('bad-buffer-test', 'hello' as any, { callback: () => {} })
+				).toThrow('Default buffer must be an ArrayBuffer');
+				const after =
+					registryStatus().find((entry) => entry.path === dbPath)?.listenerCallbacks ?? 0;
+				expect(after).toBe(before);
 			}));
 
 		it('should error if database is not open', () =>

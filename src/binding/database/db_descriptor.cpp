@@ -2516,6 +2516,21 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	napi_value defaultBuffer,
 	std::shared_ptr<ListenerCallback> listener
 ) {
+	// The caller already registered `listener` (if any) before calling in; only
+	// a successful return hands its removal off to userSharedBufferFinalize, so
+	// every early return here must remove it itself or it outlives this call.
+	struct ListenerCleanup {
+		DBDescriptor* self;
+		std::string& key;
+		std::shared_ptr<ListenerCallback>& listener;
+		bool armed = true;
+		~ListenerCleanup() {
+			if (armed && listener) {
+				self->removeListener(key, listener);
+			}
+		}
+	} listenerCleanup{this, key, listener};
+
 	bool isArrayBuffer;
 	NAPI_STATUS_THROWS(::napi_is_arraybuffer(env, defaultBuffer, &isArrayBuffer));
 	if (!isArrayBuffer) {
@@ -2552,10 +2567,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	// Hold a strong ref to the user shared buffer data here so the external
 	// ArrayBuffer's storage outlives DBDescriptor / ColumnFamilyDescriptor
 	// teardown while JS still retains the ArrayBuffer. The data is released
-	// when this finalize data is destroyed. Kept in a unique_ptr until the
-	// finalize_cb is registered below, so a failed napi_create_external_arraybuffer
-	// (NAPI_STATUS_THROWS returns before the finalizer ever runs) frees it here
-	// instead of leaking it.
+	// when this finalize data is destroyed.
 	auto finalizeData = std::make_unique<UserSharedBufferFinalizeData>(
 		key,
 		std::weak_ptr<DBHandle>(dbHandle),
@@ -2573,6 +2585,7 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		&result                   // [out] result
 	));
 	finalizeData.release();
+	listenerCleanup.armed = false;
 	return result;
 }
 
