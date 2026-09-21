@@ -109,10 +109,7 @@ function findResyncPosition(dataView: DataView, from: number, dataEnd: number): 
 }
 
 /**
- * Builds the report for a broken frame, with the offset iteration should continue from. The
- * `readUncommitted` extent below reads `logBuffer.size` when already cached, falling back to
- * `readableExtent()` (a lock-free atomic native read) only on a cache miss — a healthy read
- * must never pay that native crossing on every corrupt-frame report.
+ * Builds the report for a broken frame, with the offset iteration should continue from.
  */
 function corruptFrame(
 	message: string,
