@@ -109,9 +109,9 @@ function findResyncPosition(dataView: DataView, from: number, dataEnd: number): 
 }
 
 /**
- * Builds the report for a broken frame, with the offset iteration should continue from. Resolves
- * the written extent here rather than per frame: `getLogFileSize` crosses into native and takes
- * the store mutex, which a healthy read must never pay.
+ * Builds the report for a broken frame, with the offset iteration should continue from. The
+ * caller resolves the written extent once via `readableExtent()` rather than per frame: it
+ * crosses into native for a lock-free atomic read, which a healthy read must never pay per frame.
  */
 function corruptFrame(
 	message: string,

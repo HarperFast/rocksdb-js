@@ -3109,7 +3109,7 @@ describe('Transaction Log', () => {
 						// Segment 3 is on disk and registered, so the skip was a lookup answering the
 						// wrong question rather than a missing segment. Asserted by presence, not by
 						// `getLogFileSize()`: reading the extent *opens* the segment, and an open
-						// handle keeps reporting the real size after an unlink (invariant 20), which
+						// handle keeps reporting the real size after an unlink (invariant 29), which
 						// would defeat the absence set up next. Every read below is ordered for the
 						// same reason — nothing may touch a segment before it is meant to be gone.
 						expect(existsSync(join(logDirectory, '3.txnlog'))).toBe(true);
