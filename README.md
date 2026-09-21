@@ -1007,8 +1007,12 @@ reference this existing shared buffer. The buffer lives as long as its column fa
 only clears, so its buffers survive): it is process-wide state, so a thread dropping or garbage
 collecting its own view (or exiting) never resets it for the others. Because nothing is ever
 evicted, key the buffer on a small fixed set of names rather than on unbounded data such as
-record ids. The notify callback is removed when the `ArrayBuffer` it was registered with is
-garbage collected, or by `cancel()`.
+record ids. A returned `ArrayBuffer` kept across a `close()`/`drop()` stays valid and keeps
+reading/writing that generation's memory — it is not detached automatically — but a later reopen
+of the same column family starts a fresh map seeded from the caller's default, so a view held
+across the boundary must be re-resolved via `getUserSharedBuffer()` rather than reused. The notify
+callback is removed when the `ArrayBuffer` it was registered with is garbage collected, or by
+`cancel()`.
 
 ```typescript
 const buffer = new Uint8Array(db.getUserSharedBuffer('isDone', new ArrayBuffer(1)));

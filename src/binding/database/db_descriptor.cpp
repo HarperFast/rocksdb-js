@@ -2483,9 +2483,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 
 /**
  * Finalize callback for when a user shared ArrayBuffer is garbage collected.
- * It removes the event listener registered with that ArrayBuffer, if any. The
- * buffer itself is not touched: it is owned by the column family's
- * `userSharedBuffers` map for as long as the database is open.
+ * It removes the event listener registered with that ArrayBuffer, if any.
  */
 static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
@@ -2554,8 +2552,11 @@ napi_value DBDescriptor::getUserSharedBuffer(
 	// Hold a strong ref to the user shared buffer data here so the external
 	// ArrayBuffer's storage outlives DBDescriptor / ColumnFamilyDescriptor
 	// teardown while JS still retains the ArrayBuffer. The data is released
-	// when this finalize data is destroyed.
-	auto* finalizeData = new UserSharedBufferFinalizeData(
+	// when this finalize data is destroyed. Kept in a unique_ptr until the
+	// finalize_cb is registered below, so a failed napi_create_external_arraybuffer
+	// (NAPI_STATUS_THROWS returns before the finalizer ever runs) frees it here
+	// instead of leaking it.
+	auto finalizeData = std::make_unique<UserSharedBufferFinalizeData>(
 		key,
 		std::weak_ptr<DBHandle>(dbHandle),
 		userSharedBuffer,
@@ -2568,9 +2569,10 @@ napi_value DBDescriptor::getUserSharedBuffer(
 		userSharedBuffer->data,   // data
 		userSharedBuffer->size,   // size
 		userSharedBufferFinalize, // finalize_cb
-		finalizeData,             // finalize_hint
+		finalizeData.get(),       // finalize_hint
 		&result                   // [out] result
 	));
+	finalizeData.release();
 	return result;
 }
 
