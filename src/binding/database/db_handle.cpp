@@ -428,8 +428,10 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	// this handle is leaving, so drop it before the registry attaches the new one.
 	this->commitCompletion.reset();
 
+	// Every descriptor-backed field, `identityPath` included, is published by
+	// OpenDB() under `databasesMutex` (invariant 28) -- reading one back here
+	// would be exactly the post-lock dereference that invariant forbids.
 	DBRegistry::OpenDB(this->shared_from_this(), path, options);
-	this->identityPath = this->descriptor->identityPath;
 
 	const int openAttachDelayMs = openAttachDelayMsFlag().load(std::memory_order_relaxed);
 	if (openAttachDelayMs > 0) {

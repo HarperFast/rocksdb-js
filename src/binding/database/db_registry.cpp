@@ -1022,6 +1022,7 @@ void DBRegistry::OpenDB(
 
 	handle->columnDescriptor = std::move(columnDescriptor);
 	handle->descriptor = entry.descriptor;
+	handle->identityPath = entry.descriptor->identityPath;
 	handle->verificationTableDbId = verificationTableDbId;
 	handle->verificationTableColumnFamilyId = verificationTableColumnFamilyId;
 	handle->disableWAL = options.disableWAL;
