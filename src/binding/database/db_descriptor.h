@@ -1052,17 +1052,11 @@ struct UserSharedBufferData final {
  * Finalize data for user shared buffer ArrayBuffers, run when the ArrayBuffer
  * is garbage collected.
  *
- * Holds a strong reference to the underlying `UserSharedBufferData` so the
- * backing storage outlives any ColumnFamilyDescriptor / DBDescriptor teardown
- * until JS releases every retained ArrayBuffer for the key. The map entry is
- * never evicted while the column family is open. The weak `DBHandle` is used
- * to remove the listener when the handle is still alive.
- *
- * The listener is held as a `weak_ptr` (not the raw `napi_ref`): the ref's
- * ownership belongs to the listener's threadsafe function, which deletes it
- * once the listener is torn down. A `weak_ptr` lets the finalizer remove the
- * listener by identity only while it is still live, without ever dereferencing
- * a ref it does not own (HarperFast/rocksdb-js#790).
+ * `sharedData` is strong so a retained view's backing storage outlives
+ * ColumnFamilyDescriptor / DBDescriptor teardown. `listener` is weak: its
+ * `napi_ref` is owned by the listener's threadsafe function, not here, so
+ * dereferencing anything but a still-live weak_ptr was the shutdown UAF in
+ * HarperFast/rocksdb-js#790.
  */
 struct UserSharedBufferFinalizeData final {
 	std::string key;
