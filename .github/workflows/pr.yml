@@ -79,6 +79,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
+      - name: Enable native wall-clock step regression
+        if: runner.os == 'Linux' && matrix.node == 24
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfaketime
+          faketime_lib=$(dpkg -L libfaketime | grep '/libfaketime.so.1$')
+          test -f "$faketime_lib"
+          echo "ROCKSDB_JS_FAKETIME_LIB=$faketime_lib" >> "$GITHUB_ENV"
+
       - name: Run tests on Node.js ${{ matrix.node }}
         shell: bash
         run: pnpm coverage || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm coverage)

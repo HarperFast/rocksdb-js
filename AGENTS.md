@@ -1098,6 +1098,23 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     wait is replaced by deferral to the last releaser, so no immediate-drop path remains for the gate
     to protect.
 
+24. **Two process-wide clocks, two contracts — never route one through the other**:
+    `getMonotonicTimestamp()` (`core/platform.cpp`) is a wall-clock ratchet: Unix-epoch
+    milliseconds made strictly increasing with `nextafter` on a tie or a backward host-clock step.
+    It is the transaction timestamp and transaction-log batch key, so it must stay in the epoch
+    domain and comparable across processes and restarts (docs/transaction-timestamp-integrity-design.md,
+    #825). The price is that after a backward step it advances one ulp per call until the wall
+    catches up, so a difference between two calls understates real elapsed time and a deadline
+    computed from it stretches. `steadyClockNow()` (module-level export, `getSteadyClockNow()` in
+    `core/platform.cpp`, docs/steady-clock-design.md) is `std::chrono::steady_clock` as fractional
+    milliseconds from an unspecified per-process origin: one domain across every thread and env in the
+    process (Bun gives each worker its own `performance.timeOrigin`/`hrtime` origin, which is why the
+    native layer owns this), non-decreasing but **not unique**, unaffected by wall steps, and not
+    meaningful across processes or restarts. Neither substitutes for the other: making the ratchet
+    steady would break the durable epoch contract, and adding a ratchet to the steady clock would
+    distort elapsed measurement under contention. Whether host suspend counts is platform-defined
+    (Linux excludes it; current macOS and Windows implementations include it).
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
