@@ -580,11 +580,10 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	}
 
 	// Claim an in-flight operation BEFORE queuing so teardown paths that call
-	// DBDescriptor::finishClose() — which waits on this counter unbounded, while
-	// DBHandle::close()'s async-work drain is bounded and its failure ignored —
+	// DBDescriptor::finishClose() — which waits on this counter unbounded —
 	// cannot reset descriptor->db under a long replay (a follower catching up on
-	// a big backlog opens every new SST/blob eagerly and routinely exceeds the
-	// drain timeout).
+	// a big backlog opens every new SST/blob eagerly and can run far longer than
+	// any bound a drain could reasonably carry).
 	auto descriptor = (*dbHandle)->descriptor;
 	++descriptor->operationsInFlight;
 	bool handedOff = false;

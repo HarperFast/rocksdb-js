@@ -1367,7 +1367,10 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	// Without this claim finishClose()'s drain returns immediately and its
 	// closables sweep rolls back the transaction while the scan is parked
 	// between rows, leaving the iterator reading freed memory.
-	auto& txnDbHandle = (*txnHandle)->dbHandle;
+	// A copy, not a reference: TransactionHandle::close() resets `dbHandle` from
+	// whichever thread drives a forced teardown, so a reference could be nulled
+	// between the check below and the descriptor read after it.
+	std::shared_ptr<DBHandle> txnDbHandle = (*txnHandle)->dbHandle;
 	if (!txnDbHandle) {
 		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 		NAPI_RETURN_UNDEFINED();
