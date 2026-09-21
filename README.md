@@ -1002,8 +1002,13 @@ Returns a new `ArrayBuffer` with two additional methods:
 - `cancel()` - Removes the callback; future `notify()` calls do nothing
 
 Note: If a shared buffer already exists for the given `key`, the returned `ArrayBuffer` will
-reference this existing shared buffer. Once all `ArrayBuffer` instances have gone out of scope and
-garbage collected, the underlying memory and notify callback will be freed.
+reference this existing shared buffer. The buffer lives as long as its column family is open (a
+`drop()` discards it with the column family — except the default column family, which `drop()`
+only clears, so its buffers survive): it is process-wide state, so a thread dropping or garbage
+collecting its own view (or exiting) never resets it for the others. Because nothing is ever
+evicted, key the buffer on a small fixed set of names rather than on unbounded data such as
+record ids. The notify callback is removed when the `ArrayBuffer` it was registered with is
+garbage collected, or by `cancel()`.
 
 ```typescript
 const buffer = new Uint8Array(db.getUserSharedBuffer('isDone', new ArrayBuffer(1)));
@@ -2350,7 +2355,8 @@ Returns an array containing that status of all active RocksDB instances.
   finish before the next open. Call `destroy()` to retry cleanup.
 - `refCount: number` The number of JavaScript database instances plus the registry's reference.
 - `columnFamiles: object` A map of column family names and their their info.
-  - `userSharedBuffers: number` The count of active user shared buffers.
+  - `userSharedBuffers: number` The count of user shared buffer keys created since the column family
+    was opened; entries are never evicted, so this never decreases.
 - `transactions: number` The count of active transactions.
 - `closables: number` The count of active database, transactions, and iterators.
 - `locks: number` The count of active locks.

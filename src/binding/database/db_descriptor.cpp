@@ -2482,9 +2482,10 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 }
 
 /**
- * Finalize callback for when the user shared ArrayBuffer is garbage collected.
- * It removes the corresponding entry from the `userSharedBuffers` map to and
- * calls the finalize function, which removes the event listener, if applicable.
+ * Finalize callback for when a user shared ArrayBuffer is garbage collected.
+ * It removes the event listener registered with that ArrayBuffer, if any. The
+ * buffer itself is not touched: it is owned by the column family's
+ * `userSharedBuffers` map for as long as the database is open.
  */
 static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint) {
 	auto* finalizeData = static_cast<UserSharedBufferFinalizeData*>(hint);
@@ -2507,21 +2508,6 @@ static void userSharedBufferFinalize(napi_env env, void* unusedData, void* hint)
 		DEBUG_LOG_KEY_LN(finalizeData->key);
 	}
 
-	if (auto columnDescriptor = finalizeData->columnDescriptor.lock()) {
-		if (finalizeData->sharedData) {
-			DEBUG_LOG("%p userSharedBufferFinalize releasing user shared buffer (column=%p) for key:", columnDescriptor.get(), columnDescriptor->column.get());
-			DEBUG_LOG_KEY(finalizeData->key);
-			DEBUG_LOG_MSG(" (use_count: %ld)\n", finalizeData->sharedData.use_count());
-			columnDescriptor->releaseUserSharedBuffer(finalizeData->key, finalizeData->sharedData);
-		}
-	} else {
-		DEBUG_LOG("userSharedBufferFinalize columnDescriptor was already destroyed for key:");
-		DEBUG_LOG_KEY_LN(finalizeData->key);
-	}
-
-	// Destroying finalizeData drops the last strong ref to the shared data
-	// when this was the final external ArrayBuffer; the buffer storage is
-	// released here rather than in DBDescriptor::close().
 	delete finalizeData;
 }
 
@@ -2567,12 +2553,11 @@ napi_value DBDescriptor::getUserSharedBuffer(
 
 	// Hold a strong ref to the user shared buffer data here so the external
 	// ArrayBuffer's storage outlives DBDescriptor / ColumnFamilyDescriptor
-	// teardown (the map may be cleared on close() while JS still retains the
-	// ArrayBuffer). The data is released when this finalize data is destroyed.
+	// teardown while JS still retains the ArrayBuffer. The data is released
+	// when this finalize data is destroyed.
 	auto* finalizeData = new UserSharedBufferFinalizeData(
 		key,
 		std::weak_ptr<DBHandle>(dbHandle),
-		std::weak_ptr<ColumnFamilyDescriptor>(dbHandle->columnDescriptor),
 		userSharedBuffer,
 		std::weak_ptr<ListenerCallback>(listener)
 	);
