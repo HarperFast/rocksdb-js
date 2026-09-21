@@ -686,7 +686,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     nonzero header below `size` is a complete entry and a length overrunning it is a break.
 
     The resync scan must be bounded by the **written extent**: the live mapping-carried
-    `readableExtent` described in invariant 24, seeded from append-owned
+    `readableExtent` described in invariant 25, seeded from append-owned
     `TransactionLogFile::size` — see invariant 5 — and
     retained after the store forgets a purged segment. It must use neither the physical nor raw
     mapped size.
@@ -1435,7 +1435,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
       different store's file. That is a cache-key identity problem, not a purge-coherence one; it is
       pre-existing and Harper does not call `destroy` in production.
 
-25. **`databaseFlushed()` persists and verifies `txn.state` by pathname**: a stream kept open across
+26. **`databaseFlushed()` persists and verifies `txn.state` by pathname**: a stream kept open across
     flushes still describes the old inode after the file is unlinked or replaced, so a successful
     write can be invisible to `getLastFlushedPosition()` — which reads by path — and retention never
     advances. Today only `purgeLogs({ destroy: true })` removes the directory in-process, and Harper
