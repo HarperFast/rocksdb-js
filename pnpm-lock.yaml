@@ -31,8 +31,8 @@ importers:
         specifier: 10.1.0
         version: 10.1.0
       dotenv:
-        specifier: 17.4.2
-        version: 17.4.2
+        specifier: 18.0.1
+        version: 18.0.1
       lefthook:
         specifier: 2.1.14
         version: 2.1.14
@@ -83,6 +83,9 @@ importers:
         specifier: 2.10.0
         version: 2.10.0
       '@harperfast/rocksdb-js-linux-x64-glibc':
+        specifier: 2.10.0
+        version: 2.10.0
+      '@harperfast/rocksdb-js-linux-x64-musl':
         specifier: 2.10.0
         version: 2.10.0
       '@harperfast/rocksdb-js-win32-arm64':
@@ -318,6 +321,13 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
+
+  '@harperfast/rocksdb-js-linux-x64-musl@2.10.0':
+    resolution: {integrity: sha512-iXzNINutMiSKq8QcGm2gLrtmegROcU+CMl67xjBaIwerb8x/qYGISecw04L9BlcMbX/pSYZpBZJfC6j/dJZunw==}
+    engines: {node: ^22.18.0 || >=24.0.0}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
 
   '@harperfast/rocksdb-js-win32-arm64@2.10.0':
     resolution: {integrity: sha512-BcR26Y9ScJ0sycm+HJ8xaepH1vkzlQ1qWhm0803szb0vIfxPAKGVn3ZaybLQW696ssgfD+taKz23rEalRTmrpg==}
@@ -1247,9 +1257,10 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  dotenv@17.4.2:
-    resolution: {integrity: sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==}
+  dotenv@18.0.1:
+    resolution: {integrity: sha512-0eR4m4D/jH5eaI3evo2ZqqMii5mrTCR12v12VChdie6O1gPHs7XAjzTep0CWc1Bd+oNx3vVfbi734dK4zghigw==}
     engines: {node: '>=12'}
+    hasBin: true
 
   dts-resolver@3.0.0:
     resolution: {integrity: sha512-1T1f+z+4tl9XD+m+0HBgWoL/nm0bOIffyWaUuUSBlFg/86IWvfx+wjNaO/ybU0AJzG9/Mi5hBUgGV6zCmWEN7Q==}
@@ -2047,6 +2058,9 @@ snapshots:
   '@harperfast/rocksdb-js-linux-x64-glibc@2.10.0':
     optional: true
 
+  '@harperfast/rocksdb-js-linux-x64-musl@2.10.0':
+    optional: true
+
   '@harperfast/rocksdb-js-win32-arm64@2.10.0':
     optional: true
 
@@ -2598,7 +2612,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  dotenv@17.4.2: {}
+  dotenv@18.0.1: {}
 
   dts-resolver@3.0.0: {}
 
