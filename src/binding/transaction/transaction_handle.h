@@ -207,11 +207,14 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * early, so this handle must never commit or write again — reads remain
 	 * valid until it is aborted.
 	 *
-	 * Written from the commit lane as well as from JS threads. Relaxed on every
-	 * access: readers only branch on it, and every store precedes the
-	 * releaseIntent() that follows (so a failed cleanup cannot leave it false),
-	 * which is an order no acquire load could publish anyway. Lock freedom is a
-	 * requirement, not an assumption — the load is on every write and commit.
+	 * Written from the commit lane as well as from JS threads, so the access is
+	 * atomic. Relaxed suffices because a stale false read during an in-flight
+	 * commit cannot admit work: put/remove fail their Pending checks, the
+	 * commit entry points see Committing, and the lane's dropped-family branch
+	 * never leaves Committing. Once the commit settles, its completion hand-off
+	 * orders the lane's write for the JS thread. Keep every store ahead of the
+	 * releaseIntent() that follows it: the flag has to be set even when that
+	 * cleanup fails.
 	 */
 	std::atomic<bool> writesAbandoned{false};
 	static_assert(std::atomic<bool>::is_always_lock_free);
