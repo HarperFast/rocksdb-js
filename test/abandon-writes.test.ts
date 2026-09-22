@@ -1,3 +1,4 @@
+import { steadyClockNow } from '../src/load-binding.ts';
 import { RETRY_NOW, Transaction } from '../src/transaction.ts';
 import { dbRunner } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
@@ -84,6 +85,63 @@ describe('Transaction.abandonWrites()', () => {
 			expect(() => db.removeSync('key', { transaction: txn })).toThrow(/abandoned/);
 			txn.abort();
 		}));
+
+	it('is observed by a JS-thread write when the commit lane abandons a dropped family', () =>
+		dbRunner(
+			{ dbOptions: [{ name: 'live' }, { name: 'doomed' }, { name: 'doomed' }] },
+			async ({ db: live }, { db: doomed }, { db: dropper }) => {
+				live.putSync('key', 'committed');
+				const txn = new Transaction(live.store);
+				txn.putSync('key', 'staged');
+				doomed.putSync('gone', 'staged', { transaction: txn });
+				dropper.dropSync();
+
+				// Dispatches the commit synchronously (NativeTransaction::commit runs
+				// inside the promise executor), so the loop below races the commit lane
+				// with no JS turn in between: nothing can settle this promise or run the
+				// completion callback while the loop holds the thread.
+				let completionRan = false;
+				const commit = txn.commit().then(
+					() => (completionRan = true),
+					(error: unknown) => {
+						completionRan = true;
+						return error;
+					}
+				);
+
+				const codes: string[] = [];
+				const deadline = steadyClockNow() + 10000;
+				let landed = false;
+				while (steadyClockNow() < deadline) {
+					let code = 'no-error';
+					try {
+						live.putSync('probe', 'late', { transaction: txn });
+						landed = true;
+					} catch (error) {
+						code = (error as { code?: string }).code ?? 'no-code';
+					}
+					if (codes.at(-1) !== code) codes.push(code);
+					if (landed || code === 'ERR_WRITES_ABANDONED') break;
+				}
+
+				const seen = codes.join(' -> ');
+				expect(landed, `write landed on an abandoned transaction (${seen})`).toBe(false);
+				expect(codes.at(-1), `never observed the abandon (${seen})`).toBe('ERR_WRITES_ABANDONED');
+				// Before the lane publishes, the refusal comes from the Committing state
+				// gate instead; `live` is never retired, so ERR_WRITES_ABANDONED can only
+				// come from the flag the lane set on another thread.
+				for (const code of codes.slice(0, -1)) {
+					expect(code, seen).toBe('ERR_ABORTED');
+				}
+				expect(completionRan, 'the commit callback ran before the loop finished').toBe(false);
+
+				expect(await commit).toMatchObject({ code: 'ERR_COLUMN_FAMILY_DROPPED' });
+				expect(live.getSync('probe')).toBeUndefined();
+				expect(live.getSync('key')).toBe('committed');
+				expect(live.getSync('key', { transaction: txn })).toBe('staged');
+				txn.abort();
+			}
+		));
 
 	it('is idempotent and a no-op after abort', () =>
 		dbRunner(async ({ db }) => {

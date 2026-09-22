@@ -206,8 +206,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * refusal (staging, commit admission): the VT write intents were released
 	 * early, so this handle must never commit or write again — reads remain
 	 * valid until it is aborted.
+	 *
+	 * Written from the commit lane as well as from JS threads. Relaxed on every
+	 * access: readers only branch on it, and every store precedes the
+	 * releaseIntent() that follows (so a failed cleanup cannot leave it false),
+	 * which is an order no acquire load could publish anyway. Lock freedom is a
+	 * requirement, not an assumption — the load is on every write and commit.
 	 */
-	bool writesAbandoned = false;
+	std::atomic<bool> writesAbandoned{false};
+	static_assert(std::atomic<bool>::is_always_lock_free);
 
 	/**
 	 * The transaction id assigned by the database descriptor.
