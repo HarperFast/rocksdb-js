@@ -16,7 +16,7 @@ importers:
         version: 2.1.0
       ordered-binary:
         specifier: ^1.6.1
-        version: 1.6.1
+        version: 1.6.2
     devDependencies:
       '@rollup/plugin-replace':
         specifier: 6.0.3
@@ -1576,8 +1576,8 @@ packages:
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
 
-  ordered-binary@1.6.1:
-    resolution: {integrity: sha512-QkCdPooczexPLiXIrbVOPYkR3VO3T6v2OyKRkR1Xbhpy7/LAVXwahnRCgRp78Oe/Ehf0C/HATAxfSr6eA1oX+w==}
+  ordered-binary@1.6.2:
+    resolution: {integrity: sha512-BY+qgDArmYpvvmij141xbkB4Cw8RFLBQM5Zj4MODFb1SyXBRE/xO4Xj/QWbR7aUEBxbkjuNdsFVCL2TmbYrlNg==}
 
   oxfmt@0.68.0:
     resolution: {integrity: sha512-Z0XMofcXCGUXbcpBHnWyUiX93BGiw1B+lcHNbQDWEtOhX06ewoFfu4zXkyiLhRrNnMq0twqXRHUcJetf+GsiQQ==}
@@ -2810,7 +2810,7 @@ snapshots:
       msgpackr: 1.12.1
       node-addon-api: 6.1.0
       node-gyp-build-optional-packages: 5.2.2
-      ordered-binary: 1.6.1
+      ordered-binary: 1.6.2
       weak-lru-cache: 1.2.2
     optionalDependencies:
       '@lmdb/lmdb-darwin-arm64': 3.5.6
@@ -2906,7 +2906,7 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  ordered-binary@1.6.1: {}
+  ordered-binary@1.6.2: {}
 
   oxfmt@0.68.0:
     dependencies:
