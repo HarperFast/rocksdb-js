@@ -1172,7 +1172,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     a child process the parent kills on a deadline, because the stalled writer blocks the JS thread
     and the runner's own timeout cannot fire (#781 item 2).
 
-22. **A transaction timestamp is only unique within one process unless the caller names its log**:
+23. **A transaction timestamp is only unique within one process unless the caller names its log**:
     `getMonotonicTimestamp()` (`core/platform.cpp`) ratchets a file-static atomic that starts at `0`
     in every new process, then re-reads the wall clock — so a backward clock step between runs
     reissues transaction timestamps, which are transaction-log batch keys (`writeBatch`) and, for a
@@ -1201,7 +1201,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     every descriptor on that path; `DBKey` also contains read-only and secondary state, so guarding
     only one descriptor would allow a concurrent open to rescan a writer's active log.
 
-23. **A queued unlock callback belongs to its env and is released by that env's cleanup hook**:
+24. **A queued unlock callback belongs to its env and is released by that env's cleanup hook**:
     `tryLock(key, callback)` on a held key queues the callback as a threadsafe function of the
     caller's env on the shared `LockHandle` (`DBDescriptor::lockEnqueueCallback`), and only the
     holder's `unlock()` (`lockReleaseByKey`) or `db.close()` (`lockReleaseByOwner`) ever calls it. A
@@ -1218,7 +1218,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     and Node cannot free the tsfn under `napi_call_threadsafe_function`. Calling a tsfn only enqueues
     onto its env's loop, so holding the mutex across it cannot re-enter. `test/lock-teardown-abort.test.ts`
     is the child-process repro; it also proves a live waiter is still woken.
-24. **A column family is dropped logically at once and physically only when no admitted commit
+25. **A column family is dropped logically at once and physically only when no admitted commit
     names it**: `Database::Drop`/`DropSync` used to call `DropColumnFamily` immediately, and a
     transaction commit already inside RocksDB naming that family — past optimistic validation
     under the default `kValidateParallel`, or any pessimistic commit — failed in the memtable
@@ -1353,7 +1353,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     wait is replaced by deferral to the last releaser, so no immediate-drop path remains for the gate
     to protect.
 
-25. **Two process-wide clocks, two contracts — never route one through the other**:
+26. **Two process-wide clocks, two contracts — never route one through the other**:
     `getMonotonicTimestamp()` (`core/platform.cpp`) is a wall-clock ratchet: Unix-epoch
     milliseconds made strictly increasing with `nextafter` on a tie or a backward host-clock step.
     It is the transaction timestamp and transaction-log batch key, so it must stay in the epoch
@@ -1369,7 +1369,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     steady would break the durable epoch contract, and adding a ratchet to the steady clock would
     distort elapsed measurement under contention. Whether host suspend counts is platform-defined
     (Linux excludes it; current macOS and Windows implementations include it).
-26. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
+27. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
     namespace-scope `static`, so anything still in `instance->databases` when the hook returns is
     destroyed from an `atexit` handler. Closing a RocksDB database there runs
     `DBImpl::CancelAllBackgroundWork()` → `PeriodicTaskScheduler::Unregister()` **after** RocksDB's
@@ -1387,7 +1387,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
     which is why its fixtures now tear down with `destroy()` rather than `close()`).
 
-27. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
+28. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
     lifecycle waits**:
     `DBHandle::close()` publishes `cancelled` (and, per invariant 6, the per-handle compaction
     token), and every async admission refuses while either stands — so `DBHandle::open()` has to
@@ -1403,7 +1403,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     release their descriptor before the base destructor unregisters async work, preserving that
     order.
 
-28. **Handle adoption and descriptor attachment are one registry-locked publication**:
+29. **Handle adoption and descriptor attachment are one registry-locked publication**:
     `DBRegistry::OpenDB()` selects the descriptor and column family, clears stale close cancellation,
     publishes every descriptor-backed handle field, and inserts the handle into
     `DBDescriptor::closables` before releasing `databasesMutex`. The owner-thread-only `path` is set
@@ -1418,7 +1418,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` widens the point
     after atomic publication so the fixture can assert the exact closables count before destroy.
 
-29. **A user shared buffer lives as long as its column family is open, never as long as some view
+30. **A user shared buffer lives as long as its column family is open, never as long as some view
     of it**: `getUserSharedBuffer` used to erase the map entry once the last external `ArrayBuffer`
     for a key was collected, and the next call re-seeded the key from the caller's default. Every
     consumer keys boot-lifetime process state on it — id counters, a branch's claim word, blob hold
