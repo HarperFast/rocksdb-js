@@ -20,9 +20,6 @@ namespace {
 // follow — must NOT truncate) from a torn tail (only partial bytes follow).
 constexpr int RESYNC_MIN_FRAMES = 8;
 
-// Sequential window for nearby success-path headers and for the corruption-only
-// byte search in validFramingResumes. Heap-allocated: 64 KiB on the stack is
-// hostile to musl/small-stack threads.
 constexpr uint32_t RESYNC_WINDOW = 65536;
 
 struct ScanDeadlineReached {};
@@ -138,61 +135,9 @@ bool headerLooksLikeFrame(const char* header, uint32_t pos, uint32_t fileSize) {
 	return static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length <= fileSize;
 }
 
-// Returns true if valid log data resumes at some offset in [from, fileSize):
-// either a run of at least RESYNC_MIN_FRAMES well-formed frames, or any run that
-// lands exactly on EOF. Sequential candidate offsets are served from a 64 KiB
-// window; chain hops (HEADER+length) read a 13-byte header so a large payload is
-// not pulled in. A failed read throws — it must not look like "no resume".
-bool validFramingResumes(ScanReader& source, uint32_t from) {
-	std::vector<char> window(RESYNC_WINDOW);
-	uint32_t windowStart = 0;
-	uint32_t windowLen = 0;
-	char headerBuf[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
-
-	auto loadHeader = [&](uint32_t pos, const char*& out) -> bool {
-		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > source.fileSize) {
-			return false;
-		}
-		if (pos >= windowStart &&
-			pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= windowStart + windowLen) {
-			out = window.data() + (pos - windowStart);
-			return true;
-		}
-		source.readExact(pos, headerBuf, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
-		out = headerBuf;
-		return true;
-	};
-
-	for (uint32_t start = from;
-		 static_cast<uint64_t>(start) + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= source.fileSize;
-		 ++start) {
-		if (start < windowStart || start + TRANSACTION_LOG_ENTRY_HEADER_SIZE > windowStart + windowLen) {
-			windowStart = start;
-			windowLen = std::min(RESYNC_WINDOW, source.fileSize - start);
-			source.readExact(windowStart, window.data(), windowLen);
-		}
-
-		const char* header = nullptr;
-		if (!loadHeader(start, header) || !headerLooksLikeFrame(header, start, source.fileSize)) {
-			continue;
-		}
-
-		uint32_t pos = start + TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(header + 8);
-		int frames = 1;
-		if (frames >= RESYNC_MIN_FRAMES || pos == source.fileSize) {
-			return true;
-		}
-		while (loadHeader(pos, header) && headerLooksLikeFrame(header, pos, source.fileSize)) {
-			pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(header + 8);
-			if (++frames >= RESYNC_MIN_FRAMES || pos == source.fileSize) {
-				return true;
-			}
-		}
-	}
-	return false;
-}
-
-uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from, bool endIsWrittenExtent) {
+uint32_t findFramingResumeOffset(
+	ScanReader& source, uint32_t from, bool endIsWrittenExtent, bool allowPaddingLanding = true
+) {
 	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 	for (uint32_t start = from;
 		static_cast<uint64_t>(start) + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= source.fileSize;
@@ -205,7 +150,7 @@ uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from, bool endIsWr
 		int frames = 1;
 		auto reachesExtent = [&] {
 			return endIsWrittenExtent &&
-				(pos == source.fileSize || (frames >= 2 && pos == source.nonzeroEnd()));
+				(pos == source.fileSize || (allowPaddingLanding && pos == source.nonzeroEnd()));
 		};
 		if (frames >= RESYNC_MIN_FRAMES || reachesExtent()) {
 			return start;
@@ -289,11 +234,15 @@ RecoveryScan scanTransactionLogForRecovery(
 			source.readHeaderAt(pos, header);
 			double timestamp = readDoubleBE(header);
 			if (timestamp == 0) {
-				// A resume cannot hide in zeros, so the per-byte search is skipped.
 				if (requirePaddedTail) {
 					return terminate(RecoveryScan::Kind::Clean, pos);
 				}
-				if (validFramingResumes(source, pos + 1)) {
+				if (fileSize - pos > RESYNC_WINDOW) {
+					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
+				}
+				if (findFramingResumeOffset(
+						source, pos + 1, /*endIsWrittenExtent=*/true, /*allowPaddingLanding=*/false
+					) != 0) {
 					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
 				}
 				return scan(RecoveryScan::Kind::Clean, pos);
@@ -453,6 +402,10 @@ RecoveryScan scanTransactionLogForFloor(
 
 	auto scan = scanTransactionLogForRecovery(extent, readFromStream, &input, plausibleBound,
 		deadline, /*requirePaddedTail=*/true);
+	if (retiredAppendBoundary == 0 && streamExtent(input, path) != extent) {
+		scan.kind = RecoveryScan::Kind::Incomplete;
+		return scan;
+	}
 	uint32_t remaining = extent - scan.validEnd;
 	if (scan.kind == RecoveryScan::Kind::TruncateTail &&
 		remaining > 0 && remaining < TRANSACTION_LOG_ENTRY_HEADER_SIZE

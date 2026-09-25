@@ -332,6 +332,30 @@ TEST(TransactionLogRecovery, ShortRunReachingThePaddingIsNotTruncated) {
 	EXPECT_EQ(scan.lastCompleteTransactionEnd, runEnd);
 }
 
+TEST(TransactionLogRecovery, SingleFrameReachingThePaddingIsNotTruncated) {
+	LogImage img;
+	img.entry(10).entry(20);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	img.entry(16);
+	uint32_t runEnd = img.size();
+	img.zeros(4096);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, breakOffset);
+	EXPECT_EQ(scan.lastCompleteTransactionEnd, runEnd);
+}
+
+TEST(TransactionLogRecovery, LongZeroSuffixDoesNotTriggerAnUnboundedResumeSearch) {
+	LogImage img;
+	img.entry(10).entry(20);
+	uint32_t markerOffset = img.size();
+	img.zeros(65537);
+	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.validEnd, markerOffset);
+}
+
 TEST(TransactionLogRecovery, TornTailBeforeThePaddingIsStillTruncated) {
 	LogImage img;
 	img.entry(10).entry(20);
@@ -1274,7 +1298,7 @@ TEST(TransactionLogStrictScan, FrameHiddenPastAMalformedLengthIsABreak) {
 	img.zeros(4096);
 
 	auto recovery = scanTransactionLogForRecovery(img.data(), img.size());
-	ASSERT_EQ(recovery.kind, RecoveryScan::Kind::TruncateTail);
+	ASSERT_EQ(recovery.kind, RecoveryScan::Kind::MidFileCorruption);
 
 	auto scan = floorScan(img);
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);

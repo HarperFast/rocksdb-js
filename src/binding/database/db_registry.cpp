@@ -653,11 +653,6 @@ void DBRegistry::OpenDB(
 		}
 	};
 
-	// Only the first open of a physical path seeds the process-global clock, and
-	// `DBKey` splits one path into several entries. Ask the transaction-log
-	// registry what the path resolved, never a descriptor's copy of the name: an
-	// open that carried no option stamps an empty one without changing what was
-	// seeded.
 	auto rejectConflictingTimestampFloorLog = [&]() {
 		if (options.timestampFloorLog.empty()) {
 			return;
