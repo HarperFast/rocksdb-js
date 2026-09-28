@@ -1,5 +1,12 @@
 import { RocksDatabase } from '../../src/index.ts';
-import { appendFileSync, readdirSync } from 'node:fs';
+import {
+	appendFileSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 
 const [mode, dbPath, keyArg, logArg, expectedWarning] = process.argv.slice(2);
@@ -12,7 +19,7 @@ function fail(message: string): never {
 }
 
 const warnings: string[] = [];
-if (mode.startsWith('warn') || mode === 'read-no-warn') {
+if (mode.startsWith('warn') || mode === 'read-no-warn' || mode === 'absent-create-reseed') {
 	RocksDatabase.on('log.warn', (...args: unknown[]) => warnings.push(JSON.stringify(args)));
 }
 
@@ -21,7 +28,8 @@ const FRAME_PAYLOAD = 32;
 let db!: RocksDatabase;
 const unseededFirstOpen =
 	mode === 'write-unseeded' || mode === 'reopen-refuse' || mode === 'reopen-refuse-read-only';
-if (mode !== 'refuse-then-unseeded') {
+const firstUseGuard = mode.startsWith('first-use-guard');
+if (mode !== 'refuse-then-unseeded' && !firstUseGuard) {
 	db = RocksDatabase.open(dbPath, {
 		...(unseededFirstOpen ? {} : { timestampFloorLog: log }),
 		...(mode === 'warn-read-only' ? { readOnly: true } : {}),
@@ -164,6 +172,100 @@ try {
 		if (!(written > key!)) {
 			fail(`transaction timestamp ${written} did not clear the seeded key ${key}`);
 		}
+	} else if (firstUseGuard) {
+		const logDir = join(dbPath, 'transaction_logs', log);
+		const heldLogDir = `${logDir}-held`;
+		const segment = readdirSync(logDir).find((name) => name.endsWith('.txnlog'))!;
+		const durableBytes = readFileSync(join(logDir, segment));
+		renameSync(logDir, heldLogDir);
+		db = RocksDatabase.open(dbPath, { timestampFloorLog: log });
+
+		if (mode === 'first-use-guard-bad') {
+			mkdirSync(logDir);
+			writeFileSync(join(logDir, 'bad.txnlog'), 'not a transaction log');
+		} else {
+			renameSync(heldLogDir, logDir);
+		}
+
+		if (mode === 'first-use-guard-read-only') {
+			try {
+				const second = RocksDatabase.open(dbPath, {
+					readOnly: true,
+					timestampFloorLog: log,
+				});
+				second.close();
+				fail('a read-only open after the named log reappeared unexpectedly succeeded');
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (!message.includes('appeared after timestampFloorLog found it absent')) {
+					fail(`unexpected read-only first-use error: ${message}`);
+				}
+			}
+		} else {
+			for (const useLog of [
+				() => db.useLog(log),
+				() => db.transaction(async (txn) => txn.useLog(log)),
+			]) {
+				try {
+					await useLog();
+					fail('a first use after the named log reappeared unexpectedly succeeded');
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					if (!message.includes('appeared after timestampFloorLog found it absent')) {
+						fail(`unexpected first-use error: ${message}`);
+					}
+				}
+			}
+		}
+
+		if (mode === 'first-use-guard') {
+			const unchanged = readFileSync(join(logDir, segment));
+			if (!unchanged.equals(durableBytes)) {
+				fail('first-use guard changed the reappeared transaction-log segment');
+			}
+			const unseededClock = db.getMonotonicTimestamp();
+			if (!(unseededClock < key!)) {
+				fail(`clock ${unseededClock} was unexpectedly seeded from the reappeared log`);
+			}
+			db.close();
+			db = RocksDatabase.open(dbPath, { timestampFloorLog: log });
+			const reseededClock = db.getMonotonicTimestamp();
+			if (!(reseededClock > key!)) {
+				fail(`clock ${reseededClock} did not seed after every handle closed and reopened`);
+			}
+			console.log(JSON.stringify({ unseededClock, reseededClock, key }));
+		} else {
+			console.log(JSON.stringify({ refused: true }));
+		}
+	} else if (mode === 'absent-create-reseed') {
+		let written = 0;
+		await db.transaction(async (txn) => {
+			written = txn.getTimestamp();
+			await txn.put('first-use', 'v');
+			db.useLog(log).addEntry(Buffer.from('first-use'), txn.id);
+		});
+		await new Promise((resolve) => setTimeout(resolve, 250));
+		if (!warnings.some((warning) => warning.includes('monotonic timestamp floor was not seeded'))) {
+			fail('the absent timestampFloorLog warning was not emitted');
+		}
+		db.close();
+		db = RocksDatabase.open(dbPath, { timestampFloorLog: log });
+		const clock = db.getMonotonicTimestamp();
+		if (!(clock > written)) {
+			fail(`clock ${clock} did not reseed above first-use key ${written}`);
+		}
+		console.log(JSON.stringify({ written, clock }));
+	} else if (mode === 'first-use-purge') {
+		await db.transaction(async (txn) => {
+			await txn.put('before-purge', 'v');
+			db.useLog(log).addEntry(Buffer.from('before-purge'), txn.id);
+		});
+		db.purgeLogs({ name: log, destroy: true });
+		await db.transaction(async (txn) => {
+			await txn.put('after-purge', 'v');
+			db.useLog(log).addEntry(Buffer.from('after-purge'), txn.id);
+		});
+		console.log(JSON.stringify({ recreated: true }));
 	} else if (mode === 'warn' || mode === 'warn-read-only') {
 		const until = Date.now() + 5000;
 		while (

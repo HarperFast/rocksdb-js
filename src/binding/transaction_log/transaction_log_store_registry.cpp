@@ -231,6 +231,37 @@ std::chrono::milliseconds timestampFloorScanBudget() {
 	return budget;
 }
 
+bool directoryIsNonEmpty(const std::filesystem::path& path) {
+	std::error_code error;
+	if (!std::filesystem::exists(path, error)) {
+		if (error) {
+			throw rocksdb_js::DBException(
+				"Cannot inspect transaction log directory " + path.string() + ": " + error.message());
+		}
+		return false;
+	}
+	if (!std::filesystem::is_directory(path, error)) {
+		if (error) {
+			throw rocksdb_js::DBException(
+				"Cannot inspect transaction log directory " + path.string() + ": " + error.message());
+		}
+		throw rocksdb_js::DBException("Transaction log path " + path.string() + " is not a directory");
+	}
+
+	std::filesystem::directory_iterator iterator(path, error);
+	if (error) {
+		throw rocksdb_js::DBException(
+			"Cannot inspect transaction log directory " + path.string() + ": " + error.message());
+	}
+	return iterator != std::filesystem::directory_iterator();
+}
+
+std::string firstUseFloorLogMessage(const std::string& name, const std::string& dbPath) {
+	return "Transaction log \"" + name + "\" for \"" + dbPath +
+		"\" appeared after timestampFloorLog found it absent. Close every handle for this database "
+		"and reopen with timestampFloorLog so its durable keys are scanned before the log is used.";
+}
+
 } // namespace
 
 std::string TransactionLogStoreRegistry::ResolvedTimestampFloorLog(const std::string& dbPath) {
@@ -253,6 +284,8 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 
 	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 	std::shared_ptr<TransactionLogStore> store;
+	TransactionLogStoreConfig config;
+	bool alreadyResolved = false;
 	{
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 		auto it = instance->entries.find(dbPath);
@@ -260,31 +293,50 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 			return;
 		}
 		entry = it->second;
+		config = entry->config;
 		// Rescanning here would walk a store the first descriptor may be appending
 		// to right now: DBRegistry serializes registry opens, not commits.
 		if (entry->seededFloorLog == logName) {
-			return;
+			alreadyResolved = true;
 		}
 		// A first read-only or secondary descriptor cannot establish a stable
 		// cross-process view: the primary can append a durable key immediately
 		// after this scan. Reusing a seed the process already established is safe;
 		// creating one is reserved for the writable primary opener.
-		if (callerReadOnly) {
+		if (!alreadyResolved && callerReadOnly) {
 			throw rocksdb_js::DBException(
 				"Cannot seed timestampFloorLog from a first read-only or secondary open for \"" +
 				logName + "\". Open the writable primary with timestampFloorLog first, or omit "
 				"timestampFloorLog from the read-only/secondary open.");
 		}
-		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
-		auto storeIt = entry->stores.find(logName);
-		if (storeIt != entry->stores.end()) {
-			store = storeIt->second;
+		if (!alreadyResolved) {
+			std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+			auto storeIt = entry->stores.find(logName);
+			if (storeIt != entry->stores.end()) {
+				store = storeIt->second;
+			}
 		}
 	}
 
-	auto markResolved = [&]() {
+	if (alreadyResolved) {
+		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+		auto storeIt = entry->stores.find(logName);
+		if (entry->absentFloorLog == logName && storeIt != entry->stores.end() &&
+			directoryIsNonEmpty(std::filesystem::path(config.transactionLogsPath) / logName)) {
+			throw rocksdb_js::DBException(firstUseFloorLogMessage(logName, dbPath));
+		}
+		return;
+	}
+
+	auto markResolved = [&](bool logWasAbsent) {
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 		entry->seededFloorLog = logName;
+		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+		if (logWasAbsent) {
+			entry->absentFloorLog = logName;
+		} else if (entry->absentFloorLog == logName) {
+			entry->absentFloorLog.clear();
+		}
 	};
 
 	if (!store) {
@@ -293,7 +345,7 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 			<< dbPath << " does not have; the monotonic timestamp floor was not seeded.";
 		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
-		markResolved();
+		markResolved(true);
 		return;
 	}
 
@@ -408,7 +460,7 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		}
 	}
 
-	markResolved();
+	markResolved(false);
 }
 
 /**
@@ -484,6 +536,12 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Creating new store \"%s\" for \"%s\"\n",
 		instance.get(), name.c_str(), dbPath.c_str());
 
+	// A transaction's timestamp was fixed before txn.useLog(), so this cannot
+	// lazily scan a log directory that appeared after the missing-log seed.
+	if (entry->absentFloorLog == name && directoryIsNonEmpty(logDirectory)) {
+		throw rocksdb_js::DBException(firstUseFloorLogMessage(name, dbPath));
+	}
+
 	// Ensure the directory exists
 	rocksdb_js::tryCreateDirectory(logDirectory);
 
@@ -498,6 +556,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 
 	// Use insert_or_assign to replace any closing store with the same name
 	entry->stores.insert_or_assign(txnLogStore->name, txnLogStore);
+	if (entry->absentFloorLog == name) {
+		entry->absentFloorLog.clear();
+	}
 	return txnLogStore;
 }
 

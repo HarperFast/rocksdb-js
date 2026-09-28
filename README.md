@@ -180,6 +180,9 @@ Creates a new database instance.
     [Timestamp floor at open](#timestamp-floor-at-open). Unset by default, which leaves the clock
     alone. Its first use in a process must be on a writable primary open; read-only and secondary
     handles can reuse an already-established seed for the same log but cannot establish one.
+    If that first seed warned because the log was absent, the log may be created fresh, but a
+    nonempty directory that reappears before first use is refused until every handle closes and the
+    path reopens with this option.
   - `verificationTable: boolean` When `true`, this column family participates in the process-global
     [Verification Table](#verification-table): transaction writes to this column family invalidate
     the verification slot for each written key. Enable this only for column families whose records
@@ -905,6 +908,12 @@ more than ten years ahead of the wall clock refuses the opted-in open rather tha
 batch key. The floor is process-wide, so it applies to every database open in the process. The scan
 runs while the process serializes database opens and closes, so increasing its budget can delay
 unrelated opens and closes too.
+
+Naming an absent log warns so a fresh local log can be configured before its first write. The first
+use may create that fresh log, but if a nonempty directory appears after the warning it is refused:
+those keys were not part of the seed, and a transaction timestamp is already chosen before
+`txn.useLog()` could scan it. Close every handle for the path and reopen with `timestampFloorLog` to
+scan the restored log before using it.
 
 ### `db.getOldestSnapshotTimestamp(): number`
 

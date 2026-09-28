@@ -156,13 +156,24 @@ contiguous prefix provably covers every durable entry. A longer one is refused, 
 distinguishes a partial append from corruption hiding a complete higher-keyed frame. The named-log-missing warning remains non-fatal so a fresh local log can be named
 before its first append.
 
+### First-use guard for an absent log
+
+The warning remains usable for a fresh log, but it cannot authorize adopting old data later in the
+same process. `SeedTimestampFloor` records that the named log was absent. Before a writable first
+use creates a store, the registry rejects a nonempty directory with that name; it also rejects a
+later read-only or secondary descriptor that discovers one. A transaction obtains its timestamp
+before `txn.useLog()`, so rescanning at lazy resolution could not repair an already-issued key.
+Closing every handle removes that per-path state; the next opted-in open discovers and scans the
+restored log before a transaction can be constructed. A process-created fresh log clears the guard,
+so normal destroy-and-recreate log maintenance remains available.
+
 ### Verification route
 
 The forked integration fixture writes a named log in one process and opens it in another. It verifies
 successful seeding, then independently corrupts a segment, exhausts the deadline, skips discovery,
-creates a mid-file framing break, and writes an implausible key; each unsafe case must reject the
-opted-in open. Native tests cover scan classification and the repository build/check gates validate
-the binding and TypeScript surface.
+creates a mid-file framing break, writes an implausible key, and restores a named directory after an
+absent seed; each unsafe case must reject the opted-in open. Native tests cover scan classification
+and the repository build/check gates validate the binding and TypeScript surface.
 
 ### Planning review resolution
 

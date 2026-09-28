@@ -453,6 +453,56 @@ describe('monotonic clock floor', () => {
 		expect(JSON.parse(reopened.stdout).clock).toBeGreaterThan(key);
 	}, 60000);
 
+	it('refuses first use when the named log reappears after an absent seed', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		const guarded = await runFixture('first-use-guard', dbPath, key);
+		expect(guarded.code, guarded.stderr).toBe(0);
+		const { unseededClock, reseededClock } = JSON.parse(guarded.stdout);
+		expect(unseededClock).toBeLessThan(key);
+		expect(reseededClock).toBeGreaterThan(key);
+	}, 60000);
+
+	it('refuses a reappeared noncanonical log before first use', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		const guarded = await runFixture('first-use-guard-bad', dbPath, key);
+		expect(guarded.code, guarded.stderr).toBe(0);
+	}, 60000);
+
+	it('refuses a read-only re-open when the absent named log reappears', async () => {
+		const dbPath = newDBPath();
+		const key = aheadOfNow();
+
+		expect((await runFixture('write', dbPath, key)).code).toBe(0);
+
+		const guarded = await runFixture('first-use-guard-read-only', dbPath, key);
+		expect(guarded.code, guarded.stderr).toBe(0);
+	}, 60000);
+
+	it('permits a fresh absent named log to seed its subsequent first write', async () => {
+		const dbPath = newDBPath();
+
+		const seeded = await runFixture('absent-create-reseed', dbPath, Date.now());
+		expect(seeded.code, seeded.stderr).toBe(0);
+		const { written, clock } = JSON.parse(seeded.stdout);
+		expect(clock).toBeGreaterThan(written);
+	}, 60000);
+
+	it('does not retain the absent-log guard after it creates a fresh log', async () => {
+		const dbPath = newDBPath();
+
+		const recreated = await runFixture('first-use-purge', dbPath, Date.now());
+		expect(recreated.code, recreated.stderr).toBe(0);
+		expect(JSON.parse(recreated.stdout).recreated).toBe(true);
+	}, 60000);
+
 	it('covers a key the seeded clock itself wrote', async () => {
 		const dbPath = newDBPath();
 		const key = aheadOfNow();

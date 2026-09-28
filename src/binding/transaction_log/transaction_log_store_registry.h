@@ -80,6 +80,14 @@ struct TransactionLogStoreRegistryEntry final {
 	 */
 	std::string seededFloorLog;
 
+	/**
+	 * The `timestampFloorLog` that was absent when its first seed resolved.
+	 * A later first use may create it only if no directory appeared in the
+	 * meantime; otherwise its durable keys were never covered by that seed.
+	 * Guarded by `storesMutex`.
+	 */
+	std::string absentFloorLog;
+
 	TransactionLogStoreRegistryEntry() = default;
 
 	TransactionLogStoreRegistryEntry(const TransactionLogStoreConfig& cfg)

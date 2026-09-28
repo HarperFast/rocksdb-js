@@ -1200,7 +1200,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     caller can omit `timestampFloorLog` only when its writes do not need restart-safe uniqueness.
     The first descriptor that seeds it must be a writable primary: a read-only or secondary scan
     cannot establish a cross-process snapshot while a primary may append. Later read-only or
-    secondary descriptors reuse that same in-process seed without rescanning. For copied Windows
+    secondary descriptors reuse that same in-process seed without rescanning. A seed that found its
+    named log absent still warns and permits this process to create a fresh one, but it never adopts
+    a nonempty directory that appears before that first use: the transaction timestamp exists before
+    `txn.useLog()` could rescan it. That first use, and a read-only or secondary re-open that
+    discovers the directory, refuse until every path handle closes and an opted-in open scans it.
+    For copied Windows
     padding on POSIX, recovery proves the entire zero suffix before a durable truncate; an unproved
     suffix, timeout, or failed truncation sync refuses the writable open rather than letting O_APPEND
     hide a later entry past the marker.

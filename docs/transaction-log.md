@@ -337,6 +337,12 @@ no existing keys to seed. Callers that need restart-safe uniqueness must provisi
 local log consistently before its first write; a missing name can otherwise be a configuration mistake
 that leaves no key to scan.
 
+After that warning, the first use can create a genuinely fresh or empty named directory. It cannot
+adopt a nonempty directory that reappears before that first use: its keys were not covered by the
+missing-log seed, and a transaction's timestamp already exists before `txn.useLog()` could inspect it.
+That use — and a read-only or secondary re-open that discovers the directory — refuses. Close every
+handle for the path and reopen with `timestampFloorLog` so the restored log is scanned before use.
+
 A floor raised more than a second above the wall clock also warns. Only a backward clock step puts
 durable keys ahead of now, and from that point the process issues timestamps off the floor rather than
 tracking wall time — and each restart re-seeds from the keys it just wrote — so it stays ahead until
