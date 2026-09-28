@@ -208,13 +208,16 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * valid until it is aborted.
 	 *
 	 * Written from the commit lane as well as from JS threads, so the access is
-	 * atomic. Relaxed suffices because a stale false read during an in-flight
-	 * commit cannot admit work: put/remove fail their Pending checks, the
-	 * commit entry points see Committing, and the lane's dropped-family branch
-	 * never leaves Committing. Once the commit settles, its completion hand-off
-	 * orders the lane's write for the JS thread. Keep every store ahead of the
-	 * releaseIntent() that follows it: the flag has to be set even when that
-	 * cleanup fails.
+	 * atomic. Relaxed because the flag publishes nothing: readers only branch on
+	 * it, and each store precedes the releaseIntent() it pairs with, so no
+	 * stronger ordering could publish that cleanup. The owning env sees the
+	 * lane's store through the commit-completion hand-off. Keep every store ahead
+	 * of the cleanup: the flag has to be set even when that cleanup fails.
+	 *
+	 * Only this field is synchronized. A write through this transaction while a
+	 * commit is in flight — from the owning env, or from another env through
+	 * Database::PutSync/RemoveSync by txnId — still reads the plain `state`, and
+	 * from another env can stage into `txn` with no ordering against the lane.
 	 */
 	std::atomic<bool> writesAbandoned{false};
 	static_assert(std::atomic<bool>::is_always_lock_free);
