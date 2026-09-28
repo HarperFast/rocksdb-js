@@ -156,16 +156,46 @@ function onSIGINT() {
 	currentAbortController?.abort();
 }
 
+// ask() reads lines through a single shared line iterator + `linesSeenSinceRL`/
+// `linesConsumedSinceRL`, never rl.question(): question() installs a one-shot line
+// consumer, and piped stdin routinely delivers several commands in one chunk, which
+// readline parses into 'line' events synchronously — anything past the first had no
+// listener and was silently dropped (HarperFast/rocksdb-js#886).
 function createRL() {
 	const iface = createInterface({ input: stdin, output: stdout, completer });
 	iface.on('SIGINT', onSIGINT);
 	iface.on('SIGBREAK', () => process.exit(0));
+	iface.on('line', () => linesSeenSinceRL++);
+	iface.on('close', () => {
+		rlClosed = true;
+	});
+	iface.on('error', (err) => {
+		console.error(bad(`stdin error: ${err.message ?? err}`));
+		process.exit(1);
+	});
 	return iface;
 }
 
 let rl = createRL();
+let lineIterator = rl[Symbol.asyncIterator]();
+let rlClosed = false;
+let linesSeenSinceRL = 0;
+let linesConsumedSinceRL = 0;
 let ctrlC = false;
 let currentAbortController = null;
+
+// Rejects when `signal` aborts; never settles otherwise. Raced against an in-flight
+// `lineIterator.next()` so Ctrl-C can interrupt ask() without asking the iterator to
+// cancel a request it has no API to cancel.
+function whenAborted(signal) {
+	return new Promise((_resolve, reject) => {
+		signal.addEventListener(
+			'abort',
+			() => reject(Object.assign(new Error('The operation was aborted'), { code: 'ABORT_ERR' })),
+			{ once: true }
+		);
+	});
+}
 
 function str(text) {
 	try {
@@ -240,17 +270,33 @@ async function run(fn) {
 	return { time: end - start, result };
 }
 
+// Returns the next line, or `null` on EOF (stdin closed with nothing left buffered) —
+// callers that compare the answer to 'y'/'Y' already decline on anything else, so EOF
+// during a confirmation declines it for free; the main loop checks for `null` explicitly
+// to exit cleanly instead of leaving a promise permanently pending.
 async function ask(prompt) {
+	if (rlClosed) return null;
 	rl.resume();
+	rl.setPrompt(prompt);
+	rl.prompt();
+	// One `next()` call per ask(); a Ctrl-C retry below re-awaits this SAME promise
+	// rather than requesting a new one, because the iterator has no way to cancel an
+	// outstanding request — a second concurrent `next()` would just queue behind it and
+	// silently steal whatever line the user types next out from under this retry.
+	const pending = lineIterator.next();
 	while (true) {
 		try {
 			currentAbortController = new AbortController();
-			const answer = await rl.question(prompt, { signal: currentAbortController.signal });
-			rl.pause();
+			const result = await Promise.race([pending, whenAborted(currentAbortController.signal)]);
 			ctrlC = false;
-			return answer;
+			if (result.done) return null;
+			rl.pause();
+			linesConsumedSinceRL++;
+			return result.value;
 		} catch (err) {
 			if (err.code !== 'ABORT_ERR') throw err;
+			rl.clearLine();
+			rl.prompt();
 		}
 	}
 }
@@ -842,6 +888,17 @@ async function removeCommand(args) {
 }
 
 async function replCommand() {
+	// If more input already arrived in the same chunk as "repl" (piped bulk input), it's
+	// sitting unconsumed in lineIterator's buffer with no defined recipient: the CLI
+	// interface is about to close, and those bytes never reach the JS sub-REPL's stdin
+	// either (readline already parsed them out of the stream). Reinterpreting them after
+	// the handoff — as CLI commands, e.g. a buffered "clear"+"y" — would be destructive,
+	// so refuse rather than guess.
+	if (linesSeenSinceRL - linesConsumedSinceRL > 0) {
+		console.log(bad('Cannot open the JS sub-REPL with piped input still queued.'));
+		console.log(note('Run "repl" as its own invocation, with nothing piped after it.\n'));
+		return;
+	}
 	const history = [...rl.history];
 	rl.close();
 	r = repl.start({ prompt: styleText('magenta', 'js> '), useColors: true, useGlobal: false });
@@ -852,6 +909,10 @@ async function replCommand() {
 	console.log();
 	rl = createRL();
 	rl.history = history;
+	lineIterator = rl[Symbol.asyncIterator]();
+	rlClosed = false;
+	linesSeenSinceRL = 0;
+	linesConsumedSinceRL = 0;
 }
 
 function statsCommand() {
@@ -942,7 +1003,9 @@ async function main() {
 		console.log(`Type "help" for more information.`);
 
 		while (true) {
-			const line = (await ask('> ')).trim().split(/[ \t]+/);
+			const raw = await ask('> ');
+			if (raw === null) break; // EOF: nothing left buffered, exit the REPL loop cleanly.
+			const line = raw.trim().split(/[ \t]+/);
 			const command = line[0];
 			if (!command) continue;
 			const commandFn = COMMANDS[command];
