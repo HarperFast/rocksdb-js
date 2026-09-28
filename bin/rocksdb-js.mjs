@@ -262,23 +262,20 @@ async function run(fn) {
 	return { time: end - start, result };
 }
 
-// Returns the next line, or `null` once the iterator itself reports `done` (stdin
-// truly exhausted, nothing left buffered). `rlClosed` only gates the display calls
-// below, never whether to read: `close` can fire on a non-socket stdin (a file
-// redirect, or a stream with no trailing newline) while lines the iterator already
-// buffered are still unread, and lineIterator.next() keeps draining those correctly
-// regardless of `rlClosed` — only rl.resume()/setPrompt()/prompt()/pause() throw
-// ERR_USE_AFTER_CLOSE once the interface is closed, so those are the calls that skip.
+// Returns the next line, or `null` once the iterator itself reports `done`. `rlClosed`
+// gates only display calls (resume/setPrompt/prompt/pause/clearLine, each of which
+// throws ERR_USE_AFTER_CLOSE once closed) — never whether to read: `close` can fire
+// before lineIterator already-buffered lines are drained, and next() keeps draining
+// them correctly regardless.
 async function ask(prompt) {
 	if (!rlClosed) {
 		rl.resume();
 		rl.setPrompt(prompt);
 		rl.prompt();
 	}
-	// One `next()` call per ask(); a Ctrl-C retry below re-awaits this SAME promise
-	// rather than requesting a new one, because the iterator has no way to cancel an
-	// outstanding request — a second concurrent `next()` would just queue behind it and
-	// silently steal whatever line the user types next out from under this retry.
+	// One next() call per ask(); a Ctrl-C retry below re-awaits this SAME promise
+	// instead of requesting a new one, since a second `next()` would just queue behind
+	// it and steal the next real line out from under this retry.
 	const pending = lineIterator.next();
 	while (true) {
 		try {
@@ -291,6 +288,7 @@ async function ask(prompt) {
 			return result.value;
 		} catch (err) {
 			if (err.code !== 'ABORT_ERR') throw err;
+			if (rlClosed) continue;
 			rl.clearLine();
 			rl.prompt();
 		}
@@ -884,14 +882,10 @@ async function removeCommand(args) {
 }
 
 async function replCommand() {
-	// If more input already arrived in the same chunk as "repl" (piped bulk input), it's
-	// sitting unconsumed in lineIterator's buffer with no defined recipient: the CLI
-	// interface is about to close, and those bytes never reach the JS sub-REPL's stdin
-	// either (readline already parsed them out of the stream). Returning here would leave
-	// the main loop to keep draining that same queue as CLI commands — a buffered
-	// "clear"+"y" destined for the sub-REPL would then run as the CLI's own destructive
-	// commands — so exit instead of letting the queue fall through to a different
-	// interpreter than the one it was written for.
+	// Lines already queued behind "repl" have no defined recipient (readline already
+	// parsed them out of the stream, so the sub-REPL's stdin never sees them either);
+	// exit rather than return, since returning would leave the main loop to run them as
+	// CLI commands instead.
 	if (linesSeenSinceRL - linesConsumedSinceRL > 0) {
 		console.log(bad('Cannot open the JS sub-REPL with piped input still queued.'));
 		console.log(note('Run "repl" as its own invocation, with nothing piped after it.\n'));
