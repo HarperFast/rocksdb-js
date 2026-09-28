@@ -720,6 +720,19 @@ TEST(TransactionLogRecoverySource, CleanWalkReadsOnlyHeaders) {
 	EXPECT_EQ(counted.reads, 2u);
 }
 
+TEST(TransactionLogRecoverySource, RefillsHeadersAfterALargePayload) {
+	LogImage img;
+	img.entry(128 * 1024);
+	for (int i = 0; i < 2000; ++i) {
+		img.entry(1);
+	}
+	CountingRead counted{ img.data(), img.size() };
+	auto scan = scanTransactionLogForRecovery(img.size(), countingRead, &counted);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_EQ(scan.validEnd, img.size());
+	EXPECT_LT(counted.reads, 10u);
+}
+
 TEST(TransactionLogRecoverySource, DenseTinyEntriesAmortizesReads) {
 	LogImage img;
 	for (int i = 0; i < 2000; ++i) {

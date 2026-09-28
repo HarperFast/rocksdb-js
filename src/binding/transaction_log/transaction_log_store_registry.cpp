@@ -319,10 +319,18 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 	}
 
 	if (alreadyResolved) {
+		bool absentStoreBecameResident = false;
+		{
+			std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+			absentStoreBecameResident =
+				entry->absentFloorLog == logName && entry->stores.contains(logName);
+		}
+		if (!absentStoreBecameResident ||
+			!directoryIsNonEmpty(std::filesystem::path(config.transactionLogsPath) / logName)) {
+			return;
+		}
 		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
-		auto storeIt = entry->stores.find(logName);
-		if (entry->absentFloorLog == logName && storeIt != entry->stores.end() &&
-			directoryIsNonEmpty(std::filesystem::path(config.transactionLogsPath) / logName)) {
+		if (entry->absentFloorLog == logName && entry->stores.contains(logName)) {
 			throw rocksdb_js::DBException(firstUseFloorLogMessage(logName, dbPath));
 		}
 		return;
