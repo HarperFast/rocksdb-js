@@ -193,7 +193,8 @@ public:
 	 * locally originated log. Call after DiscoverStores() has completed recovery;
 	 * throws when the scan cannot establish a complete, plausible floor.
 	 */
-	static void SeedTimestampFloor(const std::string& dbPath, const std::string& logName);
+	static void SeedTimestampFloor(
+		const std::string& dbPath, const std::string& logName, bool callerReadOnly);
 
 	/**
 	 * The `timestampFloorLog` already resolved for this physical path, or empty

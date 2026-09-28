@@ -1774,7 +1774,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	logConfig.transactionLogRetentionMs = std::chrono::milliseconds(options.transactionLogRetentionMs);
 	TransactionLogStoreRegistry::Register(descriptor->identityPath, logConfig);
 	TransactionLogStoreRegistry::DiscoverStores(descriptor->identityPath, options.readOnly);
-	TransactionLogStoreRegistry::SeedTimestampFloor(descriptor->identityPath, options.timestampFloorLog);
+	TransactionLogStoreRegistry::SeedTimestampFloor(
+		descriptor->identityPath, options.timestampFloorLog, options.readOnly);
 
 	return descriptor;
 }

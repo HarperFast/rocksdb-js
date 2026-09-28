@@ -277,6 +277,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   its resolution and wraps into the past, scanning nothing). Read once per process
   (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
   `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is started with
+- `ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS` - Bound (default `2000`) on a writable open's
+  transaction-log recovery scan. In particular, a copied Windows segment on POSIX must prove its
+  entire zero-padded suffix within this time before recovery durably truncates it to the
+  end-of-entries marker; otherwise the open fails rather than letting an `O_APPEND` write land past
+  an invisible marker. The bound is honored literally, including `0`; malformed, negative, and
+  over-one-day values use the default. It is read once per process, so set it before starting Node.
 - `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` - Rate-limit window (default `1000`) for the
   per-database `'writeStall'` event. The event is rising-edge only (fires when a
   column family enters a stall); during a sustained oscillating stall it re-emits
@@ -1192,6 +1198,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     named log is fail closed: an unreadable segment, framing break, exhausted scan budget, or
     implausibly future key refuses that open rather than risk reissuing a durable batch key. The
     caller can omit `timestampFloorLog` only when its writes do not need restart-safe uniqueness.
+    The first descriptor that seeds it must be a writable primary: a read-only or secondary scan
+    cannot establish a cross-process snapshot while a primary may append. Later read-only or
+    secondary descriptors reuse that same in-process seed without rescanning. For copied Windows
+    padding on POSIX, recovery proves the entire zero suffix before a durable truncate; an unproved
+    suffix, timeout, or failed truncation sync refuses the writable open rather than letting O_APPEND
+    hide a later entry past the marker.
     **The floor walk needs proof of completeness, not recovery's repair heuristic.** It reads through
     a private stream in strict mode: ending before the extent is accepted only when the remaining
     bytes are all zero or too short for a frame. Its extent comes from that open stream, capped by a

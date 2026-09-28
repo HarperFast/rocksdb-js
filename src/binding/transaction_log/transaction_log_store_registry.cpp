@@ -244,7 +244,8 @@ std::string TransactionLogStoreRegistry::ResolvedTimestampFloorLog(const std::st
 
 void TransactionLogStoreRegistry::SeedTimestampFloor(
 	const std::string& dbPath,
-	const std::string& logName
+	const std::string& logName,
+	bool callerReadOnly
 ) {
 	if (!instance || logName.empty()) {
 		return;
@@ -263,6 +264,16 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		// to right now: DBRegistry serializes registry opens, not commits.
 		if (entry->seededFloorLog == logName) {
 			return;
+		}
+		// A first read-only or secondary descriptor cannot establish a stable
+		// cross-process view: the primary can append a durable key immediately
+		// after this scan. Reusing a seed the process already established is safe;
+		// creating one is reserved for the writable primary opener.
+		if (callerReadOnly) {
+			throw rocksdb_js::DBException(
+				"Cannot seed timestampFloorLog from a first read-only or secondary open for \"" +
+				logName + "\". Open the writable primary with timestampFloorLog first, or omit "
+				"timestampFloorLog from the read-only/secondary open.");
 		}
 		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
 		auto storeIt = entry->stores.find(logName);

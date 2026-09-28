@@ -257,33 +257,16 @@ describe('monotonic clock floor', () => {
 		expect(refused.stderr).toContain('framing breaks partway through');
 	}, 120000);
 
-	it('distinguishes an unrecovered read-only torn tail from a framing break', async () => {
+	it('refuses a first read-only timestamp-floor seed', async () => {
 		const dbPath = newDBPath();
 		const key = aheadOfNow();
 
 		expect((await runFixture('write', dbPath, key)).code).toBe(0);
-		const logDir = join(dbPath, 'transaction_logs', LOG);
-		const segment = readdirSync(logDir).find((name) => name.endsWith('.txnlog'))!;
-		const fd = openSync(join(logDir, segment), 'a');
-		try {
-			writeSync(fd, Buffer.from([1]));
-		} finally {
-			closeSync(fd);
-		}
 
-		const warned = await runFixture(
-			'warn-read-only',
-			dbPath,
-			key,
-			LOG,
-			{},
-			'partial entry this handle cannot recover'
-		);
-		expect(warned.code, warned.stderr).toBe(0);
-		const { warnings, clock } = JSON.parse(warned.stdout);
-		expect(warnings.join(' ')).toContain('partial entry this handle cannot recover');
-		expect(warnings.join(' ')).not.toContain('framing breaks partway through');
-		expect(clock).toBeGreaterThan(key);
+		const refused = await runFixture('warn-read-only', dbPath, key, LOG);
+		expect(refused.code).not.toBe(0);
+		expect(refused.stderr).toContain('first read-only or secondary open');
+		expect(refused.stderr).toContain('writable primary');
 	}, 60000);
 
 	it('recovers a writable torn tail before scanning the floor', async () => {
@@ -360,7 +343,7 @@ describe('monotonic clock floor', () => {
 
 		const refused = await runFixture('read', dbPath, key);
 		expect(refused.code).not.toBe(0);
-		expect(refused.stderr).toContain('without proof that nothing durable follows');
+		expect(refused.stderr).toContain('Cannot prove that bytes after a transaction-log end marker');
 	}, 60000);
 
 	it('refuses a read-only open when a durable frame hides past a malformed length', async () => {
@@ -380,7 +363,7 @@ describe('monotonic clock floor', () => {
 			Buffer.concat([broken, hiddenFrame(key + 60 * 60 * 1000), Buffer.alloc(4096)])
 		);
 
-		const refused = await runFixture('warn-read-only', dbPath, key);
+		const refused = await runFixture('warn', dbPath, key);
 		expect(refused.code).not.toBe(0);
 		expect(refused.stderr).toContain('without proof that nothing durable follows');
 	}, 60000);

@@ -178,7 +178,8 @@ Creates a new database instance.
     durable in that log, so a backward wall-clock step between runs cannot reissue a transaction
     timestamp that is already a key in it. See
     [Timestamp floor at open](#timestamp-floor-at-open). Unset by default, which leaves the clock
-    alone.
+    alone. Its first use in a process must be on a writable primary open; read-only and secondary
+    handles can reuse an already-established seed for the same log but cannot establish one.
   - `verificationTable: boolean` When `true`, this column family participates in the process-global
     [Verification Table](#verification-table): transaction writes to this column family invalidate
     the verification slot for each written key. Enable this only for column families whose records

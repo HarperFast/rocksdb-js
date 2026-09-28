@@ -303,9 +303,17 @@ segment that cannot be opened or scanned, an exhausted budget, or a key more tha
 the wall clock. Entries past a break can still be durable and `query()` resyncs to them, which is
 exactly why this walk cannot treat them as absent.
 
-One consequence worth stating: a read-only or secondary open runs no recovery (it must not mutate a
-live primary's logs), so a crash-torn tail it finds is refused unless it is shorter than an entry
-header. A writable open recovers such a tail before the walk runs and is unaffected.
+The first open that names `timestampFloorLog` must be the writable primary. A read-only or secondary
+handle cannot establish a cross-process snapshot: a primary could durably append a larger key as the
+handle scans. Once this process has seeded that same log through a writable primary, read-only and
+secondary descriptors reuse the established seed without rescanning. A handle that cannot meet this
+rule must omit the option.
+
+The writable recovery scan is separately bounded by `ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS`
+(default `2000`). At a zero end-of-entries marker it proves every remaining byte is zero before a
+POSIX opener durably truncates copied Windows padding; on timeout, non-zero data, or a failed sync it
+refuses the writable open rather than allowing a later `O_APPEND` write to become invisible past the
+marker.
 
 Discovery only registers segments whose filename is one the writer could have produced —
 `<sequence>.txnlog`, a positive decimal with no padding or suffix. A `.txnlog` that is not, or a

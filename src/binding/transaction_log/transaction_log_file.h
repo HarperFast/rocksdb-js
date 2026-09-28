@@ -400,7 +400,9 @@ struct TransactionLogFile final {
 	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
 	 * this->size (append-owned written extent), not the mapped/pre-extended size.
 	 */
-	RecoveryScan scanRecoveryLocked(double plausibleBound = std::numeric_limits<double>::infinity());
+	RecoveryScan scanRecoveryLocked(
+		double plausibleBound = std::numeric_limits<double>::infinity(),
+		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
 
 	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file

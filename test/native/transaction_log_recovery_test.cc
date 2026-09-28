@@ -346,13 +346,13 @@ TEST(TransactionLogRecovery, SingleFrameReachingThePaddingIsNotTruncated) {
 	EXPECT_EQ(scan.lastCompleteTransactionEnd, runEnd);
 }
 
-TEST(TransactionLogRecovery, LongZeroSuffixDoesNotTriggerAnUnboundedResumeSearch) {
+TEST(TransactionLogRecovery, LongZeroSuffixIsProvedBeforeRecoveryAcceptsIt) {
 	LogImage img;
 	img.entry(10).entry(20);
 	uint32_t markerOffset = img.size();
 	img.zeros(65537);
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
-	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
 	EXPECT_EQ(scan.validEnd, markerOffset);
 }
 
@@ -1271,8 +1271,9 @@ TEST(TransactionLogStrictScan, ZeroPaddedTailIsProvedClean) {
 }
 
 TEST(TransactionLogStrictScan, FrameHiddenPastAZeroMarkerIsABreak) {
-	// One complete frame after the marker satisfies neither the eight-frame
-	// resync threshold nor EOF, so the heuristic reports Clean and drops its key.
+	// One complete frame after the marker must make ordinary writable recovery
+	// refuse too: a POSIX O_APPEND writer cannot safely normalize a suffix that
+	// is not entirely zero.
 	LogImage img;
 	img.entry(10, 1, 500.0);
 	uint32_t marker = img.size();
@@ -1281,8 +1282,8 @@ TEST(TransactionLogStrictScan, FrameHiddenPastAZeroMarkerIsABreak) {
 	img.zeros(4096);
 
 	auto recovery = scanTransactionLogForRecovery(img.data(), img.size());
-	ASSERT_EQ(recovery.kind, RecoveryScan::Kind::Clean);
-	ASSERT_DOUBLE_EQ(recovery.maxTimestamp, 500.0);
+	ASSERT_EQ(recovery.kind, RecoveryScan::Kind::MidFileCorruption);
+	ASSERT_EQ(recovery.validEnd, marker);
 
 	auto scan = floorScan(img);
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
@@ -1331,14 +1332,14 @@ TEST(TransactionLogStrictScan, NonZeroBytesPastTheEntriesAreABreak) {
 	EXPECT_EQ(scan.validEnd, entriesEnd);
 }
 
-TEST(TransactionLogStrictScan, DefaultModeKeepsRecoveryClassification) {
+TEST(TransactionLogStrictScan, DefaultModeRefusesANonzeroSuffixPastTheMarker) {
 	LogImage img;
 	img.entry(10, 1, 500.0);
 	uint32_t entriesEnd = img.size();
 	img.zeros(TRANSACTION_LOG_ENTRY_HEADER_SIZE).raw({ 0, 0, 7, 0, 0 }).zeros(64);
 
 	auto scan = scanTransactionLogForRecovery(img.data(), img.size());
-	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Clean);
+	EXPECT_EQ(scan.kind, RecoveryScan::Kind::MidFileCorruption);
 	EXPECT_EQ(scan.validEnd, entriesEnd);
 }
 

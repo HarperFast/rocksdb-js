@@ -95,7 +95,10 @@ describe('Transaction log crash recovery', () => {
 					database.close();
 
 					const logicalEnd = statSync(logPath).size;
-					await appendFile(logPath, Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1));
+					// A copied Windows segment can have its whole pre-extended zero suffix.
+					// This must be proved and removed before the POSIX O_APPEND fd writes
+					// another entry, not merely classified as a bounded recovery break.
+					await appendFile(logPath, Buffer.alloc(128 * 1024));
 					database = RocksDatabase.open(dbPath);
 					const reopened = database.useLog('foo');
 					expect(statSync(logPath).size).toBe(logicalEnd);
@@ -109,6 +112,24 @@ describe('Transaction log crash recovery', () => {
 				}
 			})
 	);
+
+	it('refuses a writable reopen with non-zero bytes past an end marker', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			const log = db.useLog('foo');
+			await db.transaction(async (txn) => {
+				log.addEntry(Buffer.alloc(24, 'x'), txn.id);
+			});
+			const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+			db.close();
+
+			await appendFile(
+				logPath,
+				Buffer.concat([Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE), Buffer.from([1])])
+			);
+			expect(() => RocksDatabase.open(dbPath)).toThrow(
+				'Cannot prove that bytes after a transaction-log end marker are zero'
+			);
+		}));
 
 	// Only a batch's final entry carries TRANSACTION_LOG_ENTRY_LAST_FLAG, so a crash partway
 	// through a multi-entry transaction leaves whole, well-framed entries that are only a prefix

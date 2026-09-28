@@ -93,6 +93,31 @@ struct ScanReader {
 		return true;
 	}
 
+	// A writable POSIX opener may normalize copied Windows padding by truncating
+	// at a zero end-of-entries marker. That is safe only when every following
+	// byte is zero: an O_APPEND write after an unproved marker would be durable
+	// but invisible to readers. Unlike tailCannotHoldAFrame(), a short non-zero
+	// suffix is not harmless here because it is about appendability, not whether
+	// it can encode another complete frame.
+	bool tailIsAllZero(uint32_t from) {
+		if (window.size() < RESYNC_WINDOW) {
+			window.resize(RESYNC_WINDOW);
+		}
+		for (uint32_t at = from; at < fileSize; ) {
+			uint32_t chunk = std::min(RESYNC_WINDOW, fileSize - at);
+			readExact(at, window.data(), chunk);
+			windowStart = at;
+			windowLen = chunk;
+			for (uint32_t i = 0; i < chunk; ++i) {
+				if (window[i] != 0) {
+					return false;
+				}
+			}
+			at += chunk;
+		}
+		return true;
+	}
+
 	// Sequential headers within 64 KiB of the current window refill from the
 	// next header. A larger gap is a payload skip: read exactly 13 bytes so
 	// that payload is not pulled in.
@@ -237,15 +262,9 @@ RecoveryScan scanTransactionLogForRecovery(
 				if (requirePaddedTail) {
 					return terminate(RecoveryScan::Kind::Clean, pos);
 				}
-				if (fileSize - pos > RESYNC_WINDOW) {
-					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
-				}
-				if (findFramingResumeOffset(
-						source, pos + 1, /*endIsWrittenExtent=*/true, /*allowPaddingLanding=*/false
-					) != 0) {
-					return scan(RecoveryScan::Kind::MidFileCorruption, pos);
-				}
-				return scan(RecoveryScan::Kind::Clean, pos);
+				return scan(source.tailIsAllZero(pos)
+					? RecoveryScan::Kind::Clean
+					: RecoveryScan::Kind::MidFileCorruption, pos);
 			}
 			uint32_t length = readUint32BE(header + 8);
 			if (length == 0 ||
