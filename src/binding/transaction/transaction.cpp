@@ -190,7 +190,7 @@ napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
 	}
 
-	(*txnHandle)->writesAbandoned = true;
+	(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
 	(*txnHandle)->releaseIntent();
 	NAPI_RETURN_UNDEFINED();
 }
@@ -575,7 +575,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 		if (!state->status.ok()) {
 			state->claim.release(descriptor);
 			if (state->status.IsColumnFamilyDropped()) {
-				txnHandle->writesAbandoned = true;
+				txnHandle->writesAbandoned.store(true, std::memory_order_relaxed);
 				if (!txnHandle->lockedVTSlots.empty()) {
 					txnHandle->releaseIntent();
 				}
@@ -948,7 +948,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
 	}
-	if ((*txnHandle)->writesAbandoned) {
+	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
@@ -1170,7 +1170,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
 	}
-	if ((*txnHandle)->writesAbandoned) {
+	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned and can no longer be committed");
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
@@ -1195,7 +1195,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		if (!admission.ok()) {
 			(*txnHandle)->state = TransactionState::Pending;
 			if (admission.IsColumnFamilyDropped()) {
-				(*txnHandle)->writesAbandoned = true;
+				(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
 				if (!(*txnHandle)->lockedVTSlots.empty()) {
 					(*txnHandle)->releaseIntent();
 				}
@@ -1585,7 +1585,7 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[1], value, nullptr);
 	UNWRAP_TRANSACTION_HANDLE("Put");
 	// THROW_IF_READONLY((*txnHandle)->dbHandle->descriptor, "Put failed: ");
-	if ((*txnHandle)->writesAbandoned) {
+	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 	}
 
@@ -1611,7 +1611,7 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 	NAPI_GET_BUFFER(argv[0], key, "Key is required");
 	UNWRAP_TRANSACTION_HANDLE("Remove");
 	// THROW_IF_READONLY((*txnHandle)->dbHandle->descriptor, "Remove failed: ");
-	if ((*txnHandle)->writesAbandoned) {
+	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 	}
 
