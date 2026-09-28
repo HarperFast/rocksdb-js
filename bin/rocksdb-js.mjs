@@ -259,20 +259,18 @@ async function run(fn) {
 	return { time: end - start, result };
 }
 
-// Returns the next line, or `null` once the iterator itself reports `done`. `rlClosed`
-// gates only display calls (resume/setPrompt/prompt/pause/clearLine, each of which
-// throws ERR_USE_AFTER_CLOSE once closed) — never whether to read: `close` can fire
-// before lineIterator already-buffered lines are drained, and next() keeps draining
-// them correctly regardless.
+// Returns the next line, or `null` once the iterator itself reports `done`. `close` can
+// fire before lineIterator's already-buffered lines are drained, so `rlClosed` never
+// gates reading — only resume()/setPrompt()/prompt(), which throw ERR_USE_AFTER_CLOSE
+// once closed.
 async function ask(prompt) {
 	if (!rlClosed) {
 		rl.resume();
 		rl.setPrompt(prompt);
 		rl.prompt();
 	}
-	// One next() call per ask(); a Ctrl-C retry below re-awaits this SAME promise
-	// instead of requesting a new one, since a second `next()` would just queue behind
-	// it and steal the next real line out from under this retry.
+	// A second next() would queue behind this one and steal the next real line out from
+	// under a Ctrl-C retry below, so retries re-await this same promise instead.
 	const pending = lineIterator.next();
 	while (true) {
 		try {
@@ -878,10 +876,8 @@ async function removeCommand(args) {
 }
 
 async function replCommand() {
-	// A non-TTY stdin can't feed the sub-REPL interactively, and any input already read
-	// out of it — including a line readline has buffered but not yet emitted — has no
-	// defined recipient once this CLI's interface closes; refuse outright rather than
-	// try to detect a specific queued-lines case.
+	// A non-TTY stdin can't feed the sub-REPL interactively, and input already read out
+	// of it has no defined recipient once this CLI's interface closes.
 	if (!stdin.isTTY) {
 		console.log(bad('The JS sub-REPL needs an interactive terminal; stdin is not one here.\n'));
 		process.exit(1);
@@ -989,7 +985,7 @@ async function main() {
 
 		while (true) {
 			const raw = await ask('> ');
-			if (raw === null) break; // EOF: nothing left buffered, exit the REPL loop cleanly.
+			if (raw === null) break; // EOF
 			const line = raw.trim().split(/[ \t]+/);
 			const command = line[0];
 			if (!command) continue;
