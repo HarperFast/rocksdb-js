@@ -306,7 +306,7 @@ describe('monotonic clock floor', () => {
 		const segment = readdirSync(logDir).find((name) => name.endsWith('.txnlog'))!;
 		writeAtLogicalEnd(join(logDir, segment), Buffer.from([1]));
 
-		const read = await runFixture('read', dbPath, key);
+		const read = await runFixture('read-no-warn', dbPath, key);
 		expect(read.code, read.stderr).toBe(0);
 	}, 60000);
 

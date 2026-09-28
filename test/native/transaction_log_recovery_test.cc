@@ -1244,6 +1244,39 @@ TEST(TransactionLogFloorScan, OlderProtectedTornTailIsIncomplete) {
 	std::filesystem::remove_all(storePath);
 }
 
+TEST(TransactionLogFloorScan, OlderTornTailBeforeALaggingFlushIsIncomplete) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	auto previousPath = storePath / "1.txnlog";
+	auto currentPath = storePath / "2.txnlog";
+	LogImage previous;
+	previous.entry(10, 1, 500.0);
+	rocksdb_js::LogPosition flushedPosition(previous.size(), 1);
+	previous.raw({ 1 });
+	LogImage current;
+	current.entry(10, 1, 700.0);
+	writeLogImage(previousPath, previous);
+	writeLogImage(currentPath, current);
+	{
+		std::ofstream state(storePath / "txn.state", std::ios::binary | std::ios::trunc);
+		state.write(reinterpret_cast<const char*>(&flushedPosition), sizeof(flushedPosition));
+	}
+
+	{
+		rocksdb_js::TransactionLogStore store(
+			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(previousPath, 1));
+		store.sequenceFiles.emplace(2, std::make_shared<TransactionLogFile>(currentPath, 2));
+		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
+		EXPECT_FALSE(scan.complete);
+		EXPECT_TRUE(scan.stoppedAtBreak);
+		EXPECT_TRUE(scan.tornTail);
+		EXPECT_DOUBLE_EQ(scan.largestKey, 700.0);
+	}
+
+	std::filesystem::remove_all(storePath);
+}
+
 // Strict mode: the floor's completeness proof, at the buffer level so both the
 // proved and unproved shapes are pinned against ordinary recovery's answer for
 // the same bytes.

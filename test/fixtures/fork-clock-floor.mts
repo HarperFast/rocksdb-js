@@ -12,7 +12,7 @@ function fail(message: string): never {
 }
 
 const warnings: string[] = [];
-if (mode.startsWith('warn')) {
+if (mode.startsWith('warn') || mode === 'read-no-warn') {
 	RocksDatabase.on('log.warn', (...args: unknown[]) => warnings.push(JSON.stringify(args)));
 }
 
@@ -57,7 +57,7 @@ try {
 		});
 		const segments = rotating ? segmentCount() : 0;
 		console.log(JSON.stringify({ wrote: key, log, segments }));
-	} else if (mode === 'read') {
+	} else if (mode === 'read' || mode === 'read-no-warn') {
 		const clock = db.getMonotonicTimestamp();
 		let txnTimestamp = 0;
 		await db.transaction(async (txn) => {
@@ -69,6 +69,12 @@ try {
 		}
 		if (!(txnTimestamp > clock)) {
 			fail(`transaction timestamp ${txnTimestamp} is not above the seeded clock ${clock}`);
+		}
+		if (mode === 'read-no-warn') {
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			if (warnings.some((warning) => warning.includes('ends in a partial entry'))) {
+				fail('timestamp-floor scan warned about a torn tail before writable recovery');
+			}
 		}
 	} else if (mode === 'read-unseeded') {
 		const clock = db.getMonotonicTimestamp();

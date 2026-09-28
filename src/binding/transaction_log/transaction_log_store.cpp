@@ -390,6 +390,7 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 	const auto scanStarted = std::chrono::steady_clock::now();
 	const auto deadline = scanStarted + budget;
 	const LogPosition flushedPosition = this->getLastFlushedPosition();
+	const uint32_t newestSequence = files.empty() ? 0 : files.front()->sequenceNumber;
 	auto wasPurged = [this](const std::shared_ptr<TransactionLogFile>& logFile) {
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 		auto it = this->sequenceFiles.find(logFile->sequenceNumber);
@@ -437,7 +438,12 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 					break;
 				case RecoveryScan::Kind::TruncateTail:
 					result.tornTail = true;
-					if (logFile->sequenceNumber < flushedPosition.logSequenceNumber ||
+					// Only the newest writable segment can end in an interrupted
+					// append. A tail break in an older or retired file is durable
+					// corruption, even when txn.state has not caught up to it.
+					if (logFile->sequenceNumber != newestSequence ||
+						logFile->retiredAppendBoundary.load(std::memory_order_relaxed) > 0 ||
+						logFile->sequenceNumber < flushedPosition.logSequenceNumber ||
 						(logFile->sequenceNumber == flushedPosition.logSequenceNumber &&
 							fileScan.validEnd < flushedPosition.positionInLogFile)) {
 						result.stoppedAtBreak = true;
