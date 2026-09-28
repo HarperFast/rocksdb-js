@@ -160,7 +160,6 @@ function createRL() {
 	const iface = createInterface({ input: stdin, output: stdout, completer });
 	iface.on('SIGINT', onSIGINT);
 	iface.on('SIGBREAK', () => process.exit(0));
-	iface.on('line', () => linesSeenSinceRL++);
 	iface.on('close', () => {
 		rlClosed = true;
 	});
@@ -174,8 +173,6 @@ function createRL() {
 let rl = createRL();
 let lineIterator = rl[Symbol.asyncIterator]();
 let rlClosed = false;
-let linesSeenSinceRL = 0;
-let linesConsumedSinceRL = 0;
 let ctrlC = false;
 let currentAbortController = null;
 
@@ -284,7 +281,6 @@ async function ask(prompt) {
 			ctrlC = false;
 			if (result.done) return null;
 			if (!rlClosed) rl.pause();
-			linesConsumedSinceRL++;
 			return result.value;
 		} catch (err) {
 			if (err.code !== 'ABORT_ERR') throw err;
@@ -882,13 +878,12 @@ async function removeCommand(args) {
 }
 
 async function replCommand() {
-	// Lines already queued behind "repl" have no defined recipient (readline already
-	// parsed them out of the stream, so the sub-REPL's stdin never sees them either);
-	// exit rather than return, since returning would leave the main loop to run them as
-	// CLI commands instead.
-	if (linesSeenSinceRL - linesConsumedSinceRL > 0) {
-		console.log(bad('Cannot open the JS sub-REPL with piped input still queued.'));
-		console.log(note('Run "repl" as its own invocation, with nothing piped after it.\n'));
+	// A non-TTY stdin can't feed the sub-REPL interactively, and any input already read
+	// out of it — including a line readline has buffered but not yet emitted — has no
+	// defined recipient once this CLI's interface closes; refuse outright rather than
+	// try to detect a specific queued-lines case.
+	if (!stdin.isTTY) {
+		console.log(bad('The JS sub-REPL needs an interactive terminal; stdin is not one here.\n'));
 		process.exit(1);
 	}
 	const history = [...rl.history];
@@ -903,8 +898,6 @@ async function replCommand() {
 	rl.history = history;
 	lineIterator = rl[Symbol.asyncIterator]();
 	rlClosed = false;
-	linesSeenSinceRL = 0;
-	linesConsumedSinceRL = 0;
 }
 
 function statsCommand() {

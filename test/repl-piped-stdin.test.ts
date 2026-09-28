@@ -156,7 +156,7 @@ describe.skipIf(!distBuilt)('REPL piped stdin', () => {
 		try {
 			const { code, stdout } = await runCLI(dbPath, 'y\nput a 1\nrepl\nclear\ny\n');
 			expect(code).toBe(1);
-			expect(stdout).toContain('Cannot open the JS sub-REPL with piped input still queued.');
+			expect(stdout).toContain('needs an interactive terminal');
 			expect(stdout).not.toContain('Cleared');
 
 			const db = RocksDatabase.open(dbPath, { readOnly: true });
@@ -167,6 +167,29 @@ describe.skipIf(!distBuilt)('REPL piped stdin', () => {
 			}
 		} finally {
 			cleanup(dbPath);
+		}
+	});
+
+	it('refuses "repl" even when the trailing line after it has no newline yet', async () => {
+		const dbPath = generateDBPath();
+		const scriptPath = `${dbPath}-script.txt`;
+		try {
+			// No trailing "\n": "put b 2" sits in readline's internal buffer, unemitted,
+			// when replCommand runs — a count of emitted lines alone would miss it.
+			writeFileSync(scriptPath, 'y\nput a 1\nrepl\nput b 2');
+
+			const { code, stdout } = await runCLIFromFile(dbPath, scriptPath);
+			expect(code).toBe(1);
+			expect(stdout).toContain('needs an interactive terminal');
+
+			const db = RocksDatabase.open(dbPath, { readOnly: true });
+			try {
+				expect(db.getSync('b')).toBeUndefined();
+			} finally {
+				db.close();
+			}
+		} finally {
+			cleanup(dbPath, scriptPath);
 		}
 	});
 });
