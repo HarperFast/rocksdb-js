@@ -3,7 +3,16 @@ import { constants } from '../src/load-binding.js';
 import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import {
+	closeSync,
+	existsSync,
+	openSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	writeSync,
+} from 'node:fs';
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +50,30 @@ function runCrashFixture(dbPath: string, env: Record<string, string> = {}) {
 			}
 		});
 	});
+}
+
+function writeAfterLogicalEndMarker(path: string, data: Buffer): void {
+	const image = readFileSync(path);
+	let position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	while (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= image.length) {
+		if (image.readDoubleBE(position) === 0) {
+			break;
+		}
+		const length = image.readUInt32BE(position + 8);
+		if (length === 0 || position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > image.length) {
+			throw new Error(`Cannot find logical end of transaction log ${path}`);
+		}
+		position += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
+	}
+	if (position !== image.length && position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > image.length) {
+		throw new Error(`Transaction log ${path} has no end-of-entries marker`);
+	}
+	const fd = openSync(path, 'r+');
+	try {
+		writeSync(fd, data, 0, data.length, position);
+	} finally {
+		closeSync(fd);
+	}
 }
 
 // The committed watermark (lastCommittedPosition) is in-memory state advanced by
@@ -122,7 +155,7 @@ describe('Transaction log crash recovery', () => {
 			const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 			db.close();
 
-			await appendFile(
+			writeAfterLogicalEndMarker(
 				logPath,
 				Buffer.concat([Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE), Buffer.from([1])])
 			);

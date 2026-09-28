@@ -1,10 +1,10 @@
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import {
-	appendFileSync,
 	closeSync,
 	copyFileSync,
 	openSync,
+	readFileSync,
 	readdirSync,
 	rmSync,
 	writeFileSync,
@@ -33,6 +33,34 @@ function newDBPath(): string {
 	const path = generateDBPath();
 	paths.push(path);
 	return path;
+}
+
+// Windows keeps the active segment physically pre-extended, so appending to the
+// file lands after its zero-padded map rather than after its logical entries.
+// Place test corruption at the first zero header instead, which is the logical
+// end on both platforms.
+function writeAtLogicalEnd(path: string, data: Buffer): void {
+	const image = readFileSync(path);
+	let position = TXNLOG_FILE_HEADER;
+	while (position + TXNLOG_ENTRY_HEADER <= image.length) {
+		if (image.readDoubleBE(position) === 0) {
+			break;
+		}
+		const length = image.readUInt32BE(position + 8);
+		if (length === 0 || position + TXNLOG_ENTRY_HEADER + length > image.length) {
+			throw new Error(`Cannot find logical end of transaction log ${path}`);
+		}
+		position += TXNLOG_ENTRY_HEADER + length;
+	}
+	if (position !== image.length && position + TXNLOG_ENTRY_HEADER > image.length) {
+		throw new Error(`Transaction log ${path} has no end-of-entries marker`);
+	}
+	const fd = openSync(path, 'r+');
+	try {
+		writeSync(fd, data, 0, data.length, position);
+	} finally {
+		closeSync(fd);
+	}
 }
 
 function runFixture(
@@ -276,12 +304,7 @@ describe('monotonic clock floor', () => {
 		expect((await runFixture('write', dbPath, key)).code).toBe(0);
 		const logDir = join(dbPath, 'transaction_logs', LOG);
 		const segment = readdirSync(logDir).find((name) => name.endsWith('.txnlog'))!;
-		const fd = openSync(join(logDir, segment), 'a');
-		try {
-			writeSync(fd, Buffer.from([1]));
-		} finally {
-			closeSync(fd);
-		}
+		writeAtLogicalEnd(join(logDir, segment), Buffer.from([1]));
 
 		const read = await runFixture('read', dbPath, key);
 		expect(read.code, read.stderr).toBe(0);
@@ -332,7 +355,7 @@ describe('monotonic clock floor', () => {
 		const key = aheadOfNow();
 
 		expect((await runFixture('write', dbPath, key)).code).toBe(0);
-		appendFileSync(
+		writeAtLogicalEnd(
 			segmentPath(dbPath),
 			Buffer.concat([
 				Buffer.alloc(TXNLOG_ENTRY_HEADER), // the marker the walk used to stop at
@@ -358,7 +381,7 @@ describe('monotonic clock floor', () => {
 		broken.writeDoubleBE(key, 0);
 		broken.writeUInt32BE(100000, 8); // declares far more than is present
 		broken.writeUInt8(1, 12);
-		appendFileSync(
+		writeAtLogicalEnd(
 			segmentPath(dbPath),
 			Buffer.concat([broken, hiddenFrame(key + 60 * 60 * 1000), Buffer.alloc(4096)])
 		);
