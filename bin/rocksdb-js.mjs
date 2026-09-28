@@ -156,11 +156,6 @@ function onSIGINT() {
 	currentAbortController?.abort();
 }
 
-// ask() reads lines through a single shared line iterator + `linesSeenSinceRL`/
-// `linesConsumedSinceRL`, never rl.question(): question() installs a one-shot line
-// consumer, and piped stdin routinely delivers several commands in one chunk, which
-// readline parses into 'line' events synchronously — anything past the first had no
-// listener and was silently dropped (HarperFast/rocksdb-js#886).
 function createRL() {
 	const iface = createInterface({ input: stdin, output: stdout, completer });
 	iface.on('SIGINT', onSIGINT);
@@ -184,9 +179,6 @@ let linesConsumedSinceRL = 0;
 let ctrlC = false;
 let currentAbortController = null;
 
-// Rejects when `signal` aborts; never settles otherwise. Raced against an in-flight
-// `lineIterator.next()` so Ctrl-C can interrupt ask() without asking the iterator to
-// cancel a request it has no API to cancel.
 function whenAborted(signal) {
 	return new Promise((_resolve, reject) => {
 		signal.addEventListener(
@@ -270,15 +262,19 @@ async function run(fn) {
 	return { time: end - start, result };
 }
 
-// Returns the next line, or `null` on EOF (stdin closed with nothing left buffered) —
-// callers that compare the answer to 'y'/'Y' already decline on anything else, so EOF
-// during a confirmation declines it for free; the main loop checks for `null` explicitly
-// to exit cleanly instead of leaving a promise permanently pending.
+// Returns the next line, or `null` once the iterator itself reports `done` (stdin
+// truly exhausted, nothing left buffered). `rlClosed` only gates the display calls
+// below, never whether to read: `close` can fire on a non-socket stdin (a file
+// redirect, or a stream with no trailing newline) while lines the iterator already
+// buffered are still unread, and lineIterator.next() keeps draining those correctly
+// regardless of `rlClosed` — only rl.resume()/setPrompt()/prompt()/pause() throw
+// ERR_USE_AFTER_CLOSE once the interface is closed, so those are the calls that skip.
 async function ask(prompt) {
-	if (rlClosed) return null;
-	rl.resume();
-	rl.setPrompt(prompt);
-	rl.prompt();
+	if (!rlClosed) {
+		rl.resume();
+		rl.setPrompt(prompt);
+		rl.prompt();
+	}
 	// One `next()` call per ask(); a Ctrl-C retry below re-awaits this SAME promise
 	// rather than requesting a new one, because the iterator has no way to cancel an
 	// outstanding request — a second concurrent `next()` would just queue behind it and
@@ -290,7 +286,7 @@ async function ask(prompt) {
 			const result = await Promise.race([pending, whenAborted(currentAbortController.signal)]);
 			ctrlC = false;
 			if (result.done) return null;
-			rl.pause();
+			if (!rlClosed) rl.pause();
 			linesConsumedSinceRL++;
 			return result.value;
 		} catch (err) {
@@ -891,13 +887,15 @@ async function replCommand() {
 	// If more input already arrived in the same chunk as "repl" (piped bulk input), it's
 	// sitting unconsumed in lineIterator's buffer with no defined recipient: the CLI
 	// interface is about to close, and those bytes never reach the JS sub-REPL's stdin
-	// either (readline already parsed them out of the stream). Reinterpreting them after
-	// the handoff — as CLI commands, e.g. a buffered "clear"+"y" — would be destructive,
-	// so refuse rather than guess.
+	// either (readline already parsed them out of the stream). Returning here would leave
+	// the main loop to keep draining that same queue as CLI commands — a buffered
+	// "clear"+"y" destined for the sub-REPL would then run as the CLI's own destructive
+	// commands — so exit instead of letting the queue fall through to a different
+	// interpreter than the one it was written for.
 	if (linesSeenSinceRL - linesConsumedSinceRL > 0) {
 		console.log(bad('Cannot open the JS sub-REPL with piped input still queued.'));
 		console.log(note('Run "repl" as its own invocation, with nothing piped after it.\n'));
-		return;
+		process.exit(1);
 	}
 	const history = [...rl.history];
 	rl.close();
