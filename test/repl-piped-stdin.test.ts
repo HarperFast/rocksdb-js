@@ -62,7 +62,7 @@ function cleanup(...paths: string[]) {
 
 // Node-only: the CLI's fix depends on rl[Symbol.asyncIterator]() behavior (buffering,
 // 'close' timing, backpressure) that Bun's and Deno's node:readline compat shims are
-// not verified to match — see test/lock-teardown-abort.test.ts for the same reasoning.
+// not verified to match.
 describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.bun))(
 	'REPL piped stdin',
 	() => {

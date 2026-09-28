@@ -261,8 +261,8 @@ async function run(fn) {
 
 // Returns the next line, or `null` once the iterator itself reports `done`. `close` can
 // fire before lineIterator's already-buffered lines are drained, so `rlClosed` never
-// gates reading — only resume()/setPrompt()/prompt(), which throw ERR_USE_AFTER_CLOSE
-// once closed.
+// gates reading — only resume()/setPrompt()/prompt()/pause(), which throw
+// ERR_USE_AFTER_CLOSE once closed.
 async function ask(prompt) {
 	if (!rlClosed) {
 		rl.resume();
@@ -985,7 +985,7 @@ async function main() {
 
 		while (true) {
 			const raw = await ask('> ');
-			if (raw === null) break; // EOF
+			if (raw === null) break;
 			const line = raw.trim().split(/[ \t]+/);
 			const command = line[0];
 			if (!command) continue;
