@@ -282,7 +282,6 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 		}
 	}
 
-	// Resolving the request to "there is nothing to scan" also counts as resolved.
 	auto markResolved = [&]() {
 		std::lock_guard<std::mutex> lock(instance->entriesMutex);
 		entry->seededFloorLog = logName;

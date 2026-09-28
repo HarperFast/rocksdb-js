@@ -75,22 +75,7 @@ struct ScanReader {
 		if (fileSize - from < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
 			return true;
 		}
-		if (window.size() < RESYNC_WINDOW) {
-			window.resize(RESYNC_WINDOW);
-		}
-		for (uint32_t at = from; at < fileSize; ) {
-			uint32_t chunk = std::min(RESYNC_WINDOW, fileSize - at);
-			readExact(at, window.data(), chunk);
-			windowStart = at;
-			windowLen = chunk;
-			for (uint32_t i = 0; i < chunk; ++i) {
-				if (window[i] != 0) {
-					return false;
-				}
-			}
-			at += chunk;
-		}
-		return true;
+		return tailIsAllZero(from);
 	}
 
 	// A writable POSIX opener may normalize copied Windows padding by truncating
@@ -161,7 +146,7 @@ bool headerLooksLikeFrame(const char* header, uint32_t pos, uint32_t fileSize) {
 }
 
 uint32_t findFramingResumeOffset(
-	ScanReader& source, uint32_t from, bool endIsWrittenExtent, bool allowPaddingLanding = true
+	ScanReader& source, uint32_t from, bool endIsWrittenExtent
 ) {
 	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 	for (uint32_t start = from;
@@ -175,7 +160,7 @@ uint32_t findFramingResumeOffset(
 		int frames = 1;
 		auto reachesExtent = [&] {
 			return endIsWrittenExtent &&
-				(pos == source.fileSize || (allowPaddingLanding && pos == source.nonzeroEnd()));
+				(pos == source.fileSize || pos == source.nonzeroEnd());
 		};
 		if (frames >= RESYNC_MIN_FRAMES || reachesExtent()) {
 			return start;
