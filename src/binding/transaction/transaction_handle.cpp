@@ -732,7 +732,7 @@ void ColumnFamilySet::removeLast(ColumnFamilyDescriptor* column) {
 rocksdb::Status TransactionHandle::abandonForDroppedColumnFamily(
 	const std::shared_ptr<ColumnFamilyDescriptor>& column
 ) noexcept {
-	this->writesAbandoned = true;
+	this->writesAbandoned.store(true, std::memory_order_relaxed);
 	try {
 		if (!this->lockedVTSlots.empty()) {
 			this->releaseIntent();
