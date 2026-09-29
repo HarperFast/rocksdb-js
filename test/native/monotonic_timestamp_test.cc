@@ -82,8 +82,8 @@ TEST(ParseDurationMs, ClampsAboveTheCap) {
 }
 
 TEST(ParseDurationMs, ClampsAValueTooLargeForTheIntegerType) {
-	// The whole point of not using stoll: this used to throw out_of_range and
-	// silently become the default, contradicting the documented cap.
+	// std::stoll throws out_of_range here, which would fall back to the default
+	// instead of the documented cap.
 	std::string huge(100, '9');
 	EXPECT_EQ(parseDurationMs(huge.c_str(), 2000, 86400000), 86400000u);
 }
