@@ -182,7 +182,8 @@ Creates a new database instance.
     handles can reuse an already-established seed for the same log but cannot establish one.
     If that first seed warned because the log was absent, the log may be created fresh, but a
     nonempty directory that reappears before first use is refused until every handle closes and the
-    path reopens with this option.
+    path reopens with this option. The name must be a single path component that does not start with
+    `.`: startup discovery skips such directories, so the log could never be scanned again.
   - `verificationTable: boolean` When `true`, this column family participates in the process-global
     [Verification Table](#verification-table): transaction writes to this column family invalidate
     the verification slot for each written key. Enable this only for column families whose records

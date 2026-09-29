@@ -1,3 +1,4 @@
+import { RocksDatabase } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import {
@@ -545,6 +546,14 @@ describe('monotonic clock floor', () => {
 		expect(warned.code, warned.stderr).toBe(0);
 		expect(JSON.parse(warned.stdout).warnings.join(' ')).toContain('does not have');
 	}, 60000);
+
+	it('refuses a log name that discovery would never find again', () => {
+		for (const name of ['.hidden', 'a/b']) {
+			expect(() => RocksDatabase.open(newDBPath(), { timestampFloorLog: name })).toThrow(
+				'must be a single path component'
+			);
+		}
+	});
 
 	it('leaves the clock alone when no log is named', async () => {
 		const dbPath = newDBPath();

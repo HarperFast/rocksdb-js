@@ -633,6 +633,12 @@ struct TransactionLogStore final {
 		const bool readOnly = false
 	);
 
+	/**
+	 * Whether load() would rediscover a store of this name on a later open: one
+	 * path component that does not start with ".".
+	 */
+	static bool isDiscoverableName(const std::string& name);
+
 private:
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 	friend struct TransactionLogStoreTestPeer;

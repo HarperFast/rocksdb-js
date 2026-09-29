@@ -1438,6 +1438,10 @@ void TransactionLogStore::warnFlushedStateFailure(const char* what, const char* 
 	}
 }
 
+bool TransactionLogStore::isDiscoverableName(const std::string& name) {
+	return !name.empty() && name[0] != '.' && name.find_first_of("/\\") == std::string::npos;
+}
+
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	const std::filesystem::path& path,
 	const uint32_t maxFileSize,
@@ -1446,9 +1450,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	const bool readOnly
 ) {
 	auto dirName = path.filename().string();
-
-	// skip directories that start with "."
-	if (dirName.empty() || dirName[0] == '.') {
+	if (!isDiscoverableName(dirName)) {
 		return nullptr;
 	}
 
