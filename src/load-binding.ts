@@ -827,7 +827,17 @@ export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
 export const TransactionLog: TransactionLog = binding.TransactionLog;
-export const registryStatus: () => RegistryStatus = binding.registryStatus;
+/**
+ * Returns the status of every database currently held by the native registry.
+ * Walks every registered descriptor, so it samples live state rather than
+ * reading a stored property.
+ */
+export const getRegistryStatus: () => RegistryStatus = binding.registryStatus;
+/**
+ * @deprecated Use {@link getRegistryStatus} instead. This alias will be removed
+ * in v3.0.0.
+ */
+export const registryStatus: () => RegistryStatus = getRegistryStatus;
 /**
  * Flushes every open database and waits for outstanding compactions, then
  * releases the registry.
