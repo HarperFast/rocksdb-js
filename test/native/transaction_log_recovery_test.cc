@@ -1664,7 +1664,6 @@ TEST(TransactionLogFloorScan, AnAbandonedSegmentIsNotCountedAsCovered) {
 		rocksdb_js::TransactionLogStore store(
 			"store", storePath, 0, std::chrono::milliseconds(0), 0);
 		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(logPath, 1));
-		// A zero budget expires before the first segment is walked.
 		auto scan = store.scanLargestDurableKey(
 			std::numeric_limits<double>::infinity(), std::chrono::milliseconds(0));
 		EXPECT_FALSE(scan.complete);
