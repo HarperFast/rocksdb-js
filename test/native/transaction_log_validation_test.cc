@@ -543,3 +543,16 @@ TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures)
 
 	std::filesystem::remove_all(dir);
 }
+
+TEST(TransactionLogFileOpen, OpenExistingDoesNotCreateMissingPath) {
+	auto root = makeTempStoreDir("rocksdb-js-transaction-log-open-existing");
+	auto path = root / "missing-parent" / "1.txnlog";
+	TransactionLogFile missing(path, 1);
+
+	EXPECT_FALSE(missing.openExisting(0));
+	EXPECT_FALSE(missing.isOpen());
+	EXPECT_FALSE(std::filesystem::exists(path));
+	EXPECT_FALSE(std::filesystem::exists(path.parent_path()));
+
+	std::filesystem::remove_all(root);
+}

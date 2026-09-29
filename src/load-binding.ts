@@ -136,7 +136,8 @@ export type NativeTransaction = {
 export type LogBuffer = Buffer & {
 	dataView: DataView;
 	logId: number;
-	size: number;
+	readonly readableExtent: number;
+	size?: number;
 };
 
 export type TransactionLogQueryOptions = {
@@ -221,12 +222,13 @@ export type TransactionLog = {
 	name: string;
 	path: string;
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
-	_currentLogBuffer: LogBuffer;
+	_currentLogBuffer: WeakRef<LogBuffer> | undefined;
 	_findPosition(timestamp: number): number;
 	_getLastCommittedPosition(): Buffer;
 	_getLastFlushed(): number;
 	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;
 	_lastCommittedPosition: Float64Array;
+	_nextLogId(sequenceId: number): number;
 	_logBuffers: Map<number, WeakRef<LogBuffer>>;
 };
 

@@ -185,6 +185,7 @@ TEST_F(TransactionLogEraseTail, TornTailRecoveryZeroFillsWhenTheFileCannotShrink
 	file->recoverTail();
 
 	EXPECT_EQ(file->size.load(), completeEnd);
+	EXPECT_EQ(pinnedMap->readableExtent.load(), completeEnd);
 	expectPhysicalSize(tornSize);
 	std::vector<char> tail(tornSize - completeEnd, '\xff');
 	DWORD read = 0;

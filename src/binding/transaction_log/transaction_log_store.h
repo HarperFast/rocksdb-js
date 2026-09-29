@@ -23,6 +23,9 @@ namespace rocksdb_js {
 struct TransactionLogEntryBatch;
 struct TransactionLogFile;
 struct MemoryMap;
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+struct TransactionLogStoreTestPeer;
+#endif
 
 #define LOG_POSITION_SIZE 8
 
@@ -350,7 +353,8 @@ struct TransactionLogStore final {
 	std::mutex flushedStateMutex;
 
 	/**
-	 * This file stream is used to track how much of the transaction log has been flushed to the database.
+	 * Short-lived stream used to persist how much of the transaction log has
+	 * reached the database. It is reopened by pathname for every update.
 	 */
 	std::ofstream flushedStateFile;
 
@@ -358,6 +362,15 @@ struct TransactionLogStore final {
 	 * The last flushed position that was written to the state file.
 	 */
 	LogPosition lastWrittenFlushedPosition = { 0, 0 };
+
+	std::atomic<bool> flushedStateWarningEmitted = false;
+
+	/**
+	 * Generation of the correlation ring and txn.state. An all-segment purge
+	 * advances it while holding dataSetsMutex; a flush callback captures it with
+	 * its position scan and checks it after acquiring flushedStateMutex.
+	 */
+	std::atomic<uint64_t> flushedStateGeneration = 0;
 
 	/**
 	 * The next sequence position to use for a new transaction log entry.
@@ -447,6 +460,9 @@ struct TransactionLogStore final {
 	 * returns a strong reference. For a frozen file the log file keeps only a
 	 * weak handle, so this reference (handed to the JS external buffer) owns the
 	 * mapping; releasing it unmaps the file.
+	 *
+	 * Returns nullptr for a registered segment that is no longer on disk, rather
+	 * than recreating it — see `openIfPresent()`.
 	 **/
 	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t logSequenceNumber);
 
@@ -463,6 +479,20 @@ struct TransactionLogStore final {
 	* Get the log file size.
 	**/
 	uint64_t getLogFileSize(uint32_t logSequenceNumber);
+
+	/**
+	 * The lowest registered sequence number greater than `sequenceNumber`, or 0
+	 * when none exists.
+	 *
+	 * The successor over `sequenceFiles`, which is what a reader advancing past a
+	 * purged run actually needs. `findPositionByTimestamp(0)` is not that: it walks
+	 * *backward* from the current sequence and stops at the first gap, so it names
+	 * the bottom of the contiguous run ending at the current segment. With more than
+	 * one hole — a `purge({all})` that continued past a segment it could not unlink,
+	 * or segments deleted out of band and registered that way at load — that answer
+	 * is past a survivor, whose committed entries the reader then never sees.
+	 */
+	uint32_t nextSequenceAfter(uint32_t sequenceNumber);
 
 	/**
 	 * Get the shared represention object representing the last committed position.
@@ -552,6 +582,9 @@ struct TransactionLogStore final {
 	);
 
 private:
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	friend struct TransactionLogStoreTestPeer;
+#endif
 	/**
 	 * Opens a log file for the given sequence number. If the log file does not
 	 * exist, it will be created.
@@ -585,12 +618,24 @@ private:
 	 *
 	 * Never touches the active segment: its handle belongs to the write path.
 	 *
-	 * Important! Must be called with `dataSetsMutex` held, which is also what
-	 * makes the exists() check meaningful: outside it the file could be
-	 * unlinked between the check and open(), whose O_CREAT / OPEN_ALWAYS would
-	 * resurrect a header-only ghost segment.
+	 * Important! Must be called with `dataSetsMutex` held so another local purge
+	 * cannot detach the registered entry while its extent is being resolved.
+	 * The actual open is atomic and non-creating, covering cross-process unlink.
 	 */
 	void ensureExtent(const std::shared_ptr<TransactionLogFile>& file);
+
+	/**
+	 * Opens `file` if it is closed and still present on disk.
+	 *
+	 * Uses the platform's no-create open rather than a separate existence probe,
+	 * so purge cannot unlink between the check and a creating O_CREAT/OPEN_ALWAYS
+	 * call. Meaningful only with `dataSetsMutex` held; returns whether it opened.
+	 */
+	bool openIfPresent(TransactionLogFile& file);
+
+	void recordFlushedPosition(rocksdb::SequenceNumber rocksSequenceNumber);
+	void writeFlushedPosition(LogPosition latestSequencePosition, uint64_t observedGeneration);
+	void warnFlushedStateFailure(const char* what, const char* detail) noexcept;
 
 	void doPurge(
 		std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor = nullptr,
