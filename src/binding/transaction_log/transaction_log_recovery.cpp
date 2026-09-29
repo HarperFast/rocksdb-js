@@ -20,6 +20,7 @@ namespace {
 // follow — must NOT truncate) from a torn tail (only partial bytes follow).
 constexpr int RESYNC_MIN_FRAMES = 8;
 
+// Heap-allocated where used: 64 KiB on the stack is hostile to musl/small-stack threads.
 constexpr uint32_t RESYNC_WINDOW = 65536;
 
 struct ScanDeadlineReached {};
@@ -44,6 +45,9 @@ struct ScanReader {
 		bytesRead += n;
 	}
 
+	// End of the nonzero bytes: where a pre-extended file's zero padding starts. A
+	// frame chain landing exactly here is as conclusive as one landing on EOF,
+	// which padding never lets it reach. Computed on first use, reading backwards.
 	uint32_t nonzeroEnd() {
 		if (nonzeroEndKnown) {
 			return nonzeroEndValue;
@@ -257,6 +261,9 @@ RecoveryScan scanTransactionLogForRecovery(
 				if (requirePaddedTail) {
 					return terminate(RecoveryScan::Kind::TruncateTail, pos);
 				}
+				// Intact frames after the break are mid-file corruption; truncating would
+				// discard them, and the committed watermark must still reach them, so the
+				// walk resumes where framing does. A torn tail has nothing valid behind it.
 				uint32_t resume = findFramingResumeOffset(source, pos + 1, /*endIsWrittenExtent=*/true);
 				if (resume == 0) {
 					return scan(RecoveryScan::Kind::TruncateTail, pos);

@@ -416,16 +416,11 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
 ) {
 	// openFile()'s index scan shortens the append-owned `size` to the first
 	// zero-timestamp word, which would hide any suffix past it.
-	RecoveryScan scan;
-	try {
-		scan = scanTransactionLogForFloor(
-			this->path,
-			this->retiredAppendBoundary.load(std::memory_order_relaxed),
-			plausibleBound,
-			deadline);
-	} catch (const DBException& error) {
-		throw DBException(std::string(error.what()) + ": " + this->path.string());
-	}
+	RecoveryScan scan = scanTransactionLogForFloor(
+		this->path,
+		this->retiredAppendBoundary.load(std::memory_order_relaxed),
+		plausibleBound,
+		deadline);
 
 	MaxEntryScan result;
 	result.maxTimestamp = scan.maxTimestamp;

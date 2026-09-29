@@ -405,8 +405,8 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 
 	for (const auto& logFile : files) {
 		// Refusal is already decided, and DBRegistry::OpenDB holds databasesMutex
-		// across DBDescriptor::open — the rest of the budget would stall unrelated
-		// opens and closes to add detail nobody reads.
+		// across DBDescriptor::open, so scanning further would only stall unrelated
+		// opens and closes.
 		if (!result.complete || result.refusedKey > 0) {
 			break;
 		}
