@@ -1439,7 +1439,7 @@ void TransactionLogStore::warnFlushedStateFailure(const char* what, const char* 
 }
 
 bool TransactionLogStore::isDiscoverableName(const std::string& name) {
-	return !name.empty() && name[0] != '.' && name.find_first_of("/\\") == std::string::npos;
+	return !name.empty() && name[0] != '.' && std::filesystem::path(name).filename() == name;
 }
 
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(

@@ -393,9 +393,8 @@ describe('monotonic clock floor', () => {
 	}, 60000);
 
 	it('refuses to open when a stray name shadows a real segment', async () => {
-		// `std::stoul` prefix-parsed this into sequence 1 and it replaced the real
-		// 1.txnlog, so the shadowed segment's keys were silently missing from a
-		// scan that still reported itself complete.
+		// A prefix parse reads this as sequence 1 and shadows the real 1.txnlog,
+		// dropping its keys from a scan that still reports itself complete.
 		const dbPath = newDBPath();
 		const key = aheadOfNow();
 
