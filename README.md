@@ -2350,7 +2350,7 @@ import { currentThreadId } from '@harperfast/rocksdb-js';
 console.log(currentThreadId());
 ```
 
-### `registryStatus(): RegistryStatus`
+### `getRegistryStatus(): RegistryStatus`
 
 Returns an array containing that status of all active RocksDB instances.
 
@@ -2368,8 +2368,8 @@ Returns an array containing that status of all active RocksDB instances.
 - `listenerCallbacks: number` The count of in-flight callbacks.
 
 ```typescript
-import { registryStatus } from '@harperfast/rocksdb-js';
-console.log(registryStatus());
+import { getRegistryStatus } from '@harperfast/rocksdb-js';
+console.log(getRegistryStatus());
 ```
 
 ### `shutdown(): void`

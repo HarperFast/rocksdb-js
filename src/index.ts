@@ -26,6 +26,7 @@ export {
 	coolTransactionLogs,
 	currentThreadId,
 	fileLockRelease,
+	getRegistryStatus,
 	getWriteBufferManagerStats,
 	tryFileLock,
 	registryStatus,
