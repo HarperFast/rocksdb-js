@@ -367,7 +367,13 @@ describe('monotonic clock floor', () => {
 
 		const refused = await runFixture('read', dbPath, key);
 		expect(refused.code).not.toBe(0);
-		expect(refused.stderr).toContain('Cannot prove that bytes after a transaction-log end marker');
+		// Windows recovery stops at the logical size, which open set at the marker,
+		// so there the floor walk over the physical extent is what refuses.
+		expect(refused.stderr).toContain(
+			process.platform === 'win32'
+				? 'was not fully scanned'
+				: 'Cannot prove that bytes after a transaction-log end marker'
+		);
 	}, 60000);
 
 	it('refuses a read-only open when a durable frame hides past a malformed length', async () => {

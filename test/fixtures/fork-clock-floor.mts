@@ -174,7 +174,9 @@ try {
 		}
 	} else if (firstUseGuard) {
 		const logDir = join(dbPath, 'transaction_logs', log);
-		const heldLogDir = `${logDir}-held`;
+		// Dot-prefixed so discovery skips it: a discovered store holds its segment
+		// open, and Windows then refuses to rename the directory back.
+		const heldLogDir = join(dbPath, 'transaction_logs', `.${log}-held`);
 		const segment = readdirSync(logDir).find((name) => name.endsWith('.txnlog'))!;
 		const durableBytes = readFileSync(join(logDir, segment));
 		renameSync(logDir, heldLogDir);
