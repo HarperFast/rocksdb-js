@@ -371,7 +371,7 @@ describe('monotonic clock floor', () => {
 
 	it('refuses a read-only open when a durable frame hides past a malformed length', async () => {
 		// Read-only, because a writable open recovers the torn tail away before the
-		// floor is scanned; a follower runs no recovery at all (invariant 18), so it
+		// floor is scanned; a follower runs no recovery at all (invariant 19), so it
 		// is the open that has to decide the suffix is unreadable rather than absent.
 		const dbPath = newDBPath();
 		const key = aheadOfNow();
