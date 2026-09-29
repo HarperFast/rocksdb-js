@@ -160,12 +160,31 @@ function createRL() {
 	const iface = createInterface({ input: stdin, output: stdout, completer });
 	iface.on('SIGINT', onSIGINT);
 	iface.on('SIGBREAK', () => process.exit(0));
+	iface.on('close', () => {
+		rlClosed = true;
+	});
+	iface.on('error', (err) => {
+		console.error(bad(`stdin error: ${err.message ?? err}`));
+		process.exit(1);
+	});
 	return iface;
 }
 
 let rl = createRL();
+let lineIterator = rl[Symbol.asyncIterator]();
+let rlClosed = false;
 let ctrlC = false;
 let currentAbortController = null;
+
+function whenAborted(signal) {
+	return new Promise((_resolve, reject) => {
+		signal.addEventListener(
+			'abort',
+			() => reject(Object.assign(new Error('The operation was aborted'), { code: 'ABORT_ERR' })),
+			{ once: true }
+		);
+	});
+}
 
 function str(text) {
 	try {
@@ -240,17 +259,32 @@ async function run(fn) {
 	return { time: end - start, result };
 }
 
+// Returns the next line, or `null` once the iterator itself reports `done`. `close` can
+// fire before lineIterator's already-buffered lines are drained, so `rlClosed` never
+// gates reading — only resume()/setPrompt()/prompt()/pause(), which throw
+// ERR_USE_AFTER_CLOSE once closed.
 async function ask(prompt) {
-	rl.resume();
+	if (!rlClosed) {
+		rl.resume();
+		rl.setPrompt(prompt);
+		rl.prompt();
+	}
+	// A second next() would queue behind this one and steal the next real line out from
+	// under a Ctrl-C retry below, so retries re-await this same promise instead.
+	const pending = lineIterator.next();
 	while (true) {
 		try {
 			currentAbortController = new AbortController();
-			const answer = await rl.question(prompt, { signal: currentAbortController.signal });
-			rl.pause();
+			const result = await Promise.race([pending, whenAborted(currentAbortController.signal)]);
 			ctrlC = false;
-			return answer;
+			if (result.done) return null;
+			if (!rlClosed) rl.pause();
+			return result.value;
 		} catch (err) {
 			if (err.code !== 'ABORT_ERR') throw err;
+			if (rlClosed) continue;
+			rl.clearLine();
+			rl.prompt();
 		}
 	}
 }
@@ -842,6 +876,12 @@ async function removeCommand(args) {
 }
 
 async function replCommand() {
+	// A non-TTY stdin can't feed the sub-REPL interactively, and input already read out
+	// of it has no defined recipient once this CLI's interface closes.
+	if (!stdin.isTTY) {
+		console.log(bad('The JS sub-REPL needs an interactive terminal; stdin is not one here.\n'));
+		process.exit(1);
+	}
 	const history = [...rl.history];
 	rl.close();
 	r = repl.start({ prompt: styleText('magenta', 'js> '), useColors: true, useGlobal: false });
@@ -852,6 +892,8 @@ async function replCommand() {
 	console.log();
 	rl = createRL();
 	rl.history = history;
+	lineIterator = rl[Symbol.asyncIterator]();
+	rlClosed = false;
 }
 
 function statsCommand() {
@@ -942,7 +984,9 @@ async function main() {
 		console.log(`Type "help" for more information.`);
 
 		while (true) {
-			const line = (await ask('> ')).trim().split(/[ \t]+/);
+			const raw = await ask('> ');
+			if (raw === null) break;
+			const line = raw.trim().split(/[ \t]+/);
 			const command = line[0];
 			if (!command) continue;
 			const commandFn = COMMANDS[command];
