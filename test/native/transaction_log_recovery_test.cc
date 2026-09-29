@@ -804,6 +804,33 @@ TEST(TransactionLogResumeOffset, FindsTheFirstFrameAfterABreak) {
 	EXPECT_EQ(findFramingResumeOffset(img.size(), countingRead, &counted, breakOffset + 1), resumeOffset);
 }
 
+// Most candidates in a high-entropy gap declare a length that fits the file, so
+// their first hop lands far away. That hop must not evict the candidate window,
+// or every following candidate refills 64 KiB.
+TEST(TransactionLogResumeOffset, ChainHopsDoNotEvictTheCandidateWindow) {
+	LogImage img;
+	img.entry(10);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8);
+	constexpr uint32_t gap = 4 * 1024 * 1024;
+	std::vector<char> noise(gap);
+	uint64_t state = 0x9E3779B97F4A7C15ull;
+	for (auto& byte : noise) {
+		state ^= state << 13;
+		state ^= state >> 7;
+		state ^= state << 17;
+		byte = static_cast<char>(state);
+	}
+	img.raw(noise);
+	uint32_t resumeOffset = img.size();
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16);
+	}
+	CountingRead counted{ img.data(), img.size() };
+	EXPECT_EQ(findFramingResumeOffset(img.size(), countingRead, &counted, breakOffset + 1), resumeOffset);
+	EXPECT_LT(counted.bytes, 2ull * gap);
+}
+
 TEST(TransactionLogResumeOffset, ZeroWhenNothingResumes) {
 	LogImage img;
 	img.entry(10).entry(20);

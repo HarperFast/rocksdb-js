@@ -136,6 +136,17 @@ struct ScanReader {
 		windowLen = TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 		std::memcpy(window.data(), dest, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
 	}
+
+	// For a resync chain hop, which usually lands far from the candidate being
+	// tested: moving the window there would make the next candidate refill it.
+	void peekHeader(uint32_t pos, char* dest) {
+		if (pos >= windowStart &&
+			pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= windowStart + windowLen) {
+			std::memcpy(dest, window.data() + (pos - windowStart), TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+			return;
+		}
+		readExact(pos, dest, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+	}
 };
 
 bool headerLooksLikeFrame(const char* header, uint32_t pos, uint32_t fileSize) {
@@ -170,7 +181,7 @@ uint32_t findFramingResumeOffset(
 			return start;
 		}
 		while (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= source.fileSize) {
-			source.readHeaderAt(pos, header);
+			source.peekHeader(pos, header);
 			if (!headerLooksLikeFrame(header, pos, source.fileSize)) {
 				break;
 			}
