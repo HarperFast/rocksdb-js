@@ -27,9 +27,11 @@ import {
 	type ArrayBufferWithNotify,
 	type CompactOptions,
 	type CompressionInfo,
+	type CompressionOption,
 	ITERATOR_STATE_BUFFER,
 	KEY_BUFFER,
 	type LogOptions,
+	normalizeCompression,
 	Store,
 	type StoreOptions,
 	type UserSharedBufferOptions,
@@ -330,6 +332,77 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 */
 	get compression(): CompressionInfo {
 		return this.store.db.getCompression() as CompressionInfo;
+	}
+
+	/**
+	 * Dynamically changes the compression algorithm (and optional level) for
+	 * this database's column family on an already-open database — no close, no
+	 * reopen, and it does not conflict with another handle that already has
+	 * this column family open (unlike an explicit open-time `compression`
+	 * mismatch). That other handle's live options change too, silently,
+	 * without notice; a later explicit reopen of it is compared against the
+	 * new value, so a stale request it still holds can then conflict. Backed
+	 * by RocksDB's `DB::SetOptions()`, which documents both `compression` and
+	 * `blob_compression_type` as mutable column family options.
+	 *
+	 * This governs only *newly written* files (the next flush and any future
+	 * compaction output) going forward; SST and blob files already on disk
+	 * keep their existing compression until they are rewritten by a later
+	 * compaction. `compact()`'s default options can skip already-bottommost
+	 * files; use `compact({ bottommost: true })` to rewrite them under the new
+	 * codec. This is the live-mutation counterpart to the open-time
+	 * `compression` option — see the README's Compression section for when to
+	 * use each.
+	 *
+	 * @example
+	 * ```typescript
+	 * const db = RocksDatabase.open('/path/to/db', { compression: 'none' });
+	 * db.setCompression({ algorithm: 'zstd', level: 19 });
+	 * // new writes are now compressed with zstd; existing SSTs are untouched
+	 * // until compacted.
+	 * ```
+	 */
+	setCompression(compression: CompressionOption): void {
+		const { compression: algorithm, compressionLevel } = normalizeCompression(compression);
+		if (algorithm === undefined) {
+			throw new TypeError('setCompression requires a compression algorithm');
+		}
+		try {
+			this.store.db.setCompression(algorithm, compressionLevel);
+		} catch (error) {
+			// A persist failure can still have applied the change in memory (native
+			// flags this via `appliedInMemoryOnly`); resync so a same-instance
+			// close()+open() resubmits the live value instead of the stale request.
+			if ((error as { appliedInMemoryOnly?: boolean } | null)?.appliedInMemoryOnly) {
+				this.syncStoreCompressionFromLive();
+			}
+			throw error;
+		}
+		this.syncStoreCompressionFromLive();
+	}
+
+	/**
+	 * Resyncs the store's cached open-time compression option from the live
+	 * database state after `setCompression()`. Also clears
+	 * `compressionForAllColumnFamilies`: that flag means "apply this option to
+	 * every column family opened for this database", which no longer describes
+	 * a live change scoped to a single column family — leaving it set would
+	 * restamp every other family with this algorithm on the next
+	 * same-instance `close()` + `open()`.
+	 *
+	 * The flag clear is unconditional (a plain assignment, so it cannot itself
+	 * fail) and comes first: a concurrent close racing the live-state read
+	 * below throws "Database not open" from the getter, and that read failing
+	 * must not also skip the flag clear -- otherwise the same restamp this
+	 * method exists to prevent survives on the next open().
+	 */
+	private syncStoreCompressionFromLive(): void {
+		this.store.compressionForAllColumnFamilies = false;
+		try {
+			this.store.compression = this.compression;
+		} catch {
+			// Best-effort: nothing left to sync if the database already closed.
+		}
 	}
 
 	/**
