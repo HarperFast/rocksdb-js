@@ -256,6 +256,7 @@
 				'test/native/json_test.cc',
 				'test/native/open_status_test.cc',
 				'test/native/secondary_blob_test.cc',
+				'test/native/monotonic_timestamp_test.cc',
 				'test/native/platform_fd_limit_test.cc',
 				'test/native/steady_clock_test.cc',
 				'test/native/transaction_log_madvise_test.cc',

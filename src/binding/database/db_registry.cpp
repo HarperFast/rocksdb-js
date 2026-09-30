@@ -1,8 +1,10 @@
 #include <chrono>
 #include <optional>
 #include <cstdlib>
+#include <sstream>
 #include <vector>
 #include "database/db_registry.h"
+#include "transaction_log/transaction_log_store_registry.h"
 #include "transaction/transaction_handle.h"
 #include "database/db_settings.h"
 #include "core/test_seam.h"
@@ -651,6 +653,36 @@ void DBRegistry::OpenDB(
 		}
 	};
 
+	auto rejectConflictingTimestampFloorLog = [&]() {
+		if (options.timestampFloorLog.empty()) {
+			return;
+		}
+		bool pathIsOpen = false;
+		for (const auto& [existingKey, existingEntry] : instance->databases) {
+			if (existingKey.path == identityPath && existingEntry.descriptor) {
+				pathIsOpen = true;
+				break;
+			}
+		}
+		if (!pathIsOpen) {
+			return;
+		}
+		const std::string resolved =
+			TransactionLogStoreRegistry::ResolvedTimestampFloorLog(identityPath);
+		if (resolved == options.timestampFloorLog) {
+			return;
+		}
+		std::ostringstream msg;
+		msg << "Database \"" << path << "\" is already open"
+			<< (resolved.empty()
+				? " without a timestampFloorLog"
+				: " with timestampFloorLog \"" + resolved + "\"")
+			<< "; cannot open it with timestampFloorLog \"" << options.timestampFloorLog
+			<< "\" because the monotonic timestamp floor was not seeded from it. Close every "
+			   "handle for this path, then reopen with timestampFloorLog.";
+		throw rocksdb_js::DBException(msg.str());
+	};
+
 	DBKey key{identityPath, options.readOnly, options.secondaryPath};
 	auto entryIterator = instance->databases.end();
 	// Armed on the first wait for a reclaiming generation, so time spent
@@ -781,6 +813,7 @@ void DBRegistry::OpenDB(
 			}
 
 			rejectConflictingSecondaryWorkspace();
+			rejectConflictingTimestampFloorLog();
 			entryIterator = instance->databases.find(key);
 			if (entryIterator == instance->databases.end()) {
 				entryIterator = instance->databases.emplace(key, DBRegistryEntry()).first;

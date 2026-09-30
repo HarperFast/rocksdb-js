@@ -6,6 +6,7 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include <limits>
 #include <string>
 #include <utility>
 #include "core/debug.h"
@@ -50,6 +51,16 @@
 #define TRANSACTION_LOG_BYTES_LANDED_UNKNOWN (-1)
 
 namespace rocksdb_js {
+
+/**
+ * Parses a transaction-log segment filename into its sequence number. The only
+ * accepted form is what the writer produces — `<sequence>.txnlog`, a positive
+ * decimal uint32 with no leading zeros, sign or padding — so a name this store
+ * could not have written is rejected rather than prefix-parsed into an identity
+ * that collides with a real segment's. Non-throwing and allocation-free:
+ * discovery runs it on every `.txnlog` of every open, floor option or not.
+ */
+bool parseTransactionLogSegmentName(const std::string& filename, uint32_t& sequenceNumber);
 
 /**
  * Path of the fixed-size append-boundary marker paired with a transaction-log
@@ -389,7 +400,9 @@ struct TransactionLogFile final {
 	 * requested bytes — that is not a torn tail. Recovery bounds the walk by
 	 * this->size (append-owned written extent), not the mapped/pre-extended size.
 	 */
-	RecoveryScan scanRecoveryLocked();
+	RecoveryScan scanRecoveryLocked(
+		double plausibleBound = std::numeric_limits<double>::infinity(),
+		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
 
 	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file
@@ -432,6 +445,28 @@ struct TransactionLogFile final {
 	 * that and falls back toward txn.state.
 	 */
 	uint32_t scanForLastCompleteTransactionEnd();
+
+	struct MaxEntryScan final {
+		double maxTimestamp = 0;
+		double maxImplausibleTimestamp = 0;
+		RecoveryScan::Kind kind = RecoveryScan::Kind::Clean;
+		uint32_t validEnd = 0;
+		/** Bytes this walk read, reported so a budget failure can be sized. */
+		uint64_t scannedBytes = 0;
+	};
+
+	/**
+	 * The largest batch key still durable in this file, for the monotonic clock
+	 * floor. It must run *after* open-time recovery — a key that recoverTail()
+	 * truncated away is no longer durable and must not reach the floor. It takes
+	 * no file lock: the only shared state it reads is the retired append boundary
+	 * (one atomic load), and the extent and bytes both come from the private
+	 * stream scanTransactionLogForFloor() opens, under that function's stricter
+	 * termination proof. Throws DBException on I/O failure.
+	 */
+	MaxEntryScan scanMaxEntryTimestamp(
+		double plausibleBound,
+		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
 
 	/**
 	 * Closes the log file and removes it.

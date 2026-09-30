@@ -4,7 +4,7 @@ import { parseTransactionLog } from '../src/parse-transaction-log.js';
 import { dbRunner, generateDBPath } from './lib/util.js';
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -80,6 +80,61 @@ describe('Transaction log crash recovery', () => {
 				database.close();
 			}
 		}));
+
+	it.skipIf(process.platform === 'win32')(
+		'truncates copied Windows zero padding before appending on POSIX',
+		() =>
+			dbRunner(async ({ db, dbPath }) => {
+				let database = db;
+				try {
+					const log = database.useLog('foo');
+					await database.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(24, 'x'), txn.id);
+					});
+					const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+					database.close();
+
+					const logicalEnd = statSync(logPath).size;
+					// A copied Windows segment can have its whole pre-extended zero suffix.
+					// This must be proved and removed before the POSIX O_APPEND fd writes
+					// another entry, not merely classified as a bounded recovery break.
+					await appendFile(logPath, Buffer.alloc(128 * 1024));
+					database = RocksDatabase.open(dbPath);
+					const reopened = database.useLog('foo');
+					expect(statSync(logPath).size).toBe(logicalEnd);
+
+					await database.transaction(async (txn) => {
+						reopened.addEntry(Buffer.alloc(24, 'y'), txn.id);
+					});
+					expect(Array.from(reopened.query({ start: 0 })).length).toBe(2);
+				} finally {
+					database.close();
+				}
+			})
+	);
+
+	// Windows open sets the logical size at the first zero word and appends seek
+	// to it, so the next entry overwrites the marker rather than landing past it.
+	it.skipIf(process.platform === 'win32')(
+		'refuses a writable reopen with non-zero bytes past an end marker on POSIX',
+		() =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.alloc(24, 'x'), txn.id);
+				});
+				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				db.close();
+
+				await appendFile(
+					logPath,
+					Buffer.concat([Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE), Buffer.from([1])])
+				);
+				expect(() => RocksDatabase.open(dbPath)).toThrow(
+					'Cannot prove that bytes after a transaction-log end marker are zero'
+				);
+			})
+	);
 
 	// Only a batch's final entry carries TRANSACTION_LOG_ENTRY_LAST_FLAG, so a crash partway
 	// through a multi-entry transaction leaves whole, well-framed entries that are only a prefix

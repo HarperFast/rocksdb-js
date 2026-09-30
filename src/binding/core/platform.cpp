@@ -1,3 +1,4 @@
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <atomic>
@@ -133,12 +134,15 @@ std::chrono::system_clock::time_point convertFileTimeToSystemTime(
 
 static std::atomic<double> lastTimestamp{0.0};
 
-double getMonotonicTimestamp() {
+double getWallClockTimestamp() {
 	int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::system_clock::now().time_since_epoch()
 	).count();
+	return static_cast<double>(now) / 1000000.0;
+}
 
-	double result = static_cast<double>(now) / 1000000.0;
+double getMonotonicTimestamp() {
+	double result = getWallClockTimestamp();
 
 	double last = lastTimestamp.load(std::memory_order_acquire);
 	if (result <= last) {
@@ -220,6 +224,54 @@ bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::pa
 	// A root ("/", "c:/") already ends in the separator, so requiring another
 	// one there would report every path on the volume as unrelated to it.
 	return parentStr.back() == '/' || childStr[parentStr.size()] == '/';
+}
+
+bool raiseMonotonicTimestampFloor(double floor) {
+	return raiseMonotonicTimestampFloor(floor, getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
+}
+
+bool raiseMonotonicTimestampFloor(double floor, double plausibleBound) {
+	if (!std::isfinite(floor) || floor <= 0 || floor >= MAX_TIMESTAMP_MS || floor > plausibleBound) {
+		return false;
+	}
+
+	double last = lastTimestamp.load(std::memory_order_acquire);
+	while (last < floor) {
+		if (lastTimestamp.compare_exchange_weak(last, floor, std::memory_order_acq_rel)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+uint64_t parseDurationMs(const char* raw, uint64_t defaultMs, uint64_t maxMs) {
+	if (raw == nullptr || *raw == '\0') {
+		return defaultMs;
+	}
+	const char* end = raw + std::strlen(raw);
+	unsigned long long parsed = 0;
+	// from_chars on an unsigned type rejects a sign and leading whitespace
+	// outright, so "-1" and " 5" land on the default rather than being read as
+	// magnitudes.
+	auto [stop, error] = std::from_chars(raw, end, parsed);
+	if (stop != end) {
+		return defaultMs;
+	}
+	if (error == std::errc::result_out_of_range) {
+		return maxMs;
+	}
+	if (error != std::errc()) {
+		return defaultMs;
+	}
+	return parsed > maxMs ? maxMs : static_cast<uint64_t>(parsed);
+}
+
+bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs) {
+	if (budgetMs == 0) {
+		return false;
+	}
+	return static_cast<double>(elapsedMs) >=
+		static_cast<double>(budgetMs) * BUDGET_PRESSURE_FRACTION;
 }
 
 void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {

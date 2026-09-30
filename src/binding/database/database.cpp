@@ -19,6 +19,7 @@
 #include "napi/async.h"
 #include "core/verification_table.h"
 #include "core/compression.h"
+#include "transaction_log/transaction_log_store.h"
 
 namespace rocksdb_js {
 
@@ -2497,6 +2498,17 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	dbHandleOptions.transactionLogsPath = transactionLogsPath.empty()
 		? std::string()
 		: rocksdb_js::resolveIdentityPath(transactionLogsPath).string();
+
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "timestampFloorLog", dbHandleOptions.timestampFloorLog));
+	// An undiscoverable log is absent to every later seed, and the absent-log
+	// guard would then refuse its first use forever.
+	if (!dbHandleOptions.timestampFloorLog.empty() &&
+		!rocksdb_js::TransactionLogStore::isDiscoverableName(dbHandleOptions.timestampFloorLog)) {
+		std::string errorMsg = "timestampFloorLog \"" + dbHandleOptions.timestampFloorLog +
+			"\" must be a single path component that does not start with \".\"";
+		::napi_throw_error(env, nullptr, errorMsg.c_str());
+		return nullptr;
+	}
 
 	if (dbHandleOptions.transactionLogMaxAgeThreshold < 0.0f || dbHandleOptions.transactionLogMaxAgeThreshold > 1.0f) {
 		::napi_throw_error(env, nullptr, "transactionLogMaxAgeThreshold must be between 0.0 and 1.0");

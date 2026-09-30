@@ -4,7 +4,16 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "napi/global_events.h"
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 #include <filesystem>
+#include <iomanip>
+#include <sstream>
 #include <vector>
 
 namespace rocksdb_js {
@@ -212,6 +221,256 @@ void TransactionLogStoreRegistry::DiscoverStores(const std::string& dbPath, bool
 	}
 }
 
+namespace {
+
+std::chrono::milliseconds timestampFloorScanBudget() {
+	static const std::chrono::milliseconds budget(parseDurationMs(
+		::getenv("ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS"),
+		/*defaultMs=*/2000,
+		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL));
+	return budget;
+}
+
+bool directoryIsNonEmpty(const std::filesystem::path& path) {
+	std::error_code error;
+	if (!std::filesystem::exists(path, error)) {
+		if (error) {
+			throw rocksdb_js::DBException(
+				"Cannot inspect transaction log directory " + path.string() + ": " + error.message());
+		}
+		return false;
+	}
+	if (!std::filesystem::is_directory(path, error)) {
+		if (error) {
+			throw rocksdb_js::DBException(
+				"Cannot inspect transaction log directory " + path.string() + ": " + error.message());
+		}
+		throw rocksdb_js::DBException("Transaction log path " + path.string() + " is not a directory");
+	}
+
+	std::filesystem::directory_iterator iterator(path, error);
+	if (error) {
+		throw rocksdb_js::DBException(
+			"Cannot inspect transaction log directory " + path.string() + ": " + error.message());
+	}
+	return iterator != std::filesystem::directory_iterator();
+}
+
+std::string firstUseFloorLogMessage(const std::string& name, const std::string& dbPath) {
+	return "Transaction log \"" + name + "\" for \"" + dbPath +
+		"\" appeared after timestampFloorLog found it absent. Close every handle for this database "
+		"and reopen with timestampFloorLog so its durable keys are scanned before the log is used.";
+}
+
+} // namespace
+
+std::string TransactionLogStoreRegistry::ResolvedTimestampFloorLog(const std::string& dbPath) {
+	if (!instance) {
+		return {};
+	}
+	std::lock_guard<std::mutex> lock(instance->entriesMutex);
+	auto it = instance->entries.find(dbPath);
+	return it == instance->entries.end() ? std::string() : it->second->seededFloorLog;
+}
+
+void TransactionLogStoreRegistry::SeedTimestampFloor(
+	const std::string& dbPath,
+	const std::string& logName,
+	bool callerReadOnly
+) {
+	if (!instance || logName.empty()) {
+		return;
+	}
+
+	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
+	std::shared_ptr<TransactionLogStore> store;
+	TransactionLogStoreConfig config;
+	bool alreadyResolved = false;
+	{
+		std::lock_guard<std::mutex> lock(instance->entriesMutex);
+		auto it = instance->entries.find(dbPath);
+		if (it == instance->entries.end()) {
+			return;
+		}
+		entry = it->second;
+		config = entry->config;
+		// Rescanning here would walk a store the first descriptor may be appending
+		// to right now: DBRegistry serializes registry opens, not commits.
+		if (entry->seededFloorLog == logName) {
+			alreadyResolved = true;
+		}
+		// A first read-only or secondary descriptor cannot establish a stable
+		// cross-process view: the primary can append a durable key immediately
+		// after this scan. Reusing a seed the process already established is safe;
+		// creating one is reserved for the writable primary opener.
+		if (!alreadyResolved && callerReadOnly) {
+			throw rocksdb_js::DBException(
+				"Cannot seed timestampFloorLog from a first read-only or secondary open for \"" +
+				logName + "\". Open the writable primary with timestampFloorLog first, or omit "
+				"timestampFloorLog from the read-only/secondary open.");
+		}
+		if (!alreadyResolved) {
+			std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+			auto storeIt = entry->stores.find(logName);
+			if (storeIt != entry->stores.end()) {
+				store = storeIt->second;
+			}
+		}
+	}
+
+	if (alreadyResolved) {
+		bool absentStoreBecameResident = false;
+		{
+			std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+			absentStoreBecameResident =
+				entry->absentFloorLog == logName && entry->stores.contains(logName);
+		}
+		if (!absentStoreBecameResident ||
+			!directoryIsNonEmpty(std::filesystem::path(config.transactionLogsPath) / logName)) {
+			return;
+		}
+		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+		if (entry->absentFloorLog == logName && entry->stores.contains(logName)) {
+			throw rocksdb_js::DBException(firstUseFloorLogMessage(logName, dbPath));
+		}
+		return;
+	}
+
+	auto markResolved = [&](bool logWasAbsent) {
+		std::lock_guard<std::mutex> lock(instance->entriesMutex);
+		entry->seededFloorLog = logName;
+		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
+		if (logWasAbsent) {
+			entry->absentFloorLog = logName;
+		} else if (entry->absentFloorLog == logName) {
+			entry->absentFloorLog.clear();
+		}
+	};
+
+	if (!store) {
+		std::ostringstream msg;
+		msg << "timestampFloorLog names transaction log \"" << logName << "\", which database "
+			<< dbPath << " does not have; the monotonic timestamp floor was not seeded.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		markResolved(true);
+		return;
+	}
+
+	const double plausibleBound = std::min(
+		getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS,
+		std::nextafter(MAX_TIMESTAMP_MS, 0.0));
+	auto scan = store->scanLargestDurableKey(plausibleBound, timestampFloorScanBudget());
+
+	if (scan.refusedKey > 0) {
+		std::ostringstream msg;
+		msg << "Transaction log \"" << logName << "\" of database " << dbPath
+			<< " holds a batch key more than "
+			<< static_cast<long long>(MAX_CLOCK_FLOOR_SKEW_MS / 86400000.0)
+			<< " days ahead of the wall clock (" << std::fixed << scan.refusedKey << ")";
+		if (!scan.refusedKeySegment.empty()) {
+			msg << " in segment " << scan.refusedKeySegment;
+		}
+		msg << ". Refusing to open with timestampFloorLog. If this node's clock is wrong, correct it"
+			   " and retry. Otherwise the key is durable, and the only ways past it are to open"
+			   " without timestampFloorLog — which forfeits restart-safe timestamp uniqueness for"
+			   " this process — or to discard that segment, which discards every entry in it and is"
+			   " safe only if none is still needed for replay, replication or audit.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		throw rocksdb_js::DBException(msg.str());
+	}
+
+	if (!scan.complete) {
+		std::vector<std::string> reasons;
+		if (scan.budgetExhausted) {
+			std::ostringstream detail;
+			detail << "the timestamp floor scan budget ran out"
+				   << " (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS=" << timestampFloorScanBudget().count()
+				   << "ms read " << scan.bytesScanned << " byte(s) across " << scan.segmentsScanned
+				   << " of " << scan.segmentsTotal << " segment(s); the budget is per database path,"
+				   << " so raising it multiplies by the number of opted-in databases)";
+			reasons.emplace_back(detail.str());
+		}
+		if (scan.stoppedAtBreak) {
+			reasons.emplace_back(
+				"a segment ends without proof that nothing durable follows — its framing breaks"
+				" partway through, or bytes past its last entry are neither a complete frame this"
+				" walk could read nor zero padding. A query resyncs past such a frame and can still"
+				" return the entries after it, so this walk cannot treat them as absent");
+		}
+		if (scan.discoveryIncomplete) {
+			std::ostringstream detail;
+			detail << "transaction-log discovery skipped a segment at open";
+			if (!scan.discoverySkipped.empty()) {
+				detail << " (";
+				for (size_t i = 0; i < scan.discoverySkipped.size(); ++i) {
+					detail << (i == 0 ? "" : ", ") << scan.discoverySkipped[i];
+				}
+				if (scan.skippedDiscoveryCount > scan.discoverySkipped.size()) {
+					detail << ", and " << (scan.skippedDiscoveryCount - scan.discoverySkipped.size())
+						   << " more";
+				}
+				detail << ")";
+			}
+			reasons.emplace_back(detail.str());
+		}
+		if (scan.readFailed || reasons.empty()) {
+			reasons.emplace_back("a segment could not be read at open");
+		}
+
+		std::ostringstream msg;
+		msg << "Transaction log \"" << logName << "\" of database " << dbPath
+			<< " was not fully scanned: ";
+		for (size_t i = 0; i < reasons.size(); ++i) {
+			msg << (i == 0 ? "" : "; and ") << reasons[i];
+		}
+		msg << ". Refusing to open with timestampFloorLog because the monotonic timestamp floor may sit below a batch key already durable in it.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		throw rocksdb_js::DBException(msg.str());
+	}
+
+	if (scan.tornTail) {
+		std::ostringstream msg;
+		msg << "Transaction log \"" << logName << "\" of database " << dbPath
+			<< " ends in a partial entry this handle cannot recover; it may be an in-flight "
+			   "append from another writer. Its contiguous framed prefix was scanned.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	}
+
+	if (budgetNearlyExhausted(static_cast<uint64_t>(scan.elapsed.count()),
+			static_cast<uint64_t>(timestampFloorScanBudget().count()))) {
+		std::ostringstream msg;
+		msg << "The monotonic timestamp floor scan of transaction log \"" << logName
+			<< "\" of database " << dbPath << " used " << scan.elapsed.count() << "ms of its "
+			<< timestampFloorScanBudget().count()
+			<< "ms budget (ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS) reading " << scan.bytesScanned
+			<< " byte(s) across " << scan.segmentsTotal
+			<< " segment(s). This log is close to the size at which an opted-in open is refused;"
+			   " raise the budget or reduce the log's retention before it gets there.";
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	}
+
+	if (raiseMonotonicTimestampFloor(scan.largestKey, plausibleBound)) {
+		DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor Raised clock floor to %f from log \"%s\" of \"%s\"\n",
+			instance.get(), scan.largestKey, logName.c_str(), dbPath.c_str());
+		double ahead = scan.largestKey - getWallClockTimestamp();
+		if (ahead > CLOCK_FLOOR_AHEAD_WARN_MS) {
+			std::ostringstream msg;
+			msg << "Transaction log \"" << logName << "\" of database " << dbPath
+				<< " holds a batch key " << std::fixed << std::setprecision(0) << ahead
+				<< " ms ahead of the wall clock; the monotonic timestamp floor was raised to it,"
+				   " so transaction timestamps will run ahead of wall time until the clock catches"
+				   " up. Check this node's clock.";
+			DEBUG_LOG("%p TransactionLogStoreRegistry::SeedTimestampFloor WARNING: %s\n", instance.get(), msg.str().c_str());
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		}
+	}
+
+	markResolved(false);
+}
+
 /**
  * Resolves (finds or creates) a transaction log store by name.
  */
@@ -285,6 +544,12 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 	DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Creating new store \"%s\" for \"%s\"\n",
 		instance.get(), name.c_str(), dbPath.c_str());
 
+	// A transaction's timestamp was fixed before txn.useLog(), so this cannot
+	// lazily scan a log directory that appeared after the missing-log seed.
+	if (entry->absentFloorLog == name && directoryIsNonEmpty(logDirectory)) {
+		throw rocksdb_js::DBException(firstUseFloorLogMessage(name, dbPath));
+	}
+
 	// Ensure the directory exists
 	rocksdb_js::tryCreateDirectory(logDirectory);
 
@@ -299,6 +564,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 
 	// Use insert_or_assign to replace any closing store with the same name
 	entry->stores.insert_or_assign(txnLogStore->name, txnLogStore);
+	if (entry->absentFloorLog == name) {
+		entry->absentFloorLog.clear();
+	}
 	return txnLogStore;
 }
 

@@ -374,6 +374,111 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	return { TRANSACTION_LOG_FILE_HEADER_SIZE, above != 0 ? above : currentSeq };
 }
 
+TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
+	double plausibleBound,
+	std::chrono::milliseconds budget
+) {
+	std::vector<std::shared_ptr<TransactionLogFile>> files;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		files.reserve(this->sequenceFiles.size());
+		for (auto it = this->sequenceFiles.rbegin(); it != this->sequenceFiles.rend(); ++it) {
+			files.push_back(it->second);
+		}
+	}
+
+	const auto scanStarted = std::chrono::steady_clock::now();
+	const auto deadline = scanStarted + budget;
+	const LogPosition flushedPosition = this->getLastFlushedPosition();
+	const uint32_t newestSequence = files.empty() ? 0 : files.front()->sequenceNumber;
+	auto wasPurged = [this](const std::shared_ptr<TransactionLogFile>& logFile) {
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		auto it = this->sequenceFiles.find(logFile->sequenceNumber);
+		return it == this->sequenceFiles.end() || it->second != logFile;
+	};
+	DurableKeyScan result;
+	result.discoveryIncomplete = this->discoveryIncomplete;
+	result.complete = !result.discoveryIncomplete;
+	result.segmentsTotal = files.size();
+	result.discoverySkipped = this->discoverySkipped;
+	result.skippedDiscoveryCount = this->skippedDiscoveryCount;
+
+	for (const auto& logFile : files) {
+		// Refusal is already decided, and DBRegistry::OpenDB holds databasesMutex
+		// across DBDescriptor::open, so scanning further would only stall unrelated
+		// opens and closes.
+		if (!result.complete || result.refusedKey > 0) {
+			break;
+		}
+		if (std::chrono::steady_clock::now() >= deadline) {
+			result.budgetExhausted = true;
+			result.complete = false;
+			break;
+		}
+
+		try {
+			auto fileScan = logFile->scanMaxEntryTimestamp(plausibleBound, deadline);
+			result.bytesScanned += fileScan.scannedBytes;
+			if (fileScan.kind != RecoveryScan::Kind::Incomplete) {
+				result.segmentsScanned++;
+			}
+			if (fileScan.maxTimestamp > result.largestKey) {
+				result.largestKey = fileScan.maxTimestamp;
+			}
+			if (fileScan.maxImplausibleTimestamp > result.refusedKey) {
+				result.refusedKey = fileScan.maxImplausibleTimestamp;
+				result.refusedKeySegment = logFile->path.filename().string();
+			}
+			switch (fileScan.kind) {
+				case RecoveryScan::Kind::Clean:
+					break;
+				case RecoveryScan::Kind::MidFileCorruption:
+					result.stoppedAtBreak = true;
+					result.complete = false;
+					break;
+				case RecoveryScan::Kind::TruncateTail:
+					result.tornTail = true;
+					// Only the newest writable segment can end in an interrupted
+					// append. A tail break in an older or retired file is durable
+					// corruption, even when txn.state has not caught up to it.
+					if (logFile->sequenceNumber != newestSequence ||
+						logFile->retiredAppendBoundary.load(std::memory_order_relaxed) > 0 ||
+						logFile->sequenceNumber < flushedPosition.logSequenceNumber ||
+						(logFile->sequenceNumber == flushedPosition.logSequenceNumber &&
+							fileScan.validEnd < flushedPosition.positionInLogFile)) {
+						result.stoppedAtBreak = true;
+						result.complete = false;
+					}
+					break;
+				case RecoveryScan::Kind::Incomplete:
+					result.budgetExhausted = true;
+					result.complete = false;
+					break;
+			}
+		} catch (const std::exception& e) {
+			if (wasPurged(logFile)) {
+				continue;
+			}
+			result.readFailed = true;
+			result.complete = false;
+			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s: %s\n",
+				this, logFile->path.string().c_str(), e.what());
+		} catch (...) {
+			if (wasPurged(logFile)) {
+				continue;
+			}
+			result.readFailed = true;
+			result.complete = false;
+			DEBUG_LOG("%p TransactionLogStore::scanLargestDurableKey Failed to scan %s\n",
+				this, logFile->path.string().c_str());
+		}
+	}
+
+	result.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - scanStarted);
+	return result;
+}
+
 LogPosition TransactionLogStore::getLastFlushedPosition() {
 	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 	auto stateFilePath = this->path / "txn.state";
@@ -877,8 +982,17 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	}
 }
 
-void TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
+bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+
+	// Before any marker read or file construction: a duplicate carrying a corrupt
+	// marker would otherwise throw the fatal boundary exception instead of being
+	// reported as a segment discovery could not place.
+	if (this->sequenceFiles.count(sequenceNumber)) {
+		DEBUG_LOG("%p TransactionLogStore::registerLogFile Sequence %u already registered, ignoring %s\n",
+			this, sequenceNumber, path.string().c_str());
+		return false;
+	}
 
 	uint32_t retiredBoundary = readTransactionLogAppendBoundaryMarker(path);
 	auto logFile = std::make_shared<TransactionLogFile>(
@@ -933,6 +1047,7 @@ void TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	DEBUG_LOG("%p TransactionLogStore::registerLogFile Added log file: %s (seq=%u)\n",
 		this, path.string().c_str(), sequenceNumber);
+	return true;
 }
 
 void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
@@ -1323,6 +1438,10 @@ void TransactionLogStore::warnFlushedStateFailure(const char* what, const char* 
 	}
 }
 
+bool TransactionLogStore::isDiscoverableName(const std::string& name) {
+	return !name.empty() && name[0] != '.' && std::filesystem::path(name).filename() == name;
+}
+
 std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	const std::filesystem::path& path,
 	const uint32_t maxFileSize,
@@ -1331,9 +1450,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 	const bool readOnly
 ) {
 	auto dirName = path.filename().string();
-
-	// skip directories that start with "."
-	if (dirName.empty() || dirName[0] == '.') {
+	if (!isDiscoverableName(dirName)) {
 		return nullptr;
 	}
 
@@ -1347,24 +1464,31 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				if (fileEntry.is_regular_file() && fileEntry.path().extension() == ".txnlog") {
 					auto filePath = fileEntry.path();
 					auto filename = filePath.filename().string();
-
-					std::string sequenceNumberStr = filename.substr(0, filename.size() - 7);
 					uint32_t sequenceNumber = 0;
-
-					sequenceNumber = std::stoul(sequenceNumberStr);
-					store->registerLogFile(filePath, sequenceNumber);
+					if (!parseTransactionLogSegmentName(filename, sequenceNumber)) {
+						store->markDiscoverySkipped(filePath);
+						DEBUG_LOG("%p TransactionLogStore::load Ignoring non-canonical segment name: %s\n",
+							store.get(), filename.c_str());
+						continue;
+					}
+					if (!store->registerLogFile(filePath, sequenceNumber)) {
+						store->markDiscoverySkipped(filePath);
+					}
 				}
 			} catch (const TransactionLogAppendBoundaryException&) {
 				// The marker is the only authoritative record of a retired file's
 				// logical end. Ignoring it could expose orphaned bytes after restart.
 				throw;
 			} catch (const std::filesystem::filesystem_error& e) {
+				store->markDiscoverySkipped(fileEntry.path());
 				DEBUG_LOG("%p TransactionLogStore::load Failed to process file (filesystem error): %s\n",
 					store.get(), e.what());
 			} catch (const std::exception& e) {
+				store->markDiscoverySkipped(fileEntry.path());
 				DEBUG_LOG("%p TransactionLogStore::load Failed to load file: %s\n",
 					store.get(), e.what());
 			} catch (...) {
+				store->markDiscoverySkipped(fileEntry.path());
 				auto eptr = std::current_exception();
 				std::string errorMsg = getExceptionMessage(eptr);
 				DEBUG_LOG("%p TransactionLogStore::load Unknown error processing file: %s\n",
@@ -1372,6 +1496,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			}
 		}
 	} catch (const std::filesystem::filesystem_error& e) {
+		store->discoveryIncomplete = true;
 		DEBUG_LOG("%p TransactionLogStore::load Failed to iterate directory: %s\n",
 			store.get(), e.what());
 	}

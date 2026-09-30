@@ -635,7 +635,8 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	if (::fsync(this->fd) != 0) {
 		DEBUG_LOG("%p TransactionLogFile::truncateFile fsync after ftruncate failed: %s (errno=%d)\n",
 			this, ::strerror(errno), errno);
-		// the truncation itself succeeded; a later flush() will sync again
+		throw rocksdb_js::DBException(
+			"Failed to sync transaction log truncation: " + this->path.string());
 	}
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	// The overlay can no longer extend past the new EOF; lower the bookkeeping so a

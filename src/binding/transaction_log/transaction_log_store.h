@@ -253,6 +253,28 @@ struct TransactionLogStore final {
 	 * (EnsureWritableRegistrationSafe).
 	 */
 	bool readOnly = false;
+	bool discoveryIncomplete = false;
+
+	/**
+	 * Names of the files discovery could not register, capped at
+	 * DISCOVERY_SKIPPED_NAMES (`skippedDiscoveryCount` is the true total). The
+	 * refusal they cause outlives the DEBUG_LOG that recorded them — that is
+	 * compiled out of release builds.
+	 *
+	 * Written only from load(), before the store is published: that, not a lock,
+	 * is the whole contract, as for `discoveryIncomplete` beside it.
+	 */
+	static constexpr size_t DISCOVERY_SKIPPED_NAMES = 8;
+	std::vector<std::string> discoverySkipped;
+	size_t skippedDiscoveryCount = 0;
+
+	void markDiscoverySkipped(const std::filesystem::path& file) {
+		discoveryIncomplete = true;
+		skippedDiscoveryCount++;
+		if (discoverySkipped.size() < DISCOVERY_SKIPPED_NAMES) {
+			discoverySkipped.push_back(file.filename().string());
+		}
+	}
 
 	/**
 	 * The current sequence number of the transaction log file. Atomic because it
@@ -510,6 +532,36 @@ struct TransactionLogStore final {
 	 */
 	LogPosition getLastFlushedPosition();
 
+	struct DurableKeyScan final {
+		double largestKey = 0;
+		double refusedKey = 0;
+		/** Segment the refused key came from, so the message can name it. */
+		std::string refusedKeySegment;
+		bool complete = true;
+		bool budgetExhausted = false;
+		bool stoppedAtBreak = false;
+		bool tornTail = false;
+		bool readFailed = false;
+		bool discoveryIncomplete = false;
+		std::vector<std::string> discoverySkipped;
+		size_t skippedDiscoveryCount = 0;
+		/**
+		 * Segments walked, segments the store holds, and the bytes those walks
+		 * read. Reported with a budget failure so an operator can size
+		 * `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` from what this store actually
+		 * costs rather than by trial.
+		 */
+		size_t segmentsScanned = 0;
+		size_t segmentsTotal = 0;
+		uint64_t bytesScanned = 0;
+		/** Wall time the whole walk took, one sample per scan, never per frame. */
+		std::chrono::milliseconds elapsed{ 0 };
+	};
+
+	DurableKeyScan scanLargestDurableKey(
+		double plausibleBound,
+		std::chrono::milliseconds budget);
+
 	/**
 	 * Returns a point-in-time snapshot of the files that make up this store, for
 	 * backup. Enumerates the sequence files under `dataSetsMutex` (holding
@@ -546,12 +598,12 @@ struct TransactionLogStore final {
 	);
 
 	/**
-	 * Registers a log file for the given sequence number.
-	 *
-	 * @param path The path to the log file to register.
-	 * @param sequenceNumber The sequence number of the log file to register.
+	 * Registers a discovered segment for `sequenceNumber`. Returns false — without
+	 * touching the registry, reading its marker or opening it — when that sequence
+	 * is already registered; the caller records that as a segment discovery could
+	 * not place.
 	 */
-	void registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber);
+	bool registerLogFile(const std::filesystem::path& path, const uint32_t sequenceNumber);
 
 	/**
 	 * Writes a batch of transaction log entries to the store.
@@ -580,6 +632,12 @@ struct TransactionLogStore final {
 		const float maxAgeThreshold,
 		const bool readOnly = false
 	);
+
+	/**
+	 * Whether load() would rediscover a store of this name on a later open: one
+	 * path component that does not start with ".".
+	 */
+	static bool isDiscoverableName(const std::string& name);
 
 private:
 #ifdef ROCKSDB_JS_NATIVE_TESTS

@@ -1,11 +1,15 @@
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <fstream>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
+#include "core/encoding.h"
+#include "core/platform.h"
 #include "napi/global_events.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
@@ -19,6 +23,41 @@
 #endif
 
 namespace rocksdb_js {
+
+namespace {
+
+std::chrono::milliseconds transactionLogRecoveryScanBudget() {
+	static const std::chrono::milliseconds budget(parseDurationMs(
+		::getenv("ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS"),
+		/*defaultMs=*/2000,
+		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL));
+	return budget;
+}
+
+} // namespace
+
+bool parseTransactionLogSegmentName(const std::string& filename, uint32_t& sequenceNumber) {
+	constexpr std::string_view extension = ".txnlog";
+	if (filename.size() <= extension.size() ||
+		filename.compare(filename.size() - extension.size(), extension.size(), extension) != 0
+	) {
+		return false;
+	}
+	const char* first = filename.data();
+	const char* last = first + (filename.size() - extension.size());
+	if (first == last || (last - first > 1 && *first == '0')) {
+		return false;
+	}
+	uint64_t parsed = 0;
+	auto [stop, error] = std::from_chars(first, last, parsed);
+	if (stop != last || error != std::errc() || parsed == 0 ||
+		parsed > std::numeric_limits<uint32_t>::max()
+	) {
+		return false;
+	}
+	sequenceNumber = static_cast<uint32_t>(parsed);
+	return true;
+}
 
 std::filesystem::path transactionLogAppendBoundaryMarkerPath(
 	const std::filesystem::path& logPath) {
@@ -333,14 +372,19 @@ bool TransactionLogFile::readBytes(uint32_t offset, void* dest, uint32_t n) {
 	return true;
 }
 
-RecoveryScan TransactionLogFile::scanRecoveryLocked() {
+RecoveryScan TransactionLogFile::scanRecoveryLocked(
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline
+) {
 	uint32_t fileSize = this->size.load(std::memory_order_relaxed);
 	return scanTransactionLogForRecovery(
 		fileSize,
 		[](void* context, uint32_t offset, void* dest, uint32_t n) {
 			return static_cast<TransactionLogFile*>(context)->readBytes(offset, dest, n);
 		},
-		this
+		this,
+		plausibleBound,
+		deadline
 	);
 }
 
@@ -366,6 +410,27 @@ uint32_t TransactionLogFile::scanForLastCompleteTransactionEnd() {
 	return scan.lastCompleteTransactionEnd;
 }
 
+TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline
+) {
+	// openFile()'s index scan shortens the append-owned `size` to the first
+	// zero-timestamp word, which would hide any suffix past it.
+	RecoveryScan scan = scanTransactionLogForFloor(
+		this->path,
+		this->retiredAppendBoundary.load(std::memory_order_relaxed),
+		plausibleBound,
+		deadline);
+
+	MaxEntryScan result;
+	result.maxTimestamp = scan.maxTimestamp;
+	result.maxImplausibleTimestamp = scan.maxImplausibleTimestamp;
+	result.kind = scan.kind;
+	result.validEnd = scan.validEnd;
+	result.scannedBytes = scan.bytesRead;
+	return result;
+}
+
 void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 
@@ -380,7 +445,9 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 
 	RecoveryScan scan;
 	try {
-		scan = this->scanRecoveryLocked();
+		scan = this->scanRecoveryLocked(
+			std::numeric_limits<double>::infinity(),
+			std::chrono::steady_clock::now() + transactionLogRecoveryScanBudget());
 	} catch (const DBException& error) {
 		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
@@ -389,10 +456,43 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 	this->lastCompleteTransactionEnd.store(scan.lastCompleteTransactionEnd, std::memory_order_relaxed);
 	switch (scan.kind) {
 		case RecoveryScan::Kind::Clean:
+#ifdef PLATFORM_POSIX
+			if (scan.validEnd < fileSize) {
+				// scanRecoveryLocked() proved the whole suffix zero. A POSIX fd is
+				// O_APPEND, so leave none of that copied Windows padding behind:
+				// the next acknowledged entry would otherwise land after the marker
+				// and be invisible to every reader.
+				if (!this->truncateFile(scan.validEnd)) {
+					throw DBException(
+						"Failed to durably normalize zero-padded transaction log before append: " +
+						this->path.string());
+				}
+				this->size.store(scan.validEnd, std::memory_order_relaxed);
+				if (this->lastFlushedSize > scan.validEnd) {
+					this->lastFlushedSize = scan.validEnd;
+				}
+				this->resetTimestampIndex();
+			}
+#endif
 			this->discardUnclosedTransaction(scan, scan.validEnd, protectedPosition);
 			return;
 
 		case RecoveryScan::Kind::MidFileCorruption: {
+			// A generic framing break can be left for the reader's resync protocol,
+			// but a zero end-of-entries marker is different: an O_APPEND write after
+			// it is invisible. scanRecoveryLocked() reaches Clean at such a marker
+			// only after proving the entire suffix zero, so this unproved marker must
+			// reject a writable open rather than merely warn and append past it.
+			char marker[sizeof(double)];
+			if (!this->readBytes(scan.validEnd, marker, sizeof(marker))) {
+				throw DBException(
+					"Failed to reread transaction-log recovery break: " + this->path.string());
+			}
+			if (readDoubleBE(marker) == 0) {
+				throw DBException(
+					"Cannot prove that bytes after a transaction-log end marker are zero; "
+					"refusing writable open before append: " + this->path.string());
+			}
 			// Leave the file intact: entries are still framed after the break, so
 			// truncating would discard committed/replicated transactions. Surface
 			// it so an operator can repair the file; the reader's per-entry bounds
@@ -411,6 +511,13 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 
 			return;
 		}
+
+		case RecoveryScan::Kind::Incomplete:
+			throw DBException(
+				"Timed out proving transaction-log recovery before append "
+				"(ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS=" +
+				std::to_string(transactionLogRecoveryScanBudget().count()) + "ms): " +
+				this->path.string());
 
 		case RecoveryScan::Kind::TruncateTail:
 			if (scan.validEnd >= fileSize) {

@@ -70,6 +70,24 @@ struct TransactionLogStoreRegistryEntry final {
 	 */
 	size_t refCount = 0;
 
+	/**
+	 * The `timestampFloorLog` already resolved for this physical path, or empty.
+	 * The clock floor is process-global and the seed is a property of the path,
+	 * not of a `DBKey`, so a second descriptor for the same path (a read-only or
+	 * secondary open) must not rescan a store the first one may be appending to.
+	 * Guarded by `entriesMutex`, and gone with this entry when the last
+	 * descriptor for the path closes — so a fresh open seeds again.
+	 */
+	std::string seededFloorLog;
+
+	/**
+	 * The `timestampFloorLog` that was absent when its first seed resolved.
+	 * A later first use may create it only if no directory appeared in the
+	 * meantime; otherwise its durable keys were never covered by that seed.
+	 * Guarded by `storesMutex`.
+	 */
+	std::string absentFloorLog;
+
 	TransactionLogStoreRegistryEntry() = default;
 
 	TransactionLogStoreRegistryEntry(const TransactionLogStoreConfig& cfg)
@@ -177,6 +195,22 @@ public:
 	 * truncation against what may be a live primary's logs — invariant 5).
 	 */
 	static void DiscoverStores(const std::string& dbPath, bool callerReadOnly);
+
+	/**
+	 * Raises the process-wide monotonic timestamp floor from the caller-named,
+	 * locally originated log. Call after DiscoverStores() has completed recovery;
+	 * throws when the scan cannot establish a complete, plausible floor.
+	 */
+	static void SeedTimestampFloor(
+		const std::string& dbPath, const std::string& logName, bool callerReadOnly);
+
+	/**
+	 * The `timestampFloorLog` already resolved for this physical path, or empty
+	 * when the path has none. Descriptors are per `DBKey` and an open carrying no
+	 * option stamps an empty name on its own, so a descriptor's copy cannot answer
+	 * this.
+	 */
+	static std::string ResolvedTimestampFloorLog(const std::string& dbPath);
 
 	/**
 	 * Resolves (finds or creates) a transaction log store by name for the

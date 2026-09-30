@@ -259,6 +259,30 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   per process via a function-local `static` (the watchdog runs off the JS thread —
   same `::getenv`-vs-`process.env` caveat as `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it
   must be set in the environment a process is started with
+- `ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS` - Bound (default `2000`) on the open-time walk that seeds the
+  monotonic timestamp floor from the `timestampFloorLog` log. The walk is O(entries in that log) on
+  the calling thread inside `RocksDatabase.open()`, and a log's retention window bounds its age
+  rather than its entry count, so without a bound a large log is an open that does not return. It
+  goes newest segment first and rejects the explicitly opted-in open when it cannot cover every
+  durable key. It is a budget **per database path**, not per process — the deadline is computed on
+  each `scanLargestDurableKey` call and the seed runs once per new descriptor — so raising it
+  multiplies by the number of opted-in databases a process opens, all of them serialized behind
+  `databasesMutex`. Historical segments are scanned through a private read-only stream;
+  the floor walk must not open, close, map, or index the shared `TransactionLogFile`, since the same
+  store can concurrently serve another database descriptor. It runs while database opens and closes
+  are serialized process-wide, so increasing its budget can delay unrelated opens and closes.
+  Honored literally, `0` included (scan
+  nothing, refuse); there is no unbounded setting, so a deployment that would rather wait raises the
+  value (capped at a day: the deadline is a `steady_clock` time point, and a larger value overflows
+  its resolution and wraps into the past, scanning nothing). Read once per process
+  (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
+  `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is started with
+- `ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS` - Bound (default `2000`) on a writable open's
+  transaction-log recovery scan. In particular, a copied Windows segment on POSIX must prove its
+  entire zero-padded suffix within this time before recovery durably truncates it to the
+  end-of-entries marker; otherwise the open fails rather than letting an `O_APPEND` write land past
+  an invisible marker. The bound is honored literally, including `0`; malformed, negative, and
+  over-one-day values use the default. It is read once per process, so set it before starting Node.
 - `ROCKSDB_JS_WRITE_STALL_DEBOUNCE_MS` - Rate-limit window (default `1000`) for the
   per-database `'writeStall'` event. The event is rising-edge only (fires when a
   column family enters a stall); during a sustained oscillating stall it re-emits
@@ -327,6 +351,18 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `pnpm coverage:native` (lcov on Unix)
 - `test/lib/util.ts` contains Vitest utilities
 - Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
+- **`deps/gtest.gyp` must keep C++ exceptions on for gtest's own TUs.** node's `common.gypi`
+  disables them for every target (`ExceptionHandling: 0` / `-fno-exceptions`) and
+  `GTEST_HAS_EXCEPTIONS` is derived per translation unit, so without the override
+  `gtest-all.cc` compiles the shared headers with it `0` while the test TUs (which
+  `binding.gyp` does give exceptions) compile them with `1`. `HandleExceptionsInMethodIfSupported`
+  is instantiated on gtest's side, so with `0` it has no `catch` blocks and an exception that
+  escapes a test body reaches `main()` unhandled: on Windows that is `std::terminate` →
+  `abort` → exit code `0xC0000409` with the last line of output being the test's `[ RUN ]`
+  and **no failure line at all** (`__fastfail` bypasses gtest's SEH handler too). A native
+  job that dies right after a `[ RUN ]` line is that shape — gtest flushes stdout in both
+  `OnTestStart` and `OnTestEnd`, so the missing `[ OK ]` locates the crash in that test, not
+  in a later one.
 - **No `tsx`**: `.ts`/`.mts` scripts, worker files, and `src` itself run under Node's native type
   stripping (the `engines` floor `^22.18.0 || >=24.0.0` is where it's unflagged). Rules for code Node
   loads directly (i.e. outside Vitest/tsdown, which do their own resolution):
@@ -1456,6 +1492,46 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     leaves the store live because a transaction is still bound. A current-generation commit and
     flush may legitimately recreate it. It runs on RocksDB's flush thread, so every filesystem failure is caught and reported once
     via `log.warn` (`flushedStateWarningEmitted`) and the write is retried on the next flush.
+
+32. **A transaction timestamp is only unique within one process unless the caller names its log**:
+    `getMonotonicTimestamp()` (`core/platform.cpp`) ratchets a file-static atomic that starts at `0`
+    in every new process, then re-reads the wall clock — so a backward clock step between runs
+    reissues transaction timestamps, which are transaction-log batch keys (`writeBatch`) and, for a
+    producer that encodes them, record versions. The `timestampFloorLog` open option names the log
+    this process _originates_; `TransactionLogStoreRegistry::SeedTimestampFloor` walks that store
+    after `DiscoverStores()` and raises the floor, inside `DBDescriptor::open` and therefore before
+    any handle — and so any transaction — exists.
+    **The log must be named, never inferred.** `useLog(name)` takes an arbitrary name and native
+    code has no origin semantics for it: Harper opens one log per origin node and a replication
+    receiver adopts the origin's timestamp through `setTimestamp()` before writing, so a peer's log
+    is keyed by _that node's_ clock. Seeding from every log would ratchet this node's clock to the
+    fastest peer at each restart, and the peers would adopt those keys onward. Two other traps the
+    implementation encodes: the seed runs **after** recovery, because a key in bytes `recoverTail()`
+    truncates is not durable; and **every segment is walked**, because keys are unordered and a
+    segment header holds only `latestTimestamp` as of that segment's creation — which, starting at
+    `0` each process, is _below_ older segments' keys after a rollback, not above them. An explicitly
+    named log is fail closed: an unreadable segment, framing break, exhausted scan budget, or
+    implausibly future key refuses that open rather than risk reissuing a durable batch key. The
+    caller can omit `timestampFloorLog` only when its writes do not need restart-safe uniqueness.
+    The first descriptor that seeds it must be a writable primary: a read-only or secondary scan
+    cannot establish a cross-process snapshot while a primary may append. Later read-only or
+    secondary descriptors reuse that same in-process seed without rescanning. A seed that found its
+    named log absent still warns and permits this process to create a fresh one, but it never adopts
+    a nonempty directory that appears before that first use: the transaction timestamp exists before
+    `txn.useLog()` could rescan it. That first use, and a read-only or secondary re-open that
+    discovers the directory, refuse until every path handle closes and an opted-in open scans it.
+    For copied Windows
+    padding on POSIX, recovery proves the entire zero suffix before a durable truncate; an unproved
+    suffix, timeout, or failed truncation sync refuses the writable open rather than letting O_APPEND
+    hide a later entry past the marker.
+    **The floor walk needs proof of completeness, not recovery's repair heuristic.** It reads through
+    a private stream in strict mode: ending before the extent is accepted only when the remaining
+    bytes are all zero or too short for a frame. Its extent comes from that open stream, capped by a
+    retired segment's append boundary, never from `TransactionLogFile::size`, which Windows open
+    normalizes at the first zero timestamp and could otherwise hide durable suffixes. The resolved
+    floor-log name is memoized per physical transaction-log store, which is the source of truth for
+    every descriptor on that path; `DBKey` also contains read-only and secondary state, so guarding
+    only one descriptor would allow a concurrent open to rescan a writer's active log.
 
 ## Debugging native heap corruption
 

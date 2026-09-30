@@ -3,7 +3,10 @@
 #include "core/encoding.h"                         // readDoubleBE / readUint32BE
 #include "core/exception.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
+#include <fstream>
+#include <limits>
 #include <mutex>
 #include <vector>
 
@@ -17,23 +20,29 @@ namespace {
 // follow — must NOT truncate) from a torn tail (only partial bytes follow).
 constexpr int RESYNC_MIN_FRAMES = 8;
 
-// Sequential window for nearby success-path headers and for the corruption-only
-// byte search in findFramingResumeOffset. Heap-allocated: 64 KiB on the stack is
-// hostile to musl/small-stack threads.
+// Heap-allocated where used: 64 KiB on the stack is hostile to musl/small-stack threads.
 constexpr uint32_t RESYNC_WINDOW = 65536;
+
+struct ScanDeadlineReached {};
 
 struct ScanReader {
 	TransactionLogReadFn read;
 	void* context;
 	uint32_t fileSize;
+	std::optional<std::chrono::steady_clock::time_point> deadline;
 	std::vector<char> window;
 	uint32_t windowStart = 0;
 	uint32_t windowLen = 0;
+	uint64_t bytesRead = 0;
 
-	void readExact(uint32_t offset, void* dest, uint32_t n) const {
+	void readExact(uint32_t offset, void* dest, uint32_t n) {
+		if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+			throw ScanDeadlineReached{};
+		}
 		if (!read(context, offset, dest, n)) {
 			throw DBException("Failed to read transaction log during recovery scan");
 		}
+		bytesRead += n;
 	}
 
 	// End of the nonzero bytes: where a pre-extended file's zero padding starts. A
@@ -44,8 +53,7 @@ struct ScanReader {
 			return nonzeroEndValue;
 		}
 		std::vector<char> tail(RESYNC_WINDOW);
-		uint32_t end = fileSize;
-		while (end > 0) {
+		for (uint32_t end = fileSize; end > 0; ) {
 			uint32_t len = std::min(RESYNC_WINDOW, end);
 			readExact(end - len, tail.data(), len);
 			for (uint32_t i = len; i > 0; --i) {
@@ -57,13 +65,47 @@ struct ScanReader {
 			}
 			end -= len;
 		}
-		nonzeroEndValue = 0;
 		nonzeroEndKnown = true;
 		return 0;
 	}
 
 	bool nonzeroEndKnown = false;
 	uint32_t nonzeroEndValue = 0;
+
+	// True when no complete frame can begin in [from, fileSize): too short to hold
+	// a header, or all zero (a frame header opens with a non-zero big-endian
+	// timestamp). Fixed-block reads, so one tail never becomes one allocation.
+	bool tailCannotHoldAFrame(uint32_t from) {
+		if (fileSize - from < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
+			return true;
+		}
+		return tailIsAllZero(from);
+	}
+
+	// A writable POSIX opener may normalize copied Windows padding by truncating
+	// at a zero end-of-entries marker. That is safe only when every following
+	// byte is zero: an O_APPEND write after an unproved marker would be durable
+	// but invisible to readers. Unlike tailCannotHoldAFrame(), a short non-zero
+	// suffix is not harmless here because it is about appendability, not whether
+	// it can encode another complete frame.
+	bool tailIsAllZero(uint32_t from) {
+		if (window.size() < RESYNC_WINDOW) {
+			window.resize(RESYNC_WINDOW);
+		}
+		for (uint32_t at = from; at < fileSize; ) {
+			uint32_t chunk = std::min(RESYNC_WINDOW, fileSize - at);
+			readExact(at, window.data(), chunk);
+			windowStart = at;
+			windowLen = chunk;
+			for (uint32_t i = 0; i < chunk; ++i) {
+				if (window[i] != 0) {
+					return false;
+				}
+			}
+			at += chunk;
+		}
+		return true;
+	}
 
 	// Sequential headers within 64 KiB of the current window refill from the
 	// next header. A larger gap is a payload skip: read exactly 13 bytes so
@@ -94,6 +136,17 @@ struct ScanReader {
 		windowLen = TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 		std::memcpy(window.data(), dest, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
 	}
+
+	// For a resync chain hop, which usually lands far from the candidate being
+	// tested: moving the window there would make the next candidate refill it.
+	void peekHeader(uint32_t pos, char* dest) {
+		if (pos >= windowStart &&
+			pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= windowStart + windowLen) {
+			std::memcpy(dest, window.data() + (pos - windowStart), TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+			return;
+		}
+		readExact(pos, dest, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
+	}
 };
 
 bool headerLooksLikeFrame(const char* header, uint32_t pos, uint32_t fileSize) {
@@ -107,59 +160,33 @@ bool headerLooksLikeFrame(const char* header, uint32_t pos, uint32_t fileSize) {
 	return static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length <= fileSize;
 }
 
-// Returns the first offset in [from, fileSize) where valid log data resumes:
-// either a run of at least RESYNC_MIN_FRAMES well-formed frames, or any run that
-// lands exactly on the written extent (EOF, or the start of a pre-extended
-// file's zero padding). Returns 0 when nothing resumes. Sequential candidate
-// offsets are served from a 64 KiB window; chain hops (HEADER+length) read a
-// 13-byte header so a large payload is not pulled in. A failed read throws — it
-// must not look like "no resume".
-uint32_t findFramingResumeOffset(ScanReader& source, uint32_t from, bool endIsWrittenExtent) {
-	std::vector<char> window(RESYNC_WINDOW);
-	uint32_t windowStart = 0;
-	uint32_t windowLen = 0;
-	char headerBuf[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
-
-	auto reachesWrittenExtent = [&](uint32_t pos) -> bool {
-		return endIsWrittenExtent && (pos == source.fileSize || pos == source.nonzeroEnd());
-	};
-
-	auto loadHeader = [&](uint32_t pos, const char*& out) -> bool {
-		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > source.fileSize) {
-			return false;
-		}
-		if (pos >= windowStart &&
-			pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= windowStart + windowLen) {
-			out = window.data() + (pos - windowStart);
-			return true;
-		}
-		source.readExact(pos, headerBuf, TRANSACTION_LOG_ENTRY_HEADER_SIZE);
-		out = headerBuf;
-		return true;
-	};
-
+uint32_t findFramingResumeOffset(
+	ScanReader& source, uint32_t from, bool endIsWrittenExtent
+) {
+	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 	for (uint32_t start = from;
-		 static_cast<uint64_t>(start) + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= source.fileSize;
-		 ++start) {
-		if (start < windowStart || start + TRANSACTION_LOG_ENTRY_HEADER_SIZE > windowStart + windowLen) {
-			windowStart = start;
-			windowLen = std::min(RESYNC_WINDOW, source.fileSize - start);
-			source.readExact(windowStart, window.data(), windowLen);
-		}
-
-		const char* header = nullptr;
-		if (!loadHeader(start, header) || !headerLooksLikeFrame(header, start, source.fileSize)) {
+		static_cast<uint64_t>(start) + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= source.fileSize;
+		++start) {
+		source.readHeaderAt(start, header);
+		if (!headerLooksLikeFrame(header, start, source.fileSize)) {
 			continue;
 		}
-
 		uint32_t pos = start + TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(header + 8);
 		int frames = 1;
-		if (frames >= RESYNC_MIN_FRAMES || reachesWrittenExtent(pos)) {
+		auto reachesExtent = [&] {
+			return endIsWrittenExtent &&
+				(pos == source.fileSize || pos == source.nonzeroEnd());
+		};
+		if (frames >= RESYNC_MIN_FRAMES || reachesExtent()) {
 			return start;
 		}
-		while (loadHeader(pos, header) && headerLooksLikeFrame(header, pos, source.fileSize)) {
+		while (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= source.fileSize) {
+			source.peekHeader(pos, header);
+			if (!headerLooksLikeFrame(header, pos, source.fileSize)) {
+				break;
+			}
 			pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + readUint32BE(header + 8);
-			if (++frames >= RESYNC_MIN_FRAMES || reachesWrittenExtent(pos)) {
+			if (++frames >= RESYNC_MIN_FRAMES || reachesExtent()) {
 				return start;
 			}
 		}
@@ -176,77 +203,113 @@ uint32_t findFramingResumeOffset(
 	if (from == 0 || from >= fileSize) {
 		return 0;
 	}
-	ScanReader source{ read, context, fileSize, {}, 0, 0 };
+	ScanReader source{ read, context, fileSize, std::nullopt, {}, 0, 0 };
 	return findFramingResumeOffset(source, from, endIsWrittenExtent);
 }
 
 RecoveryScan scanTransactionLogForRecovery(
-	uint32_t fileSize, TransactionLogReadFn read, void* context
+	uint32_t fileSize,
+	TransactionLogReadFn read,
+	void* context,
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline,
+	bool requirePaddedTail
 ) {
 	uint32_t lastCompleteEnd = 0;
 	uint32_t tailEntries = 0;
 	double tailTimestamp = 0;
 	bool tailUniformTimestamp = true;
 	uint32_t firstBreak = 0;
+	bool afterBreak = false;
+	double maxTimestamp = 0;
+	double maxImplausibleTimestamp = 0;
+	ScanReader source{ read, context, fileSize, deadline, {}, 0, 0 };
 	auto scan = [&](RecoveryScan::Kind kind, uint32_t validEnd) {
 		if (firstBreak != 0) {
 			kind = RecoveryScan::Kind::MidFileCorruption;
 			validEnd = firstBreak;
 		}
 		return RecoveryScan{ kind, validEnd, lastCompleteEnd, tailEntries,
-			tailEntries > 0 && tailUniformTimestamp };
+			tailEntries > 0 && tailUniformTimestamp, maxTimestamp, maxImplausibleTimestamp,
+			fileSize, source.bytesRead };
 	};
 
 	if (fileSize <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		return scan(RecoveryScan::Kind::Clean, fileSize);
 	}
 
-	ScanReader source{ read, context, fileSize, {}, 0, 0 };
 	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 	uint32_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
-	while (true) {
-		if (pos == fileSize) {
-			return scan(RecoveryScan::Kind::Clean, fileSize);
+	// Recovery's heuristics answer where it is safe to truncate, which is not a
+	// proof that no durable key remains.
+	auto terminate = [&](RecoveryScan::Kind kind, uint32_t at) {
+		if (requirePaddedTail && !source.tailCannotHoldAFrame(at)) {
+			return scan(RecoveryScan::Kind::MidFileCorruption, at);
 		}
-		if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
-			return scan(RecoveryScan::Kind::TruncateTail, pos);
-		}
-		source.readHeaderAt(pos, header);
-		double timestamp = readDoubleBE(header);
-		if (timestamp == 0) {
-			// End-of-entries marker, including the zero padding of a pre-extended file.
-			return scan(RecoveryScan::Kind::Clean, pos);
-		}
-		uint32_t length = readUint32BE(header + 8);
-		if (length == 0 ||
-			static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
-			// Intact frames after the break are mid-file corruption; truncating would
-			// discard them, and the committed watermark must still reach them, so the
-			// walk resumes where framing does. A torn tail has nothing valid behind it.
-			uint32_t resume = findFramingResumeOffset(source, pos + 1, /*endIsWrittenExtent=*/true);
-			if (resume == 0) {
-				return scan(RecoveryScan::Kind::TruncateTail, pos);
+		return scan(kind, at);
+	};
+	try {
+		while (true) {
+			if (pos == fileSize) {
+				return scan(RecoveryScan::Kind::Clean, fileSize);
 			}
-			if (firstBreak == 0) {
-				firstBreak = pos;
+			if (static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > fileSize) {
+				return terminate(RecoveryScan::Kind::TruncateTail, pos);
 			}
-			pos = resume;
-			tailEntries = 0;
-			tailUniformTimestamp = true;
-			continue;
+			source.readHeaderAt(pos, header);
+			double timestamp = readDoubleBE(header);
+			if (timestamp == 0) {
+				if (requirePaddedTail) {
+					return terminate(RecoveryScan::Kind::Clean, pos);
+				}
+				return scan(source.tailIsAllZero(pos)
+					? RecoveryScan::Kind::Clean
+					: RecoveryScan::Kind::MidFileCorruption, pos);
+			}
+			uint32_t length = readUint32BE(header + 8);
+			if (length == 0 ||
+				static_cast<uint64_t>(pos) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > fileSize) {
+				if (requirePaddedTail) {
+					return terminate(RecoveryScan::Kind::TruncateTail, pos);
+				}
+				// Intact frames after the break are mid-file corruption; truncating would
+				// discard them, and the committed watermark must still reach them, so the
+				// walk resumes where framing does. A torn tail has nothing valid behind it.
+				uint32_t resume = findFramingResumeOffset(source, pos + 1, /*endIsWrittenExtent=*/true);
+				if (resume == 0) {
+					return scan(RecoveryScan::Kind::TruncateTail, pos);
+				}
+				if (firstBreak == 0) {
+					firstBreak = pos;
+				}
+				pos = resume;
+				afterBreak = true;
+				tailEntries = 0;
+				tailUniformTimestamp = true;
+				continue;
+			}
+			bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
+			if (!afterBreak && timestamp > plausibleBound) {
+				if (timestamp > maxImplausibleTimestamp) {
+					maxImplausibleTimestamp = timestamp;
+				}
+			} else if (!afterBreak && timestamp > maxTimestamp) {
+				maxTimestamp = timestamp;
+			}
+			if (tailEntries++ == 0) {
+				tailTimestamp = timestamp;
+			} else if (timestamp != tailTimestamp) {
+				tailUniformTimestamp = false;
+			}
+			pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
+			if (closesTransaction) {
+				lastCompleteEnd = pos;
+				tailEntries = 0;
+				tailUniformTimestamp = true;
+			}
 		}
-		bool closesTransaction = (readUint8(header + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
-		if (tailEntries++ == 0) {
-			tailTimestamp = timestamp;
-		} else if (timestamp != tailTimestamp) {
-			tailUniformTimestamp = false;
-		}
-		pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;
-		if (closesTransaction) {
-			lastCompleteEnd = pos;
-			tailEntries = 0;
-			tailUniformTimestamp = true;
-		}
+	} catch (const ScanDeadlineReached&) {
+		return scan(RecoveryScan::Kind::Incomplete, pos);
 	}
 }
 
@@ -257,10 +320,28 @@ bool readFromBuffer(void* context, uint32_t offset, void* dest, uint32_t n) {
 	return true;
 }
 
+bool readFromStream(void* context, uint32_t offset, void* dest, uint32_t n) {
+	auto& input = *static_cast<std::ifstream*>(context);
+	input.clear();
+	input.seekg(offset, std::ios::beg);
+	if (!input) {
+		return false;
+	}
+	input.read(static_cast<char*>(dest), n);
+	return input.gcount() == static_cast<std::streamsize>(n);
+}
+
 } // namespace
 
-RecoveryScan scanTransactionLogForRecovery(const char* data, uint32_t fileSize) {
-	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data));
+RecoveryScan scanTransactionLogForRecovery(
+	const char* data,
+	uint32_t fileSize,
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline,
+	bool requirePaddedTail
+) {
+	return scanTransactionLogForRecovery(fileSize, readFromBuffer, const_cast<char*>(data),
+		plausibleBound, deadline, requirePaddedTail);
 }
 
 uint32_t findFramingResumeOffset(
@@ -268,6 +349,101 @@ uint32_t findFramingResumeOffset(
 ) {
 	return findFramingResumeOffset(
 		fileSize, readFromBuffer, const_cast<char*>(data), from, endIsWrittenExtent);
+}
+
+namespace {
+
+// The extent of an already-open stream, so the bytes classified are the bytes
+// of the object the handle refers to. A stat of the path followed by an open is
+// two different objects.
+uint32_t streamExtent(std::ifstream& input, const std::filesystem::path& path) {
+	input.clear();
+	input.seekg(0, std::ios::end);
+	if (!input) {
+		throw DBException("Failed to size transaction log for scan: " + path.string());
+	}
+	std::streamoff extent = input.tellg();
+	if (extent < 0) {
+		throw DBException("Failed to size transaction log for scan: " + path.string());
+	}
+	if (static_cast<uint64_t>(extent) > std::numeric_limits<uint32_t>::max()) {
+		throw DBException("Transaction log is too large to scan: " + path.string());
+	}
+	return static_cast<uint32_t>(extent);
+}
+
+} // namespace
+
+RecoveryScan scanTransactionLogForFloor(
+	const std::filesystem::path& path,
+	uint32_t retiredAppendBoundary,
+	double plausibleBound,
+	std::optional<std::chrono::steady_clock::time_point> deadline
+) {
+	auto outOfTime = [](uint32_t extent) {
+		return RecoveryScan{ RecoveryScan::Kind::Incomplete, TRANSACTION_LOG_FILE_HEADER_SIZE,
+			0, 0, false, 0, 0, extent, 0 };
+	};
+	if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+		return outOfTime(0);
+	}
+	std::ifstream input(path, std::ios::binary | std::ios::in);
+	if (!input.is_open()) {
+		throw DBException("Failed to open transaction log for recovery scan: " + path.string());
+	}
+
+	uint32_t extent = streamExtent(input, path);
+	if (retiredAppendBoundary > 0) {
+		if (retiredAppendBoundary > extent) {
+			throw TransactionLogAppendBoundaryException(
+				"Transaction log append boundary exceeds physical extent: " + path.string());
+		}
+		extent = retiredAppendBoundary;
+	}
+	if (extent == 0) {
+		// A just-created segment has no keys yet, and no header to validate.
+		return RecoveryScan{ RecoveryScan::Kind::Clean, 0, 0, 0, false, 0, 0, 0, 0 };
+	}
+
+	char header[TRANSACTION_LOG_FILE_HEADER_SIZE];
+	if (deadline && std::chrono::steady_clock::now() >= *deadline) {
+		return outOfTime(extent);
+	}
+	if (extent < TRANSACTION_LOG_FILE_HEADER_SIZE ||
+		!readFromStream(&input, 0, header, TRANSACTION_LOG_FILE_HEADER_SIZE)) {
+		throw DBException("Failed to read transaction log header: " + path.string());
+	}
+	if (readUint32BE(header) != TRANSACTION_LOG_TOKEN) {
+		throw TransactionLogFormatException("Invalid transaction log file: " + path.string());
+	}
+	uint8_t version = readUint8(header + 4);
+	if (version != 1) {
+		throw TransactionLogFormatException(
+			"Unsupported transaction log file version: " + std::to_string(version));
+	}
+
+	auto scan = scanTransactionLogForRecovery(extent, readFromStream, &input, plausibleBound,
+		deadline, /*requirePaddedTail=*/true);
+	if (retiredAppendBoundary == 0 && streamExtent(input, path) != extent) {
+		scan.kind = RecoveryScan::Kind::Incomplete;
+		return scan;
+	}
+	uint32_t remaining = extent - scan.validEnd;
+	if (scan.kind == RecoveryScan::Kind::TruncateTail &&
+		remaining > 0 && remaining < TRANSACTION_LOG_ENTRY_HEADER_SIZE
+	) {
+		// Zeros here are the end-of-entries marker of a Windows segment padded to
+		// its mapped size, not a torn write; a torn-tail warning about one would be
+		// a warning about a healthy file.
+		char padding[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+		if (!readFromStream(&input, scan.validEnd, padding, remaining)) {
+			throw DBException("Failed to read transaction log padding: " + path.string());
+		}
+		if (std::all_of(padding, padding + remaining, [](char byte) { return byte == 0; })) {
+			scan.kind = RecoveryScan::Kind::Clean;
+		}
+	}
+	return scan;
 }
 
 RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file) {

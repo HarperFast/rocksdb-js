@@ -38,6 +38,20 @@ void setThreadName(const char* name);
 
 std::chrono::system_clock::time_point convertFileTimeToSystemTime(const std::filesystem::file_time_type& fileTime);
 
+constexpr double MAX_TIMESTAMP_MS = 8.64e15;
+
+constexpr double MAX_CLOCK_FLOOR_SKEW_MS = 10.0 * 365.25 * 24.0 * 3600.0 * 1000.0;
+
+/**
+ * How far a seeded clock floor may sit ahead of the wall clock before it is
+ * reported. A key written moments before a restart can land a hair ahead
+ * legitimately; anything past a second means the clock stepped backward, which
+ * is worth a line on every restart until it is fixed.
+ */
+constexpr double CLOCK_FLOOR_AHEAD_WARN_MS = 1000.0;
+
+double getWallClockTimestamp();
+
 // Epoch milliseconds ratcheted strictly increasing for durable transaction/log
 // identities. Rollback can stall elapsed deltas; never substitute the steady clock.
 double getMonotonicTimestamp();
@@ -72,6 +86,28 @@ std::filesystem::path resolveIdentityPath(const std::string& path);
  * handled: the separator is not required twice.
  */
 bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child);
+
+bool raiseMonotonicTimestampFloor(double floor);
+
+bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
+
+/**
+ * Reads a millisecond duration out of an environment variable's raw value.
+ * Anything that is not a fully consumed non-negative decimal integer yields
+ * `defaultMs`; a value above `maxMs` — including one too large for the integer
+ * type — yields `maxMs`.
+ */
+uint64_t parseDurationMs(const char* raw, uint64_t defaultMs, uint64_t maxMs);
+
+/**
+ * Fraction of a bounded budget a successful run may use before it is worth
+ * reporting. Past this the next growth of the same input crosses into a hard
+ * refusal, and the successful run is the only chance to say so first.
+ */
+constexpr double BUDGET_PRESSURE_FRACTION = 0.75;
+
+/** True when `elapsedMs` used at least BUDGET_PRESSURE_FRACTION of `budgetMs`. */
+bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs);
 
 void tryCreateDirectory(
 	const std::filesystem::path& path,
