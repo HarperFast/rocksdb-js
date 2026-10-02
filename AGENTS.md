@@ -1560,7 +1560,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     the buffer — is the signal that a buffer predates an append that outgrew it. The reader
     re-resolves at every point where it would otherwise treat the mapping's end as the segment's
     end — the cache hit, `query()`'s current-buffer fast path, the two segment transitions, and a
-    frame that does not fit — and a remap that is not possible right now (the segment is
+    frame that does not fit. Both transitions also re-read the segment's own extent before leaving
+    it: an iterator's `size` is a snapshot, so a filtered entry ending exactly on it followed by a
+    rotation used to step over everything appended to that segment after the snapshot (the
+    in-loop transition skipped the re-read the top-of-`next()` one did). A remap that is not
+    possible right now (the segment is
     registered but unmappable) stops the iterator where it is for the next poll rather than
     skipping the tail; a remapped buffer no longer than the old one means the file really ends
     there, so a `size` past it is the over-reporting torn-segment case the existing bound reports;

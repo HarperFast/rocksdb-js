@@ -475,6 +475,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								}
 								continue;
 							}
+							// entries appended after this iterator's snapshot end past `segmentSize`
+							size = logBuffer!.size ?? readableExtent(logBuffer!);
+							if (!readUncommitted) {
+								logBuffer!.size = size;
+							}
+							if (position < size) {
+								continue;
+							}
 							const nextLogBuffer = nextReadableLogBuffer(
 								transactionLog,
 								logBuffer!.logId,

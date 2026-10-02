@@ -934,8 +934,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 
 	// An empty file (size 0) has no mapping and every timestamp comes after it. A file with
 	// entries that could not be mapped is a failure to report, not a position: the sentinel
-	// would start the reader at this file's end, past every unread entry. The size is the one
-	// the mapping saw: an append landing after the lock must not reclassify an empty file.
+	// would start the reader at this file's end, past every unread entry.
 	if (!memoryMap) {
 		if (sizeAtMapping == 0) {
 			DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this);

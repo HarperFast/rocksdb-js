@@ -3553,10 +3553,10 @@ describe('Transaction Log', () => {
 		// A header-only segment pre-extended to the target, the layout of a Windows active segment
 		// (open maps it at that physical size; POSIX recovery truncates the zero tail), so both
 		// platforms map it at `segmentMaxSize` before anything is appended.
-		async function writeHeaderOnlySegment(dbPath: string, name: string, segmentMaxSize: number) {
+		async function writeHeaderOnlySegment(dbPath: string, name: string, segmentSize: number) {
 			const logDirectory = join(dbPath, 'transaction_logs', name);
 			await mkdir(logDirectory, { recursive: true });
-			const segment = Buffer.alloc(segmentMaxSize);
+			const segment = Buffer.alloc(segmentSize);
 			segment.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
 			segment.writeUInt8(1, 4);
 			segment.writeDoubleBE(Date.now(), 5);
@@ -3647,6 +3647,31 @@ describe('Transaction Log', () => {
 					}
 				)
 		);
+
+		// A header-only segment that is not pre-extended (a crash, or recovery truncation): Windows
+		// maps it at 13 bytes on open and keeps that view until the batch outgrows it.
+		it('reads an oversized batch through the mapping of an unpadded header-only segment', () =>
+			dbRunner(
+				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
+				async ({ db, dbPath }) => {
+					await writeHeaderOnlySegment(dbPath, 'foo', TRANSACTION_LOG_FILE_HEADER_SIZE);
+					db.open();
+					const log = db.useLog('foo');
+					const tail = log.query({});
+					expect(indices(log.query({ start: 0 }))).toEqual([]);
+					const cached = log._logBuffers.get(1)!.deref()!;
+					expect(cached.length).toBeLessThanOrEqual(maxSize);
+					const positioned = log.query({ start: 0 });
+
+					await writeOversizedTransaction(db, log);
+					expect(cached.readableExtent).toBeGreaterThan(cached.length);
+					expectOversizedBatch(readAll(log.query({ start: 0 })));
+					expectOversizedBatch(readAll(tail));
+					expectOversizedBatch(readAll(positioned));
+					await writeSmallTransaction(db, log, entryCount);
+					expect(indices(log.query({ start: 0 }))).toEqual(range(entryCount + 1));
+				}
+			));
 
 		it('keeps reading across the rotation that follows an oversized batch', () =>
 			dbRunner(
@@ -3744,6 +3769,25 @@ describe('Transaction Log', () => {
 				db.close();
 				db.open();
 				expect(indices(db.useLog('foo').query({ start: 0 }))).toEqual(range(12));
+			}));
+
+		// A filtered entry ending exactly at the iterator's snapshot, then a rotation: the segment
+		// may hold entries appended after the snapshot, and the reader must not step over them.
+		it('reads entries appended after its snapshot before leaving a rotated segment', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 2000 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				await writeSmallTransaction(db, log, 0);
+				const first = readAll(log.query({ start: 0 }))[0];
+				await db.transaction(async (txn) => {
+					txn.setTimestamp(first.timestamp + 100_000); // filtered by `end`
+					log.addEntry(payload(1), txn.id);
+				});
+				const iterator = log.query({ start: 0, end: first.timestamp + 60_000 });
+				expect(iterator.next().value!.data.readUInt32BE(0)).toBe(0);
+				await writeSmallTransaction(db, log, 2);
+				await writeSmallTransaction(db, log, 3); // rotates into segment 2
+				expect(indices(iterator)).toEqual([2, 3]);
+				expect(indices(log.query({ start: 0, end: first.timestamp + 60_000 }))).toEqual([0, 2, 3]);
 			}));
 
 		it('refreshes an outgrown mapping while filtering entries by timestamp', () =>
