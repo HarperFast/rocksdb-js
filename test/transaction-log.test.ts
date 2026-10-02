@@ -3674,8 +3674,8 @@ describe('Transaction Log', () => {
 			));
 
 		// On Windows the first read after the segment grows pre-extends it to the target while the
-		// 13-byte open-time view is still mapped (as main did on the first read of every reopened
-		// segment); the entry must still be read through the new mapping.
+		// 13-byte open-time view is still mapped; the entry must still be read through the new
+		// mapping.
 		it('grows an unpadded segment under its open-time mapping', () =>
 			dbRunner(
 				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
