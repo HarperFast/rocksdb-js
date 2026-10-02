@@ -6,9 +6,11 @@
 #include <mutex>
 #include <map>
 #include <atomic>
+#include <functional>
 #include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/exception.h"
@@ -232,6 +234,14 @@ struct TransactionLogFile final {
 	 * it has expired by the time another reader asks.
 	 */
 	std::weak_ptr<MemoryMap> frozenMapCache;
+
+	/**
+	 * Mappings replaced by a larger one while a reader may still hold them. They
+	 * keep receiving the append-owned extent, so such a reader can tell that its
+	 * mapping no longer covers the file instead of reading its end as the file's
+	 * end. Guarded by fileMutex; expired entries are pruned on publish.
+	 */
+	std::vector<std::weak_ptr<MemoryMap>> supersededMaps;
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY && defined(PLATFORM_POSIX)
 	/**
@@ -535,8 +545,9 @@ struct TransactionLogFile final {
 	 * getMemoryMapLocked(). Callers must NOT already hold fileMutex — a caller
 	 * that does (the open path) calls getMemoryMapLocked() directly instead.
 	 *
-	 * @param fileSize The size to map (max file size for the current file, which
-	 *   is still growing; the frozen file size otherwise).
+	 * @param fileSize The capacity to map (max file size for the current file, which
+	 *   is still growing; the frozen file size otherwise). Raised to the append-owned
+	 *   size under fileMutex, so a handout always covers the file.
 	 * @param isCurrent Whether this is the store's current (actively-written) log
 	 *   file. The current file retains a strong reference in `memoryMap` (the
 	 *   writer and index need it); a frozen file does not — it is weak-cached in
@@ -642,6 +653,14 @@ struct TransactionLogFile final {
 	 * returning the same position. Guarded by indexMutex like the memo itself. Test-only.
 	 */
 	uint32_t resyncSearchCountForTests = 0;
+
+	/**
+	 * Runs once the index walk has acquired its mapping and released fileMutex, before
+	 * it reads the written extent: the window in which an append can land past the
+	 * mapping. Lets a test build the map-shorter-than-the-file state that
+	 * getMemoryMapLocked() otherwise never hands out. Test-only.
+	 */
+	std::function<void()> afterIndexMapAcquiredForTests;
 #endif
 
 private:
@@ -768,6 +787,9 @@ struct MemoryMap final {
 	 * The append-owned logical extent that readers may consume. This stays
 	 * authoritative after purge unlinks the file and the mapping outlives its
 	 * TransactionLogFile, so physical orphan bytes never become log entries.
+	 * It is not clamped to mapSize: an extent past the mapping is how a reader
+	 * learns that an append outgrew the mapping it holds and must remap. Readers
+	 * clamp their own reads to the mapping.
 	 */
 	std::atomic<uint32_t> readableExtent = 0;
 

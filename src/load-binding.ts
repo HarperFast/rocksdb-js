@@ -136,6 +136,11 @@ export type NativeTransaction = {
 export type LogBuffer = Buffer & {
 	dataView: DataView;
 	logId: number;
+	/**
+	 * The segment's append-owned extent, read live from the mapping. It is not clamped to the
+	 * buffer: a value past `length` means a batch outgrew the mapping this buffer was taken from
+	 * (invariant 33), so the reader remaps instead of reading the buffer's end as the segment's end.
+	 */
 	readonly readableExtent: number;
 	size?: number;
 };

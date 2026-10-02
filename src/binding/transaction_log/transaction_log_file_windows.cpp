@@ -381,6 +381,10 @@ bool TransactionLogFile::openFile(bool createIfMissing) {
 // are neither weak-held nor deduped on Windows, by design.)
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
 	(void)isCurrent;
+	// A handout must cover the append-owned extent, whatever capacity the caller
+	// asked for: a batch written to an empty segment may exceed maxFileSize, and
+	// an append can land between the store's size snapshot and this lock.
+	fileSize = std::max(fileSize, this->size.load(std::memory_order_relaxed));
 	// CreateFileMappingW and MapViewOfFile with length 0 may have undefined behavior.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty files.
@@ -400,11 +404,11 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Returning existing memory map (map size=%u)\n", this, memoryMap->mapSize);
 			this->memoryMap->fileSize = fileSize;
 			this->memoryMap->readableExtent.store(
-				std::min(this->size.load(std::memory_order_relaxed), this->memoryMap->mapSize),
-				std::memory_order_release);
+				this->size.load(std::memory_order_relaxed), std::memory_order_release);
 			return this->memoryMap;
 		} else {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map was too small, creating new map (map size=%u)\n", this, memoryMap->mapSize);
+			this->supersededMaps.push_back(this->memoryMap);
 		}
 		// this memory map is not big enough, need to create a new one
 	} else {
@@ -499,9 +503,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	::CloseHandle(mh);
 
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap Mapped to: %p\n", this, map);
-	this->memoryMap = std::make_shared<MemoryMap>(
-		map, fileSize,
-		std::min(this->size.load(std::memory_order_relaxed), fileSize));
+	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize, this->size.load(std::memory_order_relaxed));
 
 	return this->memoryMap;
 }

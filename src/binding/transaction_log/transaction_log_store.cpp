@@ -244,9 +244,20 @@ std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenc
 	// never be re-pinned as current here).
 	bool isCurrent = this->currentSequenceNumber.load(std::memory_order_relaxed) == logSequenceNumber;
 	return logFile->getMemoryMap(isCurrent ?
-		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
+		this->currentMapCapacity(*logFile) : // the most current log is still growing, so map room for it
 		logFile->size.load(std::memory_order_relaxed), // otherwise it is frozen, use the file size
 		isCurrent);
+}
+
+uint32_t TransactionLogStore::currentMapCapacity(const TransactionLogFile& logFile) const {
+	if (this->maxFileSize > 0) {
+		// getMemoryMapLocked() raises this to the file's size when one batch pushed it past the target
+		return this->maxFileSize;
+	}
+	// Unlimited: doubling bounds remaps to O(log size). The mapping is virtual address space
+	// (anonymous overlay on POSIX; the pre-extended file on Windows), so the headroom is cheap.
+	uint32_t size = logFile.size.load(std::memory_order_relaxed);
+	return size > std::numeric_limits<uint32_t>::max() / 2 ? std::numeric_limits<uint32_t>::max() : size * 2;
 }
 
 bool TransactionLogStore::openIfPresent(TransactionLogFile& file) {
@@ -351,7 +362,7 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 		if (this->openIfPresent(*logFile)) {
 			uint32_t positionInLogFile = logFile->findPositionByTimestamp(
 				timestamp,
-				isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed),
+				isCurrent ? this->currentMapCapacity(*logFile) : logFile->size.load(std::memory_order_relaxed),
 				isCurrent
 			);
 			if (positionInLogFile == 0xFFFFFFFF) {

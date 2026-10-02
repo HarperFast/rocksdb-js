@@ -738,8 +738,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 
     A resync that finds nothing is only conclusive over the bytes it could actually read. The index
     walk searches the mapped region (`min(size, mapSize)`), which is short of the written extent
-    whenever one batch exceeded `transactionLogMaxSize` or the limit was lowered, so an empty result
-    there means "not in this map", not "not in this file". It must then stay at the break and report
+    only when an append landed after the walk acquired its mapping (a handout always covers the
+    file at acquisition — invariant 33), so an empty result there means "not in this map", not
+    "not in this file". It must then stay at the break and report
     an unindexed tail — the same treatment the walk already gives a header the map does not cover —
     and only park `lastIndexedPosition` at the written extent when the whole extent was searchable
     and the break is therefore a torn tail. A short map also disqualifies the "chain lands on the
@@ -1532,6 +1533,35 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     floor-log name is memoized per physical transaction-log store, which is the source of truth for
     every descriptor on that path; `DBKey` also contains read-only and secondary state, so guarding
     only one descriptor would allow a concurrent open to rescan a writer's active log.
+
+33. **A transaction-log mapping handed to a reader covers the segment's committed extent, and a
+    reader holding one that no longer does remaps instead of reporting the overrun**: a batch
+    written to an empty segment may exceed `transactionLogMaxSize` (invariant 5 never splits a
+    transaction), and `transactionLogMaxSize` is the capacity the current segment is mapped at.
+    Readers of such a segment mapped it at exactly that size, so every entry past it was
+    unreachable and the frame straddling the mapping's end read as a torn tail
+    (`CorruptFrameError: declared length N overruns the log`); Harper's replication sender stopped
+    there and re-threw on every poll (#889). A frame ending exactly on the mapping's end was worse:
+    no error, and the reader stepped to the next segment over the unread tail. Native owns the
+    first half: `getMemoryMapLocked()` raises every requested capacity to the append-owned
+    `size` **under `fileMutex`** — not at the store's call sites, where a size snapshot taken under
+    `dataSetsMutex` can predate an append that lands before the file lock is acquired — and its
+    reuse check (`mapSize >= fileSize`) then replaces a map the file outgrew. The store asks for
+    `maxFileSize` for the current segment, or a doubling of the size when the store is unlimited
+    (`maxFileSize == 0`, which used to map 0 bytes and read nothing). The JS reader owns the second
+    half, because its per-`TransactionLog` buffer caches (`_logBuffers`, `_currentLogBuffer`) and
+    an iterator's local buffer outlive any native remap: the mapping's `readableExtent` is the
+    append-owned size **unclamped** (the JS helper clamps reads to the buffer), so
+    `readableExtent > length` is the signal that a buffer predates an append that outgrew it. A
+    superseded mapping keeps receiving that extent (`TransactionLogFile::supersededMaps`): in
+    unlimited mode a map can be replaced before it is outgrown, and a map that stopped updating
+    would answer "covers" for a file it no longer does. The reader re-resolves at every point where
+    it would otherwise treat the mapping's end as the segment's end — the cache hit, the two
+    segment transitions, and a frame that does not fit — and a remap that is not possible right
+    now (the segment is registered but unmappable) stops the iterator where it is for the next poll
+    rather than skipping the tail; a segment the store has forgotten keeps serving what it mapped
+    (invariant 30). Covered by `test/transaction-log.test.ts` ("oversized current segment") and
+    `test/native/transaction_log_mmap_test.cc`.
 
 ## Debugging native heap corruption
 

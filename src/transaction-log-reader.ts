@@ -182,6 +182,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		// life of the process (HarperFast/harper#2337)
 		let logBuffer: LogBuffer | undefined = this._currentLogBuffer?.deref(); // try the current one first
 		let foundExactStart = false;
+		if (
+			logBuffer !== undefined &&
+			logBuffer.logId === logId &&
+			(logId === latestLogId ? size > logBuffer.length : !coversExtent(logBuffer))
+		) {
+			// a batch outgrew the mapping this buffer was taken from; resolve it through the cache below
+			logBuffer = undefined;
+		}
 
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
@@ -277,6 +285,18 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						// if it is not the latest log, get the file size
 						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 						if (position >= size) {
+							// the mapping's end is only this segment's end if nothing outgrew it
+							const covering = coveringLogBuffer(transactionLog, logBuffer!);
+							if (covering === undefined) {
+								return { done: true, value: undefined };
+							}
+							if (covering !== logBuffer) {
+								logBuffer = covering;
+								dataView = covering.dataView;
+								size = covering.size ?? (covering.size = readableExtent(covering));
+							}
+						}
+						if (position >= size) {
 							// we can't read any further in this block, go to the next block
 							const nextLogBuffer = nextReadableLogBuffer(
 								transactionLog,
@@ -299,19 +319,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 
 				while (position < size) {
-					try {
-						timestamp = dataView.getFloat64(position);
-					} catch (error) {
-						(error as Error).message += ` at position ${position.toString(16)} of log ${
-							logBuffer!.logId
-						} (size=${size}, log buffer length=${logBuffer!.length})`;
-						throw error;
-					}
-					if (!timestamp) {
-						// we have gone beyond the last transaction and reached the end
-						return { done: true, value: undefined };
-					}
-
 					// Corruption bound: a committed read can't legitimately extend past
 					// the committed `size` (a true entry boundary); an uncommitted read is
 					// bounded only by the physically mapped buffer. In both cases the bound
@@ -325,7 +332,42 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					// dereference an undefined buffer. Fail loudly with a bounded error.
 					// The throw leaves `position` at the resume point, so a broken frame ends the
 					// entry rather than the rest of the log (HarperFast/harper#2016, #2063).
+					//
+					// A frame that does not fit the mapping is not corrupt when the mapping is what
+					// is short: a batch may outgrow the capacity a current segment is mapped at.
 					const limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
+					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit && limit === logBuffer!.length) {
+						const covering = outgrownMapping(logBuffer!, size)
+							? coveringLogBuffer(transactionLog, logBuffer!)
+							: logBuffer;
+						if (covering === undefined) {
+							return { done: true, value: undefined };
+						}
+						if (covering !== logBuffer) {
+							if (size <= logBuffer!.length) {
+								size = covering.size ?? readableExtent(covering);
+								if (!readUncommitted) {
+									covering.size = size;
+								}
+							}
+							logBuffer = covering;
+							dataView = covering.dataView;
+							continue;
+						}
+					}
+					try {
+						timestamp = dataView.getFloat64(position);
+					} catch (error) {
+						(error as Error).message += ` at position ${position.toString(16)} of log ${
+							logBuffer!.logId
+						} (size=${size}, log buffer length=${logBuffer!.length})`;
+						throw error;
+					}
+					if (!timestamp) {
+						// we have gone beyond the last transaction and reached the end
+						return { done: true, value: undefined };
+					}
+
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
 						const broken = corruptFrame(
 							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${
@@ -343,6 +385,28 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						throw broken.error;
 					}
 					const length = dataView.getUint32(position + 8);
+					if (
+						length !== 0 &&
+						position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit &&
+						limit === logBuffer!.length &&
+						outgrownMapping(logBuffer!, size)
+					) {
+						const covering = coveringLogBuffer(transactionLog, logBuffer!);
+						if (covering === undefined) {
+							return { done: true, value: undefined };
+						}
+						if (covering !== logBuffer) {
+							if (size <= logBuffer!.length) {
+								size = covering.size ?? readableExtent(covering);
+								if (!readUncommitted) {
+									covering.size = size;
+								}
+							}
+							logBuffer = covering;
+							dataView = covering.dataView;
+							continue;
+						}
+					}
 					if (length === 0 || position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit) {
 						const broken = corruptFrame(
 							length === 0
@@ -403,6 +467,20 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
+							// the mapping's end is only this segment's end if nothing outgrew it
+							const covering = coveringLogBuffer(transactionLog, logBuffer!);
+							if (covering === undefined) {
+								return { done: true, value: undefined };
+							}
+							if (covering !== logBuffer) {
+								logBuffer = covering;
+								dataView = covering.dataView;
+								size = covering.size ?? readableExtent(covering);
+								if (!readUncommitted) {
+									covering.size = size;
+								}
+								continue;
+							}
 							const nextLogBuffer = nextReadableLogBuffer(
 								transactionLog,
 								logBuffer!.logId,
@@ -487,14 +565,53 @@ function readableExtent(logBuffer: LogBuffer): number {
 	return Math.min(logBuffer.length, extent);
 }
 
+/**
+ * Whether `logBuffer` still covers its segment. A batch written to an empty segment may exceed
+ * `transactionLogMaxSize`, the capacity the current segment is mapped at, so a mapping taken before
+ * that batch landed stops short of entries that exist. Native publishes the append-owned extent
+ * unclamped so the shortfall is visible here (#889).
+ */
+function coversExtent(logBuffer: LogBuffer): boolean {
+	return !(logBuffer.readableExtent > logBuffer.length);
+}
+
+/** `coversExtent` without the native getter when the committed `size` already exceeds the buffer. */
+function outgrownMapping(logBuffer: LogBuffer, size: number): boolean {
+	return size > logBuffer.length || !coversExtent(logBuffer);
+}
+
+/**
+ * The buffer that covers `logBuffer`'s segment, remapping it when an append outgrew the mapping.
+ * `undefined` means the segment is still registered but cannot be remapped right now: the caller
+ * stops where it is and retries on the next poll, rather than reading the mapping's end as the
+ * segment's end and stepping over the unread tail. A segment the store has forgotten keeps serving
+ * what it mapped, as any purged segment does (invariant 30).
+ */
+function coveringLogBuffer(
+	transactionLog: TransactionLog,
+	logBuffer: LogBuffer
+): LogBuffer | undefined {
+	if (coversExtent(logBuffer)) {
+		return logBuffer;
+	}
+	transactionLog._logBuffers!.delete(logBuffer.logId);
+	const remapped = getLogMemoryMap(transactionLog, logBuffer.logId);
+	if (remapped) {
+		return remapped.length > logBuffer.length ? remapped : logBuffer;
+	}
+	transactionLog._logBuffers!.set(logBuffer.logId, new WeakRef(logBuffer));
+	return transactionLog.getLogFileSize(logBuffer.logId) > 0 ? undefined : logBuffer;
+}
+
 function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {
 	if (logId <= 0) {
 		return;
 	}
 	let logBuffer = transactionLog._logBuffers!.get(logId)?.deref();
 	if (logBuffer) {
-		// if we have a cached buffer, return it
-		return logBuffer;
+		// a cached buffer serves at least what it mapped; a remap that is not possible right now
+		// is retried where the reader reaches its end
+		return coveringLogBuffer(transactionLog, logBuffer) ?? logBuffer;
 	}
 	try {
 		logBuffer = transactionLog._getMemoryMapOfFile(logId);

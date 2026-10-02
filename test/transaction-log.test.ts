@@ -3521,6 +3521,254 @@ describe('Transaction Log', () => {
 			}));
 	});
 
+	describe('oversized current segment', () => {
+		// One batch written to an empty segment may exceed transactionLogMaxSize (README). The
+		// current segment used to be mapped at exactly that size, so every entry past it read as
+		// a torn tail (#889).
+		const maxSize = 64 * 1024;
+		const payloadSize = 534;
+		const entryCount = 200; // ~109 KB in one transaction
+		const entrySize = TRANSACTION_LOG_ENTRY_HEADER_SIZE + payloadSize;
+
+		function payload(index: number) {
+			const data = Buffer.alloc(payloadSize, 1);
+			data.writeUInt32BE(index, 0);
+			return data;
+		}
+
+		async function writeOversizedTransaction(db: RocksDatabase, log: TransactionLog) {
+			await db.transaction(async (txn) => {
+				for (let i = 0; i < entryCount; i++) {
+					log.addEntry(payload(i), txn.id);
+				}
+			});
+		}
+
+		async function writeSmallTransaction(db: RocksDatabase, log: TransactionLog, index: number) {
+			await db.transaction(async (txn) => {
+				log.addEntry(payload(index), txn.id);
+			});
+		}
+
+		async function writeHeaderOnlySegment(dbPath: string, name: string) {
+			const logDirectory = join(dbPath, 'transaction_logs', name);
+			await mkdir(logDirectory, { recursive: true });
+			const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+			header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+			header.writeUInt8(1, 4);
+			header.writeDoubleBE(Date.now(), 5);
+			await writeFile(join(logDirectory, '1.txnlog'), header);
+		}
+
+		function readAll(entries: Iterable<{ data: Buffer; timestamp: number; endTxn: boolean }>) {
+			const read: { index: number; timestamp: number; endTxn: boolean }[] = [];
+			for (const entry of entries) {
+				expect(entry.data.length).toBe(payloadSize);
+				read.push({
+					index: entry.data.readUInt32BE(0),
+					timestamp: entry.timestamp,
+					endTxn: entry.endTxn,
+				});
+			}
+			return read;
+		}
+
+		function indices(entries: Iterable<{ data: Buffer; timestamp: number; endTxn: boolean }>) {
+			return readAll(entries).map((entry) => entry.index);
+		}
+
+		function range(count: number, from = 0) {
+			return Array.from({ length: count }, (_, i) => from + i);
+		}
+
+		function expectOversizedBatch(read: ReturnType<typeof readAll>) {
+			expect(read.map((entry) => entry.index)).toEqual(range(entryCount));
+			expect(new Set(read.map((entry) => entry.timestamp)).size).toBe(1);
+			expect(read.map((entry) => entry.endTxn)).toEqual(
+				range(entryCount).map((i) => i === entryCount - 1)
+			);
+		}
+
+		it('reads every entry of an oversized segment after reopen', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: maxSize }] }, async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				await writeOversizedTransaction(db, log);
+				expectOversizedBatch(readAll(log.query({ start: 0 })));
+				const segmentPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				expect(statSync(segmentPath).size).toBeGreaterThan(maxSize);
+
+				db.close();
+				db.open();
+				const reopened = db.useLog('foo');
+				expectOversizedBatch(readAll(reopened.query({ start: 0 })));
+				expectOversizedBatch(readAll(reopened.query({ start: 0, readUncommitted: true })));
+
+				// positioning by timestamp walks the index over the same mapping
+				const { timestamp } = reopened.query({ start: 0 }).next().value!;
+				expectOversizedBatch(readAll(reopened.query({ start: timestamp })));
+				expectOversizedBatch(readAll(reopened.query({ start: timestamp, exactStart: true })));
+				expect(indices(reopened.query({ start: timestamp + 1 }))).toEqual([]);
+			}));
+
+		// A frame straddling the mapping's end used to read as corrupt; a frame ending exactly on
+		// it used to make the reader advance past the unread tail with no error at all.
+		it.each([
+			{ shape: 'straddles', segmentMaxSize: maxSize },
+			{
+				shape: 'ends exactly at',
+				segmentMaxSize: TRANSACTION_LOG_FILE_HEADER_SIZE + entrySize * (entryCount / 2),
+			},
+		])(
+			'reads an oversized batch whose frame $shape the mapping taken before it was written',
+			({ segmentMaxSize }) =>
+				dbRunner(
+					{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: segmentMaxSize }] },
+					async ({ db, dbPath }) => {
+						await writeHeaderOnlySegment(dbPath, 'foo');
+						db.open();
+						const log = db.useLog('foo');
+						// a tail iterator created before the segment was ever mapped
+						const tail = log.query({});
+						expect(indices(log.query({ start: 0 }))).toEqual([]);
+						// the header-only current segment is mapped at the configured maximum and cached
+						const cached = log._logBuffers.get(1)!.deref()!;
+						expect(cached.length).toBe(segmentMaxSize);
+						expect(log._getMemoryMapOfFile(1)!.length).toBe(segmentMaxSize);
+						// an iterator already positioned inside that short mapping
+						const positioned = log.query({ start: 0 });
+
+						await writeOversizedTransaction(db, log);
+						expect(
+							statSync(join(dbPath, 'transaction_logs', 'foo', '1.txnlog')).size
+						).toBeGreaterThan(segmentMaxSize);
+						expect(cached.readableExtent).toBeGreaterThan(cached.length);
+
+						expectOversizedBatch(readAll(log.query({ start: 0 })));
+						expectOversizedBatch(readAll(log.query({ start: 0, readUncommitted: true })));
+						expectOversizedBatch(readAll(tail));
+						expectOversizedBatch(readAll(positioned));
+						expect(log._logBuffers.get(1)?.deref()).not.toBe(cached);
+					}
+				)
+		);
+
+		it('keeps reading across the rotation that follows an oversized batch', () =>
+			dbRunner(
+				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
+				async ({ db, dbPath }) => {
+					await writeHeaderOnlySegment(dbPath, 'foo');
+					db.open();
+					const log = db.useLog('foo');
+					expect(indices(log.query({ start: 0 }))).toEqual([]); // stale short mapping, as above
+					const resumable = log.query({ start: 0 });
+
+					await writeOversizedTransaction(db, log);
+					expectOversizedBatch(readAll(resumable));
+					await writeSmallTransaction(db, log, entryCount);
+					await writeSmallTransaction(db, log, entryCount + 1);
+					const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+					expect((await readdir(logDirectory)).sort()).toEqual(['1.txnlog', '2.txnlog']);
+
+					expect(indices(log.query({ start: 0 }))).toEqual(range(entryCount + 2));
+					expect(indices(resumable)).toEqual([entryCount, entryCount + 1]); // resumes past the oversized segment
+					expect(indices(log.query({ start: 0, readUncommitted: true }))).toEqual(
+						range(entryCount + 2)
+					);
+
+					db.close();
+					db.open();
+					expect(indices(db.useLog('foo').query({ start: 0 }))).toEqual(range(entryCount + 2));
+				}
+			));
+
+		it('positions by timestamp past the capacity a smaller target reopens the segment at', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 1024 * 1024 }] }, async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				for (let i = 0; i < entryCount; i++) {
+					await writeSmallTransaction(db, log, i);
+				}
+				const timestamps = readAll(log.query({ start: 0 })).map((entry) => entry.timestamp);
+				expect(new Set(timestamps).size).toBe(entryCount);
+				db.close();
+
+				const smaller = RocksDatabase.open(dbPath, { transactionLogMaxSize: maxSize });
+				try {
+					const reopened = smaller.useLog('foo');
+					expect(indices(reopened.query({ start: timestamps[150] }))).toEqual(range(50, 150));
+					expect(indices(reopened.query({ start: timestamps[150], exactStart: true }))).toEqual(
+						range(50, 150)
+					);
+					expect(indices(reopened.query({ start: timestamps[entryCount - 1] }))).toEqual([
+						entryCount - 1,
+					]);
+					expect(indices(reopened.query({ start: timestamps[entryCount - 1] + 1 }))).toEqual([]);
+					expect(indices(reopened.query({ start: 0 }))).toEqual(range(entryCount));
+				} finally {
+					smaller.close();
+				}
+			}));
+
+		it('stops at a mapping it cannot replace and resumes without skipping once it can', () =>
+			dbRunner(
+				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
+				async ({ db, dbPath }) => {
+					await writeHeaderOnlySegment(dbPath, 'foo');
+					db.open();
+					const log = db.useLog('foo');
+					expect(indices(log.query({ start: 0 }))).toEqual([]); // stale short mapping, as above
+					await writeOversizedTransaction(db, log);
+
+					const fitting = Math.floor((maxSize - TRANSACTION_LOG_FILE_HEADER_SIZE) / entrySize);
+					const remap = vi.spyOn(log, '_getMemoryMapOfFile').mockReturnValue(undefined);
+					try {
+						// the readable prefix is served; the unread tail is neither corrupt nor skipped
+						expect(indices(log.query({ start: 0 }))).toEqual(range(fitting));
+						const parked = log.query({ start: 0 });
+						expect(indices(parked)).toEqual(range(fitting));
+						expect(indices(parked)).toEqual([]);
+						expect(remap).toHaveBeenCalled();
+						remap.mockRestore();
+						expect(indices(parked)).toEqual(range(entryCount - fitting, fitting));
+					} finally {
+						remap.mockRestore();
+					}
+					expectOversizedBatch(readAll(log.query({ start: 0 })));
+				}
+			));
+
+		it('reads the growing current segment when transactionLogMaxSize is 0', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				const tail = log.query({});
+				for (let i = 0; i < 12; i++) {
+					await writeSmallTransaction(db, log, i);
+					expect(indices(log.query({ start: 0 }))).toEqual(range(i + 1));
+					expect(indices(tail)).toEqual([i]);
+				}
+				db.close();
+				db.open();
+				expect(indices(db.useLog('foo').query({ start: 0 }))).toEqual(range(12));
+			}));
+
+		it('refreshes an outgrown mapping while filtering entries by timestamp', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				await writeSmallTransaction(db, log, 0);
+				const first = readAll(log.query({ start: 0 }))[0];
+				const filtered = log.query({ start: first.timestamp });
+				expect(indices(filtered)).toEqual([0]);
+				for (let i = 1; i < 12; i++) {
+					// older than `start`, so the iterator skips it and reaches the next frame mid-loop
+					await db.transaction(async (txn) => {
+						txn.setTimestamp(first.timestamp - 1000 * i);
+						log.addEntry(payload(i), txn.id);
+					});
+					await writeSmallTransaction(db, log, 100 + i);
+					expect(indices(filtered)).toEqual([100 + i]);
+				}
+			}));
+	});
+
 	describe('memory map lifecycle', () => {
 		// Repeatedly GC and wait until `cond` holds (or time runs out). Buffer
 		// finalization (which unmaps a released frozen map) is GC-driven.

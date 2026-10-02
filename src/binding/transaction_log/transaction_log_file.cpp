@@ -892,10 +892,17 @@ void TransactionLogFile::publishReadableExtentLocked() {
 		frozen = this->frozenMapCache.lock();
 		map = frozen.get();
 	}
+	uint32_t size = this->size.load(std::memory_order_relaxed);
 	if (map) {
-		map->readableExtent.store(
-			std::min(this->size.load(std::memory_order_relaxed), map->mapSize),
-			std::memory_order_release);
+		map->readableExtent.store(size, std::memory_order_release);
+	}
+	for (auto it = this->supersededMaps.begin(); it != this->supersededMaps.end();) {
+		if (auto superseded = it->lock()) {
+			superseded->readableExtent.store(size, std::memory_order_release);
+			++it;
+		} else {
+			it = this->supersededMaps.erase(it);
+		}
 	}
 }
 
@@ -936,6 +943,11 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this);
 		return 0xFFFFFFFF;
 	}
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (this->afterIndexMapAcquiredForTests) {
+		this->afterIndexMapAcquiredForTests();
+	}
+#endif
 
 	std::unique_lock<std::mutex> indexLock(this->indexMutex);
 

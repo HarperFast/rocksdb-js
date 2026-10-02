@@ -489,6 +489,12 @@ struct TransactionLogStore final {
 	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t logSequenceNumber);
 
 	/**
+	 * The capacity to map for the current (growing) segment: maxFileSize, or a doubling of the
+	 * file's size when the store is unlimited (maxFileSize == 0).
+	 */
+	uint32_t currentMapCapacity(const TransactionLogFile& logFile) const;
+
+	/**
 	 * Advances currentSequenceNumber to the next sequence, first downgrading the
 	 * memory map of the file being rotated away from to a weak reference (so a
 	 * reader that mapped it while current no longer pins it), then resets

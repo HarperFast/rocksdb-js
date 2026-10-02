@@ -104,4 +104,67 @@ TEST(TransactionLogMmapOwnership, FrozenHandoutsShareOneMap) {
 	EXPECT_EQ(MemoryMap::liveCount.load(), base + 1);  // one mapping, not two
 }
 
+// A current segment that one batch pushed past the size it was mapped at (one
+// transaction written to an empty segment may exceed transactionLogMaxSize):
+// the mapping keeps publishing the append-owned extent past its own length so
+// a reader can tell it no longer covers the file, and the next request for a
+// larger size replaces it rather than reusing it (#889).
+TEST(TransactionLogMmapOwnership, OutgrownCurrentMapReportsFullExtentAndIsReplaced) {
+	const int64_t base = MemoryMap::liveCount.load();
+	auto log = makeLog(8192);
+	auto small = log->getMemoryMap(8192, /*isCurrent=*/true);
+	ASSERT_NE(small, nullptr);
+	EXPECT_EQ(small->mapSize, 8192u);
+	EXPECT_EQ(small->readableExtent.load(), 8192u);
+
+	// grow the file by one more "batch" past the mapping
+	std::vector<char> more(8192, 'y');
+	ASSERT_EQ(::pwrite(log->fd, more.data(), more.size(), 8192), static_cast<ssize_t>(more.size()));
+	log->size.store(16384, std::memory_order_relaxed);
+	{
+		std::lock_guard<std::mutex> lock(log->fileMutex);
+		log->publishReadableExtentLocked();
+	}
+	EXPECT_EQ(small->readableExtent.load(), 16384u);  // not clamped to the 8192-byte map
+	EXPECT_EQ(small->mapSize, 8192u);
+
+	// the smaller map must not be reused for a request that covers the whole file
+	auto big = log->getMemoryMap(16384, /*isCurrent=*/true);
+	ASSERT_NE(big, nullptr);
+	EXPECT_NE(big.get(), small.get());
+	EXPECT_GE(big->mapSize, 16384u);
+	EXPECT_EQ(big->readableExtent.load(), 16384u);
+	EXPECT_EQ(log->memoryMap.get(), big.get());
+	EXPECT_EQ(MemoryMap::liveCount.load(), base + 2);  // the outgrown map lives while a reader holds it
+	EXPECT_EQ(static_cast<const char*>(big->map)[8192], 'y');
+
+	// a reader still holding the superseded map keeps seeing the file's extent
+	log->size.store(20000, std::memory_order_relaxed);
+	{
+		std::lock_guard<std::mutex> lock(log->fileMutex);
+		log->publishReadableExtentLocked();
+	}
+	EXPECT_EQ(small->readableExtent.load(), 20000u);
+	EXPECT_EQ(big->readableExtent.load(), 20000u);
+
+	small.reset();
+	EXPECT_EQ(MemoryMap::liveCount.load(), base + 1);
+	{
+		std::lock_guard<std::mutex> lock(log->fileMutex);
+		log->publishReadableExtentLocked();  // prunes the expired entry
+		EXPECT_TRUE(log->supersededMaps.empty());
+	}
+}
+
+// A request smaller than the file (a store-side capacity snapshot taken before an
+// append landed) still maps the whole file: the capacity is raised under fileMutex.
+TEST(TransactionLogMmapOwnership, StaleCapacityRequestStillCoversTheFile) {
+	auto log = makeLog(16384);
+	auto map = log->getMemoryMap(8192, /*isCurrent=*/true);
+	ASSERT_NE(map, nullptr);
+	EXPECT_GE(map->mapSize, 16384u);
+	EXPECT_EQ(map->fileSize, 16384u);
+	EXPECT_EQ(map->readableExtent.load(), 16384u);
+}
+
 #endif // _WIN32
