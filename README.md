@@ -169,7 +169,7 @@ Creates a new database instance.
   - `transactionLogMaxSize: number` The target maximum size of a transaction log file. Transactions
     are never split across files: if the complete transaction does not fit, the log rotates before
     writing it. A transaction written to an empty file may exceed the target. Defaults to 16 MB;
-    `0` also uses this default.
+    `0` also uses this default, including normal size-based rotation and configured retention.
   - `transactionLogRetention: string | number` The number of minutes to retain transaction logs
     before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults to

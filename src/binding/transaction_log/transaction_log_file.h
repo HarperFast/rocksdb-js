@@ -2,6 +2,7 @@
 #define __TRANSACTION_LOG_FILE_H__
 
 #include <chrono>
+#include <algorithm>
 #include <filesystem>
 #include <mutex>
 #include <map>
@@ -807,7 +808,7 @@ struct MemoryMap final {
 	static std::atomic<int64_t> liveCount;
 
 	MemoryMap(void* map, uint32_t mapSize, uint32_t readableExtent)
-		: map(map), mapSize(mapSize), fileSize(mapSize), readableExtent(readableExtent) {
+		: map(map), mapSize(mapSize), fileSize(mapSize), readableExtent(std::min(readableExtent, mapSize)) {
 		liveCount.fetch_add(1, std::memory_order_relaxed);
 	}
 

@@ -805,7 +805,9 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		(maxFileSize > 0 && currentSize > TRANSACTION_LOG_FILE_HEADER_SIZE &&
 			(currentSize >= maxFileSize ||
 				totalSizeToWrite > static_cast<uint64_t>(maxFileSize - currentSize)))) {
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 No entries to write\n", this);
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Batch is empty or exceeds segment capacity (entries=%u, bytes=%llu, size=%u, readerCapacity=%u, maxFileSize=%u)\n",
+			this, numEntriesToWrite, static_cast<unsigned long long>(totalSizeToWrite),
+			currentSize, this->readerCapacity, maxFileSize);
 		return;
 	}
 

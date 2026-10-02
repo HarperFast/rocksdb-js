@@ -397,7 +397,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 #endif
 	}
 	map->fileSize = std::min(fileSize, map->mapSize);
-	map->readableExtent.store(size, std::memory_order_release);
+	map->readableExtent.store(std::min(size, map->mapSize), std::memory_order_release);
 
 	// Ownership: the current (actively-written) file keeps a strong reference —
 	// the writer extends its overlay and the index reads through it. A frozen

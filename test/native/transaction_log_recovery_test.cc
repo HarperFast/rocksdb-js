@@ -708,6 +708,34 @@ uint32_t OpenedLogFile::sequence = 0;
 
 } // namespace
 
+#ifdef _WIN32
+TEST(TransactionLogWindowsOpen, MappingFailureCannotAppendPastZeroPadding) {
+	LogImage img;
+	img.zeros(64 * 1024 - img.size());
+	OpenedLogFile opened(img);
+	auto& file = opened.get();
+	file.close();
+
+	std::string payload = "first-entry";
+	rocksdb_js::TransactionLogEntryBatch batch(3.0);
+	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+	TransactionLogFile::forceMapFailureForTests.store(true);
+	EXPECT_THROW(file.writeEntries(batch, 128 * 1024, 3.0),
+		rocksdb_js::TransactionLogOpenException);
+	TransactionLogFile::forceMapFailureForTests.store(false);
+	EXPECT_FALSE(file.isOpen());
+	EXPECT_EQ(file.size.load(), 0u);
+	EXPECT_FALSE(batch.isComplete());
+
+	file.writeEntries(batch, 128 * 1024, 3.0);
+	EXPECT_TRUE(batch.isComplete());
+	auto map = file.getMemoryMap(128 * 1024, /*isCurrent=*/true);
+	ASSERT_NE(map, nullptr);
+	EXPECT_EQ(countTransactionLogEntries(static_cast<const char*>(map->map), file.size.load()), 1u);
+}
+#endif
+
 TEST(TransactionLogRecoverySource, CleanWalkReadsOnlyHeaders) {
 	LogImage img;
 	img.entry(1024 * 1024).entry(1024 * 1024);

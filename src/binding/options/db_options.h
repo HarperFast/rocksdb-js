@@ -10,6 +10,8 @@
 
 namespace rocksdb_js {
 
+constexpr uint32_t DEFAULT_TRANSACTION_LOG_MAX_SIZE = 16 * 1024 * 1024;
+
 /**
  * The RocksDB database mode.
  */
@@ -96,7 +98,7 @@ struct DBOptions final {
 	uint32_t parallelismThreads = std::max<uint32_t>(1, std::thread::hardware_concurrency() / 2);
 	uint8_t statsLevel = rocksdb::StatsLevel::kExceptDetailedTimers;
 	float transactionLogMaxAgeThreshold = 0.75f;
-	uint32_t transactionLogMaxSize = 16 * 1024 * 1024; // 16MB
+	uint32_t transactionLogMaxSize = DEFAULT_TRANSACTION_LOG_MAX_SIZE;
 	uint32_t transactionLogRetentionMs = 3 * 24 * 60 * 60 * 1000; // 3 days
 	std::string transactionLogsPath;
 	std::string transactionLogsDisplayPath;

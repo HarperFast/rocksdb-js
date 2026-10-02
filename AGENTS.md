@@ -738,8 +738,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 
     A resync that finds nothing is only conclusive over the bytes it could actually read. The index
     walk searches the mapped region (`min(size, mapSize)`), which is short of the written extent
-    only when an append landed after the walk acquired an internal index mapping, so an empty result there means "not in this map", not
-    "not in this file". It must then stay at the break and report
+    only when an append landed after the walk acquired an internal index mapping, so an empty
+    result there means "not in this map", not "not in this file". It must then stay at the break and report
     an unindexed tail — the same treatment the walk already gives a header the map does not cover —
     and only park `lastIndexedPosition` at the written extent when the whole extent was searchable
     and the break is therefore a torn tail. A short map also disqualifies the "chain lands on the

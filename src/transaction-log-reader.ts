@@ -250,7 +250,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 
 		dataView = logBuffer.dataView;
 
-		if (latestLogId !== logId) {
+		if (latestLogId > logId) {
 			const cachedSize = logBuffer.size;
 			if (cachedSize === undefined) {
 				size = logBuffer.size = readableExtent(logBuffer);

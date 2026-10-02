@@ -359,12 +359,7 @@ bool TransactionLogFile::openFile(bool createIfMissing) {
 		// (std::mutex is not recursive — re-locking would self-deadlock/terminate).
 		// isCurrent is ignored by the Windows getMemoryMapLocked() (it always
 		// retains a strong reference), so the value passed here is immaterial.
-		try {
-			this->findPositionByTimestamp(0, size, /*isCurrent=*/true, /*fileMutexHeld=*/true);
-		} catch (const std::exception& e) {
-			// The open-time normalization is best effort; a later read reports the failure.
-			DEBUG_LOG("%p TransactionLogFile::openFile Could not index on open: %s\n", this, e.what());
-		}
+		this->findPositionByTimestamp(0, size, /*isCurrent=*/true, /*fileMutexHeld=*/true);
 		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
 			this, size, this->path.string().c_str());
 	}
@@ -415,7 +410,8 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 			(this->readerCapacity > 0 || this->memoryMap->mapSize >= fileSize)) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Returning existing memory map (map size=%u)\n", this, memoryMap->mapSize);
 			this->memoryMap->fileSize = std::min(fileSize, this->memoryMap->mapSize);
-			this->memoryMap->readableExtent.store(size, std::memory_order_release);
+			this->memoryMap->readableExtent.store(std::min(size, this->memoryMap->mapSize),
+				std::memory_order_release);
 			return this->memoryMap;
 		} else {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map was too small, creating new map (map size=%u)\n", this, memoryMap->mapSize);

@@ -47,7 +47,7 @@ TransactionLogStore::TransactionLogStore(
 	name(name),
 	path(path),
 	displayPath(path),
-	maxFileSize(maxFileSize > 0 ? maxFileSize : DBOptions{}.transactionLogMaxSize),
+	maxFileSize(maxFileSize > 0 ? maxFileSize : DEFAULT_TRANSACTION_LOG_MAX_SIZE),
 	retentionMs(retentionMs),
 	maxAgeThreshold(maxAgeThreshold)
 {
@@ -1087,12 +1087,10 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			}
 
 			// rotate to next sequence if the file is at max size
-			if (logFile != nullptr) {
-				DEBUG_LOG("%p TransactionLogStore::writeBatch Advancing sequence number from %u to %u for store \"%s\" (logFile=%p, maxIndexSize=%u)\n",
-					this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize);
-				this->rotateToNextSequence(logFile);
-				logFile = nullptr;
-			}
+			DEBUG_LOG("%p TransactionLogStore::writeBatch Advancing sequence number from %u to %u for store \"%s\" (logFile=%p, maxIndexSize=%u)\n",
+				this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize);
+			this->rotateToNextSequence(logFile);
+			logFile = nullptr;
 		}
 
 		if (!logPosition.fullPosition) {
@@ -1100,12 +1098,6 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			this->positionErase(logPosition);
 			logPosition = this->nextLogPosition;
 			this->positionInsert(logPosition);
-		}
-
-		// ensure we have a valid log file before writing
-		if (!logFile) {
-			DEBUG_LOG("%p TransactionLogStore::writeBatch ERROR: Failed to open transaction log file for store \"%s\"\n", this, this->name.c_str());
-			throw rocksdb_js::DBException("Failed to open transaction log file for store \"" + this->name + "\"");
 		}
 
 		// if the file is older than the retention threshold, rotate to the next file
