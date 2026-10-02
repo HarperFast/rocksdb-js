@@ -1545,23 +1545,33 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     no error, and the reader stepped to the next segment over the unread tail. Native owns the
     first half: `getMemoryMapLocked()` raises every requested capacity to the append-owned
     `size` **under `fileMutex`** — not at the store's call sites, where a size snapshot taken under
-    `dataSetsMutex` can predate an append that lands before the file lock is acquired — and its
-    reuse check (`mapSize >= fileSize`) then replaces a map the file outgrew. The store asks for
-    `maxFileSize` for the current segment, or a doubling of the size when the store is unlimited
-    (`maxFileSize == 0`, which used to map 0 bytes and read nothing). The JS reader owns the second
-    half, because its per-`TransactionLog` buffer caches (`_logBuffers`, `_currentLogBuffer`) and
-    an iterator's local buffer outlive any native remap: the mapping's `readableExtent` is the
-    append-owned size **unclamped** (the JS helper clamps reads to the buffer), so
-    `readableExtent > length` is the signal that a buffer predates an append that outgrew it. A
-    superseded mapping keeps receiving that extent (`TransactionLogFile::supersededMaps`): in
-    unlimited mode a map can be replaced before it is outgrown, and a map that stopped updating
-    would answer "covers" for a file it no longer does. The reader re-resolves at every point where
-    it would otherwise treat the mapping's end as the segment's end — the cache hit, the two
-    segment transitions, and a frame that does not fit — and a remap that is not possible right
-    now (the segment is registered but unmappable) stops the iterator where it is for the next poll
-    rather than skipping the tail; a segment the store has forgotten keeps serving what it mapped
-    (invariant 30). Covered by `test/transaction-log.test.ts` ("oversized current segment") and
-    `test/native/transaction_log_mmap_test.cc`.
+    `dataSetsMutex` can predate an append that lands before the file lock is acquired. The
+    requested capacity only sizes a _new_ mapping: a live mapping that still covers the file is
+    reused however large the request, so **a mapping is replaced only once the file outgrew it**.
+    That ordering is load-bearing on POSIX, where `updateMemoryMapOverlay()` extends only the live
+    mapping's file overlay: a mapping replaced before it was outgrown would keep anonymous zero
+    pages inside its length and a reader holding it would deliver zero-filled payloads or park on a
+    false end-of-entries marker. A mapping replaced after it was outgrown has a complete overlay,
+    and the append that outgrew it has already published an extent past its end. The JS reader
+    owns the second half, because its per-`TransactionLog` buffer caches (`_logBuffers`,
+    `_currentLogBuffer`) and an iterator's local buffer outlive any native remap: the mapping's
+    `readableExtent` is the append-owned size **unclamped** (the JS helper clamps reads to the
+    buffer), so `readableExtent > length` — or, free of the native getter, a committed `size` past
+    the buffer — is the signal that a buffer predates an append that outgrew it. The reader
+    re-resolves at every point where it would otherwise treat the mapping's end as the segment's
+    end — the cache hit, `query()`'s current-buffer fast path, the two segment transitions, and a
+    frame that does not fit — and a remap that is not possible right now (the segment is
+    registered but unmappable) stops the iterator where it is for the next poll rather than
+    skipping the tail; a remapped buffer no longer than the old one means the file really ends
+    there, so a `size` past it is the over-reporting torn-segment case the existing bound reports;
+    a segment the store has forgotten keeps serving what it mapped (invariant 30). The index walk
+    owes the same discipline: a nonempty file whose mapping fails throws from
+    `findPositionByTimestamp` instead of returning the past-every-entry sentinel, which would start
+    `query({ start })` at the segment's end. `transactionLogMaxSize: 0` used to map the current
+    segment at 0 bytes and read nothing; it now maps the segment at its size and remaps as it
+    grows (a known per-growth cost of unlimited mode; headroom would be a separate change).
+    Covered by `test/transaction-log.test.ts` ("oversized current segment"), which is also the
+    Windows coverage, and `test/native/transaction_log_mmap_test.cc`.
 
 ## Debugging native heap corruption
 

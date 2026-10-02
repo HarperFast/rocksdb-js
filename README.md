@@ -2037,8 +2037,8 @@ OS-specific differences:
   `transactionLogMaxSize` (an anonymous reservation with the file's contents overlaid on top), or
   at its size when a single transaction pushed it past that target, so `memory.mappedBytes`
   over-reports the active file; `memory.overlayBytes` is the file-backed portion and is the closer
-  proxy for real consumption. With `transactionLogMaxSize: 0` the active file is mapped at twice
-  its size and remapped as it grows.
+  proxy for real consumption. With `transactionLogMaxSize: 0` the active file is mapped at its
+  size and remapped as it grows.
 - **macOS:** Activity Monitor's "Memory" column reports the physical footprint, which excludes
   clean file-backed pages — mapped log data is essentially invisible there even when resident. Use
   process RSS (e.g. `process.memoryUsage().rss`, `ps`, or `vmmap <pid>`) to observe it.

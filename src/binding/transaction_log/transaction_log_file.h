@@ -235,14 +235,6 @@ struct TransactionLogFile final {
 	 */
 	std::weak_ptr<MemoryMap> frozenMapCache;
 
-	/**
-	 * Mappings replaced by a larger one while a reader may still hold them. They
-	 * keep receiving the append-owned extent, so such a reader can tell that its
-	 * mapping no longer covers the file instead of reading its end as the file's
-	 * end. Guarded by fileMutex; expired entries are pruned on publish.
-	 */
-	std::vector<std::weak_ptr<MemoryMap>> supersededMaps;
-
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY && defined(PLATFORM_POSIX)
 	/**
 	 * The file size at which the last MAP_FIXED overlay was applied over the
@@ -545,9 +537,11 @@ struct TransactionLogFile final {
 	 * getMemoryMapLocked(). Callers must NOT already hold fileMutex — a caller
 	 * that does (the open path) calls getMemoryMapLocked() directly instead.
 	 *
-	 * @param fileSize The capacity to map (max file size for the current file, which
-	 *   is still growing; the frozen file size otherwise). Raised to the append-owned
-	 *   size under fileMutex, so a handout always covers the file.
+	 * @param fileSize The capacity to allocate when no live mapping covers the file
+	 *   (max file size for the current file, which is still growing; the frozen file
+	 *   size otherwise). Raised to the append-owned size under fileMutex, so a handout
+	 *   always covers the file; a live mapping that still covers it is reused whatever
+	 *   the capacity asked for, so a mapping is replaced only once the file outgrew it.
 	 * @param isCurrent Whether this is the store's current (actively-written) log
 	 *   file. The current file retains a strong reference in `memoryMap` (the
 	 *   writer and index need it); a frozen file does not — it is weak-cached in
@@ -661,6 +655,9 @@ struct TransactionLogFile final {
 	 * getMemoryMapLocked() otherwise never hands out. Test-only.
 	 */
 	std::function<void()> afterIndexMapAcquiredForTests;
+
+	/** Makes getMemoryMapLocked() fail like the OS mapping call did. Test-only. */
+	static std::atomic<bool> forceMapFailureForTests;
 #endif
 
 private:
@@ -789,7 +786,9 @@ struct MemoryMap final {
 	 * TransactionLogFile, so physical orphan bytes never become log entries.
 	 * It is not clamped to mapSize: an extent past the mapping is how a reader
 	 * learns that an append outgrew the mapping it holds and must remap. Readers
-	 * clamp their own reads to the mapping.
+	 * clamp their own reads to the mapping. Only the file's live mapping receives
+	 * it, which suffices because a mapping is replaced only once the file outgrew
+	 * it — the append that did so has already published an extent past its end.
 	 */
 	std::atomic<uint32_t> readableExtent = 0;
 

@@ -359,7 +359,12 @@ bool TransactionLogFile::openFile(bool createIfMissing) {
 		// (std::mutex is not recursive — re-locking would self-deadlock/terminate).
 		// isCurrent is ignored by the Windows getMemoryMapLocked() (it always
 		// retains a strong reference), so the value passed here is immaterial.
-		this->findPositionByTimestamp(0, size, /*isCurrent=*/true, /*fileMutexHeld=*/true);
+		try {
+			this->findPositionByTimestamp(0, size, /*isCurrent=*/true, /*fileMutexHeld=*/true);
+		} catch (const std::exception& e) {
+			// The open-time normalization is best effort; a later read reports the failure.
+			DEBUG_LOG("%p TransactionLogFile::openFile Could not index on open: %s\n", this, e.what());
+		}
 		DEBUG_LOG("%p TransactionLogFile::openFile New file size: %zu file path: %s\n",
 			this, size, this->path.string().c_str());
 	}
@@ -384,7 +389,8 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	// A handout must cover the append-owned extent, whatever capacity the caller
 	// asked for: a batch written to an empty segment may exceed maxFileSize, and
 	// an append can land between the store's size snapshot and this lock.
-	fileSize = std::max(fileSize, this->size.load(std::memory_order_relaxed));
+	uint32_t size = this->size.load(std::memory_order_relaxed);
+	fileSize = std::max(fileSize, size);
 	// CreateFileMappingW and MapViewOfFile with length 0 may have undefined behavior.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty files.
@@ -392,23 +398,27 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMapLocked fileSize is 0, returning nullptr\n", this);
 		return nullptr;
 	}
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (forceMapFailureForTests.load(std::memory_order_relaxed)) {
+		return nullptr;
+	}
+#endif
 
 	if (this->fileHandle == INVALID_HANDLE_VALUE) {
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap file is not open: %s\n", this, this->path.string().c_str());
 		return nullptr;
 	}
 
+	// Reuse the live mapping while it still covers the file: a mapping is replaced only
+	// once the file outgrew it (see the POSIX getMemoryMapLocked()).
 	if (this->memoryMap) {
-		if (this->memoryMap->mapSize >= fileSize) {
-			// existing memory map will work
+		if (this->memoryMap->mapSize >= size) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Returning existing memory map (map size=%u)\n", this, memoryMap->mapSize);
-			this->memoryMap->fileSize = fileSize;
-			this->memoryMap->readableExtent.store(
-				this->size.load(std::memory_order_relaxed), std::memory_order_release);
+			this->memoryMap->fileSize = std::min(fileSize, this->memoryMap->mapSize);
+			this->memoryMap->readableExtent.store(size, std::memory_order_release);
 			return this->memoryMap;
 		} else {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map was too small, creating new map (map size=%u)\n", this, memoryMap->mapSize);
-			this->supersededMaps.push_back(this->memoryMap);
 		}
 		// this memory map is not big enough, need to create a new one
 	} else {
@@ -431,7 +441,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 		if (fileSize == 0) {
 			return nullptr;
 		}
-	} else if (fileSize > this->size.load(std::memory_order_relaxed)) {
+	} else if (fileSize > size) {
 		LARGE_INTEGER currentPos;
 		LARGE_INTEGER distanceToMove;
 		// First, we have to get the current position, so we can restore it (if we get to a point where no other code relies on position, could remove this)
@@ -503,7 +513,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	::CloseHandle(mh);
 
 	DEBUG_LOG("%p TransactionLogFile::getMemoryMap Mapped to: %p\n", this, map);
-	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize, this->size.load(std::memory_order_relaxed));
+	this->memoryMap = std::make_shared<MemoryMap>(map, fileSize, size);
 
 	return this->memoryMap;
 }

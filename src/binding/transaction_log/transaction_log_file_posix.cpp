@@ -338,7 +338,8 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	// A handout must cover the append-owned extent, whatever capacity the caller
 	// asked for: a batch written to an empty segment may exceed maxFileSize, and
 	// an append can land between the store's size snapshot and this lock.
-	fileSize = std::max(fileSize, this->size.load(std::memory_order_relaxed));
+	uint32_t size = this->size.load(std::memory_order_relaxed);
+	fileSize = std::max(fileSize, size);
 	// mmap with length 0 has undefined behavior according to POSIX.
 	// Different runtimes handle this differently - Node.js/Bun tolerate it,
 	// but Deno stalls. Return nullptr for empty or too-small files.
@@ -346,14 +347,19 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMapLocked fileSize is 0, returning nullptr\n", this);
 		return nullptr;
 	}
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (forceMapFailureForTests.load(std::memory_order_relaxed)) {
+		return nullptr;
+	}
+#endif
 
-	// Reuse an existing live mapping that is already large enough — the strong
-	// ref for the current file, or a still-live frozen handout.
+	// Reuse a live mapping that still covers the file — the strong ref for the
+	// current file, or a still-live frozen handout. A mapping is replaced only
+	// once the file outgrew it: by then the append that did so has published an
+	// extent past its end (the reader's signal to remap) and its overlay is
+	// complete, so a reader still holding it sees only file bytes.
 	std::shared_ptr<MemoryMap> map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
-	if (!(map && map->map && map->mapSize >= fileSize)) {
-		if (map && map->map) {
-			this->supersededMaps.push_back(map);
-		}
+	if (!(map && map->map && map->mapSize >= size)) {
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 		// On POSIX, mmap(fd, maxFileSize) over a small file causes SIGBUS on
 		// pages entirely beyond the file. We first create an anonymous
@@ -367,7 +373,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 			return nullptr;
 		}
 
-		uint32_t actualSize = std::min(this->size.load(std::memory_order_relaxed), fileSize);
+		uint32_t actualSize = std::min(size, fileSize);
 		if (actualSize > 0 && this->fd >= 0) {
 			void* fileMap = ::mmap(anonMap, actualSize, PROT_READ, MAP_SHARED | MAP_FIXED, this->fd, 0);
 			if (fileMap == MAP_FAILED) {
@@ -382,7 +388,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 		// correctly frees both anonymous and file-backed pages. Removing files
 		// that are memory mapped is perfectly fine on POSIX, and the memory map
 		// can be safely used indefinitely.
-		map = std::make_shared<MemoryMap>(anonMap, fileSize, this->size.load(std::memory_order_relaxed));
+		map = std::make_shared<MemoryMap>(anonMap, fileSize, size);
 #else
 		void* newMap = ::mmap(NULL, fileSize, PROT_READ, MAP_SHARED, this->fd, 0);
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap new memory map: %p\n", this, newMap);
@@ -390,11 +396,11 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap ERROR: mmap failed: %s", this, ::strerror(errno));
 			return nullptr;
 		}
-		map = std::make_shared<MemoryMap>(newMap, fileSize, this->size.load(std::memory_order_relaxed));
+		map = std::make_shared<MemoryMap>(newMap, fileSize, size);
 #endif
 	}
-	map->fileSize = fileSize;
-	map->readableExtent.store(this->size.load(std::memory_order_relaxed), std::memory_order_release);
+	map->fileSize = std::min(fileSize, map->mapSize);
+	map->readableExtent.store(size, std::memory_order_release);
 
 	// Ownership: the current (actively-written) file keeps a strong reference —
 	// the writer extends its overlay and the index reads through it. A frozen

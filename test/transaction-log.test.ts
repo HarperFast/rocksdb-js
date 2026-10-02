@@ -3563,12 +3563,9 @@ describe('Transaction Log', () => {
 		function readAll(entries: Iterable<{ data: Buffer; timestamp: number; endTxn: boolean }>) {
 			const read: { index: number; timestamp: number; endTxn: boolean }[] = [];
 			for (const entry of entries) {
-				expect(entry.data.length).toBe(payloadSize);
-				read.push({
-					index: entry.data.readUInt32BE(0),
-					timestamp: entry.timestamp,
-					endTxn: entry.endTxn,
-				});
+				const index = entry.data.readUInt32BE(0);
+				expect(entry.data.equals(payload(index))).toBe(true);
+				read.push({ index, timestamp: entry.timestamp, endTxn: entry.endTxn });
 			}
 			return read;
 		}
@@ -3627,15 +3624,12 @@ describe('Transaction Log', () => {
 						await writeHeaderOnlySegment(dbPath, 'foo');
 						db.open();
 						const log = db.useLog('foo');
-						// a tail iterator created before the segment was ever mapped
-						const tail = log.query({});
+						const tail = log.query({}); // before the segment is mapped at all
 						expect(indices(log.query({ start: 0 }))).toEqual([]);
-						// the header-only current segment is mapped at the configured maximum and cached
 						const cached = log._logBuffers.get(1)!.deref()!;
 						expect(cached.length).toBe(segmentMaxSize);
 						expect(log._getMemoryMapOfFile(1)!.length).toBe(segmentMaxSize);
-						// an iterator already positioned inside that short mapping
-						const positioned = log.query({ start: 0 });
+						const positioned = log.query({ start: 0 }); // holds the short mapping
 
 						await writeOversizedTransaction(db, log);
 						expect(
@@ -3659,7 +3653,7 @@ describe('Transaction Log', () => {
 					await writeHeaderOnlySegment(dbPath, 'foo');
 					db.open();
 					const log = db.useLog('foo');
-					expect(indices(log.query({ start: 0 }))).toEqual([]); // stale short mapping, as above
+					expect(indices(log.query({ start: 0 }))).toEqual([]);
 					const resumable = log.query({ start: 0 });
 
 					await writeOversizedTransaction(db, log);
@@ -3670,7 +3664,7 @@ describe('Transaction Log', () => {
 					expect((await readdir(logDirectory)).sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 					expect(indices(log.query({ start: 0 }))).toEqual(range(entryCount + 2));
-					expect(indices(resumable)).toEqual([entryCount, entryCount + 1]); // resumes past the oversized segment
+					expect(indices(resumable)).toEqual([entryCount, entryCount + 1]);
 					expect(indices(log.query({ start: 0, readUncommitted: true }))).toEqual(
 						range(entryCount + 2)
 					);
@@ -3715,13 +3709,12 @@ describe('Transaction Log', () => {
 					await writeHeaderOnlySegment(dbPath, 'foo');
 					db.open();
 					const log = db.useLog('foo');
-					expect(indices(log.query({ start: 0 }))).toEqual([]); // stale short mapping, as above
+					expect(indices(log.query({ start: 0 }))).toEqual([]);
 					await writeOversizedTransaction(db, log);
 
 					const fitting = Math.floor((maxSize - TRANSACTION_LOG_FILE_HEADER_SIZE) / entrySize);
 					const remap = vi.spyOn(log, '_getMemoryMapOfFile').mockReturnValue(undefined);
 					try {
-						// the readable prefix is served; the unread tail is neither corrupt nor skipped
 						expect(indices(log.query({ start: 0 }))).toEqual(range(fitting));
 						const parked = log.query({ start: 0 });
 						expect(indices(parked)).toEqual(range(fitting));
@@ -3758,7 +3751,6 @@ describe('Transaction Log', () => {
 				const filtered = log.query({ start: first.timestamp });
 				expect(indices(filtered)).toEqual([0]);
 				for (let i = 1; i < 12; i++) {
-					// older than `start`, so the iterator skips it and reaches the next frame mid-loop
 					await db.transaction(async (txn) => {
 						txn.setTimestamp(first.timestamp - 1000 * i);
 						log.addEntry(payload(i), txn.id);

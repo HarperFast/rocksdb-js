@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include "core/exception.h"
 #include "transaction_log/transaction_log_file.h"
 
 using rocksdb_js::MemoryMap;
@@ -106,18 +107,18 @@ TEST(TransactionLogMmapOwnership, FrozenHandoutsShareOneMap) {
 
 // A current segment that one batch pushed past the size it was mapped at (one
 // transaction written to an empty segment may exceed transactionLogMaxSize):
-// the mapping keeps publishing the append-owned extent past its own length so
-// a reader can tell it no longer covers the file, and the next request for a
-// larger size replaces it rather than reusing it (#889).
+// the mapping publishes the append-owned extent past its own length so a reader
+// can tell it no longer covers the file, and the next request replaces it rather
+// than reusing it (#889).
 TEST(TransactionLogMmapOwnership, OutgrownCurrentMapReportsFullExtentAndIsReplaced) {
 	const int64_t base = MemoryMap::liveCount.load();
 	auto log = makeLog(8192);
 	auto small = log->getMemoryMap(8192, /*isCurrent=*/true);
 	ASSERT_NE(small, nullptr);
 	EXPECT_EQ(small->mapSize, 8192u);
+	EXPECT_EQ(small->fileSize, 8192u);
 	EXPECT_EQ(small->readableExtent.load(), 8192u);
 
-	// grow the file by one more "batch" past the mapping
 	std::vector<char> more(8192, 'y');
 	ASSERT_EQ(::pwrite(log->fd, more.data(), more.size(), 8192), static_cast<ssize_t>(more.size()));
 	log->size.store(16384, std::memory_order_relaxed);
@@ -125,35 +126,52 @@ TEST(TransactionLogMmapOwnership, OutgrownCurrentMapReportsFullExtentAndIsReplac
 		std::lock_guard<std::mutex> lock(log->fileMutex);
 		log->publishReadableExtentLocked();
 	}
-	EXPECT_EQ(small->readableExtent.load(), 16384u);  // not clamped to the 8192-byte map
+	EXPECT_EQ(small->readableExtent.load(), 16384u);
 	EXPECT_EQ(small->mapSize, 8192u);
 
-	// the smaller map must not be reused for a request that covers the whole file
-	auto big = log->getMemoryMap(16384, /*isCurrent=*/true);
+	auto big = log->getMemoryMap(8192, /*isCurrent=*/true);
 	ASSERT_NE(big, nullptr);
 	EXPECT_NE(big.get(), small.get());
-	EXPECT_GE(big->mapSize, 16384u);
+	EXPECT_EQ(big->mapSize, 16384u);
+	EXPECT_EQ(big->fileSize, 16384u);
 	EXPECT_EQ(big->readableExtent.load(), 16384u);
 	EXPECT_EQ(log->memoryMap.get(), big.get());
-	EXPECT_EQ(MemoryMap::liveCount.load(), base + 2);  // the outgrown map lives while a reader holds it
+	EXPECT_EQ(MemoryMap::liveCount.load(), base + 2);
 	EXPECT_EQ(static_cast<const char*>(big->map)[8192], 'y');
 
-	// a reader still holding the superseded map keeps seeing the file's extent
-	log->size.store(20000, std::memory_order_relaxed);
+	small.reset();
+	EXPECT_EQ(MemoryMap::liveCount.load(), base + 1);
+}
+
+// The capacity asked for only sizes a new mapping: a live one that still covers the
+// file is reused however large the request, so a mapping is replaced only once the
+// file outgrew it — the point at which its overlay is complete and its published extent
+// already exceeds its length.
+TEST(TransactionLogMmapOwnership, CoveringMapIsReusedForALargerRequest) {
+	const int64_t base = MemoryMap::liveCount.load();
+	auto log = makeLog(8192);
+	auto map = log->getMemoryMap(8192, /*isCurrent=*/true);
+	ASSERT_NE(map, nullptr);
+	EXPECT_EQ(log->getMemoryMap(32768, /*isCurrent=*/true).get(), map.get());
+	EXPECT_EQ(MemoryMap::liveCount.load(), base + 1);
+
+	std::vector<char> more(100, 'z');
+	ASSERT_EQ(::pwrite(log->fd, more.data(), more.size(), 8192), static_cast<ssize_t>(more.size()));
+	log->size.store(8292, std::memory_order_relaxed);
 	{
 		std::lock_guard<std::mutex> lock(log->fileMutex);
 		log->publishReadableExtentLocked();
 	}
-	EXPECT_EQ(small->readableExtent.load(), 20000u);
-	EXPECT_EQ(big->readableExtent.load(), 20000u);
-
-	small.reset();
-	EXPECT_EQ(MemoryMap::liveCount.load(), base + 1);
-	{
-		std::lock_guard<std::mutex> lock(log->fileMutex);
-		log->publishReadableExtentLocked();  // prunes the expired entry
-		EXPECT_TRUE(log->supersededMaps.empty());
-	}
+	auto grown = log->getMemoryMap(32768, /*isCurrent=*/true);
+	ASSERT_NE(grown, nullptr);
+	EXPECT_NE(grown.get(), map.get());
+	EXPECT_EQ(grown->mapSize, 32768u);
+	EXPECT_EQ(grown->fileSize, 32768u);
+	EXPECT_EQ(map->readableExtent.load(), 8292u);  // published before the replacement
+	EXPECT_EQ(static_cast<const char*>(grown->map)[8192], 'z');
+	// a frozen handout is exactly the file's size, whatever the mapping's capacity
+	log->downgradeMapToFrozen();
+	EXPECT_EQ(log->getMemoryMap(8292, /*isCurrent=*/false)->fileSize, 8292u);
 }
 
 // A request smaller than the file (a store-side capacity snapshot taken before an
@@ -165,6 +183,19 @@ TEST(TransactionLogMmapOwnership, StaleCapacityRequestStillCoversTheFile) {
 	EXPECT_GE(map->mapSize, 16384u);
 	EXPECT_EQ(map->fileSize, 16384u);
 	EXPECT_EQ(map->readableExtent.load(), 16384u);
+}
+
+// A file with entries that cannot be mapped is a failure, not "every timestamp is past
+// this file": the sentinel would start a reader at the file's end, past every unread
+// entry. An empty file keeps the sentinel.
+TEST(TransactionLogMmapOwnership, IndexWalkReportsAMappingFailureInsteadOfEndOfFile) {
+	TransactionLogFile::forceMapFailureForTests.store(true);
+	auto log = makeLog(8192);
+	EXPECT_THROW(log->findPositionByTimestamp(1.0, 8192, /*isCurrent=*/true), rocksdb_js::DBException);
+	auto empty = makeLog(0);
+	EXPECT_EQ(empty->findPositionByTimestamp(1.0, 0, /*isCurrent=*/true), 0xFFFFFFFFu);
+	TransactionLogFile::forceMapFailureForTests.store(false);
+	EXPECT_NE(log->findPositionByTimestamp(1.0, 8192, /*isCurrent=*/true), 0xFFFFFFFFu);
 }
 
 #endif // _WIN32

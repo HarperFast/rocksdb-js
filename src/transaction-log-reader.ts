@@ -182,14 +182,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		// life of the process (HarperFast/harper#2337)
 		let logBuffer: LogBuffer | undefined = this._currentLogBuffer?.deref(); // try the current one first
 		let foundExactStart = false;
-		if (
-			logBuffer !== undefined &&
-			logBuffer.logId === logId &&
-			(logId === latestLogId ? size > logBuffer.length : !coversExtent(logBuffer))
-		) {
-			// a batch outgrew the mapping this buffer was taken from; resolve it through the cache below
-			logBuffer = undefined;
-		}
 
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
@@ -222,6 +214,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 
+		if (
+			logBuffer !== undefined &&
+			logBuffer.logId === logId &&
+			(logId === latestLogId ? size > logBuffer.length : !coversExtent(logBuffer))
+		) {
+			logBuffer = undefined; // outgrown (invariant 33): resolve it through the cache
+		}
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
 			logBuffer = getLogMemoryMap(this, logId);
@@ -285,8 +284,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						// if it is not the latest log, get the file size
 						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 						if (position >= size) {
-							// the mapping's end is only this segment's end if nothing outgrew it
-							const covering = coveringLogBuffer(transactionLog, logBuffer!);
+							const covering = coveringLogBuffer(transactionLog, logBuffer!, size);
 							if (covering === undefined) {
 								return { done: true, value: undefined };
 							}
@@ -332,14 +330,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					// dereference an undefined buffer. Fail loudly with a bounded error.
 					// The throw leaves `position` at the resume point, so a broken frame ends the
 					// entry rather than the rest of the log (HarperFast/harper#2016, #2063).
-					//
-					// A frame that does not fit the mapping is not corrupt when the mapping is what
-					// is short: a batch may outgrow the capacity a current segment is mapped at.
+					// A frame that does not fit the mapping is not corrupt when the mapping is what is
+					// short (invariant 33), so that is ruled out first.
 					const limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit && limit === logBuffer!.length) {
-						const covering = outgrownMapping(logBuffer!, size)
-							? coveringLogBuffer(transactionLog, logBuffer!)
-							: logBuffer;
+						const covering = coveringLogBuffer(transactionLog, logBuffer!, size);
 						if (covering === undefined) {
 							return { done: true, value: undefined };
 						}
@@ -388,10 +383,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					if (
 						length !== 0 &&
 						position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit &&
-						limit === logBuffer!.length &&
-						outgrownMapping(logBuffer!, size)
+						limit === logBuffer!.length
 					) {
-						const covering = coveringLogBuffer(transactionLog, logBuffer!);
+						const covering = coveringLogBuffer(transactionLog, logBuffer!, size);
 						if (covering === undefined) {
 							return { done: true, value: undefined };
 						}
@@ -467,8 +461,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
-							// the mapping's end is only this segment's end if nothing outgrew it
-							const covering = coveringLogBuffer(transactionLog, logBuffer!);
+							const covering = coveringLogBuffer(transactionLog, logBuffer!, size);
 							if (covering === undefined) {
 								return { done: true, value: undefined };
 							}
@@ -575,31 +568,35 @@ function coversExtent(logBuffer: LogBuffer): boolean {
 	return !(logBuffer.readableExtent > logBuffer.length);
 }
 
-/** `coversExtent` without the native getter when the committed `size` already exceeds the buffer. */
-function outgrownMapping(logBuffer: LogBuffer, size: number): boolean {
-	return size > logBuffer.length || !coversExtent(logBuffer);
-}
-
 /**
  * The buffer that covers `logBuffer`'s segment, remapping it when an append outgrew the mapping.
- * `undefined` means the segment is still registered but cannot be remapped right now: the caller
- * stops where it is and retries on the next poll, rather than reading the mapping's end as the
- * segment's end and stepping over the unread tail. A segment the store has forgotten keeps serving
- * what it mapped, as any purged segment does (invariant 30).
+ * `size` is the committed extent the caller already holds: it exceeds the buffer before the
+ * append's extent publish is visible, so it decides without the native getter. `undefined` means
+ * the segment is still registered but cannot be remapped right now: the caller stops where it is
+ * and retries on the next poll, rather than reading the mapping's end as the segment's end and
+ * stepping over the unread tail. A segment the store has forgotten keeps serving what it mapped,
+ * as any purged segment does (invariant 30).
  */
 function coveringLogBuffer(
 	transactionLog: TransactionLog,
-	logBuffer: LogBuffer
+	logBuffer: LogBuffer,
+	size = 0
 ): LogBuffer | undefined {
-	if (coversExtent(logBuffer)) {
+	if (size <= logBuffer.length && coversExtent(logBuffer)) {
 		return logBuffer;
 	}
 	transactionLog._logBuffers!.delete(logBuffer.logId);
 	const remapped = getLogMemoryMap(transactionLog, logBuffer.logId);
 	if (remapped) {
-		return remapped.length > logBuffer.length ? remapped : logBuffer;
+		if (remapped.length > logBuffer.length) {
+			return remapped;
+		}
+		if (coversExtent(remapped)) {
+			return logBuffer; // the file has no more bytes: `size` over-reports it (torn or truncated)
+		}
+	} else {
+		transactionLog._logBuffers!.set(logBuffer.logId, new WeakRef(logBuffer));
 	}
-	transactionLog._logBuffers!.set(logBuffer.logId, new WeakRef(logBuffer));
 	return transactionLog.getLogFileSize(logBuffer.logId) > 0 ? undefined : logBuffer;
 }
 
@@ -609,8 +606,6 @@ function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuff
 	}
 	let logBuffer = transactionLog._logBuffers!.get(logId)?.deref();
 	if (logBuffer) {
-		// a cached buffer serves at least what it mapped; a remap that is not possible right now
-		// is retried where the reader reaches its end
 		return coveringLogBuffer(transactionLog, logBuffer) ?? logBuffer;
 	}
 	try {

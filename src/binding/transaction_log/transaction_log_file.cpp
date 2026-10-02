@@ -106,6 +106,7 @@ std::atomic<int64_t> MemoryMap::liveCount{0};
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 std::atomic<int64_t> TransactionLogFile::forcedBytesLandedForTests{INT64_MIN};
+std::atomic<bool> TransactionLogFile::forceMapFailureForTests{false};
 
 void TransactionLogFile::resetAdviseColdSupportForTests() {
 	madvColdUnsupported.store(false, std::memory_order_relaxed);
@@ -892,17 +893,8 @@ void TransactionLogFile::publishReadableExtentLocked() {
 		frozen = this->frozenMapCache.lock();
 		map = frozen.get();
 	}
-	uint32_t size = this->size.load(std::memory_order_relaxed);
 	if (map) {
-		map->readableExtent.store(size, std::memory_order_release);
-	}
-	for (auto it = this->supersededMaps.begin(); it != this->supersededMaps.end();) {
-		if (auto superseded = it->lock()) {
-			superseded->readableExtent.store(size, std::memory_order_release);
-			++it;
-		} else {
-			it = this->supersededMaps.erase(it);
-		}
+		map->readableExtent.store(this->size.load(std::memory_order_relaxed), std::memory_order_release);
 	}
 }
 
@@ -937,11 +929,15 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		memoryMap = this->getMemoryMapLocked(mapSize, isCurrent);
 	}
 
-	// If memory map is null (e.g., empty file with size 0), return 0xFFFFFFFF
-	// to indicate the timestamp comes after this logfile
+	// An empty file (size 0) has no mapping and every timestamp comes after it. A file with
+	// entries that could not be mapped is a failure to report, not a position: the sentinel
+	// would start the reader at this file's end, past every unread entry.
 	if (!memoryMap) {
-		DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this);
-		return 0xFFFFFFFF;
+		if (this->size.load(std::memory_order_relaxed) == 0) {
+			DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this);
+			return 0xFFFFFFFF;
+		}
+		throw rocksdb_js::DBException("Failed to memory map transaction log file: " + this->path.string());
 	}
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 	if (this->afterIndexMapAcquiredForTests) {
