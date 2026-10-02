@@ -353,13 +353,10 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	}
 #endif
 
-	// Reuse a live mapping that still covers the file — the strong ref for the
-	// current file, or a still-live frozen handout. A mapping is replaced only
-	// once the file outgrew it: by then the append that did so has published an
-	// extent past its end (the reader's signal to remap) and its overlay is
-	// complete, so a reader still holding it sees only file bytes.
+	// Index-only views may be resized before the first reader handout.
 	std::shared_ptr<MemoryMap> map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
-	if (!(map && map->map && map->mapSize >= size)) {
+	if (!(map && map->map && map->mapSize >= size &&
+		(this->readerCapacity > 0 || map->mapSize >= fileSize))) {
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 		// On POSIX, mmap(fd, maxFileSize) over a small file causes SIGBUS on
 		// pages entirely beyond the file. We first create an anonymous

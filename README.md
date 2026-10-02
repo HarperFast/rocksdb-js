@@ -168,7 +168,8 @@ Creates a new database instance.
     Defaults to `0.75`.
   - `transactionLogMaxSize: number` The target maximum size of a transaction log file. Transactions
     are never split across files: if the complete transaction does not fit, the log rotates before
-    writing it. A transaction written to an empty file may exceed the target. Defaults to 16 MB.
+    writing it. A transaction written to an empty file may exceed the target. Defaults to 16 MB;
+    `0` also uses this default.
   - `transactionLogRetention: string | number` The number of minutes to retain transaction logs
     before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults to
@@ -2037,8 +2038,7 @@ OS-specific differences:
   `transactionLogMaxSize` (an anonymous reservation with the file's contents overlaid on top), or
   at its size when a single transaction pushed it past that target, so `memory.mappedBytes`
   over-reports the active file; `memory.overlayBytes` is the file-backed portion and is the closer
-  proxy for real consumption. With `transactionLogMaxSize: 0` the active file is mapped at its
-  size and remapped as it grows.
+  proxy for real consumption. `transactionLogMaxSize: 0` uses the default 16 MB target.
 - **macOS:** Activity Monitor's "Memory" column reports the physical footprint, which excludes
   clean file-backed pages — mapped log data is essentially invisible there even when resident. Use
   process RSS (e.g. `process.memoryUsage().rss`, `ps`, or `vmmap <pid>`) to observe it.

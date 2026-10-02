@@ -214,13 +214,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 
-		if (
-			logBuffer !== undefined &&
-			logBuffer.logId === logId &&
-			(logId === latestLogId ? size > logBuffer.length : !coversExtent(logBuffer))
-		) {
-			logBuffer = undefined;
-		}
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
 			logBuffer = getLogMemoryMap(this, logId);
@@ -284,17 +277,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						// if it is not the latest log, get the file size
 						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 						if (position >= size) {
-							const covering = coveringLogBuffer(transactionLog, logBuffer!, size);
-							if (covering === undefined) {
-								return { done: true, value: undefined };
-							}
-							if (covering !== logBuffer) {
-								logBuffer = covering;
-								dataView = covering.dataView;
-								size = covering.size ?? (covering.size = readableExtent(covering));
-							}
-						}
-						if (position >= size) {
 							// we can't read any further in this block, go to the next block
 							const nextLogBuffer = nextReadableLogBuffer(
 								transactionLog,
@@ -317,39 +299,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 
 				while (position < size) {
-					// Corruption bound: a committed read can't legitimately extend past
-					// the committed `size` (a true entry boundary); an uncommitted read is
-					// bounded only by the physically mapped buffer. In both cases the bound
-					// is also clamped to `logBuffer.length` — if committed `size` over-reports
-					// the mapped buffer (e.g. a truncated/torn file), an unclamped `size`
-					// would let `position` advance past the buffer and `subarray` silently
-					// return a truncated frame instead of throwing. A torn/corrupt entry
-					// can declare a length far past this bound — without the checks below,
-					// `position` runs past the buffer, `subarray` hands back a misframed
-					// (garbage) transaction, and the advance-to-next-log path can
-					// dereference an undefined buffer. Fail loudly with a bounded error.
-					// The throw leaves `position` at the resume point, so a broken frame ends the
-					// entry rather than the rest of the log (HarperFast/harper#2016, #2063).
-					// A frame that does not fit the mapping is not corrupt when the mapping is what is
-					// short (invariant 33), so that is ruled out first.
-					const limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
-					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit && limit === logBuffer!.length) {
-						const covering = coveringLogBuffer(transactionLog, logBuffer!, size);
-						if (covering === undefined) {
-							return { done: true, value: undefined };
-						}
-						if (covering !== logBuffer) {
-							if (size <= logBuffer!.length) {
-								size = covering.size ?? readableExtent(covering);
-								if (!readUncommitted) {
-									covering.size = size;
-								}
-							}
-							logBuffer = covering;
-							dataView = covering.dataView;
-							continue;
-						}
-					}
 					try {
 						timestamp = dataView.getFloat64(position);
 					} catch (error) {
@@ -363,6 +312,20 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						return { done: true, value: undefined };
 					}
 
+					// Corruption bound: a committed read can't legitimately extend past
+					// the committed `size` (a true entry boundary); an uncommitted read is
+					// bounded only by the physically mapped buffer. In both cases the bound
+					// is also clamped to `logBuffer.length` — if committed `size` over-reports
+					// the mapped buffer (e.g. a truncated/torn file), an unclamped `size`
+					// would let `position` advance past the buffer and `subarray` silently
+					// return a truncated frame instead of throwing. A torn/corrupt entry
+					// can declare a length far past this bound — without the checks below,
+					// `position` runs past the buffer, `subarray` hands back a misframed
+					// (garbage) transaction, and the advance-to-next-log path can
+					// dereference an undefined buffer. Fail loudly with a bounded error.
+					// The throw leaves `position` at the resume point, so a broken frame ends the
+					// entry rather than the rest of the log (HarperFast/harper#2016, #2063).
+					const limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
 						const broken = corruptFrame(
 							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${
@@ -380,27 +343,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						throw broken.error;
 					}
 					const length = dataView.getUint32(position + 8);
-					if (
-						length !== 0 &&
-						position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit &&
-						limit === logBuffer!.length
-					) {
-						const covering = coveringLogBuffer(transactionLog, logBuffer!, size);
-						if (covering === undefined) {
-							return { done: true, value: undefined };
-						}
-						if (covering !== logBuffer) {
-							if (size <= logBuffer!.length) {
-								size = covering.size ?? readableExtent(covering);
-								if (!readUncommitted) {
-									covering.size = size;
-								}
-							}
-							logBuffer = covering;
-							dataView = covering.dataView;
-							continue;
-						}
-					}
 					if (length === 0 || position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit) {
 						const broken = corruptFrame(
 							length === 0
@@ -455,27 +397,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					}
 					if (position >= size) {
 						// move to the next log file
-						const segmentSize = size;
 						const { logId: latestLogId, size: latestSize } = loadLastPosition(
 							transactionLog,
 							!!readUncommitted
 						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
-							const covering = coveringLogBuffer(transactionLog, logBuffer!, segmentSize);
-							if (covering === undefined) {
-								return { done: true, value: undefined };
-							}
-							if (covering !== logBuffer) {
-								logBuffer = covering;
-								dataView = covering.dataView;
-								size = covering.size ?? readableExtent(covering);
-								if (!readUncommitted) {
-									covering.size = size;
-								}
-								continue;
-							}
-							// entries appended after this iterator's snapshot end past `segmentSize`
 							size = logBuffer!.size ?? readableExtent(logBuffer!);
 							if (!readUncommitted) {
 								logBuffer!.size = size;
@@ -483,6 +410,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							if (position < size) {
 								continue;
 							}
+
 							const nextLogBuffer = nextReadableLogBuffer(
 								transactionLog,
 								logBuffer!.logId,
@@ -536,9 +464,14 @@ function nextReadableLogBuffer(
 	while (candidateLogId <= latestLogId) {
 		const logBuffer = getLogMemoryMap(transactionLog, candidateLogId);
 		if (logBuffer) {
-			return logBuffer;
-		}
-		if (transactionLog.getLogFileSize(candidateLogId) > 0) {
+			// A recovered empty segment may have rotated to preserve its handed-out capacity.
+			if (
+				candidateLogId === latestLogId ||
+				readableExtent(logBuffer) > TRANSACTION_LOG_FILE_HEADER_SIZE
+			) {
+				return logBuffer;
+			}
+		} else if (transactionLog.getLogFileSize(candidateLogId) > 0) {
 			// the store still has bytes for it, so it is durable history that is merely
 			// unmappable right now; stop and pick it up on the next poll
 			return;
@@ -567,53 +500,14 @@ function readableExtent(logBuffer: LogBuffer): number {
 	return Math.min(logBuffer.length, extent);
 }
 
-/**
- * A batch written to an empty segment may exceed `transactionLogMaxSize`, the capacity the current
- * segment is mapped at, so a mapping taken before that batch landed stops short of entries that
- * exist; native publishes the append-owned extent unclamped so the shortfall is visible (#889).
- */
-function coversExtent(logBuffer: LogBuffer): boolean {
-	return !(logBuffer.readableExtent > logBuffer.length);
-}
-
-/**
- * `size` is the committed extent the caller already holds: it exceeds an outgrown buffer before
- * the append's extent publish is visible, so it decides without the native getter. `undefined`
- * means the segment is still registered but cannot be remapped right now: the caller stops where
- * it is and retries on the next poll, rather than reading the mapping's end as the segment's end
- * and stepping over the unread tail. A segment the store has forgotten keeps serving what it
- * mapped, as any purged segment does (invariant 30).
- */
-function coveringLogBuffer(
-	transactionLog: TransactionLog,
-	logBuffer: LogBuffer,
-	size = 0
-): LogBuffer | undefined {
-	if (size <= logBuffer.length && coversExtent(logBuffer)) {
-		return logBuffer;
-	}
-	transactionLog._logBuffers!.delete(logBuffer.logId);
-	const remapped = getLogMemoryMap(transactionLog, logBuffer.logId);
-	if (remapped) {
-		if (remapped.length > logBuffer.length) {
-			return remapped;
-		}
-		if (coversExtent(remapped)) {
-			return logBuffer; // the file has no more bytes: `size` over-reports it (torn or truncated)
-		}
-	} else {
-		transactionLog._logBuffers!.set(logBuffer.logId, new WeakRef(logBuffer));
-	}
-	return transactionLog.getLogFileSize(logBuffer.logId) > 0 ? undefined : logBuffer;
-}
-
 function getLogMemoryMap(transactionLog: TransactionLog, logId: number): LogBuffer | undefined {
 	if (logId <= 0) {
 		return;
 	}
 	let logBuffer = transactionLog._logBuffers!.get(logId)?.deref();
 	if (logBuffer) {
-		return coveringLogBuffer(transactionLog, logBuffer) ?? logBuffer;
+		// if we have a cached buffer, return it
+		return logBuffer;
 	}
 	try {
 		logBuffer = transactionLog._getMemoryMapOfFile(logId);

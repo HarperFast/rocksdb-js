@@ -105,72 +105,19 @@ TEST(TransactionLogMmapOwnership, FrozenHandoutsShareOneMap) {
 	EXPECT_EQ(MemoryMap::liveCount.load(), base + 1);  // one mapping, not two
 }
 
-// A current segment that one batch pushed past the size it was mapped at (one
-// transaction written to an empty segment may exceed transactionLogMaxSize):
-// the mapping publishes the append-owned extent past its own length so a reader
-// can tell it no longer covers the file, and the next request replaces it rather
-// than reusing it (#889).
-TEST(TransactionLogMmapOwnership, OutgrownCurrentMapReportsFullExtentAndIsReplaced) {
-	const int64_t base = MemoryMap::liveCount.load();
+TEST(TransactionLogMmapOwnership, ReaderHandoutReplacesAnUndersizedInternalIndexMap) {
 	auto log = makeLog(8192);
-	auto small = log->getMemoryMap(8192, /*isCurrent=*/true);
-	ASSERT_NE(small, nullptr);
-	EXPECT_EQ(small->mapSize, 8192u);
-	EXPECT_EQ(small->fileSize, 8192u);
-	EXPECT_EQ(small->readableExtent.load(), 8192u);
-
-	std::vector<char> more(8192, 'y');
-	ASSERT_EQ(::pwrite(log->fd, more.data(), more.size(), 8192), static_cast<ssize_t>(more.size()));
-	log->size.store(16384, std::memory_order_relaxed);
+	std::shared_ptr<MemoryMap> indexMap;
 	{
 		std::lock_guard<std::mutex> lock(log->fileMutex);
-		log->publishReadableExtentLocked();
+		indexMap = log->getMemoryMapLocked(8192, /*isCurrent=*/true);
 	}
-	EXPECT_EQ(small->readableExtent.load(), 16384u);
-	EXPECT_EQ(small->mapSize, 8192u);
-
-	auto big = log->getMemoryMap(8192, /*isCurrent=*/true);
-	ASSERT_NE(big, nullptr);
-	EXPECT_NE(big.get(), small.get());
-	EXPECT_EQ(big->mapSize, 16384u);
-	EXPECT_EQ(big->fileSize, 16384u);
-	EXPECT_EQ(big->readableExtent.load(), 16384u);
-	EXPECT_EQ(log->memoryMap.get(), big.get());
-	EXPECT_EQ(MemoryMap::liveCount.load(), base + 2);
-	EXPECT_EQ(static_cast<const char*>(big->map)[8192], 'y');
-
-	small.reset();
-	EXPECT_EQ(MemoryMap::liveCount.load(), base + 1);
-}
-
-// The capacity asked for only sizes a new mapping: a live one that still covers the
-// file is reused however large the request, so a mapping is replaced only once the
-// file outgrew it — the point at which its overlay is complete and its published extent
-// already exceeds its length.
-TEST(TransactionLogMmapOwnership, CoveringMapIsReusedForALargerRequest) {
-	const int64_t base = MemoryMap::liveCount.load();
-	auto log = makeLog(8192);
-	auto map = log->getMemoryMap(8192, /*isCurrent=*/true);
-	ASSERT_NE(map, nullptr);
-	EXPECT_EQ(log->getMemoryMap(32768, /*isCurrent=*/true).get(), map.get());
-	EXPECT_EQ(MemoryMap::liveCount.load(), base + 1);
-
-	std::vector<char> more(100, 'z');
-	ASSERT_EQ(::pwrite(log->fd, more.data(), more.size(), 8192), static_cast<ssize_t>(more.size()));
-	log->size.store(8292, std::memory_order_relaxed);
-	{
-		std::lock_guard<std::mutex> lock(log->fileMutex);
-		log->publishReadableExtentLocked();
-	}
-	auto grown = log->getMemoryMap(32768, /*isCurrent=*/true);
-	ASSERT_NE(grown, nullptr);
-	EXPECT_NE(grown.get(), map.get());
-	EXPECT_EQ(grown->mapSize, 32768u);
-	EXPECT_EQ(grown->fileSize, 32768u);
-	EXPECT_EQ(map->readableExtent.load(), 8292u);
-	EXPECT_EQ(static_cast<const char*>(grown->map)[8192], 'z');
-	log->downgradeMapToFrozen();
-	EXPECT_EQ(log->getMemoryMap(8292, /*isCurrent=*/false)->fileSize, 8292u);
+	auto readerMap = log->getMemoryMap(32768, /*isCurrent=*/true);
+	ASSERT_NE(readerMap, nullptr);
+	EXPECT_NE(readerMap.get(), indexMap.get());
+	EXPECT_EQ(readerMap->fileSize, 32768u);
+	EXPECT_EQ(readerMap->readableExtent.load(), 8192u);
+	EXPECT_EQ(log->getMemoryMap(65536, /*isCurrent=*/true).get(), readerMap.get());
 }
 
 // A request smaller than the file (a store-side capacity snapshot taken before an

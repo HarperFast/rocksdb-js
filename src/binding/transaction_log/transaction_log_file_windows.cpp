@@ -409,10 +409,10 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 		return nullptr;
 	}
 
-	// Reuse the live mapping while it still covers the file: a mapping is replaced only
-	// once the file outgrew it (see the POSIX getMemoryMapLocked()).
+	// Index-only views may be resized before the first reader handout.
 	if (this->memoryMap) {
-		if (this->memoryMap->mapSize >= size) {
+		if (this->memoryMap->mapSize >= size &&
+			(this->readerCapacity > 0 || this->memoryMap->mapSize >= fileSize)) {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Returning existing memory map (map size=%u)\n", this, memoryMap->mapSize);
 			this->memoryMap->fileSize = std::min(fileSize, this->memoryMap->mapSize);
 			this->memoryMap->readableExtent.store(size, std::memory_order_release);
@@ -420,7 +420,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 		} else {
 			DEBUG_LOG("%p TransactionLogFile::getMemoryMap Existing memory map was too small, creating new map (map size=%u)\n", this, memoryMap->mapSize);
 		}
-		// this memory map is not big enough, need to create a new one
+		this->memoryMap.reset();
 	} else {
 		DEBUG_LOG("%p TransactionLogFile::getMemoryMap Creating new memory map: %u\n", this, fileSize);
 	}

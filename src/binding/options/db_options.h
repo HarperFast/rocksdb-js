@@ -6,6 +6,7 @@
 #include <string>
 #include <thread>
 #include "rocksdb/compression_type.h"
+#include "rocksdb/statistics.h"
 
 namespace rocksdb_js {
 

@@ -7,6 +7,7 @@
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/platform.h"
+#include "options/db_options.h"
 #include "napi/global_events.h"
 #include "fstream"
 
@@ -46,7 +47,7 @@ TransactionLogStore::TransactionLogStore(
 	name(name),
 	path(path),
 	displayPath(path),
-	maxFileSize(maxFileSize),
+	maxFileSize(maxFileSize > 0 ? maxFileSize : DBOptions{}.transactionLogMaxSize),
 	retentionMs(retentionMs),
 	maxAgeThreshold(maxAgeThreshold)
 {
@@ -499,8 +500,8 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 	}
 
 	// Never borrow the active segment's handle. Its lifecycle belongs to the
-	// write path — load()'s post-discovery activation and getLogFile() open it
-	// before the first append — so the only way it reads size 0 and closed is the
+	// write path — load()'s post-discovery activation and writeEntries() open it
+	// before appending — so the only way it reads size 0 and closed is the
 	// window between getLogFile() creating it and the first append, where 0 is
 	// the truth. A close() here would drop a handle (and, on Windows, the mapping)
 	// the next append expects to still hold.
@@ -1071,39 +1072,22 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		this->latestTimestamp = batch.timestamp;
 	}
 
+	bool rotatedAfterOpenFailure = false;
 	// write entries across multiple log files until all are written
 	while (!batch.isComplete()) {
 		std::shared_ptr<TransactionLogFile> logFile = nullptr;
-		bool rotatedAfterOpenFailure = false;
 
 		// get the current log file and rotate if needed
 		while (logFile == nullptr) {
 			logFile = this->getLogFile(this->currentSequenceNumber.load(std::memory_order_relaxed));
 
 			// we found a log file, check if it's already at max size
-			if (this->maxFileSize == 0 || logFile->size < this->maxFileSize) {
-				try {
-					if (!logFile->isOpen()) {
-						logFile->open(this->latestTimestamp);
-					}
-					break;
-				} catch (const std::exception& e) {
-					DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what());
-					this->writeFailures.fetch_add(1, std::memory_order_relaxed);
-					if (rotatedAfterOpenFailure) {
-						// A corrupt/colliding existing segment may be bypassed once, but a
-						// repeated environmental failure must become a bounded caller error.
-						throw;
-					}
-					rotatedAfterOpenFailure = true;
-					// move to next sequence number and try again
-					logFile = nullptr;
-				}
+			if (logFile->size < this->maxFileSize) {
+				break;
 			}
 
-			// rotate to next sequence if file open failed or file is at max size
-			// one retry avoids an infinite sequence of files on an environmental failure
-			if (logFile == nullptr || this->maxFileSize > 0) {
+			// rotate to next sequence if the file is at max size
+			if (logFile != nullptr) {
 				DEBUG_LOG("%p TransactionLogStore::writeBatch Advancing sequence number from %u to %u for store \"%s\" (logFile=%p, maxIndexSize=%u)\n",
 					this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize);
 				this->rotateToNextSequence(logFile);
@@ -1149,7 +1133,16 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 		// write as much as possible to this file
 		try {
-			logFile->writeEntries(batch, this->maxFileSize);
+			logFile->writeEntries(batch, this->maxFileSize, this->latestTimestamp);
+		} catch (const TransactionLogOpenException& e) {
+			DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what());
+			this->writeFailures.fetch_add(1, std::memory_order_relaxed);
+			if (rotatedAfterOpenFailure) {
+				throw DBException(e.what());
+			}
+			rotatedAfterOpenFailure = true;
+			this->rotateToNextSequence(logFile);
+			continue;
 		} catch (...) {
 			this->writeFailures.fetch_add(1, std::memory_order_relaxed);
 			if (logFile->appendBoundaryLost.load(std::memory_order_relaxed)) {
@@ -1169,7 +1162,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		if (logFile->size == sizeBefore) {
 			DEBUG_LOG("%p TransactionLogStore::writeBatch No progress made (size unchanged), advancing from %u to %u for store \"%s\"\n", this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str());
 			this->rotateToNextSequence(logFile);
-		} else if (this->maxFileSize > 0 && logFile->size >= this->maxFileSize) {
+		} else if (logFile->size >= this->maxFileSize) {
 			// we've reached or exceeded the max size, rotate to the next file
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Log file reached max size, advancing from %u to %u for store \"%s\"\n", this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str());
 			this->rotateToNextSequence(logFile);

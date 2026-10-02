@@ -85,6 +85,13 @@ public:
 	const char* what() const noexcept override { return message.c_str(); }
 };
 
+class TransactionLogOpenException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogOpenException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
+
 /** A marker failure makes the safe logical end unknowable and must fail load. */
 class TransactionLogAppendBoundaryException final : public std::exception {
 	std::string message;
@@ -233,6 +240,10 @@ struct TransactionLogFile final {
 	 * it has expired by the time another reader asks.
 	 */
 	std::weak_ptr<MemoryMap> frozenMapCache;
+
+	// Smallest capacity handed to a reader; append admission preserves every live view.
+	// Guarded by fileMutex, and retained even after readers release their views.
+	uint32_t readerCapacity = 0;
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY && defined(PLATFORM_POSIX)
 	/**
@@ -528,7 +539,8 @@ struct TransactionLogFile final {
 	 * @param batch The batch of entries to write with state tracking.
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 */
-	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0);
+	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0,
+		double latestTimestamp = 0);
 
 	/**
 	 * Return a memory map of the file and mark it as in use. Thin wrapper that
@@ -539,8 +551,8 @@ struct TransactionLogFile final {
 	 * @param fileSize The capacity to allocate when no live mapping covers the file
 	 *   (max file size for the current file, which is still growing; the frozen file
 	 *   size otherwise). Raised to the append-owned size under fileMutex, so a handout
-	 *   always covers the file; a live mapping that still covers it is reused whatever
-	 *   the capacity asked for, so a mapping is replaced only once the file outgrew it.
+	 *   always covers the file. Once exposed to a reader, an active mapping is reused
+	 *   and append admission prevents its capacity from being exceeded.
 	 * @param isCurrent Whether this is the store's current (actively-written) log
 	 *   file. The current file retains a strong reference in `memoryMap` (the
 	 *   writer and index need it); a frozen file does not — it is weak-cached in
@@ -595,7 +607,7 @@ struct TransactionLogFile final {
 	 * No-op on Windows where the file is pre-extended to maxFileSize.
 	 *
 	 * Precondition: the caller must already hold fileMutex (it touches
-	 * memoryMap). Both call sites satisfy this — writeEntriesV1() holds it, and
+	 * memoryMap). Both call sites satisfy this — writeEntries() holds it, and
 	 * getMemoryMapLocked() runs with it held.
 	 */
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
@@ -649,10 +661,11 @@ struct TransactionLogFile final {
 
 	/**
 	 * Runs once the index walk has acquired its mapping and released fileMutex: the
-	 * window in which an append can land past the mapping, the only way a walk sees a
-	 * map shorter than the file. Test-only.
+	 * window in which an append can land past an internal index mapping. Test-only.
 	 */
 	std::function<void()> afterIndexMapAcquiredForTests;
+
+	std::function<void()> afterHeaderCreatedForTests;
 
 	/** Makes getMemoryMapLocked() fail like the OS mapping call did. Test-only. */
 	static std::atomic<bool> forceMapFailureForTests;
@@ -782,11 +795,7 @@ struct MemoryMap final {
 	 * The append-owned logical extent that readers may consume. This stays
 	 * authoritative after purge unlinks the file and the mapping outlives its
 	 * TransactionLogFile, so physical orphan bytes never become log entries.
-	 * It is not clamped to mapSize: an extent past the mapping is how a reader
-	 * learns that an append outgrew the mapping it holds and must remap. Readers
-	 * clamp their own reads to the mapping. Only the file's live mapping receives
-	 * it, which suffices because a mapping is replaced only once the file outgrew
-	 * it — the append that did so has already published an extent past its end.
+	 * Bounded by mapSize; append admission preserves every reader handout.
 	 */
 	std::atomic<uint32_t> readableExtent = 0;
 
