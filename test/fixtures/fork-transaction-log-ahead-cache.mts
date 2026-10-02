@@ -5,9 +5,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const db = RocksDatabase.open(process.argv[2], { transactionLogMaxSize: 2000 });
 const log = db.useLog('foo');
+const pendingPayloadSize = Number(process.argv[3]);
 const write = (index: number) =>
 	db.transaction((txn) => {
-		const payload = Buffer.alloc(534, 1);
+		const payload = Buffer.alloc(index === 3 ? pendingPayloadSize : 534, 1);
 		payload.writeUInt32BE(index);
 		log.addEntry(payload, txn.id);
 	});

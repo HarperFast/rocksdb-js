@@ -120,8 +120,6 @@ TEST(TransactionLogMmapOwnership, ReaderHandoutReplacesAnUndersizedInternalIndex
 	EXPECT_EQ(log->getMemoryMap(65536, /*isCurrent=*/true).get(), readerMap.get());
 }
 
-// A request smaller than the file (a store-side capacity snapshot taken before an
-// append landed) still maps the whole file: the capacity is raised under fileMutex.
 TEST(TransactionLogMmapOwnership, StaleCapacityRequestStillCoversTheFile) {
 	auto log = makeLog(16384);
 	auto map = log->getMemoryMap(8192, /*isCurrent=*/true);

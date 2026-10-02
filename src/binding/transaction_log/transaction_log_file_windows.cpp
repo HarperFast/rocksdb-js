@@ -381,9 +381,7 @@ bool TransactionLogFile::openFile(bool createIfMissing) {
 // are neither weak-held nor deduped on Windows, by design.)
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
 	(void)isCurrent;
-	// A handout must cover the append-owned extent, whatever capacity the caller
-	// asked for: a batch written to an empty segment may exceed maxFileSize, and
-	// an append can land between the store's size snapshot and this lock.
+	// Normalize under fileMutex so a racing append cannot leave the handout short.
 	uint32_t size = this->size.load(std::memory_order_relaxed);
 	fileSize = std::max(fileSize, size);
 	// CreateFileMappingW and MapViewOfFile with length 0 may have undefined behavior.
@@ -404,7 +402,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 		return nullptr;
 	}
 
-	// Index-only views may be resized before the first reader handout.
 	if (this->memoryMap) {
 		if (this->memoryMap->mapSize >= size &&
 			(this->readerCapacity > 0 || this->memoryMap->mapSize >= fileSize)) {

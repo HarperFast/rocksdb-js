@@ -335,9 +335,7 @@ bool TransactionLogFile::openFile(bool createIfMissing) {
 // frozenMapCache are (re)assigned, so holding fileMutex makes that shared_ptr
 // access race-free against close()/removeFile()/adviseCold().
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
-	// A handout must cover the append-owned extent, whatever capacity the caller
-	// asked for: a batch written to an empty segment may exceed maxFileSize, and
-	// an append can land between the store's size snapshot and this lock.
+	// Normalize under fileMutex so a racing append cannot leave the handout short.
 	uint32_t size = this->size.load(std::memory_order_relaxed);
 	fileSize = std::max(fileSize, size);
 	// mmap with length 0 has undefined behavior according to POSIX.
@@ -353,7 +351,6 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 	}
 #endif
 
-	// Index-only views may be resized before the first reader handout.
 	std::shared_ptr<MemoryMap> map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
 	if (!(map && map->map && map->mapSize >= size &&
 		(this->readerCapacity > 0 || map->mapSize >= fileSize))) {

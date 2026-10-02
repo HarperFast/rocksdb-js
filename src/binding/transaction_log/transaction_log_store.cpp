@@ -1086,7 +1086,6 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 				break;
 			}
 
-			// rotate to next sequence if the file is at max size
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Advancing sequence number from %u to %u for store \"%s\" (logFile=%p, maxIndexSize=%u)\n",
 				this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, this->name.c_str(), static_cast<void*>(logFile.get()), this->maxFileSize);
 			this->rotateToNextSequence(logFile);

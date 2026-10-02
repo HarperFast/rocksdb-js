@@ -466,7 +466,6 @@ function nextReadableLogBuffer(
 	while (candidateLogId <= latestLogId) {
 		const logBuffer = getLogMemoryMap(transactionLog, candidateLogId);
 		if (logBuffer) {
-			// A recovered empty segment may have rotated to preserve its handed-out capacity.
 			if (
 				candidateLogId === latestLogId ||
 				readableExtent(logBuffer) > TRANSACTION_LOG_FILE_HEADER_SIZE

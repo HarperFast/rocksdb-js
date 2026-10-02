@@ -3849,30 +3849,37 @@ describe('Transaction Log', () => {
 				}
 			}));
 
-		it('does not freeze the extent of a segment ahead of the committed watermark', () =>
-			dbRunner({ skipOpen: true }, async ({ dbPath }) => {
-				const result = await new Promise<{ code: number | null; stderr: string }>(
-					(resolve, reject) => {
-						const child = spawn(
-							process.execPath,
-							[join(__dirname, 'fixtures', 'fork-transaction-log-ahead-cache.mts'), dbPath],
-							{
-								env: {
-									...process.env,
-									ROCKSDB_JS_COMMIT_THREAD: '1',
-									ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
-								},
-								timeout: 20_000,
-							}
-						);
-						let stderr = '';
-						child.stderr.on('data', (chunk) => (stderr += chunk));
-						child.once('error', reject);
-						child.once('close', (code) => resolve({ code, stderr }));
-					}
-				);
-				expect(result.code, result.stderr).toBe(0);
-			}));
+		it.each([534, 2048])(
+			'does not freeze or read an ahead segment before commit (%i byte payload)',
+			(pendingPayloadSize) =>
+				dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+					const result = await new Promise<{ code: number | null; stderr: string }>(
+						(resolve, reject) => {
+							const child = spawn(
+								process.execPath,
+								[
+									join(__dirname, 'fixtures', 'fork-transaction-log-ahead-cache.mts'),
+									dbPath,
+									String(pendingPayloadSize),
+								],
+								{
+									env: {
+										...process.env,
+										ROCKSDB_JS_COMMIT_THREAD: '1',
+										ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
+									},
+									timeout: 20_000,
+								}
+							);
+							let stderr = '';
+							child.stderr.on('data', (chunk) => (stderr += chunk));
+							child.once('error', reject);
+							child.once('close', (code) => resolve({ code, stderr }));
+						}
+					);
+					expect(result.code, result.stderr).toBe(0);
+				})
+		);
 	});
 
 	describe('memory map lifecycle', () => {
