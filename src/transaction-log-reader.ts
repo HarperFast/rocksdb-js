@@ -250,7 +250,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 
 		dataView = logBuffer.dataView;
 
-		if (latestLogId > logId) {
+		if (latestLogId < logId) {
+			size = 0;
+		} else if (latestLogId > logId) {
 			const cachedSize = logBuffer.size;
 			if (cachedSize === undefined) {
 				size = logBuffer.size = readableExtent(logBuffer);
@@ -272,7 +274,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						transactionLog,
 						!!readUncommitted
 					);
-					size = latestSize;
+					size = latestLogId < logBuffer!.logId ? 0 : latestSize;
 					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
 						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
@@ -401,7 +403,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							transactionLog,
 							!!readUncommitted
 						);
-						size = latestSize;
+						size = latestLogId < logBuffer!.logId ? 0 : latestSize;
 						if (latestLogId > logBuffer!.logId) {
 							size = logBuffer!.size ?? readableExtent(logBuffer!);
 							if (!readUncommitted) {

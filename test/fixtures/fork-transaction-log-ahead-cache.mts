@@ -23,6 +23,8 @@ try {
 
 	const timestamp = [...log.query({ start: 0, readUncommitted: true })].at(-1)!.timestamp;
 	const ahead = log.query({ start: timestamp, exactStart: true });
+	assert.deepEqual([...ahead], []);
+	assert.deepEqual([...ahead], []);
 	await pending;
 	for (let i = 4; i < 7; i++) await write(i);
 	assert.deepEqual(
