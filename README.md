@@ -170,6 +170,8 @@ Creates a new database instance.
     are never split across files: if the complete transaction does not fit, the log rotates before
     writing it. A transaction written to an empty file may exceed the target. Defaults to 16 MB;
     `0` also uses this default, including normal size-based rotation and configured retention.
+    Existing stores configured with `0` start size-based rotation after upgrading, making older
+    segments eligible for purge under `transactionLogRetention`.
   - `transactionLogRetention: string | number` The number of minutes to retain transaction logs
     before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults to
