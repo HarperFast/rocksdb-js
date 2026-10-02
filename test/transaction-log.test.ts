@@ -3673,6 +3673,26 @@ describe('Transaction Log', () => {
 				}
 			));
 
+		// On Windows the first read after the segment grows pre-extends it to the target while the
+		// 13-byte open-time view is still mapped (as main did on the first read of every reopened
+		// segment); the entry must still be read through the new mapping.
+		it('grows an unpadded segment under its open-time mapping', () =>
+			dbRunner(
+				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
+				async ({ db, dbPath }) => {
+					await writeHeaderOnlySegment(dbPath, 'foo', TRANSACTION_LOG_FILE_HEADER_SIZE);
+					db.open();
+					const log = db.useLog('foo');
+					expect(indices(log.query({ start: 0 }))).toEqual([]);
+					const cached = log._logBuffers.get(1)!.deref()!;
+					await writeSmallTransaction(db, log, 0);
+					expect(indices(log.query({ start: 0 }))).toEqual([0]);
+					await writeSmallTransaction(db, log, 1);
+					expect(indices(log.query({ start: 0 }))).toEqual([0, 1]);
+					expect(cached.readableExtent).toBeGreaterThanOrEqual(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				}
+			));
+
 		it('keeps reading across the rotation that follows an oversized batch', () =>
 			dbRunner(
 				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
