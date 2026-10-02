@@ -6,4 +6,4 @@ A reader's external buffer has a fixed length. `TransactionLogFile::getMemoryMap
 
 Internal index maps may be replaced before the first reader handout. After exposure, an active map remains pinned so the POSIX writer continues extending its file overlay. Windows releases an undersized internal view before extending the file for a reader's first full-capacity mapping. A requested capacity is always raised to the written extent under the file lock. `transactionLogMaxSize: 0` uses the default 16 MiB limit.
 
-Native concurrency and append-admission tests and the integration suite's recovered-empty and default-capacity cases cover the invariant. The JS reader needs no remapping; its filtered-entry transition still refreshes the final extent before leaving a rotated segment, and traversal skips empty retired segments.
+The JS reader needs no remapping; its filtered-entry transition still refreshes the final extent before leaving a rotated segment, and traversal skips empty retired segments.

@@ -129,9 +129,6 @@ TEST(TransactionLogMmapOwnership, StaleCapacityRequestStillCoversTheFile) {
 	EXPECT_EQ(map->readableExtent.load(), 16384u);
 }
 
-// A file with entries that cannot be mapped is a failure, not "every timestamp is past
-// this file": the sentinel would start a reader at the file's end, past every unread
-// entry. An empty file keeps the sentinel.
 TEST(TransactionLogMmapOwnership, IndexWalkReportsAMappingFailureInsteadOfEndOfFile) {
 	TransactionLogFile::forceMapFailureForTests.store(true);
 	auto log = makeLog(8192);

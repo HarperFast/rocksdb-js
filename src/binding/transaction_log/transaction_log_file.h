@@ -535,10 +535,13 @@ struct TransactionLogFile final {
 	uint32_t countEntries() const;
 
 	/**
-	 * Writes a batch of transaction log entries to the log file.
+	 * Lazily opens the file and writes a batch under fileMutex. A capacity refusal
+	 * leaves the batch incomplete for the caller to rotate. A failed lazy open
+	 * closes the handle and throws TransactionLogOpenException.
 	 *
 	 * @param batch The batch of entries to write with state tracking.
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
+	 * @param latestTimestamp The header timestamp when creating a segment.
 	 */
 	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0,
 		double latestTimestamp = 0);

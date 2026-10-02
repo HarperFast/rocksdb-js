@@ -3528,9 +3528,6 @@ describe('Transaction Log', () => {
 	});
 
 	describe('oversized current segment', () => {
-		// One batch written to an empty segment may exceed transactionLogMaxSize (README). The
-		// current segment used to be mapped at exactly that size, so every entry past it read as
-		// a torn tail (#889).
 		const maxSize = 64 * 1024;
 		const payloadSize = 534;
 		const entryCount = 200; // ~109 KB in one transaction

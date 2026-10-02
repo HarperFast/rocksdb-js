@@ -335,7 +335,6 @@ bool TransactionLogFile::openFile(bool createIfMissing) {
 // frozenMapCache are (re)assigned, so holding fileMutex makes that shared_ptr
 // access race-free against close()/removeFile()/adviseCold().
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileSize, bool isCurrent) {
-	// Normalize under fileMutex so a racing append cannot leave the handout short.
 	uint32_t size = this->size.load(std::memory_order_relaxed);
 	fileSize = std::max(fileSize, size);
 	// mmap with length 0 has undefined behavior according to POSIX.
