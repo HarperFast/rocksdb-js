@@ -738,8 +738,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 
     A resync that finds nothing is only conclusive over the bytes it could actually read. The index
     walk searches the mapped region (`min(size, mapSize)`), which is short of the written extent
-    whenever one batch exceeded `transactionLogMaxSize` or the limit was lowered, so an empty result
-    there means "not in this map", not "not in this file". It must then stay at the break and report
+    only when an append landed after the walk acquired an internal index mapping, so an empty
+    result there means "not in this map", not "not in this file". It must then stay at the break and report
     an unindexed tail — the same treatment the walk already gives a header the map does not cover —
     and only park `lastIndexedPosition` at the written extent when the whole extent was searchable
     and the break is therefore a torn tail. A short map also disqualifies the "chain lands on the
@@ -1532,6 +1532,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     floor-log name is memoized per physical transaction-log store, which is the source of truth for
     every descriptor on that path; `DBKey` also contains read-only and secondary state, so guarding
     only one descriptor would allow a concurrent open to rescan a writer's active log.
+
+33. **Transaction-log reader mappings cannot be outgrown**: the native writer checks every
+    append against the smallest exposed capacity under `fileMutex`; creation and the first append
+    share that lock. See [transaction-log design](src/binding/transaction_log/DESIGN.md).
 
 ## Debugging native heap corruption
 

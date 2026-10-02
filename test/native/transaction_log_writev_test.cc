@@ -20,6 +20,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <chrono>
 #include <initializer_list>
 #include <memory>
 #include <string>
@@ -613,6 +615,97 @@ TEST_F(AppendBoundary, WholeBatchRotatesOrExceedsTheTargetTogether) {
 
 	auto image = readWholeFile(path_);
 	EXPECT_EQ(rocksdb_js::countTransactionLogEntries(image.data(), static_cast<uint32_t>(image.size())), 2u);
+}
+
+TEST_F(AppendBoundary, ExposedEmptySegmentRefusesAnOversizedBatch) {
+	auto& file = openLog("exposed-empty");
+	auto map = file.getMemoryMap(32, /*isCurrent=*/true);
+	ASSERT_NE(map, nullptr);
+	auto batch = makeBatch(1001.0, { "oversized-first-entry" });
+	file.writeEntries(batch, 32);
+	EXPECT_EQ(batch.currentEntryIndex, 0u);
+	EXPECT_EQ(file.size.load(), TRANSACTION_LOG_FILE_HEADER_SIZE);
+	EXPECT_EQ(map->readableExtent.load(), TRANSACTION_LOG_FILE_HEADER_SIZE);
+	EXPECT_EQ(file.getMemoryMap(32, /*isCurrent=*/true).get(), map.get());
+}
+
+TEST_F(AppendBoundary, FirstAppendAndHeaderCreationExcludeReaderHandouts) {
+	path_ = uniqueLogPath("atomic-first-append");
+	file_ = std::make_unique<rocksdb_js::TransactionLogFile>(path_, 1);
+	std::promise<void> headerCreated;
+	auto headerReady = headerCreated.get_future();
+	std::promise<void> continueAppend;
+	auto canAppend = continueAppend.get_future().share();
+	file_->afterHeaderCreatedForTests = [&] {
+		headerCreated.set_value();
+		canAppend.wait();
+	};
+	auto batch = makeBatch(1001.0, { "oversized-first-entry" });
+	auto writer = std::async(std::launch::async, [&] { file_->writeEntries(batch, 32); });
+	if (headerReady.wait_for(std::chrono::seconds(2)) != std::future_status::ready) {
+		continueAppend.set_value();
+		writer.get();
+		FAIL() << "First append did not initialize its header";
+		return;
+	}
+	std::promise<void> readerStarted;
+	auto started = readerStarted.get_future();
+	auto reader = std::async(std::launch::async, [&] {
+		readerStarted.set_value();
+		return file_->getMemoryMap(32, /*isCurrent=*/true);
+	});
+	started.wait();
+	EXPECT_EQ(reader.wait_for(std::chrono::milliseconds(30)), std::future_status::timeout);
+	continueAppend.set_value();
+	writer.get();
+	auto map = reader.get();
+	ASSERT_NE(map, nullptr);
+	EXPECT_TRUE(batch.isComplete());
+	EXPECT_GT(map->fileSize, 32u);
+	EXPECT_EQ(map->readableExtent.load(), file_->size.load());
+	EXPECT_TRUE(file_->hasAppendedSinceOpen.load());
+}
+
+TEST_F(AppendBoundary, ZeroByteFirstAppendCanRotateAnExposedEmptySegment) {
+	const auto storePath = uniqueLogPath("empty-store");
+	std::filesystem::create_directories(storePath);
+	{
+		rocksdb_js::TransactionLogStore store("foo", storePath, 32,
+			std::chrono::milliseconds(0), 0);
+		auto first = makeBatch(1001.0, { "a" });
+		rocksdb_js::LogPosition position;
+		g_writev_budget_bytes = 0;
+		EXPECT_THROW(store.writeBatch(first, position), rocksdb_js::DBException);
+		g_writev_budget_bytes = kUnlimitedWritevBudget;
+		auto emptyMap = store.getMemoryMap(1);
+		ASSERT_NE(emptyMap, nullptr);
+		auto oversized = makeBatch(1002.0, { "oversized-first-entry" });
+		store.writeBatch(oversized, position);
+		EXPECT_TRUE(oversized.isComplete());
+		EXPECT_EQ(store.getLogFileSize(1), TRANSACTION_LOG_FILE_HEADER_SIZE);
+		EXPECT_GT(store.getLogFileSize(2), 32u);
+		EXPECT_EQ(emptyMap->readableExtent.load(), TRANSACTION_LOG_FILE_HEADER_SIZE);
+		EXPECT_EQ(store.getMemoryMap(1).get(), emptyMap.get());
+	}
+	std::filesystem::remove_all(storePath);
+	std::filesystem::remove_all(
+		rocksdb_js::transactionLogAppendBoundaryMarkerPath(storePath / "1.txnlog").parent_path());
+}
+
+TEST_F(AppendBoundary, LazyAppendOpenFailureClosesTheRejectedFile) {
+	path_ = uniqueLogPath("bad-lazy-open");
+	{
+		std::ofstream stream(path_, std::ios::binary);
+		std::string invalidHeader(TRANSACTION_LOG_FILE_HEADER_SIZE, 'x');
+		stream.write(invalidHeader.data(), invalidHeader.size());
+	}
+	file_ = std::make_unique<rocksdb_js::TransactionLogFile>(path_, 1);
+	auto batch = makeBatch(1001.0, { "entry" });
+	EXPECT_THROW(file_->writeEntries(batch, 32), rocksdb_js::TransactionLogOpenException);
+	EXPECT_FALSE(file_->isOpen());
+	EXPECT_EQ(file_->size.load(), 0u);
+	EXPECT_EQ(batch.currentEntryIndex, 0u);
+	EXPECT_EQ(std::filesystem::file_size(path_), TRANSACTION_LOG_FILE_HEADER_SIZE);
 }
 
 #endif // !_WIN32

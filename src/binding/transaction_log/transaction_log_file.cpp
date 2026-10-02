@@ -106,6 +106,7 @@ std::atomic<int64_t> MemoryMap::liveCount{0};
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 std::atomic<int64_t> TransactionLogFile::forcedBytesLandedForTests{INT64_MIN};
+std::atomic<bool> TransactionLogFile::forceMapFailureForTests{false};
 
 void TransactionLogFile::resetAdviseColdSupportForTests() {
 	madvColdUnsupported.store(false, std::memory_order_relaxed);
@@ -256,6 +257,11 @@ bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfM
 			throw rocksdb_js::DBException("Failed to write transaction log file header: " + this->path.string());
 		}
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+		if (this->afterHeaderCreatedForTests) {
+			this->afterHeaderCreatedForTests();
+		}
+#endif
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str());
 		throw rocksdb_js::TransactionLogFormatException("File is too small to be a valid transaction log file: " + this->path.string());
@@ -742,7 +748,22 @@ uint32_t TransactionLogFile::countEntries() const {
 	}
 }
 
-void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
+void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize,
+	double latestTimestamp) {
+	std::lock_guard<std::mutex> fileLock(this->fileMutex);
+	if (!this->isOpen()) {
+		try {
+			this->openLocked(latestTimestamp);
+		} catch (const std::exception& e) {
+			this->closeLocked();
+			this->size.store(0, std::memory_order_relaxed);
+			throw TransactionLogOpenException(e.what());
+		} catch (...) {
+			this->closeLocked();
+			this->size.store(0, std::memory_order_relaxed);
+			throw;
+		}
+	}
 	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu (timestamp=%f, maxFileSize=%u, currentSize=%u)\n",
 		this, batch.entries.size(), batch.currentEntryIndex, batch.timestamp, maxFileSize, this->size.load(std::memory_order_relaxed));
 
@@ -762,8 +783,6 @@ void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uin
 }
 
 void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
-	std::lock_guard<std::mutex> fileLock(this->fileMutex);
-
 	if (this->appendBoundaryLost.load(std::memory_order_relaxed)) {
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Append boundary lost, refusing write: %s\n",
 			this, this->path.string().c_str());
@@ -782,10 +801,13 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	}
 
 	if (numEntriesToWrite == 0 ||
+		(this->readerCapacity > 0 && currentSize + totalSizeToWrite > this->readerCapacity) ||
 		(maxFileSize > 0 && currentSize > TRANSACTION_LOG_FILE_HEADER_SIZE &&
 			(currentSize >= maxFileSize ||
 				totalSizeToWrite > static_cast<uint64_t>(maxFileSize - currentSize)))) {
-		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 No entries to write\n", this);
+		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Batch is empty or exceeds segment capacity (entries=%u, bytes=%llu, size=%u, readerCapacity=%u, maxFileSize=%u)\n",
+			this, numEntriesToWrite, static_cast<unsigned long long>(totalSizeToWrite),
+			currentSize, this->readerCapacity, maxFileSize);
 		return;
 	}
 
@@ -879,7 +901,12 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 // path, via findPositionByTimestamp) must call getMemoryMapLocked() directly.
 std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, bool isCurrent) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
-	return this->getMemoryMapLocked(fileSize, isCurrent);
+	auto map = this->getMemoryMapLocked(fileSize, isCurrent);
+	if (map) {
+		this->readerCapacity = this->readerCapacity > 0
+			? std::min(this->readerCapacity, map->fileSize) : map->fileSize;
+	}
+	return map;
 }
 
 void TransactionLogFile::publishReadableExtentLocked() {
@@ -893,8 +920,7 @@ void TransactionLogFile::publishReadableExtentLocked() {
 		map = frozen.get();
 	}
 	if (map) {
-		map->readableExtent.store(
-			std::min(this->size.load(std::memory_order_relaxed), map->mapSize),
+		map->readableExtent.store(std::min(this->size.load(std::memory_order_relaxed), map->mapSize),
 			std::memory_order_release);
 	}
 }
@@ -923,19 +949,31 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 	// Acquiring fileMutex before indexMutex (and never the reverse) keeps the
 	// fileMutex -> indexMutex order; the open path nests them in that same order.
 	std::shared_ptr<MemoryMap> memoryMap;
+	uint32_t sizeAtMapping;
 	if (fileMutexHeld) {
 		memoryMap = this->getMemoryMapLocked(mapSize, isCurrent);
+		sizeAtMapping = this->size.load(std::memory_order_relaxed);
 	} else {
 		std::lock_guard<std::mutex> fileLock(this->fileMutex);
 		memoryMap = this->getMemoryMapLocked(mapSize, isCurrent);
+		sizeAtMapping = this->size.load(std::memory_order_relaxed);
 	}
 
-	// If memory map is null (e.g., empty file with size 0), return 0xFFFFFFFF
-	// to indicate the timestamp comes after this logfile
+	// An empty file (size 0) has no mapping and every timestamp comes after it. A file with
+	// entries that could not be mapped is a failure to report, not a position: the sentinel
+	// would start the reader at this file's end, past every unread entry.
 	if (!memoryMap) {
-		DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this);
-		return 0xFFFFFFFF;
+		if (sizeAtMapping == 0) {
+			DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp memoryMap is null, returning 0xFFFFFFFF\n", this);
+			return 0xFFFFFFFF;
+		}
+		throw rocksdb_js::DBException("Failed to memory map transaction log file: " + this->path.string());
 	}
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (this->afterIndexMapAcquiredForTests) {
+		this->afterIndexMapAcquiredForTests();
+	}
+#endif
 
 	std::unique_lock<std::mutex> indexLock(this->indexMutex);
 

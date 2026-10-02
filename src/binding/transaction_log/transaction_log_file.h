@@ -2,10 +2,12 @@
 #define __TRANSACTION_LOG_FILE_H__
 
 #include <chrono>
+#include <algorithm>
 #include <filesystem>
 #include <mutex>
 #include <map>
 #include <atomic>
+#include <functional>
 #include <limits>
 #include <string>
 #include <utility>
@@ -81,6 +83,13 @@ class TransactionLogFormatException final : public std::exception {
 	std::string message;
 public:
 	explicit TransactionLogFormatException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
+
+class TransactionLogOpenException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogOpenException(std::string msg) noexcept : message(std::move(msg)) {}
 	const char* what() const noexcept override { return message.c_str(); }
 };
 
@@ -232,6 +241,10 @@ struct TransactionLogFile final {
 	 * it has expired by the time another reader asks.
 	 */
 	std::weak_ptr<MemoryMap> frozenMapCache;
+
+	// Smallest capacity handed to a reader; append admission preserves every live view.
+	// Guarded by fileMutex, and retained even after readers release their views.
+	uint32_t readerCapacity = 0;
 
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY && defined(PLATFORM_POSIX)
 	/**
@@ -522,12 +535,16 @@ struct TransactionLogFile final {
 	uint32_t countEntries() const;
 
 	/**
-	 * Writes a batch of transaction log entries to the log file.
+	 * Lazily opens the file and writes a batch under fileMutex. A capacity refusal
+	 * leaves the batch incomplete for the caller to rotate. A failed lazy open
+	 * closes the handle and throws TransactionLogOpenException.
 	 *
 	 * @param batch The batch of entries to write with state tracking.
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
+	 * @param latestTimestamp The header timestamp when creating a segment.
 	 */
-	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0);
+	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0,
+		double latestTimestamp = 0);
 
 	/**
 	 * Return a memory map of the file and mark it as in use. Thin wrapper that
@@ -535,8 +552,11 @@ struct TransactionLogFile final {
 	 * getMemoryMapLocked(). Callers must NOT already hold fileMutex — a caller
 	 * that does (the open path) calls getMemoryMapLocked() directly instead.
 	 *
-	 * @param fileSize The size to map (max file size for the current file, which
-	 *   is still growing; the frozen file size otherwise).
+	 * @param fileSize The capacity to allocate when no live mapping covers the file
+	 *   (max file size for the current file, which is still growing; the frozen file
+	 *   size otherwise). Raised to the append-owned size under fileMutex, so a handout
+	 *   always covers the file. Once exposed to a reader, an active mapping is reused
+	 *   and append admission prevents its capacity from being exceeded.
 	 * @param isCurrent Whether this is the store's current (actively-written) log
 	 *   file. The current file retains a strong reference in `memoryMap` (the
 	 *   writer and index need it); a frozen file does not — it is weak-cached in
@@ -591,7 +611,7 @@ struct TransactionLogFile final {
 	 * No-op on Windows where the file is pre-extended to maxFileSize.
 	 *
 	 * Precondition: the caller must already hold fileMutex (it touches
-	 * memoryMap). Both call sites satisfy this — writeEntriesV1() holds it, and
+	 * memoryMap). Both call sites satisfy this — writeEntries() holds it, and
 	 * getMemoryMapLocked() runs with it held.
 	 */
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
@@ -642,6 +662,17 @@ struct TransactionLogFile final {
 	 * returning the same position. Guarded by indexMutex like the memo itself. Test-only.
 	 */
 	uint32_t resyncSearchCountForTests = 0;
+
+	/**
+	 * Runs once the index walk has acquired its mapping and released fileMutex: the
+	 * window in which an append can land past an internal index mapping. Test-only.
+	 */
+	std::function<void()> afterIndexMapAcquiredForTests;
+
+	std::function<void()> afterHeaderCreatedForTests;
+
+	/** Makes getMemoryMapLocked() fail like the OS mapping call did. Test-only. */
+	static std::atomic<bool> forceMapFailureForTests;
 #endif
 
 private:
@@ -768,6 +799,7 @@ struct MemoryMap final {
 	 * The append-owned logical extent that readers may consume. This stays
 	 * authoritative after purge unlinks the file and the mapping outlives its
 	 * TransactionLogFile, so physical orphan bytes never become log entries.
+	 * Bounded by mapSize; append admission preserves every reader handout.
 	 */
 	std::atomic<uint32_t> readableExtent = 0;
 
@@ -779,7 +811,7 @@ struct MemoryMap final {
 	static std::atomic<int64_t> liveCount;
 
 	MemoryMap(void* map, uint32_t mapSize, uint32_t readableExtent)
-		: map(map), mapSize(mapSize), fileSize(mapSize), readableExtent(readableExtent) {
+		: map(map), mapSize(mapSize), fileSize(mapSize), readableExtent(std::min(readableExtent, mapSize)) {
 		liveCount.fetch_add(1, std::memory_order_relaxed);
 	}
 

@@ -11,6 +11,7 @@ import { writeLazyTransactionLogSegments } from './lib/transaction-log-fixtures.
 import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
+import { spawn } from 'node:child_process';
 import {
 	chmodSync,
 	existsSync,
@@ -740,7 +741,7 @@ describe('Transaction Log', () => {
 				}
 			}));
 
-		it('should allow unlimited transaction log size', () =>
+		it('uses the default transaction log size limit when configured as 0', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }] }, async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
 				const value = Buffer.alloc(10000, 'a');
@@ -755,8 +756,13 @@ describe('Transaction Log', () => {
 					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10000) * 2000;
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
 				const logFiles = await readdir(logStorePath);
-				expect(logFiles).toEqual(['1.txnlog']);
-				expect(statSync(join(dbPath, 'transaction_logs', 'foo', '1.txnlog')).size).toBe(totalSize);
+				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
+				expect(log.getStats().config.maxFileSize).toBe(16 * 1024 * 1024);
+				const firstSize = log.getLogFileSize(1);
+				const secondSize = log.getLogFileSize(2);
+				expect(firstSize).toBeLessThanOrEqual(16 * 1024 * 1024);
+				expect(secondSize).toBeLessThanOrEqual(16 * 1024 * 1024);
+				expect(firstSize + secondSize).toBe(totalSize + TRANSACTION_LOG_FILE_HEADER_SIZE);
 			}));
 
 		it('reports lazy-segment open failures as JavaScript errors', () =>
@@ -3519,6 +3525,358 @@ describe('Transaction Log', () => {
 				expect(typeof result.bytes).toBe('number');
 				expect(result.bytes).toBeGreaterThanOrEqual(0);
 			}));
+	});
+
+	describe('oversized current segment', () => {
+		const maxSize = 64 * 1024;
+		const payloadSize = 534;
+		const entryCount = 200; // ~109 KB in one transaction
+		const entrySize = TRANSACTION_LOG_ENTRY_HEADER_SIZE + payloadSize;
+
+		function payload(index: number) {
+			const data = Buffer.alloc(payloadSize, 1);
+			data.writeUInt32BE(index, 0);
+			return data;
+		}
+
+		async function writeOversizedTransaction(db: RocksDatabase, log: TransactionLog) {
+			await db.transaction(async (txn) => {
+				for (let i = 0; i < entryCount; i++) {
+					log.addEntry(payload(i), txn.id);
+				}
+			});
+		}
+
+		async function writeSmallTransaction(db: RocksDatabase, log: TransactionLog, index: number) {
+			await db.transaction(async (txn) => {
+				log.addEntry(payload(index), txn.id);
+			});
+		}
+
+		// Cover both Windows padding and a crash that left only the physical header.
+		async function writeHeaderOnlySegment(
+			dbPath: string,
+			name: string,
+			segmentSize: number,
+			sequence = 1
+		) {
+			const logDirectory = join(dbPath, 'transaction_logs', name);
+			await mkdir(logDirectory, { recursive: true });
+			const segment = Buffer.alloc(segmentSize);
+			segment.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+			segment.writeUInt8(1, 4);
+			segment.writeDoubleBE(Date.now(), 5);
+			await writeFile(join(logDirectory, `${sequence}.txnlog`), segment);
+		}
+
+		function readAll(entries: Iterable<{ data: Buffer; timestamp: number; endTxn: boolean }>) {
+			const read: { index: number; timestamp: number; endTxn: boolean }[] = [];
+			for (const entry of entries) {
+				const index = entry.data.readUInt32BE(0);
+				expect(entry.data.equals(payload(index))).toBe(true);
+				read.push({ index, timestamp: entry.timestamp, endTxn: entry.endTxn });
+			}
+			return read;
+		}
+
+		function indices(entries: Iterable<{ data: Buffer; timestamp: number; endTxn: boolean }>) {
+			return readAll(entries).map((entry) => entry.index);
+		}
+
+		function range(count: number, from = 0) {
+			return Array.from({ length: count }, (_, i) => from + i);
+		}
+
+		function expectOversizedBatch(read: ReturnType<typeof readAll>) {
+			expect(read.map((entry) => entry.index)).toEqual(range(entryCount));
+			expect(new Set(read.map((entry) => entry.timestamp)).size).toBe(1);
+			expect(read.map((entry) => entry.endTxn)).toEqual(
+				range(entryCount).map((i) => i === entryCount - 1)
+			);
+		}
+
+		it('reads every entry of an oversized segment after reopen', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: maxSize }] }, async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				await writeOversizedTransaction(db, log);
+				expectOversizedBatch(readAll(log.query({ start: 0 })));
+				const segmentPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				expect(statSync(segmentPath).size).toBeGreaterThan(maxSize);
+
+				db.close();
+				db.open();
+				const reopened = db.useLog('foo');
+				expectOversizedBatch(readAll(reopened.query({ start: 0 })));
+				expectOversizedBatch(readAll(reopened.query({ start: 0, readUncommitted: true })));
+
+				const { timestamp } = reopened.query({ start: 0 }).next().value!;
+				expectOversizedBatch(readAll(reopened.query({ start: timestamp })));
+				expectOversizedBatch(readAll(reopened.query({ start: timestamp, exactStart: true })));
+				expect(indices(reopened.query({ start: timestamp + 1 }))).toEqual([]);
+			}));
+
+		// A frame straddling the mapping's end used to read as corrupt; a frame ending exactly on
+		// it used to make the reader advance past the unread tail with no error at all.
+		it.each([
+			{ shape: 'straddles', segmentMaxSize: maxSize },
+			{
+				shape: 'ends exactly at',
+				segmentMaxSize: TRANSACTION_LOG_FILE_HEADER_SIZE + entrySize * (entryCount / 2),
+			},
+		])(
+			'preserves a recovered empty mapping when a batch $shape its capacity',
+			({ segmentMaxSize }) =>
+				dbRunner(
+					{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: segmentMaxSize }] },
+					async ({ db, dbPath }) => {
+						await writeHeaderOnlySegment(dbPath, 'foo', segmentMaxSize);
+						db.open();
+						const log = db.useLog('foo');
+						const tail = log.query({});
+						expect(indices(log.query({ start: 0 }))).toEqual([]);
+						const cached = log._logBuffers.get(1)!.deref()!;
+						expect(cached.length).toBe(segmentMaxSize);
+						expect(log._getMemoryMapOfFile(1)!.length).toBe(segmentMaxSize);
+						const positioned = log.query({ start: 0 });
+
+						await writeOversizedTransaction(db, log);
+						expect(
+							statSync(join(dbPath, 'transaction_logs', 'foo', '2.txnlog')).size
+						).toBeGreaterThan(segmentMaxSize);
+						expect(cached.readableExtent).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE);
+
+						expectOversizedBatch(readAll(log.query({ start: 0 })));
+						expectOversizedBatch(readAll(log.query({ start: 0, readUncommitted: true })));
+						expectOversizedBatch(readAll(tail));
+						expectOversizedBatch(readAll(positioned));
+						expect(log._logBuffers.get(1)?.deref()).toBe(cached);
+					}
+				)
+		);
+
+		it('preserves an unpadded empty mapping while rotating an oversized first batch', () =>
+			dbRunner(
+				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
+				async ({ db, dbPath }) => {
+					await writeHeaderOnlySegment(dbPath, 'foo', TRANSACTION_LOG_FILE_HEADER_SIZE);
+					db.open();
+					const log = db.useLog('foo');
+					const tail = log.query({});
+					expect(indices(log.query({ start: 0 }))).toEqual([]);
+					const cached = log._logBuffers.get(1)!.deref()!;
+					expect(cached.length).toBe(maxSize);
+					const positioned = log.query({ start: 0 });
+
+					await writeOversizedTransaction(db, log);
+					expect(cached.readableExtent).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE);
+					expectOversizedBatch(readAll(log.query({ start: 0 })));
+					expectOversizedBatch(readAll(tail));
+					expectOversizedBatch(readAll(positioned));
+					await writeSmallTransaction(db, log, entryCount);
+					expect(indices(log.query({ start: 0 }))).toEqual(range(entryCount + 1));
+				}
+			));
+
+		it('uses a stable full-capacity handout for an unpadded recovered segment', () =>
+			dbRunner(
+				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
+				async ({ db, dbPath }) => {
+					await writeHeaderOnlySegment(dbPath, 'foo', TRANSACTION_LOG_FILE_HEADER_SIZE);
+					db.open();
+					const log = db.useLog('foo');
+					expect(indices(log.query({ start: 0 }))).toEqual([]);
+					const cached = log._logBuffers.get(1)!.deref()!;
+					expect(cached.length).toBe(maxSize);
+					await writeSmallTransaction(db, log, 0);
+					expect(indices(log.query({ start: 0 }))).toEqual([0]);
+					await writeSmallTransaction(db, log, 1);
+					expect(indices(log.query({ start: 0 }))).toEqual([0, 1]);
+					expect(cached.readableExtent).toBeLessThanOrEqual(cached.length);
+					expect(log._logBuffers.get(1)!.deref()).toBe(cached);
+				}
+			));
+
+		it('keeps reading across the rotation that follows an oversized batch', () =>
+			dbRunner(
+				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
+				async ({ db, dbPath }) => {
+					await writeHeaderOnlySegment(dbPath, 'foo', maxSize);
+					db.open();
+					const log = db.useLog('foo');
+					expect(indices(log.query({ start: 0 }))).toEqual([]);
+					const resumable = log.query({ start: 0 });
+
+					await writeOversizedTransaction(db, log);
+					expectOversizedBatch(readAll(resumable));
+					await writeSmallTransaction(db, log, entryCount);
+					await writeSmallTransaction(db, log, entryCount + 1);
+					const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+					expect((await readdir(logDirectory)).sort()).toEqual([
+						'1.txnlog',
+						'2.txnlog',
+						'3.txnlog',
+					]);
+
+					expect(indices(log.query({ start: 0 }))).toEqual(range(entryCount + 2));
+					expect(indices(resumable)).toEqual([entryCount, entryCount + 1]);
+					expect(indices(log.query({ start: 0, readUncommitted: true }))).toEqual(
+						range(entryCount + 2)
+					);
+
+					db.close();
+					db.open();
+					expect(indices(db.useLog('foo').query({ start: 0 }))).toEqual(range(entryCount + 2));
+				}
+			));
+
+		it('positions by timestamp past the capacity a smaller target reopens the segment at', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 1024 * 1024 }] }, async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				for (let i = 0; i < entryCount; i++) {
+					await writeSmallTransaction(db, log, i);
+				}
+				const timestamps = readAll(log.query({ start: 0 })).map((entry) => entry.timestamp);
+				expect(new Set(timestamps).size).toBe(entryCount);
+				db.close();
+
+				const smaller = RocksDatabase.open(dbPath, { transactionLogMaxSize: maxSize });
+				try {
+					const reopened = smaller.useLog('foo');
+					expect(indices(reopened.query({ start: timestamps[150] }))).toEqual(range(50, 150));
+					expect(indices(reopened.query({ start: timestamps[150], exactStart: true }))).toEqual(
+						range(50, 150)
+					);
+					expect(indices(reopened.query({ start: timestamps[entryCount - 1] }))).toEqual([
+						entryCount - 1,
+					]);
+					expect(indices(reopened.query({ start: timestamps[entryCount - 1] + 1 }))).toEqual([]);
+					expect(indices(reopened.query({ start: 0 }))).toEqual(range(entryCount));
+				} finally {
+					smaller.close();
+				}
+			}));
+
+		it('tails a recovered empty segment without replaying older retained entries', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: maxSize }] }, async ({ db, dbPath }) => {
+				await writeSmallTransaction(db, db.useLog('foo'), entryCount);
+				db.close();
+				await writeHeaderOnlySegment(dbPath, 'foo', TRANSACTION_LOG_FILE_HEADER_SIZE, 2);
+				db.open();
+				const log = db.useLog('foo');
+				const committed = log.query({});
+				const uncommitted = log.query({ readUncommitted: true });
+				expect(indices(committed)).toEqual([]);
+				expect(indices(uncommitted)).toEqual([]);
+				const empty = log._logBuffers.get(2)!.deref()!;
+				await writeOversizedTransaction(db, log);
+				expectOversizedBatch(readAll(committed));
+				expectOversizedBatch(readAll(uncommitted));
+				expect(empty.readableExtent).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				expect(indices(log.query({ start: 0 }))).toEqual([entryCount, ...range(entryCount)]);
+			}));
+
+		it('keeps a cached mapping readable without asking native to replace it', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: maxSize }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				await writeSmallTransaction(db, log, 0);
+				expect(indices(log.query({ start: 0 }))).toEqual([0]);
+				const cached = log._logBuffers.get(1)!.deref()!;
+				const map = vi.spyOn(log, '_getMemoryMapOfFile').mockReturnValue(undefined);
+				try {
+					for (let i = 1; i < 12; i++) {
+						await writeSmallTransaction(db, log, i);
+						expect(indices(log.query({ start: 0 }))).toEqual(range(i + 1));
+						expect(cached.readableExtent).toBeLessThanOrEqual(cached.length);
+						expect(log._logBuffers.get(1)!.deref()).toBe(cached);
+					}
+					expect(map).not.toHaveBeenCalled();
+				} finally {
+					map.mockRestore();
+				}
+			}));
+
+		it('preserves a default-capacity mapping when transactionLogMaxSize is 0', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				const tail = log.query({});
+				for (let i = 0; i < 12; i++) {
+					await writeSmallTransaction(db, log, i);
+					expect(indices(log.query({ start: 0 }))).toEqual(range(i + 1));
+					expect(indices(tail)).toEqual([i]);
+					expect(log._logBuffers.get(1)!.deref()!.length).toBe(16 * 1024 * 1024);
+				}
+				db.close();
+				db.open();
+				expect(indices(db.useLog('foo').query({ start: 0 }))).toEqual(range(12));
+			}));
+
+		// A filtered entry ending exactly at the iterator's snapshot, then a rotation: the segment
+		// may hold entries appended after the snapshot, and the reader must not step over them.
+		it('reads entries appended after its snapshot before leaving a rotated segment', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 2000 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				await writeSmallTransaction(db, log, 0);
+				const first = readAll(log.query({ start: 0 }))[0];
+				await db.transaction(async (txn) => {
+					txn.setTimestamp(first.timestamp + 100_000); // filtered by `end`
+					log.addEntry(payload(1), txn.id);
+				});
+				const iterator = log.query({ start: 0, end: first.timestamp + 60_000 });
+				expect(iterator.next().value!.data.readUInt32BE(0)).toBe(0);
+				await writeSmallTransaction(db, log, 2);
+				await writeSmallTransaction(db, log, 3); // rotates into segment 2
+				expect(indices(iterator)).toEqual([2, 3]);
+				expect(indices(log.query({ start: 0, end: first.timestamp + 60_000 }))).toEqual([0, 2, 3]);
+			}));
+
+		it('filters later appends through the same default-capacity mapping', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }] }, async ({ db }) => {
+				const log = db.useLog('foo');
+				await writeSmallTransaction(db, log, 0);
+				const first = readAll(log.query({ start: 0 }))[0];
+				const filtered = log.query({ start: first.timestamp });
+				expect(indices(filtered)).toEqual([0]);
+				for (let i = 1; i < 12; i++) {
+					await db.transaction(async (txn) => {
+						txn.setTimestamp(first.timestamp - 1000 * i);
+						log.addEntry(payload(i), txn.id);
+					});
+					await writeSmallTransaction(db, log, 100 + i);
+					expect(indices(filtered)).toEqual([100 + i]);
+				}
+			}));
+
+		it.each([534, 2048])(
+			'does not freeze or read an ahead segment before commit (%i byte payload)',
+			(pendingPayloadSize) =>
+				dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+					const result = await new Promise<{ code: number | null; stderr: string }>(
+						(resolve, reject) => {
+							const child = spawn(
+								process.execPath,
+								[
+									join(__dirname, 'fixtures', 'fork-transaction-log-ahead-cache.mts'),
+									dbPath,
+									String(pendingPayloadSize),
+								],
+								{
+									env: {
+										...process.env,
+										ROCKSDB_JS_COMMIT_THREAD: '1',
+										ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
+									},
+									timeout: 20_000,
+								}
+							);
+							let stderr = '';
+							child.stderr.on('data', (chunk) => (stderr += chunk));
+							child.once('error', reject);
+							child.once('close', (code) => resolve({ code, stderr }));
+						}
+					);
+					expect(result.code, result.stderr).toBe(0);
+				})
+		);
 	});
 
 	describe('memory map lifecycle', () => {

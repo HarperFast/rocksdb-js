@@ -708,6 +708,34 @@ uint32_t OpenedLogFile::sequence = 0;
 
 } // namespace
 
+#ifdef _WIN32
+TEST(TransactionLogWindowsOpen, MappingFailureCannotAppendPastZeroPadding) {
+	LogImage img;
+	img.zeros(64 * 1024 - img.size());
+	OpenedLogFile opened(img);
+	auto& file = opened.get();
+	file.close();
+
+	std::string payload = "first-entry";
+	rocksdb_js::TransactionLogEntryBatch batch(3.0);
+	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+	TransactionLogFile::forceMapFailureForTests.store(true);
+	EXPECT_THROW(file.writeEntries(batch, 128 * 1024, 3.0),
+		rocksdb_js::TransactionLogOpenException);
+	TransactionLogFile::forceMapFailureForTests.store(false);
+	EXPECT_FALSE(file.isOpen());
+	EXPECT_EQ(file.size.load(), 0u);
+	EXPECT_FALSE(batch.isComplete());
+
+	file.writeEntries(batch, 128 * 1024, 3.0);
+	EXPECT_TRUE(batch.isComplete());
+	auto map = file.getMemoryMap(128 * 1024, /*isCurrent=*/true);
+	ASSERT_NE(map, nullptr);
+	EXPECT_EQ(countTransactionLogEntries(static_cast<const char*>(map->map), file.size.load()), 1u);
+}
+#endif
+
 TEST(TransactionLogRecoverySource, CleanWalkReadsOnlyHeaders) {
 	LogImage img;
 	img.entry(1024 * 1024).entry(1024 * 1024);
@@ -925,8 +953,8 @@ TEST(TransactionLogTimestampIndex, SeeksPastMultipleBreaks) {
 	EXPECT_EQ(file.findPositionByTimestamp(52.0, img.size(), /*isCurrent=*/true), 0xFFFFFFFFu);
 }
 
-// A map shorter than the written extent (one batch larger than maxFileSize, or a
-// lowered maxFileSize) can cover the break without covering the run behind it.
+// A map shorter than the written extent (an append that landed after the walk
+// acquired its mapping) can cover the break without covering the run behind it.
 // "Nothing resumes" then rules out only the bytes that were searchable, so the
 // walk must stay at the break: parking at the written extent would leave those
 // entries permanently unindexed, since a later, larger map resumes from
@@ -948,12 +976,19 @@ TEST(TransactionLogTimestampIndex, ShortMapDoesNotSkipTheUnsearchedPostBreakTail
 	file.downgradeMapToFrozen();
 	file.resetTimestampIndex();
 	file.resyncSearchCountForTests = 0;
-	// Cut the map mid-entry, too few frames past the break to qualify as a resume.
+	// Cut the map mid-entry, too few frames past the break to qualify as a resume. A
+	// mapping is acquired to cover the file, so the cut comes from the rest landing after
+	// acquisition.
 	uint32_t shortMap = offsets[2] + 5;
+	uint32_t fullSize = img.size();
+	file.afterIndexMapAcquiredForTests = [&] { file.size.store(fullSize, std::memory_order_relaxed); };
+	file.size.store(shortMap, std::memory_order_relaxed);
 	EXPECT_EQ(file.findPositionByTimestamp(20.0, shortMap, /*isCurrent=*/true), breakOffset);
 	EXPECT_EQ(file.resyncSearchCountForTests, 1u);
+	file.size.store(shortMap, std::memory_order_relaxed);
 	EXPECT_EQ(file.findPositionByTimestamp(25.0, shortMap, /*isCurrent=*/true), breakOffset);
 	EXPECT_EQ(file.resyncSearchCountForTests, 1u);
+	file.afterIndexMapAcquiredForTests = nullptr;
 	// Once the map reaches the written extent the run is found, indexed and seekable.
 	EXPECT_EQ(file.findPositionByTimestamp(20.0, img.size(), /*isCurrent=*/true), offsets[0]);
 	EXPECT_EQ(file.resyncSearchCountForTests, 2u);
@@ -979,8 +1014,13 @@ TEST(TransactionLogTimestampIndex, ShortMapCutIsNotTreatedAsTheWrittenExtent) {
 	TransactionLogFile& file = opened.get();
 	file.downgradeMapToFrozen();
 	file.resetTimestampIndex();
-	// Cut the map exactly on a frame boundary, two frames past the break.
+	// Cut the map exactly on a frame boundary, two frames past the break (the rest of the
+	// file landing after the walk acquired its mapping).
+	uint32_t fullSize = img.size();
+	file.afterIndexMapAcquiredForTests = [&] { file.size.store(fullSize, std::memory_order_relaxed); };
+	file.size.store(offsets[2], std::memory_order_relaxed);
 	EXPECT_EQ(file.findPositionByTimestamp(20.0, offsets[2], /*isCurrent=*/true), breakOffset);
+	file.afterIndexMapAcquiredForTests = nullptr;
 	EXPECT_EQ(file.findPositionByTimestamp(20.0, img.size(), /*isCurrent=*/true), offsets[0]);
 }
 

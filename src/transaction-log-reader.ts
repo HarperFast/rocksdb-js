@@ -250,7 +250,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 
 		dataView = logBuffer.dataView;
 
-		if (latestLogId !== logId) {
+		if (latestLogId < logId) {
+			size = 0;
+		} else if (latestLogId > logId) {
 			const cachedSize = logBuffer.size;
 			if (cachedSize === undefined) {
 				size = logBuffer.size = readableExtent(logBuffer);
@@ -272,7 +274,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						transactionLog,
 						!!readUncommitted
 					);
-					size = latestSize;
+					size = latestLogId < logBuffer!.logId ? 0 : latestSize;
 					if (latestLogId > logBuffer!.logId) {
 						// if it is not the latest log, get the file size
 						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
@@ -401,8 +403,16 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							transactionLog,
 							!!readUncommitted
 						);
-						size = latestSize;
+						size = latestLogId < logBuffer!.logId ? 0 : latestSize;
 						if (latestLogId > logBuffer!.logId) {
+							size = logBuffer!.size ?? readableExtent(logBuffer!);
+							if (!readUncommitted) {
+								logBuffer!.size = size;
+							}
+							if (position < size) {
+								continue;
+							}
+
 							const nextLogBuffer = nextReadableLogBuffer(
 								transactionLog,
 								logBuffer!.logId,
@@ -456,9 +466,13 @@ function nextReadableLogBuffer(
 	while (candidateLogId <= latestLogId) {
 		const logBuffer = getLogMemoryMap(transactionLog, candidateLogId);
 		if (logBuffer) {
-			return logBuffer;
-		}
-		if (transactionLog.getLogFileSize(candidateLogId) > 0) {
+			if (
+				candidateLogId === latestLogId ||
+				readableExtent(logBuffer) > TRANSACTION_LOG_FILE_HEADER_SIZE
+			) {
+				return logBuffer;
+			}
+		} else if (transactionLog.getLogFileSize(candidateLogId) > 0) {
 			// the store still has bytes for it, so it is durable history that is merely
 			// unmappable right now; stop and pick it up on the next poll
 			return;
