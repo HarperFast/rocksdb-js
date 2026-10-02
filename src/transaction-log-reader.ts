@@ -219,7 +219,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			logBuffer.logId === logId &&
 			(logId === latestLogId ? size > logBuffer.length : !coversExtent(logBuffer))
 		) {
-			logBuffer = undefined; // outgrown (invariant 33): resolve it through the cache
+			logBuffer = undefined;
 		}
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
@@ -455,13 +455,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					}
 					if (position >= size) {
 						// move to the next log file
+						const segmentSize = size;
 						const { logId: latestLogId, size: latestSize } = loadLastPosition(
 							transactionLog,
 							!!readUncommitted
 						);
 						size = latestSize;
 						if (latestLogId > logBuffer!.logId) {
-							const covering = coveringLogBuffer(transactionLog, logBuffer!, size);
+							const covering = coveringLogBuffer(transactionLog, logBuffer!, segmentSize);
 							if (covering === undefined) {
 								return { done: true, value: undefined };
 							}
@@ -559,23 +560,21 @@ function readableExtent(logBuffer: LogBuffer): number {
 }
 
 /**
- * Whether `logBuffer` still covers its segment. A batch written to an empty segment may exceed
- * `transactionLogMaxSize`, the capacity the current segment is mapped at, so a mapping taken before
- * that batch landed stops short of entries that exist. Native publishes the append-owned extent
- * unclamped so the shortfall is visible here (#889).
+ * A batch written to an empty segment may exceed `transactionLogMaxSize`, the capacity the current
+ * segment is mapped at, so a mapping taken before that batch landed stops short of entries that
+ * exist; native publishes the append-owned extent unclamped so the shortfall is visible (#889).
  */
 function coversExtent(logBuffer: LogBuffer): boolean {
 	return !(logBuffer.readableExtent > logBuffer.length);
 }
 
 /**
- * The buffer that covers `logBuffer`'s segment, remapping it when an append outgrew the mapping.
- * `size` is the committed extent the caller already holds: it exceeds the buffer before the
- * append's extent publish is visible, so it decides without the native getter. `undefined` means
- * the segment is still registered but cannot be remapped right now: the caller stops where it is
- * and retries on the next poll, rather than reading the mapping's end as the segment's end and
- * stepping over the unread tail. A segment the store has forgotten keeps serving what it mapped,
- * as any purged segment does (invariant 30).
+ * `size` is the committed extent the caller already holds: it exceeds an outgrown buffer before
+ * the append's extent publish is visible, so it decides without the native getter. `undefined`
+ * means the segment is still registered but cannot be remapped right now: the caller stops where
+ * it is and retries on the next poll, rather than reading the mapping's end as the segment's end
+ * and stepping over the unread tail. A segment the store has forgotten keeps serving what it
+ * mapped, as any purged segment does (invariant 30).
  */
 function coveringLogBuffer(
 	transactionLog: TransactionLog,

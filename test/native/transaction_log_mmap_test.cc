@@ -167,9 +167,8 @@ TEST(TransactionLogMmapOwnership, CoveringMapIsReusedForALargerRequest) {
 	EXPECT_NE(grown.get(), map.get());
 	EXPECT_EQ(grown->mapSize, 32768u);
 	EXPECT_EQ(grown->fileSize, 32768u);
-	EXPECT_EQ(map->readableExtent.load(), 8292u);  // published before the replacement
+	EXPECT_EQ(map->readableExtent.load(), 8292u);
 	EXPECT_EQ(static_cast<const char*>(grown->map)[8192], 'z');
-	// a frozen handout is exactly the file's size, whatever the mapping's capacity
 	log->downgradeMapToFrozen();
 	EXPECT_EQ(log->getMemoryMap(8292, /*isCurrent=*/false)->fileSize, 8292u);
 }

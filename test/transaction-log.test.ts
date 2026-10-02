@@ -3550,14 +3550,17 @@ describe('Transaction Log', () => {
 			});
 		}
 
-		async function writeHeaderOnlySegment(dbPath: string, name: string) {
+		// A header-only segment pre-extended to the target, the layout of a Windows active segment
+		// (open maps it at that physical size; POSIX recovery truncates the zero tail), so both
+		// platforms map it at `segmentMaxSize` before anything is appended.
+		async function writeHeaderOnlySegment(dbPath: string, name: string, segmentMaxSize: number) {
 			const logDirectory = join(dbPath, 'transaction_logs', name);
 			await mkdir(logDirectory, { recursive: true });
-			const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
-			header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
-			header.writeUInt8(1, 4);
-			header.writeDoubleBE(Date.now(), 5);
-			await writeFile(join(logDirectory, '1.txnlog'), header);
+			const segment = Buffer.alloc(segmentMaxSize);
+			segment.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+			segment.writeUInt8(1, 4);
+			segment.writeDoubleBE(Date.now(), 5);
+			await writeFile(join(logDirectory, '1.txnlog'), segment);
 		}
 
 		function readAll(entries: Iterable<{ data: Buffer; timestamp: number; endTxn: boolean }>) {
@@ -3600,7 +3603,6 @@ describe('Transaction Log', () => {
 				expectOversizedBatch(readAll(reopened.query({ start: 0 })));
 				expectOversizedBatch(readAll(reopened.query({ start: 0, readUncommitted: true })));
 
-				// positioning by timestamp walks the index over the same mapping
 				const { timestamp } = reopened.query({ start: 0 }).next().value!;
 				expectOversizedBatch(readAll(reopened.query({ start: timestamp })));
 				expectOversizedBatch(readAll(reopened.query({ start: timestamp, exactStart: true })));
@@ -3621,15 +3623,15 @@ describe('Transaction Log', () => {
 				dbRunner(
 					{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: segmentMaxSize }] },
 					async ({ db, dbPath }) => {
-						await writeHeaderOnlySegment(dbPath, 'foo');
+						await writeHeaderOnlySegment(dbPath, 'foo', segmentMaxSize);
 						db.open();
 						const log = db.useLog('foo');
-						const tail = log.query({}); // before the segment is mapped at all
+						const tail = log.query({});
 						expect(indices(log.query({ start: 0 }))).toEqual([]);
 						const cached = log._logBuffers.get(1)!.deref()!;
 						expect(cached.length).toBe(segmentMaxSize);
 						expect(log._getMemoryMapOfFile(1)!.length).toBe(segmentMaxSize);
-						const positioned = log.query({ start: 0 }); // holds the short mapping
+						const positioned = log.query({ start: 0 });
 
 						await writeOversizedTransaction(db, log);
 						expect(
@@ -3650,7 +3652,7 @@ describe('Transaction Log', () => {
 			dbRunner(
 				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
 				async ({ db, dbPath }) => {
-					await writeHeaderOnlySegment(dbPath, 'foo');
+					await writeHeaderOnlySegment(dbPath, 'foo', maxSize);
 					db.open();
 					const log = db.useLog('foo');
 					expect(indices(log.query({ start: 0 }))).toEqual([]);
@@ -3706,10 +3708,11 @@ describe('Transaction Log', () => {
 			dbRunner(
 				{ skipOpen: true, dbOptions: [{ transactionLogMaxSize: maxSize }] },
 				async ({ db, dbPath }) => {
-					await writeHeaderOnlySegment(dbPath, 'foo');
+					await writeHeaderOnlySegment(dbPath, 'foo', maxSize);
 					db.open();
 					const log = db.useLog('foo');
 					expect(indices(log.query({ start: 0 }))).toEqual([]);
+					expect(log._logBuffers.get(1)!.deref()!.length).toBe(maxSize);
 					await writeOversizedTransaction(db, log);
 
 					const fitting = Math.floor((maxSize - TRANSACTION_LOG_FILE_HEADER_SIZE) / entrySize);

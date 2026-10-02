@@ -10,7 +10,6 @@
 #include <limits>
 #include <string>
 #include <utility>
-#include <vector>
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/exception.h"
@@ -649,10 +648,9 @@ struct TransactionLogFile final {
 	uint32_t resyncSearchCountForTests = 0;
 
 	/**
-	 * Runs once the index walk has acquired its mapping and released fileMutex, before
-	 * it reads the written extent: the window in which an append can land past the
-	 * mapping. Lets a test build the map-shorter-than-the-file state that
-	 * getMemoryMapLocked() otherwise never hands out. Test-only.
+	 * Runs once the index walk has acquired its mapping and released fileMutex: the
+	 * window in which an append can land past the mapping, the only way a walk sees a
+	 * map shorter than the file. Test-only.
 	 */
 	std::function<void()> afterIndexMapAcquiredForTests;
 
