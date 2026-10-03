@@ -1,0 +1,43 @@
+# Risk surfaces: how much human and agent review attention a change to a path deserves.
+# The pre-push review reads this file from the BASE branch, so a PR cannot lower the tier of its
+# own files. Format: `<tier> <glob>`, last match wins. A glob containing `/` is anchored at the
+# repository root; one without matches at any depth.
+#
+# critical  — what a read returns or a write persists: transactions and the transaction log,
+#             column-family routing, encodings, commit, backup/restore, file locking, snapshot
+#             and bounds handling in iterators, native lifetime and teardown
+# sensitive — authentication, authorization, secrets
+# hot       — per-call paths where a regression is a performance incident
+# ordinary  — overrides a broader line above it
+
+critical  src/binding/transaction/**
+critical  src/binding/transaction_log/**
+critical  src/binding/database/**
+critical  src/binding/iterator/**
+critical  src/binding/napi/**
+critical  src/binding/options/**
+critical  src/binding/binding.cpp
+critical  src/binding/core/platform.*
+critical  src/binding/core/background_error.*
+critical  src/binding/core/column_family_lifetime.h
+critical  src/binding/core/encoding.h
+critical  src/binding/core/compression.*
+critical  src/binding/core/file_lock.*
+critical  src/binding/core/verification_table.*
+critical  src/binding/core/open_status.*
+critical  src/transaction.ts
+critical  src/transaction-log-reader.ts
+critical  src/parse-transaction-log.ts
+critical  src/validate-transaction-log.ts
+critical  src/encoding.ts
+critical  src/store.ts
+critical  src/database.ts
+critical  src/dbi.ts
+critical  src/backup.ts
+critical  src/backup-stream.ts
+critical  src/tar.ts
+# `when` resolves every MaybePromise on the read path (DBI.get and friends).
+critical  src/util.ts
+
+hot       src/dbi-iterator.ts
+hot       src/binding/core/test_seam.h
