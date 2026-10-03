@@ -1,0 +1,37 @@
+# Risk surfaces: how much human and agent review attention a change to a path deserves.
+# Read from the BASE branch by the pre-push review (skills-internal cross-model-review), so a PR
+# cannot lower the tier of its own files. Format: `<tier> <glob>`, last match wins; a glob with no
+# `/` matches at any depth. Defaults already make path words like transaction, storage, schema
+# and migration critical, so src/binding/transaction/, src/binding/transaction_log/ and
+# src/*transaction-log*.ts need no line here.
+#
+# critical  — what a read returns or a write persists: column-family routing, encodings,
+#             commit, backup/restore, file locking
+# sensitive — authentication, authorization, secrets
+# hot       — per-call paths where a regression is a performance incident
+# ordinary  — overrides a broader line above it
+
+critical  src/binding/database/
+critical  src/binding/core/column_family_lifetime.h
+critical  src/binding/core/encoding.h
+critical  src/binding/core/compression.*
+critical  src/binding/core/file_lock.*
+critical  src/binding/core/verification_table.*
+critical  src/binding/core/open_status.*
+critical  src/encoding.ts
+critical  src/store.ts
+critical  src/database.ts
+critical  src/dbi.ts
+critical  src/backup.ts
+critical  src/backup-stream.ts
+critical  src/tar.ts
+
+hot       src/binding/iterator/
+hot       src/dbi-iterator.ts
+hot       src/binding/napi/
+hot       src/binding/core/write_stall_debounce.h
+hot       src/binding/core/wbm_stall_watchdog.*
+
+ordinary  src/binding/database/db_stats.*
+ordinary  src/binding/core/debug.*
+ordinary  src/stats.ts
