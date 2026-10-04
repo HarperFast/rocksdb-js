@@ -1,26 +1,26 @@
 # Terms with a situational meaning in rocksdb-js. PR descriptions define them at first use as <ins title="…">term</ins>.
 # One "term: definition" per line; keep each definition to one clause.
 env: one Node.js environment, the main thread or a worker_thread, whose teardown must release its native state
-DBDescriptor: process-global native state shared by every env that opens the same database path
+DBDescriptor: process-global native state shared by every env opening one database path in the same read-only and secondary mode
 DBHandle: one open's native handle onto a descriptor's column family, owned by a single env
-tsfn: N-API thread-safe function that marshals a native completion back to its owning env's JS thread
-column family: named keyspace of one database; db.use(name) returns a view, while transactions and backups span all
+tsfn: N-API thread-safe function that delivers native-side completions, events or wakes to its owning env's JS thread
+column family: named keyspace within one database, opened as a view by db.use(name) and spanned by transactions and backups
 logical drop: column-family drop that is immediate for callers but physical only once no admitted commit names it
-snapshot: read view a transaction pins, created on first read (optimistic) or first read or write (pessimistic)
-verification table: process-global hashed slots of last-known record versions that let a cached read skip the get
-write intent: per-key mark in the verification table while a transaction is mid-write; its release wakes parked retries
-coordinated retry: a commit that loses a conflict parks until the holder's write intent releases, then reruns immediately
+transaction snapshot: read view a transaction pins, taken at first read (optimistic) or first read or write (pessimistic)
+verification table: process-global hashed slots, each a version or a write lock, that let a cached read skip the get
+write intent: lock a transaction write holds on its key's hashed verification-table slot, which colliding keys share
+coordinated retry: opt-in mode where a busy-conflicted commit waits, up to a timeout, for the holder's write intent, then reruns
 WriteBufferManager stall: writers parked on the manager's own queue, invisible to RocksDB's stall counters and writeStall event
 user shared buffer: cross-thread ArrayBuffer keyed by name that lives until its column family closes, never by view lifetime
-secondary: read-only follower of a live primary database, advanced by catchUpWithPrimary()
+secondary: read-only follower of a live primary in its own exclusive workspace, advanced by catchUpWithPrimary()
 transaction log: append-only .txnlog files of caller-written entries, written just before a transaction's RocksDB commit
-segment: one numbered .txnlog sequence file of a log store, rotated when it reaches its maximum size
+segment: one numbered .txnlog sequence file of a log store, superseded by the next when the store rotates
 txn.state: side file persisting the flushed position, whose sequence file anchors the retention floor
-retention floor: txn.state's sequence file and every newer one; only files below it can be purged
-committed position: position of the last transaction committed to RocksDB; reads of the log stop there
+retention floor: the oldest sequence file an age-based purge must keep, usually the one txn.state's flushed position names
+committed position: position of the last transaction committed to RocksDB, where log reads stop unless reading uncommitted
 flushed position: log position up to which data has been flushed from memtables to RocksDB's on-disk files
-torn tail: partial last write with nothing valid after it, truncated at open as the log's true end
+torn tail: partial last write with nothing valid after it, which a writable open erases as the log's true end
 mid-log break: corrupt frame with committed entries after it, reported as CorruptFrameError with a resync position
-timestamp floor: clock raised at open above every batch key in the named originated log
-monotonic timestamp: epoch-millisecond clock made strictly increasing; the transaction timestamp and log batch key
+timestamp floor: lower bound the monotonic clock is raised to at open, above every batch key in the timestampFloorLog log
+monotonic timestamp: process-wide epoch-millisecond clock made strictly increasing, which issues new transactions' timestamps and log batch keys
 steady clock: elapsed-time clock, unrelated to wall time, for durations and deadlines instead of the monotonic timestamp

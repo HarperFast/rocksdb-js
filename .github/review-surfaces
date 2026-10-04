@@ -36,7 +36,7 @@ critical  src/dbi.ts
 critical  src/backup.ts
 critical  src/backup-stream.ts
 critical  src/tar.ts
-# `when` resolves every MaybePromise on the read path (DBI.get and friends).
+# `when` is the `DBI.get` sync/Promise seam.
 critical  src/util.ts
 
 hot       src/dbi-iterator.ts
