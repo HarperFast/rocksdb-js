@@ -166,13 +166,19 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			::napi_throw_range_error(env, nullptr, "occLockBuckets must be an integer between 16 and 16777216");
 			return nullptr;
 		}
-		std::lock_guard<std::mutex> lock(settings.occLockBucketsMutex);
-		if (settings.occLockBuckets && count != settings.occLockBucketCount) {
+		bool differentLiveCount;
+		{
+			std::lock_guard<std::mutex> lock(settings.occLockBucketsMutex);
+			differentLiveCount = settings.occLockBuckets && count != settings.occLockBucketCount;
+			if (!differentLiveCount) {
+				settings.occLockBucketCount = static_cast<uint32_t>(count);
+			}
+		}
+		if (differentLiveCount) {
 			::napi_throw_error(env, nullptr,
 				"occLockBuckets cannot be changed after the shared pool has been created; configure it before the first writable optimistic database open");
 			return nullptr;
 		}
-		settings.occLockBucketCount = static_cast<uint32_t>(count);
 	}
 
 	int64_t blockCacheSize = 0;

@@ -3,6 +3,7 @@
 Every writable optimistic descriptor uses the same `DBSettings`-owned `OccLockBuckets`.
 `getOccLockBuckets()` and `Config()` share one mutex, so the count freezes at materialization,
 including a failed open, and cannot change across worker threads or close/shutdown/reopen.
+Configuration releases this mutex before constructing a JS error, whose allocation may run finalizers.
 The settings retain the pool for the process lifetime; RocksDB also retains shared ownership
 until database teardown, which must drain native commits before destroying their databases.
 RocksDB orders and deduplicates bucket locks and validates conflicts per database/key; sharing
