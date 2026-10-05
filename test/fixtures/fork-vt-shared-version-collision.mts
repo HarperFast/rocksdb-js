@@ -36,12 +36,14 @@ db.putSync(updated, valueAt(newerVersion, 'new'));
 // some of them.
 for (const key of others) native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
 
+// Colliding keys evict each other, but the last one cached still verifies. Checked first: the
+// expected-version read of the updated key below publishes its new version, which evicts the last
+// key whenever the two share a slot (1 in 16, by the per-process seed).
+assert.equal(db.verifyVersion(others.at(-1)!, sharedVersion), true);
 assert.equal(db.verifyVersion(updated, sharedVersion), false);
 const read = native.getSync(updated, 0, undefined, sharedVersion);
 assert.notEqual(read, FRESH_VERSION_FLAG);
 assert.equal((db.getSync(updated) as Buffer).toString('utf8', 8), 'new');
-// Colliding keys evict each other, but the last one cached still verifies.
-assert.equal(db.verifyVersion(others.at(-1)!, sharedVersion), true);
 
 db.close();
 shutdown();
