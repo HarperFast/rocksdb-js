@@ -1,7 +1,7 @@
+// The pool freezes process-wide, so each configuration needs a fresh process.
 import { RocksDatabase, shutdown, Transaction } from '../../src/index.ts';
 import { TransactionIsBusyError } from '../../src/transaction.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
-// The pool freezes process-wide, so each configuration needs a fresh process.
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -71,6 +71,12 @@ if (!isMainThread) {
 		RocksDatabase.config({ occLockBuckets: 17 });
 	}
 	if (mode !== 'default') RocksDatabase.config({ occLockBuckets: count });
+	if (mode === 'configured') {
+		const blockedPath = join(root, 'blocked');
+		mkdirSync(join(blockedPath, 'LOCK'), { recursive: true });
+		assert.throws(() => RocksDatabase.open(blockedPath, options), /LOCK/);
+		checkFrozen(count);
+	}
 
 	const before = anonymousMiB();
 	const dbs = Array.from({ length: 10 }, (_, i) =>

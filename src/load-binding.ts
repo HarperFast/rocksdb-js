@@ -540,8 +540,8 @@ export type NativeDatabase = {
 export type RocksDatabaseConfig = {
 	blockCacheSize?: number;
 	/**
-	 * Number of optimistic commit lock buckets shared by all databases and
-	 * worker threads in this process. Defaults to 1,048,576; accepts integers
+	 * Number of commit lock buckets shared by all writable optimistic databases
+	 * and worker threads in this process. Defaults to 1,048,576; accepts integers
 	 * from 16 through 16,777,216. This does not limit transaction size.
 	 *
 	 * Configure before the first writable optimistic open creates the pool,
@@ -550,7 +550,8 @@ export type RocksDatabaseConfig = {
 	 *
 	 * Smaller pools save memory but increase contention across databases.
 	 * Locks remain held through the RocksDB write, including WAL sync and
-	 * write stalls, so a stalled database can delay another database's commit.
+	 * write stalls, so an uncleared stall can block another database's commit
+	 * indefinitely.
 	 */
 	occLockBuckets?: number;
 	/**

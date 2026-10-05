@@ -260,7 +260,8 @@ Sets global database settings.
     This is **not a transaction write limit**: multiple keys can share a bucket. Smaller pools
     save memory but increase commit contention across databases. Bucket locks remain held through
     the RocksDB write, including WAL sync and write stalls, so one stalled database can delay
-    otherwise unrelated commits. The default count is unchanged, but it now serves all databases.
+    otherwise unrelated commits indefinitely if its stall cannot clear. The default count is
+    unchanged, but it now serves all databases.
   - `lifecycleWaitSeconds: number` How long a synchronous open, destroy, or shutdown waits for a
     _conflicting_ lifecycle operation already in progress on the same path (e.g. another open or
     close) before throwing a retryable timeout error. It does not bound the separate, intentionally
@@ -295,7 +296,7 @@ Sets global database settings.
 RocksDatabase.config({
 	blockCacheSize: 100 * 1024 * 1024, // 100MB
 	compactOnClose: true,
-	occLockBuckets: 16 * 1024, // smaller shared pool; set before opening any optimistic database
+	occLockBuckets: 1 << 20, // default shared pool; smaller counts save memory but increase contention
 	writeBufferManagerAllowStall: false,
 	writeBufferManagerCostToCache: false,
 	writeBufferManagerSize: 64 * 1024 * 1024, // 64MB
