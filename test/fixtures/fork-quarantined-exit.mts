@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../../src/index.ts';
 
 // A close-time flush failure quarantines the descriptor: it stays in the
 // process-global registry, still holding an open rocksdb::DB, so an explicit
@@ -31,5 +31,5 @@ try {
 	if (!String(error).includes('Injected database close flush failure')) throw error;
 }
 
-if (!registryStatus().some((entry) => entry.path === path && entry.closeError))
+if (!getRegistryStatus().some((entry) => entry.path === path && entry.closeError))
 	throw new Error('Flush failure did not quarantine the descriptor');

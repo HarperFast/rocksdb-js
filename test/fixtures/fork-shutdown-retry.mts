@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -29,7 +29,7 @@ const shutdownResult = nextMessage();
 // be claimed. Opening earlier hits the still-quarantined entry and fails with
 // "previous close failed" instead of exercising the wait this fixture measures.
 function retrying(): boolean {
-	return registryStatus().some((entry) => entry.path === path && entry.closeRetrying);
+	return getRegistryStatus().some((entry) => entry.path === path && entry.closeRetrying);
 }
 for (let attempt = 0; attempt < 40 && !retrying(); attempt++) await delay(25);
 if (!retrying()) throw new Error('The shutdown retry was never claimed');

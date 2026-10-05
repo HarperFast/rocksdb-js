@@ -1,4 +1,4 @@
-import { registryStatus, RocksDatabase, shutdown } from '../../src/index.ts';
+import { getRegistryStatus, RocksDatabase, shutdown } from '../../src/index.ts';
 import {
 	isTransactionCommitAdmissionDelayedForTesting,
 	NativeTransaction,
@@ -33,7 +33,7 @@ if (isMainThread) {
 		}
 		shutdown();
 		assert(isTransactionCommitAdmissionDelayedForTesting(), 'shutdown outlasted the pause');
-		assert.equal(registryStatus().length, 0);
+		assert.equal(getRegistryStatus().length, 0);
 		setTransactionCommitAdmissionDelayForTesting(0);
 		assert.deepEqual(await result, [
 			'Operation aborted: Database closed during transaction commit operation',

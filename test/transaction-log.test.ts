@@ -1,4 +1,4 @@
-import { CorruptFrameError, RocksDatabase, Transaction, registryStatus } from '../src/index.ts';
+import { CorruptFrameError, RocksDatabase, Transaction, getRegistryStatus } from '../src/index.ts';
 import {
 	constants,
 	coolTransactionLogs,
@@ -2527,7 +2527,7 @@ describe('Transaction Log', () => {
 							// Every surface that hands a path back, not just this one:
 							// the registry reports databases by the path they were
 							// opened with, which callers match against their own.
-							expect(registryStatus().map((entry) => entry.path)).toContain(linkPath);
+							expect(getRegistryStatus().map((entry) => entry.path)).toContain(linkPath);
 							expect(linked.purgeLogs({ destroy: true })).toEqual([logFile]);
 						} finally {
 							linked.close();

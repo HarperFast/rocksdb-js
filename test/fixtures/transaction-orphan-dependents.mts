@@ -1,4 +1,4 @@
-import { registryStatus, RocksDatabase, Transaction } from '../../src/index.ts';
+import { getRegistryStatus, RocksDatabase, Transaction } from '../../src/index.ts';
 import assert from 'node:assert/strict';
 import { rmSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -18,7 +18,7 @@ if (
 }
 
 function transactionCount(): number {
-	return registryStatus().find((entry) => entry.path === dbPath)?.transactions ?? 0;
+	return getRegistryStatus().find((entry) => entry.path === dbPath)?.transactions ?? 0;
 }
 
 async function forceCollection(rounds = 10): Promise<number> {

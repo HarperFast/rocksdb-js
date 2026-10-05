@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -204,7 +204,7 @@ describe('Checkpoints', () => {
 					() => 'settled'
 				)
 			).resolves.toBe('settled');
-			expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
+			expect(getRegistryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 		}));
 
 	it('should not free the database under an in-flight checkpoint when destroy() races it', () =>

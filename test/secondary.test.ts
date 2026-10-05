@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -437,7 +437,7 @@ describe('Secondary Instances', () => {
 			// rather than this one's (HarperFast/rocksdb-js#672). destroy() above
 			// physically deleted the primary's files (it no longer throws with the
 			// catch-up in flight), so the rest of this test uses a fresh pair.
-			expect(registryStatus().filter((entry) => entry.path === dbPath)).toEqual([]);
+			expect(getRegistryStatus().filter((entry) => entry.path === dbPath)).toEqual([]);
 
 			// The other half of #672, which a forced destroy() cannot reach because
 			// it erases the entries itself: a plain close() while a catch-up is
@@ -467,7 +467,7 @@ describe('Secondary Instances', () => {
 				// all, not just the still-open primary's own entry.
 				freshPrimary.close();
 				await vi.waitFor(() =>
-					expect(registryStatus().filter((entry) => entry.path === freshPath)).toEqual([])
+					expect(getRegistryStatus().filter((entry) => entry.path === freshPath)).toEqual([])
 				);
 			} finally {
 				freshPrimary.close();

@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus, shutdown } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus, shutdown } from '../../src/index.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const path = process.argv[2];
@@ -27,7 +27,7 @@ if (args[0] !== path || args[1] !== 'Injected database close failure') {
 	throw new Error(`Unexpected database:closeFailed arguments: ${JSON.stringify(args)}`);
 }
 if (
-	registryStatus().find((entry) => entry.path === path)?.closeError !==
+	getRegistryStatus().find((entry) => entry.path === path)?.closeError !==
 	'Injected database close failure'
 ) {
 	throw new Error('Automatic close failure was not quarantined');
