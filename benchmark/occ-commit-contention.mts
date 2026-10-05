@@ -23,6 +23,7 @@ type Config = {
 	seconds: number;
 	wal: boolean;
 	hotKeys: number;
+	occLockBuckets: number | null;
 };
 type WorkerResult = {
 	id: number;
@@ -66,6 +67,7 @@ if (isMainThread) {
 			seconds: { type: 'string', default: '5' },
 			wal: { type: 'boolean', default: false },
 			'hot-keys': { type: 'string', default: '0' },
+			'occ-lock-buckets': { type: 'string' },
 			dir: { type: 'string', default: resolve(import.meta.dirname, 'data') },
 		},
 	});
@@ -81,12 +83,16 @@ if (isMainThread) {
 		seconds: Number(values.seconds),
 		wal: values.wal,
 		hotKeys: Number(values['hot-keys']) || Number(values.keys) * 4,
+		occLockBuckets: values['occ-lock-buckets'] ? Number(values['occ-lock-buckets']) : null,
 	};
+	assert(config.hotKeys >= config.keys, '--hot-keys must be at least --keys');
 	assert(
 		['one-db', 'four-db', 'mixed-sync', 'conflict', 'memory'].includes(config.scenario),
 		'scenario must be one-db, four-db, mixed-sync, conflict or memory'
 	);
 	const { RocksDatabase, shutdown } = await loadLib(config.lib);
+	if (config.occLockBuckets !== null)
+		RocksDatabase.config({ occLockBuckets: config.occLockBuckets });
 	mkdirSync(values.dir, { recursive: true });
 	const root = mkdtempSync(resolve(values.dir, 'occ-'));
 	const dbOptions = { disableWAL: !config.wal };
@@ -144,12 +150,12 @@ if (isMainThread) {
 			}
 			await Promise.all(ready);
 			for (const worker of workers) {
-				results.push(
-					new Promise((res, rej) => {
-						worker.once('error', rej);
-						worker.once('message', res);
-					})
-				);
+				const result = new Promise<WorkerResult>((res, rej) => {
+					worker.once('error', rej);
+					worker.once('message', res);
+				});
+				void result.catch(() => {});
+				results.push(result);
 				worker.postMessage('go');
 			}
 			await new Promise((res) => setTimeout(res, config.warmup * 1000));
@@ -160,7 +166,14 @@ if (isMainThread) {
 			Atomics.store(phase, 0, PHASE_STOP);
 			const cpu = process.cpuUsage(cpuStart);
 			const wall = (performance.now() - wallStart) / 1000;
-			const workerResults = await Promise.all(results);
+			let workerResults: WorkerResult[];
+			try {
+				workerResults = await Promise.all(results);
+			} catch (error) {
+				// Other workers may still be committing; stop them before shutdown() closes the databases.
+				await Promise.all(workers.map((worker) => worker.terminate()));
+				throw error;
+			}
 
 			const summarize = (group: WorkerResult[]) => {
 				const commits = group.reduce((sum, r) => sum + r.commits, 0);
@@ -194,8 +207,6 @@ if (isMainThread) {
 				output.sync = summarize(workerResults.filter((r) => r.sync));
 			}
 			if (config.scenario === 'conflict') {
-				// Every successful commit incremented each of its keys by one; a lost update would
-				// mean a write-write conflict went undetected.
 				const increments = workerResults.reduce((sum, r) => sum + r.increments!, 0);
 				let stored = 0;
 				for (let k = 0; k < config.hotKeys; k++) stored += mainDbs[0].getSync(`hot-${k}`) ?? 0;
@@ -227,8 +238,9 @@ if (isMainThread) {
 	let tryAgains = 0;
 	let increments = 0;
 	const isRetryable = (error: { code?: string }) => {
-		if (error?.code === 'ERR_BUSY') conflicts++;
-		else if (error?.code === 'ERR_TRY_AGAIN') tryAgains++;
+		const measuring = Atomics.load(phase, 0) === PHASE_MEASURE;
+		if (error?.code === 'ERR_BUSY') conflicts += measuring ? 1 : 0;
+		else if (error?.code === 'ERR_TRY_AGAIN') tryAgains += measuring ? 1 : 0;
 		else return false;
 		return true;
 	};

@@ -21,7 +21,7 @@ private:
 
 	size_t blockCacheSize;
 	std::shared_ptr<rocksdb::Cache> blockCache;
-	// Atomic because async opens read it on libuv worker threads.
+	// Atomic because config() and open() can run on different worker_threads.
 	std::atomic<uint32_t> occLockBucketCount;
 
 	// Total memory limit (bytes) shared across all databases for active and

@@ -263,9 +263,11 @@ Sets global database settings.
     Memory is the count times the platform mutex size (40 bytes on Linux x64, 64 bytes on macOS), so
     the default is about 160 KiB per database. Commits that touch keys hashing to the same bucket
     validate one at a time; multiple keys can share a bucket, so this is **not a transaction write
-    limit**. Async commits to one database already run one at a time on its commit thread, so a
-    larger count only reduces waiting between that thread and concurrent `commitSync()` calls on
-    the same database. Pessimistic, read-only and secondary opens allocate no buckets.
+    limit**. Async commits to one database run one at a time on its commit thread, so they only
+    contend with concurrent `commitSync()` calls on the same database (from any thread), or with
+    each other under `ROCKSDB_JS_COMMIT_THREAD=0`. Colliding commits cannot share a RocksDB write
+    group, so raise the count for databases with heavy concurrent `commitSync()` traffic.
+    Pessimistic, read-only and secondary opens allocate no buckets.
   - `lifecycleWaitSeconds: number` How long a synchronous open, destroy, or shutdown waits for a
     _conflicting_ lifecycle operation already in progress on the same path (e.g. another open or
     close) before throwing a retryable timeout error. It does not bound the separate, intentionally
