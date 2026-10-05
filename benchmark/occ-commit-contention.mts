@@ -1,7 +1,8 @@
 // Optimistic commit throughput, latency and CPU under the commit patterns that reach RocksDB's
 // commit lock buckets. Prints one JSON result line. Usage:
 //   node benchmark/occ-commit-contention.mts --scenario one-db --workers 4 --keys 64
-// --lib points at another build's dist/index.mjs so one script can compare several builds.
+// --lib points at another build's dist/index.mjs so one script can compare several builds;
+// --occ-lock-buckets and --occ-validation apply RocksDatabase.config() before any open.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -24,6 +25,7 @@ type Config = {
 	wal: boolean;
 	hotKeys: number;
 	occLockBuckets: number | null;
+	occValidation: string | null;
 };
 type WorkerResult = {
 	id: number;
@@ -35,7 +37,7 @@ type WorkerResult = {
 	increments?: number;
 };
 
-// The shared phase word starts at 0, the warmup phase.
+const PHASE_WARMUP = 0;
 const PHASE_MEASURE = 1;
 const PHASE_STOP = 2;
 
@@ -68,6 +70,7 @@ if (isMainThread) {
 			wal: { type: 'boolean', default: false },
 			'hot-keys': { type: 'string', default: '0' },
 			'occ-lock-buckets': { type: 'string' },
+			'occ-validation': { type: 'string' },
 			dir: { type: 'string', default: resolve(import.meta.dirname, 'data') },
 		},
 	});
@@ -84,15 +87,28 @@ if (isMainThread) {
 		wal: values.wal,
 		hotKeys: Number(values['hot-keys']) || Number(values.keys) * 4,
 		occLockBuckets: values['occ-lock-buckets'] ? Number(values['occ-lock-buckets']) : null,
+		occValidation: values['occ-validation'] ?? null,
 	};
+	for (const name of [
+		'workers',
+		'syncWorkers',
+		'keys',
+		'valueSize',
+		'concurrency',
+		'hotKeys',
+	] as const) {
+		assert(Number.isSafeInteger(config[name]) && config[name] >= 0, `${name} must be an integer`);
+	}
 	assert(config.hotKeys >= config.keys, '--hot-keys must be at least --keys');
 	assert(
 		['one-db', 'four-db', 'mixed-sync', 'conflict', 'memory'].includes(config.scenario),
 		'scenario must be one-db, four-db, mixed-sync, conflict or memory'
 	);
 	const { RocksDatabase, shutdown } = await loadLib(config.lib);
-	if (config.occLockBuckets !== null)
+	if (config.occLockBuckets !== null) {
 		RocksDatabase.config({ occLockBuckets: config.occLockBuckets });
+	}
+	if (config.occValidation !== null) RocksDatabase.config({ occValidation: config.occValidation });
 	mkdirSync(values.dir, { recursive: true });
 	const root = mkdtempSync(resolve(values.dir, 'occ-'));
 	const dbOptions = { disableWAL: !config.wal };
@@ -148,7 +164,13 @@ if (isMainThread) {
 					})
 				);
 			}
-			await Promise.all(ready);
+			try {
+				await Promise.all(ready);
+			} catch (error) {
+				await Promise.all(workers.map((worker) => worker.terminate()));
+				throw error;
+			}
+			Atomics.store(phase, 0, PHASE_WARMUP);
 			for (const worker of workers) {
 				const result = new Promise<WorkerResult>((res, rej) => {
 					worker.once('error', rej);

@@ -545,8 +545,9 @@ export type RocksDatabaseConfig = {
 	 * database on Linux x64; RocksDB's own default is 2^20); accepts integers
 	 * from 16 through 16,777,216. Applies to databases opened after the call; open
 	 * databases keep their count. Smaller pools only cost throughput when several
-	 * threads commit synchronously to the same database at once. This does not
-	 * limit transaction size.
+	 * threads commit to the same database at once: `commitSync()` callers, or
+	 * async commits under `ROCKSDB_JS_COMMIT_THREAD=0`, which has no commit lane.
+	 * This does not limit transaction size.
 	 */
 	occLockBuckets?: number;
 	/**

@@ -28,7 +28,9 @@ namespace rocksdb_js {
  * validation takes its database's commit lock buckets in sorted order and
  * releases them when the RocksDB write returns. The buckets are private to
  * each database, so only `commitSync()` calls on the same database, from any
- * thread, can contend with this lane or with each other for them.
+ * thread, can contend with this lane or with each other for them (in the
+ * legacy libuv mode, which has no lane, async commits contend too). Serial
+ * validation takes no buckets.
  *
  * The thread is started lazily on the first task and joined on shutdown after
  * draining any queued tasks. Each run-loop wakeup drains the entire queue
