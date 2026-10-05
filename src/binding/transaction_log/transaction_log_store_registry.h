@@ -35,7 +35,7 @@ struct TransactionLogStoreConfig final {
 
 	/**
 	 * The maximum size of a transaction log file in bytes before it is rotated
-	 * to the next sequence number. A max size of 0 selects the default limit.
+	 * to the next sequence number. A max size of `0` is rejected at open.
 	 */
 	uint32_t transactionLogMaxSize;
 
