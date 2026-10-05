@@ -3782,6 +3782,29 @@ describe('Transaction Log', () => {
 				expect(indices(log.query({ start: 0 }))).toEqual([entryCount, ...range(entryCount)]);
 			}));
 
+		it('crosses an empty retired segment that cannot be mapped', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: maxSize }] }, async ({ db, dbPath }) => {
+				await writeSmallTransaction(db, db.useLog('foo'), entryCount);
+				db.close();
+				await writeHeaderOnlySegment(dbPath, 'foo', TRANSACTION_LOG_FILE_HEADER_SIZE, 2);
+				db.open();
+				const log = db.useLog('foo');
+				expect(indices(log.query({ readUncommitted: true }))).toEqual([]);
+				await writeOversizedTransaction(db, log);
+				expect(log.getLogFileSize(2)).toBe(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				log._logBuffers.delete(2);
+				const getMemoryMap = log._getMemoryMapOfFile.bind(log);
+				const map = vi
+					.spyOn(log, '_getMemoryMapOfFile')
+					.mockImplementation((logId: number) => (logId === 2 ? undefined : getMemoryMap(logId)));
+				try {
+					expect(indices(log.query({ start: 0 }))).toEqual([entryCount, ...range(entryCount)]);
+					expect(map).toHaveBeenCalledWith(2);
+				} finally {
+					map.mockRestore();
+				}
+			}));
+
 		it('keeps a cached mapping readable without asking native to replace it', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: maxSize }] }, async ({ db }) => {
 				const log = db.useLog('foo');

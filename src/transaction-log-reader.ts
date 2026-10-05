@@ -472,8 +472,8 @@ function nextReadableLogBuffer(
 			) {
 				return logBuffer;
 			}
-		} else if (transactionLog.getLogFileSize(candidateLogId) > 0) {
-			// the store still has bytes for it, so it is durable history that is merely
+		} else if (transactionLog.getLogFileSize(candidateLogId) > TRANSACTION_LOG_FILE_HEADER_SIZE) {
+			// the store still has entries in it, so it is durable history that is merely
 			// unmappable right now; stop and pick it up on the next poll
 			return;
 		}
