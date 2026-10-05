@@ -8,5 +8,6 @@ The settings retain the pool for the process lifetime; RocksDB also retains shar
 until database teardown, which must drain native commits before destroying their databases.
 RocksDB orders and deduplicates bucket locks and validates conflicts per database/key; sharing
 adds cross-database waiting through the write (including WAL sync and stalls), not false conflicts.
+A write that cannot progress can hold those buckets indefinitely and block other databases.
 `test/occ-lock-buckets.test.ts` covers the lifetime/configuration contract and worker commits;
 its Linux memory assertions distinguish shared pools from RocksDB's private-pool fallback.
