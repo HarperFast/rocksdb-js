@@ -247,6 +247,19 @@ Sets global database settings.
   - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
+  - `commitThreads: number` The maximum number of dedicated threads each database opened after the
+    call uses to run async `transaction.commit()` calls. Defaults to `min(4, cores)`; accepts
+    integers from `1` through `64`. A thread starts only when a commit finds every started thread
+    busy, so a database that is never committed to concurrently owns one. Async commits never use
+    the libuv threadpool, so slow commits cannot delay `fs`, `dns`, `crypto` or async `get()` calls.
+    With more than one thread, RocksDB validates and applies concurrent commits on several cores
+    and can combine them into one write: with four worker threads committing 64-key transactions to
+    one database, this committed about twice as many transactions per second as one thread.
+    Concurrent commits finish, and their promises resolve, in any order, as concurrent
+    `commitSync()` calls always have, and their transaction-log entries are appended in the order
+    the commits reach the log; a log reader never sees an entry before its transaction's data is
+    committed. With `1`, a database's async commits run one at a time in the order `commit()` was
+    called. Databases already open keep their limit.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
   - `occValidation: 'parallel' | 'serial'` How writable optimistic databases opened after the call
     validate commits for conflicts. Defaults to `'parallel'` (RocksDB's default). Databases already
@@ -257,34 +270,30 @@ Sets global database settings.
       writes (`db.putSync()` and friends) take no bucket, so one that lands between a commit's
       conflict check and its write is overwritten by that commit without an `ERR_BUSY`.
     - `'serial'` checks for conflicts inside RocksDB's write group instead, and allocates no bucket
-      pool. Use it when nearly all writes to a database are async transaction commits, which run one
-      at a time on that database's commit thread anyway, with few concurrent `commitSync()` calls or
-      non-transactional writes on the same database. It also suits large transactions and processes
-      that open many databases. In benchmarks it gave about 8–12% more throughput, with lower p95
-      latency and CPU per commit, at 1,000 or more keys per transaction, and it saves the bucket pool's
-      memory. Because the check and the write happen in one step, a non-transactional write cannot
-      land between them and be silently overwritten, and a column family cannot be dropped between
-      them. The cost: RocksDB never batches a serial-validated commit with another writer, so
-      concurrent synchronous commits to the same database lose substantial throughput (30–55% fewer
-      commits per second than `'parallel'` with 4,096 buckets in a benchmark with async and
-      `commitSync()` writers sharing one database).
+      pool, which saves its memory. Because the check and the write happen in one step, a
+      non-transactional write cannot land between them and be silently overwritten, and a column
+      family cannot be dropped between them. The cost: RocksDB never batches a serial-validated
+      commit with another writer, including the database's other commit threads, so it gives back
+      what `commitThreads` gains. With four worker threads
+      committing 64-key transactions to one database it committed about 4,500 transactions per
+      second against about 9,900 for `'parallel'`, the same as a single commit thread; it came out
+      ahead (about 7%) only at 1,000 keys per transaction with the default bucket count, where
+      raising `occLockBuckets` gains more. Concurrent `commitSync()` calls lose throughput the same
+      way. It suits a database committed to one transaction at a time (`commitThreads: 1`).
   - `occLockBuckets: number` The number of commit lock buckets each writable optimistic database
     allocates when it is opened with `occValidation: 'parallel'`. Defaults to `65536` (2^16), not
     RocksDB's 2^20. Accepts integers from `16` through `16777216` (2^24). Applies to databases
     opened after the call; databases already open keep their count. Memory is the count times the
     platform mutex size (40 bytes on Linux x64, 64 bytes on macOS), so the default is about 2.5 MiB
     per database on Linux, against about 40 MiB at RocksDB's default. Multiple keys can share a
-    bucket, so this is **not a transaction write limit**. Async commits to one database run one at a
-    time on its commit thread, so a small pool costs nothing unless several threads commit to the
-    same database at once: `commitSync()` callers, or concurrent libuv commits under
-    `ROCKSDB_JS_COMMIT_THREAD=0`. Commits that collide on a bucket run one at a time and cannot
-    share a RocksDB write. With two async and two `commitSync()` workers committing 64-key
-    transactions to one database, async throughput relative to 2^20 was 58% at 4096 buckets, 74% at
-    16384 and 95% at 65536. With 1,000-key transactions, 65536 still gave up to about a third fewer
-    async commits per second than 2^20, so databases with that workload should raise the count.
-    Under the legacy `ROCKSDB_JS_COMMIT_THREAD=0` mode every async commit runs on a libuv thread and
-    contends for buckets; with four workers, 65536 buckets gave about 10% fewer commits per second
-    than 2^20 at 64 keys per transaction and about 30% fewer at 1,000 keys.
+    bucket, so this is **not a transaction write limit**. A small pool costs throughput only when
+    commits to the same database overlap (its `commitThreads`, `commitSync()` callers, or libuv
+    commits under `ROCKSDB_JS_COMMIT_THREAD=0`) and their keys share a bucket: colliding commits
+    run one at a time and cannot share a RocksDB write. Collisions grow with transaction size. With
+    four worker threads and the default four commit threads, 65536 buckets matched 2^20 and 2^22 at
+    64 keys per transaction (and 4096 gave about a third fewer commits per second), but at 1,000 keys
+    65536 committed 336 transactions per second against 466 at 2^20 and 685 at 2^22, so databases
+    with large transactions should raise the count.
   - `lifecycleWaitSeconds: number` How long a synchronous open, destroy, or shutdown waits for a
     _conflicting_ lifecycle operation already in progress on the same path (e.g. another open or
     close) before throwing a retryable timeout error. It does not bound the separate, intentionally
@@ -318,6 +327,7 @@ Sets global database settings.
 ```typescript
 RocksDatabase.config({
 	blockCacheSize: 100 * 1024 * 1024, // 100MB
+	commitThreads: 4, // per database; applies to subsequent opens
 	compactOnClose: true,
 	occLockBuckets: 1 << 20, // per optimistic database with parallel validation
 	occValidation: 'parallel', // or 'serial'; applies to subsequent optimistic opens
@@ -742,9 +752,9 @@ Flushes all in-memory data to disk asynchronously.
     memtable switch can itself prolong an existing L0 stop-trigger condition rather than clear it.
     That cost is database-wide, covering every column family on the (process-global,
     `worker_threads`-shared) database handle, not just the caller's — and it relocates the hang
-    rather than removing it: a stalled write blocks the database's single commit thread, which
-    dispatches every `Transaction.commit()` in order, so every commit behind it queues up too,
-    including ones from callers that never touched flush. This is a different knob from
+    rather than removing it: a stalled write blocks each of the database's commit threads that
+    reaches it, so every async `Transaction.commit()` behind them queues up too, including ones
+    from callers that never touched flush. This is a different knob from
     `writeBufferManagerAllowStall` (see [`new RocksDatabase()`](#new-rocksdatabasepath-options)
     options), with nearly opposite polarity: that one governs whether the `WriteBufferManager` may
     stall writers at all, this one governs whether one manual flush is willing to cause a stall

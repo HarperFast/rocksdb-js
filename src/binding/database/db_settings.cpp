@@ -1,8 +1,10 @@
 #include "database/db_settings.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <random>
+#include <thread>
 #include "database/db_stats.h"
 #include "napi/macros.h"
 #include "napi/helpers.h"
@@ -12,6 +14,11 @@
 namespace rocksdb_js {
 
 namespace {
+
+uint32_t defaultCommitThreads() {
+	const unsigned cores = std::thread::hardware_concurrency();
+	return cores == 0 ? 1 : std::min(4u, cores);
+}
 
 uint64_t generateSeed() {
 	std::random_device rd;
@@ -30,6 +37,7 @@ DBSettings::DBSettings():
 	blockCache(nullptr),
 	occLockBucketCount(1 << 16),
 	occValidateSerial(false),
+	commitThreads(defaultCommitThreads()),
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
@@ -185,6 +193,23 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
+	napi_value commitThreadsValue;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "commitThreads", &commitThreadsValue));
+	napi_valuetype commitThreadsType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, commitThreadsValue, &commitThreadsType));
+	double commitThreads = 0;
+	const bool commitThreadsProvided = commitThreadsType != napi_undefined && commitThreadsType != napi_null;
+	if (commitThreadsProvided) {
+		if (::napi_get_value_double(env, commitThreadsValue, &commitThreads) != napi_ok) {
+			::napi_throw_type_error(env, nullptr, "commitThreads must be a number");
+			return nullptr;
+		}
+		if (!std::isfinite(commitThreads) || std::trunc(commitThreads) != commitThreads || commitThreads < 1 || commitThreads > 64) {
+			::napi_throw_range_error(env, nullptr, "commitThreads must be an integer between 1 and 64");
+			return nullptr;
+		}
+	}
+
 	int64_t blockCacheSize = 0;
 	napi_status status = rocksdb_js::getProperty(env, params, "blockCacheSize", blockCacheSize, true);
 	if (status == napi_ok) {
@@ -314,13 +339,16 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
 	}
 
-	// Stored last: both occ fields are validated up front, but a later field's
+	// Stored last: all three fields are validated up front, but a later field's
 	// throw must still leave them untouched.
 	if (occLockBucketsProvided) {
 		settings.occLockBucketCount.store(static_cast<uint32_t>(count), std::memory_order_relaxed);
 	}
 	if (occValidationProvided) {
 		settings.occValidateSerial.store(validateSerial, std::memory_order_relaxed);
+	}
+	if (commitThreadsProvided) {
+		settings.commitThreads.store(static_cast<uint32_t>(commitThreads), std::memory_order_relaxed);
 	}
 
 	NAPI_RETURN_UNDEFINED();

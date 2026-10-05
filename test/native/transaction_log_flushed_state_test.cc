@@ -1,9 +1,13 @@
 #include <gtest/gtest.h>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include "transaction_log/transaction_log_entry.h"
 #include "transaction_log/transaction_log_store.h"
 
@@ -53,7 +57,7 @@ TEST(TransactionLogFlushedState, DestructivePurgeInvalidatesOldFlushCorrelations
 		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
 	rocksdb_js::LogPosition position;
 	store->writeBatch(batch, position);
-	store->commitFinished(position, 10);
+	store->commitFinished(position, []() -> rocksdb::SequenceNumber { return 10; });
 	store->databaseFlushed(10);
 	ASSERT_TRUE(std::filesystem::exists(statePath));
 
@@ -278,3 +282,65 @@ TEST(TransactionLogFlushedState, RetriesAfterDirectoryCannotBeRecreated) {
 	std::filesystem::remove_all(parent);
 }
 #endif
+
+TEST(TransactionLogFlushedState, OutOfOrderCommitsKeepFlushCorrelationBehindUnflushedPositions) {
+	auto storePath = uniqueFlushedStatePath();
+	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+
+	std::string payload = "entry";
+	auto writeOne = [&](double timestamp) {
+		rocksdb_js::TransactionLogEntryBatch batch(timestamp);
+		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		rocksdb_js::LogPosition position;
+		store->writeBatch(batch, position);
+		return position;
+	};
+	rocksdb_js::LogPosition earlier = writeOne(1001.0);
+	rocksdb_js::LogPosition later = writeOne(1002.0);
+
+	// The later log position commits first, at sequence 10, and samples the sequence. Before it
+	// publishes, the earlier position commits at sequence 11 and publishes. A sample taken outside
+	// the store's lock lets that happen between the sample and the publish, pairing sequence 10
+	// with a prefix that covers the earlier position.
+	std::mutex mutex;
+	std::condition_variable changed;
+	std::atomic<rocksdb::SequenceNumber> latest{ 10 };
+	bool sampled = false;
+	bool earlierPublished = false;
+	std::thread laterCommit([&]() {
+		store->commitFinished(later, [&]() {
+			rocksdb::SequenceNumber sample = latest.load();
+			std::unique_lock<std::mutex> lock(mutex);
+			sampled = true;
+			changed.notify_all();
+			changed.wait_for(lock, std::chrono::milliseconds(200), [&]() { return earlierPublished; });
+			return sample;
+		});
+	});
+	{
+		std::unique_lock<std::mutex> lock(mutex);
+		changed.wait(lock, [&]() { return sampled; });
+	}
+	latest = 11;
+	store->commitFinished(earlier, [&]() { return latest.load(); });
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		earlierPublished = true;
+		changed.notify_all();
+	}
+	laterCommit.join();
+
+	// A flush through sequence 10 holds the later transaction but not the earlier one.
+	store->databaseFlushed(10);
+	auto flushed = store->getLastFlushedPosition();
+	EXPECT_LE(flushed.fullPosition, earlier.fullPosition);
+
+	store->databaseFlushed(11);
+	flushed = store->getLastFlushedPosition();
+	EXPECT_GT(flushed.fullPosition, later.fullPosition);
+
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}

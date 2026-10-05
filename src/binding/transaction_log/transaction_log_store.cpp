@@ -1196,7 +1196,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Completed writing all entries\n", this);
 }
 
-void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber) {
+void TransactionLogStore::commitFinished(const LogPosition position, const std::function<rocksdb::SequenceNumber()>& latestSequenceNumber) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	// This written transaction entry is no longer uncommitted, so we can remove it
 	this->positionErase(position);
@@ -1208,7 +1208,7 @@ void TransactionLogStore::commitFinished(const LogPosition position, rocksdb::Se
 	// update the current position handle with latest fully committed position
 	*this->lastCommittedPosition = fullyCommittedPosition;
 	// now setup a sequence position that matches a rocksdb sequence number to our log position
-	SequencePosition sequencePosition = { rocksSequenceNumber, fullyCommittedPosition };
+	SequencePosition sequencePosition = { latestSequenceNumber(), fullyCommittedPosition };
 	// Now we record this in our array of sequence number + position combinations. However, we don't want to keep a huge
 	// array so we keep an array where each n position represents an n^2 frequencies of correlations. We are not keeping
 	// an exact map of every pairing, and we don't need to. We don't need to know the exact rocks sequence number, we just
