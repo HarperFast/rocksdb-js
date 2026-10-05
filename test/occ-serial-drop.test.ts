@@ -18,8 +18,11 @@ describe.skipIf(!!process.versions.bun || !!process.versions.deno)(
 	() => {
 		it('pass', () => {
 			const env = Object.fromEntries(
-				Object.entries(process.env).filter(([name]) => !name.startsWith('VITEST'))
+				Object.entries(process.env).filter(
+					([name]) => !name.startsWith('VITEST') && name !== 'FORCE_COLOR'
+				)
 			);
+			env.NO_COLOR = '1';
 			env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--import=${preload}`]
 				.filter(Boolean)
 				.join(' ');
