@@ -8,8 +8,9 @@ write stall.
 
 A small pool is enough because almost nothing contends for it. Async commits to one database run
 one at a time on its `CommitWorker` lane, so the lane never waits on itself. The only waiters on
-the same buckets are `commitSync()` calls on that database (plus concurrent libuv commits in the
-legacy `ROCKSDB_JS_COMMIT_THREAD=0` mode). Harper also disables the RocksDB WAL for tables, so
+the same buckets are `commitSync()` calls on that database from any thread (plus concurrent libuv
+commits in the legacy `ROCKSDB_JS_COMMIT_THREAD=0` mode). Two of those that collide on a bucket
+also lose RocksDB write-group batching, which is the cost of a small pool. Harper also disables the RocksDB WAL for tables, so
 buckets are not held across a WAL fsync there. RocksDB's 2^20 default cost about 40 MiB per
 database on Linux x64, which dominated the footprint of processes that open many databases.
 

@@ -27,8 +27,6 @@ function openMany(root: string, prefix: string, count: number) {
 	return { dbs, growth: before === null || after === null ? null : after - before };
 }
 
-// Increments a shared counter with a read-modify-write transaction, retrying on conflict. Lost
-// updates would mean a true write-write conflict went undetected.
 async function incrementCounter(db: RocksDatabase, sync: boolean): Promise<number> {
 	for (let conflicts = 0; ; conflicts++) {
 		const txn = new Transaction(db.store);
@@ -50,8 +48,7 @@ if (!isMainThread) {
 	try {
 		parentPort!.postMessage('ready');
 		await new Promise<void>((resolve) => parentPort!.once('message', resolve));
-		// Worker 0 commits through the database's commit lane, worker 1 with commitSync on its own
-		// thread: the one pairing that can contend for one database's buckets.
+		// The commit lane against commitSync on another thread contends for one database's buckets.
 		const sync = id === 1;
 		let conflicts = 0;
 		for (let round = 0; round < counterIncrements; round++) {
@@ -85,7 +82,6 @@ if (!isMainThread) {
 		RocksDatabase.config({ occLockBuckets: 1 << 20 });
 		const large = openMany(root, 'large', 3);
 		RocksDatabase.config({ occLockBuckets: 16 });
-		// A database opened before the change keeps its count; this open must reuse it.
 		const reused = RocksDatabase.open(join(root, 'large0'), options);
 		const small = openMany(root, 'small', 3);
 		reused.putSync('key', 'value');
@@ -126,7 +122,6 @@ if (!isMainThread) {
 				else await txn.commit();
 				for (let i = 0; i < 1024; i++) assert.equal(dbs[0].getSync(`bulk-${sync}-${i}`), i);
 			}
-			// The same key in different databases and column families is not a conflict.
 			const txns = [dbs[0], dbs[1], other].map((db, i) => {
 				const txn = new Transaction(db.store);
 				txn.putSync('same-key', i);
