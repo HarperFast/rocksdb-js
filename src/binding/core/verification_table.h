@@ -18,11 +18,11 @@ struct LockTracker;
  * Process-wide cache verification table.
  *
  * A fixed-size, lock-free array of std::atomic<uint64_t> slots, addressed by
- * a hash of (db pointer, column family id, record key). Each slot encodes:
+ * a hash of (db epoch, column family id, record key). Each slot encodes:
  *
  *   bit 63        : tag (0 = version, 1 = lock or settled-empty)
  *   bit 62        : among tagged values, 0 = lock, 1 = settled-empty
- *   versions      : the full uint64 is the version bit pattern (bit 63 == 0)
+ *   versions      : the version bit pattern XOR the key's tag (bit 63 == 0)
  *   locks         : bits 61..48 a 14-bit generation, bits 47..0 a LockTracker*
  *   settled-empty : bits 61..0 a 62-bit monotonic settle generation
  *
@@ -40,8 +40,13 @@ struct LockTracker;
  * a stale/superseded version can never be published (no ABA on the empty state).
  *
  * Hash collisions are intentional. Two different keys hashing to the same
- * slot will spuriously share state; this can cause false invalidations
- * (revert to slow path) but never incorrect results.
+ * slot share its lock and settle state, which can cause false invalidations
+ * (revert to slow path) but never incorrect results. They must never share a
+ * version: keys written in one transaction carry the same version, so a plain
+ * version in a shared slot would vouch for whichever key populated it last.
+ * Each (db, cf, key) therefore has a 63-bit tag from the same hash, and a slot
+ * stores `version ^ tag` (vtEncodeVersion). A colliding key with an equal
+ * version stores a different value unless the tags also collide.
  */
 
 constexpr uint64_t VT_TAG_BIT     = 1ULL << 63;             // 1 = not a version
@@ -91,6 +96,30 @@ inline uint16_t vtGenFromLock(uint64_t v) {
 inline uint64_t vtEncodeSettled(uint64_t gen) {
 	return VT_TAG_BIT | VT_SETTLED_BIT | (gen & VT_SETTLED_GEN_MASK);
 }
+
+// The slot value that vouches for `version` of the key with `keyTag`. The tag's bit 63 is clear, so
+// the result is still an untagged version. 0 (not a version, or `version == keyTag`) is never
+// published or matched; that key just stays uncached.
+inline uint64_t vtEncodeVersion(uint64_t version, uint64_t keyTag) {
+	return vtIsVersion(version) ? version ^ keyTag : 0;
+}
+
+/**
+ * A key's slot plus its tag. Every comparison or publication of a version goes through this, so
+ * stored values are always encoded; lock and settle paths only need `slot`.
+ */
+struct VtSlotRef {
+	std::atomic<uint64_t>* slot = nullptr;
+	uint64_t keyTag = 0;
+
+	explicit operator bool() const { return slot != nullptr; }
+	uint64_t load() const { return slot->load(std::memory_order_acquire); }
+	// Whether `observed` (a value loaded from this slot) vouches for `version` of this key.
+	bool holds(uint64_t observed, uint64_t version) const {
+		const uint64_t encoded = vtEncodeVersion(version, keyTag);
+		return encoded != 0 && observed == encoded;
+	}
+};
 
 /**
  * Per-slot intent tracker for write-in-flight coordination.
@@ -165,6 +194,16 @@ public:
 	) const;
 
 	/**
+	 * slotFor() plus the key's tag, for every path that verifies or publishes a version. Returns an
+	 * empty ref when the table is disabled.
+	 */
+	VtSlotRef slotRefFor(
+		uint64_t dbId,
+		uint32_t cfId,
+		const rocksdb::Slice& key
+	) const;
+
+	/**
 	 * Returns true if the slot currently holds a version equal to
 	 * `expectedVersion`.
 	 */
@@ -194,6 +233,17 @@ public:
 		uint64_t observed,
 		uint64_t newVersion
 	);
+
+	// The same three operations on a key's tagged slot; versions are encoded with its tag.
+	static bool verifyVersion(const VtSlotRef& ref, uint64_t expectedVersion) {
+		return verifyVersion(ref.slot, vtEncodeVersion(expectedVersion, ref.keyTag));
+	}
+	static bool populateVersion(const VtSlotRef& ref, uint64_t newVersion) {
+		return populateVersion(ref.slot, vtEncodeVersion(newVersion, ref.keyTag));
+	}
+	static bool populateVersionIfUnchanged(const VtSlotRef& ref, uint64_t observed, uint64_t newVersion) {
+		return populateVersionIfUnchanged(ref.slot, observed, vtEncodeVersion(newVersion, ref.keyTag));
+	}
 
 	/**
 	 * Reads the first 8 bytes of `value` as a big-endian uint64 and converts
@@ -310,6 +360,8 @@ private:
 	std::unique_ptr<std::atomic<uint64_t>[]> slots_;
 	size_t mask_;
 	uint64_t seed_;
+
+	uint64_t hashFor(uint64_t dbId, uint32_t cfId, const rocksdb::Slice& key) const;
 
 	// Serializes all LockTracker install / join / release / reference / reclaim
 	// operations (see the write-intent lifecycle methods above). Not taken on

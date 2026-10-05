@@ -4,6 +4,7 @@
 // the N-API/JS layer, so we drive the primitives directly here.
 
 #include <gtest/gtest.h>
+#include <string>
 #include "core/verification_table.h"
 #include "rocksdb/slice.h"
 
@@ -194,4 +195,41 @@ TEST(VerificationTable, ValueVersionIsNotUniqueReadsTaggedFlagOnly) {
 	const std::string shortValue = value(VERSION_HEADER_TAG, VERSION_NOT_UNIQUE_FLAG, 11);
 	EXPECT_FALSE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(shortValue)));
 	EXPECT_FALSE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(std::string())));
+}
+
+// Keys that share a slot and a version must not vouch for each other: the slot stores the version
+// encoded with each key's tag, so only the key that populated it verifies.
+TEST(VerificationTable, CollidingKeysWithSameVersionDoNotVouchForEachOther) {
+	VerificationTable vt(2, 0xABCD);
+	const VtSlotRef a = vt.slotRefFor(0x1, 0, rocksdb::Slice("a"));
+	VtSlotRef b;
+	for (int i = 0; !b || b.slot != a.slot; ++i) {
+		b = vt.slotRefFor(0x1, 0, rocksdb::Slice("b" + std::to_string(i)));
+	}
+	ASSERT_NE(a.keyTag, b.keyTag);
+
+	EXPECT_TRUE(VerificationTable::populateVersion(a, kV1));
+	EXPECT_TRUE(VerificationTable::verifyVersion(a, kV1));
+	EXPECT_TRUE(a.holds(a.load(), kV1));
+	EXPECT_FALSE(VerificationTable::verifyVersion(b, kV1));
+	EXPECT_FALSE(b.holds(b.load(), kV1));
+
+	// The raw slot holds the encoded value, not the version itself.
+	EXPECT_FALSE(VerificationTable::verifyVersion(a.slot, kV1));
+
+	const uint64_t observed = b.load();
+	EXPECT_TRUE(VerificationTable::populateVersionIfUnchanged(b, observed, kV1));
+	EXPECT_TRUE(VerificationTable::verifyVersion(b, kV1));
+	EXPECT_FALSE(VerificationTable::verifyVersion(a, kV1));
+}
+
+// A version equal to its key's tag would encode to 0, the never-written value, so it is neither
+// published nor matched.
+TEST(VerificationTable, VersionEqualToKeyTagIsNeverCached) {
+	VerificationTable vt(8, 0xABCD);
+	const VtSlotRef ref = vt.slotRefFor(0x1, 0, rocksdb::Slice("k"));
+	ASSERT_TRUE(vtIsVersion(ref.keyTag));
+	EXPECT_FALSE(VerificationTable::populateVersion(ref, ref.keyTag));
+	EXPECT_FALSE(VerificationTable::verifyVersion(ref, ref.keyTag));
+	EXPECT_FALSE(ref.holds(ref.load(), ref.keyTag));
 }

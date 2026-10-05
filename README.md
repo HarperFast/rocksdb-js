@@ -1931,7 +1931,9 @@ Each record's version is the numeric value stored in the first 8 bytes of its va
 a big-endian float64). The table maps `(database, column family, key)` to a single 8-byte slot that
 holds the last-known version for that key. Because slots are addressed by a hash, distinct keys may
 share a slot; a collision only ever causes a conservative miss (a real read), never a stale value to
-be treated as fresh.
+be treated as fresh. That holds even when colliding keys carry the same version, as keys written in
+one transaction often do: a slot stores the version combined with a tag derived from its key, so only
+the key that cached it can match.
 
 This first word is the only version the table derives on its own: it is what a read with
 `populateVersion: true` publishes and what a transaction write invalidates against. A producer whose

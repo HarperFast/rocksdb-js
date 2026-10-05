@@ -483,7 +483,7 @@ napi_value TransactionHandle::get(
 	napi_value resolve,
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride,
-	std::atomic<uint64_t>* vtSlot,
+	VtSlotRef vtSlot,
 	uint64_t observedSlot,
 	bool hasExpectedVersion,
 	uint64_t expectedVersion,

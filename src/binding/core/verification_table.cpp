@@ -96,6 +96,19 @@ VerificationTable::VerificationTable(size_t numEntries, uint64_t seed)
 
 VerificationTable::~VerificationTable() = default;
 
+uint64_t VerificationTable::hashFor(
+	uint64_t dbId,
+	uint32_t cfId,
+	const rocksdb::Slice& key
+) const {
+	uint64_t h = seed_;
+	h ^= dbId;
+	h = mix64(h);
+	h ^= static_cast<uint64_t>(cfId);
+	h = mix64(h);
+	return hashKeyBytes(reinterpret_cast<const uint8_t*>(key.data()), key.size(), h);
+}
+
 std::atomic<uint64_t>* VerificationTable::slotFor(
 	uint64_t dbId,
 	uint32_t cfId,
@@ -104,13 +117,23 @@ std::atomic<uint64_t>* VerificationTable::slotFor(
 	if (!slots_) {
 		return nullptr;
 	}
-	uint64_t h = seed_;
-	h ^= dbId;
-	h = mix64(h);
-	h ^= static_cast<uint64_t>(cfId);
-	h = mix64(h);
-	h = hashKeyBytes(reinterpret_cast<const uint8_t*>(key.data()), key.size(), h);
-	return &slots_[h & mask_];
+	return &slots_[hashFor(dbId, cfId, key) & mask_];
+}
+
+VtSlotRef VerificationTable::slotRefFor(
+	uint64_t dbId,
+	uint32_t cfId,
+	const rocksdb::Slice& key
+) const {
+	VtSlotRef ref;
+	if (!slots_) {
+		return ref;
+	}
+	const uint64_t h = hashFor(dbId, cfId, key);
+	ref.slot = &slots_[h & mask_];
+	// Remixed so keys that agree in the index bits still get unrelated tags.
+	ref.keyTag = mix64(h ^ 0x9e3779b97f4a7c15ULL) & ~VT_TAG_BIT;
+	return ref;
 }
 
 bool VerificationTable::verifyVersion(

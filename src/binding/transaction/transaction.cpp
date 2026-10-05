@@ -1340,11 +1340,11 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
 
-	std::atomic<uint64_t>* vtSlot = nullptr;
+	VtSlotRef vtSlot;
 	uint64_t vtObserved = 0;
 	if (hasExpectedVersion) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
-		if (vtSlot) vtObserved = vtSlot->load(std::memory_order_acquire);
+		if (vtSlot) vtObserved = vtSlot.load();
 	}
 
 	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
@@ -1454,17 +1454,17 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	// the slot before our load, so a FRESH hit is consistent with the snapshot.
 	(*txnHandle)->ensureSnapshot();
 
-	std::atomic<uint64_t>* vtSlot = nullptr;
+	VtSlotRef vtSlot;
 	// Observe the slot after the snapshot is established; reused for the
 	// fast-path check and the post-read conditional CAS.
 	uint64_t vtObserved = 0;
 	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
-		if (vtSlot) vtObserved = vtSlot->load(std::memory_order_acquire);
+		if (vtSlot) vtObserved = vtSlot.load();
 	}
 
 	// VT fast-path: caller-supplied version matches the table → return FRESH
-	if (vtSlot && hasExpectedVersion && vtObserved == expectedVersion) {
+	if (vtSlot && hasExpectedVersion && vtSlot.holds(vtObserved, expectedVersion)) {
 		// Snapshot already established above; no further action needed.
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
