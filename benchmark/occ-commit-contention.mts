@@ -35,7 +35,7 @@ type WorkerResult = {
 	increments?: number;
 };
 
-const PHASE_WARMUP = 0;
+// The shared phase word starts at 0, the warmup phase.
 const PHASE_MEASURE = 1;
 const PHASE_STOP = 2;
 
