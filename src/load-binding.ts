@@ -548,10 +548,11 @@ export type RocksDatabaseConfig = {
 	 * even if that open fails. Afterwards, only the same count is accepted.
 	 * The pool remains allocated across close/shutdown/reopen.
 	 *
-	 * Smaller pools save memory but increase contention across databases.
-	 * Locks remain held through the RocksDB write, including WAL sync and
-	 * write stalls, so an uncleared stall can block another database's commit
-	 * indefinitely.
+	 * Commits in different databases can wait on each other at any count,
+	 * including the default. Smaller pools and larger transactions increase
+	 * contention. Locks remain held through the RocksDB write, including WAL
+	 * sync and write stalls, so an uncleared stall can block another database's
+	 * commit indefinitely.
 	 */
 	occLockBuckets?: number;
 	/**
