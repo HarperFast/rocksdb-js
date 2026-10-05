@@ -27,6 +27,7 @@ uint64_t generateSeed() {
 DBSettings::DBSettings():
 	blockCacheSize(32 * 1024 * 1024), // 32MB (RocksDB default)
 	blockCache(nullptr),
+	occLockBucketCount(1 << 20),
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
@@ -57,6 +58,14 @@ std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
 		blockCache = rocksdb::NewLRUCache(blockCacheSize);
 	}
 	return blockCache;
+}
+
+std::shared_ptr<rocksdb::OccLockBuckets> DBSettings::getOccLockBuckets() {
+	std::lock_guard<std::mutex> lock(occLockBucketsMutex);
+	if (!occLockBuckets) {
+		occLockBuckets = rocksdb::MakeSharedOccLockBuckets(occLockBucketCount);
+	}
+	return occLockBuckets;
 }
 
 /**
@@ -142,6 +151,29 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 	DBSettings& settings = DBSettings::getInstance();
 	napi_value params = argv[0];
+
+	napi_value occLockBucketsValue;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "occLockBuckets", &occLockBucketsValue));
+	napi_valuetype occLockBucketsType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, occLockBucketsValue, &occLockBucketsType));
+	if (occLockBucketsType != napi_undefined && occLockBucketsType != napi_null) {
+		double count;
+		if (::napi_get_value_double(env, occLockBucketsValue, &count) != napi_ok) {
+			::napi_throw_type_error(env, nullptr, "occLockBuckets must be a number");
+			return nullptr;
+		}
+		if (!std::isfinite(count) || std::trunc(count) != count || count < 16 || count > (1 << 24)) {
+			::napi_throw_range_error(env, nullptr, "occLockBuckets must be an integer between 16 and 16777216");
+			return nullptr;
+		}
+		std::lock_guard<std::mutex> lock(settings.occLockBucketsMutex);
+		if (settings.occLockBuckets && count != settings.occLockBucketCount) {
+			::napi_throw_error(env, nullptr,
+				"occLockBuckets cannot be changed after the shared pool has been created; configure it before the first writable optimistic database open");
+			return nullptr;
+		}
+		settings.occLockBucketCount = static_cast<uint32_t>(count);
+	}
 
 	int64_t blockCacheSize = 0;
 	napi_status status = rocksdb_js::getProperty(env, params, "blockCacheSize", blockCacheSize, true);

@@ -257,6 +257,19 @@ Sets global database settings.
     Defaults to 32MB. Set to `0` (zero) disables block cache for future opened databases. Existing
     block cache for any opened databases is resized immediately. Negative values throw an error.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
+  - `occLockBuckets: number` The number of optimistic commit lock buckets shared by all writable
+    optimistic databases and `worker_threads` in this process. Defaults to `1048576` (2^20),
+    approximately 40 MiB once per process on Linux x64, instead of per database. Accepts integers
+    from `16` through `16777216` (2^24); memory scales with the count and platform mutex size
+    (the maximum is approximately 640 MiB on Linux x64). Configure it before the first writable
+    optimistic open creates the pool, even if that open fails. Once created, a different count
+    throws; repeating the same count is allowed, and `undefined`/`null` leave it unchanged.
+    Pessimistic, read-only and secondary opens do not create the pool. Closing every database or
+    calling `shutdown()` retains the pool and its fixed count for subsequent opens.
+    This is **not a transaction write limit**: multiple keys can share a bucket. Smaller pools
+    save memory but increase commit contention across databases. Bucket locks remain held through
+    the RocksDB write, including WAL sync and write stalls, so one stalled database can delay
+    otherwise unrelated commits. The default count is unchanged, but it now serves all databases.
   - `lifecycleWaitSeconds: number` How long a synchronous open, destroy, or shutdown waits for a
     _conflicting_ lifecycle operation already in progress on the same path (e.g. another open or
     close) before throwing a retryable timeout error. It does not bound the separate, intentionally
@@ -291,6 +304,7 @@ Sets global database settings.
 RocksDatabase.config({
 	blockCacheSize: 100 * 1024 * 1024, // 100MB
 	compactOnClose: true,
+	occLockBuckets: 16 * 1024, // smaller shared pool; set before opening any optimistic database
 	writeBufferManagerAllowStall: false,
 	writeBufferManagerCostToCache: false,
 	writeBufferManagerSize: 64 * 1024 * 1024, // 64MB
