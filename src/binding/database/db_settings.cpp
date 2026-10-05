@@ -1,5 +1,6 @@
 #include "database/db_settings.h"
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <random>
 #include "database/db_stats.h"
@@ -27,7 +28,8 @@ uint64_t generateSeed() {
 DBSettings::DBSettings():
 	blockCacheSize(32 * 1024 * 1024), // 32MB (RocksDB default)
 	blockCache(nullptr),
-	occLockBucketCount(4096),
+	occLockBucketCount(1 << 16),
+	occValidateSerial(false),
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
@@ -148,8 +150,9 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "occLockBuckets", &occLockBucketsValue));
 	napi_valuetype occLockBucketsType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, occLockBucketsValue, &occLockBucketsType));
-	if (occLockBucketsType != napi_undefined && occLockBucketsType != napi_null) {
-		double count;
+	double count = 0;
+	const bool occLockBucketsProvided = occLockBucketsType != napi_undefined && occLockBucketsType != napi_null;
+	if (occLockBucketsProvided) {
 		if (::napi_get_value_double(env, occLockBucketsValue, &count) != napi_ok) {
 			::napi_throw_type_error(env, nullptr, "occLockBuckets must be a number");
 			return nullptr;
@@ -158,7 +161,35 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			::napi_throw_range_error(env, nullptr, "occLockBuckets must be an integer between 16 and 16777216");
 			return nullptr;
 		}
+	}
+
+	napi_value occValidationValue;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "occValidation", &occValidationValue));
+	napi_valuetype occValidationType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, occValidationValue, &occValidationType));
+	bool validateSerial = false;
+	const bool occValidationProvided = occValidationType != napi_undefined && occValidationType != napi_null;
+	if (occValidationProvided) {
+		if (occValidationType != napi_string) {
+			::napi_throw_type_error(env, nullptr, "occValidation must be a string");
+			return nullptr;
+		}
+		char policy[16];
+		size_t length = 0;
+		NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, occValidationValue, policy, sizeof(policy), &length));
+		if (length == 6 && std::strcmp(policy, "serial") == 0) {
+			validateSerial = true;
+		} else if (!(length == 8 && std::strcmp(policy, "parallel") == 0)) {
+			::napi_throw_range_error(env, nullptr, "occValidation must be 'parallel' or 'serial'");
+			return nullptr;
+		}
+	}
+
+	if (occLockBucketsProvided) {
 		settings.occLockBucketCount.store(static_cast<uint32_t>(count), std::memory_order_relaxed);
+	}
+	if (occValidationProvided) {
+		settings.occValidateSerial.store(validateSerial, std::memory_order_relaxed);
 	}
 
 	int64_t blockCacheSize = 0;

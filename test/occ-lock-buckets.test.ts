@@ -24,17 +24,18 @@ function runFixture(mode: string): Record<string, number | null> {
 	}
 }
 
-// RocksDB's own default is 2^20 buckets per database, about 40 MiB each on Linux x64. The memory
-// assertions only run on Linux, where anonymous memory is readable from /proc.
-describe('per-database optimistic lock buckets', () => {
-	it('keeps ten empty databases small at the default count', () => {
+// RocksDB's own default is 2^20 buckets per database, about 40 MiB each on Linux x64; ours is 2^16,
+// about 2.5 MiB. The memory assertions only run on Linux, where anonymous memory is readable from
+// /proc.
+describe('optimistic commit validation settings', () => {
+	it('keeps ten empty databases small at the default bucket count', () => {
 		const result = runFixture('default');
 		if (result.defaultGrowthMiB !== null) {
-			expect(result.defaultGrowthMiB).toBeLessThan(100);
+			expect(result.defaultGrowthMiB).toBeLessThan(60);
 		}
 	});
 
-	it('applies the configured count to subsequent opens only', () => {
+	it('applies the configured bucket count to subsequent opens only', () => {
 		const result = runFixture('configured');
 		if (result.largeGrowthMiB !== null) {
 			expect(result.largeGrowthMiB).toBeGreaterThan(90);
@@ -44,5 +45,12 @@ describe('per-database optimistic lock buckets', () => {
 
 	it('detects conflicts and commits large transactions with 16 buckets', () => {
 		runFixture('transactions');
+	});
+
+	it('allocates no buckets and still detects conflicts with serial validation', () => {
+		const result = runFixture('serial');
+		if (result.serialGrowthMiB !== null) {
+			expect(result.serialGrowthMiB).toBeLessThan(30);
+		}
 	});
 });

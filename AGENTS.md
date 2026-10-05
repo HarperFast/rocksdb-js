@@ -1198,9 +1198,14 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 24. **A column family is dropped logically at once and physically only when no admitted commit
     names it**: `Database::Drop`/`DropSync` used to call `DropColumnFamily` immediately, and a
     transaction commit already inside RocksDB naming that family — past optimistic validation
-    under the default `kValidateParallel`, or any pessimistic commit — failed in the memtable
-    inserter with `Invalid column family specified in write batch`, which `HandleMemTableInsertFailure`
-    latches as a fatal background error on the whole database (#806, #726; harper#1381). The rule
+    under the default `occValidation: 'parallel'` (`kValidateParallel`), or any pessimistic commit —
+    failed in the memtable inserter with `Invalid column family specified in write batch`, which
+    `HandleMemTableInsertFailure` latches as a fatal background error on the whole database (#806,
+    #726; harper#1381). Under `occValidation: 'serial'` the optimistic conflict check runs inside
+    the write group, which `DropColumnFamily` also enters (`EnterUnbatched`), so a dropped family
+    fails that check with `Could not access column family` before any memtable insert. That is
+    defense in depth only: the claim protocol below applies under both policies and is the only
+    protection for pessimistic commits. The rule
     now (`core/column_family_lifetime.h`, GoogleTest-covered): a commit **claims** every family
     its batch names once, at admission in `executeLogWork`/`CommitSync` **before** the
     transaction-log write (`ColumnFamilyCommitClaim`, RAII so a log-write failure, N-API/queue
