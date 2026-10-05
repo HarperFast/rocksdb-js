@@ -1930,10 +1930,12 @@ intended for read-heavy workloads where records carry a monotonically increasing
 Each record's version is the numeric value stored in the first 8 bytes of its value (interpreted as
 a big-endian float64). The table maps `(database, column family, key)` to a single 8-byte slot that
 holds the last-known version for that key. Because slots are addressed by a hash, distinct keys may
-share a slot; a collision only ever causes a conservative miss (a real read), never a stale value to
-be treated as fresh. That holds even when colliding keys carry the same version, as keys written in
-one transaction often do: a slot stores the version combined with a tag derived from its key, so a
-different key can only match by a coincidence of its tag (a probability below 2^-46 per lookup).
+share a slot. A slot stores the version combined with a tag derived from its key, so a version that
+another key cached in a shared slot — even the same version, as keys written in one transaction
+often carry — answers fresh only if the two keys' version-and-tag combinations coincide; otherwise
+the collision costs only a conservative miss (a real read). With the default 131,072 slots that
+coincidence has a probability of 2^-47 per lookup that finds another key's version in its slot, and
+each doubling of `verificationTableEntries` doubles it.
 
 This first word is the only version the table derives on its own: it is what a read with
 `populateVersion: true` publishes and what a transaction write invalidates against. A producer whose
