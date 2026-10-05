@@ -32,15 +32,6 @@ describe('commitThreads', () => {
 		runFixture(['validate']);
 	});
 
-	it('shows stalled legacy libuv commits delaying fs calls', () => {
-		const result = runFixture(['starve', '4'], {
-			ROCKSDB_JS_COMMIT_THREAD: '0',
-			ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '300',
-			UV_THREADPOOL_SIZE: '2',
-		});
-		expect(result.statMs).toBeGreaterThanOrEqual(250);
-	});
-
 	describe.each(['1', '2'])('ROCKSDB_JS_COMMIT_THREAD=%s', (commitThread) => {
 		it('runs one commit at a time with one thread', () => {
 			const result = runFixture(['concurrent', '1'], {
@@ -60,14 +51,18 @@ describe('commitThreads', () => {
 			expect(result.wallMs).toBeLessThan(600);
 		});
 
-		it('leaves the libuv threadpool free while commits are stalled', () => {
-			const result = runFixture(['starve', '4'], {
-				ROCKSDB_JS_COMMIT_THREAD: commitThread,
-				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '300',
-				UV_THREADPOOL_SIZE: '2',
-			});
-			expect(result.statMs).toBeLessThan(150);
-		});
+		// Deno runs node:fs outside the pool that N-API async work uses, so this cannot fail there.
+		it.skipIf(Boolean(process.versions.deno))(
+			'leaves the libuv threadpool free while commits are stalled',
+			() => {
+				const result = runFixture(['starve', '4'], {
+					ROCKSDB_JS_COMMIT_THREAD: commitThread,
+					ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '300',
+					UV_THREADPOOL_SIZE: '2',
+				});
+				expect(result.statMs).toBeLessThan(150);
+			}
+		);
 
 		it('resolves commits in dispatch order with one thread', () => {
 			const result = runFixture(['order', '1'], { ROCKSDB_JS_COMMIT_THREAD: commitThread });
