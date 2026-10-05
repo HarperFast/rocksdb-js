@@ -24,8 +24,9 @@ try {
 			txn.putSync(`k${i}`, i);
 			await txn.commit();
 		}
-		// Commits awaited one at a time never find the only thread busy.
-		assert.equal(commitThreadsStat(db), 1);
+		// Commits awaited one at a time overlap only when one is enqueued between a thread delivering
+		// the previous completion and going idle.
+		assert.ok(commitThreadsStat(db) <= 2, `started ${commitThreadsStat(db)} threads`);
 		await Promise.all(
 			Array.from({ length: 50 }, (_, i) => {
 				const txn = new Transaction(db.store);

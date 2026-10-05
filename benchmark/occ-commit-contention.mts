@@ -116,6 +116,11 @@ if (isMainThread) {
 	] as const) {
 		assert(Number.isSafeInteger(config[name]) && config[name] >= 0, `${name} must be an integer`);
 	}
+	assert(
+		config.commitThreads === null ||
+			(Number.isSafeInteger(config.commitThreads) && config.commitThreads >= 1),
+		'--commit-threads must be a positive integer'
+	);
 	assert(config.hotKeys >= config.keys, '--hot-keys must be at least --keys');
 	assert(
 		['one-db', 'four-db', 'mixed-sync', 'conflict', 'memory'].includes(config.scenario),
@@ -314,26 +319,38 @@ if (isMainThread) {
 		}
 	};
 
-	// Each in-flight slot owns its keys, so non-conflict scenarios never conflict with themselves.
-	const lastCommitted: number[] = [];
-	async function slotLoop(slot: number): Promise<void> {
-		for (let n = 0; Atomics.load(phase, 0) !== PHASE_STOP; n++) {
-			const txn = new Transaction(db.store);
-			for (let j = 0; j < config.keys; j++) {
-				txn.putSync(`w${id}-s${slot}-${j}`, { n, pad });
-				log?.addEntry(logEntry, txn.id);
-			}
+	// A retryable failure resets the native transaction, so the body is re-run on the same
+	// transaction, as db.transaction() does; aborting a transaction that already wrote its log
+	// entries would abandon it.
+	async function commitWithRetry(body: (txn: any) => void): Promise<[number, number]> {
+		const txn = new Transaction(db.store);
+		for (;;) {
+			body(txn);
 			const startPhase = Atomics.load(phase, 0);
 			const started = performance.now();
 			try {
 				if (sync) txn.commitSync();
 				else await txn.commit();
+				return [started, startPhase];
 			} catch (error) {
-				txn.abort();
-				if (!isRetryable(error as { code?: string })) throw error;
-				n--;
-				continue;
+				if (!isRetryable(error as { code?: string })) {
+					txn.abort();
+					throw error;
+				}
 			}
+		}
+	}
+
+	// Each in-flight slot owns its keys, so non-conflict scenarios never conflict with themselves.
+	const lastCommitted: number[] = [];
+	async function slotLoop(slot: number): Promise<void> {
+		for (let n = 0; Atomics.load(phase, 0) !== PHASE_STOP; n++) {
+			const [started, startPhase] = await commitWithRetry((txn) => {
+				for (let j = 0; j < config.keys; j++) {
+					txn.putSync(`w${id}-s${slot}-${j}`, { n, pad });
+					log?.addEntry(logEntry, txn.id);
+				}
+			});
 			lastCommitted[slot] = n;
 			record(started, startPhase);
 		}
@@ -352,21 +369,12 @@ if (isMainThread) {
 			while (keys.size < config.keys) keys.add(random());
 			const started = performance.now();
 			const startPhase = Atomics.load(phase, 0);
-			for (;;) {
-				const txn = new Transaction(db.store);
-				try {
-					for (const k of keys) {
-						txn.putSync(`hot-${k}`, (txn.getSync(`hot-${k}`) ?? 0) + 1);
-						log?.addEntry(logEntry, txn.id);
-					}
-					if (sync) txn.commitSync();
-					else await txn.commit();
-					break;
-				} catch (error) {
-					txn.abort();
-					if (!isRetryable(error as { code?: string })) throw error;
+			await commitWithRetry((txn) => {
+				for (const k of keys) {
+					txn.putSync(`hot-${k}`, (txn.getSync(`hot-${k}`) ?? 0) + 1);
+					log?.addEntry(logEntry, txn.id);
 				}
-			}
+			});
 			increments++;
 			record(started, startPhase);
 		}

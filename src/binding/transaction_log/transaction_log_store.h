@@ -460,10 +460,9 @@ struct TransactionLogStore final {
 	 *
 	 * `latestSequenceNumber` is read under `dataSetsMutex`, after this position leaves the
 	 * uncommitted set, and is paired with the fully committed position for flush correlation.
-	 * Reading it before taking the lock is unsafe once commits finish concurrently: an earlier
-	 * log position can commit at a later sequence and leave the uncommitted set in between, so
-	 * the pair would claim a sequence that does not cover every position below it, and a flush
-	 * at that sequence would record a replay start past unflushed data.
+	 * A sequence read before the lock may not cover a lower position that committed at a later
+	 * sequence and left the uncommitted set in between, and a flush at that sequence would then
+	 * record a replay start past unflushed data.
 	 */
 	void commitFinished(LogPosition position, const std::function<rocksdb::SequenceNumber()>& latestSequenceNumber);
 

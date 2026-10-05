@@ -513,20 +513,18 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	uint64_t writeStallDebounceWindowMs = 0;
 
 	/**
-	 * Commit lanes executing async transaction commits off the libuv
-	 * threadpool, shared by all envs/handles on this database. In the default
-	 * single-lane mode only commitWorker runs: each commit executes its log
-	 * write and RocksDB commit back to back in dispatch order (logWorker is
-	 * never started). In two-lane mode (ROCKSDB_JS_COMMIT_THREAD=2) the log
-	 * lane writes the transaction-log batch (a pass-through no-op for txns
-	 * with no log entries, preserving total order), then forwards to the
-	 * commit lane, letting the stages overlap across transactions while each
-	 * lane preserves order — see commitThreadMode() in transaction.cpp and
-	 * CommitWorker for the rationale.
+	 * Workers executing async transaction commits off the libuv threadpool,
+	 * shared by all envs/handles on this database. By default only
+	 * commitWorker runs: each commit executes its log write and RocksDB commit
+	 * back to back on one of up to `commitThreads` threads, in dispatch order
+	 * only with one (logWorker is never started). In two-lane mode
+	 * (ROCKSDB_JS_COMMIT_THREAD=2) the log lane writes transaction-log batches
+	 * in dispatch order, then forwards each commit to commitWorker — see
+	 * commitThreadMode() in transaction.cpp.
 	 *
-	 * Declared commit-lane-first so member destruction (reverse order) tears
-	 * down the log lane before the commit lane it feeds; finishClose() shuts
-	 * both down explicitly in that order first.
+	 * Declared commit-worker-first so member destruction (reverse order) tears
+	 * down the log lane before the worker it feeds; finishClose() shuts both
+	 * down explicitly in that order first.
 	 */
 	CommitWorker commitWorker{"rocksdb-commit"};
 	CommitWorker logWorker{"rocksdb-txnlog"};

@@ -1055,8 +1055,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 			if (mode == CommitThreadMode::TwoLane) {
 				// Two-lane pipeline: the log lane writes the transaction-log
-				// batch, then forwards to the commit worker. Every commit passes
-				// through both so a single commit lane preserves total order.
+				// batch, then forwards to the commit worker. Commits are in
+				// dispatch order only with `commitThreads: 1`.
 				descriptor->logWorker.enqueue([descriptorOwner, state, commitStage]() {
 					executeLogWork(state);
 					descriptorOwner->commitWorker.enqueue(commitStage);
@@ -1248,7 +1248,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			store = (*txnHandle)->boundLogStore.lock();
 		}
 		if (store) {
-			rocksdb::DB* db = (*txnHandle)->dbHandle->descriptor->db.get();
+			rocksdb::DB* db = descriptor->db.get();
 			store->commitFinished((*txnHandle)->committedPosition, [db]() { return db->GetLatestSequenceNumber(); });
 		} else {
 			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %llu\n", (*txnHandle).get(), (*txnHandle)->committedPosition.logSequenceNumber, (unsigned long long)(*txnHandle)->id);

@@ -258,7 +258,11 @@ Sets global database settings.
     Concurrent commits finish, and their promises resolve, in any order, as concurrent
     `commitSync()` calls always have, and their transaction-log entries are appended in the order
     the commits reach the log; a log reader never sees an entry before its transaction's data is
-    committed. With `1`, a database's async commits run one at a time in the order `commit()` was
+    committed. Log position is not the order in which writes to the same key were applied: a
+    commit that conflicts and is retried keeps its original log position but lands after commits
+    logged behind it, so a consumer that replays entries for one key must order them by
+    transaction timestamp rather than by position. Concurrent commit threads make this more
+    frequent; a single commit thread and `commitSync()` callers could already produce it. With `1`, a database's async commits run one at a time in the order `commit()` was
     called. Databases already open keep their limit.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
   - `occValidation: 'parallel' | 'serial'` How writable optimistic databases opened after the call

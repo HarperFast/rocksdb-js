@@ -87,9 +87,8 @@ struct CommitWorker final {
 			DEBUG_LOG("%p CommitWorker::enqueue Running task inline\n", this);
 			task();
 		} else if (wake) {
-			// Busy threads re-check the queue before they wait, so only an idle
-			// thread needs a signal. Profiling showed a per-enqueue
-			// pthread_cond_signal as a measurable JS-thread cost under load.
+			// Busy threads re-check the queue before they wait; signalling only
+			// idle ones keeps pthread_cond_signal off the JS thread under load.
 			this->cv.notify_one();
 		}
 	}
@@ -104,7 +103,7 @@ struct CommitWorker final {
 	}
 
 	/**
-	 * Number of threads started so far. Diagnostic only.
+	 * Number of threads started so far.
 	 */
 	size_t threadCount() {
 		std::lock_guard<std::mutex> lock(this->mutex);
