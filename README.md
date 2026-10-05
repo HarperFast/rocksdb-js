@@ -267,7 +267,8 @@ Sets global database settings.
     Pessimistic, read-only and secondary opens do not create the pool. Closing every database or
     calling `shutdown()` retains the pool and its fixed count for subsequent opens.
     This is **not a transaction write limit**: multiple keys can share a bucket. Smaller pools
-    save memory but increase commit contention across databases. Bucket locks remain held through
+    save memory but increase contention. Commits in different databases can wait on each other even
+    at the default count, and contention grows with transaction size. Bucket locks remain held through
     the RocksDB write, including WAL sync and write stalls, so one stalled database can delay
     otherwise unrelated commits indefinitely if its stall cannot clear. The default count is
     unchanged, but it now serves all databases.
