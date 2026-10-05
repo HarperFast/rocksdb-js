@@ -4,7 +4,7 @@ import { TransactionIsBusyError } from '../../src/transaction.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
@@ -168,10 +168,16 @@ if (!isMainThread) {
 			const db = RocksDatabase.open(path, options);
 			const workers = [0, 1].map(
 				(id) =>
-					new Worker(createWorkerBootstrapScript(fileURLToPath(import.meta.url)), {
-						eval: true,
-						workerData: { path, id },
-					})
+					// A cwd-relative specifier: an absolute Windows path is not a valid import() URL.
+					new Worker(
+						createWorkerBootstrapScript(
+							`./${relative(process.cwd(), fileURLToPath(import.meta.url))}`
+						),
+						{
+							eval: true,
+							workerData: { path, id },
+						}
+					)
 			);
 			const exited = workers.map(
 				(worker) =>
