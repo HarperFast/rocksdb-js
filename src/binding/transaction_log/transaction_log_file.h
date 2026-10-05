@@ -669,9 +669,12 @@ struct TransactionLogFile final {
 	 */
 	std::function<void()> afterIndexMapAcquiredForTests;
 
-	std::function<void()> afterHeaderCreatedForTests;
+	/**
+	 * Runs between writeEntries()' lazy open and its first append: the window in which a
+	 * reader handout would fix a capacity smaller than an oversized first batch. Test-only.
+	 */
+	std::function<void()> afterLazyOpenForTests;
 
-	/** Makes getMemoryMapLocked() fail like the OS mapping call did. Test-only. */
 	static std::atomic<bool> forceMapFailureForTests;
 #endif
 

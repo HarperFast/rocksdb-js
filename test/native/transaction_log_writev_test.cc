@@ -636,7 +636,7 @@ TEST_F(AppendBoundary, FirstAppendAndHeaderCreationExcludeReaderHandouts) {
 	auto headerReady = headerCreated.get_future();
 	std::promise<void> continueAppend;
 	auto canAppend = continueAppend.get_future().share();
-	file_->afterHeaderCreatedForTests = [&] {
+	file_->afterLazyOpenForTests = [&] {
 		headerCreated.set_value();
 		canAppend.wait();
 	};

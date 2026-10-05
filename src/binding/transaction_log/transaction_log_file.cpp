@@ -257,11 +257,6 @@ bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfM
 			throw rocksdb_js::DBException("Failed to write transaction log file header: " + this->path.string());
 		}
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
-#ifdef ROCKSDB_JS_NATIVE_TESTS
-		if (this->afterHeaderCreatedForTests) {
-			this->afterHeaderCreatedForTests();
-		}
-#endif
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str());
 		throw rocksdb_js::TransactionLogFormatException("File is too small to be a valid transaction log file: " + this->path.string());
@@ -763,6 +758,11 @@ void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uin
 			this->size.store(0, std::memory_order_relaxed);
 			throw;
 		}
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+		if (this->afterLazyOpenForTests) {
+			this->afterLazyOpenForTests();
+		}
+#endif
 	}
 	DEBUG_LOG("%p TransactionLogFile::writeEntries Writing batch with %zu entries, current entry index=%zu (timestamp=%f, maxFileSize=%u, currentSize=%u)\n",
 		this, batch.entries.size(), batch.currentEntryIndex, batch.timestamp, maxFileSize, this->size.load(std::memory_order_relaxed));
