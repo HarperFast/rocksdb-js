@@ -28,6 +28,8 @@ if (process.argv[2] === 'cjs') {
 
 	const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url), 'cjs'], {
 		stdio: 'inherit',
+		timeout: 60_000,
 	});
+	if (child.error) throw child.error;
 	if (child.status !== 0) process.exit(child.status ?? 1);
 }
