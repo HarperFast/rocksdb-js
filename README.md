@@ -262,7 +262,9 @@ Sets global database settings.
     open keep their policy. Pessimistic, read-only and secondary opens are unaffected.
     - `'parallel'` locks the commit's keys in a per-database pool of `occLockBuckets` mutexes,
       checks for conflicts, and holds the locks through the write. Commits on different threads
-      that touch different buckets can then be batched into one RocksDB write.
+      that touch different buckets can then be batched into one RocksDB write. Non-transactional
+      writes (`db.putSync()` and friends) take no bucket, so one that lands between a commit's
+      conflict check and its write is overwritten by that commit without an `ERR_BUSY`.
     - `'serial'` checks for conflicts inside RocksDB's write group instead, and allocates no bucket
       pool. Use it when nearly all writes to a database are async transaction commits, which run one
       at a time on that database's commit thread anyway, with few concurrent `commitSync()` calls or
@@ -280,14 +282,18 @@ Sets global database settings.
     RocksDB's 2^20. Accepts integers from `16` through `16777216` (2^24). Applies to databases
     opened after the call; databases already open keep their count. Memory is the count times the
     platform mutex size (40 bytes on Linux x64, 64 bytes on macOS), so the default is about 2.5 MiB
-    per database on Linux, against about 40 MiB at RocksDB's default. Multiple keys can share a bucket, so this is **not a transaction write
-    limit**. Async commits to one database run one at a time on its commit thread, so a small pool
-    costs nothing unless several threads commit to the same database at once: `commitSync()`
-    callers, or concurrent libuv commits under `ROCKSDB_JS_COMMIT_THREAD=0`. Commits that collide on
-    a bucket run one at a time and cannot share a RocksDB write. With two async and two `commitSync()`
-    workers committing 64-key transactions to one database, async throughput relative to 2^20 was
-    58% at 4096 buckets, 74% at 16384 and 95% at 65536; with 1,000-key transactions only 2^20 avoided
-    the loss, so databases with that workload should raise the count.
+    per database on Linux, against about 40 MiB at RocksDB's default. Multiple keys can share a
+    bucket, so this is **not a transaction write limit**. Async commits to one database run one at a
+    time on its commit thread, so a small pool costs nothing unless several threads commit to the
+    same database at once: `commitSync()` callers, or concurrent libuv commits under
+    `ROCKSDB_JS_COMMIT_THREAD=0`. Commits that collide on a bucket run one at a time and cannot
+    share a RocksDB write. With two async and two `commitSync()` workers committing 64-key
+    transactions to one database, async throughput relative to 2^20 was 58% at 4096 buckets, 74% at
+    16384 and 95% at 65536. With 1,000-key transactions, 65536 still gave up to about a third fewer
+    async commits per second than 2^20, so databases with that workload should raise the count.
+    Under the legacy `ROCKSDB_JS_COMMIT_THREAD=0` mode every async commit runs on a libuv thread and
+    contends for buckets; with four workers, 65536 buckets gave about 10% fewer commits per second
+    than 2^20 at 64 keys per transaction and about 30% fewer at 1,000 keys.
   - `lifecycleWaitSeconds: number` How long a synchronous open, destroy, or shutdown waits for a
     _conflicting_ lifecycle operation already in progress on the same path (e.g. another open or
     close) before throwing a retryable timeout error. It does not bound the separate, intentionally
