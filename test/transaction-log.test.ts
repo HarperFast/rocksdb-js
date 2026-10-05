@@ -741,8 +741,15 @@ describe('Transaction Log', () => {
 				}
 			}));
 
-		it('uses the default transaction log size limit when configured as 0', () =>
-			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }] }, async ({ db, dbPath }) => {
+		it('rejects the former unlimited transaction log size of 0', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }], skipOpen: true }, async ({ db }) => {
+				expect(() => db.open()).toThrow(
+					'transactionLogMaxSize must be greater than 0; omit it to use the default'
+				);
+			}));
+
+		it('rotates at the default transaction log size limit', () =>
+			dbRunner(async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
 				const value = Buffer.alloc(10000, 'a');
 
@@ -3795,8 +3802,8 @@ describe('Transaction Log', () => {
 				}
 			}));
 
-		it('preserves a default-capacity mapping when transactionLogMaxSize is 0', () =>
-			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }] }, async ({ db }) => {
+		it('preserves a default-capacity mapping across appends', () =>
+			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 				const tail = log.query({});
 				for (let i = 0; i < 12; i++) {
@@ -3830,7 +3837,7 @@ describe('Transaction Log', () => {
 			}));
 
 		it('filters later appends through the same default-capacity mapping', () =>
-			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }] }, async ({ db }) => {
+			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
 				await writeSmallTransaction(db, log, 0);
 				const first = readAll(log.query({ start: 0 }))[0];
