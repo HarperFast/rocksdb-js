@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 // The ESM and CJS bundles each patch the same native prototypes, so loading both in one process
-// throws; each format is checked in its own child.
+// throws. ESM is checked here; CJS is checked in a child.
 function check(mod, format) {
 	if (typeof mod.getRegistryStatus !== 'function') {
 		throw new Error(`${format}: getRegistryStatus is not a function`);
