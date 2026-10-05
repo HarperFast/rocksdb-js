@@ -1704,9 +1704,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		DEBUG_LOG("DBDescriptor::open Opened pessimistic transaction db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 	} else {
+		rocksdb::OptimisticTransactionDBOptions occOptions;
+		occOptions.shared_lock_buckets = settings.getOccLockBuckets();
 		rocksdb::OptimisticTransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
-		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
+		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, occOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			throw rocksdb_js::DBException(status.ToString());
