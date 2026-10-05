@@ -170,7 +170,9 @@ Creates a new database instance.
     are never split across files: if the complete transaction does not fit, the log rotates before
     writing it. A transaction written to an empty file may exceed the target. Defaults to 16 MB.
     `0` is rejected: it formerly meant unlimited segment size, which a reader's fixed-size mapping
-    cannot cover. A store configured with `0` must omit the option or set a size before opening.
+    cannot cover. A store configured with `0` must omit the option or set a size before opening;
+    once it rotates by size, rotated segments older than `transactionLogRetention` are purged, so
+    raise the retention to keep more history.
   - `transactionLogRetention: string | number` The number of minutes to retain transaction logs
     before purging. Defaults to `'3d'` (3 days).
   - `transactionLogsPath: string` The path to store transaction logs. Defaults to
