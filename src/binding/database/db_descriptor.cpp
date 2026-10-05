@@ -1705,7 +1705,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 	} else {
 		rocksdb::OptimisticTransactionDBOptions occOptions;
-		occOptions.shared_lock_buckets = settings.getOccLockBuckets();
+		occOptions.occ_lock_buckets = settings.getOccLockBucketCount();
 		rocksdb::OptimisticTransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
 		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, occOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
