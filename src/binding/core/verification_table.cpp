@@ -131,12 +131,14 @@ VtSlotRef VerificationTable::slotRefFor(
 	}
 	const uint64_t h = hashFor(dbId, cfId, key);
 	ref.slot = &slots_[h & mask_];
-	// Remixed so keys that agree in the index bits still get unrelated tags.
-	ref.keyTag = mix64(h ^ 0x9e3779b97f4a7c15ULL) & ~VT_TAG_BIT;
+	// Keys that share a slot agree on h's index bits, so only h's 47 bits above the index of a
+	// 128K-slot table differ between them; that is still a 2^-47 chance that two colliding keys get the
+	// same tag, and it avoids a second mix on the read path.
+	ref.keyTag = h >> 1;
 	return ref;
 }
 
-bool VerificationTable::verifyVersion(
+bool VerificationTable::verifyEncoded(
 	std::atomic<uint64_t>* slot,
 	uint64_t expectedVersion
 ) {
@@ -147,7 +149,7 @@ bool VerificationTable::verifyVersion(
 	return v == expectedVersion;
 }
 
-bool VerificationTable::populateVersion(
+bool VerificationTable::populateEncoded(
 	std::atomic<uint64_t>* slot,
 	uint64_t newVersion
 ) {
@@ -176,7 +178,7 @@ bool VerificationTable::populateVersion(
 	}
 }
 
-bool VerificationTable::populateVersionIfUnchanged(
+bool VerificationTable::populateEncodedIfUnchanged(
 	std::atomic<uint64_t>* slot,
 	uint64_t observed,
 	uint64_t newVersion

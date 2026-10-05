@@ -104,17 +104,13 @@ inline uint64_t vtEncodeVersion(uint64_t version, uint64_t keyTag) {
 	return vtIsVersion(version) ? version ^ keyTag : 0;
 }
 
-/**
- * A key's slot plus its tag. Every comparison or publication of a version goes through this, so
- * stored values are always encoded; lock and settle paths only need `slot`.
- */
+// Lock and settle paths only need `slot`; every version comparison or publication needs the tag.
 struct VtSlotRef {
 	std::atomic<uint64_t>* slot = nullptr;
 	uint64_t keyTag = 0;
 
 	explicit operator bool() const { return slot != nullptr; }
 	uint64_t load() const { return slot->load(std::memory_order_acquire); }
-	// Whether `observed` (a value loaded from this slot) vouches for `version` of this key.
 	bool holds(uint64_t observed, uint64_t version) const {
 		const uint64_t encoded = vtEncodeVersion(version, keyTag);
 		return encoded != 0 && observed == encoded;
@@ -193,10 +189,6 @@ public:
 		const rocksdb::Slice& key
 	) const;
 
-	/**
-	 * slotFor() plus the key's tag, for every path that verifies or publishes a version. Returns an
-	 * empty ref when the table is disabled.
-	 */
 	VtSlotRef slotRefFor(
 		uint64_t dbId,
 		uint32_t cfId,
@@ -204,22 +196,25 @@ public:
 	) const;
 
 	/**
-	 * Returns true if the slot currently holds a version equal to
-	 * `expectedVersion`.
+	 * The *Encoded primitives take slot values already encoded with the key's
+	 * tag (vtEncodeVersion); passing a plain version reopens cross-key matches.
+	 * Callers outside the table use the VtSlotRef overloads below.
+	 *
+	 * Returns true if the slot currently holds `expectedVersion`.
 	 */
-	static bool verifyVersion(std::atomic<uint64_t>* slot, uint64_t expectedVersion);
+	static bool verifyEncoded(std::atomic<uint64_t>* slot, uint64_t expectedVersion);
 
 	/**
-	 * Unconditionally installs `newVersion`, overwriting whatever the slot holds
+	 * Unconditionally installs encoded `newVersion`, overwriting whatever the slot holds
 	 * (0, a settled-empty marker, or an older version) except a lock, which is
 	 * never overwritten. This is the low-level "force set" primitive behind the
 	 * explicit populateVersion() JS API; the cold read path uses
 	 * populateVersionIfUnchanged() instead. Returns true on success.
 	 */
-	static bool populateVersion(std::atomic<uint64_t>* slot, uint64_t newVersion);
+	static bool populateEncoded(std::atomic<uint64_t>* slot, uint64_t newVersion);
 
 	/**
-	 * Conditionally publishes `newVersion`, succeeding only if the slot still
+	 * Conditionally publishes encoded `newVersion`, succeeding only if the slot still
 	 * holds `observed` — the value the caller loaded *before* reading the value
 	 * from RocksDB. This is the lock-free cold populate: a single CAS that is a
 	 * no-op if any write cycle intervened between the read and the populate
@@ -228,21 +223,20 @@ public:
 	 * publish a stale or superseded version. Skips (returns false) when `observed`
 	 * is a lock or `newVersion` is not a real version.
 	 */
-	static bool populateVersionIfUnchanged(
+	static bool populateEncodedIfUnchanged(
 		std::atomic<uint64_t>* slot,
 		uint64_t observed,
 		uint64_t newVersion
 	);
 
-	// The same three operations on a key's tagged slot; versions are encoded with its tag.
 	static bool verifyVersion(const VtSlotRef& ref, uint64_t expectedVersion) {
-		return verifyVersion(ref.slot, vtEncodeVersion(expectedVersion, ref.keyTag));
+		return verifyEncoded(ref.slot, vtEncodeVersion(expectedVersion, ref.keyTag));
 	}
 	static bool populateVersion(const VtSlotRef& ref, uint64_t newVersion) {
-		return populateVersion(ref.slot, vtEncodeVersion(newVersion, ref.keyTag));
+		return populateEncoded(ref.slot, vtEncodeVersion(newVersion, ref.keyTag));
 	}
 	static bool populateVersionIfUnchanged(const VtSlotRef& ref, uint64_t observed, uint64_t newVersion) {
-		return populateVersionIfUnchanged(ref.slot, observed, vtEncodeVersion(newVersion, ref.keyTag));
+		return populateEncodedIfUnchanged(ref.slot, observed, vtEncodeVersion(newVersion, ref.keyTag));
 	}
 
 	/**
