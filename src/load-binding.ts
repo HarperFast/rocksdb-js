@@ -541,12 +541,24 @@ export type RocksDatabaseConfig = {
 	blockCacheSize?: number;
 	/**
 	 * Number of commit lock buckets each writable optimistic database allocates
-	 * when it is opened. Defaults to 4,096; accepts integers from 16 through
-	 * 16,777,216. Applies to databases opened after the call; open databases
-	 * keep their count. Buckets are private to each database, and keys sharing
-	 * a bucket only serialize commits, so this does not limit transaction size.
+	 * when opened with parallel validation. Defaults to 65,536 (about 2.5 MiB per
+	 * database on Linux x64; RocksDB's own default is 2^20); accepts integers
+	 * from 16 through 16,777,216. Applies to databases opened after the call; open
+	 * databases keep their count. Smaller pools only cost throughput when several
+	 * threads commit synchronously to the same database at once. This does not
+	 * limit transaction size.
 	 */
 	occLockBuckets?: number;
+	/**
+	 * How writable optimistic databases opened after the call validate commits.
+	 * `'parallel'` (default, RocksDB's default) uses the `occLockBuckets` pool and
+	 * lets concurrent commits share a RocksDB write. `'serial'` validates inside
+	 * the write group and allocates no bucket pool: faster for databases written
+	 * almost only by async transaction commits, but RocksDB never batches its
+	 * commits with other writers, so concurrent `commitSync()` callers on the same
+	 * database lose throughput. Open databases keep their policy.
+	 */
+	occValidation?: 'parallel' | 'serial';
 	/**
 	 * Number of slots in the process-global verification table. Each slot is
 	 * 8 bytes; the default of 128K slots is 1 MB. Set to 0 to disable.

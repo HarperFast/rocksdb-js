@@ -1706,6 +1706,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	} else {
 		rocksdb::OptimisticTransactionDBOptions occOptions;
 		occOptions.occ_lock_buckets = settings.getOccLockBucketCount();
+		if (settings.getOccValidateSerial()) {
+			occOptions.validate_policy = rocksdb::OccValidationPolicy::kValidateSerial;
+		}
 		rocksdb::OptimisticTransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
 		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, occOptions, identityPath, cfDescriptors, &cfHandles, &rdb);

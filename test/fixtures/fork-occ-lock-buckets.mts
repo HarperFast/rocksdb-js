@@ -68,7 +68,7 @@ if (!isMainThread) {
 } else {
 	const [root, mode] = process.argv.slice(2);
 	assert.ok(root);
-	assert.ok(['default', 'configured', 'transactions'].includes(mode));
+	assert.ok(['default', 'configured', 'transactions', 'serial'].includes(mode));
 	mkdirSync(root, { recursive: true });
 	const result: Record<string, number | null> = {};
 
@@ -98,11 +98,28 @@ if (!isMainThread) {
 		for (const invalid of ['16', true, {}, 16n]) {
 			assert.throws(() => RocksDatabase.config({ occLockBuckets: invalid } as any), TypeError);
 		}
-		RocksDatabase.config({ occLockBuckets: 16777216 });
-		RocksDatabase.config({ occLockBuckets: undefined });
-		RocksDatabase.config({ occLockBuckets: null } as any);
-		RocksDatabase.config({ occLockBuckets: 16 });
+		for (const invalid of ['', 'Serial', 'parallel ', 'optimistic', 'serial\0']) {
+			assert.throws(() => RocksDatabase.config({ occValidation: invalid } as any), RangeError);
+		}
+		for (const invalid of [0, true, {}, ['serial']]) {
+			assert.throws(() => RocksDatabase.config({ occValidation: invalid } as any), TypeError);
+		}
+		assert.throws(() => RocksDatabase.config({ occLockBuckets: 32, occValidation: 'x' } as any));
+		RocksDatabase.config({ occLockBuckets: 16777216, occValidation: 'serial' });
+		RocksDatabase.config({ occLockBuckets: undefined, occValidation: undefined });
+		RocksDatabase.config({ occLockBuckets: null, occValidation: null } as any);
+		RocksDatabase.config({ occLockBuckets: 16, occValidation: 'parallel' });
+	}
 
+	if (mode === 'serial') {
+		// Serial validation allocates no bucket pool, so even 2^20 buckets cost nothing.
+		RocksDatabase.config({ occLockBuckets: 1 << 20, occValidation: 'serial' });
+		const serial = openMany(root, 'serial', 3);
+		for (const db of serial.dbs) db.close();
+		result.serialGrowthMiB = serial.growth;
+	}
+
+	if (mode === 'transactions' || mode === 'serial') {
 		const pessimisticPath = join(root, 'pessimistic');
 		const pessimistic = RocksDatabase.open(pessimisticPath, { ...options, pessimistic: true });
 		pessimistic.putSync('key', 'value');
@@ -114,7 +131,7 @@ if (!isMainThread) {
 		const dbs = [0, 1].map((i) => RocksDatabase.open(join(root, `db${i}`), options));
 		const other = RocksDatabase.open(join(root, 'db0'), { ...options, name: 'other' });
 		try {
-			// 1,024 keys over 16 buckets: every bucket is shared many times within one commit.
+			// With parallel validation, 1,024 keys share each of the 16 buckets many times in one commit.
 			for (const sync of [false, true]) {
 				const txn = new Transaction(dbs[0].store);
 				for (let i = 0; i < 1024; i++) txn.putSync(`bulk-${sync}-${i}`, i);
