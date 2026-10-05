@@ -1,13 +1,23 @@
-# Process-wide optimistic commit lock buckets
+# Per-database optimistic commit lock buckets
 
-Every writable optimistic descriptor uses the same `DBSettings`-owned `OccLockBuckets`.
-`getOccLockBuckets()` and `Config()` share one mutex, so the count freezes at materialization,
-including a failed open, and cannot change across worker threads or close/shutdown/reopen.
-Configuration releases this mutex before constructing a JS error, whose allocation may run finalizers.
-The settings retain the pool for the process lifetime; RocksDB also retains shared ownership
-until database teardown, which must drain native commits before destroying their databases.
-RocksDB orders and deduplicates bucket locks and validates conflicts per database/key; sharing
-adds cross-database waiting through the write (including WAL sync and stalls), not false conflicts.
-A write that cannot progress can hold those buckets indefinitely and block other databases.
-`test/occ-lock-buckets.test.ts` covers the lifetime/configuration contract and worker commits;
-its Linux memory assertions distinguish shared pools from RocksDB's private-pool fallback.
+Every writable optimistic descriptor opens with RocksDB's private `OccLockBuckets` pool, sized by
+`DBSettings::getOccLockBucketCount()` at open time (`RocksDatabase.config({ occLockBuckets })`,
+default 4,096). `kValidateParallel` takes the buckets for a commit's keys in sorted order, runs the
+conflict check, and holds them through `DB::Write()`, so a bucket can be held for a WAL sync or a
+write stall.
+
+A small pool is enough because almost nothing contends for it. Async commits to one database run
+one at a time on its `CommitWorker` lane, so the lane never waits on itself. The only waiters on
+the same buckets are `commitSync()` calls on that database (plus concurrent libuv commits in the
+legacy `ROCKSDB_JS_COMMIT_THREAD=0` mode). Harper also disables the RocksDB WAL for tables, so
+buckets are not held across a WAL fsync there. RocksDB's 2^20 default cost about 40 MiB per
+database on Linux x64, which dominated the footprint of processes that open many databases.
+
+The pool must stay private. A process-wide shared pool (RocksDB's `shared_lock_buckets`) makes
+commits in unrelated databases contend on hash collisions, and because buckets are held through
+the write, one database in a write stall can block commits in every other database whose keys
+collide with its pending commit. Private pools cannot couple databases. Sorted acquisition keeps
+the lane-versus-`commitSync()` case deadlock-free.
+
+`test/occ-lock-buckets.test.ts` covers validation, conflict detection with small pools, and a
+Linux memory assertion that fails if opens fall back to RocksDB's 2^20 default.

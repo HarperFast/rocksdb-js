@@ -23,9 +23,12 @@ namespace rocksdb_js {
  * lane that writes the log batch before forwarding to the commit lane (see
  * commitThreadMode() in transaction.cpp). Each lane preserves dispatch order —
  * which keeps per-database commit order stable and serializes the
- * transaction-log write mutex for free. RocksDB commits never block on one
- * another's locks (pessimistic locks are acquired at put time, optimistic
- * validation does not block), so a single commit lane cannot deadlock.
+ * transaction-log write mutex for free. A single commit lane cannot deadlock:
+ * pessimistic locks are acquired at put time, and optimistic parallel
+ * validation takes its database's commit lock buckets in sorted order and
+ * releases them when the RocksDB write returns. The buckets are private to
+ * each database, so the only commits that can wait on this lane's buckets
+ * are `commitSync()` calls on the same database.
  *
  * The thread is started lazily on the first task and joined on shutdown after
  * draining any queued tasks. Each run-loop wakeup drains the entire queue

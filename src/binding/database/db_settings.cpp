@@ -27,7 +27,7 @@ uint64_t generateSeed() {
 DBSettings::DBSettings():
 	blockCacheSize(32 * 1024 * 1024), // 32MB (RocksDB default)
 	blockCache(nullptr),
-	occLockBucketCount(1 << 20),
+	occLockBucketCount(4096),
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
@@ -58,14 +58,6 @@ std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
 		blockCache = rocksdb::NewLRUCache(blockCacheSize);
 	}
 	return blockCache;
-}
-
-std::shared_ptr<rocksdb::OccLockBuckets> DBSettings::getOccLockBuckets() {
-	std::lock_guard<std::mutex> lock(occLockBucketsMutex);
-	if (!occLockBuckets) {
-		occLockBuckets = rocksdb::MakeSharedOccLockBuckets(occLockBucketCount);
-	}
-	return occLockBuckets;
 }
 
 /**
@@ -166,19 +158,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			::napi_throw_range_error(env, nullptr, "occLockBuckets must be an integer between 16 and 16777216");
 			return nullptr;
 		}
-		bool differentLiveCount;
-		{
-			std::lock_guard<std::mutex> lock(settings.occLockBucketsMutex);
-			differentLiveCount = settings.occLockBuckets && count != settings.occLockBucketCount;
-			if (!differentLiveCount) {
-				settings.occLockBucketCount = static_cast<uint32_t>(count);
-			}
-		}
-		if (differentLiveCount) {
-			::napi_throw_error(env, nullptr,
-				"occLockBuckets cannot be changed after the shared pool has been created; configure it before the first writable optimistic database open");
-			return nullptr;
-		}
+		settings.occLockBucketCount.store(static_cast<uint32_t>(count), std::memory_order_relaxed);
 	}
 
 	int64_t blockCacheSize = 0;

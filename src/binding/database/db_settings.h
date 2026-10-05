@@ -6,7 +6,6 @@
 #include <mutex>
 #include <node_api.h>
 #include "rocksdb/cache.h"
-#include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/write_buffer_manager.h"
 #include "core/verification_table.h"
 
@@ -22,9 +21,8 @@ private:
 
 	size_t blockCacheSize;
 	std::shared_ptr<rocksdb::Cache> blockCache;
-	uint32_t occLockBucketCount;
-	std::shared_ptr<rocksdb::OccLockBuckets> occLockBuckets;
-	std::mutex occLockBucketsMutex;
+	// Atomic because async opens read it on libuv worker threads.
+	std::atomic<uint32_t> occLockBucketCount;
 
 	// Total memory limit (bytes) shared across all databases for active and
 	// immutable memtables. 0 disables the manager (each database uses its own
@@ -85,7 +83,10 @@ public:
 	}
 
 	std::shared_ptr<rocksdb::Cache> getBlockCache();
-	std::shared_ptr<rocksdb::OccLockBuckets> getOccLockBuckets();
+
+	uint32_t getOccLockBucketCount() const {
+		return occLockBucketCount.load(std::memory_order_relaxed);
+	}
 
 	size_t getWriteBufferManagerSize() const {
 		return writeBufferManagerSize.load(std::memory_order_relaxed);
