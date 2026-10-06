@@ -72,8 +72,11 @@ one exception, fixed here:
   now read through a callback under that mutex, after the position leaves the uncommitted set,
   when every lower position has already returned from `Commit()`.
 - The committed-read watermark is the lowest position in the uncommitted set, under the same
-  mutex, so it only advances over a contiguous prefix of committed transactions, and the commit
-  that advances it emits `'committed'` afterward on the same thread.
+  mutex, so it only advances over a contiguous prefix of committed transactions. Every
+  successful commit emits `'committed'` on its own completion, whether or not it was the one
+  that moved the watermark — with out-of-order completion, a later-dispatched commit can emit
+  `'committed'` while the watermark is still pinned on an earlier, not-yet-committed position,
+  so a committed `log.query()` does not yet see that transaction's entry.
 - Recovery's unclosed-tail discard (AGENTS.md invariant 14) needs only that a transaction's log
   write completes before its own RocksDB commit and that log writes are serialized, which the
   store's write mutex guarantees in every mode.

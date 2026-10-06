@@ -260,10 +260,13 @@ Sets global database settings.
     the commits reach the log; a log reader never sees an entry before its transaction's data is
     committed. Log position is not the order in which writes to the same key were applied: a
     commit that conflicts and is retried keeps its original log position but lands after commits
-    logged behind it, so a consumer that replays entries for one key must order them by
-    transaction timestamp rather than by position. Concurrent commit threads make this more
-    frequent; a single commit thread and `commitSync()` callers could already produce it. With `1`, a database's async commits run one at a time in the order `commit()` was
-    called. Databases already open keep their limit.
+    logged behind it. Its transaction timestamp is frozen at the same point as its log position
+    (it does not advance across a retry), so replaying entries for one key in timestamp order
+    does not recover true apply order either — a consumer that needs one must have the producer
+    embed its own last-writer-wins marker. Concurrent commit threads make this more frequent; a
+    single commit thread and `commitSync()` callers could already produce it. With `1`, a
+    database's async commits run one at a time in the order `commit()` was called. Databases
+    already open keep their limit.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
   - `occValidation: 'parallel' | 'serial'` How writable optimistic databases opened after the call
     validate commits for conflicts. Defaults to `'parallel'` (RocksDB's default). Databases already

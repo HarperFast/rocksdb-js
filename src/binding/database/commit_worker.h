@@ -102,9 +102,6 @@ struct CommitWorker final {
 		return this->queue.size();
 	}
 
-	/**
-	 * Number of threads started so far.
-	 */
 	size_t threadCount() {
 		std::lock_guard<std::mutex> lock(this->mutex);
 		return this->threads.size();

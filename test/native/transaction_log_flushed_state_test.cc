@@ -319,18 +319,24 @@ TEST(TransactionLogFlushedState, OutOfOrderCommitsKeepFlushCorrelationBehindUnfl
 			return sample;
 		});
 	});
+	bool sampledInTime;
 	{
 		std::unique_lock<std::mutex> lock(mutex);
-		changed.wait(lock, [&]() { return sampled; });
+		sampledInTime = changed.wait_for(lock, std::chrono::seconds(5), [&]() { return sampled; });
 	}
-	latest = 11;
-	store->commitFinished(earlier, [&]() { return latest.load(); });
-	{
-		std::lock_guard<std::mutex> lock(mutex);
-		earlierPublished = true;
-		changed.notify_all();
+	if (sampledInTime) {
+		latest = 11;
+		store->commitFinished(earlier, [&]() { return latest.load(); });
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			earlierPublished = true;
+			changed.notify_all();
+		}
 	}
+	// Join unconditionally — even on timeout above, laterCommit's own 200ms wait_for bounds how
+	// long its thread can still be running — before any ASSERT_* can return out of this scope.
 	laterCommit.join();
+	ASSERT_TRUE(sampledInTime) << "commitFinished never called the sequence sampler";
 
 	// A flush through sequence 10 holds the later transaction but not the earlier one.
 	store->databaseFlushed(10);

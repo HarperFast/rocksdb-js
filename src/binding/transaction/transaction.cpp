@@ -1062,7 +1062,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					descriptorOwner->commitWorker.enqueue(commitStage);
 				});
 			} else {
-				// Default: both stages run back to back on a commit thread.
 				descriptor->commitWorker.enqueue([state, commitStage]() {
 					executeLogWork(state);
 					commitStage();
