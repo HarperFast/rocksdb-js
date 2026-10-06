@@ -185,13 +185,6 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	if (occLockBucketsProvided) {
-		settings.occLockBucketCount.store(static_cast<uint32_t>(count), std::memory_order_relaxed);
-	}
-	if (occValidationProvided) {
-		settings.occValidateSerial.store(validateSerial, std::memory_order_relaxed);
-	}
-
 	int64_t blockCacheSize = 0;
 	napi_status status = rocksdb_js::getProperty(env, params, "blockCacheSize", blockCacheSize, true);
 	if (status == napi_ok) {
@@ -319,6 +312,15 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
+	}
+
+	// Stored last: both occ fields are validated up front, but a later field's
+	// throw must still leave them untouched.
+	if (occLockBucketsProvided) {
+		settings.occLockBucketCount.store(static_cast<uint32_t>(count), std::memory_order_relaxed);
+	}
+	if (occValidationProvided) {
+		settings.occValidateSerial.store(validateSerial, std::memory_order_relaxed);
 	}
 
 	NAPI_RETURN_UNDEFINED();
