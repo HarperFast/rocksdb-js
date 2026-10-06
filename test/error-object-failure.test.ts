@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -37,11 +38,16 @@ function runFixture(
 describe('native error construction failure', () => {
 	it('settles every promise and throw with the exception a failed error builder throws', async () => {
 		const suffix = `${process.pid}-${Date.now()}`;
-		const { code, stdout } = await runFixture(
-			join(tmpdir(), `rocksdb-js-error-object-db-${suffix}`),
-			join(tmpdir(), `rocksdb-js-error-object-missing-${suffix}`)
-		);
-		expect(code).toBe(0);
-		expect(stdout).toContain('settled');
+		const dbPath = join(tmpdir(), `rocksdb-js-error-object-db-${suffix}`);
+		try {
+			const { code, stdout } = await runFixture(
+				dbPath,
+				join(tmpdir(), `rocksdb-js-error-object-missing-${suffix}`)
+			);
+			expect(code).toBe(0);
+			expect(stdout).toContain('settled');
+		} finally {
+			rmSync(dbPath, { recursive: true, force: true });
+		}
 	}, 15_000);
 });
