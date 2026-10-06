@@ -189,6 +189,11 @@ public:
 		const rocksdb::Slice& key
 	) const;
 
+	/**
+	 * Returns the slot for the given (db, cf, key) together with the key's tag.
+	 * Verify and publish versions through this ref so slot values carry the
+	 * tag. Returns an empty ref when the table is disabled.
+	 */
 	VtSlotRef slotRefFor(
 		uint64_t dbId,
 		uint32_t cfId,
