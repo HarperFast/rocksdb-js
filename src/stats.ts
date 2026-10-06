@@ -58,6 +58,7 @@ export type StatsBasics = {
 	'txnlog.replayGapBytes': number;
 	'commitPipeline.logQueueDepth': number;
 	'commitPipeline.commitQueueDepth': number;
+	'commitPipeline.commitThreads': number;
 	'columnFamily.pendingReclaims': number;
 	'writeBufferManager.bufferSize': number;
 	'writeBufferManager.memoryUsage': number;

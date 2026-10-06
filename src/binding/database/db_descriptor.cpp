@@ -456,7 +456,8 @@ DBDescriptor::DBDescriptor(
 	attachedWriteBufferManager(attachedWriteBufferManager),
 	columns(std::move(columns)),
 	retiringCondition(std::make_shared<std::condition_variable>()),
-	statistics(statistics)
+	statistics(statistics),
+	commitWorker("rocksdb-commit", DBSettings::getInstance().getCommitThreads())
 {
 	// Resolve the debounce window here (JS thread, open path) so the emit path on
 	// a RocksDB background thread reads a plain field instead of calling ::getenv.
@@ -1704,9 +1705,13 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		DEBUG_LOG("DBDescriptor::open Opened pessimistic transaction db for \"%s\"\n", path.c_str());
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 	} else {
+		rocksdb::OptimisticTransactionDBOptions occOptions;
+		occOptions.occ_lock_buckets = settings.getOccLockBucketCount();
+		occOptions.validate_policy = settings.getOccValidateSerial() ? rocksdb::OccValidationPolicy::kValidateSerial
+		                                                              : rocksdb::OccValidationPolicy::kValidateParallel;
 		rocksdb::OptimisticTransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
-		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
+		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, occOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
 			throw rocksdb_js::DBException(status.ToString());

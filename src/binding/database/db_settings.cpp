@@ -1,7 +1,10 @@
 #include "database/db_settings.h"
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <random>
+#include <thread>
 #include "database/db_stats.h"
 #include "napi/macros.h"
 #include "napi/helpers.h"
@@ -11,6 +14,11 @@
 namespace rocksdb_js {
 
 namespace {
+
+uint32_t defaultCommitThreads() {
+	const unsigned cores = std::thread::hardware_concurrency();
+	return cores == 0 ? 1 : std::min(4u, cores);
+}
 
 uint64_t generateSeed() {
 	std::random_device rd;
@@ -27,6 +35,9 @@ uint64_t generateSeed() {
 DBSettings::DBSettings():
 	blockCacheSize(32 * 1024 * 1024), // 32MB (RocksDB default)
 	blockCache(nullptr),
+	occLockBucketCount(1 << 16),
+	occValidateSerial(false),
+	commitThreads(defaultCommitThreads()),
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
@@ -142,6 +153,62 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 	DBSettings& settings = DBSettings::getInstance();
 	napi_value params = argv[0];
+
+	napi_value occLockBucketsValue;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "occLockBuckets", &occLockBucketsValue));
+	napi_valuetype occLockBucketsType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, occLockBucketsValue, &occLockBucketsType));
+	double count = 0;
+	const bool occLockBucketsProvided = occLockBucketsType != napi_undefined && occLockBucketsType != napi_null;
+	if (occLockBucketsProvided) {
+		if (::napi_get_value_double(env, occLockBucketsValue, &count) != napi_ok) {
+			::napi_throw_type_error(env, nullptr, "occLockBuckets must be a number");
+			return nullptr;
+		}
+		if (!std::isfinite(count) || std::trunc(count) != count || count < 16 || count > (1 << 24)) {
+			::napi_throw_range_error(env, nullptr, "occLockBuckets must be an integer between 16 and 16777216");
+			return nullptr;
+		}
+	}
+
+	napi_value occValidationValue;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "occValidation", &occValidationValue));
+	napi_valuetype occValidationType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, occValidationValue, &occValidationType));
+	bool validateSerial = false;
+	const bool occValidationProvided = occValidationType != napi_undefined && occValidationType != napi_null;
+	if (occValidationProvided) {
+		if (occValidationType != napi_string) {
+			::napi_throw_type_error(env, nullptr, "occValidation must be a string");
+			return nullptr;
+		}
+		char policy[16];
+		size_t length = 0;
+		NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, occValidationValue, policy, sizeof(policy), &length));
+		if (length == 6 && std::strcmp(policy, "serial") == 0) {
+			validateSerial = true;
+		} else if (!(length == 8 && std::strcmp(policy, "parallel") == 0)) {
+			::napi_throw_range_error(env, nullptr, "occValidation must be 'parallel' or 'serial'");
+			return nullptr;
+		}
+	}
+
+	napi_value commitThreadsValue;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "commitThreads", &commitThreadsValue));
+	napi_valuetype commitThreadsType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, commitThreadsValue, &commitThreadsType));
+	double commitThreads = 0;
+	const bool commitThreadsProvided = commitThreadsType != napi_undefined && commitThreadsType != napi_null;
+	if (commitThreadsProvided) {
+		if (::napi_get_value_double(env, commitThreadsValue, &commitThreads) != napi_ok) {
+			::napi_throw_type_error(env, nullptr, "commitThreads must be a number");
+			return nullptr;
+		}
+		if (!std::isfinite(commitThreads) || std::trunc(commitThreads) != commitThreads || commitThreads < 1 || commitThreads > 64) {
+			::napi_throw_range_error(env, nullptr, "commitThreads must be an integer between 1 and 64");
+			return nullptr;
+		}
+	}
 
 	int64_t blockCacheSize = 0;
 	napi_status status = rocksdb_js::getProperty(env, params, "blockCacheSize", blockCacheSize, true);
@@ -270,6 +337,26 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
+	}
+
+	// Stored last: all three fields are validated up front, but a later field's
+	// throw must still leave them untouched. A getter that throws (rather than just
+	// supplying the wrong type) leaves a pending exception none of the reads above
+	// check for; catch it here, right before the stores, so it stays correct
+	// regardless of which field above is last.
+	bool exceptionPending = false;
+	::napi_is_exception_pending(env, &exceptionPending);
+	if (exceptionPending) {
+		return nullptr;
+	}
+	if (occLockBucketsProvided) {
+		settings.occLockBucketCount.store(static_cast<uint32_t>(count), std::memory_order_relaxed);
+	}
+	if (occValidationProvided) {
+		settings.occValidateSerial.store(validateSerial, std::memory_order_relaxed);
+	}
+	if (commitThreadsProvided) {
+		settings.commitThreads.store(static_cast<uint32_t>(commitThreads), std::memory_order_relaxed);
 	}
 
 	NAPI_RETURN_UNDEFINED();

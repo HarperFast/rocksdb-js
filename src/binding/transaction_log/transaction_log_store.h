@@ -456,9 +456,15 @@ struct TransactionLogStore final {
 	bool tryClose();
 
 	/**
-	 * Notifies the transaction log store that a RocksDB commit operation has finished, and the transactions sequence number.
+	 * Notifies the transaction log store that a RocksDB commit operation has finished.
+	 *
+	 * `latestSequenceNumber` is read under `dataSetsMutex`, after this position leaves the
+	 * uncommitted set, and is paired with the fully committed position for flush correlation.
+	 * A sequence read before the lock may not cover a lower position that committed at a later
+	 * sequence and left the uncommitted set in between, and a flush at that sequence would then
+	 * record a replay start past unflushed data.
 	 */
-	void commitFinished(LogPosition position, rocksdb::SequenceNumber rocksSequenceNumber);
+	void commitFinished(LogPosition position, const std::function<rocksdb::SequenceNumber()>& latestSequenceNumber);
 
 	/**
 	 * Cleans up when a transaction handle is closed or garbage collected without
