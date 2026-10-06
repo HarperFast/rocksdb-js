@@ -413,9 +413,9 @@ export type FlushOptions = {
 	 * the descriptor is process-global and shared across `worker_threads`, so the stall lands on
 	 * every other column family and every other handle that opened the same path — not just the
 	 * one you called. It also relocates the hang rather than removing it: a stalled `db->Write()`
-	 * blocks the database's single `CommitWorker` thread, which dispatches every
-	 * `Transaction.commit()` in order, so the stall queues up every commit behind it — including
-	 * ones from callers that never touched flush — until the stall clears.
+	 * blocks each of the database's `CommitWorker` threads that reaches it, so the stall queues up
+	 * every async `Transaction.commit()` behind them — including ones from callers that never
+	 * touched flush — until the stall clears.
 	 *
 	 * Note this is a *different* knob from the `writeBufferManagerAllowStall` config, and their
 	 * polarity is nearly opposite: that one decides whether the WriteBufferManager may stall
@@ -540,6 +540,38 @@ export type NativeDatabase = {
 
 export type RocksDatabaseConfig = {
 	blockCacheSize?: number;
+	/**
+	 * Number of commit lock buckets each writable optimistic database allocates
+	 * when opened with parallel validation. Defaults to 65,536 (about 2.5 MiB per
+	 * database on Linux x64; RocksDB's own default is 2^20); accepts integers
+	 * from 16 through 16,777,216. Applies to databases opened after the call; open
+	 * databases keep their count. Smaller pools only cost throughput when several
+	 * commits to the same database overlap (`commitThreads`, `commitSync()`
+	 * callers) and their keys collide, which large transactions make likely:
+	 * raise the count for databases that commit hundreds of keys at a time. This
+	 * does not limit transaction size.
+	 */
+	occLockBuckets?: number;
+	/**
+	 * How writable optimistic databases opened after the call validate commits.
+	 * `'parallel'` (default, RocksDB's default) uses the `occLockBuckets` pool and
+	 * lets concurrent commits share a RocksDB write. `'serial'` validates inside
+	 * the write group and allocates no bucket pool, but RocksDB never batches its
+	 * commits with other writers, so a database's concurrent commits (its
+	 * `commitThreads` and any `commitSync()` callers) lose most of their
+	 * throughput. Open databases keep their policy.
+	 */
+	occValidation?: 'parallel' | 'serial';
+	/**
+	 * Maximum number of dedicated threads each database opened after the call uses
+	 * to commit async transactions. Threads start only when commits overlap, so a
+	 * database committed to one transaction at a time owns one. Defaults to
+	 * `min(4, hardware concurrency)`; accepts integers from 1 through 64. With 1,
+	 * async commits to a database run one at a time in dispatch order; with more,
+	 * concurrent commits finish (and their promises resolve) in any order, as
+	 * concurrent `commitSync()` calls always have. Open databases keep their limit.
+	 */
+	commitThreads?: number;
 	/**
 	 * Number of slots in the process-global verification table. Each slot is
 	 * 8 bytes; the default of 128K slots is 1 MB. Set to 0 to disable.

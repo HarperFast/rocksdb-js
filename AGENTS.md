@@ -178,12 +178,19 @@ C++ code that needs to emit to JS without a database context should call
 ### Commit execution
 
 Async `Transaction.commit()` does not use the libuv threadpool: each database
-has a dedicated commit thread (`CommitWorker`, owned by the shared
-`DBDescriptor`) that runs the txn-log write + RocksDB commit in dispatch order,
-so slow commits cannot starve fs/dns/crypto/async-get work sharing the libuv
-pool. `ROCKSDB_JS_COMMIT_THREAD` selects the mode (`0`/`false` = legacy libuv
-path, default = single lane, `2` = experimental two-lane txnlog→commit
-pipeline). Completions are marshalled back to the originating env via per-env
+owns dedicated threads (`CommitWorker`s on the shared `DBDescriptor`), so slow
+commits cannot starve fs/dns/crypto/async-get work sharing the libuv pool. The
+commit worker runs up to `commitThreads` threads (`RocksDatabase.config`,
+default `min(4, cores)`, read at open), started only when queued commits
+outnumber idle threads; each thread runs a commit's txn-log write and RocksDB
+commit back to back, so validation and memtable inserts use several cores and
+RocksDB can group concurrent commits into one write. With `commitThreads: 1` it
+is a lane that runs commits in dispatch order. Concurrent commits finish out of
+dispatch order, so nothing may depend on per-database commit order; the
+invariants that make that safe are in `src/binding/database/DESIGN.md`.
+`ROCKSDB_JS_COMMIT_THREAD` selects the mode (`0`/`false` = legacy libuv path,
+`2` = experimental two-lane pipeline: the `rocksdb-txnlog` lane writes log
+batches in dispatch order, then hands each commit to the commit threads). Completions are marshalled back to the originating env via per-env
 tsfns in per-env `CommitCompletion` objects. `commitMutex` protects only the
 registry lookup/creation and removal. Each DBHandle caches its env's completion
 on the owning JS thread and resets that cache on reopen; cross-env close leaves
@@ -230,8 +237,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - `MINIFY=1` - Enable minification of TypeScript bundle
 - `KEEP_FILES=1` - Don't delete temporary test databases for debugging purposes
 - `ROCKSDB_JS_COMMIT_THREAD` - Async-commit execution mode: `0`/`false` = legacy
-  libuv threadpool, unset = dedicated per-database commit thread (default),
-  `2` = experimental two-lane pipeline
+  libuv threadpool, unset = dedicated per-database commit threads (default; see
+  `commitThreads`), `2` = experimental two-lane txnlog→commit pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
 - `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` / `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only delays
@@ -848,9 +855,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     around: kept bytes are only invisible until the next commit moves the watermark past them, and
     then that batch's flag closes the phantom group — two source transactions merged into one for
     anything grouping on the flag. Discarding is safe because `writeBatch()` completes before
-    `Transaction::Commit()` in every commit path and both commit-thread lanes preserve dispatch
-    order, so an interrupted log write is always the newest thing in the log and its RocksDB commit
-    never ran. Recovery walks entry headers via positional reads (never a whole-file buffer);
+    `Transaction::Commit()` in every commit path and the store's write mutex serializes
+    `writeBatch()` calls, so an interrupted log write is always the newest thing in the log and its
+    RocksDB commit never ran. Recovery walks entry headers via positional reads (never a whole-file buffer);
     payload bytes are skipped. Discarding is gated on proof that the writer sets the flag — a
     boundary earlier in the same file — plus a single timestamp across the trailing run. Callers can
     assign repeated timestamps,
@@ -918,8 +925,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     condition rather than clear it, so opt in up front rather than reaching for it mid-hang. It
     relocates the hang rather than removing it, too:
     a stalled `db->Write()` blocks whichever thread calls it, and for a committing transaction that
-    is the descriptor's single `CommitWorker` thread (see "Commit execution" above), which dispatches
-    every `Transaction.commit()` in order — so opting a flush into a stall queues up every commit
+    is one of the descriptor's `CommitWorker` threads (see "Commit execution" above); a stall
+    blocks every commit thread in turn, so opting a flush into a stall queues up every commit
     behind it, including ones from callers that never touched flush.
 
 17. **Async-work admission and cancellation share one mutex; the drain that follows must never time
@@ -1197,9 +1204,14 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 24. **A column family is dropped logically at once and physically only when no admitted commit
     names it**: `Database::Drop`/`DropSync` used to call `DropColumnFamily` immediately, and a
     transaction commit already inside RocksDB naming that family — past optimistic validation
-    under the default `kValidateParallel`, or any pessimistic commit — failed in the memtable
-    inserter with `Invalid column family specified in write batch`, which `HandleMemTableInsertFailure`
-    latches as a fatal background error on the whole database (#806, #726; harper#1381). The rule
+    under the default `occValidation: 'parallel'` (`kValidateParallel`), or any pessimistic commit —
+    failed in the memtable inserter with `Invalid column family specified in write batch`, which
+    `HandleMemTableInsertFailure` latches as a fatal background error on the whole database (#806,
+    #726; harper#1381). Under `occValidation: 'serial'` the optimistic conflict check runs inside
+    the write group, which `DropColumnFamily` also enters (`EnterUnbatched`), so a dropped family
+    fails that check with `Could not access column family` before any memtable insert. That is
+    defense in depth only: the claim protocol below applies under both policies and is the only
+    protection for pessimistic commits. The rule
     now (`core/column_family_lifetime.h`, GoogleTest-covered): a commit **claims** every family
     its batch names once, at admission in `executeLogWork`/`CommitSync` **before** the
     transaction-log write (`ColumnFamilyCommitClaim`, RAII so a log-write failure, N-API/queue
@@ -1208,8 +1220,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     identity-checked erase from `columns`, `retired = true`, entry in `retiring`) and runs the
     physical drop itself only when `admitted == 0`, otherwise the last releasing commit runs it
     (`reclaimColumnFamily`). In the deferred case that last release runs `DropColumnFamily` inline:
-    an async commit lane pays the MANIFEST write/fsync before dispatching its completion and commits
-    queued behind it wait too, while `commitSync()` pays it on its calling JS thread. Moving
+    an async commit thread pays the MANIFEST write/fsync before dispatching its completion (with
+    `commitThreads: 1`, commits queued behind it wait too), while `commitSync()` pays it on its calling JS thread. Moving
     reclamation elsewhere would need a new lifetime owner. An admitted commit's transaction-log
     entries are published even though the subsequent physical drop discards its data; downstream
     consumers must order the schema drop after those entries.

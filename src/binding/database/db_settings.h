@@ -21,6 +21,10 @@ private:
 
 	size_t blockCacheSize;
 	std::shared_ptr<rocksdb::Cache> blockCache;
+	// Atomic because config() and open() can run on different worker_threads.
+	std::atomic<uint32_t> occLockBucketCount;
+	std::atomic<bool> occValidateSerial;
+	std::atomic<uint32_t> commitThreads;
 
 	// Total memory limit (bytes) shared across all databases for active and
 	// immutable memtables. 0 disables the manager (each database uses its own
@@ -81,6 +85,18 @@ public:
 	}
 
 	std::shared_ptr<rocksdb::Cache> getBlockCache();
+
+	uint32_t getOccLockBucketCount() const {
+		return occLockBucketCount.load(std::memory_order_relaxed);
+	}
+
+	bool getOccValidateSerial() const {
+		return occValidateSerial.load(std::memory_order_relaxed);
+	}
+
+	uint32_t getCommitThreads() const {
+		return commitThreads.load(std::memory_order_relaxed);
+	}
 
 	size_t getWriteBufferManagerSize() const {
 		return writeBufferManagerSize.load(std::memory_order_relaxed);
