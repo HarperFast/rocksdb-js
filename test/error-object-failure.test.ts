@@ -14,15 +14,17 @@ function runFixture(
 		const child = spawn(process.execPath, [fixture, dbPath, missingDir]);
 		let stdout = '';
 		let stderr = '';
+		let timedOut = false;
 		child.stdout.on('data', (chunk) => {
 			stdout += chunk.toString();
 		});
 		child.stderr.on('data', (chunk) => {
 			stderr += chunk.toString();
 		});
+		// Reject only after the child exits, so the caller's cleanup never races a live child.
 		const timeout = setTimeout(() => {
-			child.kill();
-			reject(new Error(`Error-object fixture timed out\n${stderr}`));
+			timedOut = true;
+			child.kill('SIGKILL');
 		}, 10_000);
 		child.on('error', (error) => {
 			clearTimeout(timeout);
@@ -30,7 +32,8 @@ function runFixture(
 		});
 		child.on('close', (code) => {
 			clearTimeout(timeout);
-			resolve({ code, stdout });
+			if (timedOut) reject(new Error(`Error-object fixture timed out\n${stderr}`));
+			else resolve({ code, stdout });
 		});
 	});
 }

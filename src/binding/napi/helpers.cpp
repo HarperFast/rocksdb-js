@@ -262,10 +262,11 @@ static const char* errorCodeStrings[] = {
 
 // Some runtimes replace a pending exception, so synthesize one only when none is set.
 static void takeFailedCallException(napi_env env, napi_status status, napi_value& error) {
+	// Read the extended error before any other N-API call resets the last-error info.
+	std::string errorStr = getNapiExtendedError(env, status, nullptr);
 	bool pending = false;
 	::napi_is_exception_pending(env, &pending);
 	if (!pending) {
-		std::string errorStr = getNapiExtendedError(env, status, nullptr);
 		::napi_throw_error(env, nullptr, errorStr.c_str());
 	}
 	::napi_get_and_clear_last_exception(env, &error);
