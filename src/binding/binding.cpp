@@ -249,6 +249,17 @@ napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Returns the number of coordinated-retry wake callbacks registered on
+ * verification-table locks across the process. Used by tests to verify that a
+ * park which ends without a wake leaves no registration behind.
+ */
+napi_value LockWakeCallbackCount(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, LockTracker::registeredWakeCallbacks(), &result));
+	return result;
+}
+
+/**
  * The number of active `rocksdb-js` modules.
  *
  * There can be multiple instances of this module in the same Node.js process
@@ -500,6 +511,11 @@ NAPI_MODULE_INIT() {
 	napi_value transactionLogMapCountFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapCount", NAPI_AUTO_LENGTH, TransactionLogMapCount, nullptr, &transactionLogMapCountFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapCount", transactionLogMapCountFn));
+
+	// lockWakeCallbackCount function (test/diagnostics)
+	napi_value lockWakeCallbackCountFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "lockWakeCallbackCount", NAPI_AUTO_LENGTH, LockWakeCallbackCount, nullptr, &lockWakeCallbackCountFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "lockWakeCallbackCount", lockWakeCallbackCountFn));
 
 	// constants
 	napi_value constants;

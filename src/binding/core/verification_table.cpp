@@ -13,6 +13,8 @@ static std::atomic<uint16_t> vtGlobalGen{0};
 // settled-empty marker is always distinct from the all-zero initial state).
 static std::atomic<uint64_t> vtGlobalSettleGen{1};
 
+static std::atomic<int64_t> registeredWakeCallbackCount{0};
+
 // SplitMix64 finalizer.
 inline uint64_t mix64(uint64_t x) {
 	x ^= x >> 33;
@@ -353,23 +355,69 @@ void VerificationTable::cancelForDB(uint64_t dbId) {
 	}
 }
 
-bool LockTracker::addWakeCallback(std::function<void()> cb) {
-	std::lock_guard<std::mutex> lock(wakeCallbacksMutex);
-	if (woken) {
+LockTracker::WakeRegistration LockTracker::addWakeCallback(std::function<void()> cb) {
+	std::lock_guard<std::mutex> lock(this->wakeCallbacksMutex);
+	if (this->woken) {
+		return {};
+	}
+	if (!this->wakeList) {
+		this->wakeList = std::make_shared<WakeList>();
+	}
+	std::list<std::function<void()>>::iterator it;
+	{
+		std::lock_guard<std::mutex> listLock(this->wakeList->mutex);
+		it = this->wakeList->callbacks.insert(this->wakeList->callbacks.end(), std::move(cb));
+	}
+	registeredWakeCallbackCount.fetch_add(1, std::memory_order_relaxed);
+	return WakeRegistration(this->wakeList, it);
+}
+
+bool LockTracker::WakeRegistration::cancel() noexcept {
+	std::shared_ptr<WakeList> list = std::move(this->list);
+	std::list<std::function<void()>>::iterator it = std::exchange(this->it, {});
+	if (!list) {
 		return false;
 	}
-	wakeCallbacks.push_back(std::move(cb));
+	// Destroyed after the list mutex is released.
+	std::function<void()> removed;
+	{
+		std::lock_guard<std::mutex> lock(list->mutex);
+		if (list->drained) {
+			return false;
+		}
+		removed = std::move(*it);
+		list->callbacks.erase(it);
+	}
+	registeredWakeCallbackCount.fetch_sub(1, std::memory_order_relaxed);
 	return true;
 }
 
+// Must not allocate: callers hold writerMutex_, and releaseWriteIntent() runs
+// after the releasing transaction's commit has already landed.
 void LockTracker::wake() {
-	std::vector<std::function<void()>> cbs;
+	std::shared_ptr<WakeList> list;
 	{
-		std::lock_guard<std::mutex> lock(wakeCallbacksMutex);
-		woken = true;
-		cbs.swap(wakeCallbacks);
+		std::lock_guard<std::mutex> lock(this->wakeCallbacksMutex);
+		this->woken = true;
+		list = std::move(this->wakeList);
 	}
-	for (auto& cb : cbs) cb();
+	if (!list) {
+		return;
+	}
+	size_t count;
+	{
+		std::lock_guard<std::mutex> lock(list->mutex);
+		list->drained = true;
+		count = list->callbacks.size();
+	}
+	registeredWakeCallbackCount.fetch_sub(static_cast<int64_t>(count), std::memory_order_relaxed);
+	for (auto& cb : list->callbacks) {
+		cb();
+	}
+}
+
+int64_t LockTracker::registeredWakeCallbacks() {
+	return registeredWakeCallbackCount.load(std::memory_order_relaxed);
 }
 
 } // namespace rocksdb_js

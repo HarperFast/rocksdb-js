@@ -24,6 +24,7 @@
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
+#include "core/verification_table.h"
 #include "core/platform.h"
 #include "core/write_stall_debounce.h"
 #include "napi/event_emitter.h"
@@ -94,10 +95,12 @@ struct DBDeleter {
  * left" decision on — so there is no purge-skip window to retry in the first
  * place (the HarperFast/rocksdb-js#672 hazard).
  *
- * Parks are keyed by a monotonic `id`, not the entry's address:
- * `LockTracker::wakeCallbacks` has no removal API, so a stale closure can
- * outlive its entry and an address-keyed lookup could resolve a later,
- * unrelated park that reused the freed address. `fired` is the exactly-once
+ * Each park owns its `LockTracker` wake registration and cancels it as the
+ * park ends, so a timed-out or abandoned park leaves nothing registered on a
+ * lock that is still held. Cancelling cannot recall a callback `wake()` has
+ * already claimed, so a closure can still run after its entry is gone: parks
+ * are therefore keyed by a monotonic `id`, not the entry's address, which a
+ * later, unrelated park could reuse. `fired` is the exactly-once
  * gate shared with that park's wake callback — whichever side wins the CAS
  * calls+releases `tsfn`, always under `mutex` so a concurrent `releaseByEnv()`
  * for a dying env cannot observe "nothing to cancel" while the other side is
@@ -129,6 +132,13 @@ public:
 	void fire(uint64_t id);
 
 	/**
+	 * JS thread, after `schedule()`. Hands the park the registration its wake
+	 * callback was added with; if the park already ended (timeout, a real wake,
+	 * shutdown), the registration is cancelled on return instead.
+	 */
+	void attachWakeRegistration(uint64_t id, LockTracker::WakeRegistration registration);
+
+	/**
 	 * Module env-cleanup hook. Cancels every pending park registered for a
 	 * dying env -- released, never called, so neither the timeout thread nor a
 	 * later real wake can fire into a tsfn Node is about to free.
@@ -154,14 +164,16 @@ private:
 		napi_threadsafe_function tsfn;
 		std::shared_ptr<std::atomic<bool>> fired;
 		DeadlineIndex::iterator deadlineIt;
+		LockTracker::WakeRegistration wakeRegistration;
 	};
 
 	/** Detaches `id` from both indexes; null if already claimed. Holds `mutex`. */
 	std::unique_ptr<ParkTimeout> take(uint64_t id);
 
 	/**
-	 * Calls+releases a claimed park's tsfn, unless another side already won the
-	 * exactly-once gate. Every caller holds `mutex`.
+	 * Cancels a claimed park's wake registration, then calls+releases its tsfn
+	 * unless another side already won the exactly-once gate. Every caller holds
+	 * `mutex`.
 	 */
 	static void resolve(ParkTimeout& park);
 

@@ -789,12 +789,13 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `writerMutex_` order, and it would run a flush, a manual compaction, `WaitForCompact` and thread
     joins under the global VT lock. That is why `ParkTimeoutRegistry` is a standalone object owned by
     the descriptor through a `shared_ptr` rather than state on the descriptor itself: the wake closure
-    captures a **`std::weak_ptr<ParkTimeoutRegistry>`** and calls only `fire(id)`, which touches one
-    mutex and one map. Weak, not raw, because a park can end up registered on a tracker installed by a
+    captures a **`std::weak_ptr<ParkTimeoutRegistry>`** and calls only `fire(id)`, which touches the
+    registry's mutex and map plus the leaf mutex of the wake list it cancels against. Weak, not raw, because a park can end up registered on a tracker installed by a
     _different_ database on a colliding VT slot (`VerificationTable::lockSlotForWrite` joins an existing
-    tracker without retagging its `dbId`), so that lock's eventual release wakes a park whose own
-    database may already have closed — `cancelForDB()` only wakes trackers tagged with _its own_
-    `vtEpoch`, so it cannot be relied on to have resolved a foreign-`dbId` park first. Weak **to the
+    tracker without retagging its `dbId`), and `cancelForDB()` only wakes trackers tagged with _its own_
+    `vtEpoch`. Closing the park's database cancels its registration, but cancelling cannot recall a
+    callback that lock's release has already claimed in `wake()`, which then runs after the database
+    may have closed. Weak **to the
     registry and not to the descriptor** because a `weak_ptr<DBDescriptor>::lock()` is a transient extra
     reference, and `PurgeIfUnreferenced` decides on `use_count() <= 1`: a racing close would see the
     inflated count, skip the purge, and leak the registry entry plus the open RocksDB — the
@@ -805,10 +806,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     whether the real holder ever wakes it, so by the time the weak reference can fail, the park has
     already settled.
 
-    Each park is identified by a monotonic `uint64_t id`, not its entry's address: `LockTracker::wakeCallbacks`
-    has no removal API (see the gap noted below), so a stale closure can outlive its entry, and an
-    address-keyed lookup risks resolving a _different_, later park that reused the same freed heap
-    address. The timeout thread and the LockTracker wake callback race through one heap-allocated
+    Each park is identified by a monotonic `uint64_t id`, not its entry's address: a closure `wake()`
+    has already claimed can outlive its entry, and an address-keyed lookup risks resolving a
+    _different_, later park that reused the same freed heap address. The timeout thread and the LockTracker wake callback race through one heap-allocated
     `std::atomic<bool>` per park (independent of the per-park `RetryNowContext`, whose refs/TSFN the
     winning side's release eventually frees) — whichever fires first calls+releases the TSFN under the
     registry's `mutex` and erases the entry; the loser finds it already gone and touches nothing. That
@@ -818,13 +818,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     like `commitCompletionCallJs` does, for the same tsfn-queue-drained-during-teardown reason. Parks
     are indexed twice, by id and by deadline (`std::multimap`): `fire()` needs an O(1) lookup because it
     runs under the global VT mutex, and the timeout thread needs the earliest deadline on every wakeup
-    without an O(N) scan on that same lock. Known gap: `LockTracker::wakeCallbacks`
-    itself has no removal API. Before this change an abandoned holder accrued one inert callback per
-    waiter and then everything hung; now each waiter re-parks (and re-registers) every
-    `ROCKSDB_JS_PARK_TIMEOUT_MS` up to `maxRetries`, so registrations accumulate per _retry_ rather than
-    per incident for as long as it lasts (each is inert once its own park resolves, so this is a
-    memory-growth concern, not a correctness one) — deferred rather than risking an unreviewed change to
-    `verification_table.cpp`'s concurrency invariants under this fix's scope.
+    without an O(N) scan on that same lock. Each park owns the `LockTracker::WakeRegistration` its wake
+    callback was added with and cancels it in `resolve()` before calling the TSFN (and on destruction,
+    for every other drain), so a waiter that re-parks every `ROCKSDB_JS_PARK_TIMEOUT_MS` behind a holder
+    that never releases leaves nothing registered on that lock; `lockWakeCallbackCount()` reports the
+    process-wide total. The registration's lifetime and lock-order rules are in
+    [the verification-table design note](src/binding/core/DESIGN.md#wake-registrations).
 
 13. **A dropped transaction must release itself**: `DBDescriptor::transactionAdd` holds a **strong**
     `shared_ptr` (the parallel `closables` entry is weak), so the registry alone keeps a

@@ -4,9 +4,10 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
-#include <vector>
+#include <utility>
 #include "rocksdb/slice.h"
 
 namespace rocksdb_js {
@@ -126,36 +127,91 @@ struct VtSlotRef {
  * Released back to 0 after the last holder commits or aborts.
  *
  * Lifetime: heap-allocated; freed when refcount drops to zero.
- *
- * Phase 3 will add: waitersMutex + waiters[] for TSFN-based wake-up.
  */
 struct LockTracker {
+	/**
+	 * Pending wake callbacks. Allocated by the first addWakeCallback() rather
+	 * than with the tracker, which is installed under the global writerMutex_ on
+	 * every transactional write. Once `drained`, wake() owns `callbacks` and runs
+	 * them in place; nothing else modifies it.
+	 */
+	struct WakeList {
+		std::mutex                       mutex;
+		bool                             drained{false};
+		std::list<std::function<void()>> callbacks;
+	};
+
+	/**
+	 * A cancellable wake registration. References the list, never the tracker:
+	 * the park drops its tracker reference right after registering, and a
+	 * tracker reference would have to be dropped under writerMutex_, which
+	 * wake() already runs under. Holding the list keeps `it` valid until this
+	 * registration lets go of it. Destroying it cancels.
+	 */
+	class WakeRegistration {
+	public:
+		WakeRegistration() = default;
+		WakeRegistration(std::shared_ptr<WakeList> list, std::list<std::function<void()>>::iterator it)
+			: list(std::move(list)), it(it) {}
+		WakeRegistration(WakeRegistration&& other) noexcept
+			: list(std::move(other.list)), it(std::exchange(other.it, {})) {}
+		WakeRegistration& operator=(WakeRegistration&& other) noexcept {
+			if (this != &other) {
+				this->cancel();
+				this->list = std::move(other.list);
+				this->it = std::exchange(other.it, {});
+			}
+			return *this;
+		}
+		WakeRegistration(const WakeRegistration&) = delete;
+		WakeRegistration& operator=(const WakeRegistration&) = delete;
+		~WakeRegistration() { this->cancel(); }
+
+		/** False when nothing was registered (the tracker was already woken) or it was cancelled. */
+		explicit operator bool() const { return this->list != nullptr; }
+
+		/**
+		 * Removes the callback unless wake() already took the list — a callback
+		 * wake() has taken may still run. Returns whether this call removed it.
+		 * Idempotent.
+		 */
+		bool cancel() noexcept;
+
+	private:
+		std::shared_ptr<WakeList> list;
+		std::list<std::function<void()>>::iterator it{};
+	};
+
 	std::atomic<uint32_t> refcount{1};  // 1 for the slot reference + 1 per holder
 	std::atomic<uint32_t> holders{0};   // count of active intent registrations
 	uint16_t              generation;   // immutable after install; matches slot encoding
 	size_t                slotIndex;    // index in VT slots_ array (for cancelForDB)
 	uint64_t              dbId;         // per-open epoch of the owning DB (DBDescriptor::vtEpoch)
 
-	bool                               woken{false};
-	std::mutex                         wakeCallbacksMutex;
-	std::vector<std::function<void()>> wakeCallbacks;
+	bool                      woken{false};
+	std::mutex                wakeCallbacksMutex;  // guards woken and wakeList
+	std::shared_ptr<WakeList> wakeList;
 
 	LockTracker(size_t idx, uint16_t gen, uint64_t dbId)
 		: refcount(1), holders(0), generation(gen), slotIndex(idx), dbId(dbId) {}
 
 	/**
-	 * Registers a callback to be invoked when wake() is called.
-	 * If wake() was already called, returns false immediately — the caller should
-	 * proceed without parking (the lock has already been released).
+	 * Registers a callback to be invoked when wake() is called. If wake() was
+	 * already called, returns an empty registration — the caller should proceed
+	 * without parking (the lock has already been released). Strong exception
+	 * guarantee.
 	 */
-	bool addWakeCallback(std::function<void()> cb);
+	[[nodiscard]] WakeRegistration addWakeCallback(std::function<void()> cb);
 
 	/**
 	 * Fires all registered wake callbacks and marks this tracker as woken.
-	 * Subsequent addWakeCallback() calls return false.
+	 * Subsequent addWakeCallback() calls return an empty registration.
 	 * Called from releaseIntent() after zeroing the VT slot.
 	 */
 	void wake();
+
+	/** Process-wide count of registered, not yet woken or cancelled, wake callbacks. */
+	static int64_t registeredWakeCallbacks();
 };
 
 // Returns a fresh 14-bit generation tag for a new LockTracker install.

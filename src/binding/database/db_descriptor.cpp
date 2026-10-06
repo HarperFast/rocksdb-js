@@ -869,6 +869,9 @@ std::unique_ptr<ParkTimeoutRegistry::ParkTimeout> ParkTimeoutRegistry::take(uint
 }
 
 void ParkTimeoutRegistry::resolve(ParkTimeout& park) {
+	// Before the call: JS that observes this resolution must not find the park
+	// still registered.
+	park.wakeRegistration.cancel();
 	bool expected = false;
 	if (park.fired->compare_exchange_strong(expected, true)) {
 		// A closing tsfn (env teardown racing this resolve) must not be
@@ -925,6 +928,14 @@ void ParkTimeoutRegistry::fire(uint64_t id) {
 		return;
 	}
 	ParkTimeoutRegistry::resolve(*owned);
+}
+
+void ParkTimeoutRegistry::attachWakeRegistration(uint64_t id, LockTracker::WakeRegistration registration) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	auto it = this->parks.find(id);
+	if (it != this->parks.end()) {
+		it->second->wakeRegistration = std::move(registration);
+	}
 }
 
 void ParkTimeoutRegistry::releaseByEnv(napi_env env) {

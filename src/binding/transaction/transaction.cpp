@@ -788,10 +788,12 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 				break;
 			}
 
-			// weak_ptr, not raw: LockTracker::wakeCallbacks has no removal API,
-			// so this closure can outlive the park registry (e.g. a foreign-dbId
-			// tracker from a colliding VT slot). `.lock()` failing means
-			// ParkTimeoutRegistry::shutdown already resolved this park at close.
+			// weak_ptr, not raw: the park cancels this registration when it
+			// ends, but a callback wake() has already claimed still runs, so
+			// it can outlive the park registry (e.g. a foreign-dbId tracker from
+			// a colliding VT slot woken while this database closes). `.lock()`
+			// failing means ParkTimeoutRegistry::shutdown already resolved this
+			// park at close.
 			// The weak reference is deliberately to the registry and not to the
 			// descriptor: this runs inline under the process-global VT
 			// `writerMutex_`, where re-entering DBRegistry can self-deadlock and
@@ -810,10 +812,18 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			};
 
 			// Register wake callback; if the tracker already fired wake()
-			// before we got here, addWakeCallback returns false and we
-			// call+release the TSFN immediately (async on the JS thread).
-			bool registered = t->addWakeCallback(fireOnce);
-			if (!registered) {
+			// before we got here, nothing is registered and we call+release
+			// the TSFN immediately (async on the JS thread). A registration
+			// that fails to allocate takes the same path rather than throwing
+			// out of a commit completion.
+			LockTracker::WakeRegistration registration;
+			try {
+				registration = t->addWakeCallback(fireOnce);
+			} catch (...) {
+			}
+			if (registration) {
+				parkTimeouts->attachWakeRegistration(parkId, std::move(registration));
+			} else {
 				fireOnce();
 			}
 
