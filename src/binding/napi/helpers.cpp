@@ -260,8 +260,7 @@ static const char* errorCodeStrings[] = {
 	"ERR_COLUMN_FAMILY_DROPPED"
 };
 
-// Throws a synthesized exception only when none is pending, so a runtime that overwrites a pending
-// exception keeps the original value.
+// Keeps a runtime that overwrites pending exceptions from replacing the original value.
 static void takeFailedCallException(napi_env env, napi_status status, napi_value& error) {
 	bool pending = false;
 	::napi_is_exception_pending(env, &pending);
