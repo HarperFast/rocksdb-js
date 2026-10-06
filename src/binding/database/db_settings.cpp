@@ -337,6 +337,17 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
+	} else {
+		// A non-ok status here is usually just "absent" (getProperty treats that as
+		// napi_ok, so this branch only runs on a real type/getter failure). A thrown
+		// getter leaves a pending exception that getProperty's own internal N-API
+		// calls didn't clear; let it propagate instead of falling through to the
+		// stores below, which would otherwise commit despite the overall call throwing.
+		bool exceptionPending = false;
+		::napi_is_exception_pending(env, &exceptionPending);
+		if (exceptionPending) {
+			return nullptr;
+		}
 	}
 
 	// Stored last: all three fields are validated up front, but a later field's
