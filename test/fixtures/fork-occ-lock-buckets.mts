@@ -13,9 +13,14 @@ const counterIncrements = 64;
 
 function anonymousMiB(): number | null {
 	if (process.platform !== 'linux') return null;
-	return (
-		Number(/Anonymous:\s+(\d+)/.exec(readFileSync('/proc/self/smaps_rollup', 'utf8'))![1]) / 1024
-	);
+	try {
+		const content = readFileSync('/proc/self/smaps_rollup', 'utf8');
+		const match = /Anonymous:\s+(\d+)/.exec(content);
+		return match ? Number(match[1]) / 1024 : null;
+	} catch {
+		// smaps_rollup needs Linux 4.14+ and an accessible /proc; skip the memory checks without it.
+		return null;
+	}
 }
 
 function openMany(root: string, prefix: string, count: number) {
