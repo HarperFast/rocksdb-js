@@ -630,6 +630,7 @@ export class Store {
 	/**
 	 * The target maximum size of a transaction log before rotation. Transactions
 	 * are never split across files, so one transaction may exceed this target.
+	 * Defaults to 16 MiB. `0` (formerly unlimited) is rejected at open.
 	 */
 	transactionLogMaxSize?: number;
 

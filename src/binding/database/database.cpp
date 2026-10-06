@@ -2515,7 +2515,15 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	if (dbHandleOptions.transactionLogMaxSize > 0 && dbHandleOptions.transactionLogMaxSize < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
+	// A reader's mapping has a fixed capacity, so an unbounded segment cannot be read.
+	// Reject the former "unlimited" value rather than silently start rotating and purging.
+	if (dbHandleOptions.transactionLogMaxSize == 0) {
+		::napi_throw_error(env, nullptr,
+			"transactionLogMaxSize must be greater than 0; omit it to use the default (0 no longer means unlimited)");
+		return nullptr;
+	}
+
+	if (dbHandleOptions.transactionLogMaxSize < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
 		std::string errorMsg = "transactionLogMaxSize must be greater than " + std::to_string(TRANSACTION_LOG_ENTRY_HEADER_SIZE) + " bytes";
 		::napi_throw_error(env, nullptr, errorMsg.c_str());
 		return nullptr;

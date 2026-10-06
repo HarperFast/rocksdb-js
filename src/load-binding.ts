@@ -328,6 +328,7 @@ export type NativeDatabaseOptions = {
 	secondaryPath?: string;
 	statsLevel?: (typeof stats.StatsLevel)[keyof typeof stats.StatsLevel];
 	transactionLogMaxAgeThreshold?: number;
+	/** Target segment size in bytes; defaults to 16 MiB. `0` is rejected. */
 	transactionLogMaxSize?: number;
 	transactionLogRetentionMs?: number;
 	transactionLogsPath?: string;

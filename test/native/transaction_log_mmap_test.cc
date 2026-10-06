@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include "core/exception.h"
 #include "transaction_log/transaction_log_file.h"
 
 using rocksdb_js::MemoryMap;
@@ -102,6 +103,40 @@ TEST(TransactionLogMmapOwnership, FrozenHandoutsShareOneMap) {
 	ASSERT_NE(b, nullptr);
 	EXPECT_EQ(a.get(), b.get());
 	EXPECT_EQ(MemoryMap::liveCount.load(), base + 1);  // one mapping, not two
+}
+
+TEST(TransactionLogMmapOwnership, ReaderHandoutReplacesAnUndersizedInternalIndexMap) {
+	auto log = makeLog(8192);
+	std::shared_ptr<MemoryMap> indexMap;
+	{
+		std::lock_guard<std::mutex> lock(log->fileMutex);
+		indexMap = log->getMemoryMapLocked(8192, /*isCurrent=*/true);
+	}
+	auto readerMap = log->getMemoryMap(32768, /*isCurrent=*/true);
+	ASSERT_NE(readerMap, nullptr);
+	EXPECT_NE(readerMap.get(), indexMap.get());
+	EXPECT_EQ(readerMap->fileSize, 32768u);
+	EXPECT_EQ(readerMap->readableExtent.load(), 8192u);
+	EXPECT_EQ(log->getMemoryMap(65536, /*isCurrent=*/true).get(), readerMap.get());
+}
+
+TEST(TransactionLogMmapOwnership, StaleCapacityRequestStillCoversTheFile) {
+	auto log = makeLog(16384);
+	auto map = log->getMemoryMap(8192, /*isCurrent=*/true);
+	ASSERT_NE(map, nullptr);
+	EXPECT_GE(map->mapSize, 16384u);
+	EXPECT_EQ(map->fileSize, 16384u);
+	EXPECT_EQ(map->readableExtent.load(), 16384u);
+}
+
+TEST(TransactionLogMmapOwnership, IndexWalkReportsAMappingFailureInsteadOfEndOfFile) {
+	TransactionLogFile::forceMapFailureForTests.store(true);
+	auto log = makeLog(8192);
+	EXPECT_THROW(log->findPositionByTimestamp(1.0, 8192, /*isCurrent=*/true), rocksdb_js::DBException);
+	auto empty = makeLog(0);
+	EXPECT_EQ(empty->findPositionByTimestamp(1.0, 0, /*isCurrent=*/true), 0xFFFFFFFFu);
+	TransactionLogFile::forceMapFailureForTests.store(false);
+	EXPECT_NE(log->findPositionByTimestamp(1.0, 8192, /*isCurrent=*/true), 0xFFFFFFFFu);
 }
 
 #endif // _WIN32
