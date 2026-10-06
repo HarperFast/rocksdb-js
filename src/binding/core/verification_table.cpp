@@ -96,6 +96,19 @@ VerificationTable::VerificationTable(size_t numEntries, uint64_t seed)
 
 VerificationTable::~VerificationTable() = default;
 
+uint64_t VerificationTable::hashFor(
+	uint64_t dbId,
+	uint32_t cfId,
+	const rocksdb::Slice& key
+) const {
+	uint64_t h = seed_;
+	h ^= dbId;
+	h = mix64(h);
+	h ^= static_cast<uint64_t>(cfId);
+	h = mix64(h);
+	return hashKeyBytes(reinterpret_cast<const uint8_t*>(key.data()), key.size(), h);
+}
+
 std::atomic<uint64_t>* VerificationTable::slotFor(
 	uint64_t dbId,
 	uint32_t cfId,
@@ -104,16 +117,28 @@ std::atomic<uint64_t>* VerificationTable::slotFor(
 	if (!slots_) {
 		return nullptr;
 	}
-	uint64_t h = seed_;
-	h ^= dbId;
-	h = mix64(h);
-	h ^= static_cast<uint64_t>(cfId);
-	h = mix64(h);
-	h = hashKeyBytes(reinterpret_cast<const uint8_t*>(key.data()), key.size(), h);
-	return &slots_[h & mask_];
+	return &slots_[hashFor(dbId, cfId, key) & mask_];
 }
 
-bool VerificationTable::verifyVersion(
+VtSlotRef VerificationTable::slotRefFor(
+	uint64_t dbId,
+	uint32_t cfId,
+	const rocksdb::Slice& key
+) const {
+	VtSlotRef ref;
+	if (!slots_) {
+		return ref;
+	}
+	const uint64_t h = hashFor(dbId, cfId, key);
+	ref.slot = &slots_[h & mask_];
+	// Keys that share a slot agree on h's index bits, so only h's 47 bits above the index of a
+	// 128K-slot table differ between them; that is still a 2^-47 chance that two colliding keys get the
+	// same tag, and it avoids a second mix on the read path.
+	ref.keyTag = h >> 1;
+	return ref;
+}
+
+bool VerificationTable::verifyEncoded(
 	std::atomic<uint64_t>* slot,
 	uint64_t expectedVersion
 ) {
@@ -124,7 +149,7 @@ bool VerificationTable::verifyVersion(
 	return v == expectedVersion;
 }
 
-bool VerificationTable::populateVersion(
+bool VerificationTable::populateEncoded(
 	std::atomic<uint64_t>* slot,
 	uint64_t newVersion
 ) {
@@ -153,7 +178,7 @@ bool VerificationTable::populateVersion(
 	}
 }
 
-bool VerificationTable::populateVersionIfUnchanged(
+bool VerificationTable::populateEncodedIfUnchanged(
 	std::atomic<uint64_t>* slot,
 	uint64_t observed,
 	uint64_t newVersion

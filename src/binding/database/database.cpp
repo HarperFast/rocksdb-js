@@ -1085,11 +1085,11 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	// Pre-compute vtSlot so both the txn and DB async paths can use it, and
 	// observe its value before the async read so the post-read CAS only publishes
 	// when no write cycle intervened.
-	std::atomic<uint64_t>* vtSlot = nullptr;
+	VtSlotRef vtSlot;
 	uint64_t vtObserved = 0;
 	if (hasExpectedVersion) {
 		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
-		if (vtSlot != nullptr) vtObserved = vtSlot->load(std::memory_order_acquire);
+		if (vtSlot) vtObserved = vtSlot.load();
 	}
 
 	if (txnIdType == napi_number) {
@@ -1871,19 +1871,19 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		txnHandle->ensureSnapshot();
 	}
 
-	std::atomic<uint64_t>* vtSlot = nullptr;
+	VtSlotRef vtSlot;
 	// Slot value observed up front (after snapshot is established). Reused for
 	// both the fast-path check and the post-read conditional CAS, so the
 	// populate only succeeds if nothing changed the slot across the read.
 	uint64_t vtObserved = 0;
 	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
-		if (vtSlot != nullptr) vtObserved = vtSlot->load(std::memory_order_acquire);
+		if (vtSlot) vtObserved = vtSlot.load();
 	}
 
 	// Fast path: caller-supplied version matches the table — return FRESH
 	// sentinel without touching RocksDB. Snapshot already established above.
-	if (vtSlot != nullptr && hasExpectedVersion && vtObserved == expectedVersion) {
+	if (vtSlot && hasExpectedVersion && vtSlot.holds(vtObserved, expectedVersion)) {
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
 		return result;
@@ -1933,7 +1933,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	// latest-read when that value is provably the latest committed version.
 	// A value whose version the producer marked non-unique is neither answered FRESH nor published
 	// (VERSION_NOT_UNIQUE_FLAG); the caller gets the value it read instead.
-	if (vtSlot != nullptr && (wantsPopulate || hasExpectedVersion) && !VerificationTable::valueVersionIsNotUnique(value)) {
+	if (vtSlot && (wantsPopulate || hasExpectedVersion) && !VerificationTable::valueVersionIsNotUnique(value)) {
 		uint64_t extracted = VerificationTable::extractVersionFromValue(value);
 		const VtLatestCheck latest = vtCheckLatest(
 			(*dbHandle)->descriptor->db.get(),
@@ -2011,7 +2011,7 @@ napi_value Database::VerifyVersion(napi_env env, napi_callback_info info) {
 	uint64_t version = 0;
 	bool fresh = false;
 	if (parseExpectedVersion(env, argv[1], version)) {
-		auto* slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
+		const VtSlotRef slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
 		if (slot) {
 			fresh = VerificationTable::verifyVersion(slot, version);
 		}
@@ -2049,7 +2049,7 @@ napi_value Database::PopulateVersion(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	auto* slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
+	const VtSlotRef slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
 	if (slot) {
 		// Low-level explicit primitive: publish exactly the caller-supplied
 		// version. The snapshot-isolation gating lives on the read/getSync

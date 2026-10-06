@@ -4,6 +4,7 @@
 // the N-API/JS layer, so we drive the primitives directly here.
 
 #include <gtest/gtest.h>
+#include <string>
 #include "core/verification_table.h"
 #include "rocksdb/slice.h"
 
@@ -24,8 +25,8 @@ TEST(VerificationTable, ColdPopulateSucceedsWhenSlotUnchanged) {
 
 	uint64_t observed = slot->load();
 	EXPECT_EQ(observed, 0u);
-	EXPECT_TRUE(VerificationTable::populateVersionIfUnchanged(slot, observed, kV1));
-	EXPECT_TRUE(VerificationTable::verifyVersion(slot, kV1));
+	EXPECT_TRUE(VerificationTable::populateEncodedIfUnchanged(slot, observed, kV1));
+	EXPECT_TRUE(VerificationTable::verifyEncoded(slot, kV1));
 }
 
 // If a full write cycle settles between the reader's observation and its CAS,
@@ -44,8 +45,8 @@ TEST(VerificationTable, ColdPopulateLosesToInterveningWriteCycle) {
 	vt.releaseWriteIntent(slot, t);
 
 	// The stale reader's CAS from the pre-write value must fail.
-	EXPECT_FALSE(VerificationTable::populateVersionIfUnchanged(slot, observed, kV1));
-	EXPECT_FALSE(VerificationTable::verifyVersion(slot, kV1));
+	EXPECT_FALSE(VerificationTable::populateEncodedIfUnchanged(slot, observed, kV1));
+	EXPECT_FALSE(VerificationTable::verifyEncoded(slot, kV1));
 	EXPECT_TRUE(vtIsSettled(slot->load()));
 }
 
@@ -82,7 +83,7 @@ TEST(VerificationTable, ColdPopulateNeverOverwritesLock) {
 	EXPECT_TRUE(vtIsLock(lockVal));
 
 	// Even if `observed` happened to equal the lock value, never publish over it.
-	EXPECT_FALSE(VerificationTable::populateVersionIfUnchanged(slot, lockVal, kV1));
+	EXPECT_FALSE(VerificationTable::populateEncodedIfUnchanged(slot, lockVal, kV1));
 	EXPECT_TRUE(vtIsLock(slot->load()));
 
 	vt.releaseWriteIntent(slot, t);  // cleanup
@@ -101,8 +102,8 @@ TEST(VerificationTable, ColdPopulateSucceedsFromSettledWhenReobserved) {
 	ASSERT_TRUE(vtIsSettled(settled));
 
 	// Re-observe the settled value, then publish — succeeds (no intervening write).
-	EXPECT_TRUE(VerificationTable::populateVersionIfUnchanged(slot, settled, kV2));
-	EXPECT_TRUE(VerificationTable::verifyVersion(slot, kV2));
+	EXPECT_TRUE(VerificationTable::populateEncodedIfUnchanged(slot, settled, kV2));
+	EXPECT_TRUE(VerificationTable::verifyEncoded(slot, kV2));
 }
 
 // Cross-incarnation isolation (HarperFast/harper#1864). A slot is addressed by
@@ -120,13 +121,13 @@ TEST(VerificationTable, DistinctDbEpochsAddressIndependentSlots) {
 
 	auto* slotOld = vt.slotFor(epochOld, 0, key);
 	ASSERT_NE(slotOld, nullptr);
-	ASSERT_TRUE(VerificationTable::populateVersion(slotOld, kV1));
-	ASSERT_TRUE(VerificationTable::verifyVersion(slotOld, kV1));
+	ASSERT_TRUE(VerificationTable::populateEncoded(slotOld, kV1));
+	ASSERT_TRUE(VerificationTable::verifyEncoded(slotOld, kV1));
 
 	for (uint64_t epochNew = 2; epochNew < 100; ++epochNew) {
 		auto* slotNew = vt.slotFor(epochNew, 0, key);
 		if (slotNew == slotOld) continue;  // rare hash collision — try the next epoch
-		EXPECT_FALSE(VerificationTable::verifyVersion(slotNew, kV1))
+		EXPECT_FALSE(VerificationTable::verifyEncoded(slotNew, kV1))
 			<< "epoch " << epochNew << " must not see a prior incarnation's version";
 		EXPECT_EQ(slotNew->load(), 0u);  // fresh/cold, not a leaked version
 		return;
@@ -194,4 +195,39 @@ TEST(VerificationTable, ValueVersionIsNotUniqueReadsTaggedFlagOnly) {
 	const std::string shortValue = value(VERSION_HEADER_TAG, VERSION_NOT_UNIQUE_FLAG, 11);
 	EXPECT_FALSE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(shortValue)));
 	EXPECT_FALSE(VerificationTable::valueVersionIsNotUnique(rocksdb::Slice(std::string())));
+}
+
+// Keys that share a slot and a version must not vouch for each other: the slot stores the version
+// encoded with each key's tag, so only the key that populated it verifies.
+TEST(VerificationTable, CollidingKeysWithSameVersionDoNotVouchForEachOther) {
+	VerificationTable vt(2, 0xABCD);
+	const VtSlotRef a = vt.slotRefFor(0x1, 0, rocksdb::Slice("a"));
+	VtSlotRef b;
+	for (int i = 0; !b || b.slot != a.slot; ++i) {
+		b = vt.slotRefFor(0x1, 0, rocksdb::Slice("b" + std::to_string(i)));
+	}
+	ASSERT_NE(a.keyTag, b.keyTag);
+
+	EXPECT_TRUE(VerificationTable::populateVersion(a, kV1));
+	EXPECT_TRUE(VerificationTable::verifyVersion(a, kV1));
+	EXPECT_TRUE(a.holds(a.load(), kV1));
+	EXPECT_FALSE(VerificationTable::verifyVersion(b, kV1));
+	EXPECT_FALSE(b.holds(b.load(), kV1));
+	EXPECT_FALSE(VerificationTable::verifyEncoded(a.slot, kV1));
+
+	const uint64_t observed = b.load();
+	EXPECT_TRUE(VerificationTable::populateVersionIfUnchanged(b, observed, kV1));
+	EXPECT_TRUE(VerificationTable::verifyVersion(b, kV1));
+	EXPECT_FALSE(VerificationTable::verifyVersion(a, kV1));
+}
+
+// A version equal to its key's tag would encode to 0, the never-written value, so it is neither
+// published nor matched.
+TEST(VerificationTable, VersionEqualToKeyTagIsNeverCached) {
+	VerificationTable vt(8, 0xABCD);
+	const VtSlotRef ref = vt.slotRefFor(0x1, 0, rocksdb::Slice("k"));
+	ASSERT_TRUE(vtIsVersion(ref.keyTag));
+	EXPECT_FALSE(VerificationTable::populateVersion(ref, ref.keyTag));
+	EXPECT_FALSE(VerificationTable::verifyVersion(ref, ref.keyTag));
+	EXPECT_FALSE(ref.holds(ref.load(), ref.keyTag));
 }

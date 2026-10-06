@@ -33,16 +33,16 @@ inline bool parseExpectedVersion(napi_env env, napi_value arg, uint64_t& out) {
 }
 
 /**
- * Returns the verification-table slot for (dbHandle, key), or nullptr if the
- * table pointer is null or the slot maps outside the table bounds.
+ * Returns the verification-table slot and tag for (dbHandle, key), or an empty
+ * ref when the table is absent or disabled.
  */
-inline std::atomic<uint64_t>* vtSlotFor(
+inline VtSlotRef vtSlotFor(
 	const std::shared_ptr<DBHandle>& dbHandle,
 	VerificationTable* vt,
 	const rocksdb::Slice& key
 ) {
-	if (!vt) return nullptr;
-	return vt->slotFor(
+	if (!vt) return VtSlotRef{};
+	return vt->slotRefFor(
 		dbHandle->verificationTableDbId,
 		dbHandle->verificationTableColumnFamilyId,
 		key
@@ -157,7 +157,7 @@ inline bool vtVersionIsSettled(
 
 inline void vtPopulateIfSettled(
 	const std::shared_ptr<DBHandle>& dbHandle,
-	std::atomic<uint64_t>* slot,
+	const VtSlotRef& slot,
 	const rocksdb::Slice& key,
 	uint64_t readVersion,
 	const rocksdb::Snapshot* readSnapshot,
@@ -404,7 +404,7 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	bool wantsPopulate = false;
-	std::atomic<uint64_t>* vtSlot = nullptr;
+	VtSlotRef vtSlot;
 	// Slot value observed before the async read was queued; the post-read CAS
 	// publishes only if the slot is still this (no write cycle intervened).
 	uint64_t vtObserved = 0;
