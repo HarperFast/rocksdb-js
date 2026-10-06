@@ -2992,7 +2992,7 @@ Available commands:
 
 ## Development
 
-This package requires Node.js 18 or higher, pnpm, and a C++ compiler.
+This package requires Node.js `^22.18.0 || >=24.0.0`, pnpm, and a C++ compiler.
 
 > [!TIP]
 > Enable pnpm log streaming to see full build output:
