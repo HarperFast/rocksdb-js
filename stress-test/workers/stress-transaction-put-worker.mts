@@ -12,20 +12,22 @@ parentPort?.on('message', (event) => {
 
 async function runTransactions10k() {
 	const db = RocksDatabase.open(workerData.path);
-	let last: Promise<void | PromiseLike<void>> | undefined;
+	// Commits can finish out of order, so the last one settling does not mean the others have.
+	let pending: Promise<unknown>[] = [];
 
 	for (let i = 0; i < workerData.iterations; i++) {
-		last = db.transaction((transaction) => {
-			db.putSync(randomBytes(16).toString('hex'), 'hello world', { transaction });
-		});
+		pending.push(
+			db.transaction((transaction) => {
+				db.putSync(randomBytes(16).toString('hex'), 'hello world', { transaction });
+			})
+		);
 		if (i % 20 === 0) {
-			await last;
+			await Promise.all(pending);
+			pending = [];
 		}
 	}
 
-	if (last) {
-		await last;
-	}
+	await Promise.all(pending);
 
 	db.close();
 	parentPort?.postMessage({ done: true });

@@ -24,6 +24,7 @@ private:
 	// Atomic because config() and open() can run on different worker_threads.
 	std::atomic<uint32_t> occLockBucketCount;
 	std::atomic<bool> occValidateSerial;
+	std::atomic<uint32_t> commitThreads;
 
 	// Total memory limit (bytes) shared across all databases for active and
 	// immutable memtables. 0 disables the manager (each database uses its own
@@ -91,6 +92,10 @@ public:
 
 	bool getOccValidateSerial() const {
 		return occValidateSerial.load(std::memory_order_relaxed);
+	}
+
+	uint32_t getCommitThreads() const {
+		return commitThreads.load(std::memory_order_relaxed);
 	}
 
 	size_t getWriteBufferManagerSize() const {

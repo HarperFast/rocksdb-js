@@ -1,10 +1,14 @@
 // Optimistic commit throughput, latency and CPU under the commit patterns that reach RocksDB's
 // commit lock buckets. Prints one JSON result line. Usage:
 //   node benchmark/occ-commit-contention.mts --scenario one-db --workers 4 --keys 64
+// --log writes one transaction-log entry per key, the way Harper writes one audit entry per record;
+// --stat-probe times sequential fs.stat calls on the main thread to measure libuv-pool starvation.
+// --commit-threads sets RocksDatabase.config({ commitThreads }) on builds that support it.
 // --lib points at another build's dist/index.mjs so one script can compare several builds;
 // --occ-lock-buckets and --occ-validation apply RocksDatabase.config() before any open.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
@@ -26,6 +30,10 @@ type Config = {
 	hotKeys: number;
 	occLockBuckets: number | null;
 	occValidation: string | null;
+	commitThreads: number | null;
+	log: boolean;
+	logEntrySize: number;
+	statProbe: boolean;
 };
 type WorkerResult = {
 	id: number;
@@ -71,6 +79,10 @@ if (isMainThread) {
 			'hot-keys': { type: 'string', default: '0' },
 			'occ-lock-buckets': { type: 'string' },
 			'occ-validation': { type: 'string' },
+			'commit-threads': { type: 'string' },
+			log: { type: 'boolean', default: false },
+			'log-entry-size': { type: 'string' },
+			'stat-probe': { type: 'boolean', default: false },
 			dir: { type: 'string', default: resolve(import.meta.dirname, 'data') },
 		},
 	});
@@ -88,6 +100,10 @@ if (isMainThread) {
 		hotKeys: Number(values['hot-keys']) || Number(values.keys) * 4,
 		occLockBuckets: values['occ-lock-buckets'] ? Number(values['occ-lock-buckets']) : null,
 		occValidation: values['occ-validation'] ?? null,
+		commitThreads: values['commit-threads'] ? Number(values['commit-threads']) : null,
+		log: values.log,
+		logEntrySize: Number(values['log-entry-size'] ?? values['value-size']),
+		statProbe: values['stat-probe'],
 	};
 	for (const name of [
 		'workers',
@@ -96,9 +112,15 @@ if (isMainThread) {
 		'valueSize',
 		'concurrency',
 		'hotKeys',
+		'logEntrySize',
 	] as const) {
 		assert(Number.isSafeInteger(config[name]) && config[name] >= 0, `${name} must be an integer`);
 	}
+	assert(
+		config.commitThreads === null ||
+			(Number.isSafeInteger(config.commitThreads) && config.commitThreads >= 1),
+		'--commit-threads must be a positive integer'
+	);
 	assert(config.hotKeys >= config.keys, '--hot-keys must be at least --keys');
 	assert(
 		['one-db', 'four-db', 'mixed-sync', 'conflict', 'memory'].includes(config.scenario),
@@ -109,6 +131,7 @@ if (isMainThread) {
 		RocksDatabase.config({ occLockBuckets: config.occLockBuckets });
 	}
 	if (config.occValidation !== null) RocksDatabase.config({ occValidation: config.occValidation });
+	if (config.commitThreads !== null) RocksDatabase.config({ commitThreads: config.commitThreads });
 	mkdirSync(values.dir, { recursive: true });
 	const root = mkdtempSync(resolve(values.dir, 'occ-'));
 	const dbOptions = { disableWAL: !config.wal };
@@ -184,7 +207,18 @@ if (isMainThread) {
 			const cpuStart = process.cpuUsage();
 			const wallStart = performance.now();
 			Atomics.store(phase, 0, PHASE_MEASURE);
-			await new Promise((res) => setTimeout(res, config.seconds * 1000));
+			const statLatencies: number[] = [];
+			const measureDone = new Promise((res) => setTimeout(res, config.seconds * 1000));
+			if (config.statProbe) {
+				let measuring = true;
+				void measureDone.then(() => (measuring = false));
+				while (measuring) {
+					const started = performance.now();
+					await stat(root);
+					statLatencies.push(performance.now() - started);
+				}
+			}
+			await measureDone;
 			Atomics.store(phase, 0, PHASE_STOP);
 			const cpu = process.cpuUsage(cpuStart);
 			const wall = (performance.now() - wallStart) / 1000;
@@ -219,11 +253,21 @@ if (isMainThread) {
 			const total = summarize(workerResults);
 			const output: Record<string, unknown> = {
 				...config,
+				commitThread: process.env.ROCKSDB_JS_COMMIT_THREAD ?? null,
 				wall,
 				...total,
 				cpuUsPerCommit: (cpu.user + cpu.system) / total.commits,
 				cpuCores: (cpu.user + cpu.system) / 1e6 / wall,
 			};
+			if (config.statProbe) {
+				const sorted = Float64Array.from(statLatencies).sort();
+				output.stat = {
+					count: sorted.length,
+					p50Ms: percentile(sorted, 50),
+					p99Ms: percentile(sorted, 99),
+					maxMs: sorted.length ? sorted[sorted.length - 1] : NaN,
+				};
+			}
 			if (config.scenario === 'mixed-sync') {
 				output.async = summarize(workerResults.filter((r) => !r.sync));
 				output.sync = summarize(workerResults.filter((r) => r.sync));
@@ -254,6 +298,8 @@ if (isMainThread) {
 	const { RocksDatabase, Transaction } = await loadLib(config.lib);
 	const db = RocksDatabase.open(path, dbOptions);
 	const pad = 'x'.repeat(Math.max(0, config.valueSize - 16));
+	const log = config.log ? db.useLog('bench') : null;
+	const logEntry = Buffer.alloc(config.logEntrySize, id);
 	const latencies: number[] = [];
 	let commits = 0;
 	let conflicts = 0;
@@ -273,23 +319,38 @@ if (isMainThread) {
 		}
 	};
 
-	// Each in-flight slot owns its keys, so non-conflict scenarios never conflict with themselves.
-	const lastCommitted: number[] = [];
-	async function slotLoop(slot: number): Promise<void> {
-		for (let n = 0; Atomics.load(phase, 0) !== PHASE_STOP; n++) {
-			const txn = new Transaction(db.store);
-			for (let j = 0; j < config.keys; j++) txn.putSync(`w${id}-s${slot}-${j}`, { n, pad });
+	// A retryable failure resets the native transaction, so the body is re-run on the same
+	// transaction, as db.transaction() does; aborting a transaction that already wrote its log
+	// entries would abandon it.
+	async function commitWithRetry(body: (txn: any) => void): Promise<[number, number]> {
+		const txn = new Transaction(db.store);
+		for (;;) {
+			body(txn);
 			const startPhase = Atomics.load(phase, 0);
 			const started = performance.now();
 			try {
 				if (sync) txn.commitSync();
 				else await txn.commit();
+				return [started, startPhase];
 			} catch (error) {
-				txn.abort();
-				if (!isRetryable(error as { code?: string })) throw error;
-				n--;
-				continue;
+				if (!isRetryable(error as { code?: string })) {
+					txn.abort();
+					throw error;
+				}
 			}
+		}
+	}
+
+	// Each in-flight slot owns its keys, so non-conflict scenarios never conflict with themselves.
+	const lastCommitted: number[] = [];
+	async function slotLoop(slot: number): Promise<void> {
+		for (let n = 0; Atomics.load(phase, 0) !== PHASE_STOP; n++) {
+			const [started, startPhase] = await commitWithRetry((txn) => {
+				for (let j = 0; j < config.keys; j++) {
+					txn.putSync(`w${id}-s${slot}-${j}`, { n, pad });
+					log?.addEntry(logEntry, txn.id);
+				}
+			});
 			lastCommitted[slot] = n;
 			record(started, startPhase);
 		}
@@ -308,18 +369,12 @@ if (isMainThread) {
 			while (keys.size < config.keys) keys.add(random());
 			const started = performance.now();
 			const startPhase = Atomics.load(phase, 0);
-			for (;;) {
-				const txn = new Transaction(db.store);
-				try {
-					for (const k of keys) txn.putSync(`hot-${k}`, (txn.getSync(`hot-${k}`) ?? 0) + 1);
-					if (sync) txn.commitSync();
-					else await txn.commit();
-					break;
-				} catch (error) {
-					txn.abort();
-					if (!isRetryable(error as { code?: string })) throw error;
+			await commitWithRetry((txn) => {
+				for (const k of keys) {
+					txn.putSync(`hot-${k}`, (txn.getSync(`hot-${k}`) ?? 0) + 1);
+					log?.addEntry(logEntry, txn.id);
 				}
-			}
+			});
 			increments++;
 			record(started, startPhase);
 		}

@@ -456,7 +456,8 @@ DBDescriptor::DBDescriptor(
 	attachedWriteBufferManager(attachedWriteBufferManager),
 	columns(std::move(columns)),
 	retiringCondition(std::make_shared<std::condition_variable>()),
-	statistics(statistics)
+	statistics(statistics),
+	commitWorker("rocksdb-commit", DBSettings::getInstance().getCommitThreads())
 {
 	// Resolve the debounce window here (JS thread, open path) so the emit path on
 	// a RocksDB background thread reads a plain field instead of calling ::getenv.

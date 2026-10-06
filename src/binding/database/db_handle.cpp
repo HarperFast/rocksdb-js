@@ -17,6 +17,7 @@ namespace {
 // Commit-pipeline queue-depth gauges (see docs/stats.md).
 constexpr const char* COMMIT_PIPELINE_LOG_QUEUE_DEPTH_KEY = "commitPipeline.logQueueDepth";
 constexpr const char* COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY = "commitPipeline.commitQueueDepth";
+constexpr const char* COMMIT_PIPELINE_COMMIT_THREADS_KEY = "commitPipeline.commitThreads";
 constexpr const char* COLUMN_FAMILY_PENDING_RECLAIMS_KEY = "columnFamily.pendingReclaims";
 
 bool lookupTxnlogSummaryStat(
@@ -239,6 +240,8 @@ napi_value DBHandle::getStat(napi_env env, const std::string& statName) {
 			NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(this->descriptor->logWorker.depth()), &jsValue));
 		} else if (statName == COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY) {
 			NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(this->descriptor->commitWorker.depth()), &jsValue));
+		} else if (statName == COMMIT_PIPELINE_COMMIT_THREADS_KEY) {
+			NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(this->descriptor->commitWorker.threadCount()), &jsValue));
 		} else {
 			// unknown commitPipeline.* key: never a RocksDB ticker/property
 			NAPI_STATUS_THROWS(::napi_get_undefined(env, &jsValue));
@@ -380,6 +383,9 @@ napi_value DBHandle::getStats(napi_env env, bool all) {
 		}
 		if (::napi_create_double(env, static_cast<double>(this->descriptor->commitWorker.depth()), &jsValue) == napi_ok) {
 			::napi_set_named_property(env, result, COMMIT_PIPELINE_COMMIT_QUEUE_DEPTH_KEY, jsValue);
+		}
+		if (::napi_create_double(env, static_cast<double>(this->descriptor->commitWorker.threadCount()), &jsValue) == napi_ok) {
+			::napi_set_named_property(env, result, COMMIT_PIPELINE_COMMIT_THREADS_KEY, jsValue);
 		}
 		if (::napi_create_double(env, static_cast<double>(this->descriptor->pendingReclaimCount()), &jsValue) == napi_ok) {
 			::napi_set_named_property(env, result, COLUMN_FAMILY_PENDING_RECLAIMS_KEY, jsValue);

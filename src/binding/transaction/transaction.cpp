@@ -636,7 +636,8 @@ static void executeCommitWork(TransactionCommitState* state) {
 		if (txnHandle->committedPosition.logSequenceNumber > 0 && state->status.ok()) {
 			auto store = txnHandle->boundLogStore.lock();
 			if (store) {
-				store->commitFinished(txnHandle->committedPosition, descriptor->db->GetLatestSequenceNumber());
+				rocksdb::DB* db = descriptor->db.get();
+				store->commitFinished(txnHandle->committedPosition, [db]() { return db->GetLatestSequenceNumber(); });
 			} else {
 				DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %llu\n", txnHandle.get(), txnHandle->committedPosition.logSequenceNumber, (unsigned long long)txnHandle->id);
 				state->status = rocksdb::Status::Aborted("Log store not found for transaction");
@@ -892,15 +893,15 @@ static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* co
 /**
  * How async commits are executed, selected by ROCKSDB_JS_COMMIT_THREAD:
  * - `0` / `false`: legacy path — one libuv async-work item per commit.
- * - unset / anything else: single dedicated commit thread per database
- *   (default) — both the log write and the RocksDB commit run on the commit
- *   lane. Best measured throughput (no inter-lane handoff, full cache
- *   locality).
- * - `2`: two-lane pipeline — the log lane writes the transaction-log batch,
- *   then forwards to the commit lane for the RocksDB commit, letting the
- *   stages overlap across transactions. Measured slower than single-lane on
- *   synthetic loads (the per-txn handoff outweighs the overlap for small
- *   commits); selectable for evaluation on real workloads.
+ * - unset / anything else (default): each commit runs its log write and its
+ *   RocksDB commit back to back on one of the database's commit threads (up
+ *   to `commitThreads`; with one, in dispatch order). Log writes serialize on
+ *   the store's write mutex.
+ * - `2`: two-lane pipeline — the log lane writes transaction-log batches in
+ *   dispatch order, then forwards each commit to the commit threads. Measured
+ *   slower than the default for a caller with one commit in flight (an extra
+ *   thread handoff per commit) and no faster under concurrency; selectable
+ *   for evaluation on real workloads.
  */
 enum class CommitThreadMode { Legacy, SingleLane, TwoLane };
 
@@ -1054,15 +1055,13 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 			if (mode == CommitThreadMode::TwoLane) {
 				// Two-lane pipeline: the log lane writes the transaction-log
-				// batch, then forwards to the commit lane. Every commit passes
-				// through both lanes so total order is preserved.
+				// batch, then forwards to the commit worker. Commits are in
+				// dispatch order only with `commitThreads: 1`.
 				descriptor->logWorker.enqueue([descriptorOwner, state, commitStage]() {
 					executeLogWork(state);
 					descriptorOwner->commitWorker.enqueue(commitStage);
 				});
 			} else {
-				// Single lane (default): both stages run back to back on the
-				// commit lane.
 				descriptor->commitWorker.enqueue([state, commitStage]() {
 					executeLogWork(state);
 					commitStage();
@@ -1248,7 +1247,8 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			store = (*txnHandle)->boundLogStore.lock();
 		}
 		if (store) {
-			store->commitFinished((*txnHandle)->committedPosition, (*txnHandle)->dbHandle->descriptor->db->GetLatestSequenceNumber());
+			rocksdb::DB* db = descriptor->db.get();
+			store->commitFinished((*txnHandle)->committedPosition, [db]() { return db->GetLatestSequenceNumber(); });
 		} else {
 			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction, log number: %u id: %llu\n", (*txnHandle).get(), (*txnHandle)->committedPosition.logSequenceNumber, (unsigned long long)(*txnHandle)->id);
 			status = rocksdb::Status::Aborted("Log store not found for transaction");
