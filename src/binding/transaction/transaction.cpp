@@ -788,7 +788,7 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			}
 
 			// weak_ptr, not raw: the park cancels this registration when it
-			// ends, but a callback wake() has already detached still runs, so
+			// ends, but a callback wake() has already claimed still runs, so
 			// it can outlive the park registry (e.g. a foreign-dbId tracker from
 			// a colliding VT slot woken while this database closes). `.lock()`
 			// failing means ParkTimeoutRegistry::shutdown already resolved this

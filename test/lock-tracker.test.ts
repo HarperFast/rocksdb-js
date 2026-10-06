@@ -282,7 +282,7 @@ describe('Coordinated retry — bounded park timeout (#741)', () => {
 describe('Coordinated retry — park wake registrations', () => {
 	const isNode = !process.versions.deno && !process.versions.bun;
 	const scenarios: { scenario: string; env?: Record<string, string>; skip?: boolean }[] = [
-		{ scenario: 'timeout', env: { ROCKSDB_JS_PARK_TIMEOUT_MS: '250' } },
+		{ scenario: 'timeout', env: { ROCKSDB_JS_PARK_TIMEOUT_MS: '1000' } },
 		{ scenario: 'wake' },
 		// Node-only for the same reason as lock-teardown-abort: the env-cleanup ordering under test
 		// is Node's, which Deno's and Bun's N-API shims do not provide.

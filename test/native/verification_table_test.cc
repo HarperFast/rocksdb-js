@@ -268,7 +268,6 @@ TEST(LockTrackerWake, CancelledParksAgainstHeldLockLeaveNothingRegistered) {
 	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
 }
 
-// Live registrations are invoked exactly once, in registration order; a cancelled one is skipped.
 TEST(LockTrackerWake, WakeInvokesLiveCallbacksInOrderOnce) {
 	LockTracker t(0, 1, 0x1);
 	const int64_t base = LockTracker::registeredWakeCallbacks();
@@ -304,9 +303,9 @@ TEST(LockTrackerWake, WakeWithoutWaitersAndRepeatedWake) {
 	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
 }
 
-// Cancelling cannot recall a callback wake() already detached: it still runs, and the cancel
-// neither erases from wake()'s batch nor double-counts.
-TEST(LockTrackerWake, CancelDuringWakeDoesNotRecallDetachedCallback) {
+// Cancelling cannot recall a callback wake() already claimed: it still runs, and the cancel
+// neither erases from the list wake() is walking nor double-counts.
+TEST(LockTrackerWake, CancelDuringWakeDoesNotRecallClaimedCallback) {
 	LockTracker t(0, 1, 0x1);
 	const int64_t base = LockTracker::registeredWakeCallbacks();
 	LockTracker::WakeRegistration second;
@@ -335,7 +334,6 @@ TEST(LockTrackerWake, CancelAfterTrackerFreed) {
 	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
 }
 
-// Destroying a registration cancels it and releases what its callback captured.
 TEST(LockTrackerWake, DestroyingRegistrationReleasesCallback) {
 	LockTracker t(0, 1, 0x1);
 	const int64_t base = LockTracker::registeredWakeCallbacks();

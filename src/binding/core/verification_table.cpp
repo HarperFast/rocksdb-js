@@ -373,12 +373,8 @@ LockTracker::WakeRegistration LockTracker::addWakeCallback(std::function<void()>
 }
 
 bool LockTracker::WakeRegistration::cancel() noexcept {
-	if (!this->active) {
-		return false;
-	}
-	this->active = false;
-	std::shared_ptr<WakeList> list = this->list.lock();
-	this->list.reset();
+	std::shared_ptr<WakeList> list = std::move(this->list);
+	std::list<std::function<void()>>::iterator it = std::exchange(this->it, {});
 	if (!list) {
 		return false;
 	}
@@ -387,16 +383,17 @@ bool LockTracker::WakeRegistration::cancel() noexcept {
 	{
 		std::lock_guard<std::mutex> lock(list->mutex);
 		if (list->drained) {
-			// wake() moved `it` into its own batch; it is not ours to erase.
 			return false;
 		}
-		removed = std::move(*this->it);
-		list->callbacks.erase(this->it);
+		removed = std::move(*it);
+		list->callbacks.erase(it);
 	}
 	registeredWakeCallbackCount.fetch_sub(1, std::memory_order_relaxed);
 	return true;
 }
 
+// Must not allocate: callers hold writerMutex_, and releaseWriteIntent() runs
+// after the releasing transaction's commit has already landed.
 void LockTracker::wake() {
 	std::shared_ptr<WakeList> list;
 	{
@@ -407,14 +404,14 @@ void LockTracker::wake() {
 	if (!list) {
 		return;
 	}
-	std::list<std::function<void()>> callbacks;
+	size_t count;
 	{
 		std::lock_guard<std::mutex> lock(list->mutex);
 		list->drained = true;
-		callbacks.swap(list->callbacks);
+		count = list->callbacks.size();
 	}
-	registeredWakeCallbackCount.fetch_sub(static_cast<int64_t>(callbacks.size()), std::memory_order_relaxed);
-	for (auto& cb : callbacks) {
+	registeredWakeCallbackCount.fetch_sub(static_cast<int64_t>(count), std::memory_order_relaxed);
+	for (auto& cb : list->callbacks) {
 		cb();
 	}
 }

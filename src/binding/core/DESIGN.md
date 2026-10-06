@@ -29,16 +29,21 @@ closing. `addWakeCallback()` therefore returns a `LockTracker::WakeRegistration`
 the parks still waiting on it. `test/fixtures/fork-park-wake-registration.mts` covers each ending;
 `test/native/verification_table_test.cc` covers the list itself.
 
-- **The registration holds its list weakly, never the tracker.** The park releases its tracker
-  reference right after registering, and dropping one is `unrefTracker()`, which takes the global
-  `writerMutex_` that `wake()` already runs under. The list is a separate `shared_ptr` allocation,
-  so cancelling after the tracker is freed is a no-op instead of a use-after-free.
+- **The registration holds its list, never the tracker.** The park releases its tracker reference
+  right after registering, and dropping one is `unrefTracker()`, which takes the global
+  `writerMutex_` that `wake()` already runs under. The list is a separate `shared_ptr` allocation
+  that outlives the tracker while any registration holds it, so a registration's iterator stays
+  valid until it lets go: only its own `cancel()` erases its node.
 - **It is created by the first registration, not with the tracker.** `lockSlotForWrite()` installs
   a tracker under `writerMutex_` on every transactional write; only contended locks get a list.
-- **Cancelling cannot recall a detached callback.** `wake()` marks the list drained and swaps the
-  callbacks into its own batch under the list mutex, then runs them unlocked. A cancel that loses
-  that race leaves its iterator alone (it now belongs to the batch) and the callback runs anyway,
-  which is why the park's closure keeps its weak references and exactly-once gate.
+- **Cancelling cannot recall a claimed callback.** `wake()` marks the list drained under its mutex,
+  then runs the callbacks in place, unlocked; once drained, nothing else modifies the list. A
+  cancel that loses that race leaves its node alone and the callback runs anyway, which is why the
+  park's closure keeps its weak references and exactly-once gate.
+- **`wake()` does not allocate.** Callers hold `writerMutex_`, and `releaseWriteIntent()` runs after
+  the releasing transaction's commit has landed, so a throw there has no recovery. Running the
+  callbacks in place is what avoids a second container (an empty `std::list` allocates a sentinel
+  on MSVC).
 - **Lock order:** `wakeCallbacksMutex -> WakeList::mutex` when adding, and the registry's mutex
   `-> WakeList::mutex` when a park cancels. Nothing is called while a list mutex is held, so it is
   a leaf.

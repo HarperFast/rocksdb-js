@@ -98,7 +98,7 @@ struct DBDeleter {
  * Each park owns its `LockTracker` wake registration and cancels it as the
  * park ends, so a timed-out or abandoned park leaves nothing registered on a
  * lock that is still held. Cancelling cannot recall a callback `wake()` has
- * already detached, so a closure can still run after its entry is gone: parks
+ * already claimed, so a closure can still run after its entry is gone: parks
  * are therefore keyed by a monotonic `id`, not the entry's address, which a
  * later, unrelated park could reuse. `fired` is the exactly-once
  * gate shared with that park's wake callback — whichever side wins the CAS

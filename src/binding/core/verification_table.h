@@ -132,7 +132,8 @@ struct LockTracker {
 	/**
 	 * Pending wake callbacks. Allocated by the first addWakeCallback() rather
 	 * than with the tracker, which is installed under the global writerMutex_ on
-	 * every transactional write.
+	 * every transactional write. Once `drained`, wake() owns `callbacks` and runs
+	 * them in place; nothing else modifies it.
 	 */
 	struct WakeList {
 		std::mutex                       mutex;
@@ -141,24 +142,24 @@ struct LockTracker {
 	};
 
 	/**
-	 * A cancellable wake registration. Holds the list weakly so a registration
-	 * can be cancelled after its tracker is freed: a tracker reference would have
-	 * to be dropped under writerMutex_, which wake() already runs under.
-	 * Destroying it cancels.
+	 * A cancellable wake registration. References the list, never the tracker:
+	 * the park drops its tracker reference right after registering, and a
+	 * tracker reference would have to be dropped under writerMutex_, which
+	 * wake() already runs under. Holding the list keeps `it` valid until this
+	 * registration lets go of it. Destroying it cancels.
 	 */
 	class WakeRegistration {
 	public:
 		WakeRegistration() = default;
-		WakeRegistration(const std::shared_ptr<WakeList>& list, std::list<std::function<void()>>::iterator it)
-			: list(list), it(it), active(true) {}
+		WakeRegistration(std::shared_ptr<WakeList> list, std::list<std::function<void()>>::iterator it)
+			: list(std::move(list)), it(it) {}
 		WakeRegistration(WakeRegistration&& other) noexcept
-			: list(std::move(other.list)), it(other.it), active(std::exchange(other.active, false)) {}
+			: list(std::move(other.list)), it(std::exchange(other.it, {})) {}
 		WakeRegistration& operator=(WakeRegistration&& other) noexcept {
 			if (this != &other) {
 				this->cancel();
 				this->list = std::move(other.list);
-				this->it = other.it;
-				this->active = std::exchange(other.active, false);
+				this->it = std::exchange(other.it, {});
 			}
 			return *this;
 		}
@@ -167,19 +168,18 @@ struct LockTracker {
 		~WakeRegistration() { this->cancel(); }
 
 		/** False when nothing was registered (the tracker was already woken) or it was cancelled. */
-		explicit operator bool() const { return this->active; }
+		explicit operator bool() const { return this->list != nullptr; }
 
 		/**
-		 * Removes the callback unless wake() already detached it — a detached
-		 * callback may still run. Returns whether this call removed it.
+		 * Removes the callback unless wake() already took the list — a callback
+		 * wake() has taken may still run. Returns whether this call removed it.
 		 * Idempotent.
 		 */
 		bool cancel() noexcept;
 
 	private:
-		std::weak_ptr<WakeList> list;
+		std::shared_ptr<WakeList> list;
 		std::list<std::function<void()>>::iterator it{};
-		bool active = false;
 	};
 
 	std::atomic<uint32_t> refcount{1};  // 1 for the slot reference + 1 per holder

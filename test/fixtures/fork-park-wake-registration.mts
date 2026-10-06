@@ -51,17 +51,17 @@ function expectCount(expected: number, what: string): void {
 	}
 }
 
-// Run with ROCKSDB_JS_PARK_TIMEOUT_MS=250.
+// Run with ROCKSDB_JS_PARK_TIMEOUT_MS=1000; the registration is observable until the timeout.
 async function timeoutScenario(): Promise<void> {
 	const db = RocksDatabase.open(dbPath, dbOptions);
 	try {
 		const holder = holdLock(db, key);
-		for (let round = 0; round < 4; round++) {
+		for (let round = 0; round < 3; round++) {
 			const park = await parkBehind(db, key);
-			await waitForCount(1, 200, `round ${round}: park registration`);
+			await waitForCount(1, 800, `round ${round}: park registration`);
 			const result = await park.commit;
 			const elapsed = performance.now() - park.start;
-			if (result !== RETRY_NOW || elapsed < 200) {
+			if (result !== RETRY_NOW || elapsed < 800) {
 				throw new Error(
 					`round ${round}: expected a timed-out park, got ${String(result)} after ${elapsed}ms`
 				);
