@@ -260,12 +260,26 @@ static const char* errorCodeStrings[] = {
 	"ERR_COLUMN_FAMILY_DROPPED"
 };
 
-// Keeps `error` written on every path: a failed N-API call has already thrown, and that exception is the value.
-static void takeFailedCallException(napi_env env, napi_value& error) {
+// Throws a synthesized exception only when none is pending, so a runtime that overwrites a pending
+// exception keeps the original value.
+static void takeFailedCallException(napi_env env, napi_status status, napi_value& error) {
+	bool pending = false;
+	::napi_is_exception_pending(env, &pending);
+	if (!pending) {
+		std::string errorStr = getNapiExtendedError(env, status, nullptr);
+		::napi_throw_error(env, nullptr, errorStr.c_str());
+	}
 	::napi_get_and_clear_last_exception(env, &error);
 }
 
-#define NAPI_STATUS_TAKES_ERROR(call) NAPI_STATUS_THROWS_RVAL(call, takeFailedCallException(env, error))
+#define NAPI_STATUS_TAKES_ERROR(call) \
+	do { \
+		napi_status napiStatus_ = (call); \
+		if (napiStatus_ != napi_ok) { \
+			takeFailedCallException(env, napiStatus_, error); \
+			return; \
+		} \
+	} while (0)
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error) {
 	ROCKSDB_STATUS_FORMAT_ERROR(status, msg);

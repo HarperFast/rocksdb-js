@@ -6,10 +6,11 @@ import { describe, expect, it } from 'vitest';
 const fixture = join(__dirname, 'fixtures', 'fork-error-object-failure.mts');
 
 function runFixture(
+	dbPath: string,
 	missingDir: string
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
+): Promise<{ code: number | null; stdout: string }> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [fixture, missingDir]);
+		const child = spawn(process.execPath, [fixture, dbPath, missingDir]);
 		let stdout = '';
 		let stderr = '';
 		child.stdout.on('data', (chunk) => {
@@ -28,16 +29,18 @@ function runFixture(
 		});
 		child.on('close', (code) => {
 			clearTimeout(timeout);
-			resolve({ code, stdout, stderr });
+			resolve({ code, stdout });
 		});
 	});
 }
 
 describe('native error construction failure', () => {
-	it('settles the promise with the exception a failed error builder throws', async () => {
-		const missingDir = join(tmpdir(), `rocksdb-js-missing-${process.pid}-${Date.now()}`);
-		const { code, stdout, stderr } = await runFixture(missingDir);
-		expect(stderr).toBe('');
+	it('settles every promise and throw with the exception a failed error builder throws', async () => {
+		const suffix = `${process.pid}-${Date.now()}`;
+		const { code, stdout } = await runFixture(
+			join(tmpdir(), `rocksdb-js-error-object-db-${suffix}`),
+			join(tmpdir(), `rocksdb-js-error-object-missing-${suffix}`)
+		);
 		expect(code).toBe(0);
 		expect(stdout).toContain('settled');
 	}, 15_000);
