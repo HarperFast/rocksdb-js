@@ -260,6 +260,13 @@ static const char* errorCodeStrings[] = {
 	"ERR_COLUMN_FAMILY_DROPPED"
 };
 
+// Keeps `error` written on every path: a failed N-API call has already thrown, and that exception is the value.
+static void takeFailedCallException(napi_env env, napi_value& error) {
+	::napi_get_and_clear_last_exception(env, &error);
+}
+
+#define NAPI_STATUS_TAKES_ERROR(call) NAPI_STATUS_THROWS_RVAL(call, takeFailedCallException(env, error))
+
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error) {
 	ROCKSDB_STATUS_FORMAT_ERROR(status, msg);
 
@@ -271,11 +278,11 @@ void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, n
 	napi_value errorCode;
 	napi_value errorMsg;
 
-	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Object", &objectCtor));
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn));
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Error", &errorCtor));
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, errorCtor, "prototype", &errorProto));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_global(env, &global));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_named_property(env, global, "Object", &objectCtor));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_named_property(env, global, "Error", &errorCtor));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_named_property(env, errorCtor, "prototype", &errorProto));
 
 	const char* codeStr;
 	switch (status.code()) {
@@ -296,14 +303,14 @@ void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, n
 		case rocksdb::Status::Code::kColumnFamilyDropped: codeStr = errorCodeStrings[15]; break;
 		default: codeStr = errorCodeStrings[0]; break;
 	}
-	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, codeStr, NAPI_AUTO_LENGTH, &errorCode));
+	NAPI_STATUS_TAKES_ERROR(::napi_create_string_utf8(env, codeStr, NAPI_AUTO_LENGTH, &errorCode));
 
-	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg));
+	NAPI_STATUS_TAKES_ERROR(::napi_create_string_utf8(env, errorStr.c_str(), errorStr.size(), &errorMsg));
 
 	napi_value createArgs[1] = { errorProto };
-	NAPI_STATUS_THROWS_VOID(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error));
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "code", errorCode));
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "message", errorMsg));
+	NAPI_STATUS_TAKES_ERROR(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error));
+	NAPI_STATUS_TAKES_ERROR(::napi_set_named_property(env, error, "code", errorCode));
+	NAPI_STATUS_TAKES_ERROR(::napi_set_named_property(env, error, "message", errorMsg));
 }
 
 void createJSError(napi_env env, const char* code, const char* message, napi_value& error) {
@@ -315,19 +322,19 @@ void createJSError(napi_env env, const char* code, const char* message, napi_val
 	napi_value errorCode;
 	napi_value errorMsg;
 
-	NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Object", &objectCtor));
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn));
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, global, "Error", &errorCtor));
-	NAPI_STATUS_THROWS_VOID(::napi_get_named_property(env, errorCtor, "prototype", &errorProto));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_global(env, &global));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_named_property(env, global, "Object", &objectCtor));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_named_property(env, objectCtor, "create", &objectCreateFn));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_named_property(env, global, "Error", &errorCtor));
+	NAPI_STATUS_TAKES_ERROR(::napi_get_named_property(env, errorCtor, "prototype", &errorProto));
 
-	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &errorCode));
-	NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &errorMsg));
+	NAPI_STATUS_TAKES_ERROR(::napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &errorCode));
+	NAPI_STATUS_TAKES_ERROR(::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &errorMsg));
 
 	napi_value createArgs[1] = { errorProto };
-	NAPI_STATUS_THROWS_VOID(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error));
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "code", errorCode));
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, error, "message", errorMsg));
+	NAPI_STATUS_TAKES_ERROR(::napi_call_function(env, objectCtor, objectCreateFn, 1, createArgs, &error));
+	NAPI_STATUS_TAKES_ERROR(::napi_set_named_property(env, error, "code", errorCode));
+	NAPI_STATUS_TAKES_ERROR(::napi_set_named_property(env, error, "message", errorMsg));
 }
 
 const char* getNapiBufferFromArg(

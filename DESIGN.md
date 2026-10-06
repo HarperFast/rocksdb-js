@@ -4,3 +4,4 @@
 - [Verification table](src/binding/core/DESIGN.md): slots store versions encoded with a per-key tag.
 - [Database resources](src/binding/database/DESIGN.md): optimistic commit validation policy,
   per-database lock buckets, and concurrent commit threads.
+- [N-API error builders](src/binding/napi/DESIGN.md): `createRocksDBError`/`createJSError` always write their out-param, even when their own N-API calls fail.
