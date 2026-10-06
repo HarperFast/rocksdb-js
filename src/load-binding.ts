@@ -931,6 +931,13 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
 /**
+ * Number of coordinated-retry wake callbacks registered on verification-table
+ * locks across the process. Internal — used by tests to verify that a park
+ * ending by timeout, env teardown, or close leaves no registration behind.
+ */
+export const lockWakeCallbackCount: () => number = binding.lockWakeCallbackCount;
+
+/**
  * Test-only: force the next `count` transaction commits to fail with TryAgain (rolled back, so
  * no data is committed), reproducing a stranded-snapshot conflict deterministically. Pass 0 to
  * disarm. Used by the ERR_TRY_AGAIN retry regression test.

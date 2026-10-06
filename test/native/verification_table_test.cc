@@ -4,7 +4,11 @@
 // the N-API/JS layer, so we drive the primitives directly here.
 
 #include <gtest/gtest.h>
+#include <atomic>
+#include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 #include "core/verification_table.h"
 #include "rocksdb/slice.h"
 
@@ -230,4 +234,187 @@ TEST(VerificationTable, VersionEqualToKeyTagIsNeverCached) {
 	EXPECT_FALSE(VerificationTable::populateVersion(ref, ref.keyTag));
 	EXPECT_FALSE(VerificationTable::verifyVersion(ref, ref.keyTag));
 	EXPECT_FALSE(ref.holds(ref.load(), ref.keyTag));
+}
+
+// ---- LockTracker wake registrations ----
+//
+// A coordinated-retry park registers a wake callback on the conflicting holder's tracker and must
+// remove it when the park ends without a wake (timeout, env teardown, close); otherwise a holder
+// that never releases accumulates one callback per re-park. registeredWakeCallbacks() is
+// process-wide, so each test asserts against the count it started with.
+
+// N parks that each time out against one held lock leave nothing registered, and the eventual
+// wake invokes none of them.
+TEST(LockTrackerWake, CancelledParksAgainstHeldLockLeaveNothingRegistered) {
+	VerificationTable vt(8, 0xABCD);
+	auto* slot = vt.slotFor(0x1, 0, rocksdb::Slice("k"));
+	const int64_t base = LockTracker::registeredWakeCallbacks();
+
+	LockTracker* holder = vt.lockSlotForWrite(slot, 0x1);
+	int invoked = 0;
+	for (int i = 0; i < 16; ++i) {
+		LockTracker* t = vt.refTrackerIfLocked(slot);
+		ASSERT_EQ(t, holder);
+		LockTracker::WakeRegistration registration = t->addWakeCallback([&invoked] { ++invoked; });
+		vt.unrefTracker(t);
+		ASSERT_TRUE(registration);
+		EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base + 1);
+		EXPECT_TRUE(registration.cancel());
+		EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+	}
+
+	vt.releaseWriteIntent(slot, holder);
+	EXPECT_EQ(invoked, 0);
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+}
+
+// Live registrations are invoked exactly once, in registration order; a cancelled one is skipped.
+TEST(LockTrackerWake, WakeInvokesLiveCallbacksInOrderOnce) {
+	LockTracker t(0, 1, 0x1);
+	const int64_t base = LockTracker::registeredWakeCallbacks();
+	std::vector<int> order;
+	auto a = t.addWakeCallback([&order] { order.push_back(0); });
+	auto b = t.addWakeCallback([&order] { order.push_back(1); });
+	auto c = t.addWakeCallback([&order] { order.push_back(2); });
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base + 3);
+	EXPECT_TRUE(b.cancel());
+
+	t.wake();
+	EXPECT_EQ(order, (std::vector<int>{0, 2}));
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+
+	t.wake();
+	EXPECT_EQ(order, (std::vector<int>{0, 2}));
+	EXPECT_FALSE(a.cancel());
+	EXPECT_FALSE(c.cancel());
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+}
+
+// A tracker that never had a waiter (the common case) wakes, and wakes again, without a list.
+TEST(LockTrackerWake, WakeWithoutWaitersAndRepeatedWake) {
+	LockTracker t(0, 1, 0x1);
+	const int64_t base = LockTracker::registeredWakeCallbacks();
+	t.wake();
+	t.wake();
+	bool invoked = false;
+	auto late = t.addWakeCallback([&invoked] { invoked = true; });
+	EXPECT_FALSE(late);
+	EXPECT_FALSE(late.cancel());
+	EXPECT_FALSE(invoked);
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+}
+
+// Cancelling cannot recall a callback wake() already detached: it still runs, and the cancel
+// neither erases from wake()'s batch nor double-counts.
+TEST(LockTrackerWake, CancelDuringWakeDoesNotRecallDetachedCallback) {
+	LockTracker t(0, 1, 0x1);
+	const int64_t base = LockTracker::registeredWakeCallbacks();
+	LockTracker::WakeRegistration second;
+	bool secondInvoked = false;
+	bool cancelledDuringWake = true;
+	auto first = t.addWakeCallback([&] { cancelledDuringWake = second.cancel(); });
+	second = t.addWakeCallback([&secondInvoked] { secondInvoked = true; });
+
+	t.wake();
+	EXPECT_FALSE(cancelledDuringWake);
+	EXPECT_TRUE(secondInvoked);
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+}
+
+// A registration outlives its tracker: cancelling after the tracker is freed is a safe no-op.
+TEST(LockTrackerWake, CancelAfterTrackerFreed) {
+	VerificationTable vt(8, 0xABCD);
+	auto* slot = vt.slotFor(0x1, 0, rocksdb::Slice("k"));
+	const int64_t base = LockTracker::registeredWakeCallbacks();
+	LockTracker* holder = vt.lockSlotForWrite(slot, 0x1);
+	bool invoked = false;
+	auto registration = holder->addWakeCallback([&invoked] { invoked = true; });
+	vt.releaseWriteIntent(slot, holder);  // wakes and frees the tracker
+	EXPECT_TRUE(invoked);
+	EXPECT_FALSE(registration.cancel());
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+}
+
+// Destroying a registration cancels it and releases what its callback captured.
+TEST(LockTrackerWake, DestroyingRegistrationReleasesCallback) {
+	LockTracker t(0, 1, 0x1);
+	const int64_t base = LockTracker::registeredWakeCallbacks();
+	auto captured = std::make_shared<int>(0);
+	{
+		auto registration = t.addWakeCallback([captured] { ++*captured; });
+		EXPECT_EQ(captured.use_count(), 2);
+	}
+	EXPECT_EQ(captured.use_count(), 1);
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+	t.wake();
+	EXPECT_EQ(*captured, 0);
+}
+
+// Move-assigning over a live registration cancels the one it replaces; the moved-from
+// registration no longer owns anything.
+TEST(LockTrackerWake, MoveAssignmentCancelsReplacedRegistration) {
+	LockTracker t(0, 1, 0x1);
+	const int64_t base = LockTracker::registeredWakeCallbacks();
+	std::vector<int> invoked;
+	auto kept = t.addWakeCallback([&invoked] { invoked.push_back(0); });
+	auto moved = t.addWakeCallback([&invoked] { invoked.push_back(1); });
+	kept = std::move(moved);
+	EXPECT_TRUE(kept);
+	EXPECT_FALSE(moved);
+	EXPECT_FALSE(moved.cancel());
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base + 1);
+
+	t.wake();
+	EXPECT_EQ(invoked, (std::vector<int>{1}));
+	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+}
+
+// Registrations racing a wake: each is either removed by its cancel or invoked by the wake, never
+// both and never neither, and the count returns to where it started. Each thread holds a batch of
+// registrations before cancelling them, and the wake waits until half the adds are done, so a
+// round exercises cancel-before-wake, wake-before-cancel, and add-after-wake together.
+TEST(LockTrackerWake, CancelRacingWakeSettlesEachRegistrationOnce) {
+	constexpr int kThreads = 4;
+	constexpr int kBatches = 64;
+	constexpr int kBatch = 16;
+	constexpr int kPerThread = kBatches * kBatch;
+	for (int round = 0; round < 8; ++round) {
+		LockTracker t(0, 1, 0x1);
+		const int64_t base = LockTracker::registeredWakeCallbacks();
+		std::vector<std::atomic<int>> settled(kThreads * kPerThread);
+		std::atomic<int> added{0};
+		std::vector<std::thread> threads;
+		for (int th = 0; th < kThreads; ++th) {
+			threads.emplace_back([&, th] {
+				for (int b = 0; b < kBatches; ++b) {
+					std::vector<LockTracker::WakeRegistration> batch;
+					for (int i = 0; i < kBatch; ++i) {
+						const int index = th * kPerThread + b * kBatch + i;
+						auto registration = t.addWakeCallback([&settled, index] { ++settled[index]; });
+						if (!registration) {
+							++settled[index];  // woken first: nothing was registered
+						}
+						batch.push_back(std::move(registration));
+						++added;
+					}
+					for (int i = 0; i < kBatch; ++i) {
+						if (batch[i].cancel()) {
+							++settled[th * kPerThread + b * kBatch + i];
+						}
+					}
+				}
+			});
+		}
+		while (added.load() < kThreads * kPerThread / 2) {
+			std::this_thread::yield();
+		}
+		t.wake();
+		for (auto& thread : threads) {
+			thread.join();
+		}
+		for (size_t index = 0; index < settled.size(); ++index) {
+			EXPECT_EQ(settled[index].load(), 1) << "registration " << index;
+		}
+		EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
+	}
 }

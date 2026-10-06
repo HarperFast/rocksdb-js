@@ -8,6 +8,43 @@ import { describe, expect, it } from 'vitest';
 
 const FRESH_VERSION_FLAG = constants.FRESH_VERSION_FLAG;
 const parkTimeoutFixturePath = join(__dirname, 'fixtures', 'fork-park-timeout.mts');
+const parkWakeRegistrationFixturePath = join(
+	__dirname,
+	'fixtures',
+	'fork-park-wake-registration.mts'
+);
+
+/**
+ * Runs a fixture in a child process: these need a process-start environment variable or a
+ * process-wide count that concurrently running test files would perturb.
+ */
+function runFixture(
+	args: string[],
+	env: Record<string, string> = {}
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, args, { env: { ...process.env, ...env } });
+		// Hang backstop only — each fixture asserts its own deadlines, and this also has to cover
+		// node boot and addon load, so a budget near the child's would report a slow runner as a
+		// regression. Under vitest's 30s testTimeout so the kill still dumps stderr.
+		const timer = setTimeout(() => child.kill(), 20_000);
+		let stderr = '';
+		child.stderr?.on('data', (chunk) => {
+			stderr += chunk.toString();
+		});
+		child.on('close', (code, signal) => {
+			clearTimeout(timer);
+			if (code !== 0 || signal) {
+				console.error(`Fixture ${args.join(' ')} stderr:\n${stderr}`);
+			}
+			resolve({ code, signal });
+		});
+		child.on('error', (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+	});
+}
 
 // Builds a value buffer whose first 8 bytes are the big-endian float64 version,
 // matching VerificationTable::extractVersionFromValue (Harper's record format).
@@ -187,36 +224,9 @@ describe('Coordinated retry (Phase 3)', () => {
 describe('Coordinated retry — bounded park timeout (#741)', () => {
 	it('a commit parked behind a never-releasing holder settles with RETRY_NOW within the deadline', () =>
 		dbRunner({ skipOpen: true }, async ({ dbPath }) => {
-			const { code, signal } = await new Promise<{
-				code: number | null;
-				signal: NodeJS.Signals | null;
-			}>((resolve, reject) => {
-				const child = spawn(process.execPath, [parkTimeoutFixturePath, dbPath], {
-					env: { ...process.env, ROCKSDB_JS_PARK_TIMEOUT_MS: '1' },
-				});
-				// Hang backstop only — the child's own `elapsed` assertion is the
-				// deadline check, and this also has to cover node boot and addon
-				// load, so a budget near the child's would report a slow runner as
-				// a regression. Under vitest's 30s testTimeout so the kill still
-				// dumps stderr.
-				const timer = setTimeout(() => child.kill(), 20_000);
-				let stderr = '';
-				child.stderr?.on('data', (chunk) => {
-					stderr += chunk.toString();
-				});
-				child.on('close', (childCode, childSignal) => {
-					clearTimeout(timer);
-					if (childCode !== 0 || childSignal) {
-						console.error(`Park timeout child stderr:\n${stderr}`);
-					}
-					resolve({ code: childCode, signal: childSignal });
-				});
-				child.on('error', (error) => {
-					clearTimeout(timer);
-					reject(error);
-				});
+			const { code, signal } = await runFixture([parkTimeoutFixturePath, dbPath], {
+				ROCKSDB_JS_PARK_TIMEOUT_MS: '1',
 			});
-
 			expect(signal).toBeNull();
 			expect(code).toBe(0);
 		}));
@@ -264,6 +274,33 @@ describe('Coordinated retry — bounded park timeout (#741)', () => {
 			// Under the deadline, so this can only have come from the close.
 			expect(elapsed).toBeLessThan(4000);
 		}));
+});
+
+// A park that ends without a wake must take its wake callback off the holder's lock, or a holder that
+// never releases accumulates one per re-park. Each scenario asserts the count drops to zero while
+// the holder still holds; see the fixture for what each one exercises.
+describe('Coordinated retry — park wake registrations', () => {
+	const isNode = !process.versions.deno && !process.versions.bun;
+	const scenarios: { scenario: string; env?: Record<string, string>; skip?: boolean }[] = [
+		{ scenario: 'timeout', env: { ROCKSDB_JS_PARK_TIMEOUT_MS: '250' } },
+		{ scenario: 'wake' },
+		// Node-only for the same reason as lock-teardown-abort: the env-cleanup ordering under test
+		// is Node's, which Deno's and Bun's N-API shims do not provide.
+		{ scenario: 'worker-exit', skip: !isNode },
+		{ scenario: 'foreign-close' },
+	];
+	for (const { scenario, env, skip } of scenarios) {
+		it.skipIf(skip)(`leaves no registration behind: ${scenario}`, () =>
+			dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+				const { code, signal } = await runFixture(
+					[parkWakeRegistrationFixturePath, scenario, dbPath],
+					env
+				);
+				expect(signal).toBeNull();
+				expect(code).toBe(0);
+			})
+		);
+	}
 });
 
 // Regression coverage for the VT-fast-path / optimistic-snapshot interaction.
