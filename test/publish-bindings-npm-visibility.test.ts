@@ -25,6 +25,12 @@ function fakeRegistry(
 	const requests: string[] = [];
 	const methods: string[] = [];
 	const cacheDirectives: Array<string | undefined> = [];
+	let bodiesCancelled = 0;
+	const bodyStub = () => ({
+		cancel: async () => {
+			bodiesCancelled += 1;
+		},
+	});
 
 	const fetch = (async (
 		url: string,
@@ -46,7 +52,7 @@ function fakeRegistry(
 		});
 
 		if (!entry) {
-			return { status: 404, body: null, json: async () => ({}) };
+			return { status: 404, body: bodyStub(), json: async () => ({}) };
 		}
 		const [spec, timing] = entry;
 		const [, version] = splitSpec(spec);
@@ -54,18 +60,18 @@ function fakeRegistry(
 			const visible = clock.now() >= timing.packumentAtMs;
 			return {
 				status: 200,
-				body: null,
+				body: bodyStub(),
 				json: async () => ({ versions: visible ? { [version]: {} } : {} }),
 			};
 		}
 		return {
 			status: clock.now() >= timing.originAtMs ? 200 : 404,
-			body: null,
+			body: bodyStub(),
 			json: async () => ({}),
 		};
 	}) as unknown as typeof globalThis.fetch;
 
-	return { fetch, requests, methods, cacheDirectives };
+	return { fetch, requests, methods, cacheDirectives, cancelled: () => bodiesCancelled };
 }
 
 function splitSpec(spec: string): [string, string] {
@@ -137,15 +143,18 @@ describe('publish-bindings npm-visibility', () => {
 	});
 
 	describe('probes', () => {
-		it('reads origin state with HEAD, leaving no body to hold its socket', async () => {
+		// GET rather than HEAD: npm documents this endpoint as GET and a custom registry need not
+		// implement HEAD. The body is released instead, so its socket returns to the pool.
+		it('reads origin state with GET and releases the body', async () => {
 			const clock = virtualClock();
-			const { fetch, requests, methods } = fakeRegistry(
+			const { fetch, requests, methods, cancelled } = fakeRegistry(
 				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 0 } },
 				clock
 			);
 			expect(await visibleAtOrigin('pkg', '1.0.0', { fetch })).toBe(true);
 			expect(requests).toEqual(['https://registry.npmjs.org/pkg/1.0.0']);
-			expect(methods).toEqual(['HEAD']);
+			expect(methods).toEqual(['GET']);
+			expect(cancelled()).toBe(1);
 		});
 
 		// A CDN that honours `no-cache` would show this probe a version ordinary installers, who
@@ -222,8 +231,28 @@ describe('publish-bindings npm-visibility', () => {
 				sleep: clock.sleep,
 				log: () => {},
 			});
-			// The packument took 2 TTLs; the settle is subsumed by that wait, not added to it.
 			expect(clock.now()).toBeLessThan(3 * PACKUMENT_TTL_MS);
+		});
+
+		// The settle is spent over real polls, not satisfied by one check. Its monotonicity against a
+		// wall-clock correction comes from the default clock being performance.now(), which an
+		// injected clock cannot exercise.
+		it('spends the settle across polls rather than satisfying it in one check', async () => {
+			let current = 0;
+			let polls = 0;
+			const clockSpy = {
+				now: () => current,
+				sleep: async (ms: number) => {
+					current += ms;
+					polls += 1;
+				},
+			};
+			const { fetch } = fakeRegistry(
+				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 0 } },
+				{ now: () => current }
+			);
+			await waitUntilServed('pkg', '1.0.0', { fetch, ...clockSpy, log: () => {} });
+			expect(polls).toBeGreaterThanOrEqual(PACKUMENT_TTL_MS / DEFAULT_POLL_INTERVAL_MS);
 		});
 
 		it('refuses a settle at or above the budget rather than never opening', async () => {
@@ -291,9 +320,7 @@ describe('publish-bindings npm-visibility', () => {
 	});
 
 	describe('budget ownership', () => {
-		// The 2.11.0 regression: one deadline was computed before the loop and shared by all eight
-		// packages, so a slow first package spent the budget the rest still needed. Driven here in
-		// the same sequential shape, a shared deadline would expire during the second wait.
+		// Sequential shape: a deadline anchored once, above the loop, expires during the second wait.
 		it('gives each package a fresh budget rather than one shared across the release', async () => {
 			const clock = virtualClock();
 			const nearlyTheWholeBudget = DEFAULT_TIMEOUT_MS - 2 * DEFAULT_POLL_INTERVAL_MS;
@@ -310,8 +337,32 @@ describe('publish-bindings npm-visibility', () => {
 			expect(clock.now()).toBeGreaterThanOrEqual(nearlyTheWholeBudget);
 
 			await waitUntilServed('second', '1.0.0', options);
-			// Past one whole global budget: a deadline anchored at the first call is long expired.
 			expect(clock.now()).toBeGreaterThan(DEFAULT_TIMEOUT_MS);
+		});
+
+		// Through the entry point the release actually calls. Serialized, these two would need
+		// nearly two budgets and the second would miss any deadline anchored at the first.
+		it('serves slow and fast packages together through waitUntilAllServed', async () => {
+			const clock = virtualClock();
+			const nearlyTheWholeBudget = DEFAULT_TIMEOUT_MS - 2 * DEFAULT_POLL_INTERVAL_MS;
+			const { fetch } = fakeRegistry(
+				{
+					'slow@1.0.0': { originAtMs: 0, packumentAtMs: nearlyTheWholeBudget },
+					'quick@1.0.0': { originAtMs: 0, packumentAtMs: PACKUMENT_TTL_MS },
+				},
+				clock
+			);
+
+			await expect(
+				waitUntilAllServed(
+					[
+						{ packageName: 'slow', version: '1.0.0' },
+						{ packageName: 'quick', version: '1.0.0' },
+					],
+					{ fetch, now: clock.now, sleep: clock.sleep, log: () => {} }
+				)
+			).resolves.toBeUndefined();
+			expect(clock.now()).toBeLessThan(2 * DEFAULT_TIMEOUT_MS);
 		});
 	});
 

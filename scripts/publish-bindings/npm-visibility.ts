@@ -60,6 +60,9 @@ const describeError = (error: unknown): string =>
 const defaultSleep = (ms: number): Promise<void> =>
 	new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Monotonic: a forward wall-clock correction must not satisfy the settle it never waited out. */
+const defaultNow = (): number => performance.now();
+
 /**
  * `Infinity` and a negative value both parse as numbers and both defeat the budget — one never
  * expires, the other expires before the first poll — so only a finite positive duration is taken.
@@ -80,7 +83,7 @@ function resolveOptions(options: VisibilityOptions = {}): ResolvedOptions {
 		pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
 		requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
 		fetch: options.fetch ?? globalThis.fetch,
-		now: options.now ?? Date.now,
+		now: options.now ?? defaultNow,
 		sleep: options.sleep ?? defaultSleep,
 		log: options.log ?? ((message: string) => console.log(message)),
 	};
@@ -108,11 +111,13 @@ export async function visibleAtOrigin(
 	options: VisibilityOptions = {}
 ): Promise<boolean> {
 	const { registry, fetch, requestTimeoutMs } = resolveOptions(options);
-	// HEAD: only the status is wanted, and an unread body would hold its socket out of the pool.
+	// GET, not HEAD: npm documents this endpoint as GET and has had HEAD/GET discrepancies, and a
+	// custom registry need not implement HEAD at all. Only the status is wanted, so the body is
+	// cancelled rather than read — an unread body holds its socket out of the connection pool.
 	const response = await fetch(versionUrl(registry, packageName, version), {
-		method: 'HEAD',
 		signal: AbortSignal.timeout(requestTimeoutMs),
 	});
+	await response.body?.cancel();
 	return response.status === 200;
 }
 
