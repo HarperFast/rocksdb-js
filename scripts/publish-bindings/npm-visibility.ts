@@ -127,12 +127,13 @@ export async function visibleAtOrigin(
 ): Promise<boolean> {
 	const { registry, fetch, requestTimeoutMs } = resolveOptions(options);
 	// GET, not HEAD: npm documents this endpoint as GET and has had HEAD/GET discrepancies, and a
-	// custom registry need not implement HEAD at all. Only the status is wanted, so the body is
-	// cancelled rather than read — an unread body holds its socket out of the connection pool.
+	// custom registry need not implement HEAD at all. Only the status is wanted, but the body is
+	// read to completion rather than cancelled: cancelling leaves unread bytes on an HTTP/1.1 wire,
+	// so undici must destroy the socket instead of returning it to the pool. The document is ~2KB.
 	const response = await fetch(versionUrl(registry, packageName, version), {
 		signal: AbortSignal.timeout(requestTimeoutMs),
 	});
-	await response.body?.cancel();
+	await response.text();
 	return response.status === 200;
 }
 
@@ -151,7 +152,7 @@ export async function visibleToInstallers(
 		signal: AbortSignal.timeout(requestTimeoutMs),
 	});
 	if (response.status !== 200) {
-		await response.body?.cancel();
+		await response.text();
 		return false;
 	}
 	const packument = (await response.json()) as { versions?: Record<string, unknown> };

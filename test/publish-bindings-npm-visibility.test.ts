@@ -25,10 +25,11 @@ function fakeRegistry(
 	const requests: string[] = [];
 	const methods: string[] = [];
 	const cacheDirectives: Array<string | undefined> = [];
-	let bodiesCancelled = 0;
-	const bodyStub = () => ({
-		cancel: async () => {
-			bodiesCancelled += 1;
+	let bodiesConsumed = 0;
+	const consumedBody = () => ({
+		text: async () => {
+			bodiesConsumed += 1;
+			return '';
 		},
 	});
 
@@ -52,7 +53,7 @@ function fakeRegistry(
 		});
 
 		if (!entry) {
-			return { status: 404, body: bodyStub(), json: async () => ({}) };
+			return { status: 404, ...consumedBody(), json: async () => ({}) };
 		}
 		const [spec, timing] = entry;
 		const [, version] = splitSpec(spec);
@@ -60,18 +61,18 @@ function fakeRegistry(
 			const visible = clock.now() >= timing.packumentAtMs;
 			return {
 				status: 200,
-				body: bodyStub(),
+				...consumedBody(),
 				json: async () => ({ versions: visible ? { [version]: {} } : {} }),
 			};
 		}
 		return {
 			status: clock.now() >= timing.originAtMs ? 200 : 404,
-			body: bodyStub(),
+			...consumedBody(),
 			json: async () => ({}),
 		};
 	}) as unknown as typeof globalThis.fetch;
 
-	return { fetch, requests, methods, cacheDirectives, cancelled: () => bodiesCancelled };
+	return { fetch, requests, methods, cacheDirectives, consumed: () => bodiesConsumed };
 }
 
 function splitSpec(spec: string): [string, string] {
@@ -145,16 +146,18 @@ describe('publish-bindings npm-visibility', () => {
 	});
 
 	describe('probes', () => {
-		it('reads origin state with GET and releases the body', async () => {
+		// A cancelled body leaves unread bytes on an HTTP/1.1 wire, so undici destroys the socket
+		// instead of pooling it — 20 probes cost 38 connections cancelled against 3 consumed.
+		it('reads origin state with GET and consumes the body', async () => {
 			const clock = virtualClock();
-			const { fetch, requests, methods, cancelled } = fakeRegistry(
+			const { fetch, requests, methods, consumed } = fakeRegistry(
 				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 0 } },
 				clock
 			);
 			expect(await visibleAtOrigin('pkg', '1.0.0', { fetch })).toBe(true);
 			expect(requests).toEqual(['https://registry.npmjs.org/pkg/1.0.0']);
 			expect(methods).toEqual(['GET']);
-			expect(cancelled()).toBe(1);
+			expect(consumed()).toBe(1);
 		});
 
 		it('asks the packument for no cache revalidation', async () => {
@@ -291,7 +294,7 @@ describe('publish-bindings npm-visibility', () => {
 					calls += 1;
 					const isPackument = init?.headers?.accept?.includes('install-v1') ?? false;
 					if (isPackument !== stallPackument) {
-						return { status: 200, body: null, json: async () => ({ versions: {} }) };
+						return { status: 200, text: async () => '', json: async () => ({ versions: {} }) };
 					}
 					return new Promise((_resolve, reject) => {
 						if (!init?.signal) {
@@ -322,8 +325,8 @@ describe('publish-bindings npm-visibility', () => {
 				}
 				const wantsPackument = init?.headers?.accept?.includes('install-v1') ?? false;
 				return wantsPackument
-					? { status: 200, body: null, json: async () => ({ versions: { '1.0.0': {} } }) }
-					: { status: 200, body: null, json: async () => ({}) };
+					? { status: 200, text: async () => '', json: async () => ({ versions: { '1.0.0': {} } }) }
+					: { status: 200, text: async () => '', json: async () => ({}) };
 			}) as unknown as typeof globalThis.fetch;
 
 			await expect(
