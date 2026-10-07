@@ -56,7 +56,9 @@ static rocksdb::Status syncBackupFile(const std::filesystem::path& path) {
  * without this a crash could durably keep the bytes but lose the name.
  */
 static rocksdb::Status syncBackupDirectory(const std::filesystem::path& path) {
-	if (!rocksdb_js::syncDirectory(path)) {
+	// A filesystem that cannot sync a directory forfeits the guarantee rather than
+	// making backups impossible, as the backup lock does where `flock` is unsupported.
+	if (!rocksdb_js::syncDirectory(path, /*allowUnsupported=*/true)) {
 		return rocksdb::Status::IOError("Failed to sync backup log directory", path.string());
 	}
 	return rocksdb::Status::OK();
@@ -211,10 +213,10 @@ static rocksdb::Status copySnapshotEntries(
 		rocksdb::Status s =
 			copyPrefixWithMtime(named.file.sourcePath, dst, named.file.byteLimit, named.file.mtime);
 		if (!s.ok()) {
-			// A concurrent retention purge can unlink a rotated file between the
-			// snapshot and this copy. An expiring file dropped from the backup is
-			// fine, so skip it — removing the partial destination the failed copy
-			// left behind; only a genuine failure (source still present) aborts.
+			// The entries pin retention, but a destroy or an out-of-band delete can
+			// still unlink a file between the snapshot and this copy. Skip it,
+			// removing the partial destination the failed copy left behind; only a
+			// genuine failure (source still present) aborts.
 			std::error_code existsEc;
 			if (!std::filesystem::exists(named.file.sourcePath, existsEc) || existsEc) {
 				std::error_code removeEc;

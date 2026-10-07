@@ -2918,8 +2918,6 @@ describe('Transaction Log', () => {
 				expect(replayed[0].timestamp).toBe(segment3Entry.timestamp);
 			}));
 
-		// The writer's segment is purged like any other once it is flushed and expired, and
-		// the sequence keeps climbing across restarts even though no segment survives.
 		it("should purge an idle store's only file and append past it across restarts", () =>
 			dbRunner({ dbOptions: [{ transactionLogRetention: 500 }] }, async ({ db, dbPath }) => {
 				let database = db;
@@ -2954,7 +2952,6 @@ describe('Transaction Log', () => {
 					database.flushSync();
 					database.close();
 
-					// startup retention takes the only file too
 					await delay(700);
 					database = RocksDatabase.open(dbPath, { transactionLogRetention: 500 });
 					log = database.useLog('foo');
@@ -3016,7 +3013,6 @@ describe('Transaction Log', () => {
 					[2]
 				);
 
-				// once the tail is flushed, the same file goes
 				db.flushSync();
 				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([segment]);
 			}));

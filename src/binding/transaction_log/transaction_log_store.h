@@ -733,10 +733,11 @@ private:
 	void retireCurrentSequenceLocked();
 
 	/**
-	 * Syncs txn.state before a purge run deletes a segment. Once every segment
-	 * at or past the flushed position can be purged, txn.state is the only
-	 * durable record of the highest sequence used, and load() derives the next
-	 * sequence from it. Returns false (after warning) when it cannot be synced.
+	 * Syncs txn.state and its directory before purge deletes the highest
+	 * registered segment. After that unlink txn.state is the only durable record
+	 * of the highest sequence used, and load() derives the next sequence from it;
+	 * any lower segment leaves a higher file as that record. Returns false (after
+	 * warning) when it cannot be synced.
 	 */
 	bool syncFlushedStateForPurge();
 

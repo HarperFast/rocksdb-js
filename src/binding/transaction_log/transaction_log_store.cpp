@@ -795,7 +795,8 @@ bool TransactionLogStore::syncFlushedStateForPurge() {
 	auto stateFilePath = this->path / "txn.state";
 	{
 		std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
-		if (rocksdb_js::syncFile(stateFilePath) && rocksdb_js::syncDirectory(this->path)) {
+		if (rocksdb_js::syncFile(stateFilePath) &&
+			rocksdb_js::syncDirectory(this->path, /*allowUnsupported=*/false)) {
 			return true;
 		}
 	}
@@ -840,7 +841,6 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 	// Per run, not per process: a directory that stays unwritable stalls retention,
 	// and one line ever would leave every later purge silent about it.
 	bool removeWarned = false;
-	bool flushedStateSynced = all;
 	auto lastFlushedPosition = this->getLastFlushedPosition();
 
 	for (const auto& entry : this->sequenceFiles) {
@@ -923,11 +923,9 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			}
 		}
 
-		if (!flushedStateSynced) {
-			if (!this->syncFlushedStateForPurge()) {
-				break;
-			}
-			flushedStateSynced = true;
+		if (!all && sequenceNumber == this->sequenceFiles.rbegin()->first &&
+			!this->syncFlushedStateForPurge()) {
+			break;
 		}
 
 		// count the entries before removing the file (counting is opt-in extra
@@ -935,6 +933,10 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 		uint32_t entryCount = (visitor && countEntries) ? logFile->countEntries() : 0;
 
 		if (sequenceNumber == this->currentSequenceNumber.load(std::memory_order_relaxed)) {
+			if (!all && this->nextSequenceNumber <= sequenceNumber) {
+				// the sequence space is exhausted; retiring would wrap below it
+				break;
+			}
 			this->retireCurrentSequenceLocked();
 		}
 
@@ -985,6 +987,17 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			this->retireCurrentSequenceLocked();
 		}
 		this->sequenceFiles.erase(sequenceNumber);
+	}
+
+	// A watermark seeded from txn.state at load can sit in a segment just purged.
+	// Nothing lies between that segment's end and the next sequence, so move it
+	// there; an uncommitted read starts its walk at the watermark's sequence.
+	uint32_t watermarkSequence = this->lastCommittedPosition->logSequenceNumber;
+	uint32_t currentSequence = this->currentSequenceNumber.load(std::memory_order_relaxed);
+	if (!sequenceNumbersToRemove.empty() && watermarkSequence < currentSequence &&
+		this->sequenceFiles.find(watermarkSequence) == this->sequenceFiles.end()) {
+		auto next = this->sequenceFiles.upper_bound(watermarkSequence);
+		*this->lastCommittedPosition = { 0, next != this->sequenceFiles.end() ? next->first : currentSequence };
 	}
 
 	// if all log files have been removed, clean up the empty directory
@@ -1537,6 +1550,18 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 
 	LogPosition flushedPosition = store->getLastFlushedPosition();
 	store->lastWrittenFlushedPosition = flushedPosition;
+	if (!readOnly && flushedPosition.fullPosition == 0 && store->sequenceFiles.empty()) {
+		// With no segment left, txn.state is the only record of the highest
+		// sequence used; one that exists but cannot be read must not restart at 1.
+		std::error_code stateError;
+		bool stateExists = std::filesystem::exists(path / "txn.state", stateError);
+		if (stateExists || stateError) {
+			throw rocksdb_js::DBException("Transaction log flushed-state file " +
+				(path / "txn.state").string() + " could not be read, and no log segment remains to "
+				"recover the store's sequence from. If the file is empty or damaged, remove it "
+				"(and nothing else) to restart the store's sequence.");
+		}
+	}
 
 	// Retention can purge every segment at or before txn.state's position,
 	// including the one it names, so txn.state may be all that remains of the

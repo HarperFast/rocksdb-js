@@ -117,10 +117,11 @@ bool syncFile(const std::filesystem::path& path);
 
 /**
  * Persists a directory's entries (creations, renames, unlinks). A no-op on
- * Windows, where NTFS journals them; on POSIX a filesystem that rejects fsync
- * on a directory (EINVAL/ENOTSUP) counts as success.
+ * Windows, where NTFS journals them. On POSIX, a filesystem that rejects fsync
+ * on a directory (EINVAL/ENOTSUP) counts as success only when
+ * `allowUnsupported` is set.
  */
-bool syncDirectory(const std::filesystem::path& path);
+bool syncDirectory(const std::filesystem::path& path, bool allowUnsupported);
 
 void tryCreateDirectory(
 	const std::filesystem::path& path,

@@ -114,8 +114,6 @@ describe('Transaction Log Stats', () => {
 				}
 			));
 
-		// An idle store's only file is both the current segment and the one txn.state
-		// names; once it is flushed and expired it is purgeable like any other.
 		it('should report and purge the flushed current file of an idle store', () =>
 			dbRunner(
 				{ dbOptions: [{ path: generateDBPath(), transactionLogRetention: 500 }] },

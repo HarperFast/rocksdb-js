@@ -308,7 +308,7 @@ bool syncFile(const std::filesystem::path& path) {
 #endif
 }
 
-bool syncDirectory(const std::filesystem::path& path) {
+bool syncDirectory(const std::filesystem::path& path, bool allowUnsupported) {
 #ifndef _WIN32
 	int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
 	if (fd < 0) {
@@ -317,7 +317,8 @@ bool syncDirectory(const std::filesystem::path& path) {
 	int rc = ::fsync(fd);
 	int syncErrno = errno;
 	::close(fd);
-	if (rc != 0 && syncErrno != EINVAL && syncErrno != ENOTSUP && syncErrno != EOPNOTSUPP) {
+	if (rc != 0 && !(allowUnsupported &&
+		(syncErrno == EINVAL || syncErrno == ENOTSUP || syncErrno == EOPNOTSUPP))) {
 		return false;
 	}
 #endif

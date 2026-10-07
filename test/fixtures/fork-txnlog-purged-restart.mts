@@ -1,5 +1,3 @@
-// Appends to a log store whose every segment retention already purged, then SIGKILLs itself
-// before any flush, so txn.state still names the purged sequence and no close runs.
 import { RocksDatabase } from '../../src/index.ts';
 import { writeSync } from 'node:fs';
 

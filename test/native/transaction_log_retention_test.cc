@@ -121,7 +121,7 @@ TEST(TransactionLogRetention, LoadUsesAnUnwrittenFlushedSequence) {
 	std::filesystem::remove_all(storePath.parent_path());
 }
 
-TEST(TransactionLogRetention, LoadIgnoresATornFlushedState) {
+TEST(TransactionLogRetention, LoadRefusesAnUnreadableStateWithNoSegment) {
 	auto storePath = uniqueRetentionPath();
 	std::filesystem::create_directories(storePath);
 	{
@@ -130,10 +130,79 @@ TEST(TransactionLogRetention, LoadIgnoresATornFlushedState) {
 		state.write(torn, sizeof(torn));
 	}
 
+	EXPECT_THROW(loadStore(storePath), rocksdb_js::DBException);
+
+	// a surviving segment still records the sequence, so the torn state is ignored
+	auto writer = std::make_shared<rocksdb_js::TransactionLogStore>(
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+	std::string payload = "entry";
+	rocksdb_js::TransactionLogEntryBatch batch(1001.0);
+	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+	rocksdb_js::LogPosition position;
+	writer->writeBatch(batch, position);
+	writer->close();
 	auto store = loadStore(storePath);
 	ASSERT_TRUE(store);
 	EXPECT_EQ(store->getLastFlushedPosition().fullPosition, 0u);
 	EXPECT_EQ(store->currentSequenceNumber.load(), 1u);
+
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+// The committed watermark is seeded from txn.state at load and can sit in the segment a purge
+// then removes; an uncommitted read starts its walk at the watermark's sequence.
+TEST(TransactionLogRetention, PurgeMovesAWatermarkOutOfAPurgedSegment) {
+	auto storePath = uniqueRetentionPath();
+	{
+		auto writer = std::make_shared<rocksdb_js::TransactionLogStore>(
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		writeAndFlush(*writer, 1001.0, 10);
+		writer->close();
+	}
+	{
+		std::ifstream first(storePath / "1.txnlog", std::ios::binary);
+		std::string header(TRANSACTION_LOG_FILE_HEADER_SIZE, '\0');
+		first.read(header.data(), header.size());
+		std::ofstream second(storePath / "2.txnlog", std::ios::binary | std::ios::trunc);
+		second.write(header.data(), header.size());
+	}
+
+	auto store = loadStore(storePath);
+	ASSERT_TRUE(store);
+	ASSERT_EQ(store->currentSequenceNumber.load(), 2u);
+	ASSERT_EQ(store->lastCommittedPosition->logSequenceNumber, 1u);
+
+	store->purge(nullptr, false, futureCutoffMs());
+	EXPECT_FALSE(std::filesystem::exists(storePath / "1.txnlog"));
+	EXPECT_TRUE(std::filesystem::exists(storePath / "2.txnlog"));
+	EXPECT_EQ(store->lastCommittedPosition->logSequenceNumber, 2u);
+	EXPECT_EQ(store->lastCommittedPosition->positionInLogFile, 0u);
+
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+// Retiring a current segment at the last sequence would wrap the writer below it.
+TEST(TransactionLogRetention, KeepsACurrentSegmentWithNoSuccessorSequence) {
+	auto storePath = uniqueRetentionPath();
+	{
+		auto writer = std::make_shared<rocksdb_js::TransactionLogStore>(
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		writeAndFlush(*writer, 1001.0, 10);
+		writer->close();
+	}
+	auto lastSegment = storePath / (std::to_string(UINT32_MAX) + ".txnlog");
+	std::filesystem::rename(storePath / "1.txnlog", lastSegment);
+	writeFlushedState(storePath, static_cast<uint32_t>(std::filesystem::file_size(lastSegment)), UINT32_MAX);
+
+	auto store = loadStore(storePath);
+	ASSERT_TRUE(store);
+	ASSERT_EQ(store->currentSequenceNumber.load(), UINT32_MAX);
+	store->purge(nullptr, false, futureCutoffMs());
+	EXPECT_TRUE(std::filesystem::exists(lastSegment));
+	EXPECT_EQ(store->currentSequenceNumber.load(), UINT32_MAX);
 
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());
