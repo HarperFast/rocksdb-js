@@ -92,7 +92,7 @@ export function assertBudgetUsable(options: VisibilityOptions = {}): void {
 
 function resolveOptions(options: VisibilityOptions = {}): ResolvedOptions {
 	const resolved = {
-		registry: trimTrailingSlash(options.registry ?? DEFAULT_REGISTRY),
+		registry: trimTrailingSlash(options.registry || DEFAULT_REGISTRY),
 		timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 		settleMs: options.settleMs ?? PACKUMENT_TTL_MS,
 		pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
