@@ -16,7 +16,7 @@
  * NODE_AUTH_TOKEN=... TAG=latest node scripts/publish-bindings.mjs
  */
 
-import { waitUntilAllServed } from './publish-bindings/npm-visibility.ts';
+import { parseTimeoutMs, waitUntilAllServed } from './publish-bindings/npm-visibility.ts';
 import { execFileSync } from 'node:child_process';
 import {
 	copyFileSync,
@@ -119,7 +119,7 @@ for (const target of Object.keys(bindings)) {
 	console.log(`Published ${packageName} to npm\n`);
 }
 
-const timeoutMs = Number(process.env.PUBLISH_VISIBILITY_TIMEOUT_MS) || undefined;
+const timeoutMs = parseTimeoutMs(process.env.PUBLISH_VISIBILITY_TIMEOUT_MS);
 try {
 	await waitUntilAllServed(
 		Object.keys(bindings).map((target) => ({

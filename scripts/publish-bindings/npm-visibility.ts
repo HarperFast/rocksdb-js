@@ -16,22 +16,34 @@
  *   lags the origin by up to that TTL and is what an installer actually resolves
  *   `optionalDependencies` through, so origin agreement alone does not make a version installable.
  *
- * Only one CDN edge is observable from here, so a consumer on another edge can still trail by up
- * to one TTL after this gate opens.
+ * The packument probe must therefore send no cache directives: asking a CDN to revalidate would
+ * show this process a version that installers, who ask for no such thing, still cannot see — the
+ * gate would open during the exact window it exists to close.
+ *
+ * Observing one edge is not observing all of them. An edge that cached the packument just before
+ * the publish landed keeps serving it for a further TTL, so the gate also holds until a TTL has
+ * passed since the version appeared at the origin. Time spent waiting for this edge counts toward
+ * it.
  */
 
-/** `cache-control: max-age` npm serves the packument with; a visibility budget needs several. */
+/** `cache-control: max-age` npm serves the packument with. */
 export const PACKUMENT_TTL_MS: number = 5 * 60 * 1000;
 
 export const DEFAULT_REGISTRY: string = 'https://registry.npmjs.org';
 export const DEFAULT_TIMEOUT_MS: number = 3 * PACKUMENT_TTL_MS;
 export const DEFAULT_POLL_INTERVAL_MS: number = 10_000;
 
+/** Caps one stalled request so it retries instead of consuming the whole package budget. */
+export const DEFAULT_REQUEST_TIMEOUT_MS: number = 30_000;
+
 export type VisibilityOptions = {
 	registry?: string;
 	/** Budget per package, not shared across them. */
 	timeoutMs?: number;
+	/** Quiet period after origin visibility, covering CDN edges this process cannot observe. */
+	settleMs?: number;
 	pollIntervalMs?: number;
+	requestTimeoutMs?: number;
 	fetch?: typeof globalThis.fetch;
 	now?: () => number;
 	sleep?: (ms: number) => Promise<void>;
@@ -40,96 +52,129 @@ export type VisibilityOptions = {
 
 type ResolvedOptions = Required<VisibilityOptions>;
 
+const trimTrailingSlash = (registry: string): string => registry.replace(/\/+$/, '');
+
+const describeError = (error: unknown): string =>
+	error instanceof Error ? error.message : String(error);
+
 const defaultSleep = (ms: number): Promise<void> =>
 	new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * `Infinity` and a negative value both parse as numbers and both defeat the budget — one never
+ * expires, the other expires before the first poll — so only a finite positive duration is taken.
+ */
+export function parseTimeoutMs(value: string | undefined): number | undefined {
+	if (value === undefined || value.trim() === '') {
+		return undefined;
+	}
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function resolveOptions(options: VisibilityOptions = {}): ResolvedOptions {
-	return {
-		registry: (options.registry ?? DEFAULT_REGISTRY).replace(/\/+$/, ''),
+	const resolved = {
+		registry: trimTrailingSlash(options.registry ?? DEFAULT_REGISTRY),
 		timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+		settleMs: options.settleMs ?? PACKUMENT_TTL_MS,
 		pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+		requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
 		fetch: options.fetch ?? globalThis.fetch,
 		now: options.now ?? Date.now,
 		sleep: options.sleep ?? defaultSleep,
 		log: options.log ?? ((message: string) => console.log(message)),
 	};
-}
 
-export function versionUrl(registry: string, packageName: string, version: string): string {
-	return `${registry.replace(/\/+$/, '')}/${encodeURIComponent(packageName)}/${version}`;
+	if (resolved.settleMs >= resolved.timeoutMs) {
+		throw new Error(
+			`settleMs (${resolved.settleMs}ms) must be below timeoutMs (${resolved.timeoutMs}ms), ` +
+				'otherwise the gate can never open'
+		);
+	}
+	return resolved;
 }
 
 export function packumentUrl(registry: string, packageName: string): string {
-	return `${registry.replace(/\/+$/, '')}/${encodeURIComponent(packageName)}`;
+	return `${trimTrailingSlash(registry)}/${encodeURIComponent(packageName)}`;
 }
 
-/** Origin truth, via the endpoint npm does not put behind the CDN. */
+export function versionUrl(registry: string, packageName: string, version: string): string {
+	return `${packumentUrl(registry, packageName)}/${version}`;
+}
+
 export async function visibleAtOrigin(
 	packageName: string,
 	version: string,
 	options: VisibilityOptions = {}
 ): Promise<boolean> {
-	const { registry, fetch } = resolveOptions(options);
+	const { registry, fetch, requestTimeoutMs } = resolveOptions(options);
+	// HEAD: only the status is wanted, and an unread body would hold its socket out of the pool.
 	const response = await fetch(versionUrl(registry, packageName, version), {
-		headers: { 'cache-control': 'no-cache' },
+		method: 'HEAD',
+		signal: AbortSignal.timeout(requestTimeoutMs),
 	});
 	return response.status === 200;
 }
 
-/** What an installer resolves through: the CDN-cached abbreviated packument. */
+/**
+ * Deliberately sends no cache directives, so the answer is the one an installer gets from this
+ * edge rather than a fresher one only this probe can see.
+ */
 export async function visibleToInstallers(
 	packageName: string,
 	version: string,
 	options: VisibilityOptions = {}
 ): Promise<boolean> {
-	const { registry, fetch } = resolveOptions(options);
+	const { registry, fetch, requestTimeoutMs } = resolveOptions(options);
 	const response = await fetch(packumentUrl(registry, packageName), {
-		headers: {
-			accept: 'application/vnd.npm.install-v1+json',
-			'cache-control': 'no-cache',
-		},
+		headers: { accept: 'application/vnd.npm.install-v1+json' },
+		signal: AbortSignal.timeout(requestTimeoutMs),
 	});
 	if (response.status !== 200) {
+		await response.body?.cancel();
 		return false;
 	}
 	const packument = (await response.json()) as { versions?: Record<string, unknown> };
 	return Boolean(packument.versions?.[version]);
 }
 
-/**
- * Block until `packageName@version` is both published at the origin and resolvable through the
- * packument, or the per-package budget expires.
- */
 export async function waitUntilServed(
 	packageName: string,
 	version: string,
 	options: VisibilityOptions = {}
 ): Promise<void> {
 	const resolved = resolveOptions(options);
-	const { timeoutMs, pollIntervalMs, now, sleep, log } = resolved;
+	const { timeoutMs, settleMs, pollIntervalMs, now, sleep, log } = resolved;
 	const spec = `${packageName}@${version}`;
 	const deadline = now() + timeoutMs;
-	let atOrigin = false;
+	let originObservedAt: number | undefined;
 
 	while (true) {
 		try {
-			if (!atOrigin && (await visibleAtOrigin(packageName, version, resolved))) {
-				atOrigin = true;
+			if (
+				originObservedAt === undefined &&
+				(await visibleAtOrigin(packageName, version, resolved))
+			) {
+				originObservedAt = now();
 				log(`origin is serving ${spec}; waiting for the packument to catch up`);
 			}
-			if (atOrigin && (await visibleToInstallers(packageName, version, resolved))) {
+			if (
+				originObservedAt !== undefined &&
+				now() >= originObservedAt + settleMs &&
+				(await visibleToInstallers(packageName, version, resolved))
+			) {
 				log(`npm is serving ${spec}`);
 				return;
 			}
 		} catch (error) {
-			// One failed request is not evidence the publish failed; only the deadline is.
-			log(`probe for ${spec} failed (${(error as Error).message}), retrying`);
+			// One failed or aborted request is not evidence the publish failed; only the deadline is.
+			log(`probe for ${spec} failed (${describeError(error)}), retrying`);
 		}
 
 		if (now() >= deadline) {
 			throw new Error(
 				`Timed out after ${Math.round(timeoutMs / 1000)}s waiting for npm to serve ${spec} ` +
-					`(${atOrigin ? 'published at the origin, packument still stale' : 'not published at the origin'})`
+					`(${originObservedAt === undefined ? 'not published at the origin' : 'published at the origin, packument still stale'})`
 			);
 		}
 		log(`waiting for npm to serve ${spec}...`);
@@ -137,10 +182,6 @@ export async function waitUntilServed(
 	}
 }
 
-/**
- * Wait for every spec concurrently, each on its own budget, and report all failures rather than
- * only the first.
- */
 export async function waitUntilAllServed(
 	specs: Array<{ packageName: string; version: string }>,
 	options: VisibilityOptions = {}
@@ -148,14 +189,13 @@ export async function waitUntilAllServed(
 	const results = await Promise.allSettled(
 		specs.map(({ packageName, version }) => waitUntilServed(packageName, version, options))
 	);
-	const reasons = results
-		.filter((result) => result.status === 'rejected')
-		.map((result) => (result.reason as Error).message);
+	const failures = results.filter((result) => result.status === 'rejected');
 
-	if (reasons.length > 0) {
+	if (failures.length > 0) {
 		throw new Error(
-			`${reasons.length} of ${specs.length} package(s) are not being served yet:\n` +
-				reasons.map((reason) => `  - ${reason}`).join('\n')
+			`${failures.length} of ${specs.length} package(s) are not being served yet:\n` +
+				failures.map((failure) => `  - ${describeError(failure.reason)}`).join('\n'),
+			{ cause: failures[0].reason }
 		);
 	}
 }

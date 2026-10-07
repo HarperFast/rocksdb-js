@@ -8,7 +8,7 @@
  * node scripts/wait-for-npm.mjs @harperfast/rocksdb-js 2.11.0
  */
 
-import { waitUntilAllServed } from './publish-bindings/npm-visibility.ts';
+import { parseTimeoutMs, waitUntilAllServed } from './publish-bindings/npm-visibility.ts';
 
 const [packageName, version] = process.argv.slice(2);
 
@@ -17,7 +17,7 @@ if (!packageName || !version) {
 	process.exit(1);
 }
 
-const timeoutMs = Number(process.env.PUBLISH_VISIBILITY_TIMEOUT_MS) || undefined;
+const timeoutMs = parseTimeoutMs(process.env.PUBLISH_VISIBILITY_TIMEOUT_MS);
 
 try {
 	await waitUntilAllServed([{ packageName, version }], {

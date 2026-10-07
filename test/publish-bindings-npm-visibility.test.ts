@@ -3,6 +3,7 @@ import {
 	DEFAULT_TIMEOUT_MS,
 	PACKUMENT_TTL_MS,
 	packumentUrl,
+	parseTimeoutMs,
 	versionUrl,
 	visibleAtOrigin,
 	visibleToInstallers,
@@ -22,8 +23,17 @@ function fakeRegistry(
 	clock: { now: () => number }
 ) {
 	const requests: string[] = [];
-	const fetch = (async (url: string, init?: { headers?: Record<string, string> }) => {
+	const methods: string[] = [];
+	const cacheDirectives: Array<string | undefined> = [];
+
+	const fetch = (async (
+		url: string,
+		init?: { headers?: Record<string, string>; method?: string }
+	) => {
 		requests.push(url);
+		methods.push(init?.method ?? 'GET');
+		cacheDirectives.push(init?.headers?.['cache-control']);
+
 		const wantsPackument = init?.headers?.accept?.includes('install-v1') ?? false;
 		const entry = Object.entries(published).find(([spec]) => {
 			const [packageName, version] = splitSpec(spec);
@@ -36,18 +46,26 @@ function fakeRegistry(
 		});
 
 		if (!entry) {
-			return { status: 404, json: async () => ({}) };
+			return { status: 404, body: null, json: async () => ({}) };
 		}
 		const [spec, timing] = entry;
 		const [, version] = splitSpec(spec);
 		if (wantsPackument) {
 			const visible = clock.now() >= timing.packumentAtMs;
-			return { status: 200, json: async () => ({ versions: visible ? { [version]: {} } : {} }) };
+			return {
+				status: 200,
+				body: null,
+				json: async () => ({ versions: visible ? { [version]: {} } : {} }),
+			};
 		}
-		return { status: clock.now() >= timing.originAtMs ? 200 : 404, json: async () => ({}) };
+		return {
+			status: clock.now() >= timing.originAtMs ? 200 : 404,
+			body: null,
+			json: async () => ({}),
+		};
 	}) as unknown as typeof globalThis.fetch;
 
-	return { fetch, requests };
+	return { fetch, requests, methods, cacheDirectives };
 }
 
 function splitSpec(spec: string): [string, string] {
@@ -69,6 +87,17 @@ function virtualClock() {
 	};
 }
 
+/** Short budgets need the settle disabled, since a settle at or above the budget cannot open. */
+function shortBudget(clock: ReturnType<typeof virtualClock>) {
+	return {
+		now: clock.now,
+		sleep: clock.sleep,
+		timeoutMs: 60_000,
+		settleMs: 0,
+		log: () => {},
+	};
+}
+
 describe('publish-bindings npm-visibility', () => {
 	describe('url building', () => {
 		it('encodes a scoped package name', () => {
@@ -87,15 +116,49 @@ describe('publish-bindings npm-visibility', () => {
 		});
 	});
 
+	describe('parseTimeoutMs', () => {
+		it('takes a finite positive duration', () => {
+			expect(parseTimeoutMs('30000')).toBe(30_000);
+		});
+
+		// Both parse as numbers and both defeat the budget: one never expires, the other expires
+		// before the first poll.
+		it('rejects Infinity and non-positive values', () => {
+			expect(parseTimeoutMs('Infinity')).toBeUndefined();
+			expect(parseTimeoutMs('-5000')).toBeUndefined();
+			expect(parseTimeoutMs('0')).toBeUndefined();
+		});
+
+		it('rejects unset, empty and malformed values', () => {
+			expect(parseTimeoutMs(undefined)).toBeUndefined();
+			expect(parseTimeoutMs('   ')).toBeUndefined();
+			expect(parseTimeoutMs('soon')).toBeUndefined();
+		});
+	});
+
 	describe('probes', () => {
-		it('reads origin state from the uncached per-version endpoint', async () => {
+		it('reads origin state with HEAD, leaving no body to hold its socket', async () => {
 			const clock = virtualClock();
-			const { fetch, requests } = fakeRegistry(
+			const { fetch, requests, methods } = fakeRegistry(
 				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 0 } },
 				clock
 			);
 			expect(await visibleAtOrigin('pkg', '1.0.0', { fetch })).toBe(true);
 			expect(requests).toEqual(['https://registry.npmjs.org/pkg/1.0.0']);
+			expect(methods).toEqual(['HEAD']);
+		});
+
+		// A CDN that honours `no-cache` would show this probe a version ordinary installers, who
+		// send no such directive, still cannot resolve — opening the gate inside the window it
+		// exists to close.
+		it('asks the packument for no cache revalidation', async () => {
+			const clock = virtualClock();
+			const { fetch, cacheDirectives } = fakeRegistry(
+				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 0 } },
+				clock
+			);
+			await visibleToInstallers('pkg', '1.0.0', { fetch });
+			expect(cacheDirectives).toEqual([undefined]);
 		});
 
 		it('reports a version absent from the packument as not installable', async () => {
@@ -121,9 +184,23 @@ describe('publish-bindings npm-visibility', () => {
 		it('does not open on origin agreement alone — the packument gates it', async () => {
 			const clock = virtualClock();
 			const { fetch } = fakeRegistry(
-				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: PACKUMENT_TTL_MS } },
+				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 2 * PACKUMENT_TTL_MS } },
 				clock
 			);
+			await waitUntilServed('pkg', '1.0.0', {
+				fetch,
+				now: clock.now,
+				sleep: clock.sleep,
+				log: () => {},
+			});
+			expect(clock.now()).toBeGreaterThanOrEqual(2 * PACKUMENT_TTL_MS);
+		});
+
+		// An edge that cached the packument just before the publish landed keeps serving it for a
+		// further TTL, and this process can only observe its own edge.
+		it('holds for a TTL after origin visibility even when this edge is already current', async () => {
+			const clock = virtualClock();
+			const { fetch } = fakeRegistry({ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 0 } }, clock);
 			await waitUntilServed('pkg', '1.0.0', {
 				fetch,
 				now: clock.now,
@@ -133,21 +210,26 @@ describe('publish-bindings npm-visibility', () => {
 			expect(clock.now()).toBeGreaterThanOrEqual(PACKUMENT_TTL_MS);
 		});
 
-		it('absorbs two full packument TTLs within the default budget', async () => {
+		it('counts time already spent waiting toward the settle', async () => {
 			const clock = virtualClock();
 			const { fetch } = fakeRegistry(
 				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 2 * PACKUMENT_TTL_MS } },
 				clock
 			);
+			await waitUntilServed('pkg', '1.0.0', {
+				fetch,
+				now: clock.now,
+				sleep: clock.sleep,
+				log: () => {},
+			});
+			// The packument took 2 TTLs; the settle is subsumed by that wait, not added to it.
+			expect(clock.now()).toBeLessThan(3 * PACKUMENT_TTL_MS);
+		});
+
+		it('refuses a settle at or above the budget rather than never opening', async () => {
 			await expect(
-				waitUntilServed('pkg', '1.0.0', {
-					fetch,
-					now: clock.now,
-					sleep: clock.sleep,
-					log: () => {},
-				})
-			).resolves.toBeUndefined();
-			expect(DEFAULT_TIMEOUT_MS).toBeGreaterThan(2 * PACKUMENT_TTL_MS);
+				waitUntilServed('pkg', '1.0.0', { timeoutMs: 1000, settleMs: 1000 })
+			).rejects.toThrow(/settleMs .* must be below timeoutMs/);
 		});
 
 		it('times out and names the gate it was waiting on', async () => {
@@ -157,13 +239,7 @@ describe('publish-bindings npm-visibility', () => {
 				clock
 			);
 			await expect(
-				waitUntilServed('pkg', '1.0.0', {
-					fetch,
-					now: clock.now,
-					sleep: clock.sleep,
-					timeoutMs: 60_000,
-					log: () => {},
-				})
+				waitUntilServed('pkg', '1.0.0', { fetch, ...shortBudget(clock) })
 			).rejects.toThrow(/published at the origin, packument still stale/);
 		});
 
@@ -171,38 +247,44 @@ describe('publish-bindings npm-visibility', () => {
 			const clock = virtualClock();
 			const { fetch } = fakeRegistry({}, clock);
 			await expect(
-				waitUntilServed('pkg', '1.0.0', {
-					fetch,
-					now: clock.now,
-					sleep: clock.sleep,
-					timeoutMs: 60_000,
-					log: () => {},
-				})
+				waitUntilServed('pkg', '1.0.0', { fetch, ...shortBudget(clock) })
 			).rejects.toThrow(/not published at the origin/);
 		});
 
-		it('keeps polling through a transient request failure', async () => {
+		// A stalled request must not outlive the budget: the deadline is only reachable between
+		// polls, so an unbounded request would hold the release open indefinitely.
+		it('keeps polling when every request aborts, and still reaches its deadline', async () => {
 			const clock = virtualClock();
 			let calls = 0;
-			const fetch = (async (url: string, init?: { headers?: Record<string, string> }) => {
+			const fetch = (async () => {
+				calls += 1;
+				throw Object.assign(new Error('The operation was aborted due to timeout'), {
+					name: 'TimeoutError',
+				});
+			}) as unknown as typeof globalThis.fetch;
+
+			await expect(
+				waitUntilServed('pkg', '1.0.0', { fetch, ...shortBudget(clock) })
+			).rejects.toThrow(/not published at the origin/);
+			expect(calls).toBeGreaterThan(1);
+		});
+
+		it('recovers after a transient request failure', async () => {
+			const clock = virtualClock();
+			let calls = 0;
+			const fetch = (async (_url: string, init?: { headers?: Record<string, string> }) => {
 				calls += 1;
 				if (calls === 1) {
 					throw new Error('ECONNRESET');
 				}
 				const wantsPackument = init?.headers?.accept?.includes('install-v1') ?? false;
 				return wantsPackument
-					? { status: 200, json: async () => ({ versions: { '1.0.0': {} } }) }
-					: { status: 200, json: async () => ({}) };
+					? { status: 200, body: null, json: async () => ({ versions: { '1.0.0': {} } }) }
+					: { status: 200, body: null, json: async () => ({}) };
 			}) as unknown as typeof globalThis.fetch;
 
 			await expect(
-				waitUntilServed('pkg', '1.0.0', {
-					fetch,
-					now: clock.now,
-					sleep: clock.sleep,
-					timeoutMs: 60_000,
-					log: () => {},
-				})
+				waitUntilServed('pkg', '1.0.0', { fetch, ...shortBudget(clock) })
 			).resolves.toBeUndefined();
 			expect(calls).toBeGreaterThan(1);
 		});
@@ -250,9 +332,7 @@ describe('publish-bindings npm-visibility', () => {
 				{ fetch, now: clock.now, sleep: clock.sleep, log: () => {} }
 			);
 
-			// All three are probed before any of them is served.
-			const firstRound = requests.slice(0, 3);
-			expect(new Set(firstRound).size).toBe(3);
+			expect(new Set(requests.slice(0, 3)).size).toBe(3);
 		});
 
 		it('reports every package that failed, not just the first', async () => {
@@ -265,7 +345,7 @@ describe('publish-bindings npm-visibility', () => {
 						{ packageName: 'missing-a', version: '1.0.0' },
 						{ packageName: 'missing-b', version: '1.0.0' },
 					],
-					{ fetch, now: clock.now, sleep: clock.sleep, timeoutMs: 60_000, log: () => {} }
+					{ fetch, ...shortBudget(clock) }
 				)
 			).rejects.toThrow(/2 of 3 package\(s\)[\s\S]*missing-a[\s\S]*missing-b/);
 		});
