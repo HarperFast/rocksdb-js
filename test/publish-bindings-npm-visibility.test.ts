@@ -1,5 +1,6 @@
 import {
 	DEFAULT_POLL_INTERVAL_MS,
+	DEFAULT_REGISTRY,
 	DEFAULT_TIMEOUT_MS,
 	PACKUMENT_TTL_MS,
 	packumentUrl,
@@ -124,6 +125,18 @@ describe('publish-bindings npm-visibility', () => {
 			expect(versionUrl('https://registry.npmjs.org/', 'pkg', '1.0.0')).toBe(
 				'https://registry.npmjs.org/pkg/1.0.0'
 			);
+		});
+
+		// `NPM_CONFIG_REGISTRY=` reaches the resolver as '', not undefined, so the fallback has to
+		// be falsy-wide: a '' registry would otherwise build relative URLs that resolve nowhere.
+		it('falls back to the default registry for an empty one', async () => {
+			const clock = virtualClock();
+			const { fetch, requests } = fakeRegistry(
+				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 0 } },
+				clock
+			);
+			expect(await visibleAtOrigin('pkg', '1.0.0', { fetch, registry: '' })).toBe(true);
+			expect(requests).toEqual([`${DEFAULT_REGISTRY}/pkg/1.0.0`]);
 		});
 	});
 
