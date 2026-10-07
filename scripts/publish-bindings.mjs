@@ -8,10 +8,15 @@
  * - NODE_AUTH_TOKEN: The npm token to use for authentication.
  * - TAG: The tag to use for the packages: `latest` or `next`.
  *
+ * Optional environment variables:
+ * - PUBLISH_VISIBILITY_TIMEOUT_MS: Per-package budget for the post-publish registry visibility
+ *   gate (default 15 minutes).
+ *
  * @example
  * NODE_AUTH_TOKEN=... TAG=latest node scripts/publish-bindings.mjs
  */
 
+import { waitUntilAllServed } from './publish-bindings/npm-visibility.ts';
 import { execFileSync } from 'node:child_process';
 import {
 	copyFileSync,
@@ -114,29 +119,22 @@ for (const target of Object.keys(bindings)) {
 	console.log(`Published ${packageName} to npm\n`);
 }
 
-// A `pnpm publish` that returns success only means npm accepted the tarball, not that the version
-// is readable yet: publishing 2.10.0 put seven bindings on the registry within 46s and left
-// linux-x64-musl unreadable for six minutes more — until after the parent package had published.
-// The parent's optionalDependencies name all eight, so anything installing it in that window
-// (harper's update-rocksdb-js workflow does, off the release dispatch) resolves the missing one to
-// nothing, with no error, and writes a lockfile that no `npm ci` can install. Block here, before
-// the caller publishes the parent, so the parent is never resolvable ahead of its own bindings.
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const deadline = Date.now() + 10 * 60 * 1000;
-for (const target of Object.keys(bindings)) {
-	const spec = `${packageJson.name}-${target}@${packageJson.version}`;
-	while (true) {
-		try {
-			execFileSync('pnpm', ['view', spec, 'version'], { stdio: 'ignore' });
-			break;
-		} catch {
-			if (Date.now() > deadline) {
-				console.error(`Timed out waiting for npm to serve ${spec}`);
-				process.exit(1);
-			}
-			console.log(`Waiting for npm to serve ${spec}...`);
-			await sleep(10000);
-		}
-	}
-	console.log(`npm is serving ${spec}`);
+const timeoutMs = Number(process.env.PUBLISH_VISIBILITY_TIMEOUT_MS) || undefined;
+try {
+	await waitUntilAllServed(
+		Object.keys(bindings).map((target) => ({
+			packageName: `${packageJson.name}-${target}`,
+			version: packageJson.version,
+		})),
+		{ registry: process.env.NPM_CONFIG_REGISTRY, timeoutMs }
+	);
+} catch (error) {
+	console.error(error.message);
+	console.error(
+		'\nThe parent package was NOT published, so nothing can resolve ahead of its bindings. The ' +
+			'bindings themselves did publish, so re-running this job is not the recovery: wait for the ' +
+			'registry to catch up, then publish the parent by hand. Raise ' +
+			'PUBLISH_VISIBILITY_TIMEOUT_MS if this recurs.'
+	);
+	process.exit(1);
 }
