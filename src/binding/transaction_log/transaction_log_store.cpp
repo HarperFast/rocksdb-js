@@ -777,8 +777,8 @@ void TransactionLogStore::retireCurrentSequenceLocked() {
 		it->second->downgradeMapToFrozen();
 	}
 	// Only the sentinel can be at the current sequence: a purge reaches it only
-	// when its whole extent is at or before the flushed position, which no
-	// uncommitted transaction can be.
+	// when its whole extent is at or before the flushed position, and every
+	// written-but-uncommitted position is past that.
 	this->positionErase(this->nextLogPosition);
 	DEBUG_LOG("%p TransactionLogStore::retireCurrentSequenceLocked Advancing sequence number from %u to %u\n",
 		this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber);
@@ -797,13 +797,18 @@ bool TransactionLogStore::syncFlushedStateForPurge() {
 		std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 		if (rocksdb_js::syncFile(stateFilePath) &&
 			rocksdb_js::syncDirectory(this->path, /*allowUnsupported=*/false)) {
+			this->purgeSyncWarningEmitted.store(false, std::memory_order_relaxed);
 			return true;
 		}
+	}
+	// A mount that never supports a directory sync would otherwise warn on every run.
+	if (this->purgeSyncWarningEmitted.exchange(true, std::memory_order_relaxed)) {
+		return false;
 	}
 	try {
 		std::ostringstream msg;
 		msg << "Transaction log flushed-state file " << stateFilePath.string()
-			<< " could not be synced; retention cannot purge segments until it can.";
+			<< " could not be synced; retention keeps the store's last segment until it can.";
 		DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	} catch (...) {

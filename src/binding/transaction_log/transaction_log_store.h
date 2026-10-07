@@ -398,8 +398,12 @@ struct TransactionLogStore final {
 	 * Backups currently between capturing txn.state and copying segments; see
 	 * pinRetention(). Incremented under dataSetsMutex, which a purge run holds
 	 * throughout, so a run either finished before the capture or sees the pin.
+	 * The release needs no lock: it can only let a later run proceed.
 	 */
 	std::atomic<uint32_t> retentionPins = 0;
+
+	/** Set once a purge reports that txn.state cannot be synced; cleared on success. */
+	std::atomic<bool> purgeSyncWarningEmitted = false;
 
 	/**
 	 * The next sequence position to use for a new transaction log entry.

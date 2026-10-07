@@ -261,9 +261,9 @@ across segments, and a segment header records the store's latest timestamp only 
 segment's creation, so there is no shortcut: every segment is read.
 
 Retention can purge every segment of the named log. The walk then finds no keys and leaves the clock
-alone, so a backward step after restart can reissue a key that was only in purged segments. Those
-segments were past retention, so this needs a backward step at least as large as the retention
-period.
+alone, so a backward step after restart can reissue a key that was only in purged segments. With
+age-based retention alone that needs a backward step at least as large as the retention period; a
+`purgeLogs({ before })` cutoff closer to now shrinks it to the time since that cutoff.
 
 Name only a log this process originates. A log a replication receiver writes under an adopted origin
 timestamp is keyed by another node's clock, and seeding from it would ratchet this process's clock
