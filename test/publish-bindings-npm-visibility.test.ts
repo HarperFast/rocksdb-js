@@ -127,8 +127,6 @@ describe('publish-bindings npm-visibility', () => {
 			expect(parseTimeoutMs('30000')).toBe(30_000);
 		});
 
-		// Both parse as numbers and both defeat the budget: one never expires, the other expires
-		// before the first poll.
 		it('rejects Infinity and non-positive values', () => {
 			expect(parseTimeoutMs('Infinity')).toBeUndefined();
 			expect(parseTimeoutMs('-5000')).toBeUndefined();
@@ -143,8 +141,6 @@ describe('publish-bindings npm-visibility', () => {
 	});
 
 	describe('probes', () => {
-		// GET rather than HEAD: npm documents this endpoint as GET and a custom registry need not
-		// implement HEAD. The body is released instead, so its socket returns to the pool.
 		it('reads origin state with GET and releases the body', async () => {
 			const clock = virtualClock();
 			const { fetch, requests, methods, cancelled } = fakeRegistry(
@@ -157,9 +153,6 @@ describe('publish-bindings npm-visibility', () => {
 			expect(cancelled()).toBe(1);
 		});
 
-		// A CDN that honours `no-cache` would show this probe a version ordinary installers, who
-		// send no such directive, still cannot resolve — opening the gate inside the window it
-		// exists to close.
 		it('asks the packument for no cache revalidation', async () => {
 			const clock = virtualClock();
 			const { fetch, cacheDirectives } = fakeRegistry(
@@ -205,8 +198,6 @@ describe('publish-bindings npm-visibility', () => {
 			expect(clock.now()).toBeGreaterThanOrEqual(2 * PACKUMENT_TTL_MS);
 		});
 
-		// An edge that cached the packument just before the publish landed keeps serving it for a
-		// further TTL, and this process can only observe its own edge.
 		it('holds for a TTL after origin visibility even when this edge is already current', async () => {
 			const clock = virtualClock();
 			const { fetch } = fakeRegistry({ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 0 } }, clock);
@@ -280,8 +271,6 @@ describe('publish-bindings npm-visibility', () => {
 			).rejects.toThrow(/not published at the origin/);
 		});
 
-		// A stalled request must not outlive the budget: the deadline is only reachable between
-		// polls, so an unbounded request would hold the release open indefinitely.
 		it('keeps polling when every request aborts, and still reaches its deadline', async () => {
 			const clock = virtualClock();
 			let calls = 0;
