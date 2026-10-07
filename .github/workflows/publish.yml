@@ -271,24 +271,24 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TAG: ${{ needs.preflight.outputs.tag }}
         shell: bash
+        # Backstop only, deliberately well above the gate's own budget: a step timeout kills the
+        # process, so the gate's failure output -- which says the bindings published and how to
+        # recover -- is lost. The gate must be the one that gives up. Raising
+        # PUBLISH_VISIBILITY_TIMEOUT_MS past this still needs this raised too.
+        timeout-minutes: 60
         run: node scripts/publish-bindings.mjs
 
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
-        run: pnpm publish --access public --no-git-checks --tag ${{ needs.preflight.outputs.tag }}
+        run: pnpm publish --access public --no-git-checks --tag "${{ needs.preflight.outputs.tag }}"
 
       - name: Wait for npm to publish
         shell: bash
-        timeout-minutes: 5
-        run: |
-          sleep 10
-          while ! pnpm view ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }} > /dev/null 2>&1; do
-            echo "Waiting for npm to publish ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}..."
-            sleep 10
-          done
-          echo "npm has published ${{ steps.get-package-info.outputs.name }}@${{ needs.preflight.outputs.version }}"
+        # Backstop only; see the binding publish step above.
+        timeout-minutes: 40
+        run: node scripts/wait-for-npm.mjs "${{ steps.get-package-info.outputs.name }}" "${{ needs.preflight.outputs.version }}"
 
       - name: Update pnpm-lock.yaml
         env:
