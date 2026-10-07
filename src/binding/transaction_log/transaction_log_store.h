@@ -396,14 +396,11 @@ struct TransactionLogStore final {
 	std::atomic<uint64_t> flushedStateGeneration = 0;
 
 	/**
-	 * Backups currently between capturing txn.state and copying segments; see
-	 * pinRetention(). Incremented under dataSetsMutex, which a purge run holds
-	 * throughout, so a run either finished before the capture or sees the pin.
-	 * The release needs no lock: it can only let a later run proceed.
+	 * See pinRetention(). Incremented under dataSetsMutex, which a purge run
+	 * holds throughout; the release needs no lock.
 	 */
 	std::atomic<uint32_t> retentionPins = 0;
 
-	/** Set once a purge reports that txn.state cannot be synced; cleared on success. */
 	std::atomic<bool> purgeSyncWarningEmitted = false;
 
 	/**
@@ -594,11 +591,9 @@ struct TransactionLogStore final {
 	std::vector<TransactionLogBackupEntry> snapshotForBackup();
 
 	/**
-	 * Holds off ordinary retention purges of `store` until the returned handle
-	 * is released. A backup copies segments after capturing txn.state, and a
-	 * purge in between reads a newer flushed position, so it could delete a
-	 * segment whose entries the captured position still needs replayed. Take it
-	 * before snapshotForBackup(). `destroy` purges ignore it.
+	 * Holds off ordinary (non-destroy) retention purges of `store` until the
+	 * returned handle is released. Take it before snapshotForBackup(); see
+	 * DESIGN.md for why.
 	 */
 	static std::shared_ptr<void> pinRetention(const std::shared_ptr<TransactionLogStore>& store);
 
@@ -730,19 +725,14 @@ private:
 	);
 
 	/**
-	 * Moves the writer off the current segment before purge unlinks it, so a
-	 * removal that fails leaves an ordinary frozen segment rather than one the
-	 * next append reopens. The next segment is created lazily by the next
-	 * append, as after any rotation. Requires writeMutex and dataSetsMutex.
+	 * Moves the writer off the current segment before purge unlinks it; the
+	 * next append creates the next segment. Requires writeMutex and dataSetsMutex.
 	 */
 	void retireCurrentSequenceLocked();
 
 	/**
 	 * Syncs txn.state and its directory before purge deletes the highest
-	 * registered segment. After that unlink txn.state is the only durable record
-	 * of the highest sequence used, and load() derives the next sequence from it;
-	 * any lower segment leaves a higher file as that record. Returns false (after
-	 * warning) when it cannot be synced.
+	 * registered segment. Returns false, warning once, when it cannot.
 	 */
 	bool syncFlushedStateForPurge();
 

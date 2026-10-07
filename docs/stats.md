@@ -493,7 +493,9 @@ const stats: TransactionLogStats = log.getStats();
 
 - `name: string` The name of the transaction log store.
 - `path: string` Filesystem path to the log store's directory.
-- `fileCount: number` Number of sequence log files on disk for this log.
+- `fileCount: number` Number of sequence log files on disk for this log. `0` does not mean the log
+  was never written: retention can purge every file of an idle log. A log that has never been written
+  reports `currentSequenceNumber` 1; one emptied by retention reports a higher one.
 - `currentSequenceNumber: number` Sequence number of the active write file.
 - `oldestSequenceNumber: number` Sequence number of the oldest file still on disk.
 - `totalSizeBytes: number` Total on-disk size of all of this log's files.

@@ -777,9 +777,8 @@ void TransactionLogStore::retireCurrentSequenceLocked() {
 	if (it != this->sequenceFiles.end()) {
 		it->second->downgradeMapToFrozen();
 	}
-	// Only the sentinel can be at the current sequence: doPurge() (with or
-	// without `all`) reaches it only when its whole extent is at or before the
-	// flushed position, and every written-but-uncommitted position is past that.
+	// Erases only the sentinel; an uncommitted position (possible only when the
+	// current file vanished from disk) stays and bounds the watermark below.
 	this->positionErase(this->nextLogPosition);
 	DEBUG_LOG("%p TransactionLogStore::retireCurrentSequenceLocked Advancing sequence number from %u to %u\n",
 		this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber);
@@ -1569,11 +1568,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		}
 	}
 
-	// Retention can purge every segment at or before txn.state's position,
-	// including the one it names, so txn.state may be all that remains of the
-	// highest sequence used. Appends must land past that position, or a replay
-	// that starts there skips them. `{0, F}` (the writer rotated to F before
-	// writing it) leaves F itself usable.
+	// txn.state may be all that remains of the highest sequence used (see
+	// DESIGN.md, "Retention and the sequence witness"); appends must land past it.
 	bool sequenceRaisedPastFlushed = false;
 	if (flushedPosition.logSequenceNumber > 0 &&
 		store->sequenceFiles.find(flushedPosition.logSequenceNumber) == store->sequenceFiles.end()) {
