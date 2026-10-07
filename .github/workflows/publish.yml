@@ -271,10 +271,11 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TAG: ${{ needs.preflight.outputs.tag }}
         shell: bash
-        # Eight publishes plus the concurrent 20-minute visibility budget. Without a limit, one
-        # stalled publish runs to the job ceiling with the release already half-published. Raising
-        # PUBLISH_VISIBILITY_TIMEOUT_MS means raising this too; the cap bounds it either way.
-        timeout-minutes: 30
+        # Backstop only, deliberately well above the gate's own budget: a step timeout kills the
+        # process, so the gate's failure output -- which says the bindings published and how to
+        # recover -- is lost. The gate must be the one that gives up. Raising
+        # PUBLISH_VISIBILITY_TIMEOUT_MS past this still needs this raised too.
+        timeout-minutes: 60
         run: node scripts/publish-bindings.mjs
 
       - name: Publish to npm
@@ -285,7 +286,8 @@ jobs:
 
       - name: Wait for npm to publish
         shell: bash
-        timeout-minutes: 25
+        # Backstop only; see the binding publish step above.
+        timeout-minutes: 40
         run: node scripts/wait-for-npm.mjs "${{ steps.get-package-info.outputs.name }}" "${{ needs.preflight.outputs.version }}"
 
       - name: Update pnpm-lock.yaml

@@ -80,7 +80,7 @@ function splitSpec(spec: string): [string, string] {
 }
 
 /**
- * Advances only when the code under test sleeps, so a 15 minute budget costs no real time.
+ * Advances only when the code under test sleeps, so no budget costs real time.
  * Concurrent sleepers each advance it, so elapsed time runs fast in proportion to the number of
  * waiters; assertions here compare clock values, never poll counts across concurrent waits.
  */
@@ -276,30 +276,41 @@ describe('publish-bindings npm-visibility', () => {
 		});
 
 		// Reaches a deadline only because each request carries an abort signal; without them it hangs.
-		it('bounds a request that never settles, by its signal alone', async () => {
-			const clock = virtualClock();
-			let calls = 0;
-			const fetch = (async (_url: string, init?: { signal?: AbortSignal }) => {
-				calls += 1;
-				return new Promise((_resolve, reject) => {
-					if (!init?.signal) {
-						return; // no signal: never settles, and the test times out
+		it.each([
+			['origin', false],
+			['packument', true],
+		])(
+			'bounds a %s request that never settles, by its signal alone',
+			async (_name, stallPackument) => {
+				const clock = virtualClock();
+				let calls = 0;
+				const fetch = (async (
+					_url: string,
+					init?: { signal?: AbortSignal; headers?: Record<string, string> }
+				) => {
+					calls += 1;
+					const isPackument = init?.headers?.accept?.includes('install-v1') ?? false;
+					if (isPackument !== stallPackument) {
+						return { status: 200, body: null, json: async () => ({ versions: {} }) };
 					}
-					init.signal.addEventListener('abort', () =>
-						reject(Object.assign(new Error('This operation was aborted'), { name: 'TimeoutError' }))
-					);
-				});
-			}) as unknown as typeof globalThis.fetch;
+					return new Promise((_resolve, reject) => {
+						if (!init?.signal) {
+							return;
+						}
+						init.signal.addEventListener('abort', () =>
+							reject(
+								Object.assign(new Error('This operation was aborted'), { name: 'TimeoutError' })
+							)
+						);
+					});
+				}) as unknown as typeof globalThis.fetch;
 
-			await expect(
-				waitUntilServed('pkg', '1.0.0', {
-					fetch,
-					...shortBudget(clock),
-					requestTimeoutMs: 5,
-				})
-			).rejects.toThrow(/not published at the origin/);
-			expect(calls).toBeGreaterThan(1);
-		});
+				await expect(
+					waitUntilServed('pkg', '1.0.0', { fetch, ...shortBudget(clock), requestTimeoutMs: 5 })
+				).rejects.toThrow(/Timed out after/);
+				expect(calls).toBeGreaterThan(1);
+			}
+		);
 
 		it('recovers after a transient request failure', async () => {
 			const clock = virtualClock();
