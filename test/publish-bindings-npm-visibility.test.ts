@@ -79,7 +79,11 @@ function splitSpec(spec: string): [string, string] {
 	return [spec.slice(0, at), spec.slice(at + 1)];
 }
 
-/** Advances only when the code under test sleeps, so a 15 minute budget costs no real time. */
+/**
+ * Advances only when the code under test sleeps, so a 15 minute budget costs no real time.
+ * Concurrent sleepers each advance it, so elapsed time runs fast in proportion to the number of
+ * waiters; assertions here compare clock values, never poll counts across concurrent waits.
+ */
 function virtualClock() {
 	let current = 0;
 	return {
@@ -186,7 +190,7 @@ describe('publish-bindings npm-visibility', () => {
 		it('does not open on origin agreement alone — the packument gates it', async () => {
 			const clock = virtualClock();
 			const { fetch } = fakeRegistry(
-				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 2 * PACKUMENT_TTL_MS } },
+				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: PACKUMENT_TTL_MS } },
 				clock
 			);
 			await waitUntilServed('pkg', '1.0.0', {
@@ -198,7 +202,7 @@ describe('publish-bindings npm-visibility', () => {
 			expect(clock.now()).toBeGreaterThanOrEqual(2 * PACKUMENT_TTL_MS);
 		});
 
-		it('holds for a TTL after origin visibility even when this edge is already current', async () => {
+		it('holds for a TTL after the packument is first correct, covering other edges', async () => {
 			const clock = virtualClock();
 			const { fetch } = fakeRegistry({ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 0 } }, clock);
 			await waitUntilServed('pkg', '1.0.0', {
@@ -210,10 +214,13 @@ describe('publish-bindings npm-visibility', () => {
 			expect(clock.now()).toBeGreaterThanOrEqual(PACKUMENT_TTL_MS);
 		});
 
-		it('counts time already spent waiting toward the settle', async () => {
+		// Anchoring on origin visibility would have opened the gate at the packument read; an edge
+		// that refreshed during this edge's lag would still have been stale.
+		it('starts the settle at the packument read, not at origin visibility', async () => {
 			const clock = virtualClock();
+			const packumentLag = 2 * PACKUMENT_TTL_MS;
 			const { fetch } = fakeRegistry(
-				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: 2 * PACKUMENT_TTL_MS } },
+				{ 'pkg@1.0.0': { originAtMs: 0, packumentAtMs: packumentLag } },
 				clock
 			);
 			await waitUntilServed('pkg', '1.0.0', {
@@ -222,12 +229,9 @@ describe('publish-bindings npm-visibility', () => {
 				sleep: clock.sleep,
 				log: () => {},
 			});
-			expect(clock.now()).toBeLessThan(3 * PACKUMENT_TTL_MS);
+			expect(clock.now()).toBeGreaterThanOrEqual(packumentLag + PACKUMENT_TTL_MS);
 		});
 
-		// The settle is spent over real polls, not satisfied by one check. Its monotonicity against a
-		// wall-clock correction comes from the default clock being performance.now(), which an
-		// injected clock cannot exercise.
 		it('spends the settle across polls rather than satisfying it in one check', async () => {
 			let current = 0;
 			let polls = 0;
@@ -271,18 +275,29 @@ describe('publish-bindings npm-visibility', () => {
 			).rejects.toThrow(/not published at the origin/);
 		});
 
-		it('keeps polling when every request aborts, and still reaches its deadline', async () => {
+		// The request never settles on its own, so this reaches a deadline only because each request
+		// carries an abort signal. Remove the signals and it hangs rather than fails.
+		it('bounds a request that never settles, by its signal alone', async () => {
 			const clock = virtualClock();
 			let calls = 0;
-			const fetch = (async () => {
+			const fetch = (async (_url: string, init?: { signal?: AbortSignal }) => {
 				calls += 1;
-				throw Object.assign(new Error('The operation was aborted due to timeout'), {
-					name: 'TimeoutError',
+				return new Promise((_resolve, reject) => {
+					if (!init?.signal) {
+						return; // no signal: never settles, and the test times out
+					}
+					init.signal.addEventListener('abort', () =>
+						reject(Object.assign(new Error('This operation was aborted'), { name: 'TimeoutError' }))
+					);
 				});
 			}) as unknown as typeof globalThis.fetch;
 
 			await expect(
-				waitUntilServed('pkg', '1.0.0', { fetch, ...shortBudget(clock) })
+				waitUntilServed('pkg', '1.0.0', {
+					fetch,
+					...shortBudget(clock),
+					requestTimeoutMs: 5,
+				})
 			).rejects.toThrow(/not published at the origin/);
 			expect(calls).toBeGreaterThan(1);
 		});
@@ -309,10 +324,11 @@ describe('publish-bindings npm-visibility', () => {
 	});
 
 	describe('budget ownership', () => {
-		// Sequential shape: a deadline anchored once, above the loop, expires during the second wait.
 		it('gives each package a fresh budget rather than one shared across the release', async () => {
 			const clock = virtualClock();
-			const nearlyTheWholeBudget = DEFAULT_TIMEOUT_MS - 2 * DEFAULT_POLL_INTERVAL_MS;
+			// Leaves exactly room for the settle that follows the packument read.
+			const nearlyTheWholeBudget =
+				DEFAULT_TIMEOUT_MS - PACKUMENT_TTL_MS - 2 * DEFAULT_POLL_INTERVAL_MS;
 			const { fetch } = fakeRegistry(
 				{
 					'first@1.0.0': { originAtMs: 0, packumentAtMs: nearlyTheWholeBudget },
@@ -329,11 +345,14 @@ describe('publish-bindings npm-visibility', () => {
 			expect(clock.now()).toBeGreaterThan(DEFAULT_TIMEOUT_MS);
 		});
 
-		// Through the entry point the release actually calls. Serialized, these two would need
-		// nearly two budgets and the second would miss any deadline anchored at the first.
+		// Proves non-serialization only. Both waits start together, so one deadline anchored around
+		// the concurrent map behaves identically to one per package; the sequential case above is
+		// what pins the anchoring.
 		it('serves slow and fast packages together through waitUntilAllServed', async () => {
 			const clock = virtualClock();
-			const nearlyTheWholeBudget = DEFAULT_TIMEOUT_MS - 2 * DEFAULT_POLL_INTERVAL_MS;
+			// Leaves exactly room for the settle that follows the packument read.
+			const nearlyTheWholeBudget =
+				DEFAULT_TIMEOUT_MS - PACKUMENT_TTL_MS - 2 * DEFAULT_POLL_INTERVAL_MS;
 			const { fetch } = fakeRegistry(
 				{
 					'slow@1.0.0': { originAtMs: 0, packumentAtMs: nearlyTheWholeBudget },

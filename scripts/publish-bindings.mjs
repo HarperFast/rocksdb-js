@@ -16,7 +16,11 @@
  * NODE_AUTH_TOKEN=... TAG=latest node scripts/publish-bindings.mjs
  */
 
-import { parseTimeoutMs, waitUntilAllServed } from './publish-bindings/npm-visibility.ts';
+import {
+	assertBudgetUsable,
+	parseTimeoutMs,
+	waitUntilAllServed,
+} from './publish-bindings/npm-visibility.ts';
 import { execFileSync } from 'node:child_process';
 import {
 	copyFileSync,
@@ -33,6 +37,10 @@ import { fileURLToPath } from 'node:url';
 if (!process.env.NODE_AUTH_TOKEN) {
 	throw new Error('NODE_AUTH_TOKEN environment variable is not set');
 }
+
+const timeoutMs = parseTimeoutMs(process.env.PUBLISH_VISIBILITY_TIMEOUT_MS);
+// Before the first publish: an unusable budget must not strand eight published bindings.
+assertBudgetUsable({ timeoutMs });
 
 const __dirname = fileURLToPath(dirname(import.meta.url));
 const packageJson = JSON.parse(readFileSync(resolve(__dirname, '..', 'package.json'), 'utf8'));
@@ -119,7 +127,6 @@ for (const target of Object.keys(bindings)) {
 	console.log(`Published ${packageName} to npm\n`);
 }
 
-const timeoutMs = parseTimeoutMs(process.env.PUBLISH_VISIBILITY_TIMEOUT_MS);
 try {
 	await waitUntilAllServed(
 		Object.keys(bindings).map((target) => ({
@@ -133,8 +140,9 @@ try {
 	console.error(
 		'\nThe parent package was NOT published, so nothing can resolve ahead of its bindings. The ' +
 			'bindings themselves did publish, so re-running this job is not the recovery: wait for the ' +
-			'registry to catch up, then publish the parent by hand. Raise ' +
-			'PUBLISH_VISIBILITY_TIMEOUT_MS if this recurs.'
+			'registry to catch up, then publish the parent by hand. If this recurs, raise both ' +
+			"PUBLISH_VISIBILITY_TIMEOUT_MS and this step's timeout-minutes — the step cap bounds the " +
+			'budget regardless of the environment variable.'
 	);
 	process.exit(1);
 }

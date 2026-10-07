@@ -20,17 +20,18 @@
  * show this process a version that installers, who ask for no such thing, still cannot see — the
  * gate would open during the exact window it exists to close.
  *
- * Observing one edge is not observing all of them. An edge that cached the packument just before
- * the publish landed keeps serving it for a further TTL, so the gate also holds until a TTL has
- * passed since the version appeared at the origin. Time spent waiting for this edge counts toward
- * it.
+ * Observing one edge is not observing all of them. The settle therefore runs from the first
+ * correct packument read, not from origin visibility: that read proves the CDN origin had the new
+ * packument, so any edge still serving the old one fetched it earlier and expires within a TTL.
+ * Anchoring on origin visibility instead would be unsound — this edge's own packument can lag past
+ * a TTL, and an edge that refreshed during that lag would still be stale after the gate opened.
  */
 
 /** `cache-control: max-age` npm serves the packument with. */
 export const PACKUMENT_TTL_MS: number = 5 * 60 * 1000;
 
 export const DEFAULT_REGISTRY: string = 'https://registry.npmjs.org';
-export const DEFAULT_TIMEOUT_MS: number = 3 * PACKUMENT_TTL_MS;
+export const DEFAULT_TIMEOUT_MS: number = 4 * PACKUMENT_TTL_MS;
 export const DEFAULT_POLL_INTERVAL_MS: number = 10_000;
 
 /** Caps one stalled request so it retries instead of consuming the whole package budget. */
@@ -40,7 +41,7 @@ export type VisibilityOptions = {
 	registry?: string;
 	/** Budget per package, not shared across them. */
 	timeoutMs?: number;
-	/** Quiet period after origin visibility, covering CDN edges this process cannot observe. */
+	/** Quiet period after the first correct packument read, covering edges this process cannot see. */
 	settleMs?: number;
 	pollIntervalMs?: number;
 	requestTimeoutMs?: number;
@@ -63,6 +64,15 @@ const defaultSleep = (ms: number): Promise<void> =>
 /** Monotonic: a forward wall-clock correction must not satisfy the settle it never waited out. */
 const defaultNow = (): number => performance.now();
 
+const describeStall = (atOrigin: boolean, packumentSeen: boolean): string => {
+	if (!atOrigin) {
+		return 'not published at the origin';
+	}
+	return packumentSeen
+		? 'packument current, still settling for other CDN edges'
+		: 'published at the origin, packument still stale';
+};
+
 /**
  * `Infinity` and a negative value both parse as numbers and both defeat the budget — one never
  * expires, the other expires before the first poll — so only a finite positive duration is taken.
@@ -73,6 +83,11 @@ export function parseTimeoutMs(value: string | undefined): number | undefined {
 	}
 	const parsed = Number(value);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/** Call before doing any publishing: a budget below the settle can never open the gate. */
+export function assertBudgetUsable(options: VisibilityOptions = {}): void {
+	resolveOptions(options);
 }
 
 function resolveOptions(options: VisibilityOptions = {}): ResolvedOptions {
@@ -152,22 +167,24 @@ export async function waitUntilServed(
 	const { timeoutMs, settleMs, pollIntervalMs, now, sleep, log } = resolved;
 	const spec = `${packageName}@${version}`;
 	const deadline = now() + timeoutMs;
-	let originObservedAt: number | undefined;
+	let atOrigin = false;
+	let packumentSeenAt: number | undefined;
 
 	while (true) {
 		try {
-			if (
-				originObservedAt === undefined &&
-				(await visibleAtOrigin(packageName, version, resolved))
-			) {
-				originObservedAt = now();
+			if (!atOrigin && (await visibleAtOrigin(packageName, version, resolved))) {
+				atOrigin = true;
 				log(`origin is serving ${spec}; waiting for the packument to catch up`);
 			}
 			if (
-				originObservedAt !== undefined &&
-				now() >= originObservedAt + settleMs &&
+				atOrigin &&
+				packumentSeenAt === undefined &&
 				(await visibleToInstallers(packageName, version, resolved))
 			) {
+				packumentSeenAt = now();
+				log(`packument is serving ${spec}; settling for other CDN edges`);
+			}
+			if (packumentSeenAt !== undefined && now() >= packumentSeenAt + settleMs) {
 				log(`npm is serving ${spec}`);
 				return;
 			}
@@ -179,7 +196,7 @@ export async function waitUntilServed(
 		if (now() >= deadline) {
 			throw new Error(
 				`Timed out after ${Math.round(timeoutMs / 1000)}s waiting for npm to serve ${spec} ` +
-					`(${originObservedAt === undefined ? 'not published at the origin' : 'published at the origin, packument still stale'})`
+					`(${describeStall(atOrigin, packumentSeenAt !== undefined)})`
 			);
 		}
 		log(`waiting for npm to serve ${spec}...`);
