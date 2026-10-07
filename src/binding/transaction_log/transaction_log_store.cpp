@@ -793,13 +793,13 @@ void TransactionLogStore::retireCurrentSequenceLocked() {
 
 bool TransactionLogStore::syncFlushedStateForPurge() {
 	auto stateFilePath = this->path / "txn.state";
-	{
-		std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
-		if (rocksdb_js::syncFile(stateFilePath) &&
-			rocksdb_js::syncDirectory(this->path, /*allowUnsupported=*/false)) {
-			this->purgeSyncWarningEmitted.store(false, std::memory_order_relaxed);
-			return true;
-		}
+	// Not under flushedStateMutex, which would hold RocksDB's flush callback for
+	// both fsyncs. txn.state only moves forward, so whatever this persists is at
+	// or past the position the purge decided on.
+	if (rocksdb_js::syncFile(stateFilePath) &&
+		rocksdb_js::syncDirectory(this->path, /*allowUnsupported=*/false)) {
+		this->purgeSyncWarningEmitted.store(false, std::memory_order_relaxed);
+		return true;
 	}
 	// A mount that never supports a directory sync would otherwise warn on every run.
 	if (this->purgeSyncWarningEmitted.exchange(true, std::memory_order_relaxed)) {
