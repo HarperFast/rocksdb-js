@@ -395,6 +395,13 @@ struct TransactionLogStore final {
 	std::atomic<uint64_t> flushedStateGeneration = 0;
 
 	/**
+	 * Backups currently between capturing txn.state and copying segments; see
+	 * pinRetention(). Incremented under dataSetsMutex, which a purge run holds
+	 * throughout, so a run either finished before the capture or sees the pin.
+	 */
+	std::atomic<uint32_t> retentionPins = 0;
+
+	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
 	LogPosition nextLogPosition = { 0, 0 };
@@ -582,6 +589,15 @@ struct TransactionLogStore final {
 	std::vector<TransactionLogBackupEntry> snapshotForBackup();
 
 	/**
+	 * Holds off ordinary retention purges of `store` until the returned handle
+	 * is released. A backup copies segments after capturing txn.state, and a
+	 * purge in between reads a newer flushed position, so it could delete a
+	 * segment whose entries the captured position still needs replayed. Take it
+	 * before snapshotForBackup(). `destroy` purges ignore it.
+	 */
+	static std::shared_ptr<void> pinRetention(const std::shared_ptr<TransactionLogStore>& store);
+
+	/**
 	 * Fills `out` with a point-in-time snapshot of this store's statistics
 	 * (file/memory/transaction gauges, purge gauges, and lifetime counters).
 	 *
@@ -707,6 +723,22 @@ private:
 		const uint64_t before = 0,
 		const bool countEntries = false
 	);
+
+	/**
+	 * Moves the writer off the current segment before purge unlinks it, so a
+	 * removal that fails leaves an ordinary frozen segment rather than one the
+	 * next append reopens. The next segment is created lazily by the next
+	 * append, as after any rotation. Requires writeMutex and dataSetsMutex.
+	 */
+	void retireCurrentSequenceLocked();
+
+	/**
+	 * Syncs txn.state before a purge run deletes a segment. Once every segment
+	 * at or past the flushed position can be purged, txn.state is the only
+	 * durable record of the highest sequence used, and load() derives the next
+	 * sequence from it. Returns false (after warning) when it cannot be synced.
+	 */
+	bool syncFlushedStateForPurge();
 
 	/**
 	 * Advances the active log file to the next sequence number and records a

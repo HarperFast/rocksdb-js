@@ -2715,7 +2715,7 @@ describe('Transaction Log', () => {
 				expect(existsSync(logFiles[0])).toBe(true);
 			}));
 
-		it('should purge a log file that is entirely before the flushed position', () =>
+		it('should purge every file at or before the flushed position and stop at the next', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
 				await mkdir(logDirectory, { recursive: true });
@@ -2734,7 +2734,8 @@ describe('Transaction Log', () => {
 					logFiles.push(logFile);
 				}
 
-				// flushed position is at segment 2's end, so segment 1 is below the floor
+				// flushed position is at segment 2's end: segment 2 is fully flushed even
+				// though txn.state names it, and segment 3 lies past it
 				const state = Buffer.alloc(8);
 				state.writeUInt32LE(TRANSACTION_LOG_FILE_HEADER_SIZE, 0);
 				state.writeUInt32LE(2, 4);
@@ -2742,11 +2743,11 @@ describe('Transaction Log', () => {
 
 				db.open();
 
-				expect(db.purgeLogs({ before: Date.now() - 60 * 60 * 1000 })).toEqual([logFiles[0]]);
-				expect(existsSync(logFiles[0])).toBe(false);
+				expect(db.purgeLogs({ before: Date.now() - 60 * 60 * 1000 })).toEqual(logFiles.slice(0, 2));
+				expect(existsSync(logFiles[2])).toBe(true);
 			}));
 
-		it('should retain the current log file past a specific timestamp', () =>
+		it('should purge the current log file once it is older than the cutoff', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
 				const logFile = join(logDirectory, '1.txnlog');
@@ -2770,12 +2771,14 @@ describe('Transaction Log', () => {
 				expect(existsSync(logFile)).toBe(true);
 				expect(db.purgeLogs({ before: threeHoursAgo.getTime() })).toEqual([]);
 				expect(existsSync(logFile)).toBe(true);
-				expect(db.purgeLogs({ before: oneHourAgo.getTime() })).toEqual([]);
-				expect(existsSync(logFile)).toBe(true);
+				expect(db.purgeLogs({ before: oneHourAgo.getTime() })).toEqual([logFile]);
+				expect(existsSync(logFile)).toBe(false);
 				expect(existsSync(join(logDirectory, 'txn.state'))).toBe(true);
 			}));
 
-		it('should purge only the eligible contiguous prefix before the current file', () =>
+		// A file too young to purge ends the run even when an older, fully flushed file
+		// follows it: retention removes a contiguous prefix, never a middle segment.
+		it('should purge only the eligible contiguous prefix', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
 				await mkdir(logDirectory, { recursive: true });
@@ -2785,7 +2788,9 @@ describe('Transaction Log', () => {
 				for (const sequence of [1, 2, 3]) {
 					const logFile = join(logDirectory, `${sequence}.txnlog`);
 					await writeFile(logFile, buildLogFile(1));
-					await utimes(logFile, old, old);
+					if (sequence !== 2) {
+						await utimes(logFile, old, old);
+					}
 					logFiles.push(logFile);
 				}
 
@@ -2796,16 +2801,15 @@ describe('Transaction Log', () => {
 				await writeFile(stateFile, state);
 
 				db.open();
-				expect(db.purgeLogs({ name: 'foo', before: Date.now() - 60 * 60 * 1000 })).toEqual(
-					logFiles.slice(0, 2)
-				);
-				expect(existsSync(logFiles[0])).toBe(false);
-				expect(existsSync(logFiles[1])).toBe(false);
+				expect(db.purgeLogs({ name: 'foo', before: Date.now() - 60 * 60 * 1000 })).toEqual([
+					logFiles[0],
+				]);
+				expect(existsSync(logFiles[1])).toBe(true);
 				expect(existsSync(logFiles[2])).toBe(true);
 				expect(existsSync(stateFile)).toBe(true);
 			}));
 
-		it('should purge an eligible prefix during startup', () =>
+		it('should purge every flushed expired file during startup and append past them', () =>
 			dbRunner(
 				{ skipOpen: true, dbOptions: [{ transactionLogRetention: 500 }] },
 				async ({ db, dbPath }) => {
@@ -2828,10 +2832,17 @@ describe('Transaction Log', () => {
 					await writeFile(stateFile, state);
 
 					db.open();
-					expect(existsSync(logFiles[0])).toBe(false);
-					expect(existsSync(logFiles[1])).toBe(false);
-					expect(existsSync(logFiles[2])).toBe(true);
+					for (const logFile of logFiles) {
+						expect(existsSync(logFile)).toBe(false);
+					}
 					expect(existsSync(stateFile)).toBe(true);
+
+					// the next write lands past txn.state's sequence, not back at 1
+					const log = db.useLog('foo');
+					await db.transaction(async (txn) => {
+						log.addEntry(Buffer.from('next'), txn.id);
+					});
+					expect(existsSync(join(logDirectory, '4.txnlog'))).toBe(true);
 				}
 			));
 
@@ -2854,9 +2865,8 @@ describe('Transaction Log', () => {
 				db.open();
 				const log = db.useLog('foo');
 				await unlink(logFiles[0]);
-				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([logFiles[1]]);
-				expect(log.getStats().fileCount).toBe(1);
-				expect(existsSync(logFiles[2])).toBe(true);
+				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual(logFiles.slice(1));
+				expect(log.getStats().fileCount).toBe(0);
 			}));
 
 		// Only the segment that is still current after the whole directory scan may
@@ -2880,7 +2890,7 @@ describe('Transaction Log', () => {
 				expect(await readdir(markerDirectory)).toEqual(['6.txnlog.boundary']);
 			}));
 
-		it('should retain the flushed-position segment for startFromLastFlushed readers', () =>
+		it('should start a startFromLastFlushed reader at the next retained segment', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
 				await mkdir(logDirectory, { recursive: true });
@@ -2898,12 +2908,186 @@ describe('Transaction Log', () => {
 
 				db.open();
 				const log = db.useLog('foo');
-				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([logFiles[0]]);
-				expect(existsSync(logFiles[1])).toBe(true);
-				expect(Array.from(log.query({ startFromLastFlushed: true }))).toHaveLength(1);
+				// txn.state names segment 2, which is fully flushed, so it goes too
+				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual(
+					logFiles.slice(0, 2)
+				);
+				const replayed = Array.from(log.query({ startFromLastFlushed: true }));
+				expect(replayed).toHaveLength(1);
+				const [segment3Entry] = parseTransactionLog(logFiles[2]).entries;
+				expect(replayed[0].timestamp).toBe(segment3Entry.timestamp);
 			}));
 
-		it('should keep repeated flush and retention purges bounded to the current file', () =>
+		// The writer's segment is purged like any other once it is flushed and expired, and
+		// the sequence keeps climbing across restarts even though no segment survives.
+		it("should purge an idle store's only file and append past it across restarts", () =>
+			dbRunner({ dbOptions: [{ transactionLogRetention: 500 }] }, async ({ db, dbPath }) => {
+				let database = db;
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				const segment = (sequence: number) => join(logDirectory, `${sequence}.txnlog`);
+				const write = async (log: TransactionLog, text: string) => {
+					await database.transaction(async (txn) => {
+						log.addEntry(Buffer.from(text), txn.id);
+						database.putSync(text, text, { transaction: txn });
+					});
+				};
+				const entries = (log: TransactionLog, options = {}) =>
+					Array.from(log.query({ start: 0, ...options })).map((entry) => entry.data.toString());
+				try {
+					let log = database.useLog('foo');
+					await write(log, 'first');
+					database.flushSync();
+					await delay(700);
+					expect(database.purgeLogs({ name: 'foo' })).toEqual([segment(1)]);
+					expect(log.getStats().fileCount).toBe(0);
+					database.close();
+
+					// nothing survives but txn.state, which names sequence 1
+					database = RocksDatabase.open(dbPath);
+					log = database.useLog('foo');
+					const committed = new Uint32Array(log._getLastCommittedPosition().buffer, 0, 2);
+					expect(committed[1]).toBe(2);
+					await write(log, 'second');
+					expect(existsSync(segment(2))).toBe(true);
+					expect(entries(log)).toEqual(['second']);
+					expect(entries(log, { readUncommitted: true })).toEqual(['second']);
+					database.flushSync();
+					database.close();
+
+					// startup retention takes the only file too
+					await delay(700);
+					database = RocksDatabase.open(dbPath, { transactionLogRetention: 500 });
+					log = database.useLog('foo');
+					expect(existsSync(segment(2))).toBe(false);
+					await write(log, 'third');
+					expect(existsSync(segment(3))).toBe(true);
+					expect(entries(log)).toEqual(['third']);
+				} finally {
+					database.close();
+				}
+			}));
+
+		// A size rotation publishes `{0, N}` before segment N exists, so txn.state can name
+		// a sequence that was never written while an older segment still has room.
+		// Appending to that older segment would land behind the flushed position, where a
+		// replay starting at txn.state never looks.
+		it('should not append below a flushed position that names an unwritten sequence', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+				await mkdir(logDirectory, { recursive: true });
+				for (const sequence of [1, 2]) {
+					await writeFile(join(logDirectory, `${sequence}.txnlog`), buildLogFile(1));
+				}
+				const segment2Size = statSync(join(logDirectory, '2.txnlog')).size;
+				const state = Buffer.alloc(8);
+				state.writeUInt32LE(0, 0);
+				state.writeUInt32LE(3, 4);
+				await writeFile(join(logDirectory, 'txn.state'), state);
+
+				db.open();
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from('next'), txn.id);
+				});
+				expect(statSync(join(logDirectory, '2.txnlog')).size).toBe(segment2Size);
+				expect(existsSync(join(logDirectory, '3.txnlog'))).toBe(true);
+				expect(
+					Array.from(log.query({ startFromLastFlushed: true })).map((entry) =>
+						entry.data.toString()
+					)
+				).toEqual(['next']);
+			}));
+
+		it('should not purge the current file while it holds an unflushed entry', () =>
+			dbRunner(async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				const write = (fill: number) =>
+					db.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(20, fill), txn.id);
+						db.putSync(`key-${fill}`, fill, { transaction: txn });
+					});
+				await write(1);
+				db.flushSync();
+				await write(2);
+				const segment = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([]);
+				expect(existsSync(segment)).toBe(true);
+				expect(Array.from(log.query({ startFromLastFlushed: true })).map((e) => e.data[0])).toEqual(
+					[2]
+				);
+
+				// once the tail is flushed, the same file goes
+				db.flushSync();
+				expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([segment]);
+			}));
+
+		it('should move a reader in the purged current file on to the next segment', () =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+				const log = db.useLog('foo');
+				const write = (fill: number) =>
+					db.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(150, fill), txn.id);
+						db.putSync(`key-${fill}`, fill, { transaction: txn });
+					});
+				await write(1);
+				const iterator = log.query({ start: 0 });
+				expect(iterator.next().value?.data[0]).toBe(1);
+				await write(2);
+				db.flushSync();
+
+				const segment1 = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
+				const purged = db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+				// Windows may refuse to unlink a segment a reader still maps (invariant 30); the
+				// writer has moved off it either way
+				if (process.platform !== 'win32') {
+					expect(purged).toEqual([segment1]);
+				}
+				expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2]);
+
+				await write(3);
+				expect(existsSync(join(dbPath, 'transaction_logs', 'foo', '2.txnlog'))).toBe(true);
+				expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([3]);
+				expect(Array.from(log.query({ startFromLastFlushed: true })).map((e) => e.data[0])).toEqual(
+					[3]
+				);
+			}));
+
+		// The writer leaves the current segment before purge unlinks it, so a refused unlink
+		// leaves an ordinary frozen segment that a later run reclaims, never one the next
+		// append reopens. An unwritable store directory forces the refusal.
+		it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+			'should retire the current file before a refused unlink and reclaim it later',
+			() =>
+				dbRunner(async ({ db, dbPath }) => {
+					const log = db.useLog('foo');
+					const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+					const write = (fill: number) =>
+						db.transaction(async (txn) => {
+							log.addEntry(Buffer.alloc(20, fill), txn.id);
+							db.putSync(`key-${fill}`, fill, { transaction: txn });
+						});
+					await write(1);
+					db.flushSync();
+
+					const directoryMode = statSync(logDirectory).mode;
+					try {
+						chmodSync(logDirectory, 0o500);
+						expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([]);
+					} finally {
+						chmodSync(logDirectory, directoryMode);
+					}
+					expect(existsSync(join(logDirectory, '1.txnlog'))).toBe(true);
+
+					await write(2);
+					expect(existsSync(join(logDirectory, '2.txnlog'))).toBe(true);
+					expect(Array.from(log.query({ start: 0 })).map((entry) => entry.data[0])).toEqual([1, 2]);
+					expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([
+						join(logDirectory, '1.txnlog'),
+					]);
+				})
+		);
+
+		it('should purge the flushed current file on every flush and retention cycle', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');
@@ -2916,17 +3100,18 @@ describe('Transaction Log', () => {
 						db.putSync(`key-${cycle}`, value, { transaction: txn });
 					});
 					db.flushSync();
-					db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+					expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([
+						join(logDirectory, `${cycle}.txnlog`),
+					]);
 
-					const logFiles = (await readdir(logDirectory))
-						.filter((name) => name.endsWith('.txnlog'))
-						.sort((a, b) => Number.parseInt(a) - Number.parseInt(b));
-					expect(logFiles).toEqual([`${cycle}.txnlog`]);
+					expect((await readdir(logDirectory)).filter((name) => name.endsWith('.txnlog'))).toEqual(
+						[]
+					);
 					const state = readFileSync(stateFile);
 					expect(state.readUInt32LE(4)).toBe(cycle);
 				}
 
-				expect(Array.from(log.query({ start: 0 }))).toHaveLength(1);
+				expect(Array.from(log.query({ start: 0 }))).toHaveLength(0);
 			}));
 
 		// Purging a segment unlinks it; a reader's memory map is the other link to the same
@@ -2950,8 +3135,8 @@ describe('Transaction Log', () => {
 				});
 
 			// Two 150-byte entries fit in segment 1 under a 500-byte cap; the 300-byte third
-			// entry does not and rotates to segment 2. The flush moves the retention floor to
-			// segment 2, so the purge deletes segment 1.
+			// entry does not and rotates to segment 2. A fourth entry written after the flush
+			// leaves segment 2 with an unflushed tail, so the purge deletes segment 1 only.
 			const seedFirstSegment = async (db: RocksDatabase, log: TransactionLog) => {
 				await writeEntry(db, log, 1, 150);
 				await writeEntry(db, log, 2, 150);
@@ -2963,6 +3148,7 @@ describe('Transaction Log', () => {
 			) => {
 				await writeEntry(db, log, 3, 300);
 				db.flushSync();
+				await writeEntry(db, log, 4, 50);
 				expect(db.purgeLogs({ name: log.name, before: Date.now() + 1000 })).toEqual([
 					join(logDirectory, '1.txnlog'),
 				]);
@@ -2983,7 +3169,7 @@ describe('Transaction Log', () => {
 
 						await rotateAndPurgeFirstSegment(db, log, join(dbPath, 'transaction_logs', 'foo'));
 
-						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3, 4]);
 					})
 			);
 
@@ -3003,7 +3189,7 @@ describe('Transaction Log', () => {
 						await writeEntry(db, log, 2, 150);
 						await rotateAndPurgeFirstSegment(db, log, join(dbPath, 'transaction_logs', 'foo'));
 
-						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3, 4]);
 					})
 			);
 
@@ -3031,15 +3217,17 @@ describe('Transaction Log', () => {
 
 						await writeEntry(db, log, 2, 50);
 						db.flushSync();
+						// an unflushed tail keeps segment 2 out of this purge
+						await writeEntry(db, log, 3, 50);
 						expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([
 							join(dbPath, 'transaction_logs', 'foo', '1.txnlog'),
 						]);
-						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2]);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
 					})
 			);
 
-			// A reader that fell behind the retention floor used to stop at the hole and stop
-			// there on every later poll, so it never saw another entry.
+			// A reader that fell behind retention used to stop at the hole and stop there on
+			// every later poll, so it never saw another entry.
 			it('should resume past a purged run rather than stopping at the hole', () =>
 				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
 					const log = db.useLog('foo');
@@ -3052,12 +3240,13 @@ describe('Transaction Log', () => {
 						await writeEntry(db, log, fill, 300);
 					}
 					db.flushSync();
+					await writeEntry(db, log, 5, 300);
 					expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual(
-						[1, 2, 3].map((sequence) => join(logDirectory, `${sequence}.txnlog`))
+						[1, 2, 3, 4].map((sequence) => join(logDirectory, `${sequence}.txnlog`))
 					);
 
-					expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([4]);
-					expect(Array.from(log.query({ start: 0 })).map((entry) => entry.data[0])).toEqual([4]);
+					expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([5]);
+					expect(Array.from(log.query({ start: 0 })).map((entry) => entry.data[0])).toEqual([5]);
 				}));
 
 			it.skipIf(!globalThis.gc || process.platform !== 'linux')(
@@ -3080,7 +3269,7 @@ describe('Transaction Log', () => {
 						expect(iterator.next().value?.data[0]).toBe(1);
 
 						await rotateAndPurgeFirstSegment(db, log, logDirectory);
-						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3, 4]);
 
 						const end = performance.now() + 5000;
 						while (deletedMappings().length > 0 && performance.now() < end) {
@@ -3240,6 +3429,7 @@ describe('Transaction Log', () => {
 						expect(buffer).toBeDefined();
 						await writeEntry(db, log, 3, 300);
 						db.flushSync();
+						await writeEntry(db, log, 4, 50);
 
 						const first = db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
 						if (process.platform !== 'win32') {
@@ -3248,7 +3438,7 @@ describe('Transaction Log', () => {
 
 						// the mapping is still live, and still serves everything it mapped
 						expect(buffer!.readableExtent).toBeGreaterThan(0);
-						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3]);
+						expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([2, 3, 4]);
 
 						// releasing it reclaims the space: either the name is already gone, or a
 						// later run removes what it could not remove while the mapping was live
@@ -3277,6 +3467,7 @@ describe('Transaction Log', () => {
 						await seedFirstSegment(db, log);
 						await writeEntry(db, log, 3, 300);
 						db.flushSync();
+						await writeEntry(db, log, 4, 50);
 
 						const warnings: string[] = [];
 						const onWarning = (message: string) => {
@@ -3288,7 +3479,7 @@ describe('Transaction Log', () => {
 							chmodSync(logDirectory, 0o500);
 							expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([]);
 							expect(existsSync(segment)).toBe(true);
-							// the operator signal for a stalled retention floor, delivered end to end
+							// the operator signal for stalled retention, delivered end to end
 							await vi.waitFor(() => expect(warnings).toHaveLength(1));
 						} finally {
 							chmodSync(logDirectory, directoryMode);

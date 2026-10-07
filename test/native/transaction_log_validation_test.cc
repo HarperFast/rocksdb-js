@@ -428,6 +428,21 @@ TEST(TransactionLogValidation, StrictTxnStateBeyondNewestIsError) {
 	std::filesystem::remove_all(dir);
 }
 
+// A size rotation publishes `{0, N + 1}` before the writer creates segment N + 1.
+TEST(TransactionLogValidation, StrictTxnStateAtUnwrittenRotationIsValid) {
+	auto dir = makeTempStoreDir("rocksdb-js-validation-strict-rotation-store");
+	LogImage img;
+	img.entry(10);
+	img.writeTo(dir / "1.txnlog");
+	writeTxnState(dir, /*offset=*/0, /*sequence=*/2);
+
+	auto result = validateTransactionLogStore(dir, true);
+	EXPECT_TRUE(result.valid);
+	EXPECT_TRUE(result.errors.empty());
+
+	std::filesystem::remove_all(dir);
+}
+
 TEST(TransactionLogValidation, UnexpectedFileIsWarning) {
 	auto dir = makeTempStoreDir("rocksdb-js-validation-unexpected-store");
 	LogImage img;

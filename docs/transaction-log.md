@@ -198,9 +198,18 @@ await db.transaction((txn) => {
 - Log files are automatically rotated when either the index or data file reaches their configured
   maximum sizes
 - Rotation happens on the next write after the size limit is exceeded
-- Old log files can be automatically purged based on retention policy. The sequence file named by
-  `txn.state` and every newer file form the live store's retention floor, so an idle store can keep
-  one bounded file past the cutoff until a later write rotates and flushes it.
+- Old log files can be automatically purged based on retention policy. A file is purgeable once it
+  is past the cutoff and lies entirely at or before the flushed position recorded in `txn.state`.
+  That includes the file `txn.state` names and the file currently being appended to, so an idle
+  store whose entries are all flushed ends up with no log files at all. The next write starts a new,
+  higher sequence; `txn.state` stays behind as the record of the highest sequence used, and a
+  restart appends past it.
+- A reader that starts from the last flushed position, or one already inside a purged file,
+  continues at the lowest retained sequence (or at the next write when nothing is retained).
+- Downgrading to a release without this rule after a store's last file was purged is unsafe: older
+  releases restart an empty store at sequence 1, below the flushed position, so a replay from
+  `txn.state` skips the new writes and retention treats them as flushed. Remove the store's
+  `txn.state` before downgrading.
 
 ### Error Handling
 
@@ -250,6 +259,11 @@ still durable, and the process clock is raised above the largest key found — b
 handle is returned, so no transaction can be constructed below it. Keys are not ordered within or
 across segments, and a segment header records the store's latest timestamp only as of that
 segment's creation, so there is no shortcut: every segment is read.
+
+Retention can purge every segment of the named log. The walk then finds no keys and leaves the clock
+alone, so a backward step after restart can reissue a key that was only in purged segments. Those
+segments were past retention, so this needs a backward step at least as large as the retention
+period.
 
 Name only a log this process originates. A log a replication receiver writes under an adopted origin
 timestamp is keyed by another node's clock, and seeding from it would ratchet this process's clock

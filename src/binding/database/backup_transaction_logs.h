@@ -4,6 +4,7 @@
 #include "rocksdb/status.h"
 #include "transaction_log/transaction_log_store.h" // TransactionLogBackupEntry
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,8 @@ struct DBDescriptor;
 struct NamedTransactionLogBackupEntry final {
 	std::string storeName;
 	TransactionLogBackupEntry file;
+	/** Shared by a store's entries; see TransactionLogStore::pinRetention(). */
+	std::shared_ptr<void> retentionPin;
 };
 
 /**
@@ -29,6 +32,7 @@ struct NamedTransactionLogBackupEntry final {
  * I/O status instead of letting a native exception escape the backup worker.
  * Malformed headers are warned about and omitted because they have no readable
  * entries; every other open/read failure rejects the incomplete snapshot.
+ * Each store's retention purges are held off until its entries are released.
  */
 rocksdb::Status collectTransactionLogBackupEntries(
 	DBDescriptor* descriptor,

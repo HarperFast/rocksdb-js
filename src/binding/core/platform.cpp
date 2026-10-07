@@ -1,3 +1,4 @@
+#include <cerrno>
 #include <charconv>
 #include <cmath>
 #include <cstring>
@@ -12,7 +13,11 @@
 #include "core/platform.h"
 #ifdef _WIN32
 #include <windows.h>
-#elif defined(__linux__)
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+#if defined(__linux__)
 #include <sys/syscall.h>
 #include <sys/resource.h>
 #include <pthread.h>
@@ -272,6 +277,51 @@ bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs) {
 	}
 	return static_cast<double>(elapsedMs) >=
 		static_cast<double>(budgetMs) * BUDGET_PRESSURE_FRACTION;
+}
+
+bool syncFile(const std::filesystem::path& path) {
+#ifdef _WIN32
+	// FlushFileBuffers requires GENERIC_WRITE access.
+	HANDLE handle = ::CreateFileW(
+		path.c_str(),
+		GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr,
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL,
+		nullptr
+	);
+	if (handle == INVALID_HANDLE_VALUE) {
+		return false;
+	}
+	BOOL ok = ::FlushFileBuffers(handle);
+	::CloseHandle(handle);
+	return ok;
+#else
+	int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		return false;
+	}
+	int rc = ::fsync(fd);
+	::close(fd);
+	return rc == 0;
+#endif
+}
+
+bool syncDirectory(const std::filesystem::path& path) {
+#ifndef _WIN32
+	int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd < 0) {
+		return false;
+	}
+	int rc = ::fsync(fd);
+	int syncErrno = errno;
+	::close(fd);
+	if (rc != 0 && syncErrno != EINVAL && syncErrno != ENOTSUP && syncErrno != EOPNOTSUPP) {
+		return false;
+	}
+#endif
+	return true;
 }
 
 void tryCreateDirectory(const std::filesystem::path& path, std::filesystem::perms permissions, uint8_t retries) {
