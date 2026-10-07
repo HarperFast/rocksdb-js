@@ -275,8 +275,7 @@ describe('publish-bindings npm-visibility', () => {
 			).rejects.toThrow(/not published at the origin/);
 		});
 
-		// The request never settles on its own, so this reaches a deadline only because each request
-		// carries an abort signal. Remove the signals and it hangs rather than fails.
+		// Reaches a deadline only because each request carries an abort signal; without them it hangs.
 		it('bounds a request that never settles, by its signal alone', async () => {
 			const clock = virtualClock();
 			let calls = 0;
@@ -345,9 +344,8 @@ describe('publish-bindings npm-visibility', () => {
 			expect(clock.now()).toBeGreaterThan(DEFAULT_TIMEOUT_MS);
 		});
 
-		// Proves non-serialization only. Both waits start together, so one deadline anchored around
-		// the concurrent map behaves identically to one per package; the sequential case above is
-		// what pins the anchoring.
+		// Proves non-serialization only; both waits start together, so the case above is what pins
+		// the per-package anchoring.
 		it('serves slow and fast packages together through waitUntilAllServed', async () => {
 			const clock = virtualClock();
 			// Leaves exactly room for the settle that follows the packument read.

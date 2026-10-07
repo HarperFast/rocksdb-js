@@ -2,7 +2,8 @@
  * Block until npm serves a published package version.
  *
  * Optional environment variables:
- * - PUBLISH_VISIBILITY_TIMEOUT_MS: Budget for the wait (default 15 minutes).
+ * - PUBLISH_VISIBILITY_TIMEOUT_MS: Budget for the wait. Defaults to DEFAULT_TIMEOUT_MS in
+ *   ./publish-bindings/npm-visibility.ts.
  *
  * @example
  * node scripts/wait-for-npm.mjs @harperfast/rocksdb-js 2.11.0

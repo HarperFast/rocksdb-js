@@ -10,7 +10,7 @@
  *
  * Optional environment variables:
  * - PUBLISH_VISIBILITY_TIMEOUT_MS: Per-package budget for the post-publish registry visibility
- *   gate (default 15 minutes).
+ *   gate. Defaults to DEFAULT_TIMEOUT_MS in ./publish-bindings/npm-visibility.ts.
  *
  * @example
  * NODE_AUTH_TOKEN=... TAG=latest node scripts/publish-bindings.mjs
