@@ -134,6 +134,7 @@ describe('Transaction Log Stats', () => {
 					stats = log.getStats();
 					expect(stats.fileCount).toBe(0);
 					expect(stats.purge.purgeableFiles).toBe(0);
+					expect(stats.purge.retentionPins).toBe(0);
 					expect(stats.currentSequenceNumber).toBe(2);
 				}
 			));

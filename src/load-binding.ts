@@ -194,6 +194,7 @@ export type TransactionLogStats = {
 		oldestFileAgeMs: number;
 		purgeableFiles: number;
 		retainedUnflushedFiles: number;
+		retentionPins: number;
 		lastPurgeMs: number;
 	};
 	totals: {

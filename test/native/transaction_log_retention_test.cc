@@ -79,8 +79,14 @@ TEST(TransactionLogRetention, RetentionPinHoldsOffOrdinaryPurge) {
 	store->purge(nullptr, false, futureCutoffMs());
 	EXPECT_TRUE(std::filesystem::exists(storePath / "1.txnlog"));
 	EXPECT_EQ(store->currentSequenceNumber.load(), 1u);
+	rocksdb_js::TransactionLogStoreStats pinned;
+	store->collectStats(pinned);
+	EXPECT_EQ(pinned.retentionPins, 1u);
 
 	pin.reset();
+	rocksdb_js::TransactionLogStoreStats released;
+	store->collectStats(released);
+	EXPECT_EQ(released.retentionPins, 0u);
 	store->purge(nullptr, false, futureCutoffMs());
 	EXPECT_FALSE(std::filesystem::exists(storePath / "1.txnlog"));
 

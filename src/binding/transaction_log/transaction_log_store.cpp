@@ -666,6 +666,7 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	out.retentionMs = static_cast<uint64_t>(this->retentionMs.count());
 	out.maxAgeThreshold = this->maxAgeThreshold;
 	out.pendingTransactions = this->pendingTransactionCount.load(std::memory_order_relaxed);
+	out.retentionPins = this->retentionPins.load(std::memory_order_relaxed);
 
 	// Read the flushed position before taking dataSetsMutex: getLastFlushedPosition()
 	// acquires flushedStateMutex, and the required lock ordering is
@@ -776,9 +777,9 @@ void TransactionLogStore::retireCurrentSequenceLocked() {
 	if (it != this->sequenceFiles.end()) {
 		it->second->downgradeMapToFrozen();
 	}
-	// Only the sentinel can be at the current sequence: a purge reaches it only
-	// when its whole extent is at or before the flushed position, and every
-	// written-but-uncommitted position is past that.
+	// Only the sentinel can be at the current sequence: doPurge() (with or
+	// without `all`) reaches it only when its whole extent is at or before the
+	// flushed position, and every written-but-uncommitted position is past that.
 	this->positionErase(this->nextLogPosition);
 	DEBUG_LOG("%p TransactionLogStore::retireCurrentSequenceLocked Advancing sequence number from %u to %u\n",
 		this, this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber);
@@ -812,7 +813,7 @@ bool TransactionLogStore::syncFlushedStateForPurge() {
 		DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	} catch (...) {
-		// reporting is best-effort
+		this->purgeSyncWarningEmitted.store(false, std::memory_order_relaxed);
 	}
 	return false;
 }

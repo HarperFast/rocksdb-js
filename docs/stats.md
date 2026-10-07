@@ -524,6 +524,8 @@ const stats: TransactionLogStats = log.getStats();
   - `oldestFileAgeMs: number` Age in milliseconds of the oldest file on disk.
   - `purgeableFiles: number` Number of files past the retention threshold that lie entirely at or
     before the flushed position, including the current file, so the next purge can delete them.
+  - `retentionPins: number` Backups currently copying this store's files. Ordinary purges of the
+    store are skipped while it is nonzero, so a value that stays nonzero points at a stalled backup.
   - `retainedUnflushedFiles: number` Number of files past the retention threshold but retained
     because they are unflushed.
   - `lastPurgeMs: number` Timestamp of the last purge scan.

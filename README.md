@@ -2206,7 +2206,9 @@ currently being written, so an idle, fully flushed store is left with no log fil
 a contiguous prefix: the first file that is too new or holds an unflushed entry stops the run. When
 the flush position lags — `txn.state` stuck at an old sequence because RocksDB flushing is behind —
 every file after it is retained regardless of age; `purge.retainedUnflushedFiles` reports that case.
-While a backup with `transactionLogs` is copying a store's files, purges of that store are skipped.
+While a backup with `transactionLogs` is copying a store's files, purges of that store are skipped
+(`purge.retentionPins` reports it). On a filesystem that rejects a directory fsync, the store's last
+file is kept, since `txn.state` could not be made durable before deleting it.
 Use `destroy: true` only to remove the store itself.
 
 - `options: object`

@@ -203,7 +203,12 @@ await db.transaction((txn) => {
   That includes the file `txn.state` names and the file currently being appended to, so an idle
   store whose entries are all flushed ends up with no log files at all. The next write starts a new,
   higher sequence; `txn.state` stays behind as the record of the highest sequence used, and a
-  restart appends past it.
+  restart appends past it. Before deleting a store's last file, retention syncs `txn.state` and its
+  directory; on a filesystem that rejects a directory fsync it keeps that file and warns once.
+- `txn.state` is rewritten in place (8 bytes at offset 0, not synced on each flush). Retention relies
+  on storage writing that range atomically: a power loss that tears it into a mix of old and new
+  bytes can name a later position than was flushed, and retention would then treat unflushed
+  entries below it as flushed.
 - A reader that starts from the last flushed position, or one already inside a purged file,
   continues at the lowest retained sequence (or at the next write when nothing is retained).
 - Downgrading to a release without this rule after a store's last file was purged is unsafe: older

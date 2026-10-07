@@ -134,6 +134,7 @@ struct TransactionLogStoreStats {
 	double oldestFileAgeMs = 0;
 	uint32_t purgeableFiles = 0;
 	uint32_t retainedUnflushedFiles = 0;
+	uint32_t retentionPins = 0;
 
 	// lifetime totals
 	uint64_t transactionsWritten = 0;
