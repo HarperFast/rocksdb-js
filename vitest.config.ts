@@ -30,11 +30,12 @@ export default defineConfig({
 		globals: false,
 		hookTimeout: 30000,
 		include: ['test/**/*.test.ts'],
-		// forks sidesteps Bun/Deno worker_threads flakiness that the default threads pool
-		// hits, at the cost of losing thread-inherited flags like --expose-gc (Deno sees no
-		// globalThis.gc — see AGENTS.md's Deno GC note). fileParallelism below holds every
-		// pool to one worker, so this is still a single process for the whole run, not one
-		// per test file.
+		// forks runs each test file in its own child process, sidestepping Bun/Deno
+		// worker_threads flakiness the default threads pool hits, at the cost of losing
+		// thread-inherited flags like --expose-gc (Deno sees no globalThis.gc — see
+		// AGENTS.md's Deno GC note). fileParallelism above serializes files to one at a
+		// time; it does not collapse them into one process (verified via process.pid) —
+		// bun-test's comment in pr.yml documents an exception for Bun specifically.
 		pool: isAlternateRuntime ? 'forks' : 'threads',
 		// Deno's node:worker_threads compat is flaky when native-backed tests run
 		// concurrently in the same fork; sequential execution avoids V8 HandleScope crashes.

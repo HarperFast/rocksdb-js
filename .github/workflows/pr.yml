@@ -16,11 +16,13 @@ on:
     - cron: '0 5 * * *'
 
 concurrency:
-  # push and schedule both land on refs/heads/main, so cancelling there would drop one
-  # commit's test signal whenever two merges or a nightly overlap; only a PR's own
-  # superseded runs get cancelled.
+  # GitHub always drops an older QUEUED run when a newer one joins the same group, no
+  # matter how cancel-in-progress is set -- that setting only governs a RUNNING run. PRs
+  # keep one group per ref on purpose (a new commit supersedes the old run); push and
+  # schedule get a group unique to the run itself so merges and the nightly run never
+  # drop each other while queued.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
 
 jobs:
   checks:
@@ -243,12 +245,10 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Deno
-        # Retried once per OS: Deno's worker_threads/native-binding flakiness isn't
-        # platform-specific (see vitest.config.ts's forks-pool comment), so the retry
-        # budget is the same everywhere. The first failure is flagged so a rising
-        # flake rate doesn't just get silently retried away.
+        # Windows-only retry, matching bun-test and the Node coverage job above: this
+        # covers GitHub's Windows runners being broadly flakier (slower AV-scanned I/O,
+        # more transient lock/network blips), not a Deno-specific race the way bun-test's
+        # #695 is. Retrying on every OS would quietly double this job's failure tolerance
+        # on Linux/macOS with no evidence of a comparable flake there to justify it.
         shell: bash
-        run: |
-          pnpm test:deno && exit 0
-          echo "::warning::pnpm test:deno failed on first attempt (${{ matrix.os }}); retrying once. A repeat failure here may be worth filing as a tracked Deno flake."
-          pnpm test:deno
+        run: pnpm test:deno || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm test:deno)
