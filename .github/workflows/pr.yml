@@ -16,7 +16,10 @@ on:
     - cron: '0 5 * * *'
 
 concurrency:
-  cancel-in-progress: true
+  # push and schedule both land on refs/heads/main, so cancelling there would drop one
+  # commit's test signal whenever two merges or a nightly overlap; only a PR's own
+  # superseded runs get cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
@@ -240,7 +243,12 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Deno
-        # Retry once on every OS, not just Windows: the Deno worker_threads/native-binding
-        # flakiness this covers isn't Windows-specific like bun-test's documented race above.
+        # Retried once per OS: Deno's worker_threads/native-binding flakiness isn't
+        # platform-specific (see vitest.config.ts's forks-pool comment), so the retry
+        # budget is the same everywhere. The first failure is flagged so a rising
+        # flake rate doesn't just get silently retried away.
         shell: bash
-        run: pnpm test:deno || pnpm test:deno
+        run: |
+          pnpm test:deno && exit 0
+          echo "::warning::pnpm test:deno failed on first attempt (${{ matrix.os }}); retrying once. A repeat failure here may be worth filing as a tracked Deno flake."
+          pnpm test:deno

@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
+import { RocksDatabase, getRegistryStatus, shutdown } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { spawn, spawnSync } from 'node:child_process';
@@ -16,27 +16,27 @@ describe('Shutdown', () => {
 		dbRunner({ dbOptions: [{}, { name: 'test' }] }, async ({ db }, { db: db2 }) => {
 			expect(db.isOpen()).toBe(true);
 			expect(db2.isOpen()).toBe(true);
-			const entry = registryStatus().find((e) => e.path === db.path);
+			const entry = getRegistryStatus().find((e) => e.path === db.path);
 			expect(entry).toBeDefined();
 			expect(Object.keys(entry!.columnFamilies).length).toBe(2);
 			shutdown();
 			expect(db.isOpen()).toBe(false);
 			expect(db2.isOpen()).toBe(false);
-			expect(registryStatus().some((e) => e.path === db.path)).toBe(false);
+			expect(getRegistryStatus().some((e) => e.path === db.path)).toBe(false);
 		}));
 
 	it('should handle multiple shutdowns', () =>
 		dbRunner(async ({ db }) => {
 			expect(db.isOpen()).toBe(true);
-			const entry = registryStatus().find((e) => e.path === db.path);
+			const entry = getRegistryStatus().find((e) => e.path === db.path);
 			expect(entry).toBeDefined();
 			expect(Object.keys(entry!.columnFamilies).length).toBe(1);
 			shutdown();
 			expect(db.isOpen()).toBe(false);
-			expect(registryStatus().some((e) => e.path === db.path)).toBe(false);
+			expect(getRegistryStatus().some((e) => e.path === db.path)).toBe(false);
 			shutdown();
 			expect(db.isOpen()).toBe(false);
-			expect(registryStatus().some((e) => e.path === db.path)).toBe(false);
+			expect(getRegistryStatus().some((e) => e.path === db.path)).toBe(false);
 		}));
 
 	it.skipIf(process.env.ROCKSDB_JS_WBM_STALL_WARN_MS === '0')(
