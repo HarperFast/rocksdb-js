@@ -11,16 +11,14 @@ on:
   push:
     branches: [main]
   schedule:
-    # Nightly, so drift that only shows up between pushes (a dependency update, a
-    # runtime/OS image bump) still gets a test signal on main.
+    # Nightly, to catch drift (a dependency or runtime update) between pushes.
     - cron: '0 5 * * *'
 
 concurrency:
-  # GitHub always drops an older QUEUED run when a newer one joins the same group, no
-  # matter how cancel-in-progress is set -- that setting only governs a RUNNING run. PRs
-  # keep one group per ref on purpose (a new commit supersedes the old run); push and
-  # schedule get a group unique to the run itself so merges and the nightly run never
-  # drop each other while queued.
+  # GitHub drops an older QUEUED run when a newer one joins its group, regardless of
+  # cancel-in-progress (which only affects a RUNNING run). PRs share one group per ref so
+  # a new commit supersedes the old run; push/schedule get a group unique to the run so
+  # merges and the nightly run never drop each other while queued.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
 
@@ -245,10 +243,7 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Deno
-        # Windows-only retry, matching bun-test and the Node coverage job above: this
-        # covers GitHub's Windows runners being broadly flakier (slower AV-scanned I/O,
-        # more transient lock/network blips), not a Deno-specific race the way bun-test's
-        # #695 is. Retrying on every OS would quietly double this job's failure tolerance
-        # on Linux/macOS with no evidence of a comparable flake there to justify it.
+        # Windows-only retry, same scope as the Node coverage job above: general
+        # Windows-runner flakiness, not a tracked race like bun-test's #695.
         shell: bash
         run: pnpm test:deno || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm test:deno)
