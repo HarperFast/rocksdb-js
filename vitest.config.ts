@@ -30,6 +30,9 @@ export default defineConfig({
 		globals: false,
 		hookTimeout: 30000,
 		include: ['test/**/*.test.ts'],
+		// forks (a process per test file) sidesteps Bun/Deno worker_threads flakiness that
+		// the default threads pool hits, at the cost of per-file process-spawn overhead and
+		// losing thread-inherited flags like --expose-gc (see AGENTS.md's Deno GC note).
 		pool: isAlternateRuntime ? 'forks' : 'threads',
 		// Deno's node:worker_threads compat is flaky when native-backed tests run
 		// concurrently in the same fork; sequential execution avoids V8 HandleScope crashes.

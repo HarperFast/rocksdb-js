@@ -8,6 +8,12 @@ on:
       - 'docs/**'
       - 'LICENSE'
       - '.gitignore'
+  push:
+    branches: [main]
+  schedule:
+    # Nightly, so drift that only shows up between pushes (a dependency update, a
+    # runtime/OS image bump) still gets a test signal on main.
+    - cron: '0 5 * * *'
 
 concurrency:
   cancel-in-progress: true
@@ -234,5 +240,7 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Deno
+        # Retry once on every OS, not just Windows: the Deno worker_threads/native-binding
+        # flakiness this covers isn't Windows-specific like bun-test's documented race above.
         shell: bash
-        run: pnpm test:deno || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm test:deno)
+        run: pnpm test:deno || pnpm test:deno
