@@ -190,11 +190,10 @@ jobs:
 
       - name: Run tests on Bun
         # windows-latest gets extra retries for a known pre-existing DBRegistry::OpenDB
-        # teardown/reopen race (HarperFast/rocksdb-js#695) that Bun's single-process,
-        # fileParallelism:false run (every test file's DB churn in one process) can
-        # trip during a normal open/close sequence -- unrelated to this workflow's
-        # own test content. Not a fix for #695 itself, just enough retry budget that
-        # a rare pre-existing race doesn't block unrelated PRs.
+        # teardown/reopen race (HarperFast/rocksdb-js#695) that this run's worker_threads
+        # churn can trip during a normal open/close sequence -- unrelated to this
+        # workflow's own test content. Not a fix for #695 itself, just enough retry
+        # budget that a rare pre-existing race doesn't block unrelated PRs.
         shell: bash
         run: |
           for i in 1 2 3; do
