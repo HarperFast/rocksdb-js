@@ -3,9 +3,9 @@ name: Format Check
 # oxfmt also formats Markdown, which pr.yml's paths-ignore skips. This job runs
 # unconditionally so a doc-only PR is still checked.
 #
-# If main ever requires a status check, require THIS job, not Test / Check --
-# paths-ignore means Check never runs on a doc-only PR (same pairing
-# validate-caller-workflows.yml documents for its own job).
+# If main ever requires a status check for formatting, require THIS job -- Test /
+# Check can't be required as-is, because paths-ignore leaves it pending on doc-only
+# PRs (same pairing validate-caller-workflows.yml documents for its own job).
 
 on:
   pull_request:
@@ -17,7 +17,10 @@ permissions:
   contents: read
 
 concurrency:
-  cancel-in-progress: true
+  # Only cancel a superseded PR run. Two merges to main in quick succession must
+  # not cancel the first one's status -- the second run covers a superset of its
+  # tree, but a cancelled run still leaves that commit without a reported result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:

@@ -43,9 +43,7 @@ jobs:
         run: pnpm build
 
       - name: Check
-        # fmt:check runs in format-check.yml instead -- keep its script list
-        # (package.json's "check") in step with this if either changes.
-        run: pnpm type-check && pnpm lint
+        run: pnpm check:code
 
   test:
     name: Test on Node.js ${{ matrix.node }} and ${{ matrix.os }}
