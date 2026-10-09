@@ -1,22 +1,20 @@
 name: Format Check
 
-# pr.yml's heavy jobs (build, type-check, lint, test matrix) are paths-ignored for
-# **.md/docs/** so a doc-only PR doesn't pay for a full build. oxfmt also formats
-# Markdown (see AGENTS.md's Code Quality section), so that paths-ignore used to skip
-# the one check a doc-only PR actually needs, and the drift only surfaced later via
-# formatting.yml's nightly auto-fix PR. This workflow runs unconditionally -- no
-# paths-ignore -- and needs no native build, so firing on every PR costs almost
-# nothing (HarperFast/rocksdb-js#916).
+# oxfmt also formats Markdown, which pr.yml's paths-ignore skips. This job runs
+# unconditionally so a doc-only PR is still checked.
 #
-# No required status checks are currently configured on main (classic branch
-# protection's required_status_checks.contexts/.checks are both empty), so adding
-# this job cannot leave a doc-only PR with a permanently pending required check.
+# If main ever requires a status check, require THIS job, not Test / Check --
+# paths-ignore means Check never runs on a doc-only PR (same pairing
+# validate-caller-workflows.yml documents for its own job).
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
     branches: [main]
+
+permissions:
+  contents: read
 
 concurrency:
   cancel-in-progress: true
@@ -42,9 +40,8 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        # --ignore-scripts: oxfmt --check needs no native build, so skip node-gyp's
-        # RocksDB prebuild fetch entirely (the only thing pr.yml's setup-deps action
-        # and its GH_TOKEN are for).
+        # No native build here, so skip the deps/rocksdb cache and GH_TOKEN that
+        # setup-deps (.github/actions/setup-deps) sets up for node-gyp's benefit.
         run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Check formatting

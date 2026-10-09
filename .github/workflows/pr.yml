@@ -43,8 +43,8 @@ jobs:
         run: pnpm build
 
       - name: Check
-        # fmt:check runs unconditionally in format-check.yml instead (no paths-ignore
-        # there, so it also covers doc-only PRs this job's paths-ignore skips).
+        # fmt:check runs in format-check.yml instead -- keep its script list
+        # (package.json's "check") in step with this if either changes.
         run: pnpm type-check && pnpm lint
 
   test:
