@@ -17,11 +17,12 @@ permissions:
   contents: read
 
 concurrency:
-  # Only cancel a superseded PR run. Two merges to main in quick succession must
-  # not cancel the first one's status -- the second run covers a superset of its
-  # tree, but a cancelled run still leaves that commit without a reported result.
+  # PRs share one group per ref, so a new commit supersedes the old run. GitHub
+  # drops an older QUEUED run sharing a group when a newer one joins, regardless of
+  # cancel-in-progress -- so push runs get a group unique to the run, and quick
+  # successive merges to main can't drop each other's result.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
 
 jobs:
   format:
@@ -43,8 +44,8 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        # No native build here, so skip the deps/rocksdb cache and GH_TOKEN that
-        # setup-deps (.github/actions/setup-deps) sets up for node-gyp's benefit.
+        # No native build here, so plain pnpm install suffices -- no deps/rocksdb
+        # cache or GH_TOKEN, unlike setup-deps (.github/actions/setup-deps).
         run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Check formatting
