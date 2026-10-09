@@ -43,7 +43,7 @@ jobs:
         run: pnpm build
 
       - name: Check
-        run: pnpm check
+        run: pnpm check:code
 
   test:
     name: Test on Node.js ${{ matrix.node }} and ${{ matrix.os }}

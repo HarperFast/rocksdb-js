@@ -1,0 +1,50 @@
+name: Format Check
+
+# oxfmt also formats Markdown, which pr.yml's paths-ignore skips.
+#
+# If main ever requires a status check for formatting, require THIS job -- Test /
+# Check can't be required as-is, because paths-ignore leaves it pending on doc-only
+# PRs (same pairing validate-caller-workflows.yml documents for its own job).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # PRs share one group per ref, so a new commit supersedes the old run. GitHub
+  # drops an older QUEUED run sharing a group when a newer one joins, regardless of
+  # cancel-in-progress -- so push runs get a group unique to the run, and quick
+  # successive merges to main can't drop each other's result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+
+jobs:
+  format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: latest
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        # Plain install, not .github/actions/setup-deps: no native build here.
+        run: pnpm install --ignore-scripts --no-frozen-lockfile
+
+      - name: Check formatting
+        run: pnpm fmt:check
