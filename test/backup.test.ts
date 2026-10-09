@@ -1,7 +1,7 @@
 import {
 	backups,
 	fileLockRelease,
-	registryStatus,
+	getRegistryStatus,
 	RocksDatabase,
 	tryFileLock,
 } from '../src/index.ts';
@@ -473,9 +473,9 @@ describe('Backups', () => {
 
 			// The backup's descriptor ref made close() skip the registry purge; the
 			// backup must retry it on release so the entry does not leak (a leaked
-			// entry keeps the RocksDB open forever and shows up in registryStatus()
+			// entry keeps the RocksDB open forever and shows up in getRegistryStatus()
 			// long after every handle is closed).
-			expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
+			expect(getRegistryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 		}));
 
 	it('should reject listing a non-existent backup directory', async () => {

@@ -45,7 +45,7 @@ void emitCloseFailure(const std::string& path, const std::string& error) {
 void emitCloseFailures(const std::vector<ClosingDescriptor>& descriptors) {
 	for (const auto& closing : descriptors) {
 		// The descriptor's spelling, not the key's resolved identity -- the same
-		// rule registryStatus() follows, so a listener can match the event's path
+		// rule getRegistryStatus() follows, so a listener can match the event's path
 		// against the path it opened.
 		emitCloseFailure(
 			closing.descriptor ? closing.descriptor->path : closing.key.path, closing.closeError);
@@ -462,7 +462,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		// rocksdb::DestroyDB (if it ran) already dropped RocksDB's own view of
 		// this path, so reopening now would silently create a fresh, empty
 		// database over whatever the filesystem failure left behind. Leave a
-		// tombstone -- surfaced by registryStatus().destroyCleanupPending and
+		// tombstone -- surfaced by getRegistryStatus().destroyCleanupPending and
 		// rejected by OpenDB's quarantine check -- so only an explicit destroy()
 		// retry (not a plain reopen, and not shutdown(), which is deliberately
 		// non-destructive) can clear it.
@@ -575,9 +575,9 @@ void DBRegistry::Init(napi_env env, napi_value exports) {
 		DEBUG_LOG("%p DBRegistry::Initialize Initialized DBRegistry\n", instance.get());
 	}
 
-	napi_value registryStatusFn;
-	NAPI_STATUS_THROWS_VOID(::napi_create_function(env, "registryStatus", NAPI_AUTO_LENGTH, DBRegistry::RegistryStatus, nullptr, &registryStatusFn));
-	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "registryStatus", registryStatusFn));
+	napi_value getRegistryStatusFn;
+	NAPI_STATUS_THROWS_VOID(::napi_create_function(env, "getRegistryStatus", NAPI_AUTO_LENGTH, DBRegistry::RegistryStatus, nullptr, &getRegistryStatusFn));
+	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "getRegistryStatus", getRegistryStatusFn));
 }
 
 /**
@@ -1533,7 +1533,7 @@ void DBRegistry::Shutdown() {
 						// A prior destroy() left a tombstone (descriptor cleared,
 						// closeError set) after its physical cleanup failed. That
 						// failure was already surfaced via database:closeFailed and
-						// stays visible in registryStatus().destroyCleanupPending.
+						// stays visible in getRegistryStatus().destroyCleanupPending.
 						// shutdown() is deliberately non-destructive -- only an
 						// explicit destroy() retries path deletion -- so skip it
 						// here rather than re-throwing the same error forever.

@@ -69,7 +69,7 @@ struct DBRegistryEntry final {
 	std::shared_ptr<std::condition_variable> condition;
 	// Set when a close (self, foreign, or destroy-driven) fails. The entry is
 	// left in the map instead of erased -- "quarantined" -- so the failure is
-	// visible (registryStatus(), a `database:closeFailed` event) and a caller
+	// visible (getRegistryStatus(), a `database:closeFailed` event) and a caller
 	// can retry via shutdown()/destroy() rather than the path silently
 	// reopening over unflushed data. `closeRetrying` is true while a retry
 	// attempt is in flight, so a second concurrent retry does not double-claim
@@ -80,7 +80,7 @@ struct DBRegistryEntry final {
 	// the entry so a tombstone -- an entry whose descriptor is gone because a
 	// destroy's physical cleanup failed -- can still report the spelling the
 	// caller supplied rather than the resolved identity the key carries. A
-	// caller matching `registryStatus().path` against the path it opened would
+	// caller matching `getRegistryStatus().path` against the path it opened would
 	// otherwise miss wherever the two spell the same directory differently
 	// (macOS `/var` vs `/private/var`, a symlink, a relative path). Empty only
 	// for a path no descriptor in this process ever opened.

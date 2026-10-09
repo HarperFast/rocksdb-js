@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -92,7 +92,7 @@ if (String(compactError).includes('Database closed during compact operation'))
 	);
 if (!/cancel|paused|incomplete/i.test(String(compactError))) throw compactError;
 
-if (registryStatus().some((entry) => entry.path === path))
+if (getRegistryStatus().some((entry) => entry.path === path))
 	throw new Error('Expected shutdown to fully clear the registry entry');
 
 await worker.terminate();

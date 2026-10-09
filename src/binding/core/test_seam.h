@@ -127,7 +127,7 @@ inline std::atomic<int>& closeRetryDelayMsFlag() {
 	return delayMs;
 }
 
-// Per-column-family delay inside registryStatus()'s column walk, so a foreign
+// Per-column-family delay inside getRegistryStatus()'s column walk, so a foreign
 // destroy()/shutdown() clearing `DBDescriptor::columns` lands in the middle of
 // it. Without the columnsMutex snapshot that walk is a use-after-free on the
 // freed map node's key.

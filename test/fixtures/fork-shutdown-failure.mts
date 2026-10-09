@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus, shutdown } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus, shutdown } from '../../src/index.ts';
 
 const path = process.argv[2];
 const db = RocksDatabase.open(path);
@@ -35,7 +35,7 @@ if (Date.now() - startedAt >= 1_000)
 	throw new Error('Cross-mode open waited instead of reporting the quarantined path immediately');
 
 shutdown();
-if (registryStatus().some((entry) => entry.path === path))
+if (getRegistryStatus().some((entry) => entry.path === path))
 	throw new Error('Shutdown retry did not clear the quarantined descriptor');
 const reopened = RocksDatabase.open(path);
 if (reopened.getSync('key') !== 'value')

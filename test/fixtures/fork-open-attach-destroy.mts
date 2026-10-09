@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -28,7 +28,7 @@ if (!opening.opening) throw new Error(`Open worker did not start: ${JSON.stringi
 const registryDeadline = Date.now() + 5_000;
 let closables: number | undefined;
 while (closables !== 2 && Date.now() < registryDeadline) {
-	closables = registryStatus().find((entry) => entry.path === path)?.closables;
+	closables = getRegistryStatus().find((entry) => entry.path === path)?.closables;
 	if (closables !== 2) await delay(1);
 }
 

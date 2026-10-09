@@ -416,7 +416,7 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 			}
 			// Promise settlement is the public completion boundary. Release the
 			// descriptor pin and retry any deferred registry purge first so an
-			// immediate registryStatus() / shutdown() cannot observe stale state.
+			// immediate getRegistryStatus() / shutdown() cannot observe stale state.
 			state->releaseDescriptor();
 			if (status != napi_cancelled) {
 				if (state->status.ok()) {

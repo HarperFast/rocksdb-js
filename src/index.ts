@@ -29,7 +29,6 @@ export {
 	getRegistryStatus,
 	getWriteBufferManagerStats,
 	tryFileLock,
-	registryStatus,
 	stats,
 	shutdown,
 	steadyClockNow,

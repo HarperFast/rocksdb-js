@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -40,7 +40,7 @@ try {
 }
 
 function bothQuarantined(): boolean {
-	const entries = registryStatus().filter((entry) => entry.path === path);
+	const entries = getRegistryStatus().filter((entry) => entry.path === path);
 	return entries.length === 2 && entries.every((entry) => entry.closeError && !entry.closeRetrying);
 }
 for (let attempt = 0; attempt < 40 && !bothQuarantined(); attempt++) await delay(25);
@@ -59,7 +59,7 @@ await nextMessage(); // worker started, about to call shutdown()
 const shutdownResult = nextMessage();
 
 function bothRetrying(): boolean {
-	const entries = registryStatus().filter((entry) => entry.path === path);
+	const entries = getRegistryStatus().filter((entry) => entry.path === path);
 	return entries.length === 2 && entries.every((entry) => entry.closeRetrying);
 }
 for (let attempt = 0; attempt < 40 && !bothRetrying(); attempt++) await delay(25);

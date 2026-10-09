@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
+import { RocksDatabase, getRegistryStatus, shutdown } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -266,7 +266,7 @@ describe('Destroy', () => {
 				try {
 					expect(() => db.destroy()).toThrow('Failed to remove database directory');
 					expect(
-						registryStatus().find((entry) => entry.path === dbPath)?.destroyCleanupPending
+						getRegistryStatus().find((entry) => entry.path === dbPath)?.destroyCleanupPending
 					).toBe(true);
 					expect(() => RocksDatabase.open(dbPath)).toThrow('previous destroy cleanup failed');
 					await expect(closeFailure).resolves.toMatchObject([
@@ -281,14 +281,14 @@ describe('Destroy', () => {
 					shutdown();
 					expect(existsSync(dbPath)).toBe(true);
 					expect(
-						registryStatus().find((entry) => entry.path === dbPath)?.destroyCleanupPending
+						getRegistryStatus().find((entry) => entry.path === dbPath)?.destroyCleanupPending
 					).toBe(true);
 				} finally {
 					RocksDatabase.off('database:closeFailed', listener);
 					if (existsSync(lockedDirectory)) chmodSync(lockedDirectory, 0o700);
 				}
 				db.destroy();
-				expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
+				expect(getRegistryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 				const healthyReopened = RocksDatabase.open(healthyPath);
 				expect(healthyReopened.getSync('key')).toBe('value');
 				healthyReopened.destroy();
@@ -298,7 +298,7 @@ describe('Destroy', () => {
 	);
 
 	// The macOS `/var` -> `/private/var` case, reproduced with an explicit symlink
-	// so it runs everywhere: `registryStatus().path` and `database:closeFailed`
+	// so it runs everywhere: `getRegistryStatus().path` and `database:closeFailed`
 	// must report the spelling the caller opened, not the resolved identity the
 	// registry key carries. A tombstone has no descriptor left to ask, so the
 	// entry has to remember it.
@@ -336,7 +336,7 @@ describe('Destroy', () => {
 			const db = RocksDatabase.open(linkPath);
 			try {
 				db.putSync('key', 'value');
-				expect(registryStatus().find((entry) => entry.path === linkPath)).toBeDefined();
+				expect(getRegistryStatus().find((entry) => entry.path === linkPath)).toBeDefined();
 				mkdirSync(lockedDirectory, { recursive: true });
 				writeFileSync(join(lockedDirectory, 'leftover'), 'data');
 				chmodSync(lockedDirectory, 0o000);
@@ -344,7 +344,7 @@ describe('Destroy', () => {
 				// The descriptor is gone by now, so this is the entry's remembered
 				// spelling rather than the live descriptor's.
 				expect(
-					registryStatus().find((entry) => entry.path === linkPath)?.destroyCleanupPending
+					getRegistryStatus().find((entry) => entry.path === linkPath)?.destroyCleanupPending
 				).toBe(true);
 				await nextCloseFailure(1);
 				expect(closeFailures[0]).toMatchObject([
@@ -461,13 +461,13 @@ describe('Destroy', () => {
 		await runDestroyFixture(foreignCloseLogCacheFixture, generateDBPath());
 	}, 20_000);
 
-	it('survives a column-family drop racing a registryStatus() walk', async () => {
+	it('survives a column-family drop racing a getRegistryStatus() walk', async () => {
 		await runDestroyFixture(registryStatusColumnRaceFixture, generateDBPath(), {
 			ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS: '10',
 		});
 	}, 15_000);
 
-	it('purges the last handle closed during a registryStatus() walk', async () => {
+	it('purges the last handle closed during a getRegistryStatus() walk', async () => {
 		await runDestroyFixture(registryStatusCloseRaceFixture, generateDBPath(), {
 			ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS: '20',
 		});

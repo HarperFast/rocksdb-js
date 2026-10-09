@@ -1,4 +1,4 @@
-import { registryStatus } from '../src/index.js';
+import { getRegistryStatus } from '../src/index.js';
 import { Transaction } from '../src/transaction.js';
 import { dbRunner } from './lib/util.js';
 import { spawn } from 'node:child_process';
@@ -20,7 +20,7 @@ const dependentFixturePath = join(__dirname, 'fixtures', 'transaction-orphan-dep
  */
 
 function status(path: string) {
-	const entry = registryStatus().find((db) => db.path === path);
+	const entry = getRegistryStatus().find((db) => db.path === path);
 	if (!entry) throw new Error(`No registry entry for ${path}`);
 	return entry;
 }
