@@ -1,7 +1,6 @@
 name: Format Check
 
-# oxfmt also formats Markdown, which pr.yml's paths-ignore skips. This job runs
-# unconditionally so a doc-only PR is still checked.
+# oxfmt also formats Markdown, which pr.yml's paths-ignore skips.
 #
 # If main ever requires a status check for formatting, require THIS job -- Test /
 # Check can't be required as-is, because paths-ignore leaves it pending on doc-only
@@ -44,8 +43,7 @@ jobs:
           cache: 'pnpm'
 
       - name: Install dependencies
-        # No native build here, so plain pnpm install suffices -- no deps/rocksdb
-        # cache or GH_TOKEN, unlike setup-deps (.github/actions/setup-deps).
+        # Plain install, not .github/actions/setup-deps: no native build here.
         run: pnpm install --ignore-scripts --no-frozen-lockfile
 
       - name: Check formatting
