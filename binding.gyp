@@ -265,6 +265,7 @@
 				'test/native/transaction_log_flushed_state_test.cc',
 				'test/native/transaction_log_mmap_test.cc',
 				'test/native/transaction_log_recovery_test.cc',
+				'test/native/transaction_log_retention_test.cc',
 				'test/native/transaction_log_retirement_test.cc',
 				'test/native/transaction_log_validation_test.cc',
 				'test/native/transaction_log_writev_test.cc',

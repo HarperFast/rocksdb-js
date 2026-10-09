@@ -12,9 +12,13 @@ import { describe, expect, it } from 'vitest';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
-function runCrashFixture(dbPath: string, env: Record<string, string> = {}) {
+function runCrashFixture(
+	dbPath: string,
+	env: Record<string, string> = {},
+	fixtureName = 'txnlog-crash-window.mjs'
+) {
 	return new Promise<void>((resolve, reject) => {
-		const fixture = join(__dirname, 'fixtures', 'txnlog-crash-window.mjs');
+		const fixture = join(__dirname, 'fixtures', fixtureName);
 		const args = [fixture, dbPath];
 		let output = '';
 		const child = spawn(process.execPath, args, { env: { ...process.env, ...env } });
@@ -372,6 +376,55 @@ describe('Transaction log crash recovery', () => {
 				database.close();
 			}
 		}));
+
+	// Retention can purge every segment, leaving txn.state as the only record of the highest
+	// sequence used. Writes after a restart must land past it: a reused lower sequence sorts
+	// before the flushed position, and a replay that starts there skips them.
+	it('replays writes made after every segment was purged and the process was killed', async () => {
+		const dbPath = generateDBPath();
+		await mkdir(dbPath, { recursive: true });
+		let db: RocksDatabase | undefined;
+		const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+		try {
+			db = RocksDatabase.open(dbPath);
+			const log = db.useLog('foo');
+			for (const text of ['before-purge-1', 'before-purge-2']) {
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.from(text), txn.id);
+					db!.putSync(text, text, { transaction: txn });
+				});
+			}
+			db.flushSync();
+			expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual([
+				join(logDirectory, '1.txnlog'),
+			]);
+			db.close();
+			db = undefined;
+			const flushedState = readFileSync(join(logDirectory, 'txn.state'));
+			expect(flushedState.readUInt32LE(4)).toBe(1);
+
+			await runCrashFixture(dbPath, {}, 'fork-txnlog-purged-restart.mts');
+
+			// the killed process never flushed, so txn.state still names the purged sequence
+			expect(readFileSync(join(logDirectory, 'txn.state'))).toEqual(flushedState);
+			expect(readdirSync(logDirectory).filter((name) => name.endsWith('.txnlog'))).toEqual([
+				'2.txnlog',
+			]);
+
+			db = RocksDatabase.open(dbPath);
+			const reopened = db.useLog('foo');
+			expect(
+				Array.from(reopened.query({ startFromLastFlushed: true })).map((entry) =>
+					entry.data.toString()
+				)
+			).toEqual(['after-purge-1', 'after-purge-2']);
+		} finally {
+			db?.close();
+			if (!process.env.KEEP_FILES && existsSync(dbPath)) {
+				rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+			}
+		}
+	});
 
 	it('exposes the post-flush window to committed reads after a SIGKILL', async () => {
 		const dbPath = generateDBPath();

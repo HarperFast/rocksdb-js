@@ -109,6 +109,20 @@ constexpr double BUDGET_PRESSURE_FRACTION = 0.75;
 /** True when `elapsedMs` used at least BUDGET_PRESSURE_FRACTION of `budgetMs`. */
 bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs);
 
+/**
+ * Flushes an existing file's data and metadata to stable storage by path.
+ * Returns false when the file cannot be opened or the sync fails.
+ */
+bool syncFile(const std::filesystem::path& path);
+
+/**
+ * Persists a directory's entries (creations, renames, unlinks). A no-op on
+ * Windows, where NTFS journals them. On POSIX, a filesystem that rejects fsync
+ * on a directory (EINVAL/ENOTSUP) counts as success only when
+ * `allowUnsupported` is set.
+ */
+bool syncDirectory(const std::filesystem::path& path, bool allowUnsupported);
+
 void tryCreateDirectory(
 	const std::filesystem::path& path,
 	std::filesystem::perms permissions =

@@ -1524,6 +1524,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     named log is fail closed: an unreadable segment, framing break, exhausted scan budget, or
     implausibly future key refuses that open rather than risk reissuing a durable batch key. The
     caller can omit `timestampFloorLog` only when its writes do not need restart-safe uniqueness.
+    The floor covers only keys still on disk: retention can purge every segment of the named log,
+    and the walk then raises nothing, so a backward step can reissue a key that lived only in purged
+    segments.
     The first descriptor that seeds it must be a writable primary: a read-only or secondary scan
     cannot establish a cross-process snapshot while a primary may append. Later read-only or
     secondary descriptors reuse that same in-process seed without rescanning. A seed that found its
