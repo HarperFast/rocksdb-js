@@ -16,6 +16,7 @@
 #include "rocksdb/options.h"
 #include "rocksdb/utilities/backup_engine.h"
 
+using rocksdb_js::isConfinedBackupPath;
 using rocksdb_js::verifyBackupTables;
 
 namespace {
@@ -240,7 +241,6 @@ TEST(BackupVerifyTables, OpensOneTableAtATime) {
 	EXPECT_EQ(fs->peak.load(), 1);
 	EXPECT_EQ(fs->open.load(), 0);
 
-	// A bad table among many is still caught, and the failure path closes it too.
 	patchFormatVersion(tables[kTables / 2], 99);
 	auto failingFs = std::make_shared<CountingFileSystem>(rocksdb::FileSystem::Default());
 	std::unique_ptr<rocksdb::Env> failingEnv = rocksdb::NewCompositeEnv(failingFs);
@@ -249,4 +249,13 @@ TEST(BackupVerifyTables, OpensOneTableAtATime) {
 	EXPECT_NE(s.ToString().find(std::filesystem::path(tables[kTables / 2]).filename().string()), std::string::npos) << s.ToString();
 	EXPECT_EQ(failingFs->peak.load(), 1);
 	EXPECT_EQ(failingFs->open.load(), 0);
+}
+
+TEST(BackupVerifyTables, RejectsMetadataNamesOutsideTheBackup) {
+	EXPECT_TRUE(isConfinedBackupPath("shared_checksum/000123_s1.sst"));
+	EXPECT_TRUE(isConfinedBackupPath("private/1/000123.sst"));
+	EXPECT_FALSE(isConfinedBackupPath(""));
+	EXPECT_FALSE(isConfinedBackupPath("/etc/passwd"));
+	EXPECT_FALSE(isConfinedBackupPath("../outside.sst"));
+	EXPECT_FALSE(isConfinedBackupPath("shared/../../outside.sst"));
 }

@@ -92,7 +92,8 @@ watermark; `test/native/transaction_log_flushed_state_test.cc` covers the flush 
 # Backup table verification
 
 `backups.verify({ verifyTables: true })` (`verifyBackupTables`, `backup_verify_tables.cpp`) must
-prove the backup is readable by _this_ build, not only intact. Three facts hold it together:
+prove every SST in the backup is readable by _this_ build, not only intact. Blob files are not
+covered (RocksDB has no public blob-file reader). Three facts hold it together:
 
 - **`SstFileReader::Open` is not enough on its own.** It decodes the footer (an unsupported
   `format_version` fails there) and the meta blocks, but never a data block, so a table whose

@@ -500,9 +500,11 @@ export const backups = {
 			verifyTransactionLogs?: boolean;
 		}
 	): Promise<void> {
-		const verifyTables = options?.verifyTables ?? false;
-		if (typeof verifyTables !== 'boolean') {
-			throw new TypeError(`verifyTables must be a boolean, received ${typeof verifyTables}`);
+		const verifyTables = options?.verifyTables;
+		if (verifyTables !== undefined && typeof verifyTables !== 'boolean') {
+			throw new TypeError(
+				`verifyTables must be a boolean, received ${verifyTables === null ? 'null' : typeof verifyTables}`
+			);
 		}
 		await new Promise<void>((resolve, reject) =>
 			nativeBackupVerify(
@@ -511,7 +513,7 @@ export const backups = {
 				backupDir,
 				backupId,
 				options?.verifyWithChecksum ?? false,
-				verifyTables
+				verifyTables === true
 			)
 		);
 

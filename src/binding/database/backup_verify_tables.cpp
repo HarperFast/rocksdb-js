@@ -11,9 +11,24 @@ namespace rocksdb_js {
 
 namespace {
 
-// Backup metadata is read from disk, so a name that escapes the backup
-// directory must not be followed.
-bool isConfinedRelativePath(const std::string& relative) {
+// Keeps the status code (an EMFILE or EACCES must not read as a corrupt
+// backup) and prefixes the file the failure belongs to.
+rocksdb::Status withFileName(const rocksdb::Status& s, const std::string& name) {
+	std::string msg = s.getState() != nullptr ? std::string(s.getState()) : s.ToString();
+	switch (s.code()) {
+		case rocksdb::Status::Code::kIOError: return rocksdb::Status::IOError(name, msg);
+		case rocksdb::Status::Code::kNotFound: return rocksdb::Status::NotFound(name, msg);
+		case rocksdb::Status::Code::kNotSupported: return rocksdb::Status::NotSupported(name, msg);
+		case rocksdb::Status::Code::kInvalidArgument: return rocksdb::Status::InvalidArgument(name, msg);
+		case rocksdb::Status::Code::kBusy: return rocksdb::Status::Busy(name, msg);
+		case rocksdb::Status::Code::kAborted: return rocksdb::Status::Aborted(name, msg);
+		default: return rocksdb::Status::Corruption(name, msg);
+	}
+}
+
+} // namespace
+
+bool isConfinedBackupPath(const std::string& relative) {
 	std::filesystem::path path(relative);
 	if (relative.empty() || path.is_absolute() || path.has_root_path()) {
 		return false;
@@ -25,12 +40,6 @@ bool isConfinedRelativePath(const std::string& relative) {
 	}
 	return true;
 }
-
-std::string statusMessage(const rocksdb::Status& s) {
-	return s.getState() != nullptr ? std::string(s.getState()) : s.ToString();
-}
-
-} // namespace
 
 rocksdb::Status verifyBackupTables(
 	rocksdb::BackupEngineReadOnly* engine,
@@ -54,14 +63,14 @@ rocksdb::Status verifyBackupTables(
 			continue;
 		}
 		const std::string& name = file.relative_filename;
-		if (!isConfinedRelativePath(name)) {
+		if (!isConfinedBackupPath(name)) {
 			return rocksdb::Status::Corruption(name, "backup metadata names a table outside the backup directory");
 		}
 
 		rocksdb::SstFileReader reader(options);
 		s = reader.Open(backupDir + "/" + name);
 		if (!s.ok()) {
-			return rocksdb::Status::Corruption(name, statusMessage(s));
+			return withFileName(s, name);
 		}
 
 		std::shared_ptr<const rocksdb::TableProperties> props = reader.GetTableProperties();

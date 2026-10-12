@@ -108,11 +108,6 @@ std::optional<std::vector<rocksdb::CompressionType>> tableCompressionTypes(const
 				return types;
 			}
 		}
-		// Written by RocksDB releases that predate the finalized zstd format.
-		if (compressionName == "ZSTDNotFinal") {
-			types.push_back(rocksdb::kZSTD);
-			return types;
-		}
 		return std::nullopt;
 	}
 

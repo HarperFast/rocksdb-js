@@ -11,6 +11,12 @@
 namespace rocksdb_js {
 
 /**
+ * Whether a file name read from backup metadata stays inside the backup
+ * directory: relative, and with no `..` component.
+ */
+bool isConfinedBackupPath(const std::string& relative);
+
+/**
  * Proves this build can read every SST in a backup: each table is opened with
  * `SstFileReader` (footer, including `format_version`, plus the meta blocks),
  * and every compression type its properties record must be one this build can
@@ -18,14 +24,9 @@ namespace rocksdb_js {
  * an algorithm this build lacks would otherwise pass and fail on the first cold
  * read after a restore.
  *
- * Tables are opened one at a time and each reader is destroyed before the next
- * opens, so file-descriptor use does not grow with the table count. Returns the
- * first failure, naming the file relative to `backupDir`. Blob files are not
+ * Tables are opened one at a time. Returns the first failure, naming the file
+ * relative to `backupDir` and keeping RocksDB's status code. Blob files are not
  * checked: RocksDB exposes no public blob-file reader.
- *
- * `env` and `isSupported` are injectable so tests can count file opens and
- * simulate a build that lacks a compressor; production passes
- * `rocksdb::Env::Default()` and `isCompressionSupported`.
  */
 rocksdb::Status verifyBackupTables(
 	rocksdb::BackupEngineReadOnly* engine,

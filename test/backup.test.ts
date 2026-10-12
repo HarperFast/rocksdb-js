@@ -344,9 +344,11 @@ describe('Backups', () => {
 			await writeAll(db, 5);
 			await db.backup(backupDir);
 
-			await expect(
-				backups.verify(backupDir, 1, { verifyTables: 'true' as unknown as boolean })
-			).rejects.toThrow(TypeError);
+			for (const value of ['true', null]) {
+				await expect(
+					backups.verify(backupDir, 1, { verifyTables: value as unknown as boolean })
+				).rejects.toThrow(TypeError);
+			}
 		}));
 
 	it('should preserve unflushed data when WAL is disabled', () =>

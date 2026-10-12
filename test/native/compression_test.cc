@@ -74,7 +74,6 @@ TEST(Compression, TableCompressionLegacyNames) {
 	EXPECT_EQ(tableCompressionTypes("Snappy"), Types{ rocksdb::kSnappyCompression });
 	EXPECT_EQ(tableCompressionTypes("LZ4"), Types{ rocksdb::kLZ4Compression });
 	EXPECT_EQ(tableCompressionTypes("ZSTD"), Types{ rocksdb::kZSTD });
-	EXPECT_EQ(tableCompressionTypes("ZSTDNotFinal"), Types{ rocksdb::kZSTD });
 }
 
 TEST(Compression, TableCompressionV7Encoding) {
@@ -91,6 +90,8 @@ TEST(Compression, TableCompressionRejectsWhatItCannotInterpret) {
 	const std::string compat = builtinCompat();
 	EXPECT_FALSE(tableCompressionTypes("").has_value());
 	EXPECT_FALSE(tableCompressionTypes("Gzip").has_value());
+	// Type 0x40, which this RocksDB can no longer decode.
+	EXPECT_FALSE(tableCompressionTypes("ZSTDNotFinal").has_value());
 	EXPECT_FALSE(tableCompressionTypes("SomeCustomManager;80;").has_value());
 	EXPECT_FALSE(tableCompressionTypes(compat + ";4;").has_value());
 	EXPECT_FALSE(tableCompressionTypes(compat + ";zz;").has_value());
