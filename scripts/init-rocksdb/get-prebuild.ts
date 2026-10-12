@@ -3,6 +3,7 @@ import semver from 'semver';
 type GithubRelease = {
 	assets: { name: string; browser_download_url: string }[];
 	body: string;
+	draft: boolean;
 	name: string;
 	tag_name: string;
 };
@@ -28,7 +29,9 @@ export async function getPrebuild(desiredVersion?: string): Promise<Prebuild> {
 		);
 	}
 
-	const releases = (await response.json()) as GithubRelease[];
+	// A GH_TOKEN with push access to rocksdb-prebuilds also lists drafts: releases still uploading
+	// their assets, or abandoned by a failed run, whose download URLs do not resolve.
+	const releases = ((await response.json()) as GithubRelease[]).filter((release) => !release.draft);
 	releases.sort((a, b) => {
 		const aVersion = a.tag_name.replace(/^v/, '');
 		const bVersion = b.tag_name.replace(/^v/, '');
