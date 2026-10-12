@@ -35,6 +35,17 @@ bool isCompressionSupported(rocksdb::CompressionType type);
  */
 const std::vector<std::string>& supportedCompressionNames();
 
+/**
+ * Decodes `TableProperties::compression_name` into the compression types an SST
+ * records. Accepts both encodings RocksDB writes: the `format_version >= 7`
+ * form `<compatibility_name>;<hex-coded types>;...` and the older single
+ * built-in name (e.g. "LZ4"). Returns `std::nullopt` for anything else,
+ * including a compatibility name other than the built-in manager's, because a
+ * table that names a compression manager this build does not have cannot be
+ * read by it.
+ */
+std::optional<std::vector<rocksdb::CompressionType>> tableCompressionTypes(const std::string& compressionName);
+
 } // namespace rocksdb_js
 
 #endif

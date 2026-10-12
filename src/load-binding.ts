@@ -1065,7 +1065,8 @@ export const nativeBackupVerify: (
 	reject: RejectCallback,
 	backupDir: string,
 	backupId: number,
-	verifyWithChecksum: boolean
+	verifyWithChecksum: boolean,
+	verifyTables: boolean
 ) => void = binding.backupVerify;
 
 // Module-level transaction log store validation. Operates on a store directory

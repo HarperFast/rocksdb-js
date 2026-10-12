@@ -1,6 +1,8 @@
 #include "core/compression.h"
 #include <algorithm>
 #include <cctype>
+#include <memory>
+#include "rocksdb/advanced_compression.h"
 #include "rocksdb/convenience.h"
 
 namespace rocksdb_js {
@@ -72,6 +74,71 @@ const std::vector<std::string>& supportedCompressionNames() {
 		return result;
 	}();
 	return names;
+}
+
+namespace {
+
+int hexDigitValue(char c) {
+	if (c >= '0' && c <= '9') {
+		return c - '0';
+	}
+	if (c >= 'a' && c <= 'f') {
+		return c - 'a' + 10;
+	}
+	if (c >= 'A' && c <= 'F') {
+		return c - 'A' + 10;
+	}
+	return -1;
+}
+
+} // namespace
+
+std::optional<std::vector<rocksdb::CompressionType>> tableCompressionTypes(const std::string& compressionName) {
+	const std::shared_ptr<rocksdb::CompressionManager>& builtin = rocksdb::GetBuiltinV2CompressionManager();
+	std::vector<rocksdb::CompressionType> types;
+
+	size_t compatEnd = compressionName.find(';');
+	if (compatEnd == std::string::npos) {
+		for (unsigned char t = rocksdb::kNoCompression; t <= rocksdb::kLastBuiltinCompression; ++t) {
+			auto type = static_cast<rocksdb::CompressionType>(t);
+			if (compressionName == builtin->CompressionTypeToString(type)) {
+				if (type != rocksdb::kNoCompression) {
+					types.push_back(type);
+				}
+				return types;
+			}
+		}
+		// Written by RocksDB releases that predate the finalized zstd format.
+		if (compressionName == "ZSTDNotFinal") {
+			types.push_back(rocksdb::kZSTD);
+			return types;
+		}
+		return std::nullopt;
+	}
+
+	// An empty compatibility name means compression was disabled for the file.
+	std::string compat = compressionName.substr(0, compatEnd);
+	if (!compat.empty() && compat != builtin->CompatibilityName()) {
+		return std::nullopt;
+	}
+
+	size_t hexStart = compatEnd + 1;
+	size_t hexEnd = compressionName.find(';', hexStart);
+	if (hexEnd == std::string::npos) {
+		return std::nullopt;
+	}
+	if ((hexEnd - hexStart) % 2 != 0) {
+		return std::nullopt;
+	}
+	for (size_t i = hexStart; i < hexEnd; i += 2) {
+		int hi = hexDigitValue(compressionName[i]);
+		int lo = hexDigitValue(compressionName[i + 1]);
+		if (hi < 0 || lo < 0) {
+			return std::nullopt;
+		}
+		types.push_back(static_cast<rocksdb::CompressionType>((hi << 4) | lo));
+	}
+	return types;
 }
 
 } // namespace rocksdb_js

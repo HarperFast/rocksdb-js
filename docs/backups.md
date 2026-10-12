@@ -80,6 +80,33 @@ verification). Pass `verifyTransactionLogs: false` to check only the RocksDB fil
 stores (e.g. the `transaction_logs` directory of a closed database) can be validated directly with
 `validateTransactionLogStore()`.
 
+Pass `verifyTables: true` to check that **this build** can read the backup, not only that its files
+are intact. Every table file is opened in turn (one at a time), so verification rejects, naming the
+file, when a table uses a `format_version` or a compression algorithm this build does not support.
+That is the case after a downgrade, or when restoring a backup taken by a build that linked a
+compressor this one lacks. Blob files are not checked.
+
+Check before a destructive restore. The default `purgeAllFiles` mode deletes the destination before
+copying, so an unreadable backup would otherwise destroy the database it was meant to replace:
+
+```typescript
+import { backups, fileLockRelease, tryFileLock } from '@harperfast/rocksdb-js';
+import { join } from 'node:path';
+
+// A shared lock keeps a concurrent delete/purge from changing the backup between the two calls.
+// Shared locks coexist, so restore can still take its own.
+const token = tryFileLock(join(backupDir, '.backup.lock'), true);
+if (!token) {
+	throw new Error('A backup, delete, or purge is running on this directory; retry later');
+}
+try {
+	await backups.verify(backupDir, backupId, { verifyWithChecksum: true, verifyTables: true });
+	await backups.restore(backupDir, dbPath, { backupId });
+} finally {
+	fileLockRelease(token);
+}
+```
+
 ### Restoring
 
 ```typescript

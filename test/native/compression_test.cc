@@ -3,12 +3,14 @@
 #include <string>
 #include <vector>
 #include "core/compression.h"
+#include "rocksdb/advanced_compression.h"
 #include "rocksdb/compression_type.h"
 
 using rocksdb_js::compressionNameFromType;
 using rocksdb_js::compressionTypeFromName;
 using rocksdb_js::isCompressionSupported;
 using rocksdb_js::supportedCompressionNames;
+using rocksdb_js::tableCompressionTypes;
 
 TEST(Compression, NameToTypeKnownAlgorithms) {
 	EXPECT_EQ(compressionTypeFromName("none"), rocksdb::kNoCompression);
@@ -55,4 +57,42 @@ TEST(Compression, SupportedListMatchesRuntimeSupport) {
 		ASSERT_TRUE(type.has_value()) << "unmapped name: " << name;
 		EXPECT_TRUE(isCompressionSupported(*type)) << "unsupported name reported: " << name;
 	}
+}
+
+namespace {
+
+std::string builtinCompat() {
+	return rocksdb::GetBuiltinV2CompressionManager()->CompatibilityName();
+}
+
+using Types = std::vector<rocksdb::CompressionType>;
+
+} // namespace
+
+TEST(Compression, TableCompressionLegacyNames) {
+	EXPECT_EQ(tableCompressionTypes("NoCompression"), Types{});
+	EXPECT_EQ(tableCompressionTypes("Snappy"), Types{ rocksdb::kSnappyCompression });
+	EXPECT_EQ(tableCompressionTypes("LZ4"), Types{ rocksdb::kLZ4Compression });
+	EXPECT_EQ(tableCompressionTypes("ZSTD"), Types{ rocksdb::kZSTD });
+	EXPECT_EQ(tableCompressionTypes("ZSTDNotFinal"), Types{ rocksdb::kZSTD });
+}
+
+TEST(Compression, TableCompressionV7Encoding) {
+	const std::string compat = builtinCompat();
+	EXPECT_EQ(tableCompressionTypes(compat + ";04;"), Types{ rocksdb::kLZ4Compression });
+	EXPECT_EQ(tableCompressionTypes(compat + ";0407;"), (Types{ rocksdb::kLZ4Compression, rocksdb::kZSTD }));
+	EXPECT_EQ(tableCompressionTypes(compat + ";;"), Types{});
+	EXPECT_EQ(tableCompressionTypes(";;"), Types{});
+	EXPECT_EQ(tableCompressionTypes(compat + ";07;reserved"), Types{ rocksdb::kZSTD });
+	EXPECT_EQ(tableCompressionTypes(compat + ";8a;"), Types{ rocksdb::kCustomCompression8A });
+}
+
+TEST(Compression, TableCompressionRejectsWhatItCannotInterpret) {
+	const std::string compat = builtinCompat();
+	EXPECT_FALSE(tableCompressionTypes("").has_value());
+	EXPECT_FALSE(tableCompressionTypes("Gzip").has_value());
+	EXPECT_FALSE(tableCompressionTypes("SomeCustomManager;80;").has_value());
+	EXPECT_FALSE(tableCompressionTypes(compat + ";4;").has_value());
+	EXPECT_FALSE(tableCompressionTypes(compat + ";zz;").has_value());
+	EXPECT_FALSE(tableCompressionTypes(compat + ";04").has_value());
 }
