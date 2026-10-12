@@ -29,8 +29,7 @@ export async function getPrebuild(desiredVersion?: string): Promise<Prebuild> {
 		);
 	}
 
-	// A GH_TOKEN with push access to rocksdb-prebuilds also lists drafts: releases still uploading
-	// their assets, or abandoned by a failed run, whose download URLs do not resolve.
+	// A GH_TOKEN with push access also lists drafts, whose assets may be incomplete or unreachable.
 	const releases = ((await response.json()) as GithubRelease[]).filter((release) => !release.draft);
 	releases.sort((a, b) => {
 		const aVersion = a.tag_name.replace(/^v/, '');
