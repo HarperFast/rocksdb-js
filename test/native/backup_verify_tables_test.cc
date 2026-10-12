@@ -285,4 +285,10 @@ TEST(BackupVerifyTables, RejectsMetadataNamesOutsideTheBackup) {
 	EXPECT_FALSE(isConfinedBackupPath("/etc/passwd"));
 	EXPECT_FALSE(isConfinedBackupPath("../outside.sst"));
 	EXPECT_FALSE(isConfinedBackupPath("shared/../../outside.sst"));
+	EXPECT_FALSE(isConfinedBackupPath("shared\\..\\..\\outside.sst"));
+	EXPECT_FALSE(isConfinedBackupPath("\\\\server\\share\\x.sst"));
+	EXPECT_FALSE(isConfinedBackupPath("C:\\outside.sst"));
+	EXPECT_FALSE(isConfinedBackupPath("C:outside.sst"));
+	EXPECT_FALSE(isConfinedBackupPath(".."));
+	EXPECT_TRUE(isConfinedBackupPath("shared/..sst"));
 }

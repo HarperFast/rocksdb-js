@@ -1,5 +1,4 @@
 #include "database/backup_verify_tables.h"
-#include <filesystem>
 #include <memory>
 #include "rocksdb/advanced_compression.h"
 #include "rocksdb/metadata.h"
@@ -20,15 +19,22 @@ rocksdb::Status withFileName(const rocksdb::Status& s, const std::string& name) 
 
 } // namespace
 
+// A plain string check rather than std::filesystem::path, so `\` is a
+// separator on every platform and no code-page conversion happens on Windows.
 bool isConfinedBackupPath(const std::string& relative) {
-	std::filesystem::path path(relative);
-	if (relative.empty() || path.is_absolute() || path.has_root_path()) {
+	if (relative.empty() || relative[0] == '/' || relative[0] == '\\' || relative.find(':') != std::string::npos) {
 		return false;
 	}
-	for (const auto& part : path) {
-		if (part == "..") {
+	size_t start = 0;
+	while (start <= relative.size()) {
+		size_t end = relative.find_first_of("/\\", start);
+		if (end == std::string::npos) {
+			end = relative.size();
+		}
+		if (relative.compare(start, end - start, "..") == 0) {
 			return false;
 		}
+		start = end + 1;
 	}
 	return true;
 }
