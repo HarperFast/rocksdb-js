@@ -138,8 +138,6 @@ private:
 	std::atomic<int>& open_;
 };
 
-// Records how many random-access files (the handles SstFileReader opens) are
-// alive at once.
 class CountingFileSystem : public rocksdb::FileSystemWrapper {
 public:
 	explicit CountingFileSystem(const std::shared_ptr<rocksdb::FileSystem>& base) : rocksdb::FileSystemWrapper(base) {}
@@ -168,6 +166,22 @@ public:
 	std::atomic<int> open{ 0 };
 	std::atomic<int> peak{ 0 };
 	std::atomic<int> opened{ 0 };
+};
+
+class FailingFileSystem : public rocksdb::FileSystemWrapper {
+public:
+	explicit FailingFileSystem(const std::shared_ptr<rocksdb::FileSystem>& base) : rocksdb::FileSystemWrapper(base) {}
+
+	const char* Name() const override { return "FailingFileSystem"; }
+
+	rocksdb::IOStatus NewRandomAccessFile(
+		const std::string&,
+		const rocksdb::FileOptions&,
+		std::unique_ptr<rocksdb::FSRandomAccessFile>*,
+		rocksdb::IODebugContext*
+	) override {
+		return rocksdb::IOStatus::NoSpace("injected");
+	}
 };
 
 } // namespace
@@ -249,6 +263,19 @@ TEST(BackupVerifyTables, OpensOneTableAtATime) {
 	EXPECT_NE(s.ToString().find(std::filesystem::path(tables[kTables / 2]).filename().string()), std::string::npos) << s.ToString();
 	EXPECT_EQ(failingFs->peak.load(), 1);
 	EXPECT_EQ(failingFs->open.load(), 0);
+}
+
+TEST(BackupVerifyTables, OpenFailureKeepsItsStatusCode) {
+	BackupFixture fixture("rocksdb-js-verify-tables-ioerror", 1, firstSupportedCompression());
+	std::vector<std::string> tables = fixture.tableFiles();
+	ASSERT_EQ(tables.size(), 1u);
+
+	auto fs = std::make_shared<FailingFileSystem>(rocksdb::FileSystem::Default());
+	std::unique_ptr<rocksdb::Env> env = rocksdb::NewCompositeEnv(fs);
+	rocksdb::Status s = fixture.verify(env.get());
+	EXPECT_TRUE(s.IsIOError()) << s.ToString();
+	EXPECT_EQ(s.subcode(), rocksdb::Status::SubCode::kNoSpace) << s.ToString();
+	EXPECT_NE(s.ToString().find(std::filesystem::path(tables.front()).filename().string()), std::string::npos) << s.ToString();
 }
 
 TEST(BackupVerifyTables, RejectsMetadataNamesOutsideTheBackup) {

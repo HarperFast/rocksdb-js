@@ -10,10 +10,8 @@
 
 namespace rocksdb_js {
 
-/**
- * Whether a file name read from backup metadata stays inside the backup
- * directory: relative, and with no `..` component.
- */
+// Backup metadata is read from disk, so a name it lists is not trusted to stay
+// inside the backup directory.
 bool isConfinedBackupPath(const std::string& relative);
 
 /**

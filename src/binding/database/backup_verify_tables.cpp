@@ -15,15 +15,7 @@ namespace {
 // backup) and prefixes the file the failure belongs to.
 rocksdb::Status withFileName(const rocksdb::Status& s, const std::string& name) {
 	std::string msg = s.getState() != nullptr ? std::string(s.getState()) : s.ToString();
-	switch (s.code()) {
-		case rocksdb::Status::Code::kIOError: return rocksdb::Status::IOError(name, msg);
-		case rocksdb::Status::Code::kNotFound: return rocksdb::Status::NotFound(name, msg);
-		case rocksdb::Status::Code::kNotSupported: return rocksdb::Status::NotSupported(name, msg);
-		case rocksdb::Status::Code::kInvalidArgument: return rocksdb::Status::InvalidArgument(name, msg);
-		case rocksdb::Status::Code::kBusy: return rocksdb::Status::Busy(name, msg);
-		case rocksdb::Status::Code::kAborted: return rocksdb::Status::Aborted(name, msg);
-		default: return rocksdb::Status::Corruption(name, msg);
-	}
+	return rocksdb::Status(s.code(), s.subcode(), s.severity(), name + ": " + msg);
 }
 
 } // namespace
