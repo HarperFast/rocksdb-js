@@ -33,6 +33,7 @@ const flushFailureFixture = join(__dirname, 'fixtures', 'fork-flush-failure.mts'
 const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
 const iteratorNextRaceFixture = join(__dirname, 'fixtures', 'fork-iterator-next-race.mts');
 const countDestroyRaceFixture = join(__dirname, 'fixtures', 'fork-count-destroy-race.mts');
+const abortGetDestroyFixture = join(__dirname, 'fixtures', 'fork-abort-get-destroy.mts');
 const compactCancelSyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-sync.mts');
 const compactCancelAsyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-async.mts');
 const compactCancelCloseFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-close.mts');
@@ -406,6 +407,20 @@ describe('Destroy', () => {
 			ROCKSDB_JS_COUNT_DELAY_MS: '50',
 		});
 	}, 15_000);
+
+	it.each(['admitted', 'closing'])(
+		'aborts a transaction with a parked async get when a foreign destroy is %s',
+		async (abortDuring) => {
+			// Abort drains the get before rolling back while holding an OperationGuard,
+			// so the destroy's closables sweep cannot delete the transaction under it.
+			// See fork-abort-get-destroy.mts.
+			await runDestroyFixture(abortGetDestroyFixture, generateDBPath(), {
+				ABORT_DURING: abortDuring,
+				ROCKSDB_JS_TXN_GET_DELAY_MS: '1000',
+			});
+		},
+		15_000
+	);
 
 	it('waits for physical destruction before shutdown completes', async () => {
 		await runDestroyFixture(destroyOpenFixture, generateDBPath(), {
