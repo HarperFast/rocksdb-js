@@ -21,8 +21,9 @@ handle's own mutex it either closes admission or reports work in flight, so no g
 can slip in between. Only the in-flight case touches the descriptor (Harper ends every read-only
 transaction with an abort). The idle case takes no guard and so still races a foreign teardown's
 sweep the way every abort did before. An already-cancelled handle, or a closing or destroyed
-descriptor, means a teardown `close()` owns the rollback; Abort returns and the closing database
-refuses any later write or commit through the `Store` checks.
+descriptor, means a teardown `close()` owns the rollback. Abort then only sets the atomic
+`writesAbandoned`, so the transaction refuses later writes and commits before that `close()` runs;
+it leaves `state` to the `close()`, which writes it concurrently.
 
 Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASan build with
 `max_free_fill_size` faults on the unfixed code) and `test/fixtures/fork-abort-get-destroy.mts`

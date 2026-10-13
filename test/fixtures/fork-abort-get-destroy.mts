@@ -26,7 +26,7 @@ db.open();
 
 const worker = new Worker(createWorkerBootstrapScript('./test/workers/destroy-open-worker.mts'), {
 	eval: true,
-	workerData: { path, destroyStartDelayMs: mode === 'closing' ? 0 : 300 },
+	workerData: { path, destroyStartDelayMs: mode === 'closing' ? 0 : 500 },
 });
 const messages: any[] = [];
 const waiters: ((message: any) => void)[] = [];
@@ -85,7 +85,8 @@ if (mode === 'closing') {
 	assert.throws(() => txn.putSync('later', 'value'), /Database is closing/);
 	assert.throws(() => txn.commitSync(), /Database is closing/);
 } else {
-	// Taking the closing path instead would return at once and leave the drain untested.
+	// The destroy cannot have started yet, so abort() must take the guarded drain.
+	assert.ok(started - issuedAt < 500, `abort() started ${started - issuedAt}ms after the get`);
 	assert.ok(
 		abortedAt - issuedAt >= 950,
 		`abort() returned ${abortedAt - issuedAt}ms after the get`

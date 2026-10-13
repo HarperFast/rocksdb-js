@@ -168,7 +168,10 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 		const bool teardownOwnsRollback = idle == AsyncWorkHandle::IdleCancel::AlreadyCancelled ||
 			(drainAsyncWork && (!descriptor || descriptor->isClosing()));
 
-		if (!teardownOwnsRollback) {
+		if (teardownOwnsRollback) {
+			// Terminal to later writes and commits now; `state` is that close()'s to set.
+			(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
+		} else {
 			(*txnHandle)->closeIterators();
 			if (drainAsyncWork) {
 				(*txnHandle)->cancelAllAsyncWork();
