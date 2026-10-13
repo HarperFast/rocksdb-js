@@ -8,10 +8,19 @@ on:
       - 'docs/**'
       - 'LICENSE'
       - '.gitignore'
+  push:
+    branches: [main]
+  schedule:
+    # Nightly, to catch drift (a dependency or runtime update) between pushes.
+    - cron: '0 5 * * *'
 
 concurrency:
-  cancel-in-progress: true
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # GitHub drops an older QUEUED run when a newer one joins its group, regardless of
+  # cancel-in-progress (which only affects a RUNNING run). PRs share one group per ref so
+  # a new commit supersedes the old run; push/schedule get a group unique to the run so
+  # merges and the nightly run never drop each other while queued.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
 
 jobs:
   checks:
@@ -181,11 +190,10 @@ jobs:
 
       - name: Run tests on Bun
         # windows-latest gets extra retries for a known pre-existing DBRegistry::OpenDB
-        # teardown/reopen race (HarperFast/rocksdb-js#695) that Bun's single-process,
-        # fileParallelism:false run (every test file's DB churn in one process) can
-        # trip during a normal open/close sequence -- unrelated to this workflow's
-        # own test content. Not a fix for #695 itself, just enough retry budget that
-        # a rare pre-existing race doesn't block unrelated PRs.
+        # teardown/reopen race (HarperFast/rocksdb-js#695) that this run's worker_threads
+        # churn can trip during a normal open/close sequence -- unrelated to this
+        # workflow's own test content. Not a fix for #695 itself, just enough retry
+        # budget that a rare pre-existing race doesn't block unrelated PRs.
         shell: bash
         run: |
           for i in 1 2 3; do
@@ -234,5 +242,7 @@ jobs:
         run: pnpm build
 
       - name: Run tests on Deno
+        # Windows-only retry, same scope as the Node coverage job above: general
+        # Windows-runner flakiness, not a tracked race like bun-test's #695.
         shell: bash
         run: pnpm test:deno || ([ "${{ matrix.os }}" = "windows-latest" ] && pnpm test:deno)
