@@ -134,6 +134,7 @@ struct TransactionLogStoreStats {
 	double oldestFileAgeMs = 0;
 	uint32_t purgeableFiles = 0;
 	uint32_t retainedUnflushedFiles = 0;
+	uint32_t retentionPins = 0;
 
 	// lifetime totals
 	uint64_t transactionsWritten = 0;
@@ -395,6 +396,14 @@ struct TransactionLogStore final {
 	std::atomic<uint64_t> flushedStateGeneration = 0;
 
 	/**
+	 * See pinRetention(). Incremented under dataSetsMutex, which a purge run
+	 * holds throughout; the release needs no lock.
+	 */
+	std::atomic<uint32_t> retentionPins = 0;
+
+	std::atomic<bool> purgeSyncWarningEmitted = false;
+
+	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
 	LogPosition nextLogPosition = { 0, 0 };
@@ -582,6 +591,13 @@ struct TransactionLogStore final {
 	std::vector<TransactionLogBackupEntry> snapshotForBackup();
 
 	/**
+	 * Holds off ordinary (non-destroy) retention purges of `store` until the
+	 * returned handle is released. Take it before snapshotForBackup(); see
+	 * DESIGN.md for why.
+	 */
+	static std::shared_ptr<void> pinRetention(const std::shared_ptr<TransactionLogStore>& store);
+
+	/**
 	 * Fills `out` with a point-in-time snapshot of this store's statistics
 	 * (file/memory/transaction gauges, purge gauges, and lifetime counters).
 	 *
@@ -707,6 +723,18 @@ private:
 		const uint64_t before = 0,
 		const bool countEntries = false
 	);
+
+	/**
+	 * Moves the writer off the current segment before purge unlinks it; the
+	 * next append creates the next segment. Requires writeMutex and dataSetsMutex.
+	 */
+	void retireCurrentSequenceLocked();
+
+	/**
+	 * Syncs txn.state and its directory before purge deletes the highest
+	 * registered segment. Returns false, warning once, when it cannot.
+	 */
+	bool syncFlushedStateForPurge();
 
 	/**
 	 * Advances the active log file to the next sequence number and records a

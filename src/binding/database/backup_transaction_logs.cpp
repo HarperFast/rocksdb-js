@@ -1,17 +1,11 @@
 #include "database/backup_transaction_logs.h"
+#include "core/platform.h"
 #include "database/db_descriptor.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <set>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <cerrno>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
 namespace rocksdb_js {
 
@@ -30,8 +24,9 @@ rocksdb::Status collectTransactionLogBackupEntries(
 				continue;
 			}
 			const std::string& storeName = store->name;
+			auto retentionPin = TransactionLogStore::pinRetention(store);
 			for (auto& file : store->snapshotForBackup()) {
-				entries.push_back({ storeName, std::move(file) });
+				entries.push_back({ storeName, std::move(file), retentionPin });
 			}
 		}
 	} catch (const std::exception& e) {
@@ -48,37 +43,10 @@ rocksdb::Status collectTransactionLogBackupEntries(
  * gives the engine files, so the transaction log payload cannot be silently
  * less durable than the rest of the same backup.
  */
-static rocksdb::Status syncFile(const std::filesystem::path& path) {
-#ifdef _WIN32
-	// FlushFileBuffers requires GENERIC_WRITE access.
-	HANDLE handle = ::CreateFileW(
-		path.c_str(),
-		GENERIC_WRITE,
-		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		nullptr,
-		OPEN_EXISTING,
-		FILE_ATTRIBUTE_NORMAL,
-		nullptr
-	);
-	if (handle == INVALID_HANDLE_VALUE) {
-		return rocksdb::Status::IOError("Failed to open backup transaction log file for sync", path.string());
-	}
-	BOOL ok = ::FlushFileBuffers(handle);
-	::CloseHandle(handle);
-	if (!ok) {
+static rocksdb::Status syncBackupFile(const std::filesystem::path& path) {
+	if (!rocksdb_js::syncFile(path)) {
 		return rocksdb::Status::IOError("Failed to sync backup transaction log file", path.string());
 	}
-#else
-	int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-	if (fd < 0) {
-		return rocksdb::Status::IOError("Failed to open backup transaction log file for sync", path.string());
-	}
-	int rc = ::fsync(fd);
-	::close(fd);
-	if (rc != 0) {
-		return rocksdb::Status::IOError("Failed to sync backup transaction log file", path.string());
-	}
-#endif
 	return rocksdb::Status::OK();
 }
 
@@ -86,26 +54,13 @@ static rocksdb::Status syncFile(const std::filesystem::path& path) {
  * Flushes a directory's entries (file creations, hard links, renames) to
  * stable storage. A file's own fsync does not persist its directory entry, so
  * without this a crash could durably keep the bytes but lose the name.
- *
- * On Windows this is a no-op: directory handles cannot be flushed the way
- * POSIX directory fds can, and NTFS journals metadata updates. On POSIX,
- * filesystems that reject fsync on a directory fd (some network filesystems
- * return EINVAL/ENOTSUP) are treated as success — the same forfeiture rule the
- * backup lock applies where `flock` is unsupported.
  */
-static rocksdb::Status syncDirectory(const std::filesystem::path& path) {
-#ifndef _WIN32
-	int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if (fd < 0) {
-		return rocksdb::Status::IOError("Failed to open backup log directory for sync", path.string());
-	}
-	int rc = ::fsync(fd);
-	int syncErrno = errno;
-	::close(fd);
-	if (rc != 0 && syncErrno != EINVAL && syncErrno != ENOTSUP && syncErrno != EOPNOTSUPP) {
+static rocksdb::Status syncBackupDirectory(const std::filesystem::path& path) {
+	// A filesystem that cannot sync a directory forfeits the guarantee rather than
+	// making backups impossible, as the backup lock does where `flock` is unsupported.
+	if (!rocksdb_js::syncDirectory(path, /*allowUnsupported=*/true)) {
 		return rocksdb::Status::IOError("Failed to sync backup log directory", path.string());
 	}
-#endif
 	return rocksdb::Status::OK();
 }
 
@@ -222,7 +177,7 @@ static rocksdb::Status copySnapshotEntries(
 		if (!named.file.inlineContents.empty()) {
 			rocksdb::Status s = writeBytesWithMtime(dst, named.file.inlineContents, named.file.mtime);
 			if (s.ok() && sync) {
-				s = syncFile(dst);
+				s = syncBackupFile(dst);
 			}
 			if (!s.ok()) {
 				return s;
@@ -239,7 +194,7 @@ static rocksdb::Status copySnapshotEntries(
 				if (sync) {
 					// The link shares the source inode; fsync makes the shared data
 					// durable (the log store may not have synced it yet).
-					rocksdb::Status s = syncFile(dst);
+					rocksdb::Status s = syncBackupFile(dst);
 					if (!s.ok()) {
 						return s;
 					}
@@ -258,10 +213,10 @@ static rocksdb::Status copySnapshotEntries(
 		rocksdb::Status s =
 			copyPrefixWithMtime(named.file.sourcePath, dst, named.file.byteLimit, named.file.mtime);
 		if (!s.ok()) {
-			// A concurrent retention purge can unlink a rotated file between the
-			// snapshot and this copy. An expiring file dropped from the backup is
-			// fine, so skip it — removing the partial destination the failed copy
-			// left behind; only a genuine failure (source still present) aborts.
+			// The entries pin retention, but a destroy or an out-of-band delete can
+			// still unlink a file between the snapshot and this copy. Skip it,
+			// removing the partial destination the failed copy left behind; only a
+			// genuine failure (source still present) aborts.
 			std::error_code existsEc;
 			if (!std::filesystem::exists(named.file.sourcePath, existsEc) || existsEc) {
 				std::error_code removeEc;
@@ -271,7 +226,7 @@ static rocksdb::Status copySnapshotEntries(
 			return s;
 		}
 		if (sync) {
-			s = syncFile(dst);
+			s = syncBackupFile(dst);
 			if (!s.ok()) {
 				return s;
 			}
@@ -280,13 +235,13 @@ static rocksdb::Status copySnapshotEntries(
 
 	if (sync) {
 		for (const auto& dir : createdDirs) {
-			rocksdb::Status s = syncDirectory(dir);
+			rocksdb::Status s = syncBackupDirectory(dir);
 			if (!s.ok()) {
 				return s;
 			}
 		}
 		if (!createdDirs.empty()) {
-			rocksdb::Status s = syncDirectory(destBaseDir);
+			rocksdb::Status s = syncBackupDirectory(destBaseDir);
 			if (!s.ok()) {
 				return s;
 			}
@@ -347,7 +302,7 @@ rocksdb::Status backupTransactionLogsToDir(
 			// The rename is directory metadata: persist it, or a crash could roll
 			// the published snapshot back to its (invisible) staging name. The
 			// staged subtree itself was already synced by copySnapshotEntries.
-			status = syncDirectory(destBaseDir.parent_path());
+			status = syncBackupDirectory(destBaseDir.parent_path());
 		}
 	}
 

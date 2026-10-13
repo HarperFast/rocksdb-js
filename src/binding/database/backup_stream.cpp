@@ -530,9 +530,9 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 				continue;
 			}
 
-			// A concurrent retention purge can unlink a rotated file between the
-			// snapshot and now. Skip it (an expiring file dropped from the backup is
-			// fine) — and skip BEFORE emitting a header we could not then fulfill.
+			// The entries pin retention, but a destroy or an out-of-band delete can
+			// still unlink a file between the snapshot and now. Skip it — and skip
+			// BEFORE emitting a header we could not then fulfill.
 			std::error_code existsEc;
 			if (!std::filesystem::exists(named.file.sourcePath, existsEc) || existsEc) {
 				continue;

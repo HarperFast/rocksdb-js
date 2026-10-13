@@ -493,7 +493,9 @@ const stats: TransactionLogStats = log.getStats();
 
 - `name: string` The name of the transaction log store.
 - `path: string` Filesystem path to the log store's directory.
-- `fileCount: number` Number of sequence log files on disk for this log.
+- `fileCount: number` Number of sequence log files on disk for this log. `0` does not mean the log
+  was never written: retention can purge every file of an idle log. A log that has never been written
+  reports `currentSequenceNumber` 1; one emptied by retention reports a higher one.
 - `currentSequenceNumber: number` Sequence number of the active write file.
 - `oldestSequenceNumber: number` Sequence number of the oldest file still on disk.
 - `totalSizeBytes: number` Total on-disk size of all of this log's files.
@@ -522,9 +524,10 @@ const stats: TransactionLogStats = log.getStats();
   - `offset: number` The byte offset within that file.
 - `purge: object`
   - `oldestFileAgeMs: number` Age in milliseconds of the oldest file on disk.
-  - `purgeableFiles: number` Number of files below the retention floor (the `txn.state` sequence,
-    or the highest sequence when there is no persisted flush position) that are eligible for purge
-    under the retention policy.
+  - `purgeableFiles: number` Number of files past the retention threshold that lie entirely at or
+    before the flushed position, including the current file, so the next purge can delete them.
+  - `retentionPins: number` Backups currently copying this store's files. Ordinary purges of the
+    store are skipped while it is nonzero, so a value that stays nonzero points at a stalled backup.
   - `retainedUnflushedFiles: number` Number of files past the retention threshold but retained
     because they are unflushed.
   - `lastPurgeMs: number` Timestamp of the last purge scan.

@@ -114,7 +114,7 @@ describe('Transaction Log Stats', () => {
 				}
 			));
 
-		it('should not report the flushed current file as purgeable', () =>
+		it('should report and purge the flushed current file of an idle store', () =>
 			dbRunner(
 				{ dbOptions: [{ path: generateDBPath(), transactionLogRetention: 500 }] },
 				async ({ db }) => {
@@ -126,9 +126,16 @@ describe('Transaction Log Stats', () => {
 					db.flushSync();
 					await delay(1200);
 
-					const stats = log.getStats();
-					expect(stats.purge.purgeableFiles).toBe(0);
+					let stats = log.getStats();
+					expect(stats.purge.purgeableFiles).toBe(1);
 					expect(stats.purge.retainedUnflushedFiles).toBe(0);
+
+					expect(db.purgeLogs({ name: 'retain-current' })).toHaveLength(1);
+					stats = log.getStats();
+					expect(stats.fileCount).toBe(0);
+					expect(stats.purge.purgeableFiles).toBe(0);
+					expect(stats.purge.retentionPins).toBe(0);
+					expect(stats.currentSequenceNumber).toBe(2);
 				}
 			));
 

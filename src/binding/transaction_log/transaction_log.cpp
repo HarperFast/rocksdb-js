@@ -500,6 +500,7 @@ napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
 	SET_STAT(purge, "oldestFileAgeMs", s.oldestFileAgeMs);
 	SET_STAT(purge, "purgeableFiles", s.purgeableFiles);
 	SET_STAT(purge, "retainedUnflushedFiles", s.retainedUnflushedFiles);
+	SET_STAT(purge, "retentionPins", s.retentionPins);
 	SET_STAT(purge, "lastPurgeMs", s.lastPurgeMs);
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "purge", purge));
 

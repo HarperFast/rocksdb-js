@@ -283,6 +283,28 @@ TEST(TransactionLogFlushedState, RetriesAfterDirectoryCannotBeRecreated) {
 }
 #endif
 
+// Retention can purge every segment up to the recorded position, leaving txn.state as the
+// only record of the highest sequence used, so a flush job completing out of order with an
+// older position must not move it back.
+TEST(TransactionLogFlushedState, NeverMovesBackToAnOlderPosition) {
+	auto storePath = uniqueFlushedStatePath();
+	std::filesystem::create_directories(storePath);
+	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+
+	store->recentlyCommittedSequencePositions[0] = { 20, rocksdb_js::LogPosition(200, 2) };
+	store->recentlyCommittedSequencePositions[1] = { 10, rocksdb_js::LogPosition(100, 1) };
+	store->databaseFlushed(20);
+	expectFlushedPosition(*store, 200, 2);
+
+	store->databaseFlushed(10);
+	expectFlushedPosition(*store, 200, 2);
+	EXPECT_EQ(store->databaseFlushes.load(), 1u);
+
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
 TEST(TransactionLogFlushedState, OutOfOrderCommitsKeepFlushCorrelationBehindUnflushedPositions) {
 	auto storePath = uniqueFlushedStatePath();
 	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(

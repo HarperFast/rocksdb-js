@@ -328,7 +328,10 @@ TransactionLogStoreValidation validateTransactionLogStore(
 
 				if (flushedSequence != 0 && !store.files.empty()) {
 					uint32_t newestSequence = store.files.back().sequenceNumber;
-					if (flushedSequence > newestSequence) {
+					// `{0, newest + 1}` is a rotation the writer published before
+					// creating that segment: nothing in it was flushed, so nothing is missing.
+					bool unwrittenRotation = flushedOffset == 0 && flushedSequence == newestSequence + 1;
+					if (flushedSequence > newestSequence && !unwrittenRotation) {
 						// A backup snapshot captures txn.state before enumerating the log
 						// files, so its flushed sequence always exists in the snapshot —
 						// beyond-newest there means the newest file is missing (strict).
