@@ -84,6 +84,8 @@ if (mode === 'closing') {
 	// The deferred transaction stays Pending; the closing database refuses it.
 	assert.throws(() => txn.putSync('later', 'value'), /Database is closing/);
 	assert.throws(() => txn.commitSync(), /Database is closing/);
+	// The parked get still holds teardown's close(), so `state` is Pending here.
+	assert.throws(() => (txn as any)._context.commitSync(), { code: 'ERR_WRITES_ABANDONED' });
 } else {
 	// The destroy cannot have started yet, so abort() must take the guarded drain.
 	assert.ok(started - issuedAt < 500, `abort() started ${started - issuedAt}ms after the get`);
