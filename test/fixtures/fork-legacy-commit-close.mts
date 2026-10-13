@@ -1,4 +1,4 @@
-import { registryStatus, RocksDatabase, Transaction } from '../../src/index.ts';
+import { getRegistryStatus, RocksDatabase, Transaction } from '../../src/index.ts';
 import { isTransactionCommitExecuteDelayedForTesting } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { spawnSync } from 'node:child_process';
@@ -36,7 +36,7 @@ if (mode === 'probe') {
 }
 
 function assertReopenable(): void {
-	const status = registryStatus();
+	const status = getRegistryStatus();
 	assert(
 		!status.some((entry) => entry.path === dbPath),
 		`last-handle close left the descriptor in the registry after commit completion: ${JSON.stringify(status)}`

@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -36,10 +36,10 @@ const shutdownResult = nextMessage();
 // quarantine check first and throws "previous close failed" instead of
 // timing out, which is a flake under load, not a proof.
 for (let attempt = 0; attempt < 40; attempt++) {
-	if (registryStatus().some((entry) => entry.path === path && entry.closeRetrying)) break;
+	if (getRegistryStatus().some((entry) => entry.path === path && entry.closeRetrying)) break;
 	await delay(25);
 }
-if (!registryStatus().some((entry) => entry.path === path && entry.closeRetrying)) {
+if (!getRegistryStatus().some((entry) => entry.path === path && entry.closeRetrying)) {
 	throw new Error('Shutdown retry was never claimed');
 }
 

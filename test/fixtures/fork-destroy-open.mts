@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus, shutdown } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus, shutdown } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -45,7 +45,7 @@ if (process.env.ROCKSDB_JS_TEST_ITERATOR_DESTROY_RACE === '1') {
 }
 
 const registryDeadline = Date.now() + 5_000;
-while (registryStatus().some((entry) => entry.path === path)) {
+while (getRegistryStatus().some((entry) => entry.path === path)) {
 	if (Date.now() >= registryDeadline) throw new Error('Timed out waiting for the destroy window');
 	try {
 		const value = original.getSync('before-destroy');

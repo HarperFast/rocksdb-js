@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -34,7 +34,7 @@ const closeStarted = Date.now();
 db.close();
 const closeMs = Date.now() - closeStarted;
 if (closeMs < 200) {
-	throw new Error(`close() did not overlap the registryStatus() walk (${closeMs}ms)`);
+	throw new Error(`close() did not overlap the getRegistryStatus() walk (${closeMs}ms)`);
 }
 const result = await finished;
 if (result.error) throw new Error(`Registry-status worker failed: ${result.error}`);
@@ -42,6 +42,6 @@ if (!result.finished)
 	throw new Error(`Unexpected registry-status result: ${JSON.stringify(result)}`);
 await worker.terminate();
 
-if (registryStatus().some((entry) => entry.path === path)) {
-	throw new Error('registryStatus() retained the descriptor after the last handle closed');
+if (getRegistryStatus().some((entry) => entry.path === path)) {
+	throw new Error('getRegistryStatus() retained the descriptor after the last handle closed');
 }

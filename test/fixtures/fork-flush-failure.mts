@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus, shutdown } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus, shutdown } from '../../src/index.ts';
 
 const path = process.argv[2];
 const db = RocksDatabase.open(path, { disableWAL: true });
@@ -11,7 +11,7 @@ try {
 	if (!String(error).includes('Injected database close flush failure')) throw error;
 }
 if (db.isOpen()) throw new Error('A flush-failed database still reports itself open');
-if (!registryStatus().some((entry) => entry.path === path && entry.closeError))
+if (!getRegistryStatus().some((entry) => entry.path === path && entry.closeError))
 	throw new Error('Flush failure did not quarantine the descriptor');
 try {
 	RocksDatabase.open(path);

@@ -1,9 +1,9 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 
-// `registryStatus()` walks `DBDescriptor::columns`, and `databasesMutex` does NOT
+// `getRegistryStatus()` walks `DBDescriptor::columns`, and `databasesMutex` does NOT
 // cover that map: `retireColumnFamily()` (a `dropSync()`) erases from it under
 // `columnsMutex`, and `finishClose()` clears it, both from whichever thread drives
 // them. Without a snapshot under that mutex the walk reads a freed map node and
@@ -41,20 +41,20 @@ let sawColumns = false;
 const deadline = Date.now() + 12_000;
 let settled: any;
 for (;;) {
-	const entry = registryStatus().find((candidate) => candidate.path === path);
+	const entry = getRegistryStatus().find((candidate) => candidate.path === path);
 	polls++;
 	if (entry && Object.keys(entry.columnFamilies).length > 1) sawColumns = true;
 	for (let i = 0; i < 200; i++) Buffer.allocUnsafe(96).fill(0xab);
 	settled = await Promise.race([churnResult, Promise.resolve(undefined)]);
 	if (settled !== undefined) break;
 	if (Date.now() >= deadline) throw new Error('Timed out waiting for the column churn');
-	// registryStatus() holds databasesMutex through the column snapshot, so back-to-back
+	// getRegistryStatus() holds databasesMutex through the column snapshot, so back-to-back
 	// polls starve the worker's own open()s; yield between them.
 	await delay(1);
 }
 if (settled.error) throw new Error(`Churn worker failed: ${settled.error}`);
 if (!settled.churned) throw new Error(`Unexpected churn result: ${JSON.stringify(settled)}`);
-if (polls < 2) throw new Error(`registryStatus() was polled only ${polls} time(s)`);
+if (polls < 2) throw new Error(`getRegistryStatus() was polled only ${polls} time(s)`);
 if (!sawColumns)
 	throw new Error('Never observed a churned column family; the race was not exercised');
 await worker.terminate();

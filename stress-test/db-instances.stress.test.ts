@@ -1,4 +1,4 @@
-import { registryStatus } from '../src/index.ts';
+import { getRegistryStatus } from '../src/index.ts';
 import { dbRunner } from '../test/lib/util.ts';
 import { createWorkerBootstrapScript } from '../test/lib/worker-bootstrap.ts';
 import { stressTest } from './setup.ts';
@@ -20,7 +20,7 @@ describe('Stress DB Instances', () => {
 				const promises: Promise<void>[] = [];
 				const workers: Worker[] = [];
 
-				const [initial] = registryStatus();
+				const [initial] = getRegistryStatus();
 
 				const workerThreads = 10;
 				const dbInstances = 500;
@@ -47,7 +47,7 @@ describe('Stress DB Instances', () => {
 
 				await Promise.all(promises);
 
-				const [before] = registryStatus();
+				const [before] = getRegistryStatus();
 
 				const closePromises = workers.map(
 					(worker) =>
@@ -72,7 +72,7 @@ describe('Stress DB Instances', () => {
 					await delay(50);
 				}
 
-				const [after] = registryStatus();
+				const [after] = getRegistryStatus();
 
 				// +1 for the default column family
 				expect(Object.keys(before?.columnFamilies).length).toBe(numColumnFamilies + 1);

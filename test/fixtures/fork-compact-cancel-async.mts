@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
@@ -89,7 +89,7 @@ if (elapsed >= 2000)
 const destroyResult = await destroyResultMessage;
 if (!destroyResult.destroyed) throw new Error(`Destroy failed: ${JSON.stringify(destroyResult)}`);
 
-if (registryStatus().some((entry) => entry.path === path))
+if (getRegistryStatus().some((entry) => entry.path === path))
 	throw new Error('Expected destroy to fully clear the registry entry');
 
 await worker.terminate();

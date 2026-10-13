@@ -335,7 +335,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   concurrent destroy claim. Snapshotted in `initializeTestSeams()` — the copy runs on a libuv
   worker, so it must be set in the environment that starts the process
 - `ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS` - Test-only: per-column-family delay inside
-  `registryStatus()`'s column walk, so a concurrent `dropSync()` or close-time `columns.clear()`
+  `getRegistryStatus()`'s column walk, so a concurrent `dropSync()` or close-time `columns.clear()`
   lands in the middle of it (`test/fixtures/fork-registry-status-column-race.mts`). Snapshotted in
   `initializeTestSeams()` like the seams above
 - `ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS` / `ROCKSDB_JS_TXN_CLOSE_DELAY_MS` - Test-only delays inside
@@ -549,7 +549,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    because dropping it silently would hide possible data loss, and non-fatal for `destroy()`, whose
    caller asked for the data to be deleted anyway.
 
-   **`databasesMutex` covers the registry map, not a descriptor's own maps.** `registryStatus()`
+   **`databasesMutex` covers the registry map, not a descriptor's own maps.** `getRegistryStatus()`
    walks every entry under it and then reaches into each descriptor, but `columns` is guarded by
    `columnsMutex` and `locks` by `locksMutex` — both mutated from whichever thread drives a
    `dropSync()` (`retireColumnFamily`) or a teardown (`finishClose()`'s `columns.clear()`,
@@ -843,7 +843,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     orphan cleanup was added, could be destroyed under an async read/live iterator
     (HarperFast/harper#2107; `test/transaction-orphan-gc.test.ts`). Two constraints on any redesign
     here: the registry reference cannot simply be made weak, because dependents need the coordinated
-    cancellation and transaction-destruction path in `close()`; and `registryStatus()` may only report
+    cancellation and transaction-destruction path in `close()`; and `getRegistryStatus()` may only report
     handle fields that are fixed before publication (`id`, `createdAt`), because `txnsMutex` covers
     map membership while mutable-field writers hold no lock.
 

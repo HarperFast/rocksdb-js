@@ -1,4 +1,4 @@
-import { RocksDatabase, registryStatus } from '../src/index.ts';
+import { RocksDatabase, getRegistryStatus } from '../src/index.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
@@ -186,7 +186,7 @@ describe('Streaming backups', () => {
 
 			// If the worker deadlocked against close(), this would time out.
 			await expect(settled).resolves.toBe('settled');
-			expect(registryStatus().some((entry) => entry.path === dbPath)).toBe(false);
+			expect(getRegistryStatus().some((entry) => entry.path === dbPath)).toBe(false);
 		}));
 
 	it('waits for an in-flight stream before destroying', () =>

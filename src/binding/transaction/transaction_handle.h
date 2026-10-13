@@ -239,7 +239,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	/**
 	 * Construction time. Separate from startTimestamp, which JS can overwrite via setTimestamp();
-	 * this is the clock registryStatus() ages a handle against.
+	 * this is the clock getRegistryStatus() ages a handle against.
 	 */
 	std::chrono::steady_clock::time_point createdAt;
 
