@@ -107,6 +107,34 @@ describe('estimateCount', () => {
 			});
 		}));
 
+	it('should report zero confidence when a start-only estimate clamps at zero', () =>
+		dbRunner(async ({ db }) => {
+			const N = 2000;
+			for (let i = 0; i < N; i++) {
+				await db.put(KEY(i), `value-${i}-${'x'.repeat(50)}`);
+			}
+			await db.flush();
+			// Tombstones stay in the memtable: estimate-num-keys discounts them, the
+			// SST-density complement does not, so the complement exceeds the total.
+			for (let i = N / 2; i < N; i++) {
+				await db.remove(KEY(i));
+			}
+
+			const total = db.getEstimatedKeyCount();
+			let clamped = 0;
+			for (let i = N / 2; i < N; i += 50) {
+				// The end-only estimate is the same native range estimate the
+				// start-only branch subtracts from the total.
+				const complement = db.estimateCount({ end: KEY(i) }).count;
+				const estimate = db.estimateCount({ start: KEY(i) });
+				if (complement > total) {
+					clamped++;
+					expect(estimate).toEqual({ count: 0, confidence: 0 });
+				}
+			}
+			expect(clamped).toBeGreaterThan(0);
+		}));
+
 	it('should treat zero-length native bounds safely', () =>
 		dbRunner(async ({ db }) => {
 			for (let i = 0; i < 5000; i++) {
