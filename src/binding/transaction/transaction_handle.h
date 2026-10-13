@@ -188,6 +188,14 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::shared_ptr<DBHandle> dbHandle;
 
 	/**
+	 * The database this transaction is registered in. Set at construction and
+	 * never reset, so it can be read from any thread; `dbHandle->descriptor` is
+	 * reset when the owner closes its handle. Locking it pins the descriptor, so
+	 * a caller must retry `DBRegistry::PurgeIfUnreferenced` after releasing it.
+	 */
+	const std::weak_ptr<DBDescriptor> owningDescriptor;
+
+	/**
 	 * Whether to disable snapshots.
 	 */
 	bool disableSnapshot;

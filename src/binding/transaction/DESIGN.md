@@ -3,26 +3,30 @@
 `rocksdb::Transaction` is not thread-safe, but a cold-cache `get()` runs `txn->Get()` on a libuv
 worker while the transaction stays usable on its JS thread. `Rollback()` destroys the write-batch
 index that `Get()` walks first, so `Transaction::Abort` cancels and drains the handle's admitted
-async work before rolling back. `TransactionHandle::close()` drains too, but only after the
-rollback has already run.
+async work before rolling back. `TransactionHandle::close()` drains before it deletes `txn` and
+never calls `Rollback()`; Abort needs its own drain because it rolls back before calling `close()`.
 
 That drain can wait on a disk read, so Abort also holds a descriptor `OperationGuard` from before
 the drain until `close()` returns. A foreign `destroy()`/`shutdown()` closes transactions in
 `finishClose()`'s closables sweep, which starts only once `operationsInFlight` is zero. Without
 the guard the sweep can delete `txn` while Abort waits, or find Abort's `close()` already holding
 the close gate, skip it, and destroy the database while the parked get still pins a column family.
-When registration on the handle is refused or the descriptor is already closing, teardown owns the
-rollback and Abort returns without touching `txn`.
+The guard pins `TransactionHandle::owningDescriptor`, a weak reference fixed at construction:
+`dbHandle->descriptor` is gone once the owner has closed its handle, and another env can still
+hold the database open. Locking it can make a concurrent last-handle close skip its purge, so
+Abort retries `DBRegistry::PurgeIfUnreferenced` after releasing it, as backup and checkpoint do.
 
-Both apply only when the handle has async work in flight. Only the owning JS thread admits that
-work, so a zero count stays zero for the whole abort, and the common get-free abort (Harper ends
-every read-only transaction with one) keeps its old cost: no registration, no descriptor atomics.
-The guard also needs the owning `DBHandle` still open; after the owner's `db.close()` its
-descriptor is gone, and an abort with a get in flight drains unguarded, so a concurrent foreign
-teardown can still race its rollback.
+`AsyncWorkHandle::cancelIfIdle()` makes the common abort, with nothing admitted, cheap: under the
+handle's own mutex it either closes admission or reports work in flight, so no get from any env
+can slip in between. Only the in-flight case touches the descriptor (Harper ends every read-only
+transaction with an abort). The idle case takes no guard and so still races a foreign teardown's
+sweep the way every abort did before. An already-cancelled handle, or a closing or destroyed
+descriptor, means a teardown `close()` owns the rollback; Abort returns and the closing database
+refuses any later write or commit through the `Store` checks.
 
 Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASan build with
-`max_free_fill_size` faults on the unfixed code) and `test/fixtures/fork-abort-get-destroy.mts`.
+`max_free_fill_size` faults on the unfixed code) and `test/fixtures/fork-abort-get-destroy.mts`
+(segfaults without the guard or the owning-descriptor pin, no sanitizer needed).
 
 Other owning-thread mutations still run while an admitted get may be inside `txn->Get()`: commit
 (`Clear()` after the write), `putSync`/`removeSync` (batch append), and `resetTransaction()`

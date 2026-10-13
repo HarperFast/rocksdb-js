@@ -152,39 +152,40 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 	bool hadLogWrites = (*txnHandle)->committedPosition.logSequenceNumber > 0;
 
-	// Only this thread admits async work on the transaction, so a zero count
-	// stays zero for the rest of this call and the abort needs no drain.
-	// Otherwise: finishClose() closes transactions only after operationsInFlight
-	// drains, so the guard keeps a foreign teardown from closing this one during
-	// the drain, and the registration keeps a close() in progress from resetting
-	// `dbHandle` mid-copy. See src/binding/transaction/DESIGN.md.
-	const bool drainAsyncWork = (*txnHandle)->activeAsyncWorkCount.load() > 0;
+	// Rollback() frees the write batch an admitted async get may be reading, so
+	// admitted work drains first. That drain can wait on a disk read; the guard
+	// keeps finishClose()'s closables sweep off this transaction meanwhile. An
+	// already-cancelled handle, or a closing descriptor, means a teardown close()
+	// owns the rollback. See src/binding/transaction/DESIGN.md.
+	const AsyncWorkHandle::IdleCancel idle = (*txnHandle)->cancelIfIdle();
+	const bool drainAsyncWork = idle == AsyncWorkHandle::IdleCancel::Busy;
 	std::shared_ptr<DBDescriptor> descriptor;
-	bool teardownOwnsRollback = false;
 	if (drainAsyncWork) {
-		teardownOwnsRollback = !(*txnHandle)->registerAsyncWork();
+		descriptor = (*txnHandle)->owningDescriptor.lock();
+	}
+	{
+		OperationGuard operationGuard(descriptor);
+		const bool teardownOwnsRollback = idle == AsyncWorkHandle::IdleCancel::AlreadyCancelled ||
+			(drainAsyncWork && (!descriptor || descriptor->isClosing()));
+
 		if (!teardownOwnsRollback) {
-			if ((*txnHandle)->dbHandle) {
-				descriptor = (*txnHandle)->dbHandle->descriptor;
+			(*txnHandle)->closeIterators();
+			if (drainAsyncWork) {
+				(*txnHandle)->cancelAllAsyncWork();
+				(*txnHandle)->waitForAsyncWorkCompletion();
 			}
-			(*txnHandle)->unregisterAsyncWork();
+			(*txnHandle)->state = TransactionState::Aborted;
+
+			ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
+			DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
+			(*txnHandle)->close();
 		}
 	}
-	OperationGuard operationGuard(descriptor);
-	teardownOwnsRollback = teardownOwnsRollback || (descriptor && descriptor->isClosing());
-
-	if (!teardownOwnsRollback) {
-		(*txnHandle)->closeIterators();
-		if (drainAsyncWork) {
-			// Rollback() frees the write batch an admitted async get may be reading.
-			(*txnHandle)->cancelAllAsyncWork();
-			(*txnHandle)->waitForAsyncWorkCompletion();
-		}
-		(*txnHandle)->state = TransactionState::Aborted;
-
-		ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
-		DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
-		(*txnHandle)->close();
+	if (descriptor) {
+		// The pin can make a concurrent last-handle close skip its purge.
+		DBKey key = descriptorKey(*descriptor);
+		descriptor.reset();
+		DBRegistry::PurgeIfUnreferenced(key);
 	}
 
 	if (hadLogWrites) {

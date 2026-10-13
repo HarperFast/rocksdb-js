@@ -4,13 +4,16 @@ import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 
 // ROCKSDB_JS_TXN_GET_DELAY_MS parks the transaction's async get, admitted and
-// registered, before its worker checks for cancellation. ABORT_DURING selects
-// whether the foreign destroy begins while abort() waits on that get
-// (`admitted`) or has already published `closing` when abort() runs (`closing`).
+// registered, before its worker checks for cancellation. ABORT_DURING picks the
+// race: `admitted` starts the foreign destroy while abort() waits on that get,
+// `owner-closed` does the same after this thread closed its own handle, and
+// `closing` runs abort() after the destroy has already published `closing`.
 const path = process.argv[2];
 const mode = process.env.ABORT_DURING;
-if (!path || (mode !== 'admitted' && mode !== 'closing')) {
-	console.error('Usage: ABORT_DURING=<admitted|closing> node fork-abort-get-destroy.mts <dbPath>');
+if (!path || (mode !== 'admitted' && mode !== 'owner-closed' && mode !== 'closing')) {
+	console.error(
+		'Usage: ABORT_DURING=<admitted|owner-closed|closing> node fork-abort-get-destroy.mts <dbPath>'
+	);
 	process.exit(1);
 }
 
@@ -23,12 +26,19 @@ db.open();
 
 const worker = new Worker(createWorkerBootstrapScript('./test/workers/destroy-open-worker.mts'), {
 	eval: true,
-	workerData: { path, destroyStartDelayMs: mode === 'admitted' ? 100 : 0 },
+	workerData: { path, destroyStartDelayMs: mode === 'closing' ? 0 : 300 },
 });
-
+const messages: any[] = [];
+const waiters: ((message: any) => void)[] = [];
+worker.on('message', (message) => {
+	const waiter = waiters.shift();
+	if (waiter) waiter(message);
+	else messages.push(message);
+});
 function nextMessage(): Promise<any> {
+	if (messages.length > 0) return Promise.resolve(messages.shift());
 	return new Promise((resolve, reject) => {
-		worker.once('message', resolve);
+		waiters.push(resolve);
 		worker.once('error', reject);
 	});
 }
@@ -45,6 +55,10 @@ const settled = read.then(
 	() => 'resolved',
 	(error: Error) => error.message
 );
+if (mode === 'owner-closed') {
+	// The worker's handle keeps the database open; this handle's descriptor is gone.
+	db.close();
+}
 
 worker.postMessage({ destroy: true });
 const destroying = await nextMessage();
@@ -59,20 +73,30 @@ if (mode === 'closing') {
 	}
 }
 
-const started = Date.now();
+const started = steadyClockNow();
 txn.abort();
-const elapsed = Date.now() - started;
+const abortedAt = steadyClockNow();
 if (mode === 'closing') {
-	// Teardown owns this rollback; abort() must not wait on the parked get.
-	assert.ok(elapsed < 500, `abort() blocked ${elapsed}ms after teardown began`);
+	assert.ok(
+		abortedAt - started < 500,
+		`abort() blocked ${abortedAt - started}ms after teardown began`
+	);
+	// The deferred transaction stays Pending; the closing database refuses it.
+	assert.throws(() => txn.putSync('later', 'value'), /Database is closing/);
+	assert.throws(() => txn.commitSync(), /Database is closing/);
+} else {
+	// Taking the closing path instead would return at once and leave the drain untested.
+	assert.ok(
+		abortedAt - issuedAt >= 950,
+		`abort() returned ${abortedAt - issuedAt}ms after the get`
+	);
 }
 
 assert.match(await settled, /Database closed during transaction get operation/);
 
 const destroyResult = await nextMessage();
 if (!destroyResult.destroyed) throw new Error(`Destroy failed: ${JSON.stringify(destroyResult)}`);
-if (mode === 'admitted') {
-	// The abort's operation guard holds the destroy until the parked get is done.
+if (mode !== 'closing') {
 	const destroyAfterGet = destroyResult.destroyedAt - issuedAt;
 	assert.ok(
 		destroyAfterGet >= 950,

@@ -408,10 +408,9 @@ describe('Destroy', () => {
 		});
 	}, 15_000);
 
-	it.each(['admitted', 'closing'])(
+	it.each(['admitted', 'owner-closed', 'closing'])(
 		'aborts a transaction with a parked async get when a foreign destroy is %s',
 		async (abortDuring) => {
-			// See fork-abort-get-destroy.mts.
 			await runDestroyFixture(abortGetDestroyFixture, generateDBPath(), {
 				ABORT_DURING: abortDuring,
 				ROCKSDB_JS_TXN_GET_DELAY_MS: '1000',
