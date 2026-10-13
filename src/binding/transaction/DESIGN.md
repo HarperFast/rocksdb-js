@@ -14,6 +14,13 @@ the close gate, skip it, and destroy the database while the parked get still pin
 When registration on the handle is refused or the descriptor is already closing, teardown owns the
 rollback and Abort returns without touching `txn`.
 
+Both apply only when the handle has async work in flight. Only the owning JS thread admits that
+work, so a zero count stays zero for the whole abort, and the common get-free abort (Harper ends
+every read-only transaction with one) keeps its old cost: no registration, no descriptor atomics.
+The guard also needs the owning `DBHandle` still open; after the owner's `db.close()` its
+descriptor is gone, and an abort with a get in flight drains unguarded, so a concurrent foreign
+teardown can still race its rollback.
+
 Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASan build with
 `max_free_fill_size` faults on the unfixed code) and `test/fixtures/fork-abort-get-destroy.mts`.
 

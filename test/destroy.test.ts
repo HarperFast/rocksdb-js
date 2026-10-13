@@ -411,8 +411,6 @@ describe('Destroy', () => {
 	it.each(['admitted', 'closing'])(
 		'aborts a transaction with a parked async get when a foreign destroy is %s',
 		async (abortDuring) => {
-			// Abort drains the get before rolling back while holding an OperationGuard,
-			// so the destroy's closables sweep cannot delete the transaction under it.
 			// See fork-abort-get-destroy.mts.
 			await runDestroyFixture(abortGetDestroyFixture, generateDBPath(), {
 				ABORT_DURING: abortDuring,

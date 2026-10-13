@@ -152,29 +152,34 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 	bool hadLogWrites = (*txnHandle)->committedPosition.logSequenceNumber > 0;
 
-	// The drain below can wait on a disk read. A foreign destroy()/shutdown()
-	// closes this transaction from finishClose()'s closables sweep, which runs
-	// only once operationsInFlight drains, so the guard keeps that sweep from
-	// deleting `txn` underneath this abort. The brief registration keeps a
-	// close() already in progress from resetting `dbHandle` while it is copied;
-	// refusal, like a closing descriptor, means teardown owns the rollback.
+	// Only this thread admits async work on the transaction, so a zero count
+	// stays zero for the rest of this call and the abort needs no drain.
+	// Otherwise: finishClose() closes transactions only after operationsInFlight
+	// drains, so the guard keeps a foreign teardown from closing this one during
+	// the drain, and the registration keeps a close() in progress from resetting
+	// `dbHandle` mid-copy. See src/binding/transaction/DESIGN.md.
+	const bool drainAsyncWork = (*txnHandle)->activeAsyncWorkCount.load() > 0;
 	std::shared_ptr<DBDescriptor> descriptor;
-	bool teardownOwnsRollback = !(*txnHandle)->registerAsyncWork();
-	if (!teardownOwnsRollback) {
-		if ((*txnHandle)->dbHandle) {
-			descriptor = (*txnHandle)->dbHandle->descriptor;
+	bool teardownOwnsRollback = false;
+	if (drainAsyncWork) {
+		teardownOwnsRollback = !(*txnHandle)->registerAsyncWork();
+		if (!teardownOwnsRollback) {
+			if ((*txnHandle)->dbHandle) {
+				descriptor = (*txnHandle)->dbHandle->descriptor;
+			}
+			(*txnHandle)->unregisterAsyncWork();
 		}
-		(*txnHandle)->unregisterAsyncWork();
 	}
 	OperationGuard operationGuard(descriptor);
 	teardownOwnsRollback = teardownOwnsRollback || (descriptor && descriptor->isClosing());
 
 	if (!teardownOwnsRollback) {
 		(*txnHandle)->closeIterators();
-		// Rollback() frees the write batch that an admitted async get reads on a
-		// libuv worker; close() drains too late to protect it.
-		(*txnHandle)->cancelAllAsyncWork();
-		(*txnHandle)->waitForAsyncWorkCompletion();
+		if (drainAsyncWork) {
+			// Rollback() frees the write batch an admitted async get may be reading.
+			(*txnHandle)->cancelAllAsyncWork();
+			(*txnHandle)->waitForAsyncWorkCompletion();
+		}
 		(*txnHandle)->state = TransactionState::Aborted;
 
 		ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
