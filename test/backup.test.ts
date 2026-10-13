@@ -8,12 +8,16 @@ import {
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import {
 	chmodSync,
+	closeSync,
 	existsSync,
+	fstatSync,
 	mkdirSync,
+	openSync,
 	readdirSync,
 	rmSync,
 	statSync,
 	writeFileSync,
+	writeSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -286,6 +290,65 @@ describe('Backups', () => {
 			).resolves.toBeUndefined();
 
 			await expect(backups.verify(backupDir, 999)).rejects.toThrow();
+		}));
+
+	it('should open every table when verifyTables is set', () =>
+		dbRunner(async ({ db }) => {
+			const backupDir = tempDir();
+			for (let batch = 0; batch < 5; ++batch) {
+				await writeAll(db, 20, `batch${batch}`);
+			}
+			await db.backup(backupDir);
+
+			await expect(
+				backups.verify(backupDir, 1, { verifyTables: true, verifyWithChecksum: true })
+			).resolves.toBeUndefined();
+		}));
+
+	it('should reject a table this build cannot open only when verifyTables is set', () =>
+		dbRunner(async ({ db }) => {
+			const backupDir = tempDir();
+			for (let batch = 0; batch < 5; ++batch) {
+				await writeAll(db, 20, `batch${batch}`);
+			}
+			await db.backup(backupDir);
+
+			const tables = (readdirSync(backupDir, { recursive: true }) as string[])
+				.filter((file) => file.endsWith('.sst'))
+				.sort();
+			expect(tables.length).toBeGreaterThan(0);
+			const patched = tables[tables.length - 1];
+			// The footer ends with a 4-byte little-endian format_version, then the
+			// 8-byte table magic number.
+			const fd = openSync(join(backupDir, patched), 'r+');
+			try {
+				const version = Buffer.alloc(4);
+				version.writeUInt32LE(99);
+				writeSync(fd, version, 0, 4, fstatSync(fd).size - 12);
+			} finally {
+				closeSync(fd);
+			}
+
+			await expect(backups.verify(backupDir, 1)).resolves.toBeUndefined();
+			const error = await backups.verify(backupDir, 1, { verifyTables: true }).then(
+				() => undefined,
+				(err: Error) => err
+			);
+			expect(error?.message).toContain(basename(patched));
+			expect(error?.message).toMatch(/format_version/);
+		}));
+
+	it('should reject a non-boolean verifyTables', () =>
+		dbRunner(async ({ db }) => {
+			const backupDir = tempDir();
+			await writeAll(db, 5);
+			await db.backup(backupDir);
+
+			for (const value of ['true', null]) {
+				await expect(
+					backups.verify(backupDir, 1, { verifyTables: value as unknown as boolean })
+				).rejects.toThrow(TypeError);
+			}
 		}));
 
 	it('should preserve unflushed data when WAL is disabled', () =>

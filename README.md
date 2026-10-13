@@ -2789,7 +2789,7 @@ backup references them, so this is not equivalent to deleting files manually.
 
 Deletes all but the newest `keepCount` backups.
 
-### `backups.verify(backupDir: string, backupId: number, options?: { verifyWithChecksum?: boolean; verifyTransactionLogs?: boolean }): Promise<void>`
+### `backups.verify(backupDir: string, backupId: number, options?: { verifyWithChecksum?: boolean; verifyTables?: boolean; verifyTransactionLogs?: boolean }): Promise<void>`
 
 Verifies a backup's file sizes, and optionally their checksums (which requires reading all
 backed-up data). Resolves if the backup is intact and rejects otherwise.
@@ -2800,8 +2800,17 @@ When the backup was created with `transactionLogs: true`, the backup's transacti
 log file's header and entry framing must be intact (snapshots are copied on committed entry
 boundaries, so even a torn tail fails verification). Set `verifyTransactionLogs: false` to skip.
 
+Set `verifyTables: true` (default `false`) to also prove this build can read the backup's table
+files before you restore it. Each SST is opened in turn, one at a time, so file-descriptor use does
+not grow with the number of tables. Verification rejects, naming the file, when this build cannot
+decode a table's footer (for example a `format_version` written by a newer RocksDB) or its
+properties, or when the table records a compression algorithm this build does not support (see
+[`supportedCompression`](#supportedcompression)). Checksums cannot catch either case: the file is
+intact, just unreadable here, and RocksDB would otherwise fail on the first read after a restore.
+Blob files are not checked.
+
 ```typescript
-await backups.verify('/path/to/backups', 1, { verifyWithChecksum: true });
+await backups.verify('/path/to/backups', 1, { verifyWithChecksum: true, verifyTables: true });
 ```
 
 ## Custom Store

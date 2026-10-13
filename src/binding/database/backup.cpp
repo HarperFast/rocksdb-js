@@ -1,6 +1,7 @@
 #include "database/backup.h"
 #include "database/backup_disk_space.h"
 #include "database/backup_transaction_logs.h"
+#include "database/backup_verify_tables.h"
 #include "database/database.h"
 #include "database/db_handle.h"
 #include "database/db_registry.h"
@@ -130,6 +131,7 @@ struct AsyncBackupOpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	rocksdb::BackupEngineOptions engineOptions;
 	uint32_t arg = 0; // backupId for Delete/Verify, keepCount for Purge
 	bool verifyWithChecksum = false;
+	bool verifyTables = false;
 
 	AsyncBackupOpState(napi_env env, Op op, std::string backupDir) :
 		BaseAsyncState<std::shared_ptr<DBHandle>>(env, nullptr),
@@ -617,9 +619,12 @@ static napi_value queueBackupOp(napi_env env, AsyncBackupOpState* state, napi_va
 			if (state->op == AsyncBackupOpState::Op::Verify) {
 				// Read-only verification.
 				rocksdb::BackupEngineReadOnly* engine = nullptr;
-				rocksdb::IOStatus s = rocksdb::BackupEngineReadOnly::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
+				rocksdb::Status s = rocksdb::BackupEngineReadOnly::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
 				if (s.ok()) {
 					s = engine->VerifyBackup(state->arg, state->verifyWithChecksum);
+				}
+				if (s.ok() && state->verifyTables) {
+					s = verifyBackupTables(engine, state->arg, state->backupDir);
 				}
 				delete engine;
 				state->status = s;
@@ -695,12 +700,13 @@ static napi_value BackupPurge(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Verifies a backup's file sizes (and optionally checksums).
+ * Verifies a backup's file sizes (and optionally checksums, and that this build
+ * can open every table).
  *
- * Signature: `backupVerify(resolve, reject, backupDir, backupId, verifyWithChecksum)`
+ * Signature: `backupVerify(resolve, reject, backupDir, backupId, verifyWithChecksum, verifyTables)`
  */
 static napi_value BackupVerify(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(5);
+	NAPI_METHOD_ARGV(6);
 	napi_value resolve = argv[0];
 	napi_value reject = argv[1];
 	NAPI_GET_STRING(argv[2], backupDir, "Backup directory must be a string");
@@ -712,6 +718,11 @@ static napi_value BackupVerify(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &checksumType));
 	if (checksumType == napi_boolean) {
 		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[4], &state->verifyWithChecksum));
+	}
+	napi_valuetype tablesType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[5], &tablesType));
+	if (tablesType == napi_boolean) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[5], &state->verifyTables));
 	}
 
 	return queueBackupOp(env, state, resolve, reject);

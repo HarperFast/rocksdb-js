@@ -477,6 +477,14 @@ export const backups = {
 	 * Verifies a backup's file sizes, and optionally their checksums (which
 	 * requires reading all backed-up data).
 	 *
+	 * Set `verifyTables: true` to also prove this build can read the backup
+	 * before restoring it: every table file is opened, one at a time, and its
+	 * footer (including `format_version`) and properties must be readable, and
+	 * every compression algorithm it records must be supported by this build.
+	 * A checksum-valid table written by a newer or differently built RocksDB
+	 * otherwise passes and fails on the first read after a restore. Blob files
+	 * are not checked.
+	 *
 	 * When the backup was created with `transactionLogs: true`, the backup's
 	 * transaction log snapshot (`<backupDir>/transaction_logs/<backupId>/`) is
 	 * also validated — every log file's header and entry framing must be intact
@@ -486,10 +494,27 @@ export const backups = {
 	async verify(
 		backupDir: string,
 		backupId: number,
-		options?: { verifyWithChecksum?: boolean; verifyTransactionLogs?: boolean }
+		options?: {
+			verifyWithChecksum?: boolean;
+			verifyTables?: boolean;
+			verifyTransactionLogs?: boolean;
+		}
 	): Promise<void> {
+		const verifyTables = options?.verifyTables;
+		if (verifyTables !== undefined && typeof verifyTables !== 'boolean') {
+			throw new TypeError(
+				`verifyTables must be a boolean, received ${verifyTables === null ? 'null' : typeof verifyTables}`
+			);
+		}
 		await new Promise<void>((resolve, reject) =>
-			nativeBackupVerify(resolve, reject, backupDir, backupId, options?.verifyWithChecksum ?? false)
+			nativeBackupVerify(
+				resolve,
+				reject,
+				backupDir,
+				backupId,
+				options?.verifyWithChecksum ?? false,
+				verifyTables === true
+			)
 		);
 
 		if (options?.verifyTransactionLogs === false) {

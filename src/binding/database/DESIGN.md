@@ -88,3 +88,25 @@ one exception, fixed here:
 
 `test/commit-threads.test.ts` covers the thread limit, lazy start, out-of-order resolution and the
 watermark; `test/native/transaction_log_flushed_state_test.cc` covers the flush correlation.
+
+# Backup table verification
+
+`backups.verify({ verifyTables: true })` (`verifyBackupTables`, `backup_verify_tables.cpp`) must
+prove every SST in the backup is readable by _this_ build, not only intact. Blob files are not
+covered (RocksDB has no public blob-file reader). Three facts hold it together:
+
+- **`SstFileReader::Open` is not enough on its own.** It decodes the footer (an unsupported
+  `format_version` fails there) and the meta blocks, but never a data block, so a table whose
+  compressor this build lacks would pass. The walk therefore also decodes the table's
+  `compression_name` (`tableCompressionTypes`, both the `format_version >= 7` and the legacy
+  encodings) and fails closed on anything it cannot interpret.
+- **Physical paths are `backupDir + "/" + relative_filename`.** `BackupFileInfo::directory` is
+  the virtual `private/<id>` directory, while `relative_filename` already starts with
+  `shared/`, `shared_checksum/`, or `private/<id>/`. Joining the two finds no healthy table.
+  The name comes from on-disk metadata, so an absolute or `..` name is rejected, not followed.
+- **One reader at a time.** Each reader is destroyed before the next table opens, so descriptor
+  use stays flat however many tables a backup holds
+  (`BackupVerifyTables.OpensOneTableAtATime`).
+
+The check describes the backup only at the moment it runs: `verify` takes no lock (invariant 7).
+A caller that verifies and then restores holds the shared `.backup.lock` across both calls.
