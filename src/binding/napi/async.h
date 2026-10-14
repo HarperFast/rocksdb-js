@@ -177,6 +177,25 @@ struct AsyncWorkHandle {
 		this->cancelled.store(true);
 	}
 
+	enum class IdleCancel { Cancelled, AlreadyCancelled, Busy };
+
+	/**
+	 * Publishes cancellation only when no work is admitted. Deciding both under
+	 * `waitMutex` means no registration can land between the idle check and the
+	 * cancellation, from this thread or any other.
+	 */
+	IdleCancel cancelIfIdle() {
+		std::lock_guard<std::mutex> lock(this->waitMutex);
+		if (this->cancelled.load()) {
+			return IdleCancel::AlreadyCancelled;
+		}
+		if (this->activeAsyncWorkCount.load() > 0) {
+			return IdleCancel::Busy;
+		}
+		this->cancelled.store(true);
+		return IdleCancel::Cancelled;
+	}
+
 	/**
 	 * Blocks until every admitted unit of async work has completed. This must
 	 * not time out: the caller is about to release native state (a

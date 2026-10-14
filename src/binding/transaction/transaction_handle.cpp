@@ -110,6 +110,7 @@ inline void delayTransactionStagingForTesting() {
  */
 TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
+	owningDescriptor(dbHandle->descriptor),
 	disableSnapshot(disableSnapshot),
 	coordinatedRetry(false),
 	state(TransactionState::Pending),
