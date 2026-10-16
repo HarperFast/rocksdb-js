@@ -69,7 +69,7 @@
     "@vitest/coverage-v8": "4.1.11",
     "cross-env": "10.1.0",
     "dotenv": "18.0.7",
-    "lefthook": "2.2.1",
+    "lefthook": "2.2.2",
     "lmdb": "3.5.7",
     "node-gyp": "13.1.0",
     "oxfmt": "0.72.0",
