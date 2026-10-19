@@ -49,13 +49,6 @@ public:
 	 * Strong exception guarantee.
 	 */
 	[[nodiscard]] bool acquire(std::span<const uint64_t> hashes, const void* owner) {
-		// Nodes are built outside the lock and spliced in under it, so the critical section is
-		// pointer work: with several commit threads the mutex, not the hashing, is the cost.
-		std::unordered_map<uint64_t, const void*> staged;
-		staged.reserve(hashes.size());
-		for (uint64_t hash : hashes) {
-			staged.emplace(hash, nullptr);
-		}
 		std::unique_lock<std::mutex> lock(this->mutex);
 		while (this->anyTransientlyHeld(hashes)) {
 			++this->waiters;
@@ -65,22 +58,34 @@ public:
 		if (this->anyDurablyHeldByOther(hashes, owner)) {
 			return false;
 		}
-		// A rehash is the only allocation left under the lock; it happens before any node moves,
-		// so a failure leaves nothing held.
-		this->held.reserve(this->held.size() + staged.size());
-		this->held.merge(staged);
+		this->held.reserve(this->held.size() + hashes.size());
+		size_t inserted = 0;
+		try {
+			for (; inserted < hashes.size(); inserted++) {
+				this->held.try_emplace(hashes[inserted], nullptr);
+			}
+		} catch (...) {
+			// No transient entry of ours pre-existed (the wait above saw none), so every ownerless
+			// entry in the prefix is this call's.
+			for (size_t i = 0; i < inserted; i++) {
+				auto it = this->held.find(hashes[i]);
+				if (it != this->held.end() && it->second == nullptr) {
+					this->held.erase(it);
+				}
+			}
+			throw;
+		}
 		return true;
 	}
 
-	/** Drops the transient holds among `hashes`; durable entries are untouched. Frees outside the lock. */
+	/** Drops the transient holds among `hashes`; durable entries are untouched. */
 	void release(std::span<const uint64_t> hashes) noexcept {
-		std::unordered_map<uint64_t, const void*> freed;
 		{
 			std::lock_guard<std::mutex> lock(this->mutex);
 			for (uint64_t hash : hashes) {
 				auto it = this->held.find(hash);
 				if (it != this->held.end() && it->second == nullptr) {
-					freed.insert(this->held.extract(it));
+					this->held.erase(it);
 				}
 			}
 			if (this->waiters == 0) {
@@ -108,12 +113,11 @@ public:
 	}
 
 	void releaseDurable(std::span<const uint64_t> hashes, const void* owner) noexcept {
-		std::unordered_map<uint64_t, const void*> freed;
 		std::lock_guard<std::mutex> lock(this->mutex);
 		for (uint64_t hash : hashes) {
 			auto it = this->held.find(hash);
 			if (it != this->held.end() && it->second == owner) {
-				freed.insert(this->held.extract(it));
+				this->held.erase(it);
 			}
 		}
 	}
