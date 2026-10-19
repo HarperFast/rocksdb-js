@@ -14,7 +14,7 @@ import { Transaction, TransactionLoggedError } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { readdir, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -409,9 +409,7 @@ describe('conflict before the transaction-log write', () => {
 				const { warnings, stop } = collectWarnings('durable transaction-log batch');
 				try {
 					const worker = new Worker(
-						createWorkerBootstrapScript(
-							resolve(__dirname, 'workers/logged-pending-exit-worker.mts')
-						),
+						createWorkerBootstrapScript('./test/workers/logged-pending-exit-worker.mts'),
 						{
 							eval: true,
 							workerData: { path: dbPath, log: 'audit', key: 'k', holdUntilMessage: true },
@@ -587,9 +585,7 @@ describe('conflict before the transaction-log write', () => {
 					});
 					const pinned = log.getStats().nextLogPosition;
 					const worker = new Worker(
-						createWorkerBootstrapScript(
-							resolve(__dirname, 'workers/logged-pending-exit-worker.mts')
-						),
+						createWorkerBootstrapScript('./test/workers/logged-pending-exit-worker.mts'),
 						{ eval: true, workerData: { path: dbPath, log: 'audit', key: 'orphan' } }
 					);
 					const exited = new Promise<void>((resolveExit) =>
@@ -643,7 +639,7 @@ describe('conflict before the transaction-log write', () => {
 				const windowStart = Date.now();
 
 				const worker = new Worker(
-					createWorkerBootstrapScript(resolve(__dirname, 'workers/conflict-window-worker.mts')),
+					createWorkerBootstrapScript('./test/workers/conflict-window-worker.mts'),
 					{ eval: true, workerData: { path: dbPath, key: 'k', value: 'direct', delayMs: 0 } }
 				);
 				const exited = new Promise<void>((resolveExit) => worker.once('exit', () => resolveExit()));
@@ -694,7 +690,7 @@ describe('conflict before the transaction-log write', () => {
 				log.addEntry(Buffer.from('k'), txn.id);
 
 				const worker = new Worker(
-					createWorkerBootstrapScript(resolve(__dirname, 'workers/conflict-window-worker.mts')),
+					createWorkerBootstrapScript('./test/workers/conflict-window-worker.mts'),
 					{ eval: true, workerData: { path: dbPath, key: 'k', value: 'direct', delayMs: 300 } }
 				);
 				const exited = new Promise<void>((resolveExit) => worker.once('exit', () => resolveExit()));
