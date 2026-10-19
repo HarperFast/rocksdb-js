@@ -258,7 +258,7 @@ describe('conflict before the transaction-log write', () => {
 
 	describe('a handle whose log batch is durable', () => {
 		it('refuses abort() and abandonWrites() before touching anything, then commits once', () =>
-			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
+			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
 				const { txn, log } = await loggedPending(db, 'audit', 'k');
 				expect(() => txn.abort()).toThrow(TransactionLoggedError);
 				expect(() => txn.abandonWrites()).toThrow(TransactionLoggedError);
