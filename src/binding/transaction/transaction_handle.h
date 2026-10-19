@@ -345,6 +345,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		return this->logDurable.load(std::memory_order_acquire);
 	}
 
+	/**
+	 * A reset could not restore the durable write set (allocation failure in
+	 * `RebuildFromWriteBatch`); the commit refuses until the caller stages it again.
+	 */
+	std::atomic<bool> durableWritesLost{false};
+
 	void publishDurableLog(LogPosition position) {
 		this->committedPosition = position;
 		this->logDurable.store(true, std::memory_order_release);

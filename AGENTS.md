@@ -1287,8 +1287,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     staging error: the transaction's writes are abandoned at that point, so its later `commit()`
     throws `ERR_WRITES_ABANDONED` rather than applying the families it wrote first. On the first
     attempt that decision precedes every log byte;
-    after an `IsBusy`/`TryAgain` retry, the original attempt's write-once log position survives, so a
-    later refusal is correctly reported as `ERR_TRANSACTION_ABANDONED`. A commit admitted before
+    after an `IsBusy`/`TryAgain` retry past the log write, the original attempt's write-once log
+    position survives, so a later refusal leaves a durable handle (invariant 34). A commit admitted before
     the retire lands in the dying generation, linearized before the drop; reads through retained
     handles continue; non-transactional writes keep #725's silent discard. `DBRegistry::OpenDB`
     finds a `retiring` entry for the name under `columnsMutex` (so a drop cannot slip between the

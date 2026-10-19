@@ -2787,16 +2787,22 @@ napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
  * (`src/binding/transaction/DESIGN.md`). Pessimistic databases exclude
  * concurrent writers with RocksDB's own row locks.
  */
-static void reserveDirectWrite(
+static rocksdb::Status reserveDirectWrite(
 	CommitKeyReservationScope& reservation,
 	DBHandle& dbHandle,
 	const rocksdb::Slice& key
-) {
+) noexcept {
 	if (dbHandle.descriptor->mode != DBMode::Optimistic) {
-		return;
+		return rocksdb::Status::OK();
 	}
-	const StagedKey staged{ dbHandle.getColumnFamilyHandle()->GetID(), key };
-	reservation.acquire(dbHandle.descriptor->commitReservation, commitKeyHashes({ &staged, 1 }));
+	try {
+		reservation.acquireOne(
+			dbHandle.descriptor->commitReservation,
+			commitKeyHash(dbHandle.getColumnFamilyHandle()->GetID(), key));
+		return rocksdb::Status::OK();
+	} catch (const std::exception& e) {
+		return rocksdb::Status::Aborted("Failed to reserve the key: ", e.what());
+	}
 }
 
 /**
@@ -2870,13 +2876,15 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
 		) {
 			CommitKeyReservationScope reservation;
-			reserveDirectWrite(reservation, **dbHandle, keySlice);
-			status = (*dbHandle)->descriptor->db->Put(
-				writeOptions,
-				(*dbHandle)->getColumnFamilyHandle(),
-				keySlice,
-				valueSlice
-			);
+			status = reserveDirectWrite(reservation, **dbHandle, keySlice);
+			if (status.ok()) {
+				status = (*dbHandle)->descriptor->db->Put(
+					writeOptions,
+					(*dbHandle)->getColumnFamilyHandle(),
+					keySlice,
+					valueSlice
+				);
+			}
 		}
 		if (vt && vtSlot) {
 			vt->releaseWriteIntent(vtSlot, vtTracker);
@@ -2950,12 +2958,14 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
 		) {
 			CommitKeyReservationScope reservation;
-			reserveDirectWrite(reservation, **dbHandle, keySlice);
-			status = (*dbHandle)->descriptor->db->Delete(
-				writeOptions,
-				(*dbHandle)->getColumnFamilyHandle(),
-				keySlice
-			);
+			status = reserveDirectWrite(reservation, **dbHandle, keySlice);
+			if (status.ok()) {
+				status = (*dbHandle)->descriptor->db->Delete(
+					writeOptions,
+					(*dbHandle)->getColumnFamilyHandle(),
+					keySlice
+				);
+			}
 		}
 		if (vt && vtSlot) {
 			vt->releaseWriteIntent(vtSlot, vtTracker);

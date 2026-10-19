@@ -654,7 +654,14 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition);
+	/**
+	 * Appends `batch` and reports its position. `appended` turns true the moment
+	 * the complete batch has landed, before any bookkeeping that can still fail:
+	 * a caller that sees it set on a throw owns a durable batch. A throw before
+	 * it is set has forgotten the reserved position; the transaction stays
+	 * unlogged.
+	 */
+	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, bool* appended = nullptr);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log

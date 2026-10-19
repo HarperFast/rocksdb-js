@@ -246,53 +246,69 @@ describe('conflict before the transaction-log write', () => {
 			}));
 
 		for (const mode of ['async', 'sync'] as const) {
-			it(`${mode}: db.transaction keeps retrying past maxRetries once the batch is durable`, () =>
+			it(`${mode}: db.transaction re-commits a durable batch past maxRetries without re-running the callback`, () =>
 				dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
 					const log = db.useLog('audit');
 					forceTryAgainForTesting(3);
-					let attempts = 0;
+					let calls = 0;
 					let handle: Transaction | undefined;
 					const body = (txn: Transaction, attempt: number) => {
 						handle = txn;
-						attempts = attempt;
+						calls++;
 						txn.putSync('k', attempt);
 						log.addEntry(Buffer.from('k'), txn.id);
 					};
 					if (mode === 'async') {
-						await db.transaction(async (txn, attempt) => body(txn, attempt), { maxRetries: 2 });
+						await db.transaction(async (txn, attempt) => body(txn, attempt), {
+							maxRetries: 2,
+							retryOnBusy: false,
+						});
 					} else {
-						db.transactionSync(body, { maxRetries: 2 });
+						db.transactionSync(body, { maxRetries: 2, retryOnBusy: false });
 					}
-					expect(attempts).toBe(4);
+					// The durable batch describes attempt 1's writes, so they are what lands.
+					expect(calls).toBe(1);
 					expect(handle!.hasDurableLog).toBe(true);
-					expect(await db.get('k')).toBe(4);
+					expect(await db.get('k')).toBe(1);
 					expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
 				}));
 		}
 
-		it('db.transaction hands a logged handle back when its retry body throws', () =>
-			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
+		it('commits the write set its log batch describes even when nothing is staged again', () =>
+			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
 				const log = db.useLog('audit');
+				const txn = new Transaction(db.store);
+				txn.putSync('a', 1);
+				txn.putSync('b', 2);
+				log.addEntry(Buffer.from('ab'), txn.id);
 				forceTryAgainForTesting(1);
-				const failure = new Error('body failed on retry');
-				let caught: unknown;
-				try {
-					await db.transaction(async (txn, attempt) => {
-						txn.putSync('k', attempt);
-						log.addEntry(Buffer.from('k'), txn.id);
-						if (attempt === 2) throw failure;
-					});
-				} catch (error) {
-					caught = error;
-				}
-				expect(caught).toBeInstanceOf(TransactionLoggedError);
-				const refused = caught as TransactionLoggedError;
-				expect(refused.cause).toBe(failure);
-				expect(refused.txn.hasDurableLog).toBe(true);
-				refused.txn.putSync('k', 'recovered');
-				await refused.txn.commit();
-				expect(await db.get('k')).toBe('recovered');
+				await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_TRY_AGAIN' });
+				expect(txn.hasDurableLog).toBe(true);
+				expect(await txn.get('a')).toBe(1);
+				// A partial re-stage changes one value; the other still lands from the durable set.
+				txn.putSync('b', 3);
+				await txn.commit();
+				expect(await db.get('a')).toBe(1);
+				expect(await db.get('b')).toBe(3);
 				expect([...log.query({ start: 0 })]).toHaveLength(1);
+				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(2));
+			}));
+
+		it('transactionSync aborts the handle and rethrows when an async callback rejects', () =>
+			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
+				const failure = new Error('callback rejected');
+				let handle: Transaction | undefined;
+				await expect(
+					db.transactionSync(async (txn) => {
+						handle = txn;
+						txn.putSync('k', 'v');
+						throw failure;
+					})
+				).rejects.toBe(failure);
+				expect(handle!.hasDurableLog).toBe(false);
+				await expect(handle!.commit()).rejects.toMatchObject({ code: 'ERR_ALREADY_ABORTED' });
+				expect(registryStatus().find((entry) => entry.path === dbPath)!.transactions).toBe(0);
+				expect(await db.get('k')).toBeUndefined();
 			}));
 
 		it.skipIf(!forceGC)(
@@ -405,6 +421,7 @@ describe('conflict before the transaction-log write', () => {
 					createWorkerBootstrapScript(resolve(__dirname, 'workers/conflict-window-worker.mts')),
 					{ eval: true, workerData: { path: dbPath, key: 'k', value: 'direct', delayMs: 0 } }
 				);
+				const exited = new Promise<void>((resolveExit) => worker.once('exit', () => resolveExit()));
 				const direct = new Promise<{ started: number; done: number; error?: string }>(
 					(resolveMessage, reject) => {
 						worker.once('message', resolveMessage);
@@ -440,7 +457,7 @@ describe('conflict before the transaction-log write', () => {
 				expect(['direct', 'competitor']).toContain(await db.get('k'));
 				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
 				expect([...log.query({ start: 0 })]).toHaveLength(1);
-				await new Promise<void>((resolveExit) => worker.once('exit', () => resolveExit()));
+				await exited;
 			}));
 
 		it('a direct write from another thread waits out a synchronous logged commit', () =>
@@ -454,6 +471,7 @@ describe('conflict before the transaction-log write', () => {
 					createWorkerBootstrapScript(resolve(__dirname, 'workers/conflict-window-worker.mts')),
 					{ eval: true, workerData: { path: dbPath, key: 'k', value: 'direct', delayMs: 300 } }
 				);
+				const exited = new Promise<void>((resolveExit) => worker.once('exit', () => resolveExit()));
 				const direct = new Promise<{ started: number; done: number; error?: string }>(
 					(resolveMessage, reject) => {
 						worker.once('message', resolveMessage);
@@ -473,7 +491,7 @@ describe('conflict before the transaction-log write', () => {
 				expect(directResult.done - directResult.started).toBeGreaterThanOrEqual(900);
 				expect(db.getSync('k')).toBe('direct');
 				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
-				await new Promise<void>((resolveExit) => worker.once('exit', () => resolveExit()));
+				await exited;
 			}));
 	});
 });

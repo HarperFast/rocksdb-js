@@ -1289,7 +1289,9 @@ itself fails on a retry.
 Re-stage the transaction's log entries on every attempt: after a pre-log conflict they are the
 only copy, and once the batch is durable the native layer ignores the re-stage (`hasLog` on the
 conflict error reports that the transaction carried log entries, staged or written, which is what
-makes a logged transaction retry by default).
+makes a logged transaction retry by default). Once the batch is durable, `transaction()` and
+`transactionSync()` no longer re-run the callback: the write set the log describes survives the
+reset and is committed as it is.
 
 When `coordinatedRetry: true`, the retry behavior changes for `IsBusy` conflicts: instead of
 rejecting (or retrying immediately and potentially conflicting again), the commit waits until the
@@ -1359,8 +1361,8 @@ transaction operations are permitted.
 
 Once a commit attempt has written the transaction's log batch (`txn.hasDurableLog === true`),
 `abort()` and `abandonWrites()` throw `TransactionLoggedError` (`code: 'ERR_TRANSACTION_LOGGED'`)
-before changing anything: the transaction stays pending with its staged writes, and the caller
-retries `commit()` until it succeeds so the data the log already describes lands. A durable
+before changing anything: the transaction stays pending, its write set (restored across any
+reset) is the one the log describes, and the caller retries `commit()` until it succeeds. A durable
 transaction that is dropped instead (garbage collected, or left pending by an exiting worker or a
 closing database) is not rolled back either: its log position stays uncommitted, so committed log
 readers, the flushed position recorded for crash replay, and retention (which never purges past

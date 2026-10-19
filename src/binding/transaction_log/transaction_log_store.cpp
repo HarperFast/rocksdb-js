@@ -1128,7 +1128,25 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	return true;
 }
 
-void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
+namespace {
+
+// Forgets a reserved position on every exit that did not land the batch, so a
+// failed append can never pin the watermark (the transaction stays unlogged).
+struct ReservedPositionGuard final {
+	TransactionLogStore& store;
+	LogPosition& position;
+	bool landed = false;
+
+	~ReservedPositionGuard() {
+		if (!this->landed) {
+			this->store.forgetFailedPosition(this->position);
+		}
+	}
+};
+
+} // namespace
+
+void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, bool* appended) {
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
 	if (this->isClosing.load(std::memory_order_relaxed)) {
@@ -1138,11 +1156,18 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Adding batch with %zu entries to store \"%s\" (current=%u, next=%u, timestamp=%llu)\n",
 		this, batch.entries.size(), this->name.c_str(), this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, batch.timestamp);
 
+	if (appended) {
+		*appended = false;
+	}
 	{
 		std::lock_guard<std::mutex> logPositionLock(this->dataSetsMutex);
+		// Capacity for this position and the sentinel inserted after the append, so
+		// the bookkeeping that follows a landed batch cannot throw.
+		this->uncommittedTransactionPositions.reserve(this->uncommittedTransactionPositions.size() + 2);
 		logPosition = this->nextLogPosition;
 		this->positionInsert(logPosition);
 	}
+	ReservedPositionGuard reserved{ *this, logPosition };
 
 	if (batch.timestamp > this->latestTimestamp) {
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Setting latest timestamp to batch timestamp: %f > %f\n", this, batch.timestamp, this->latestTimestamp);
@@ -1206,7 +1231,6 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what());
 			this->writeFailures.fetch_add(1, std::memory_order_relaxed);
 			if (rotatedAfterOpenFailure) {
-				this->forgetFailedPosition(logPosition);
 				throw DBException(e.what());
 			}
 			rotatedAfterOpenFailure = true;
@@ -1220,8 +1244,13 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 				logFile->persistAppendBoundaryRetirement();
 				this->rotateToNextSequence(logFile);
 			}
-			this->forgetFailedPosition(logPosition);
 			throw;
+		}
+		if (batch.isComplete()) {
+			reserved.landed = true;
+			if (appended) {
+				*appended = true;
+			}
 		}
 		logFile->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
 

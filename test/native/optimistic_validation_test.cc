@@ -14,10 +14,10 @@
 #include "rocksdb/options.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/utilities/transaction.h"
+#include <algorithm>
 
-using rocksdb_js::collectStagedKeys;
-using rocksdb_js::commitKeyHashes;
-using rocksdb_js::StagedKey;
+using rocksdb_js::collectCommitKeyHashes;
+using rocksdb_js::commitKeyHash;
 using rocksdb_js::validateOptimisticTransaction;
 
 namespace {
@@ -195,18 +195,20 @@ TEST(OptimisticValidation, ValidationLeavesTheTransactionUsable) {
 	EXPECT_EQ(value, "v1");
 }
 
-TEST(OptimisticValidation, StagedKeysFollowTheBatchAndHashPerColumnFamily) {
+TEST(OptimisticValidation, CommitKeyHashesCoverEveryFamilyOnceAndFailClosedOnRanges) {
 	Fixture fixture;
 	std::unique_ptr<rocksdb::Transaction> txn(fixture.begin());
 	ASSERT_TRUE(txn->Put("k", "1").ok());
 	ASSERT_TRUE(txn->Delete(fixture.other, "k").ok());
 	ASSERT_TRUE(txn->Put("k", "2").ok());
-	std::vector<StagedKey> keys;
-	collectStagedKeys(*txn->GetWriteBatch()->GetWriteBatch(), keys);
-	ASSERT_EQ(keys.size(), 3u);
-	EXPECT_EQ(keys[0].columnFamilyId, 0u);
-	EXPECT_EQ(keys[1].columnFamilyId, fixture.other->GetID());
-	EXPECT_EQ(keys[2].key.ToString(), "k");
-	std::vector<uint64_t> hashes = commitKeyHashes(keys);
+	std::vector<uint64_t> hashes;
+	ASSERT_TRUE(collectCommitKeyHashes(*txn->GetWriteBatch()->GetWriteBatch(), hashes).ok());
 	EXPECT_EQ(hashes.size(), 2u) << "same key in two families reserves two entries; a duplicate reserves one";
+	EXPECT_NE(commitKeyHash(0, "k"), commitKeyHash(fixture.other->GetID(), "k"));
+	EXPECT_TRUE(std::is_sorted(hashes.begin(), hashes.end()));
+
+	rocksdb::WriteBatch ranged;
+	ASSERT_TRUE(ranged.DeleteRange("a", "z").ok());
+	EXPECT_TRUE(collectCommitKeyHashes(ranged, hashes).IsNotSupported());
 }
+

@@ -32,6 +32,7 @@ namespace rocksdb_js {
  */
 class CommitKeyReservation final {
 public:
+	/** Strong exception guarantee: a failed insertion leaves nothing held. */
 	void acquire(std::span<const uint64_t> hashes) {
 		std::unique_lock<std::mutex> lock(this->mutex);
 		while (this->anyHeld(hashes)) {
@@ -39,12 +40,21 @@ public:
 			this->released.wait(lock);
 			--this->waiters;
 		}
-		for (uint64_t hash : hashes) {
-			this->held.insert(hash);
+		this->held.reserve(this->held.size() + hashes.size());
+		size_t inserted = 0;
+		try {
+			for (; inserted < hashes.size(); inserted++) {
+				this->held.insert(hashes[inserted]);
+			}
+		} catch (...) {
+			for (size_t i = 0; i < inserted; i++) {
+				this->held.erase(hashes[i]);
+			}
+			throw;
 		}
 	}
 
-	void release(std::span<const uint64_t> hashes) {
+	void release(std::span<const uint64_t> hashes) noexcept {
 		{
 			std::lock_guard<std::mutex> lock(this->mutex);
 			for (uint64_t hash : hashes) {
@@ -81,10 +91,13 @@ private:
 /**
  * Holds one writer's reservation; `release()` is idempotent so a commit can
  * release at the right point and still rely on the destructor on error paths.
+ * A single key is held inline, so a direct write allocates nothing of its own.
  */
 struct CommitKeyReservationScope final {
 	CommitKeyReservation* reservation = nullptr;
 	std::vector<uint64_t> hashes;
+	uint64_t single = 0;
+	bool isSingle = false;
 
 	CommitKeyReservationScope() = default;
 	CommitKeyReservationScope(const CommitKeyReservationScope&) = delete;
@@ -97,7 +110,16 @@ struct CommitKeyReservationScope final {
 	void acquire(CommitKeyReservation& target, std::vector<uint64_t> keyHashes) {
 		this->release();
 		this->hashes = std::move(keyHashes);
+		this->isSingle = false;
 		target.acquire(this->hashes);
+		this->reservation = &target;
+	}
+
+	void acquireOne(CommitKeyReservation& target, uint64_t hash) {
+		this->release();
+		this->single = hash;
+		this->isSingle = true;
+		target.acquire(std::span<const uint64_t>(&this->single, 1));
 		this->reservation = &target;
 	}
 
@@ -107,8 +129,12 @@ struct CommitKeyReservationScope final {
 		}
 		CommitKeyReservation* target = this->reservation;
 		this->reservation = nullptr;
-		target->release(this->hashes);
-		this->hashes.clear();
+		if (this->isSingle) {
+			target->release(std::span<const uint64_t>(&this->single, 1));
+		} else {
+			target->release(this->hashes);
+			this->hashes.clear();
+		}
 	}
 
 	bool active() const {

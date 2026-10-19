@@ -2,7 +2,6 @@
 #define __CORE_OPTIMISTIC_VALIDATION_H__
 
 #include <cstdint>
-#include <span>
 #include <vector>
 #include "rocksdb/db.h"
 #include "rocksdb/slice.h"
@@ -12,17 +11,13 @@
 
 namespace rocksdb_js {
 
-/** One entry of a transaction's write batch; `key` points into the batch. */
-struct StagedKey final {
-	uint32_t columnFamilyId = 0;
-	rocksdb::Slice key;
-};
+uint64_t commitKeyHash(uint32_t columnFamilyId, const rocksdb::Slice& key);
 
-/** Walks `batch` in insertion order. */
-void collectStagedKeys(const rocksdb::WriteBatch& batch, std::vector<StagedKey>& out);
-
-/** Reservation hashes for `keys`, sorted and deduplicated. */
-std::vector<uint64_t> commitKeyHashes(std::span<const StagedKey> keys);
+/**
+ * Reservation hashes for every key `batch` names, sorted and deduplicated.
+ * Fails closed on a batch record kind the reservation cannot cover.
+ */
+rocksdb::Status collectCommitKeyHashes(const rocksdb::WriteBatch& batch, std::vector<uint64_t>& out);
 
 /**
  * RocksDB's own optimistic conflict check for `txn`'s tracked keys, run ahead
@@ -30,7 +25,7 @@ std::vector<uint64_t> commitKeyHashes(std::span<const StagedKey> keys);
  * batch is written. Returns what `Commit()` would return for the same state:
  * OK, `Busy` on a conflicting write, `TryAgain` when the memtable history no
  * longer covers a tracked sequence. `txn` must come from an
- * `OptimisticTransactionDB` and `db` must be that database or its base.
+ * `OptimisticTransactionDB`; callers gate on the descriptor's mode.
  */
 rocksdb::Status validateOptimisticTransaction(rocksdb::Transaction* txn, rocksdb::DB* db);
 

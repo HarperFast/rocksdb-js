@@ -83,9 +83,19 @@ transaction's own pointer. A signature change on upgrade fails the link;
 every pre-log outcome, true from the first attempt whose log write returned, across retries (the
 batch is write-once, #668), after the commit lands, and after close. `abort()` and
 `abandonWrites()` refuse with `ERR_TRANSACTION_LOGGED` before touching anything while it is true;
-the caller retries `commit()` until it succeeds. `RocksDatabase.transaction()` / `transactionSync()`
-therefore retry such a handle past `maxRetries`, hand it back on `TransactionLoggedError.txn` when
-the body throws, and `transactionSync` reuses one handle across attempts.
+the caller retries `commit()` until it succeeds. The RocksDB write set a durable batch describes
+survives `resetTransaction()` (`RebuildFromWriteBatch` into the fresh transaction), so a
+re-commit lands what the log says even if nothing is staged again; a caller that re-stages
+overwrites the same keys. `RocksDatabase.transaction()` / `transactionSync()` therefore re-commit
+such a handle past `maxRetries` and `retryOnBusy` without re-running the callback, hand it back on
+`TransactionLoggedError.txn` when a non-retryable error follows, and `transactionSync` reuses one
+handle across attempts in an iterative loop.
+
+The validator adapter declares RocksDB's private member and reaches it through a friend, because
+MSVC mangles the access level into the symbol. The addon is built without RTTI, so the call cannot
+recover the complete object and relies on `OptimisticTransaction` deriving from `Transaction`
+through a single non-virtual chain (pointer identity); the agreement test is what catches a wrong
+`this`, and callers gate on `DBMode::Optimistic` so a pessimistic transaction never reaches it.
 
 **A durable, uncommitted handle that is closed anyway** — a collected wrapper, a worker env exiting,
 a database closing, a completion whose env is gone — keeps its position in the store's uncommitted

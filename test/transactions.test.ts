@@ -493,36 +493,31 @@ for (const { name, options, txnOptions } of testOptions) {
 				dbRunner({ dbOptions: [options] }, async ({ db }) => {
 					const log = db.useLog('retry');
 					await db.put('k', 'initial');
-					let attempts = 0;
 					const originTimestamp = Date.now() - 1000;
+					const txn = new Transaction(db.store, txnOptions);
+					txn.setTimestamp(originTimestamp);
+					await txn.get('k');
+					await txn.put('k', 'committed');
+					log.addEntry(Buffer.from('entry'), txn.id);
 					// An ordinary conflict is refused before the log write, so only a failure past it
 					// (a stranded snapshot) leaves a durable batch behind for the retry.
 					forceTryAgainForTesting(1);
 					try {
-						await db.transaction(
-							async (txn: Transaction, attempt) => {
-								attempts = attempt;
-								txn.setTimestamp(originTimestamp);
-								expect(txn.getTimestamp()).toBe(originTimestamp);
-								expect(txn.hasDurableLog).toBe(attempt > 1);
-								if (attempt > 1) {
-									expect(() => txn.setTimestamp(originTimestamp + 1)).toThrow(
-										'transaction log batch is already durable'
-									);
-								}
-								await txn.get('k');
-								await txn.put('k', 'committed');
-								log.addEntry(Buffer.from('entry'), txn.id);
-							},
-							{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
-						);
+						await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_TRY_AGAIN' });
 					} finally {
 						forceTryAgainForTesting(0);
 					}
-					expect(attempts).toBe(2);
+					expect(txn.hasDurableLog).toBe(true);
+					expect(txn.getTimestamp()).toBe(originTimestamp);
+					txn.setTimestamp(originTimestamp);
+					expect(() => txn.setTimestamp(originTimestamp + 1)).toThrow(
+						'transaction log batch is already durable'
+					);
+					await txn.commit();
 					const entries = [...log.query({ start: 0 })];
 					expect(entries).toHaveLength(1);
 					expect(entries[0].timestamp).toBe(originTimestamp);
+					expect(await db.get('k')).toBe('committed');
 				})
 		);
 

@@ -46,29 +46,20 @@ describe('#1695 ERR_TRY_AGAIN retry resets onto a fresh snapshot and converges',
 			const log = db.useLog('repl');
 			await db.put(key, 'initial');
 
-			// Strand exactly the first commit with a real TryAgain (rolled back, so no data lands).
-			// A genuine memtable flush produces the same status, but staging one deterministically
-			// through the public API hinges on OCC memtable-history eviction and is flaky; the seam
-			// exercises the native reset + JS retry path directly. Disarmed in the finally.
+			// Strand exactly the first commit with a real TryAgain (Commit() is skipped, so no data
+			// lands and the write batch stays intact). A genuine memtable flush produces the same
+			// status, but staging one deterministically through the public API hinges on OCC
+			// memtable-history eviction and is flaky; the seam exercises the native reset + JS retry
+			// path directly. Disarmed in the finally.
 			forceTryAgainForTesting(1);
 			const { codes, restore } = spyOnCommitCodes();
-			const txnIds = new Set<number>();
-			let attempts = 0;
+			let calls = 0;
+			let handle: Transaction | undefined;
 			try {
 				await db.transaction(
-					async (txn, attempt) => {
-						attempts = attempt;
-						txnIds.add(txn.id);
-						if (attempt === 2) {
-							// Entering the retry: attempt 1 wrote its log batch, then failed TryAgain and
-							// rolled back. The entry must NOT be visible yet — commitFinished fires only on a
-							// real commit, so the watermark did not advance on the failed attempt. (Under the
-							// old `!IsBusy` gate this query would already return the prematurely-published
-							// entry, ahead of its never-committed data.)
-							expect([...db.useLog('repl').query({ start: 0 })].length).toBe(0);
-						}
-						// The retry re-runs on the reset transaction's fresh snapshot; the put re-tracks
-						// the key at the current sequence, so the commit validates cleanly.
+					async (txn) => {
+						calls++;
+						handle = txn;
 						await txn.put(key, 'committed');
 						log.addEntry(payload, txn.id);
 					},
@@ -82,11 +73,10 @@ describe('#1695 ERR_TRY_AGAIN retry resets onto a fresh snapshot and converges',
 			// Premise: the first attempt actually failed with TryAgain (not Busy), else the test
 			// would prove nothing about the TryAgain path.
 			expect(codes).toContain('ERR_TRY_AGAIN');
-			// A retry actually happened.
-			expect(attempts).toBeGreaterThanOrEqual(2);
-			// The reset reuses one native transaction across attempts (stable id) — the whole point
-			// of aligning with the Busy reset path instead of building a fresh transaction.
-			expect(txnIds.size).toBe(1);
+			// Attempt 1 wrote its log batch before the stranded snapshot, so the retry re-committed
+			// the restored write set on the same native transaction without re-running the body.
+			expect(calls).toBe(1);
+			expect(handle!.hasDurableLog).toBe(true);
 
 			// The transaction ultimately committed its value.
 			expect(await db.get(key)).toBe('committed');

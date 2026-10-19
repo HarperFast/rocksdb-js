@@ -127,13 +127,22 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	// clear/delete the previous transaction and create a new transaction so that it can be retried
 	this->closeIterators();
+	// A durable log batch already describes this transaction's writes, so they survive the
+	// reset: a retry commits them as they are (what crash replay would apply), whether or not
+	// the caller stages anything again.
+	std::unique_ptr<rocksdb::WriteBatch> durableWrites;
 	if (this->txn) {
+		if (this->hasDurableLog()) {
+			durableWrites = std::make_unique<rocksdb::WriteBatch>(*this->txn->GetWriteBatch()->GetWriteBatch());
+		}
 		this->txn->ClearSnapshot();
 		delete this->txn;
 	}
 
 	this->logEntryBatch.reset();
-	this->touchedColumnFamilies.clear();
+	if (!durableWrites) {
+		this->touchedColumnFamilies.clear();
+	}
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
 	auto dbHandle = this->dbHandle;
@@ -150,6 +159,15 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
 	} else {
 		throw rocksdb_js::DBException("Invalid database");
+	}
+
+	if (durableWrites && durableWrites->Count() > 0) {
+		rocksdb::Status restored = this->txn->RebuildFromWriteBatch(durableWrites.get());
+		if (!restored.ok()) {
+			DEBUG_LOG("%p TransactionHandle::resetTransaction could not restore the durable write set of transaction %llu: %s\n",
+				this, (unsigned long long)this->id, restored.ToString().c_str());
+			this->durableWritesLost.store(true, std::memory_order_relaxed);
+		}
 	}
 }
 
@@ -820,8 +838,11 @@ rocksdb::Status TransactionHandle::putSync(
 	// transaction's write buffer — not deferred to commit time. This upholds
 	// the invariant that a cached version is only trusted when there is a
 	// single visible version of the record across all transactions.
-	if (status.ok() && dbHandle->enableVerificationTable) {
-		this->lockVTSlot(dbHandle, key);
+	if (status.ok()) {
+		this->durableWritesLost.store(false, std::memory_order_relaxed);
+		if (dbHandle->enableVerificationTable) {
+			this->lockVTSlot(dbHandle, key);
+		}
 	}
 
 	return status;
@@ -866,8 +887,11 @@ rocksdb::Status TransactionHandle::removeSync(
 		}
 	}
 
-	if (status.ok() && dbHandle->enableVerificationTable) {
-		this->lockVTSlot(dbHandle, key);
+	if (status.ok()) {
+		this->durableWritesLost.store(false, std::memory_order_relaxed);
+		if (dbHandle->enableVerificationTable) {
+			this->lockVTSlot(dbHandle, key);
+		}
 	}
 
 	return status;
