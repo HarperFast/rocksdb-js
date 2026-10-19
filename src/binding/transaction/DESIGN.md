@@ -60,6 +60,15 @@ The invariant: _a durable batch can be left uncommitted only by a non-conflict f
 stranded snapshot after a memtable flush between steps 2 and 4, an I/O error, a crash — never by an
 ordinary optimistic conflict; and a handle holding one is never rolled back or forgotten silently._
 
+**A durable handle keeps a durable hold.** When a post-log attempt fails (a stranded snapshot,
+`forceTryAgainForTesting`), the transient hold is not released but promoted to a durable hold the
+handle owns until the commit that lands or `close()`. Without it a later writer could log at a higher
+position and commit the same keys before the retry, so log order (what replication and crash replay
+produce) and data order would invert. Other writers are refused with `Busy` rather than blocked —
+a transactional commit takes its ordinary conflict retry, a direct `putSync` throws `ERR_BUSY` — so a
+JS thread can never wait on a hold only it can release. Writes abandoned for a dropped column family
+can never land: that handle may be aborted and its position is released, with a warning.
+
 **Why the reservation is taken by every writer.** Step 2's verdict only holds at step 4 if no
 write to those keys lands in between, and the writer that could land one is not necessarily
 logged: an unlogged transactional commit or a non-transactional `Database::PutSync/RemoveSync`

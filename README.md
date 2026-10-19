@@ -1373,7 +1373,8 @@ transaction operations are permitted.
 Once a commit attempt has written the transaction's log batch (`txn.hasDurableLog === true`),
 `abort()` and `abandonWrites()` throw `TransactionLoggedError` (`code: 'ERR_TRANSACTION_LOGGED'`)
 before changing anything: the transaction stays pending, its write set (restored across any
-reset) is the one the log describes, and the caller retries `commit()` until it succeeds. A durable
+reset) is the one the log describes, its keys stay reserved (another writer's `putSync` or commit on
+them fails with `ERR_BUSY` until it lands), and the caller retries `commit()` until it succeeds. A durable
 transaction that is dropped instead (garbage collected, or left pending by an exiting worker or a
 closing database) is not rolled back either: its log position stays uncommitted, so committed log
 readers, the flushed position recorded for crash replay, and retention (which never purges past
