@@ -17,6 +17,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "core/commit_key_reservation.h"
 #include "core/verification_table.h"
 
 namespace rocksdb_js {
@@ -363,6 +364,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	/** Records the log position and captures the write set it describes. */
 	void publishDurableLog(LogPosition position) noexcept;
+
+	/**
+	 * Keys this transaction keeps reserved between a failed post-log commit and
+	 * the retry that lands it (`CommitKeyReservation`), so no later-logged writer
+	 * can pass it on them. Released by the commit that lands or by `close()`.
+	 */
+	DurableKeyHold durableHold;
 
 	/**
 	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),

@@ -2796,10 +2796,13 @@ static rocksdb::Status reserveDirectWrite(
 		return rocksdb::Status::OK();
 	}
 	try {
-		reservation.acquireOne(
+		const bool reserved = reservation.acquireOne(
 			dbHandle.descriptor->commitReservation,
-			commitKeyHash(dbHandle.getColumnFamilyHandle()->GetID(), key));
-		return rocksdb::Status::OK();
+			commitKeyHash(dbHandle.getColumnFamilyHandle()->GetID(), key),
+			&dbHandle);
+		return reserved
+			? rocksdb::Status::OK()
+			: rocksdb::Status::Busy("Key reserved by a transaction with a durable log batch");
 	} catch (...) {
 		return rocksdb::Status::MemoryLimit();
 	}

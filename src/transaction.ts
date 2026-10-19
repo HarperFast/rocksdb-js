@@ -16,11 +16,12 @@ export class TransactionAlreadyAbortedError extends Error {
 
 /**
  * Base for commit conflicts the native layer has already recovered from by resetting the
- * transaction in place (fresh RocksDB snapshot; `committedPosition` preserved, so a staged
- * transaction-log batch stays write-once): the caller should re-run the transaction body
- * and retry the commit — the handling is identical for every subclass. `hasLog` reports
- * whether the transaction carried transaction-log entries, staged or already written (it
- * drives the default retry decision); {@link Transaction.hasDurableLog} is the durable state.
+ * transaction in place (fresh RocksDB snapshot). While {@link Transaction.hasDurableLog} is
+ * `false` the caller re-runs the transaction body and retries the commit; once it is `true`
+ * the write set the log describes was restored into the reset transaction, so the caller
+ * retries `commit()` without staging anything again. `hasLog` reports whether the
+ * transaction carried transaction-log entries, staged or already written (it drives the
+ * default retry decision).
  *
  * {@link TransactionLoggedError} deliberately does NOT extend this class: it reports a refused
  * abort, not a commit outcome, and retryability is the boundary this hierarchy expresses.

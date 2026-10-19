@@ -109,13 +109,7 @@ export type NativeTransactionOptions = {
 
 export type NativeTransaction = {
 	id: number;
-	/**
-	 * Whether a commit attempt has written this transaction's transaction-log
-	 * batch. Write-once: `false` through every pre-log outcome (an optimistic
-	 * conflict is checked before the batch is written), `true` from the first
-	 * attempt whose log write returned, across later retries, after the commit
-	 * lands, and after close.
-	 */
+	/** See `Transaction.hasDurableLog`. */
 	readonly hasDurableLog: boolean;
 	new (context: NativeDatabase, options?: NativeTransactionOptions): NativeTransaction;
 	abandonWrites(): void;

@@ -150,7 +150,9 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
 	}
-	if ((*txnHandle)->hasDurableLog()) {
+	// Refused while the durable batch's data can still land; writes abandoned for a dropped
+	// column family never will, so that handle may close (its position is released, DESIGN.md).
+	if ((*txnHandle)->hasDurableLog() && !(*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED",
 			"Cannot abort: the transaction log batch is already durable; retry commit() until it succeeds");
 	}
@@ -230,10 +232,6 @@ napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 	NAPI_RETURN_UNDEFINED();
 }
 
-/**
- * Whether a commit attempt has written this transaction's log batch. Write-once, so it stays
- * true across retries, after the commit lands, and after close.
- */
 napi_value Transaction::HasDurableLog(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_TRANSACTION_HANDLE("HasDurableLog");
@@ -608,7 +606,12 @@ static CommitPreparation prepareCommit(
 			if (!result.status.ok()) {
 				return result;
 			}
-			reservation.acquire(descriptor.commitReservation, std::move(hashes));
+			if (!reservation.acquire(descriptor.commitReservation, std::move(hashes), txnHandle.get())) {
+				// A key owed to another transaction's durable batch: an ordinary conflict.
+				conflictChecked = true;
+				result.status = rocksdb::Status::Busy("Key reserved by a transaction with a durable log batch");
+				return result;
+			}
 		} catch (...) {
 			result.status = rocksdb::Status::MemoryLimit();
 			return result;
@@ -648,11 +651,10 @@ static CommitPreparation prepareCommit(
 	} catch (const std::exception& e) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %llu: %s\n", txnHandle.get(), (unsigned long long)txnHandle->id, e.what());
 		if (appended) {
-			// The batch landed before the store's bookkeeping failed: the obligation exists and
-			// the verdict is settled, so intents are released like after any post-log outcome.
+			// The batch landed before the store's bookkeeping failed: the obligation exists. The
+			// handle keeps its writes and VT intents for the commit() that follows.
 			txnHandle->logEntryBatch.reset();
 			txnHandle->publishDurableLog(position);
-			conflictChecked = true;
 		}
 		reservation.release();
 		result.status = rocksdb::Status::Aborted(e.what());
@@ -665,6 +667,30 @@ static CommitPreparation prepareCommit(
 	conflictChecked = true;
 	crashForTesting(kCommitCrashAfterLogWrite);
 	return result;
+}
+
+/**
+ * After `txn->Commit()` returned: a durable batch whose commit must be retried
+ * keeps its keys as a durable hold, so no later-logged writer passes it; every
+ * other outcome releases them, and a landed commit releases any earlier hold.
+ */
+static void settleReservation(
+	TransactionHandle& txnHandle,
+	CommitKeyReservationScope& reservation,
+	const rocksdb::Status& status
+) {
+	if (txnHandle.hasDurableLog() && (status.IsBusy() || status.IsTryAgain())) {
+		try {
+			txnHandle.durableHold.adopt(reservation, &txnHandle);
+			return;
+		} catch (...) {
+			// Falls through to an ordinary release; the retry is still owed, just unprotected.
+		}
+	}
+	reservation.release();
+	if (status.ok()) {
+		txnHandle.durableHold.release(&txnHandle);
+	}
 }
 
 /**
@@ -762,7 +788,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 				crashForTesting(kCommitCrashAfterCommit);
 			}
 		}
-		state->reservation.release();
+		settleReservation(*txnHandle, state->reservation, state->status);
 
 		if (state->conflictChecked) {
 			// For coordinated retry: save slot pointers before
@@ -1416,7 +1442,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 	}
 	claim.release(descriptor.get());
-	reservation.release();
+	settleReservation(**txnHandle, reservation, status);
 
 	if (conflictChecked && !(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();

@@ -21,6 +21,9 @@ try {
 		code = (error as { code?: string }).code;
 	}
 	port.postMessage({ code, hasDurableLog: txn.hasDurableLog });
+	if (workerData.holdUntilMessage) {
+		await new Promise((resolve) => port.once('message', resolve));
+	}
 } catch (error) {
 	port.postMessage({ error: error instanceof Error ? error.message : String(error) });
 }

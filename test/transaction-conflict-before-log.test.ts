@@ -316,6 +316,95 @@ describe('conflict before the transaction-log write', () => {
 				}));
 		}
 
+		it('keeps its keys reserved: other writers are refused with ERR_BUSY until it lands', () =>
+			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
+				const { txn, log } = await loggedPending(db, 'audit', 'k');
+				// A direct write and an unrelated transaction's commit on the held key are refused
+				// at once, not blocked; a free key is unaffected.
+				expect(() => db.putSync('k', 'direct')).toThrow(/Resource busy|ERR_BUSY/);
+				db.putSync('other', 'free');
+				await expect(
+					db.transaction(async (other) => {
+						other.putSync('k', 'competitor');
+					})
+				).rejects.toMatchObject({ code: 'ERR_BUSY' });
+				expect(await db.get('k')).toBeUndefined();
+
+				await txn.commit();
+				expect(await db.get('k')).toBe('logged');
+				db.putSync('k', 'direct');
+				expect(db.getSync('k')).toBe('direct');
+				expect([...log.query({ start: 0 })]).toHaveLength(1);
+				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
+			}));
+
+		it('releases its keys when it is closed without committing', () =>
+			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
+				const { warnings, stop } = collectWarnings('durable transaction-log batch');
+				try {
+					const worker = new Worker(
+						createWorkerBootstrapScript(
+							resolve(__dirname, 'workers/logged-pending-exit-worker.mts')
+						),
+						{
+							eval: true,
+							workerData: { path: dbPath, log: 'audit', key: 'k', holdUntilMessage: true },
+						}
+					);
+					const exited = new Promise<void>((resolveExit) =>
+						worker.once('exit', () => resolveExit())
+					);
+					const message = await withinDeadline(
+						new Promise<unknown>((resolveMessage, reject) => {
+							worker.once('message', resolveMessage);
+							worker.once('error', reject);
+						}),
+						worker,
+						'logged-pending worker'
+					);
+					expect(message).toEqual({ code: 'ERR_TRY_AGAIN', hasDurableLog: true });
+					expect(() => db.putSync('k', 'direct')).toThrow(/Resource busy|ERR_BUSY/);
+					worker.postMessage('release');
+					await withinDeadline(exited, worker, 'logged-pending worker exit');
+					await vi.waitFor(() => expect(warnings).toHaveLength(1));
+					db.putSync('k', 'direct');
+					expect(db.getSync('k')).toBe('direct');
+				} finally {
+					stop();
+				}
+			}));
+
+		it('may be aborted once its column family is dropped, and releases its log position', () =>
+			dbRunner(
+				{ dbOptions: [{ name: 'table' }, { name: 'table' }] },
+				async ({ db, dbPath }, { db: dropper }) => {
+					const { warnings, stop } = collectWarnings('dropped column family');
+					try {
+						const { txn, log } = await loggedPending(db, 'audit', 'k');
+						dropper.dropSync();
+						await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_COLUMN_FAMILY_DROPPED' });
+						expect(() => txn.abort()).not.toThrow();
+						await vi.waitFor(() => expect(warnings).toHaveLength(1));
+						// Nothing pins the store: a later logged transaction publishes past the entry.
+						const other = RocksDatabase.open(dbPath, { name: 'other' });
+						try {
+							await other.transaction(async (t) => {
+								t.putSync('later', 1);
+								log.addEntry(Buffer.from('later'), t.id);
+							});
+							expect([...log.query({ start: 0 })].map((entry) => entry.data.toString())).toEqual([
+								'k',
+								'later',
+							]);
+						} finally {
+							other.close();
+						}
+					} finally {
+						stop();
+					}
+				}
+			));
+
 		it('commits the write set its log batch describes even when nothing is staged again', () =>
 			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
 				const log = db.useLog('audit');

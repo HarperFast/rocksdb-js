@@ -5,40 +5,54 @@
 #include <cstdint>
 #include <mutex>
 #include <span>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace rocksdb_js {
 
 /**
- * Per-database exclusion of concurrent in-process writers to the same keys for
- * the duration of a commit (see `src/binding/transaction/DESIGN.md`).
+ * Per-database exclusion of concurrent in-process writers to the same keys
+ * (see `src/binding/transaction/DESIGN.md`).
  *
  * A logged optimistic commit validates its write set before writing the
  * transaction-log batch and only then runs `txn->Commit()`, which validates
- * again. The reservation is what makes the first verdict still hold at the
- * second: every writer of the database — transactional commits, logged or
- * not, and direct `Put`/`Delete` — holds its keys here while it writes, so
- * nothing can land between the two.
+ * again. A **transient** hold is what makes the first verdict still hold at
+ * the second: every writer of the database — transactional commits, logged or
+ * not, and direct `Put`/`Delete` — holds its keys while it writes, so nothing
+ * can land between the two. A **durable** hold is what a transaction keeps on
+ * its keys once its log batch is written but its commit still has to be
+ * retried: log order would otherwise diverge from data order, since a later
+ * writer could log and commit those keys before the retry lands. A durable
+ * hold is not waited for; a colliding writer is refused with `Busy` and takes
+ * its ordinary conflict retry, which keeps the owning thread free to drive the
+ * retry that releases it.
  *
  * Keys are 64-bit hashes of (column family, key); a hash collision only makes
- * a writer wait. Acquisition is all-or-nothing under one mutex, so there is no
- * lock order to respect and no deadlock: a holder is always inside a log write
- * or a RocksDB write, neither of which waits on a reservation. Memory is
- * proportional to the keys in flight, which is why this is a set rather than
- * a stripe array — at four commit threads with 64-key transactions, stripes
- * need about 2^16 entries (2.5 MiB per database) before collisions stop
- * serializing unrelated commits.
+ * a writer wait or retry. Transient acquisition is all-or-nothing under one
+ * mutex, so there is no lock order to respect and no deadlock: a transient
+ * holder is always inside a log write or a RocksDB write, neither of which
+ * waits on a reservation. Memory is proportional to the keys in flight, which
+ * is why this is a set rather than a stripe array — at four commit threads
+ * with 64-key transactions, stripes need about 2^16 entries (2.5 MiB per
+ * database) before collisions stop serializing unrelated commits.
  */
 class CommitKeyReservation final {
 public:
-	/** Strong exception guarantee: a failed insertion leaves nothing held. */
-	void acquire(std::span<const uint64_t> hashes) {
+	/**
+	 * Takes a transient hold on every hash, waiting out other transient holders.
+	 * Returns false, holding nothing, when another owner's durable hold covers
+	 * one of them. Strong exception guarantee.
+	 */
+	[[nodiscard]] bool acquire(std::span<const uint64_t> hashes, const void* owner) {
 		std::unique_lock<std::mutex> lock(this->mutex);
 		while (this->anyHeld(hashes)) {
 			++this->waiters;
 			this->released.wait(lock);
 			--this->waiters;
+		}
+		if (this->anyDurablyHeldByOther(hashes, owner)) {
+			return false;
 		}
 		this->held.reserve(this->held.size() + hashes.size());
 		size_t inserted = 0;
@@ -52,6 +66,7 @@ public:
 			}
 			throw;
 		}
+		return true;
 	}
 
 	void release(std::span<const uint64_t> hashes) noexcept {
@@ -67,9 +82,34 @@ public:
 		this->released.notify_all();
 	}
 
+	/** Converts the caller's transient holds into durable holds owned by `owner`. */
+	void promote(std::span<const uint64_t> hashes, const void* owner) {
+		std::lock_guard<std::mutex> lock(this->mutex);
+		this->durablyHeld.reserve(this->durablyHeld.size() + hashes.size());
+		for (uint64_t hash : hashes) {
+			this->durablyHeld[hash] = owner;
+		}
+		for (uint64_t hash : hashes) {
+			this->held.erase(hash);
+		}
+		if (this->waiters > 0) {
+			this->released.notify_all();
+		}
+	}
+
+	void releaseDurable(std::span<const uint64_t> hashes, const void* owner) noexcept {
+		std::lock_guard<std::mutex> lock(this->mutex);
+		for (uint64_t hash : hashes) {
+			auto it = this->durablyHeld.find(hash);
+			if (it != this->durablyHeld.end() && it->second == owner) {
+				this->durablyHeld.erase(it);
+			}
+		}
+	}
+
 	size_t heldCount() {
 		std::lock_guard<std::mutex> lock(this->mutex);
-		return this->held.size();
+		return this->held.size() + this->durablyHeld.size();
 	}
 
 private:
@@ -82,14 +122,28 @@ private:
 		return false;
 	}
 
+	bool anyDurablyHeldByOther(std::span<const uint64_t> hashes, const void* owner) const {
+		if (this->durablyHeld.empty()) {
+			return false;
+		}
+		for (uint64_t hash : hashes) {
+			auto it = this->durablyHeld.find(hash);
+			if (it != this->durablyHeld.end() && it->second != owner) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	std::mutex mutex;
 	std::condition_variable released;
 	std::unordered_set<uint64_t> held;
+	std::unordered_map<uint64_t, const void*> durablyHeld;
 	uint32_t waiters = 0;
 };
 
 /**
- * Holds one writer's reservation; `release()` is idempotent so a commit can
+ * One writer's transient hold; `release()` is idempotent so a commit can
  * release at the right point and still rely on the destructor on error paths.
  * A single key is held inline, so a direct write allocates nothing of its own.
  */
@@ -107,20 +161,30 @@ struct CommitKeyReservationScope final {
 		this->release();
 	}
 
-	void acquire(CommitKeyReservation& target, std::vector<uint64_t> keyHashes) {
+	[[nodiscard]] bool acquire(CommitKeyReservation& target, std::vector<uint64_t> keyHashes, const void* owner) {
 		this->release();
 		this->hashes = std::move(keyHashes);
 		this->isSingle = false;
-		target.acquire(this->hashes);
+		if (!target.acquire(this->hashes, owner)) {
+			return false;
+		}
 		this->reservation = &target;
+		return true;
 	}
 
-	void acquireOne(CommitKeyReservation& target, uint64_t hash) {
+	[[nodiscard]] bool acquireOne(CommitKeyReservation& target, uint64_t hash, const void* owner) {
 		this->release();
 		this->single = hash;
 		this->isSingle = true;
-		target.acquire(std::span<const uint64_t>(&this->single, 1));
+		if (!target.acquire(std::span<const uint64_t>(&this->single, 1), owner)) {
+			return false;
+		}
 		this->reservation = &target;
+		return true;
+	}
+
+	std::span<const uint64_t> span() const {
+		return this->isSingle ? std::span<const uint64_t>(&this->single, 1) : std::span<const uint64_t>(this->hashes);
 	}
 
 	void release() noexcept {
@@ -129,16 +193,47 @@ struct CommitKeyReservationScope final {
 		}
 		CommitKeyReservation* target = this->reservation;
 		this->reservation = nullptr;
-		if (this->isSingle) {
-			target->release(std::span<const uint64_t>(&this->single, 1));
-		} else {
-			target->release(this->hashes);
+		target->release(this->span());
+		if (!this->isSingle) {
 			this->hashes.clear();
 		}
 	}
 
 	bool active() const {
 		return this->reservation != nullptr;
+	}
+};
+
+/**
+ * The durable hold a transaction keeps between a failed post-log commit and
+ * the retry that lands it, released by that commit or by `close()`.
+ */
+struct DurableKeyHold final {
+	CommitKeyReservation* reservation = nullptr;
+	std::vector<uint64_t> hashes;
+
+	/** Takes over `scope`'s transient hold as a durable hold owned by `owner`. */
+	void adopt(CommitKeyReservationScope& scope, const void* owner) {
+		if (!scope.active()) {
+			return;
+		}
+		CommitKeyReservation* target = scope.reservation;
+		std::vector<uint64_t> taken(scope.span().begin(), scope.span().end());
+		target->promote(taken, owner);
+		scope.reservation = nullptr;
+		scope.hashes.clear();
+		this->release(owner);
+		this->reservation = target;
+		this->hashes = std::move(taken);
+	}
+
+	void release(const void* owner) noexcept {
+		if (this->reservation == nullptr) {
+			return;
+		}
+		this->reservation->releaseDurable(this->hashes, owner);
+		this->reservation = nullptr;
+		this->hashes.clear();
 	}
 };
 

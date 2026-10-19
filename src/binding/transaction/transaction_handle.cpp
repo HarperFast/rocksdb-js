@@ -464,20 +464,29 @@ void TransactionHandle::close() {
 	// restart replays it instead of publishing an entry whose data was never applied. Only a
 	// non-conflict failure, a dropped handle, or teardown can reach this (DESIGN.md).
 	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
+		auto store = this->boundLogStore.lock();
+		// Writes abandoned for a dropped column family can never land, so their entry is not an
+		// obligation: the position is released like before, and the warning says why.
+		const bool unlandable = this->writesAbandoned.load(std::memory_order_relaxed);
+		if (unlandable && store) {
+			store->commitAborted(this->committedPosition);
+		}
 		try {
-			auto store = this->boundLogStore.lock();
 			std::ostringstream msg;
 			msg << "Transaction " << this->id << " closed with a durable transaction-log batch"
 				<< (store ? " in store \"" + store->name + "\"" : std::string())
 				<< " at sequence " << this->committedPosition.logSequenceNumber
 				<< " offset " << this->committedPosition.positionInLogFile
-				<< " that was never committed; the position stays uncommitted so the committed-read"
-				<< " watermark holds and a restart replays it";
+				<< (unlandable
+					? " whose writes name a dropped column family; the entry is released without its data"
+					: " that was never committed; the position stays uncommitted so the committed-read"
+					  " watermark holds and a restart replays it");
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 		} catch (...) {
 			// Best effort: teardown must not throw for a diagnostic.
 		}
 	}
+	this->durableHold.release(this);
 
 	// If the transaction was bound to a log store but writeBatch() was never called (committedPosition
 	// is still zero), the pendingTransactionCount was incremented at bind time but never decremented
