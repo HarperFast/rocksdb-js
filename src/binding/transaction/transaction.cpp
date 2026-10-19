@@ -152,7 +152,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 	// Refused while the durable batch's data can still land; writes abandoned for a dropped
 	// column family never will, so that handle may close (its position is released, DESIGN.md).
-	if ((*txnHandle)->hasDurableLog() && !(*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
+	if ((*txnHandle)->hasDurableLog() && !(*txnHandle)->durableWritesUnlandable()) {
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED",
 			"Cannot abort: the transaction log batch is already durable; retry commit() until it succeeds");
 	}
@@ -595,9 +595,11 @@ static CommitPreparation prepareCommit(
 	CommitPreparation result;
 	result.hasLogEntries = txnHandle->logEntryBatch != nullptr || txnHandle->hasDurableLog();
 	if (txnHandle->durableWritesLost.load(std::memory_order_relaxed)) {
-		result.status = rocksdb::Status::Aborted(
-			"The durable write set could not be restored after a retry; retry the commit again");
-		return result;
+		if (!txnHandle->restoreDurableWrites(&descriptor)) {
+			result.status = rocksdb::Status::MemoryLimit();
+			return result;
+		}
+		txnHandle->durableWritesLost.store(false, std::memory_order_relaxed);
 	}
 	if (descriptor.mode == DBMode::Optimistic) {
 		try {
@@ -607,7 +609,6 @@ static CommitPreparation prepareCommit(
 				return result;
 			}
 			if (!reservation.acquire(descriptor.commitReservation, std::move(hashes), txnHandle.get())) {
-				// A key owed to another transaction's durable batch: an ordinary conflict.
 				conflictChecked = true;
 				result.status = rocksdb::Status::Busy("Key reserved by a transaction with a durable log batch");
 				return result;
@@ -652,11 +653,12 @@ static CommitPreparation prepareCommit(
 		DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %llu: %s\n", txnHandle.get(), (unsigned long long)txnHandle->id, e.what());
 		if (appended) {
 			// The batch landed before the store's bookkeeping failed: the obligation exists. The
-			// handle keeps its writes and VT intents for the commit() that follows.
+			// handle keeps its writes, VT intents and (through the caller) its key hold.
 			txnHandle->logEntryBatch.reset();
 			txnHandle->publishDurableLog(position);
+		} else {
+			reservation.release();
 		}
-		reservation.release();
 		result.status = rocksdb::Status::Aborted(e.what());
 		result.jsErrorCode = "ERR_TRANSACTION_LOG_WRITE";
 		return result;
@@ -679,7 +681,7 @@ static void settleReservation(
 	CommitKeyReservationScope& reservation,
 	const rocksdb::Status& status
 ) {
-	if (txnHandle.hasDurableLog() && (status.IsBusy() || status.IsTryAgain())) {
+	if (txnHandle.hasDurableLog() && !status.ok()) {
 		try {
 			txnHandle.durableHold.adopt(reservation, &txnHandle);
 			return;
@@ -841,7 +843,11 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// against current state instead. The caller must re-run the transaction body so the
 			// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
 			if (txnHandle->dbHandle && !txnHandle->dbHandle->isCancelled()) {
-				txnHandle->resetTransaction(descriptor);
+				// A durable handle's intact batch is copied now, on the failure path only; if that
+				// copy cannot be made the transaction stays as it is and is retried unreset.
+				if (!txnHandle->hasDurableLog() || txnHandle->captureDurableWrites()) {
+					txnHandle->resetTransaction(descriptor);
+				}
 			} else {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			}
@@ -1423,6 +1429,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			(*txnHandle)->state = TransactionState::Pending;
 		}
 		claim.release(descriptor.get());
+		settleReservation(**txnHandle, reservation, prepared.status);
 		if (conflictChecked && !(*txnHandle)->lockedVTSlots.empty()) {
 			(*txnHandle)->releaseIntent();
 		}
@@ -1473,9 +1480,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		if (status.IsBusy() || status.IsTryAgain()) {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Commit failed with %s, resetting transaction\n",
 				(*txnHandle).get(), status.IsBusy() ? "IsBusy" : "TryAgain");
-			// Reset onto a fresh snapshot so the retry re-drives the commit against current state
-			// (committedPosition survives, keeping the WAL write-once, #668). See async Commit.
-			(*txnHandle)->resetTransaction(descriptor.get());
+			if (!(*txnHandle)->hasDurableLog() || (*txnHandle)->captureDurableWrites()) {
+				(*txnHandle)->resetTransaction(descriptor.get());
+			}
 		}
 		if ((*txnHandle)->state == TransactionState::Committing) {
 			(*txnHandle)->state = TransactionState::Pending;
@@ -1792,6 +1799,9 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 	}
+	if ((*txnHandle)->hasDurableLog()) {
+		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED", "Transaction write set is fixed by its durable log batch; retry commit()");
+	}
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
@@ -1817,6 +1827,9 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 	// THROW_IF_READONLY((*txnHandle)->dbHandle->descriptor, "Remove failed: ");
 	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
+	}
+	if ((*txnHandle)->hasDurableLog()) {
+		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED", "Transaction write set is fixed by its durable log batch; retry commit()");
 	}
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
@@ -1864,7 +1877,7 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 		}
 		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction log batch is already durable");
 	}
-	if ((*txnHandle)->logEntryBatch ||
+	if (((*txnHandle)->logEntryBatch && !(*txnHandle)->logBatchCarried) ||
 		(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
 		if (isIdempotent) {
 			NAPI_RETURN_UNDEFINED();
@@ -1878,6 +1891,9 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 		(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
 	} else {
 		(*txnHandle)->startTimestamp = timestampMs;
+	}
+	if ((*txnHandle)->logEntryBatch) {
+		(*txnHandle)->logEntryBatch->timestamp = (*txnHandle)->startTimestamp;
 	}
 
 	NAPI_RETURN_UNDEFINED();

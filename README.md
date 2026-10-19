@@ -282,12 +282,13 @@ Sets global database settings.
     open keep their policy. Pessimistic, read-only and secondary opens are unaffected.
     - `'parallel'` locks the commit's keys in a per-database pool of `occLockBuckets` mutexes,
       checks for conflicts, and holds the locks through the write. Commits on different threads
-      that touch different buckets can then be batched into one RocksDB write. Non-transactional
-      writes (`db.putSync()` and friends) take no bucket, so one that lands between a commit's
-      conflict check and its write is overwritten by that commit without an `ERR_BUSY`.
+      that touch different buckets can then be batched into one RocksDB write. Every optimistic
+      writer, transactional or not, also holds its keys in a per-database reservation while it
+      writes (see "Transaction Retry Logic"), so a non-transactional write cannot land between a
+      commit's conflict check and its write; `db.putSync()`/`removeSync()` throw `ERR_BUSY` only
+      while a transaction whose log batch is durable still holds the key.
     - `'serial'` checks for conflicts inside RocksDB's write group instead, and allocates no bucket
-      pool, which saves its memory. Because the check and the write happen in one step, a
-      non-transactional write cannot land between them and be silently overwritten, and a column
+      pool, which saves its memory. Because the check and the write happen in one step, a column
       family cannot be dropped between them. The cost: RocksDB never batches a serial-validated
       commit with another writer, including the database's other commit threads, so it gives back
       what `commitThreads` gains. With four worker threads
@@ -1286,12 +1287,13 @@ transaction throws `TransactionLoggedError` (`ERR_TRANSACTION_LOGGED`) without r
 back, and `transaction()` rethrows that error with the handle on `error.txn` when the callback
 itself fails on a retry.
 
-Re-stage the transaction's log entries on every attempt: after a pre-log conflict they are the
-only copy, and once the batch is durable the native layer ignores the re-stage (`hasLog` on the
-conflict error reports that the transaction carried log entries, staged or written, which is what
-makes a logged transaction retry by default). Once the batch is durable, `transaction()` and
-`transactionSync()` no longer re-run the callback: the write set the log describes survives the
-reset and is committed as it is.
+A log batch refused before the log write is carried into the retry, so a callback may stage its
+entries once or on every attempt (a re-stage replaces the carried batch; once the batch is durable
+a re-stage is ignored). `hasLog` on the conflict error reports that the transaction carried log
+entries, staged or written, which is what makes a logged transaction retry by default. Once the
+batch is durable the write set it describes is fixed: `put()`/`remove()` on the transaction throw
+`ERR_TRANSACTION_LOGGED`, and `transaction()` / `transactionSync()` re-commit it without re-running
+the callback.
 
 When `coordinatedRetry: true`, the retry behavior changes for `IsBusy` conflicts: instead of
 rejecting (or retrying immediately and potentially conflicting again), the commit waits until the
@@ -1312,9 +1314,9 @@ In particular `0` does not disable it: `0`, negative, and unparseable values all
 
 #### Migrating from the write-then-check order (rocksdb-js ≤ 2.12)
 
-- Stage transaction-log entries on every attempt. A callback that added its entry only on
-  `attempt === 1` relied on the entry being written before the conflict; it now commits the
-  retry without an audit entry.
+- A callback that stages its transaction-log entries only on `attempt === 1` keeps working: a
+  batch refused before the log write is carried into the retry, and a retry that stages again
+  replaces it.
 - `ERR_TRANSACTION_ABANDONED` is no longer thrown. `abort()` on a transaction whose batch is
   durable throws `ERR_TRANSACTION_LOGGED` (`TransactionLoggedError`) and changes nothing; an
   exhausted unlogged retry rethrows the last conflict error.
@@ -1371,10 +1373,11 @@ callback returns, so you shouldn't need to call it, but it's ok to do so. Once c
 transaction operations are permitted.
 
 Once a commit attempt has written the transaction's log batch (`txn.hasDurableLog === true`),
-`abort()` and `abandonWrites()` throw `TransactionLoggedError` (`code: 'ERR_TRANSACTION_LOGGED'`)
-before changing anything: the transaction stays pending, its write set (restored across any
-reset) is the one the log describes, its keys stay reserved (another writer's `putSync` or commit on
-them fails with `ERR_BUSY` until it lands), and the caller retries `commit()` until it succeeds. A durable
+`abort()`, `abandonWrites()`, `put()` and `remove()` throw `TransactionLoggedError`
+(`code: 'ERR_TRANSACTION_LOGGED'`) before changing anything: the transaction stays pending, its
+write set (restored across any reset) is the one the log describes, its keys stay reserved
+(another writer's `putSync` or commit on them fails with `ERR_BUSY` until it lands), and the caller
+retries `commit()` until it succeeds. A durable
 transaction that is dropped instead (garbage collected, or left pending by an exiting worker or a
 closing database) is not rolled back either: its log position stays uncommitted, so committed log
 readers, the flushed position recorded for crash replay, and retention (which never purges past

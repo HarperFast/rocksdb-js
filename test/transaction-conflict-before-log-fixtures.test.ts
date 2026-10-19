@@ -27,12 +27,22 @@ function run(
 			env: { ...process.env, ...env },
 		});
 		let output = '';
+		const timer = setTimeout(() => {
+			child.kill('SIGKILL');
+			reject(new Error(`${fixture} did not exit within 45s: ${output}`));
+		}, 45_000);
 		child.stdout.setEncoding('utf8');
 		child.stderr.setEncoding('utf8');
 		child.stdout.on('data', (chunk) => (output += chunk));
 		child.stderr.on('data', (chunk) => (output += chunk));
-		child.on('error', reject);
-		child.on('close', (code, signal) => resolve({ code, signal, output }));
+		child.on('error', (error) => {
+			clearTimeout(timer);
+			reject(error);
+		});
+		child.on('close', (code, signal) => {
+			clearTimeout(timer);
+			resolve({ code, signal, output });
+		});
 	});
 }
 

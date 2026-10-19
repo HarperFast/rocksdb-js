@@ -1193,8 +1193,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		this.notify('begin-transaction');
 
 		for (let attempt = 1; ; attempt++) {
-			// A durable batch fixes the write set, so the retry commits it instead of re-running
-			// the callback.
 			if (!txn.hasDurableLog) {
 				try {
 					result = await callback(txn, attempt);
@@ -1211,7 +1209,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					return;
 				}
 				if (this.#mayRetry(txn, commitErr, attempt, maxRetries, options)) {
-					// retry the transaction (native reset gave it a fresh snapshot; re-run the body)
+					if (txn.hasDurableLog) {
+						await new Promise<void>((resolveTick) => setImmediate(resolveTick));
+					}
 					continue;
 				}
 
@@ -1280,8 +1280,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 
 		const maxRetries = options?.maxRetries ?? 3;
-		// One handle for every attempt: a conflict resets it onto a fresh snapshot, and a batch
-		// its first attempt already logged must not be logged again by a second handle.
 		const txn = new Transaction(this.store, options);
 
 		const commitAttempt = (attempt: number, value: T | PromiseLike<T> | void) => {
@@ -1300,7 +1298,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			}
 		};
 
-		// `carried` is the callback's value once a durable batch stops it from re-running.
 		const runAttempts = (attempt: number, carried?: T): T | PromiseLike<T> | void => {
 			let result: T | PromiseLike<T> | undefined = carried;
 			for (; ; attempt++) {

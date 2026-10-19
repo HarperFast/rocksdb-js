@@ -3,7 +3,7 @@
 // ordinary conflict retry leaves no durable entry; `hasDurableLog` reports the authoritative
 // native state; a handle whose batch is durable can neither be aborted nor silently dropped.
 
-import { RocksDatabase, registryStatus } from '../src/index.ts';
+import { RocksDatabase, registryStatus, type TransactionLog } from '../src/index.ts';
 import {
 	constants,
 	forceTryAgainForTesting,
@@ -28,6 +28,10 @@ const forceGC: (() => void) | undefined =
 			? () => (globalThis as unknown as { Bun: { gc: (sync: boolean) => void } }).Bun.gc(true)
 			: undefined;
 
+/**
+ * Physical size of a store's segments, valid only before any `query()` maps the active segment
+ * (Windows pre-extends a mapped segment to its capacity).
+ */
 async function logBytes(dbPath: string, name: string): Promise<number> {
 	let size = 0;
 	for (const file of await readdir(join(dbPath, 'transaction_logs', name)).catch(() => [])) {
@@ -39,6 +43,14 @@ async function logBytes(dbPath: string, name: string): Promise<number> {
 
 function oneEntryBytes(payloadLength: number): number {
 	return TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + payloadLength;
+}
+
+/** The store's own write counters: one batch, `entries` entries, whatever was mapped since. */
+function expectLoggedOnce(log: TransactionLog, entries = 1, bytes?: number) {
+	const totals = log.getStats().totals;
+	expect(totals.transactionsWritten).toBe(1);
+	expect(totals.entriesWritten).toBe(entries);
+	if (bytes !== undefined) expect(totals.bytesWritten).toBe(bytes);
 }
 
 type Position = { sequence: number; offset: number };
@@ -127,9 +139,32 @@ describe('conflict before the transaction-log write', () => {
 				expect(handle!.hasDurableLog).toBe(true);
 				expect(await db.get('k')).toBe('committed');
 				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(payload.length));
+				expectLoggedOnce(log, 1);
 				expect([...log.query({ start: 0 })]).toHaveLength(1);
 			}));
 	}
+
+	it('carries a log batch staged only on the first attempt across a pre-log refusal', () =>
+		dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
+			const log = db.useLog('audit');
+			await db.put('k', 'initial');
+			let attempts = 0;
+			await db.transaction(
+				async (txn, attempt) => {
+					attempts = attempt;
+					await txn.get('k');
+					if (attempt === 1) await db.put('k', 'conflict');
+					txn.putSync('k', 'committed');
+					// The old write-then-check contract: stage the entry once.
+					if (attempt === 1) log.addEntry(Buffer.from('once'), txn.id);
+				},
+				{ retryOnBusy: true, maxRetries: 5 }
+			);
+			expect(attempts).toBe(2);
+			expect(await db.get('k')).toBe('committed');
+			expect([...log.query({ start: 0 })].map((entry) => entry.data.toString())).toEqual(['once']);
+			expectLoggedOnce(log, 1);
+		}));
 
 	it('a rejected manual commit leaves the handle unlogged and abortable', () =>
 		dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
@@ -236,18 +271,23 @@ describe('conflict before the transaction-log write', () => {
 				expect(caught).toMatchObject({ code: 'ERR_TRANSACTION_LOGGED', txn });
 				expect(txn.hasDurableLog).toBe(true);
 
-				// Still pending and usable: the retry re-stages its writes (the log batch is write-once).
-				txn.putSync('k', 'logged');
+				// Its write set is fixed by the durable batch: staging is refused, the re-commit lands it.
+				expect(() => txn.putSync('k', 'other')).toThrow(
+					expect.objectContaining({ code: 'ERR_TRANSACTION_LOGGED' })
+				);
+				expect(() => txn.removeSync('k')).toThrow(
+					expect.objectContaining({ code: 'ERR_TRANSACTION_LOGGED' })
+				);
 				log.addEntry(Buffer.from('k'), txn.id);
 				await txn.commit();
 				expect(txn.hasDurableLog).toBe(true);
 				expect(await db.get('k')).toBe('logged');
-				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
+				expectLoggedOnce(log, 1);
 				expect([...log.query({ start: 0 })]).toHaveLength(1);
 			}));
 
 		it('refuses abort() after a rejected commitSync too', () =>
-			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
+			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
 				const log = db.useLog('audit');
 				const txn = new Transaction(db.store);
 				txn.putSync('k', 'logged');
@@ -258,10 +298,9 @@ describe('conflict before the transaction-log write', () => {
 				);
 				expect(txn.hasDurableLog).toBe(true);
 				expect(() => txn.abort()).toThrow(TransactionLoggedError);
-				txn.putSync('k', 'logged');
 				txn.commitSync();
 				expect(db.getSync('k')).toBe('logged');
-				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
+				expectLoggedOnce(log, 1);
 			}));
 
 		for (const mode of ['async', 'sync'] as const) {
@@ -317,7 +356,7 @@ describe('conflict before the transaction-log write', () => {
 		}
 
 		it('keeps its keys reserved: other writers are refused with ERR_BUSY until it lands', () =>
-			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
+			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
 				const { txn, log } = await loggedPending(db, 'audit', 'k');
 				// A direct write and an unrelated transaction's commit on the held key are refused
 				// at once, not blocked; a free key is unaffected.
@@ -335,7 +374,7 @@ describe('conflict before the transaction-log write', () => {
 				db.putSync('k', 'direct');
 				expect(db.getSync('k')).toBe('direct');
 				expect([...log.query({ start: 0 })]).toHaveLength(1);
-				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
+				expectLoggedOnce(log, 1);
 			}));
 
 		it('releases its keys when it is closed without committing', () =>
@@ -358,6 +397,7 @@ describe('conflict before the transaction-log write', () => {
 						new Promise<unknown>((resolveMessage, reject) => {
 							worker.once('message', resolveMessage);
 							worker.once('error', reject);
+							worker.once('exit', () => reject(new Error('worker exited without a result')));
 						}),
 						worker,
 						'logged-pending worker'
@@ -405,8 +445,27 @@ describe('conflict before the transaction-log write', () => {
 				}
 			));
 
+		it('keeps the obligation when only some of its families were dropped', () =>
+			dbRunner(
+				{ dbOptions: [{ name: 'table' }, { name: 'table' }, { name: 'other' }] },
+				async ({ db }, { db: dropper }, { db: other }) => {
+					const log = db.useLog('audit');
+					const txn = new Transaction(db.store);
+					txn.putSync('k', 'in-table');
+					other.putSync('j', 'in-other', { transaction: txn });
+					log.addEntry(Buffer.from('kj'), txn.id);
+					forceTryAgainForTesting(1);
+					await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_TRY_AGAIN' });
+					dropper.dropSync();
+					await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_COLUMN_FAMILY_DROPPED' });
+					// The write to the surviving family never landed, so the entry stays an obligation.
+					expect(() => txn.abort()).toThrow(TransactionLoggedError);
+					expect([...log.query({ start: 0 })]).toHaveLength(0);
+				}
+			));
+
 		it('commits the write set its log batch describes even when nothing is staged again', () =>
-			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
+			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
 				const log = db.useLog('audit');
 				const txn = new Transaction(db.store);
 				txn.putSync('a', 1);
@@ -416,13 +475,15 @@ describe('conflict before the transaction-log write', () => {
 				await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_TRY_AGAIN' });
 				expect(txn.hasDurableLog).toBe(true);
 				expect(await txn.get('a')).toBe(1);
-				// A partial re-stage changes one value; the other still lands from the durable set.
-				txn.putSync('b', 3);
+				// The write set is what the log describes: nothing can change it, and all of it lands.
+				expect(() => txn.putSync('b', 3)).toThrow(
+					expect.objectContaining({ code: 'ERR_TRANSACTION_LOGGED' })
+				);
 				await txn.commit();
 				expect(await db.get('a')).toBe(1);
-				expect(await db.get('b')).toBe(3);
+				expect(await db.get('b')).toBe(2);
 				expect([...log.query({ start: 0 })]).toHaveLength(1);
-				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(2));
+				expectLoggedOnce(log, 1, TRANSACTION_LOG_ENTRY_HEADER_SIZE + 2);
 			}));
 
 		it('transactionSync aborts the handle and rethrows when an async callback rejects', () =>
@@ -563,6 +624,7 @@ describe('conflict before the transaction-log write', () => {
 					(resolveMessage, reject) => {
 						worker.once('message', resolveMessage);
 						worker.once('error', reject);
+						worker.once('exit', () => reject(new Error('worker exited without a result')));
 					}
 				);
 				let competitorDone = 0;
@@ -592,7 +654,7 @@ describe('conflict before the transaction-log write', () => {
 				expect(directResult.done - windowStart).toBeGreaterThanOrEqual(1400);
 				expect(competitorDone - windowStart).toBeGreaterThanOrEqual(1400);
 				expect(['direct', 'competitor']).toContain(await db.get('k'));
-				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
+				expectLoggedOnce(log, 1);
 				expect([...log.query({ start: 0 })]).toHaveLength(1);
 				await withinDeadline(exited, worker, 'worker exit');
 			}));
@@ -613,6 +675,7 @@ describe('conflict before the transaction-log write', () => {
 					(resolveMessage, reject) => {
 						worker.once('message', resolveMessage);
 						worker.once('error', reject);
+						worker.once('exit', () => reject(new Error('worker exited without a result')));
 					}
 				);
 				// Give the worker time to open the database before the JS thread blocks.

@@ -55,10 +55,10 @@ export class TransactionTryAgainError extends TransactionRetryableError {
 }
 
 /**
- * `abort()` or `abandonWrites()` was refused because a commit attempt already wrote the
- * transaction's log batch ({@link Transaction.hasDurableLog}). Nothing was changed: the
- * transaction is still pending with its staged writes, and the caller must keep calling
- * `commit()` until it succeeds, so the data the log already describes lands.
+ * `abort()`, `abandonWrites()`, `put()` or `remove()` was refused because a commit attempt
+ * already wrote the transaction's log batch ({@link Transaction.hasDurableLog}). Nothing was
+ * changed: the transaction is still pending with the write set the log describes, and the
+ * caller keeps calling `commit()` until it succeeds.
  */
 export class TransactionLoggedError extends Error {
 	readonly code = 'ERR_TRANSACTION_LOGGED';

@@ -2848,6 +2848,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		if (txnHandle->writesAbandoned.load(std::memory_order_relaxed)) {
 			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 		}
+		if (txnHandle->hasDurableLog()) {
+			NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED", "Transaction write set is fixed by its durable log batch; retry commit()");
+		}
 		status = txnHandle->putSync(
 			keySlice,
 			valueSlice,
@@ -2938,6 +2941,9 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		}
 		if (txnHandle->writesAbandoned.load(std::memory_order_relaxed)) {
 			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
+		}
+		if (txnHandle->hasDurableLog()) {
+			NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED", "Transaction write set is fixed by its durable log batch; retry commit()");
 		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {

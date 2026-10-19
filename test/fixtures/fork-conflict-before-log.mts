@@ -91,7 +91,6 @@ try {
 	refused = error;
 }
 assert(refused instanceof TransactionLoggedError, 'abort must be refused');
-logged.putSync('j', 'logged');
 if (mode === 'async') {
 	await logged.commit();
 } else {

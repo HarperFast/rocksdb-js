@@ -66,8 +66,11 @@ handle owns until the commit that lands or `close()`. Without it a later writer 
 position and commit the same keys before the retry, so log order (what replication and crash replay
 produce) and data order would invert. Other writers are refused with `Busy` rather than blocked —
 a transactional commit takes its ordinary conflict retry, a direct `putSync` throws `ERR_BUSY` — so a
-JS thread can never wait on a hold only it can release. Writes abandoned for a dropped column family
-can never land: that handle may be aborted and its position is released, with a warning.
+JS thread can never wait on a hold only it can release. A transient wait is bounded by the holder's
+own write, so a stalled holder delays a close exactly as a stalled commit always did. A batch whose
+every write names a dropped column family can never land: that handle may be aborted and its
+position is released, with a warning; a batch with writes to a surviving family keeps its
+obligation (abort stays refused; a dropped handle pins, and a restart replays the survivors).
 
 **Why the reservation is taken by every writer.** Step 2's verdict only holds at step 4 if no
 write to those keys lands in between, and the writer that could land one is not necessarily
@@ -88,14 +91,19 @@ API: `optimistic_validation.cpp` declares it with its v11.8.1 signature and call
 transaction's own pointer. A signature change on upgrade fails the link;
 `test/native/optimistic_validation_test.cc` fails if the verdict stops matching `Commit()`.
 
+**A refused batch is carried.** A pre-log refusal keeps the staged log batch
+(`logBatchCarried`) so a caller that staged it once still logs it on the retry; a retry that stages
+again replaces it. This keeps the write-then-check era's callers correct without a lockstep change.
+
 **`hasDurableLog`** (`TransactionHandle::logDurable`, `Transaction.hasDurableLog`): false through
 every pre-log outcome, true from the first attempt whose log write returned, across retries (the
 batch is write-once, #668), after the commit lands, and after close. `abort()` and
-`abandonWrites()` refuse with `ERR_TRANSACTION_LOGGED` before touching anything while it is true;
-the caller retries `commit()` until it succeeds. The RocksDB write set a durable batch describes
-survives `resetTransaction()` (`RebuildFromWriteBatch` into the fresh transaction), so a
-re-commit lands what the log says even if nothing is staged again; a caller that re-stages
-overwrites the same keys. `RocksDatabase.transaction()` / `transactionSync()` therefore re-commit
+`abandonWrites()`, `putSync()` and `removeSync()` refuse with `ERR_TRANSACTION_LOGGED` before
+touching anything while it is true; the caller retries `commit()` until it succeeds. The RocksDB
+write set a durable batch describes is copied before the log write (`captureDurableWrites`, so an
+allocation failure refuses without a log byte) and rebuilt by every `resetTransaction()`
+(`restoreDurableWrites`, VT intents included), so a re-commit lands exactly what the log says; a
+rebuild that fails is retried by the next commit. `RocksDatabase.transaction()` / `transactionSync()` therefore re-commit
 such a handle past `maxRetries` and `retryOnBusy` without re-running the callback, hand it back on
 `TransactionLoggedError.txn` when a non-retryable error follows, and `transactionSync` reuses one
 handle across attempts in an iterative loop.

@@ -124,16 +124,104 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	this->createdAt = std::chrono::steady_clock::now();
 }
 
-void TransactionHandle::publishDurableLog(LogPosition position) noexcept {
-	this->committedPosition = position;
+bool TransactionHandle::captureDurableWrites() noexcept {
 	try {
 		this->durableWrites = std::make_unique<rocksdb::WriteBatch>(*this->txn->GetWriteBatch()->GetWriteBatch());
 		this->durableVtSlots = this->lockedVTSlots;
+		return true;
 	} catch (...) {
 		this->durableWrites.reset();
 		this->durableVtSlots.clear();
+		return false;
 	}
+}
+
+void TransactionHandle::publishDurableLog(LogPosition position) noexcept {
+	this->committedPosition = position;
 	this->logDurable.store(true, std::memory_order_release);
+}
+
+namespace {
+
+struct ColumnFamilyIds final : rocksdb::WriteBatch::Handler {
+	std::vector<uint32_t> ids;
+
+	rocksdb::Status PutCF(uint32_t id, const rocksdb::Slice&, const rocksdb::Slice&) override {
+		this->ids.push_back(id);
+		return rocksdb::Status::OK();
+	}
+	rocksdb::Status DeleteCF(uint32_t id, const rocksdb::Slice&) override {
+		this->ids.push_back(id);
+		return rocksdb::Status::OK();
+	}
+	rocksdb::Status SingleDeleteCF(uint32_t id, const rocksdb::Slice&) override {
+		this->ids.push_back(id);
+		return rocksdb::Status::OK();
+	}
+	rocksdb::Status MergeCF(uint32_t id, const rocksdb::Slice&, const rocksdb::Slice&) override {
+		this->ids.push_back(id);
+		return rocksdb::Status::OK();
+	}
+};
+
+} // namespace
+
+bool TransactionHandle::durableWritesUnlandable() const noexcept {
+	const rocksdb::WriteBatch* batch = this->durableWrites
+		? this->durableWrites.get()
+		: (this->txn ? this->txn->GetWriteBatch()->GetWriteBatch() : nullptr);
+	if (!batch || batch->Count() == 0) {
+		return false;
+	}
+	try {
+		ColumnFamilyIds written;
+		if (!batch->Iterate(&written).ok()) {
+			return false;
+		}
+		for (uint32_t id : written.ids) {
+			bool retired = false;
+			this->touchedColumnFamilies.forEach([&](const TouchedColumnFamily& touched) {
+				auto column = touched.descriptor.lock();
+				if (column && column->column && column->column->GetID() == id && column->lifetime.isRetired()) {
+					retired = true;
+				}
+			});
+			if (!retired) {
+				return false;
+			}
+		}
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
+bool TransactionHandle::restoreDurableWrites(DBDescriptor* descriptor) noexcept {
+	if (!this->durableWrites) {
+		return false;
+	}
+	try {
+		if (!this->txn->RebuildFromWriteBatch(this->durableWrites.get()).ok()) {
+			return false;
+		}
+		if (!this->durableVtSlots.empty()) {
+			auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+			if (vt) {
+				this->lockedVTSlots.reserve(this->lockedVTSlots.size() + this->durableVtSlots.size());
+				this->heldTrackers.reserve(this->heldTrackers.size() + this->durableVtSlots.size());
+				const uint64_t dbId = descriptor->vtEpoch;
+				for (auto* slot : this->durableVtSlots) {
+					if (LockTracker* tracker = vt->lockSlotForWrite(slot, dbId)) {
+						this->lockedVTSlots.push_back(slot);
+						this->heldTrackers.push_back(tracker);
+					}
+				}
+			}
+		}
+		return true;
+	} catch (...) {
+		return false;
+	}
 }
 
 void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
@@ -144,10 +232,15 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 		delete this->txn;
 	}
 
-	this->logEntryBatch.reset();
 	// A durable batch's write set survives the reset (it is what the log describes and what
-	// crash replay would apply), and so do the families it names.
+	// crash replay would apply), and so do the families it names. A batch refused before the
+	// log write is carried so a caller that staged it only once still logs it.
 	const bool restoreDurable = this->hasDurableLog();
+	if (restoreDurable) {
+		this->logEntryBatch.reset();
+	} else if (this->logEntryBatch) {
+		this->logBatchCarried = true;
+	}
 	if (!restoreDurable) {
 		this->touchedColumnFamilies.clear();
 	}
@@ -172,28 +265,7 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	if (!restoreDurable) {
 		return;
 	}
-	if (!this->durableWrites) {
-		this->durableWritesLost.store(true, std::memory_order_relaxed);
-		return;
-	}
-	bool restored = false;
-	try {
-		restored = this->txn->RebuildFromWriteBatch(this->durableWrites.get()).ok();
-		if (restored && !this->durableVtSlots.empty()) {
-			auto* vt = DBSettings::getInstance().getVerificationTableRaw();
-			if (vt) {
-				const uint64_t dbId = descriptor->vtEpoch;
-				for (auto* slot : this->durableVtSlots) {
-					if (LockTracker* tracker = vt->lockSlotForWrite(slot, dbId)) {
-						this->lockedVTSlots.push_back(slot);
-						this->heldTrackers.push_back(tracker);
-					}
-				}
-			}
-		}
-	} catch (...) {
-		restored = false;
-	}
+	const bool restored = this->restoreDurableWrites(descriptor);
 	DEBUG_LOG("%p TransactionHandle::resetTransaction restored durable write set of transaction %llu: %s\n",
 		this, (unsigned long long)this->id, restored ? "ok" : "failed");
 	this->durableWritesLost.store(!restored, std::memory_order_relaxed);
@@ -231,6 +303,10 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 			"(WAL already written at seq %u)\n",
 			this, (unsigned long long)this->id, this->committedPosition.logSequenceNumber);
 		return;
+	}
+	if (this->logBatchCarried) {
+		this->logBatchCarried = false;
+		this->logEntryBatch.reset();
 	}
 
 	// check if this transaction is already bound to a different log store
@@ -465,9 +541,9 @@ void TransactionHandle::close() {
 	// non-conflict failure, a dropped handle, or teardown can reach this (DESIGN.md).
 	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
 		auto store = this->boundLogStore.lock();
-		// Writes abandoned for a dropped column family can never land, so their entry is not an
-		// obligation: the position is released like before, and the warning says why.
-		const bool unlandable = this->writesAbandoned.load(std::memory_order_relaxed);
+		// A batch whose every write names a dropped column family can never land, so its entry
+		// is not an obligation: the position is released like before, and the warning says why.
+		const bool unlandable = this->durableWritesUnlandable();
 		if (unlandable && store) {
 			store->commitAborted(this->committedPosition);
 		}
@@ -842,6 +918,9 @@ rocksdb::Status TransactionHandle::putSync(
 		DEBUG_LOG("%p TransactionHandle::putSync Transaction is not in pending state (state=%d)\n", this, this->state);
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
+	if (this->hasDurableLog()) {
+		return rocksdb::Status::InvalidArgument("ERR_TRANSACTION_LOGGED");
+	}
 
 	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
@@ -871,13 +950,8 @@ rocksdb::Status TransactionHandle::putSync(
 	// transaction's write buffer — not deferred to commit time. This upholds
 	// the invariant that a cached version is only trusted when there is a
 	// single visible version of the record across all transactions.
-	if (status.ok()) {
-		if (!this->durableWrites) {
-			this->durableWritesLost.store(false, std::memory_order_relaxed);
-		}
-		if (dbHandle->enableVerificationTable) {
-			this->lockVTSlot(dbHandle, key);
-		}
+	if (status.ok() && dbHandle->enableVerificationTable) {
+		this->lockVTSlot(dbHandle, key);
 	}
 
 	return status;
@@ -897,6 +971,9 @@ rocksdb::Status TransactionHandle::removeSync(
 	if (this->state != TransactionState::Pending) {
 		DEBUG_LOG("%p TransactionHandle::removeSync Transaction is not in pending state (state=%d)\n", this, this->state);
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
+	}
+	if (this->hasDurableLog()) {
+		return rocksdb::Status::InvalidArgument("ERR_TRANSACTION_LOGGED");
 	}
 
 	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
@@ -922,13 +999,8 @@ rocksdb::Status TransactionHandle::removeSync(
 		}
 	}
 
-	if (status.ok()) {
-		if (!this->durableWrites) {
-			this->durableWritesLost.store(false, std::memory_order_relaxed);
-		}
-		if (dbHandle->enableVerificationTable) {
-			this->lockVTSlot(dbHandle, key);
-		}
+	if (status.ok() && dbHandle->enableVerificationTable) {
+		this->lockVTSlot(dbHandle, key);
 	}
 
 	return status;

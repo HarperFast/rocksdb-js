@@ -1,6 +1,7 @@
 #ifndef __CORE_COMMIT_KEY_RESERVATION_H__
 #define __CORE_COMMIT_KEY_RESERVATION_H__
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -82,17 +83,34 @@ public:
 		this->released.notify_all();
 	}
 
-	/** Converts the caller's transient holds into durable holds owned by `owner`. */
+	/**
+	 * Converts the caller's transient holds into durable holds owned by `owner`.
+	 * Strong exception guarantee: a failed insertion leaves the transient holds
+	 * in place and no new durable entry behind.
+	 */
 	void promote(std::span<const uint64_t> hashes, const void* owner) {
-		std::lock_guard<std::mutex> lock(this->mutex);
+		std::unique_lock<std::mutex> lock(this->mutex);
 		this->durablyHeld.reserve(this->durablyHeld.size() + hashes.size());
-		for (uint64_t hash : hashes) {
-			this->durablyHeld[hash] = owner;
+		size_t inserted = 0;
+		try {
+			for (; inserted < hashes.size(); inserted++) {
+				this->durablyHeld.try_emplace(hashes[inserted], owner);
+			}
+		} catch (...) {
+			for (size_t i = 0; i < inserted; i++) {
+				auto it = this->durablyHeld.find(hashes[i]);
+				if (it != this->durablyHeld.end() && it->second == owner && this->held.count(hashes[i]) != 0) {
+					this->durablyHeld.erase(it);
+				}
+			}
+			throw;
 		}
 		for (uint64_t hash : hashes) {
 			this->held.erase(hash);
 		}
-		if (this->waiters > 0) {
+		const bool wake = this->waiters > 0;
+		lock.unlock();
+		if (wake) {
 			this->released.notify_all();
 		}
 	}
@@ -212,19 +230,26 @@ struct DurableKeyHold final {
 	CommitKeyReservation* reservation = nullptr;
 	std::vector<uint64_t> hashes;
 
-	/** Takes over `scope`'s transient hold as a durable hold owned by `owner`. */
+	/**
+	 * Takes over `scope`'s transient hold as a durable hold owned by `owner`,
+	 * keeping any keys an earlier adoption already holds.
+	 */
 	void adopt(CommitKeyReservationScope& scope, const void* owner) {
 		if (!scope.active()) {
 			return;
 		}
 		CommitKeyReservation* target = scope.reservation;
-		std::vector<uint64_t> taken(scope.span().begin(), scope.span().end());
-		target->promote(taken, owner);
+		std::vector<uint64_t> merged(this->hashes);
+		for (uint64_t hash : scope.span()) {
+			if (std::find(merged.begin(), merged.end(), hash) == merged.end()) {
+				merged.push_back(hash);
+			}
+		}
+		target->promote(scope.span(), owner);
 		scope.reservation = nullptr;
 		scope.hashes.clear();
-		this->release(owner);
 		this->reservation = target;
-		this->hashes = std::move(taken);
+		this->hashes = std::move(merged);
 	}
 
 	void release(const void* owner) noexcept {

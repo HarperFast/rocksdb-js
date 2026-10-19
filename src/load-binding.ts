@@ -1010,7 +1010,6 @@ export const setCommitValidatedDelayForTesting: (countdown: number, delayMs: num
 export const setCommitCrashPointForTesting: (point: 0 | 1 | 2 | 3) => void =
 	binding.setCommitCrashPointForTesting;
 
-/** Reports whether a commit is currently parked by `setCommitValidatedDelayForTesting`. */
 export const isCommitValidatedDelayedForTesting: () => boolean =
 	binding.isCommitValidatedDelayedForTesting;
 
