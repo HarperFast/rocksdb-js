@@ -407,6 +407,7 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	// RocksDB's conflict check ran this attempt (ahead of the log write, or inside Commit()): the
 	// point from which VT intents are released and a coordinated retry may park.
 	bool conflictChecked = false;
+	bool durableCaptured = false;
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
 	DBDescriptor* operationDescriptor = nullptr;
@@ -551,7 +552,6 @@ static rocksdb::Status admitCommit(TransactionCommitState* state, const std::sha
 
 struct CommitPreparation final {
 	rocksdb::Status status;
-	// Staged or durable; `hasLog` on a commit error, which drives the default retry.
 	bool hasLogEntries = false;
 	bool wroteLog = false;
 	const char* jsErrorCode = nullptr;
@@ -632,6 +632,12 @@ static CommitPreparation prepareCommit(
 			delayCommitValidatedForTesting();
 		}
 	}
+	if (txnHandle->logBatchCarried && txnHandle->txn->GetWriteBatch()->GetWriteBatch()->Count() == 0) {
+		// The retry read the state the conflict left and chose to write nothing; the batch it
+		// staged for the writes it no longer makes goes with them.
+		txnHandle->logEntryBatch.reset();
+		txnHandle->logBatchCarried = false;
+	}
 	if (!txnHandle->logEntryBatch) {
 		return result;
 	}
@@ -682,12 +688,8 @@ static void settleReservation(
 	const rocksdb::Status& status
 ) {
 	if (txnHandle.hasDurableLog() && !status.ok()) {
-		try {
-			txnHandle.durableHold.adopt(reservation, &txnHandle);
-			return;
-		} catch (...) {
-			// Falls through to an ordinary release; the retry is still owed, just unprotected.
-		}
+		txnHandle.durableHold.adopt(reservation, &txnHandle);
+		return;
 	}
 	reservation.release();
 	if (status.ok()) {
@@ -788,6 +790,10 @@ static void executeCommitWork(TransactionCommitState* state) {
 			state->claim.release(descriptor);
 			if (state->status.ok()) {
 				crashForTesting(kCommitCrashAfterCommit);
+			} else if (txnHandle->hasDurableLog()) {
+				// The intact batch and its VT slots are copied before the intents are released; if
+				// the copy cannot be made the transaction is retried as it is, unreset.
+				state->durableCaptured = txnHandle->captureDurableWrites();
 			}
 		}
 		settleReservation(*txnHandle, state->reservation, state->status);
@@ -843,9 +849,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// against current state instead. The caller must re-run the transaction body so the
 			// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
 			if (txnHandle->dbHandle && !txnHandle->dbHandle->isCancelled()) {
-				// A durable handle's intact batch is copied now, on the failure path only; if that
-				// copy cannot be made the transaction stays as it is and is retried unreset.
-				if (!txnHandle->hasDurableLog() || txnHandle->captureDurableWrites()) {
+				if (!txnHandle->hasDurableLog() || state->durableCaptured) {
 					txnHandle->resetTransaction(descriptor);
 				}
 			} else {
@@ -1448,6 +1452,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			crashForTesting(kCommitCrashAfterCommit);
 		}
 	}
+	const bool durableCaptured = !status.ok() && (*txnHandle)->hasDurableLog() && (*txnHandle)->captureDurableWrites();
 	claim.release(descriptor.get());
 	settleReservation(**txnHandle, reservation, status);
 
@@ -1480,7 +1485,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		if (status.IsBusy() || status.IsTryAgain()) {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Commit failed with %s, resetting transaction\n",
 				(*txnHandle).get(), status.IsBusy() ? "IsBusy" : "TryAgain");
-			if (!(*txnHandle)->hasDurableLog() || (*txnHandle)->captureDurableWrites()) {
+			if (!(*txnHandle)->hasDurableLog() || durableCaptured) {
 				(*txnHandle)->resetTransaction(descriptor.get());
 			}
 		}

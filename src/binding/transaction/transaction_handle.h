@@ -124,6 +124,8 @@ struct InlineVector final {
 struct TouchedColumnFamily final {
 	std::weak_ptr<ColumnFamilyDescriptor> descriptor;
 	ColumnFamilyDescriptor* raw = nullptr;
+	// RocksDB's id, kept so a reclaimed generation (expired `descriptor`) is still recognizable.
+	uint32_t id = 0;
 };
 
 /**

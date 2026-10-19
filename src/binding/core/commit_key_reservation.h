@@ -1,13 +1,11 @@
 #ifndef __CORE_COMMIT_KEY_RESERVATION_H__
 #define __CORE_COMMIT_KEY_RESERVATION_H__
 
-#include <algorithm>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <span>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace rocksdb_js {
@@ -29,25 +27,30 @@ namespace rocksdb_js {
  * its ordinary conflict retry, which keeps the owning thread free to drive the
  * retry that releases it.
  *
+ * One map holds both kinds: a transient entry has no owner, a durable entry
+ * names its owner. Promoting a transient hold therefore allocates nothing,
+ * which matters because it happens after the log batch is already durable.
+ *
  * Keys are 64-bit hashes of (column family, key); a hash collision only makes
  * a writer wait or retry. Transient acquisition is all-or-nothing under one
  * mutex, so there is no lock order to respect and no deadlock: a transient
  * holder is always inside a log write or a RocksDB write, neither of which
  * waits on a reservation. Memory is proportional to the keys in flight, which
- * is why this is a set rather than a stripe array — at four commit threads
+ * is why this is a map rather than a stripe array — at four commit threads
  * with 64-key transactions, stripes need about 2^16 entries (2.5 MiB per
  * database) before collisions stop serializing unrelated commits.
  */
 class CommitKeyReservation final {
 public:
 	/**
-	 * Takes a transient hold on every hash, waiting out other transient holders.
-	 * Returns false, holding nothing, when another owner's durable hold covers
-	 * one of them. Strong exception guarantee.
+	 * Takes a transient hold on every hash the caller does not already hold
+	 * durably, waiting out other transient holders. Returns false, holding
+	 * nothing new, when another owner's durable hold covers one of them.
+	 * Strong exception guarantee.
 	 */
 	[[nodiscard]] bool acquire(std::span<const uint64_t> hashes, const void* owner) {
 		std::unique_lock<std::mutex> lock(this->mutex);
-		while (this->anyHeld(hashes)) {
+		while (this->anyTransientlyHeld(hashes)) {
 			++this->waiters;
 			this->released.wait(lock);
 			--this->waiters;
@@ -56,25 +59,32 @@ public:
 			return false;
 		}
 		this->held.reserve(this->held.size() + hashes.size());
-		size_t inserted = 0;
+		std::vector<uint64_t> inserted;
 		try {
-			for (; inserted < hashes.size(); inserted++) {
-				this->held.insert(hashes[inserted]);
+			inserted.reserve(hashes.size());
+			for (uint64_t hash : hashes) {
+				if (this->held.try_emplace(hash, nullptr).second) {
+					inserted.push_back(hash);
+				}
 			}
 		} catch (...) {
-			for (size_t i = 0; i < inserted; i++) {
-				this->held.erase(hashes[i]);
+			for (uint64_t hash : inserted) {
+				this->held.erase(hash);
 			}
 			throw;
 		}
 		return true;
 	}
 
+	/** Drops the transient holds among `hashes`; durable entries are untouched. */
 	void release(std::span<const uint64_t> hashes) noexcept {
 		{
 			std::lock_guard<std::mutex> lock(this->mutex);
 			for (uint64_t hash : hashes) {
-				this->held.erase(hash);
+				auto it = this->held.find(hash);
+				if (it != this->held.end() && it->second == nullptr) {
+					this->held.erase(it);
+				}
 			}
 			if (this->waiters == 0) {
 				return;
@@ -83,57 +93,43 @@ public:
 		this->released.notify_all();
 	}
 
-	/**
-	 * Converts the caller's transient holds into durable holds owned by `owner`.
-	 * Strong exception guarantee: a failed insertion leaves the transient holds
-	 * in place and no new durable entry behind.
-	 */
-	void promote(std::span<const uint64_t> hashes, const void* owner) {
-		std::unique_lock<std::mutex> lock(this->mutex);
-		this->durablyHeld.reserve(this->durablyHeld.size() + hashes.size());
-		size_t inserted = 0;
-		try {
-			for (; inserted < hashes.size(); inserted++) {
-				this->durablyHeld.try_emplace(hashes[inserted], owner);
-			}
-		} catch (...) {
-			for (size_t i = 0; i < inserted; i++) {
-				auto it = this->durablyHeld.find(hashes[i]);
-				if (it != this->durablyHeld.end() && it->second == owner && this->held.count(hashes[i]) != 0) {
-					this->durablyHeld.erase(it);
+	/** Turns the caller's transient holds into durable holds owned by `owner`; allocates nothing. */
+	void promote(std::span<const uint64_t> hashes, const void* owner) noexcept {
+		{
+			std::lock_guard<std::mutex> lock(this->mutex);
+			for (uint64_t hash : hashes) {
+				auto it = this->held.find(hash);
+				if (it != this->held.end() && it->second == nullptr) {
+					it->second = owner;
 				}
 			}
-			throw;
+			if (this->waiters == 0) {
+				return;
+			}
 		}
-		for (uint64_t hash : hashes) {
-			this->held.erase(hash);
-		}
-		const bool wake = this->waiters > 0;
-		lock.unlock();
-		if (wake) {
-			this->released.notify_all();
-		}
+		this->released.notify_all();
 	}
 
 	void releaseDurable(std::span<const uint64_t> hashes, const void* owner) noexcept {
 		std::lock_guard<std::mutex> lock(this->mutex);
 		for (uint64_t hash : hashes) {
-			auto it = this->durablyHeld.find(hash);
-			if (it != this->durablyHeld.end() && it->second == owner) {
-				this->durablyHeld.erase(it);
+			auto it = this->held.find(hash);
+			if (it != this->held.end() && it->second == owner) {
+				this->held.erase(it);
 			}
 		}
 	}
 
 	size_t heldCount() {
 		std::lock_guard<std::mutex> lock(this->mutex);
-		return this->held.size() + this->durablyHeld.size();
+		return this->held.size();
 	}
 
 private:
-	bool anyHeld(std::span<const uint64_t> hashes) const {
+	bool anyTransientlyHeld(std::span<const uint64_t> hashes) const {
 		for (uint64_t hash : hashes) {
-			if (this->held.count(hash) != 0) {
+			auto it = this->held.find(hash);
+			if (it != this->held.end() && it->second == nullptr) {
 				return true;
 			}
 		}
@@ -141,12 +137,9 @@ private:
 	}
 
 	bool anyDurablyHeldByOther(std::span<const uint64_t> hashes, const void* owner) const {
-		if (this->durablyHeld.empty()) {
-			return false;
-		}
 		for (uint64_t hash : hashes) {
-			auto it = this->durablyHeld.find(hash);
-			if (it != this->durablyHeld.end() && it->second != owner) {
+			auto it = this->held.find(hash);
+			if (it != this->held.end() && it->second != nullptr && it->second != owner) {
 				return true;
 			}
 		}
@@ -155,8 +148,7 @@ private:
 
 	std::mutex mutex;
 	std::condition_variable released;
-	std::unordered_set<uint64_t> held;
-	std::unordered_map<uint64_t, const void*> durablyHeld;
+	std::unordered_map<uint64_t, const void*> held;
 	uint32_t waiters = 0;
 };
 
@@ -224,32 +216,26 @@ struct CommitKeyReservationScope final {
 
 /**
  * The durable hold a transaction keeps between a failed post-log commit and
- * the retry that lands it, released by that commit or by `close()`.
+ * the retry that lands it, released by that commit or by `close()`. Adoption
+ * allocates nothing: the key set is the write set's, fixed once durable, so
+ * the first adoption takes the scope's vector and later ones keep it.
  */
 struct DurableKeyHold final {
 	CommitKeyReservation* reservation = nullptr;
 	std::vector<uint64_t> hashes;
 
-	/**
-	 * Takes over `scope`'s transient hold as a durable hold owned by `owner`,
-	 * keeping any keys an earlier adoption already holds.
-	 */
-	void adopt(CommitKeyReservationScope& scope, const void* owner) {
+	void adopt(CommitKeyReservationScope& scope, const void* owner) noexcept {
 		if (!scope.active()) {
 			return;
 		}
 		CommitKeyReservation* target = scope.reservation;
-		std::vector<uint64_t> merged(this->hashes);
-		for (uint64_t hash : scope.span()) {
-			if (std::find(merged.begin(), merged.end(), hash) == merged.end()) {
-				merged.push_back(hash);
-			}
-		}
 		target->promote(scope.span(), owner);
 		scope.reservation = nullptr;
+		if (this->reservation == nullptr) {
+			this->reservation = target;
+			this->hashes = std::move(scope.hashes);
+		}
 		scope.hashes.clear();
-		this->reservation = target;
-		this->hashes = std::move(merged);
 	}
 
 	void release(const void* owner) noexcept {

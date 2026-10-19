@@ -1,6 +1,7 @@
 import { DBI } from './dbi.ts';
+import type { Key } from './encoding.ts';
 import { constants, NativeTransaction, type NativeTransactionOptions } from './load-binding.ts';
-import { Store } from './store.ts';
+import { type PutOptions, Store } from './store.ts';
 
 /**
  * Sentinel value returned by `commit()` when `coordinatedRetry: true` and the
@@ -122,6 +123,51 @@ export class Transaction extends DBI {
 		} catch (err) {
 			throw this.#handleLoggedRefusal(err);
 		}
+	}
+
+	/** Writes on a durable handle are refused the same way `abort()` is. */
+	put(key: Key, value: any, options?: PutOptions): Promise<void> {
+		return super.put(key, value, options).catch((err: unknown) => {
+			throw this.#handleLoggedRefusal(err);
+		});
+	}
+
+	putSync(key: Key, value: any, options?: PutOptions): void {
+		try {
+			super.putSync(key, value, options);
+		} catch (err) {
+			throw this.#handleLoggedRefusal(err);
+		}
+	}
+
+	remove(key: Key, options?: unknown): Promise<void> {
+		return super.remove(key, options).catch((err: unknown) => {
+			throw this.#handleLoggedRefusal(err);
+		});
+	}
+
+	removeSync(key: Key, options?: unknown): void {
+		try {
+			super.removeSync(key, options);
+		} catch (err) {
+			throw this.#handleLoggedRefusal(err);
+		}
+	}
+
+	/**
+	 * Translates a native `ERR_TRANSACTION_LOGGED` into {@link TransactionLoggedError} for a
+	 * write routed through a database with `{ transaction }`.
+	 */
+	static loggedRefusal(err: unknown, txn: unknown): unknown {
+		if (
+			txn instanceof Transaction &&
+			err instanceof Error &&
+			'code' in err &&
+			err.code === 'ERR_TRANSACTION_LOGGED'
+		) {
+			return new TransactionLoggedError(err, txn);
+		}
+		return err;
 	}
 
 	/**

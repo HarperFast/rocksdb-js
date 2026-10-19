@@ -166,6 +166,31 @@ describe('conflict before the transaction-log write', () => {
 			expectLoggedOnce(log, 1);
 		}));
 
+	it('drops a carried log batch when the retry decides to write nothing', () =>
+		dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
+			const log = db.useLog('audit');
+			await db.put('k', 'initial');
+			let attempts = 0;
+			await db.transaction(
+				async (txn, attempt) => {
+					attempts = attempt;
+					const current = await txn.get('k');
+					if (attempt === 1) {
+						await db.put('k', 'conflict');
+						txn.putSync('k', 'mine');
+						log.addEntry(Buffer.from('mine'), txn.id);
+					} else {
+						expect(current).toBe('conflict');
+					}
+				},
+				{ retryOnBusy: true, maxRetries: 5 }
+			);
+			expect(attempts).toBe(2);
+			expect(await db.get('k')).toBe('conflict');
+			expect([...log.query({ start: 0, readUncommitted: true })]).toHaveLength(0);
+			expect(log.getStats().totals.transactionsWritten).toBe(0);
+		}));
+
 	it('a rejected manual commit leaves the handle unlogged and abortable', () =>
 		dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
 			const log = db.useLog('audit');
@@ -272,12 +297,17 @@ describe('conflict before the transaction-log write', () => {
 				expect(txn.hasDurableLog).toBe(true);
 
 				// Its write set is fixed by the durable batch: staging is refused, the re-commit lands it.
-				expect(() => txn.putSync('k', 'other')).toThrow(
-					expect.objectContaining({ code: 'ERR_TRANSACTION_LOGGED' })
-				);
-				expect(() => txn.removeSync('k')).toThrow(
-					expect.objectContaining({ code: 'ERR_TRANSACTION_LOGGED' })
-				);
+				expect(() => txn.putSync('k', 'other')).toThrow(TransactionLoggedError);
+				expect(() => txn.removeSync('k')).toThrow(TransactionLoggedError);
+				await expect(txn.put('k', 'other')).rejects.toBeInstanceOf(TransactionLoggedError);
+				let routed: unknown;
+				try {
+					db.putSync('k', 'other', { transaction: txn });
+				} catch (error) {
+					routed = error;
+				}
+				expect(routed).toBeInstanceOf(TransactionLoggedError);
+				expect((routed as TransactionLoggedError).txn).toBe(txn);
 				log.addEntry(Buffer.from('k'), txn.id);
 				await txn.commit();
 				expect(txn.hasDurableLog).toBe(true);

@@ -30,6 +30,7 @@ import {
 	type TransactionLog,
 	type UserSharedBufferCallback,
 } from './load-binding.ts';
+import { Transaction } from './transaction.ts';
 import { parseDuration } from './util.ts';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
 
@@ -1361,7 +1362,11 @@ export class Store {
 		// overwriting this method's encoded key!
 		const valueBuffer = this.encodeValue(value);
 
-		context.putSync(this.encodeKey(key), valueBuffer, this.getTxnId(options));
+		try {
+			context.putSync(this.encodeKey(key), valueBuffer, this.getTxnId(options));
+		} catch (err) {
+			throw Transaction.loggedRefusal(err, options?.transaction);
+		}
 	}
 
 	removeSync(context: StoreContext, key: Key, options?: StoreRemoveOptions): void {
@@ -1369,7 +1374,11 @@ export class Store {
 			throw new Error(this.db.closing ? 'Database is closing' : 'Database not open');
 		}
 
-		context.removeSync(this.encodeKey(key), this.getTxnId(options));
+		try {
+			context.removeSync(this.encodeKey(key), this.getTxnId(options));
+		} catch (err) {
+			throw Transaction.loggedRefusal(err, (options as DBITransactional | undefined)?.transaction);
+		}
 	}
 
 	/**

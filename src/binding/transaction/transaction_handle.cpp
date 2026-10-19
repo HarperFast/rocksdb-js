@@ -181,8 +181,12 @@ bool TransactionHandle::durableWritesUnlandable() const noexcept {
 		for (uint32_t id : written.ids) {
 			bool retired = false;
 			this->touchedColumnFamilies.forEach([&](const TouchedColumnFamily& touched) {
+				if (touched.id != id) {
+					return;
+				}
 				auto column = touched.descriptor.lock();
-				if (column && column->column && column->column->GetID() == id && column->lifetime.isRetired()) {
+				// An expired descriptor is a dropped generation that was already reclaimed.
+				if (!column || column->lifetime.isRetired()) {
 					retired = true;
 				}
 			});
@@ -304,9 +308,10 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 			this, (unsigned long long)this->id, this->committedPosition.logSequenceNumber);
 		return;
 	}
+	// A carried batch is replaced only once its successor holds the entry (allocation can throw).
+	std::unique_ptr<TransactionLogEntryBatch> replacement;
 	if (this->logBatchCarried) {
-		this->logBatchCarried = false;
-		this->logEntryBatch.reset();
+		replacement = std::make_unique<TransactionLogEntryBatch>(this->startTimestamp);
 	}
 
 	// check if this transaction is already bound to a different log store
@@ -326,6 +331,12 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 			this, (unsigned long long)this->id, entry->store->name.c_str());
 	}
 
+	if (replacement) {
+		replacement->addEntry(std::move(entry));
+		this->logEntryBatch = std::move(replacement);
+		this->logBatchCarried = false;
+		return;
+	}
 	if (!this->logEntryBatch) {
 		this->logEntryBatch = std::make_unique<TransactionLogEntryBatch>(this->startTimestamp);
 	}
@@ -851,6 +862,7 @@ void ColumnFamilySet::add(const std::shared_ptr<ColumnFamilyDescriptor>& column)
 	TouchedColumnFamily entry;
 	entry.descriptor = column;
 	entry.raw = column.get();
+	entry.id = column->column ? column->column->GetID() : 0;
 	this->entries.add(std::move(entry));
 	this->last = column.get();
 }

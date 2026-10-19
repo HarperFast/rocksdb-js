@@ -13,10 +13,7 @@ namespace rocksdb_js {
 
 uint64_t commitKeyHash(uint32_t columnFamilyId, const rocksdb::Slice& key);
 
-/**
- * Reservation hashes for every key `batch` names, sorted and deduplicated.
- * Fails closed on a batch record kind the reservation cannot cover.
- */
+/** Fails closed on a batch record kind the reservation cannot cover (range deletes). */
 rocksdb::Status collectCommitKeyHashes(const rocksdb::WriteBatch& batch, std::vector<uint64_t>& out);
 
 /**

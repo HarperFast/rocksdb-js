@@ -93,17 +93,20 @@ transaction's own pointer. A signature change on upgrade fails the link;
 
 **A refused batch is carried.** A pre-log refusal keeps the staged log batch
 (`logBatchCarried`) so a caller that staged it once still logs it on the retry; a retry that stages
-again replaces it. This keeps the write-then-check era's callers correct without a lockstep change.
+again replaces it (the replacement is built before the carried batch is dropped), and a retry that
+stages no write at all drops it, since it described writes the caller no longer makes. This keeps
+the write-then-check era's callers correct without a lockstep change.
 
 **`hasDurableLog`** (`TransactionHandle::logDurable`, `Transaction.hasDurableLog`): false through
 every pre-log outcome, true from the first attempt whose log write returned, across retries (the
 batch is write-once, #668), after the commit lands, and after close. `abort()` and
 `abandonWrites()`, `putSync()` and `removeSync()` refuse with `ERR_TRANSACTION_LOGGED` before
 touching anything while it is true; the caller retries `commit()` until it succeeds. The RocksDB
-write set a durable batch describes is copied before the log write (`captureDurableWrites`, so an
-allocation failure refuses without a log byte) and rebuilt by every `resetTransaction()`
-(`restoreDurableWrites`, VT intents included), so a re-commit lands exactly what the log says; a
-rebuild that fails is retried by the next commit. `RocksDatabase.transaction()` / `transactionSync()` therefore re-commit
+write set a durable batch describes is copied from the intact transaction when a post-log commit
+fails (`captureDurableWrites`, before its VT intents are released; never on the success path) and
+rebuilt by every `resetTransaction()` (`restoreDurableWrites`, VT intents included), so a re-commit
+lands exactly what the log says. If the copy cannot be allocated the transaction is left unreset
+and retried as it is; a rebuild that fails is retried by the next commit. `RocksDatabase.transaction()` / `transactionSync()` therefore re-commit
 such a handle past `maxRetries` and `retryOnBusy` without re-running the callback, hand it back on
 `TransactionLoggedError.txn` when a non-retryable error follows, and `transactionSync` reuses one
 handle across attempts in an iterative loop.

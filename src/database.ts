@@ -99,6 +99,19 @@ function backgroundErrorSeverityName(severity: number): string {
  * db.close();
  * ```
  */
+/**
+ * A durable handle is re-committed until it lands, so its retries back off instead of spinning:
+ * one millisecond doubling to fifty.
+ */
+function durableRetryDelayMs(attempt: number): number {
+	return Math.min(50, 2 ** Math.min(attempt, 6));
+}
+
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms: number): void {
+	Atomics.wait(sleepCell, 0, 0, ms);
+}
+
 export class RocksDatabase extends DBI<DBITransactional> {
 	/**
 	 * The name of the database's column family.
@@ -1210,7 +1223,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				}
 				if (this.#mayRetry(txn, commitErr, attempt, maxRetries, options)) {
 					if (txn.hasDurableLog) {
-						await new Promise<void>((resolveTick) => setImmediate(resolveTick));
+						await new Promise<void>((resolveTick) =>
+							setTimeout(resolveTick, durableRetryDelayMs(attempt))
+						);
 					}
 					continue;
 				}
@@ -1291,6 +1306,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 					return { value: undefined };
 				}
 				if (this.#mayRetry(txn, commitErr, attempt, maxRetries, options)) {
+					if (txn.hasDurableLog) {
+						sleepSync(durableRetryDelayMs(attempt));
+					}
 					return null;
 				}
 				this.#abandonTransaction(txn, commitErr);
