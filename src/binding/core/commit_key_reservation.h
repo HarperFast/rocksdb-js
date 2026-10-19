@@ -59,17 +59,19 @@ public:
 			return false;
 		}
 		this->held.reserve(this->held.size() + hashes.size());
-		std::vector<uint64_t> inserted;
+		size_t inserted = 0;
 		try {
-			inserted.reserve(hashes.size());
-			for (uint64_t hash : hashes) {
-				if (this->held.try_emplace(hash, nullptr).second) {
-					inserted.push_back(hash);
-				}
+			for (; inserted < hashes.size(); inserted++) {
+				this->held.try_emplace(hashes[inserted], nullptr);
 			}
 		} catch (...) {
-			for (uint64_t hash : inserted) {
-				this->held.erase(hash);
+			// No transient entry of ours pre-existed (the wait above saw none), so every ownerless
+			// entry in the prefix is this call's.
+			for (size_t i = 0; i < inserted; i++) {
+				auto it = this->held.find(hashes[i]);
+				if (it != this->held.end() && it->second == nullptr) {
+					this->held.erase(it);
+				}
 			}
 			throw;
 		}

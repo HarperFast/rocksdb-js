@@ -86,6 +86,16 @@ function backgroundErrorSeverityName(severity: number): string {
 	return BACKGROUND_ERROR_SEVERITY_NAMES[severity] ?? 'unknown';
 }
 
+/** Backoff between re-commits of a durable handle: doubling from 2 ms, capped at 50 ms. */
+function durableRetryDelayMs(attempt: number): number {
+	return Math.min(50, 2 ** Math.min(attempt, 6));
+}
+
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms: number): void {
+	Atomics.wait(sleepCell, 0, 0, ms);
+}
+
 /**
  * The main class for interacting with a RocksDB database.
  *
@@ -99,19 +109,6 @@ function backgroundErrorSeverityName(severity: number): string {
  * db.close();
  * ```
  */
-/**
- * A durable handle is re-committed until it lands, so its retries back off instead of spinning:
- * one millisecond doubling to fifty.
- */
-function durableRetryDelayMs(attempt: number): number {
-	return Math.min(50, 2 ** Math.min(attempt, 6));
-}
-
-const sleepCell = new Int32Array(new SharedArrayBuffer(4));
-function sleepSync(ms: number): void {
-	Atomics.wait(sleepCell, 0, 0, ms);
-}
-
 export class RocksDatabase extends DBI<DBITransactional> {
 	/**
 	 * The name of the database's column family.

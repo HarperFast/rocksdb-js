@@ -92,8 +92,7 @@ async function loggedPending(db: RocksDatabase, logName: string, key: string) {
 	txn.putSync(key, 'logged');
 	log.addEntry(Buffer.from(key), txn.id);
 	forceTryAgainForTesting(1);
-	// Inspected without keeping the error object, which references the handle, so a caller
-	// that drops the handle really drops it.
+	// The rejection is read into plain values so no error object outlives this helper.
 	let outcome: { code?: string; hasLog?: boolean } | undefined;
 	try {
 		await txn.commit();

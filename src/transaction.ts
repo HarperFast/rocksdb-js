@@ -125,7 +125,6 @@ export class Transaction extends DBI {
 		}
 	}
 
-	/** Writes on a durable handle are refused the same way `abort()` is. */
 	put(key: Key, value: any, options?: PutOptions): Promise<void> {
 		return super.put(key, value, options).catch((err: unknown) => {
 			throw this.#handleLoggedRefusal(err);

@@ -798,7 +798,11 @@ static void executeCommitWork(TransactionCommitState* state) {
 		}
 		settleReservation(*txnHandle, state->reservation, state->status);
 
-		if (state->conflictChecked) {
+		// A durable handle that keeps its writes (a hard error, or a copy that could not be made)
+		// keeps their VT intents too; a reset reinstalls them from the copy.
+		const bool keepsWrites = txnHandle->hasDurableLog() && !state->status.ok() &&
+			!((state->status.IsBusy() || state->status.IsTryAgain()) && state->durableCaptured);
+		if (state->conflictChecked && !keepsWrites) {
 			// For coordinated retry: save slot pointers before
 			// releaseIntent() clears them so the complete callback
 			// can park on any new lock installed on those slots.
@@ -1434,13 +1438,14 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 		claim.release(descriptor.get());
 		settleReservation(**txnHandle, reservation, prepared.status);
-		if (conflictChecked && !(*txnHandle)->lockedVTSlots.empty()) {
+		if (conflictChecked && !(*txnHandle)->hasDurableLog() && !(*txnHandle)->lockedVTSlots.empty()) {
 			(*txnHandle)->releaseIntent();
 		}
 		NAPI_THROW_JS_ERROR(prepared.jsErrorCode, prepared.status.ToString().c_str());
 	}
 
 	rocksdb::Status status = prepared.status;
+	bool durableCaptured = false;
 	if (status.ok()) {
 		conflictChecked = true;
 		if (testForceTryAgain()) {
@@ -1450,13 +1455,16 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 		if (status.ok()) {
 			crashForTesting(kCommitCrashAfterCommit);
+		} else if ((*txnHandle)->hasDurableLog()) {
+			durableCaptured = (*txnHandle)->captureDurableWrites();
 		}
 	}
-	const bool durableCaptured = !status.ok() && (*txnHandle)->hasDurableLog() && (*txnHandle)->captureDurableWrites();
 	claim.release(descriptor.get());
 	settleReservation(**txnHandle, reservation, status);
 
-	if (conflictChecked && !(*txnHandle)->lockedVTSlots.empty()) {
+	const bool keepsWrites = (*txnHandle)->hasDurableLog() && !status.ok() &&
+		!((status.IsBusy() || status.IsTryAgain()) && durableCaptured);
+	if (conflictChecked && !keepsWrites && !(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();
 	}
 

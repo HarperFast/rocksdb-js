@@ -299,9 +299,8 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
 	// #668: the write-ahead log is write-once per transaction. A durable batch survives
-	// resetTransaction, and callers re-stage their entries on every attempt (a pre-log refusal
-	// leaves nothing to skip); re-logging here would write the records again at a new position,
-	// orphan the original and pin the committed-read watermark on it (HarperFast/harper-pro#426).
+	// resetTransaction; re-logging here would write the records again at a new position, orphan
+	// the original and pin the committed-read watermark on it (HarperFast/harper-pro#426).
 	if (this->committedPosition.logSequenceNumber > 0) {
 		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %llu "
 			"(WAL already written at seq %u)\n",
