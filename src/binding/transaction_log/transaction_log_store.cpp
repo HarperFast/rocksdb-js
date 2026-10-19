@@ -1206,6 +1206,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what());
 			this->writeFailures.fetch_add(1, std::memory_order_relaxed);
 			if (rotatedAfterOpenFailure) {
+				this->forgetFailedPosition(logPosition);
 				throw DBException(e.what());
 			}
 			rotatedAfterOpenFailure = true;
@@ -1219,6 +1220,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 				logFile->persistAppendBoundaryRetirement();
 				this->rotateToNextSequence(logFile);
 			}
+			this->forgetFailedPosition(logPosition);
 			throw;
 		}
 		logFile->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
@@ -1271,6 +1273,11 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	this->bytesWritten.fetch_add(batchBytes, std::memory_order_relaxed);
 
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Completed writing all entries\n", this);
+}
+
+void TransactionLogStore::forgetFailedPosition(const LogPosition position) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	this->positionErase(position);
 }
 
 void TransactionLogStore::commitFinished(const LogPosition position, const std::function<rocksdb::SequenceNumber()>& latestSequenceNumber) {

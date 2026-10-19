@@ -15,6 +15,7 @@
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
 #include "core/platform.h"
+#include "core/optimistic_validation.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "core/verification_table.h"
@@ -2781,6 +2782,24 @@ napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * A non-transactional write holds its key in the database's commit reservation
+ * while it writes, so it cannot land inside a logged commit's validated window
+ * (`src/binding/transaction/DESIGN.md`). Pessimistic databases exclude
+ * concurrent writers with RocksDB's own row locks.
+ */
+static void reserveDirectWrite(
+	CommitKeyReservationScope& reservation,
+	DBHandle& dbHandle,
+	const rocksdb::Slice& key
+) {
+	if (dbHandle.descriptor->mode != DBMode::Optimistic) {
+		return;
+	}
+	const StagedKey staged{ dbHandle.getColumnFamilyHandle()->GetID(), key };
+	reservation.acquire(dbHandle.descriptor->commitReservation, commitKeyHashes({ &staged, 1 }));
+}
+
+/**
  * Puts a key-value pair into the RocksDB database.
  */
 napi_value Database::PutSync(napi_env env, napi_callback_info info) {
@@ -2850,6 +2869,8 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		if (!(*dbHandle)->columnDescriptor->droppable ||
 			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
 		) {
+			CommitKeyReservationScope reservation;
+			reserveDirectWrite(reservation, **dbHandle, keySlice);
 			status = (*dbHandle)->descriptor->db->Put(
 				writeOptions,
 				(*dbHandle)->getColumnFamilyHandle(),
@@ -2928,6 +2949,8 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		if (!(*dbHandle)->columnDescriptor->droppable ||
 			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
 		) {
+			CommitKeyReservationScope reservation;
+			reserveDirectWrite(reservation, **dbHandle, keySlice);
 			status = (*dbHandle)->descriptor->db->Delete(
 				writeOptions,
 				(*dbHandle)->getColumnFamilyHandle(),

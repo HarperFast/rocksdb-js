@@ -1275,26 +1275,35 @@ The retry mechanism will only be active when the `retryOnBusy` option is `true` 
 `retryOnBusy` is `undefined` and the transaction is bound to a transaction log. The attempts starts
 at `1` and ends at `maxRetries`.
 
-When using a transaction log and the commit fails with `ERR_BUSY`, the transaction log will be in
-a bad state and the transaction will need to be retried. If the max retries is reached or the
-transaction is not retried, a `ERR_TRANSACTION_ABANDONED` error will be thrown.
+On an optimistic database the conflict check runs before the transaction-log batch is written, so
+a commit that fails with `ERR_BUSY` (or `ERR_TRY_AGAIN`) on its first attempt has written nothing
+to the log and `txn.hasDurableLog` is `false`; the retry re-runs the callback, which re-stages the
+log entries. Once an attempt has written the batch — a stranded snapshot after a memtable flush, or
+an error past the log write — `txn.hasDurableLog` is `true`, the batch is write-once (later
+attempts' `addEntry` calls are ignored), and the transaction is retried until it commits regardless
+of `maxRetries`: aborting it would leave a log entry without its data. `abort()` on such a
+transaction throws `TransactionLoggedError` (`ERR_TRANSACTION_LOGGED`) without rolling anything
+back, and `transaction()` rethrows that error with the handle on `error.txn` when the callback
+itself fails on a retry.
 
-Users should use the `attempt` transaction callback parameter to ensure duplicate transaction log
-entries are not added.
+Re-stage the transaction's log entries on every attempt: after a pre-log conflict they are the
+only copy, and once the batch is durable the native layer ignores the re-stage (`hasLog` on the
+conflict error reports that the transaction carried log entries, staged or written, which is what
+makes a logged transaction retry by default).
 
 When `coordinatedRetry: true`, the retry behavior changes for `IsBusy` conflicts: instead of
 rejecting (or retrying immediately and potentially conflicting again), the commit waits until the
 conflicting transaction has committed and released its write intent, then re-runs the transaction
-body immediately with no backoff. This is still bounded by `maxRetries` — if the transaction has
-not committed after the configured number of coordinated retries, the transaction is abandoned with
-an `ERR_TRANSACTION_ABANDONED` error. Coordinated retry requires the column family to be opened with
-`verificationTable: true`.
+body immediately with no backoff. This is still bounded by `maxRetries` while nothing has been
+written to a transaction log — if the transaction has not committed after the configured number of
+coordinated retries, it is aborted and the last conflict error is thrown. Coordinated retry
+requires the column family to be opened with `verificationTable: true`.
 
 That wait is bounded so a conflicting transaction that is never committed or aborted cannot block
 the commit forever: if the write intent has not been released after `ROCKSDB_JS_PARK_TIMEOUT_MS`
 (default `5000`), the commit resolves anyway and consumes a retry attempt exactly as a real release
 would. A conflicting transaction held for longer than roughly `maxRetries` times that timeout
-therefore ends in `ERR_TRANSACTION_ABANDONED` rather than waiting indefinitely. Deployments where
+therefore ends in the last conflict error rather than waiting indefinitely. Deployments where
 waiting is preferable to failing should raise the timeout; there is no way to disable the bound.
 In particular `0` does not disable it: `0`, negative, and unparseable values all fall back to the
 `5000` default, and a value between `1` and `49` is clamped up to `50`.
@@ -1310,10 +1319,15 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.abort()` Rolls back and closes the transaction. This method is automatically called after the
   transaction callback returns, so you shouldn't need to call it, but it's ok to do so. Once called,
   no further transaction operations are permitted. Calling this method multiple times has no effect.
+  Refused with `TransactionLoggedError` once `txn.hasDurableLog` is `true`.
 - `txn.commit(): Promise<void>` Asynchronously commits the transaction and closes the transaction.
 - `txn.commitSync()` Synchronously commits and closes the transaction.
 - `txn.getTimestamp(): number` Retrieves the transaction timestamp in milliseconds as a decimal. It
   defaults to a process-wide monotonic value assigned when the transaction was created.
+- `txn.hasDurableLog: boolean` Whether a commit attempt has written the transaction's log batch.
+  `false` through every outcome before the log write (an optimistic conflict is checked first);
+  `true` from the first attempt whose log write returned, across retries, after the commit lands,
+  and after close.
 - `txn.id: number` The read-only transaction ID. Transaction IDs are unique to the RocksDB database
   path, regardless the database name/column family.
 - `txn.setTimestamp(ts?: number): void` Overrides the transaction timestamp in milliseconds. If
@@ -1342,6 +1356,16 @@ handle's eventual `abort()`.
 Rolls back and closes the transaction. This method is automatically called after the transaction
 callback returns, so you shouldn't need to call it, but it's ok to do so. Once called, no further
 transaction operations are permitted.
+
+Once a commit attempt has written the transaction's log batch (`txn.hasDurableLog === true`),
+`abort()` and `abandonWrites()` throw `TransactionLoggedError` (`code: 'ERR_TRANSACTION_LOGGED'`)
+before changing anything: the transaction stays pending with its staged writes, and the caller
+retries `commit()` until it succeeds so the data the log already describes lands. A durable
+transaction that is dropped instead (garbage collected, or left pending by an exiting worker or a
+closing database) is not rolled back either: its log position stays uncommitted, so committed log
+readers, the flushed position recorded for crash replay, and retention (which never purges past
+that position) all stop before it until the process restarts and replays it, and a `log.warn`
+event names it.
 
 #### `txn.commit(): Promise<void>`
 

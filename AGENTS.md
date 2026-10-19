@@ -1552,6 +1552,13 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     append against the smallest exposed capacity under `fileMutex`; creation and the first append
     share that lock. See [transaction-log design](src/binding/transaction_log/DESIGN.md).
 
+34. **An optimistic conflict is detected before the transaction-log batch is written, under a
+    reservation every in-process writer takes**: a durable batch can be left uncommitted only by a
+    non-conflict failure, `hasDurableLog` is the authoritative state, `abort()`/`abandonWrites()`
+    refuse a durable handle before touching it, and a durable handle closed without committing
+    keeps its position uncommitted so the watermark and `txn.state` never pass it. See
+    [conflict before the log write](src/binding/transaction/DESIGN.md).
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

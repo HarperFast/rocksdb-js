@@ -335,6 +335,22 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void resetTransaction(DBDescriptor* descriptor);
 
 	/**
+	 * Published by the committing thread once `writeBatch()` returned, so the JS
+	 * accessor can read it while a commit is in flight; `committedPosition` itself
+	 * is read natively only on the owning thread with the handle pending.
+	 */
+	std::atomic<bool> logDurable{false};
+
+	bool hasDurableLog() const {
+		return this->logDurable.load(std::memory_order_acquire);
+	}
+
+	void publishDurableLog(LogPosition position) {
+		this->committedPosition = position;
+		this->logDurable.store(true, std::memory_order_release);
+	}
+
+	/**
 	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),
 	 * tagging it as "write in flight". Called at putSync/removeSync time
 	 * (main JS thread) so the slot is invalidated as soon as the key enters

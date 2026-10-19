@@ -35,3 +35,69 @@ Other owning-thread mutations still run while an admitted get may be inside `txn
 unrelated disk reads; the candidate fix is for the worker to read through the database with a
 pinned transaction snapshot, since the setup's batch-consulting attempt already proved the key
 absent from the batch.
+
+# Conflict before the log write
+
+A transaction-log batch describes a write that must land: log readers, replication and crash
+replay apply it. Until HarperFast/harper#3253 the first commit attempt wrote the batch and only then
+let `txn->Commit()` check optimistic conflicts, so every conflicting audited write left a durable
+entry and Harper had to retry it without a cap (harper#3266). The commit now runs in this order,
+in `prepareCommit()` and the two callers that follow it with `txn->Commit()` (`transaction.cpp`:
+`executeLogWork`/`executeCommitWork` for every async mode, `CommitSync` inline):
+
+1. **Reserve** every (column family, key) the write batch names in the descriptor's
+   `CommitKeyReservation` (`core/commit_key_reservation.h`).
+2. **Validate** a first-attempt logged transaction with RocksDB's own check,
+   `OptimisticTransaction::CheckTransactionForConflicts` (`core/optimistic_validation.cpp`).
+   `Busy`/`TryAgain` here takes the existing retry path — reset onto a fresh snapshot, VT intents
+   released, coordinated retry parked — with no log byte written and `hasDurableLog` still false.
+3. **Write** the log batch; `publishDurableLog()` sets `committedPosition` and the atomic the JS
+   accessor reads, only after `writeBatch()` returned (a failed append forgets its reserved
+   position, `TransactionLogStore::forgetFailedPosition`, so the transaction stays unlogged).
+4. **Commit** in RocksDB, which validates again, then release the reservation.
+
+The invariant: _a durable batch can be left uncommitted only by a non-conflict failure — a
+stranded snapshot after a memtable flush between steps 2 and 4, an I/O error, a crash — never by an
+ordinary optimistic conflict; and a handle holding one is never rolled back or forgotten silently._
+
+**Why the reservation is taken by every writer.** Step 2's verdict only holds at step 4 if no
+write to those keys lands in between, and the writer that could land one is not necessarily
+logged: an unlogged transactional commit or a non-transactional `Database::PutSync/RemoveSync`
+(`reserveDirectWrite`) would do. So each takes its keys while it writes. Pessimistic databases skip
+it (RocksDB row locks already exclude concurrent writers, so `Commit()` cannot return `Busy`).
+`clear()` is outside it on purpose: it compacts and calls `DeleteFilesInRange`, which bumps no key
+sequence and therefore cannot produce a conflict. The reservation is a set of 64-bit hashes under
+one mutex with all-or-nothing acquisition: no lock order, no deadlock (a holder is inside a log
+write or a RocksDB write, neither of which waits on a reservation), memory proportional to keys in
+flight. A stripe array was measured out: at four commit threads and 64-key transactions it needs
+about 2^16 stripes (2.5 MiB per database) before collisions stop serializing unrelated commits.
+
+**Why RocksDB's validator and not a copy.** The check must agree with `Commit()` on the same
+tracked keys and sequences, and only RocksDB's tracker knows them (a mirrored per-write sequence
+samples before or after `TryLock` records, so it drifts on blind writes). The member is not public
+API: `optimistic_validation.cpp` declares it with its v11.8.1 signature and calls it through the
+transaction's own pointer. A signature change on upgrade fails the link;
+`test/native/optimistic_validation_test.cc` fails if the verdict stops matching `Commit()`.
+
+**`hasDurableLog`** (`TransactionHandle::logDurable`, `Transaction.hasDurableLog`): false through
+every pre-log outcome, true from the first attempt whose log write returned, across retries (the
+batch is write-once, #668), after the commit lands, and after close. `abort()` and
+`abandonWrites()` refuse with `ERR_TRANSACTION_LOGGED` before touching anything while it is true;
+the caller retries `commit()` until it succeeds. `RocksDatabase.transaction()` / `transactionSync()`
+therefore retry such a handle past `maxRetries`, hand it back on `TransactionLoggedError.txn` when
+the body throws, and `transactionSync` reuses one handle across attempts.
+
+**A durable, uncommitted handle that is closed anyway** — a collected wrapper, a worker env exiting,
+a database closing, a completion whose env is gone — keeps its position in the store's uncommitted
+set (`close()` no longer calls `commitAborted`). The committed-read watermark and the flush
+correlation that writes `txn.state` cannot pass it, so readers never receive the entry ahead of its
+data and a restart replays it; one `log.warn` names the transaction and position. The cost — that
+committed readers of the store stop there, and retention keeps every segment from there on, until
+restart — is deliberate: the alternative advanced past an entry whose data was never applied.
+
+Covered by `test/transaction-conflict-before-log.test.ts` (in-process, including competing writers
+inside the validated window and the dropped-handle pins),
+`test/transaction-conflict-before-log-fixtures.test.ts` (every commit mode and OCC policy as child
+processes; process kills after the log write, after the commit, and after a rejection — they prove
+process-crash behavior, not power loss, which the flush-time `fsync` ordering bounds as before) and
+`test/native/commit_key_reservation_test.cc`.

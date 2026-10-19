@@ -21,6 +21,7 @@
 #include "rocksdb/utilities/options_util.h"
 #include "options/db_options.h"
 #include "core/column_family_lifetime.h"
+#include "core/commit_key_reservation.h"
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
@@ -540,6 +541,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	CommitWorker commitWorker{"rocksdb-commit"};
 	CommitWorker logWorker{"rocksdb-txnlog"};
+
+	/**
+	 * Keys every in-process writer of an optimistic database holds while it
+	 * writes, so a logged commit's pre-log conflict check still holds when
+	 * `txn->Commit()` re-runs it (`core/commit_key_reservation.h`).
+	 */
+	CommitKeyReservation commitReservation;
 
 	/**
 	 * Per-env commit-completion plumbing. The commit thread is shared across

@@ -1,4 +1,5 @@
 import { registryStatus } from '../src/index.ts';
+import { forceTryAgainForTesting } from '../src/load-binding.ts';
 import { Transaction } from '../src/transaction.ts';
 import { withResolvers } from '../src/util.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
@@ -487,7 +488,46 @@ for (const { name, options, txnOptions } of testOptions) {
 			}));
 
 		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
-			`${name} async should keep a durable log timestamp frozen across a coordinated retry`,
+			`${name} async should keep a durable log timestamp frozen across a logged retry`,
+			() =>
+				dbRunner({ dbOptions: [options] }, async ({ db }) => {
+					const log = db.useLog('retry');
+					await db.put('k', 'initial');
+					let attempts = 0;
+					const originTimestamp = Date.now() - 1000;
+					// An ordinary conflict is refused before the log write, so only a failure past it
+					// (a stranded snapshot) leaves a durable batch behind for the retry.
+					forceTryAgainForTesting(1);
+					try {
+						await db.transaction(
+							async (txn: Transaction, attempt) => {
+								attempts = attempt;
+								txn.setTimestamp(originTimestamp);
+								expect(txn.getTimestamp()).toBe(originTimestamp);
+								expect(txn.hasDurableLog).toBe(attempt > 1);
+								if (attempt > 1) {
+									expect(() => txn.setTimestamp(originTimestamp + 1)).toThrow(
+										'transaction log batch is already durable'
+									);
+								}
+								await txn.get('k');
+								await txn.put('k', 'committed');
+								log.addEntry(Buffer.from('entry'), txn.id);
+							},
+							{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
+						);
+					} finally {
+						forceTryAgainForTesting(0);
+					}
+					expect(attempts).toBe(2);
+					const entries = [...log.query({ start: 0 })];
+					expect(entries).toHaveLength(1);
+					expect(entries[0].timestamp).toBe(originTimestamp);
+				})
+		);
+
+		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
+			`${name} async should leave the timestamp adoptable after a conflict refused before the log write`,
 			() =>
 				dbRunner({ dbOptions: [options] }, async ({ db }) => {
 					const log = db.useLog('retry');
@@ -497,13 +537,8 @@ for (const { name, options, txnOptions } of testOptions) {
 					await db.transaction(
 						async (txn: Transaction, attempt) => {
 							attempts = attempt;
-							txn.setTimestamp(originTimestamp);
-							expect(txn.getTimestamp()).toBe(originTimestamp);
-							if (attempt > 1) {
-								expect(() => txn.setTimestamp(originTimestamp + 1)).toThrow(
-									'transaction log batch is already durable'
-								);
-							}
+							expect(txn.hasDurableLog).toBe(false);
+							txn.setTimestamp(originTimestamp + attempt);
 							await txn.get('k');
 							if (attempt === 1) await db.put('k', 'conflict');
 							await txn.put('k', 'committed');
@@ -511,10 +546,10 @@ for (const { name, options, txnOptions } of testOptions) {
 						},
 						{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
 					);
-					expect(attempts).toBeGreaterThanOrEqual(2);
+					expect(attempts).toBe(2);
 					const entries = [...log.query({ start: 0 })];
 					expect(entries).toHaveLength(1);
-					expect(entries[0].timestamp).toBe(originTimestamp);
+					expect(entries[0].timestamp).toBe(originTimestamp + 2);
 				})
 		);
 

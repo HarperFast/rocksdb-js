@@ -8,6 +8,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "transaction/transaction_handle.h"
 #include "core/test_seam.h"
+#include "napi/global_events.h"
 #include "napi/macros.h"
 
 namespace rocksdb_js {
@@ -418,12 +419,23 @@ void TransactionHandle::close() {
 		this->state = TransactionState::Aborted;
 	}
 
-	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
-	// to remove the committed position from the log store
+	// A durable log batch that never committed stays in the store's uncommitted set: the
+	// committed-read watermark and the flush correlation (`txn.state`) cannot pass it, so a
+	// restart replays it instead of publishing an entry whose data was never applied. Only a
+	// non-conflict failure, a dropped handle, or teardown can reach this (DESIGN.md).
 	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
-		auto store = this->boundLogStore.lock();
-		if (store) {
-			store->commitAborted(this->committedPosition);
+		try {
+			auto store = this->boundLogStore.lock();
+			std::ostringstream msg;
+			msg << "Transaction " << this->id << " closed with a durable transaction-log batch"
+				<< (store ? " in store \"" + store->name + "\"" : std::string())
+				<< " at sequence " << this->committedPosition.logSequenceNumber
+				<< " offset " << this->committedPosition.positionInLogFile
+				<< " that was never committed; the position stays uncommitted so the committed-read"
+				<< " watermark holds and a restart replays it";
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		} catch (...) {
+			// Best effort: teardown must not throw for a diagnostic.
 		}
 	}
 

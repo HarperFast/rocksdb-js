@@ -19,6 +19,7 @@
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
 #include "core/platform.h"
+#include "core/optimistic_validation.h"
 #include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
@@ -149,7 +150,12 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
 	}
-	bool hadLogWrites = (*txnHandle)->committedPosition.logSequenceNumber > 0;
+	// Refused before anything is touched: the handle stays pending and usable, and the caller
+	// retries commit() until the durable batch's data lands (DESIGN.md).
+	if ((*txnHandle)->hasDurableLog()) {
+		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED",
+			"Cannot abort: the transaction log batch is already durable; retry commit() until it succeeds");
+	}
 
 	// Rollback() frees the write batch an admitted async get may be reading, so
 	// admitted work drains first. That drain can wait on a disk read; the guard
@@ -190,10 +196,6 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 		DBRegistry::PurgeIfUnreferenced(key);
 	}
 
-	if (hadLogWrites) {
-		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABANDONED", "Transaction was abandoned after writing to the transaction log");
-	}
-
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -220,10 +222,26 @@ napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
 	}
+	if ((*txnHandle)->hasDurableLog()) {
+		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED",
+			"Cannot abandon writes: the transaction log batch is already durable; retry commit() until it succeeds");
+	}
 
 	(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
 	(*txnHandle)->releaseIntent();
 	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * Whether a commit attempt has written this transaction's log batch. Write-once, so it stays
+ * true across retries, after the commit lands, and after close.
+ */
+napi_value Transaction::HasDurableLog(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_HANDLE("HasDurableLog");
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, (*txnHandle)->hasDurableLog(), &result));
+	return result;
 }
 
 /**
@@ -389,6 +407,10 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	bool hasLog;
 	std::shared_ptr<DBDescriptor::CommitCompletion> completion;
 	ColumnFamilyCommitClaim claim;
+	CommitKeyReservationScope reservation;
+	// RocksDB's conflict check ran this attempt (ahead of the log write, or inside Commit()): the
+	// point from which VT intents are released and a coordinated retry may park.
+	bool conflictChecked = false;
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
 	DBDescriptor* operationDescriptor = nullptr;
@@ -531,6 +553,104 @@ static rocksdb::Status admitCommit(TransactionCommitState* state, const std::sha
 	return state->claim.admit(txnHandle->touchedColumnFamilies, *descriptor);
 }
 
+struct CommitPreparation final {
+	rocksdb::Status status;
+	// The transaction carries log entries, staged or durable: what the `hasLog` field on a commit
+	// error reports, and what makes `transaction()` retry a conflict by default.
+	bool hasLogEntries = false;
+	bool wroteLog = false;
+	// Set when the sync path owes the caller a specific JS error code for a log failure.
+	const char* jsErrorCode = nullptr;
+};
+
+static void delayCommitValidatedForTesting() {
+	const int delayMs = consumeCommitValidatedDelayForTesting();
+	if (delayMs <= 0) {
+		return;
+	}
+	commitValidatedDelayActive().store(true, std::memory_order_release);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
+	while (commitValidatedDelayActive().load(std::memory_order_acquire) &&
+		std::chrono::steady_clock::now() < deadline
+	) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	commitValidatedDelayActive().store(false, std::memory_order_release);
+}
+
+static void crashForTesting(int point) {
+	if (commitCrashPointFlag().load(std::memory_order_relaxed) == point) {
+		std::_Exit(137);
+	}
+}
+
+/**
+ * The commit steps ahead of `txn->Commit()`, shared by every commit mode
+ * (`src/binding/transaction/DESIGN.md`): reserve the write set against every
+ * other in-process writer, run RocksDB's conflict check for a logged first
+ * attempt before any log byte exists, then write the log batch. The caller
+ * releases `reservation` after `txn->Commit()` returns. `conflictChecked`
+ * reports that the check ran, so a refusal here releases VT intents and parks
+ * a coordinated retry exactly like a refusal inside `Commit()`.
+ */
+static CommitPreparation prepareCommit(
+	const std::shared_ptr<TransactionHandle>& txnHandle,
+	DBDescriptor& descriptor,
+	CommitKeyReservationScope& reservation,
+	bool& conflictChecked
+) {
+	CommitPreparation result;
+	result.hasLogEntries = txnHandle->logEntryBatch != nullptr || txnHandle->hasDurableLog();
+	if (descriptor.mode == DBMode::Optimistic) {
+		try {
+			std::vector<StagedKey> keys;
+			collectStagedKeys(*txnHandle->txn->GetWriteBatch()->GetWriteBatch(), keys);
+			reservation.acquire(descriptor.commitReservation, commitKeyHashes(keys));
+		} catch (const std::exception& e) {
+			result.status = rocksdb::Status::Aborted("Failed to reserve commit keys: ", e.what());
+			return result;
+		}
+		if (txnHandle->logEntryBatch && !txnHandle->hasDurableLog()) {
+			conflictChecked = true;
+			result.status = validateOptimisticTransaction(txnHandle->txn, descriptor.db.get());
+			if (!result.status.ok()) {
+				DEBUG_LOG("%p Transaction::Commit refused before the log write for transaction %llu: %s\n",
+					txnHandle.get(), (unsigned long long)txnHandle->id, result.status.ToString().c_str());
+				reservation.release();
+				crashForTesting(kCommitCrashAfterRejection);
+				return result;
+			}
+			delayCommitValidatedForTesting();
+		}
+	}
+	if (!txnHandle->logEntryBatch) {
+		return result;
+	}
+	DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %llu\n",
+		txnHandle.get(), (unsigned long long)txnHandle->id);
+	auto store = txnHandle->boundLogStore.lock();
+	if (!store) {
+		DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %llu\n", txnHandle.get(), (unsigned long long)txnHandle->id);
+		result.status = rocksdb::Status::Aborted("Log store not found for transaction");
+		result.jsErrorCode = "ERR_LOG_STORE_NOT_FOUND";
+		return result;
+	}
+	try {
+		LogPosition position(0, 0);
+		store->writeBatch(*txnHandle->logEntryBatch, position);
+		txnHandle->logEntryBatch.reset();
+		txnHandle->publishDurableLog(position);
+		result.wroteLog = true;
+	} catch (const std::exception& e) {
+		DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %llu: %s\n", txnHandle.get(), (unsigned long long)txnHandle->id, e.what());
+		result.status = rocksdb::Status::Aborted(e.what());
+		result.jsErrorCode = "ERR_TRANSACTION_LOG_WRITE";
+		return result;
+	}
+	crashForTesting(kCommitCrashAfterLogWrite);
+	return result;
+}
+
 /**
  * Log-lane stage of the commit: validates the handle and writes the
  * transaction-log batch (recording the committed position). Runs off the JS
@@ -557,25 +677,11 @@ static void executeLogWork(TransactionCommitState* state) {
 		DEBUG_LOG("%p Transaction::Commit refused at admission for transaction %llu: %s\n",
 			txnHandle.get(), (unsigned long long)txnHandle->id, admission.ToString().c_str());
 		state->status = admission;
-	} else if (txnHandle->logEntryBatch) {
-		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %llu\n",
-			txnHandle.get(), (unsigned long long)txnHandle->id);
-		auto store = txnHandle->boundLogStore.lock();
-		if (store) {
-			try {
-				// write the batch to the store
-				store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
-				// free the batch after writing to avoid memory leak
-				txnHandle->logEntryBatch.reset();
-				state->hasLog = true;
-			} catch (const std::exception& e) {
-				DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %llu: %s\n", txnHandle.get(), (unsigned long long)txnHandle->id, e.what());
-				state->status = rocksdb::Status::Aborted(e.what());
-			}
-		} else {
-			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %llu\n", txnHandle.get(), (unsigned long long)txnHandle->id);
-			state->status = rocksdb::Status::Aborted("Log store not found for transaction");
-		}
+	} else {
+		CommitPreparation prepared = prepareCommit(
+			txnHandle, *state->operationDescriptor, state->reservation, state->conflictChecked);
+		state->hasLog = prepared.hasLogEntries;
+		state->status = prepared.status;
 	}
 }
 
@@ -601,6 +707,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 		}
 		state->claim.release(nullptr);
+		state->reservation.release();
 	} else {
 		// ensure the log stage (or handle validation) hasn't errored
 		if (!state->status.ok()) {
@@ -626,6 +733,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
 				transactionCommitExecuteDelayActive().store(false, std::memory_order_release);
 			}
+			state->conflictChecked = true;
 			if (testForceTryAgain()) {
 				// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
 				// so the retry path (reset onto a fresh snapshot + re-run) is exercised. A failed
@@ -639,7 +747,15 @@ static void executeCommitWork(TransactionCommitState* state) {
 				state->status = txnHandle->txn->Commit();
 			}
 			state->claim.release(descriptor);
+			if (state->status.ok()) {
+				crashForTesting(kCommitCrashAfterCommit);
+			}
+		}
+		// The reservation covered the window from the pre-log check through Commit();
+		// nothing below writes to RocksDB.
+		state->reservation.release();
 
+		if (state->conflictChecked) {
 			// For coordinated retry: save slot pointers before
 			// releaseIntent() clears them so the complete callback
 			// can park on any new lock installed on those slots.
@@ -657,14 +773,13 @@ static void executeCommitWork(TransactionCommitState* state) {
 		// Publish the log entries (advance the committed-read watermark) only when the data
 		// transaction actually committed. IsBusy and TryAgain are both retried on a reset
 		// transaction (committedPosition survives, so the WAL batch is not rewritten — #668),
-		// and the eventual successful commit is what publishes. A hard error is abandoned:
-		// close()'s commitAborted drops the position from the uncommitted set so it stops
-		// pinning the watermark (the bytes themselves cannot be unwritten — abandoning a
-		// logged transaction remains the loudly-flagged ERR_TRANSACTION_ABANDONED case).
+		// and the eventual successful commit is what publishes. A hard error leaves the handle
+		// pending for another commit(); a handle that is closed instead keeps its position
+		// uncommitted so the watermark never passes data that was not applied (DESIGN.md).
 		// Gating on !IsBusy (rather than ok()) published on a failed TryAgain commit, making
 		// the entry visible while the record was rolled back and only re-committed later on a
 		// retry — a change-feed entry ahead of its data for every reader in that window.
-		if (txnHandle->committedPosition.logSequenceNumber > 0 && state->status.ok()) {
+		if (txnHandle->hasDurableLog() && state->status.ok()) {
 			auto store = txnHandle->boundLogStore.lock();
 			if (store) {
 				rocksdb::DB* db = descriptor->db.get();
@@ -889,11 +1004,7 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
 		napi_value hasLogValue;
-		// #668: writeBatch is skipped on an IsBusy/TryAgain retry once the WAL batch is durable
-		// (committedPosition set), so state->hasLog is false this attempt. Fall back to
-		// committedPosition so the retry heuristic still treats this as logged.
-		bool hasLog = state->hasLog ||
-			(state->handle && state->handle->committedPosition.logSequenceNumber > 0);
+		bool hasLog = state->hasLog || (state->handle && state->handle->hasDurableLog());
 		napi_status status = ::napi_get_boolean(env, hasLog, &hasLogValue);
 		if (status == napi_ok) {
 			::napi_set_named_property(env, error, "hasLog", hasLogValue);
@@ -1220,9 +1331,6 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	(*txnHandle)->closeIterators();
 	(*txnHandle)->state = TransactionState::Committing;
 
-	std::shared_ptr<TransactionLogStore> store = nullptr;
-	bool hasLog = false;
-
 	std::shared_ptr<DBDescriptor> descriptor = (*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr;
 	if (!descriptor) {
 		(*txnHandle)->state = TransactionState::Pending;
@@ -1244,50 +1352,51 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			napi_value error;
 			ROCKSDB_CREATE_ERROR_LIKE_VOID(error, admission, "Transaction commit failed");
 			napi_value hasLogValue;
-			NAPI_STATUS_THROWS(::napi_get_boolean(env,
-				(*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
+			NAPI_STATUS_THROWS(::napi_get_boolean(env, (*txnHandle)->hasDurableLog(), &hasLogValue));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
 			NAPI_STATUS_THROWS(::napi_throw(env, error));
 			return nullptr;
 		}
 	}
 
-	if ((*txnHandle)->logEntryBatch) {
-		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %llu\n",
-			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
-		store = (*txnHandle)->boundLogStore.lock();
-		if (store) {
-			hasLog = true;
-			try {
-				store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
-			} catch (const std::exception& e) {
-				(*txnHandle)->state = TransactionState::Pending;
-				claim.release(descriptor.get());
-				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
-			}
-			// free the batch after writing to avoid memory leak
-			(*txnHandle)->logEntryBatch.reset();
-		} else {
-			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
-			claim.release(descriptor.get());
-			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
-		}
+	CommitKeyReservationScope reservation;
+	bool conflictChecked = false;
+	CommitPreparation prepared = prepareCommit(*txnHandle, *descriptor, reservation, conflictChecked);
+	const bool hasLog = prepared.hasLogEntries;
+	if (prepared.jsErrorCode != nullptr) {
+		(*txnHandle)->state = TransactionState::Pending;
+		claim.release(descriptor.get());
+		reservation.release();
+		NAPI_THROW_JS_ERROR(prepared.jsErrorCode, prepared.status.ToString().c_str());
 	}
 
-	rocksdb::Status status = (*txnHandle)->txn->Commit();
+	rocksdb::Status status = prepared.status;
+	if (status.ok()) {
+		conflictChecked = true;
+		if (testForceTryAgain()) {
+			// Same stranded-snapshot seam as the async path: nothing lands, TryAgain is reported.
+			rocksdb::Status rollbackStatus = (*txnHandle)->txn->Rollback();
+			status = rollbackStatus.ok()
+				? rocksdb::Status::TryAgain("forced stranded snapshot (test seam)")
+				: rollbackStatus;
+		} else {
+			status = (*txnHandle)->txn->Commit();
+		}
+		if (status.ok()) {
+			crashForTesting(kCommitCrashAfterCommit);
+		}
+	}
 	claim.release(descriptor.get());
+	reservation.release();
 
-	if (!(*txnHandle)->lockedVTSlots.empty()) {
+	if (conflictChecked && !(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();
 	}
 
-	// Publish only on a real commit; IsBusy/TryAgain defer to the retry's eventual success, and on
-	// a hard error close()'s commitAborted stops the position pinning the watermark. See the async
-	// Commit path for detail.
-	if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && status.ok()) {
-		if (!store) {
-			store = (*txnHandle)->boundLogStore.lock();
-		}
+	// Publish only on a real commit; IsBusy/TryAgain defer to the retry's eventual success. See
+	// the async Commit path for detail.
+	if ((*txnHandle)->hasDurableLog() && status.ok()) {
+		std::shared_ptr<TransactionLogStore> store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
 			rocksdb::DB* db = descriptor->db.get();
 			store->commitFinished((*txnHandle)->committedPosition, [db]() { return db->GetLatestSequenceNumber(); });
@@ -1318,10 +1427,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
 		napi_value hasLogValue;
-		// #668: writeBatch is skipped on an IsBusy/TryAgain retry (WAL already durable), so fall
-		// back to committedPosition so the caller keeps treating this as a logged txn.
-		NAPI_STATUS_THROWS(::napi_get_boolean(env,
-			hasLog || (*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
+		NAPI_STATUS_THROWS(::napi_get_boolean(env, hasLog || (*txnHandle)->hasDurableLog(), &hasLogValue));
 		NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
 		NAPI_STATUS_THROWS(::napi_throw(env, error));
 	}
@@ -1696,7 +1802,7 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 
 	const bool isIdempotent = type == napi_number && timestampMs == (*txnHandle)->startTimestamp;
 	auto* txn = (*txnHandle)->txn;
-	if ((*txnHandle)->committedPosition.logSequenceNumber > 0) {
+	if ((*txnHandle)->hasDurableLog()) {
 		if (isIdempotent) {
 			NAPI_RETURN_UNDEFINED();
 		}
@@ -1836,6 +1942,7 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getTimestamp", nullptr, GetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "hasDurableLog", nullptr, nullptr, HasDurableLog, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },

@@ -88,6 +88,35 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value SetCommitValidatedDelayForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	int32_t countdown = 0;
+	int32_t delayMs = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &countdown));
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &delayMs));
+	setCommitValidatedDelayForTesting(countdown, delayMs);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
+napi_value SetCommitCrashPointForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t point = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &point));
+	commitCrashPointFlag().store(point, std::memory_order_relaxed);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
+	return result;
+}
+
+napi_value IsCommitValidatedDelayedForTesting(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(
+		env, commitValidatedDelayActive().load(std::memory_order_acquire), &result));
+	return result;
+}
+
 napi_value ForceDropFailureForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	int32_t mode = 0;
@@ -412,6 +441,18 @@ NAPI_MODULE_INIT() {
 	napi_value forceDropFailureFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceDropFailureForTesting", NAPI_AUTO_LENGTH, ForceDropFailureForTesting, nullptr, &forceDropFailureFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceDropFailureForTesting", forceDropFailureFn));
+
+	napi_value setCommitValidatedDelayFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "setCommitValidatedDelayForTesting", NAPI_AUTO_LENGTH, SetCommitValidatedDelayForTesting, nullptr, &setCommitValidatedDelayFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setCommitValidatedDelayForTesting", setCommitValidatedDelayFn));
+
+	napi_value setCommitCrashPointFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "setCommitCrashPointForTesting", NAPI_AUTO_LENGTH, SetCommitCrashPointForTesting, nullptr, &setCommitCrashPointFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setCommitCrashPointForTesting", setCommitCrashPointFn));
+
+	napi_value isCommitValidatedDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "isCommitValidatedDelayedForTesting", NAPI_AUTO_LENGTH, IsCommitValidatedDelayedForTesting, nullptr, &isCommitValidatedDelayedFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isCommitValidatedDelayedForTesting", isCommitValidatedDelayedFn));
 
 	napi_value setTransactionStagingDelayFn;
 	NAPI_STATUS_THROWS(::napi_create_function(

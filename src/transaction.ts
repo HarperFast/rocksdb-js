@@ -19,11 +19,11 @@ export class TransactionAlreadyAbortedError extends Error {
  * transaction in place (fresh RocksDB snapshot; `committedPosition` preserved, so a staged
  * transaction-log batch stays write-once): the caller should re-run the transaction body
  * and retry the commit — the handling is identical for every subclass. `hasLog` reports
- * whether the transaction wrote to a transaction log (drives the default retry decision).
+ * whether the transaction carried transaction-log entries, staged or already written (it
+ * drives the default retry decision); {@link Transaction.hasDurableLog} is the durable state.
  *
- * {@link TransactionAbandonedError} shares this field shape but deliberately does NOT
- * extend this class — an abandoned transaction is not retryable, and retryability is the
- * boundary this hierarchy expresses.
+ * {@link TransactionLoggedError} deliberately does NOT extend this class: it reports a refused
+ * abort, not a commit outcome, and retryability is the boundary this hierarchy expresses.
  */
 export class TransactionRetryableError extends Error {
 	readonly hasLog: boolean;
@@ -53,14 +53,18 @@ export class TransactionTryAgainError extends TransactionRetryableError {
 	readonly code = 'ERR_TRY_AGAIN';
 }
 
-export class TransactionAbandonedError extends Error {
-	readonly code = 'ERR_TRANSACTION_ABANDONED';
-	readonly hasLog: boolean;
+/**
+ * `abort()` or `abandonWrites()` was refused because a commit attempt already wrote the
+ * transaction's log batch ({@link Transaction.hasDurableLog}). Nothing was changed: the
+ * transaction is still pending with its staged writes, and the caller must keep calling
+ * `commit()` until it succeeds, so the data the log already describes lands.
+ */
+export class TransactionLoggedError extends Error {
+	readonly code = 'ERR_TRANSACTION_LOGGED';
 	readonly txn: Transaction;
 
-	constructor(error: Error, txn: Transaction) {
-		super(error.message);
-		this.hasLog = (error as Error & { hasLog?: boolean }).hasLog ?? false;
+	constructor(error: Error, txn: Transaction, options?: ErrorOptions) {
+		super(error.message, options);
 		this.txn = txn;
 	}
 }
@@ -80,7 +84,7 @@ export class Transaction extends DBI {
 	constructor(store: Store, options?: NativeTransactionOptions) {
 		if (store.readOnly) {
 			super(store);
-			this.#txn = { id: 0 } as NativeTransaction;
+			this.#txn = { id: 0, hasDurableLog: false } as NativeTransaction;
 			this.abandonWrites = this.abort = this.commitSync = this.setTimestamp = () => {};
 			this.commit = async () => {};
 			this.getTimestamp = () => 0;
@@ -100,21 +104,40 @@ export class Transaction extends DBI {
 	 * Reads keep working, including read-your-own-writes.
 	 */
 	abandonWrites(): void {
-		this.#txn.abandonWrites();
+		try {
+			this.#txn.abandonWrites();
+		} catch (err) {
+			throw this.#handleLoggedRefusal(err);
+		}
 	}
 
 	/**
-	 * Abort the transaction.
+	 * Abort the transaction. Refused with {@link TransactionLoggedError}, before anything is
+	 * rolled back, once a commit attempt has written the transaction's log batch.
 	 */
 	abort(): void {
 		try {
 			this.#txn.abort();
 		} catch (err) {
-			if (err instanceof Error && 'code' in err && err.code === 'ERR_TRANSACTION_ABANDONED') {
-				throw new TransactionAbandonedError(err, this);
-			}
-			throw err;
+			throw this.#handleLoggedRefusal(err);
 		}
+	}
+
+	/**
+	 * Whether a commit attempt has written this transaction's transaction-log batch. An
+	 * optimistic conflict is checked before the batch is written, so an ordinary conflict
+	 * retry leaves this `false`; once `true` it stays `true` across retries, after the commit
+	 * lands, and after close.
+	 */
+	get hasDurableLog(): boolean {
+		return this.#txn.hasDurableLog;
+	}
+
+	#handleLoggedRefusal(err: unknown): unknown {
+		if (err instanceof Error && 'code' in err && err.code === 'ERR_TRANSACTION_LOGGED') {
+			return new TransactionLoggedError(err, this);
+		}
+		return err;
 	}
 
 	/**

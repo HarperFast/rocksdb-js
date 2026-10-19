@@ -122,7 +122,13 @@ await db.transaction((txn) => {
 
 - Log entries are buffered in memory per transaction ID
 - Multiple transactions can be buffered concurrently
-- Buffered log entries are NOT written to disk until right before the transaction is committed
+- Buffered log entries are NOT written to disk until right before the transaction is committed, and
+  on an optimistic database only after the transaction's write set has passed RocksDB's conflict
+  check: a commit that fails with `ERR_BUSY`/`ERR_TRY_AGAIN` before that point leaves no entry and
+  `txn.hasDurableLog` stays `false`
+- Once an attempt has written the batch (`txn.hasDurableLog === true`) it is written once for the
+  transaction's lifetime: retries re-stage their RocksDB writes but not the log entries, and the
+  transaction can no longer be aborted
 - If the transaction log handle is garbage collected, buffered (uncommitted) log entries are lost
 - Calling `addEntry()` with an unknown transaction ID throws an error
 
