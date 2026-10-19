@@ -553,8 +553,7 @@ static rocksdb::Status admitCommit(TransactionCommitState* state, const std::sha
 
 struct CommitPreparation final {
 	rocksdb::Status status;
-	// Staged or durable: what `hasLog` on a commit error reports and what makes
-	// `transaction()` retry a conflict by default.
+	// Staged or durable; `hasLog` on a commit error, which drives the default retry.
 	bool hasLogEntries = false;
 	bool wroteLog = false;
 	const char* jsErrorCode = nullptr;
@@ -597,10 +596,9 @@ static CommitPreparation prepareCommit(
 ) {
 	CommitPreparation result;
 	result.hasLogEntries = txnHandle->logEntryBatch != nullptr || txnHandle->hasDurableLog();
-	if (txnHandle->durableWritesLost.load(std::memory_order_relaxed) &&
-		txnHandle->txn->GetWriteBatch()->GetWriteBatch()->Count() == 0) {
+	if (txnHandle->durableWritesLost.load(std::memory_order_relaxed)) {
 		result.status = rocksdb::Status::Aborted(
-			"The durable write set could not be restored after a retry; stage the writes again before committing");
+			"The durable write set could not be restored after a retry; retry the commit again");
 		return result;
 	}
 	if (descriptor.mode == DBMode::Optimistic) {
@@ -611,8 +609,8 @@ static CommitPreparation prepareCommit(
 				return result;
 			}
 			reservation.acquire(descriptor.commitReservation, std::move(hashes));
-		} catch (const std::exception& e) {
-			result.status = rocksdb::Status::Aborted("Failed to reserve commit keys: ", e.what());
+		} catch (...) {
+			result.status = rocksdb::Status::MemoryLimit();
 			return result;
 		}
 		if (txnHandle->logEntryBatch && !txnHandle->hasDurableLog()) {
@@ -650,9 +648,11 @@ static CommitPreparation prepareCommit(
 	} catch (const std::exception& e) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %llu: %s\n", txnHandle.get(), (unsigned long long)txnHandle->id, e.what());
 		if (appended) {
-			// The batch landed before the store's bookkeeping failed: the obligation exists.
+			// The batch landed before the store's bookkeeping failed: the obligation exists and
+			// the verdict is settled, so intents are released like after any post-log outcome.
 			txnHandle->logEntryBatch.reset();
 			txnHandle->publishDurableLog(position);
+			conflictChecked = true;
 		}
 		reservation.release();
 		result.status = rocksdb::Status::Aborted(e.what());
@@ -662,8 +662,6 @@ static CommitPreparation prepareCommit(
 	txnHandle->logEntryBatch.reset();
 	txnHandle->publishDurableLog(position);
 	result.wroteLog = true;
-	// From here the check's outcome is settled for this attempt: a refusal releases VT intents
-	// and a coordinated retry parks, exactly as after a refusal inside Commit().
 	conflictChecked = true;
 	crashForTesting(kCommitCrashAfterLogWrite);
 	return result;
@@ -1344,8 +1342,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		::napi_throw_error(env, nullptr, "Database not open");
 		return nullptr;
 	}
-	// Admitted like an async commit: the descriptor cannot finish closing, and the
-	// handle cannot be torn down, while this thread may wait on a reservation.
+	// Admitted like an async commit, since this thread may wait on a reservation.
 	OperationGuard operationGuard(descriptor);
 	if (descriptor->isClosing()) {
 		::napi_throw_error(env, nullptr, "Database is closing");
@@ -1400,6 +1397,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			(*txnHandle)->state = TransactionState::Pending;
 		}
 		claim.release(descriptor.get());
+		if (conflictChecked && !(*txnHandle)->lockedVTSlots.empty()) {
+			(*txnHandle)->releaseIntent();
+		}
 		NAPI_THROW_JS_ERROR(prepared.jsErrorCode, prepared.status.ToString().c_str());
 	}
 
@@ -1441,7 +1441,6 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
 		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%llu)\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
-		// close() drains admitted work; this commit's own admission must not be waited on.
 		admission.release();
 		(*txnHandle)->close();
 	} else {

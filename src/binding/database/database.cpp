@@ -2800,8 +2800,8 @@ static rocksdb::Status reserveDirectWrite(
 			dbHandle.descriptor->commitReservation,
 			commitKeyHash(dbHandle.getColumnFamilyHandle()->GetID(), key));
 		return rocksdb::Status::OK();
-	} catch (const std::exception& e) {
-		return rocksdb::Status::Aborted("Failed to reserve the key: ", e.what());
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit();
 	}
 }
 

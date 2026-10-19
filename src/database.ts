@@ -1193,8 +1193,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		this.notify('begin-transaction');
 
 		for (let attempt = 1; ; attempt++) {
-			// Once an attempt has written the log batch, the write set it describes is fixed and
-			// survives the reset, so the retry commits it as is instead of re-running the callback.
+			// A durable batch fixes the write set, so the retry commits it instead of re-running
+			// the callback.
 			if (!txn.hasDurableLog) {
 				try {
 					result = await callback(txn, attempt);
@@ -1207,7 +1207,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			try {
 				commitResult = await txn.commit();
 			} catch (commitErr) {
-				if (commitErr instanceof TransactionAlreadyAbortedError) {
+				if (commitErr instanceof TransactionAlreadyAbortedError && !txn.hasDurableLog) {
 					return;
 				}
 				if (this.#mayRetry(txn, commitErr, attempt, maxRetries, options)) {
@@ -1284,13 +1284,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		// its first attempt already logged must not be logged again by a second handle.
 		const txn = new Transaction(this.store, options);
 
-		// `null` means retry; anything else is the final outcome.
 		const commitAttempt = (attempt: number, value: T | PromiseLike<T> | void) => {
 			try {
 				txn.commitSync();
 				return { value };
 			} catch (commitErr) {
-				if (commitErr instanceof TransactionAlreadyAbortedError) {
+				if (commitErr instanceof TransactionAlreadyAbortedError && !txn.hasDurableLog) {
 					return { value: undefined };
 				}
 				if (this.#mayRetry(txn, commitErr, attempt, maxRetries, options)) {
@@ -1301,11 +1300,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			}
 		};
 
-		// Runs attempts from `attempt` on. Synchronous callback results loop here; a
-		// Promise-returning callback hands the rest of the attempts to `continueAsync`.
-		const runAttempts = (attempt: number): T | PromiseLike<T> | void => {
+		// `carried` is the callback's value once a durable batch stops it from re-running.
+		const runAttempts = (attempt: number, carried?: T): T | PromiseLike<T> | void => {
+			let result: T | PromiseLike<T> | undefined = carried;
 			for (; ; attempt++) {
-				let result: T | PromiseLike<T> | undefined;
 				if (!txn.hasDurableLog) {
 					try {
 						result = callback(txn, attempt);
@@ -1328,7 +1326,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			pending.then(
 				(value: T | undefined) => {
 					const outcome = commitAttempt(attempt, value);
-					return outcome ? (outcome.value as T) : (runAttempts(attempt + 1) as T);
+					return outcome ? (outcome.value as T) : (runAttempts(attempt + 1, value) as T);
 				},
 				(callbackErr: unknown) => {
 					this.#abortTransaction(txn, callbackErr);

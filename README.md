@@ -1310,6 +1310,17 @@ waiting is preferable to failing should raise the timeout; there is no way to di
 In particular `0` does not disable it: `0`, negative, and unparseable values all fall back to the
 `5000` default, and a value between `1` and `49` is clamped up to `50`.
 
+#### Migrating from the write-then-check order (rocksdb-js ≤ 2.12)
+
+- Stage transaction-log entries on every attempt. A callback that added its entry only on
+  `attempt === 1` relied on the entry being written before the conflict; it now commits the
+  retry without an audit entry.
+- `ERR_TRANSACTION_ABANDONED` is no longer thrown. `abort()` on a transaction whose batch is
+  durable throws `ERR_TRANSACTION_LOGGED` (`TransactionLoggedError`) and changes nothing; an
+  exhausted unlogged retry rethrows the last conflict error.
+- `transaction()` and `transactionSync()` do not re-run the callback once the batch is durable;
+  they re-commit the write set the log describes.
+
 ### Class: `Transaction`
 
 The transaction callback is passed in a `Transaction` instance which contains all of the same data

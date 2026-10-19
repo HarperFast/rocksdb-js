@@ -45,6 +45,25 @@ type Position = { sequence: number; offset: number };
 const positionAtMost = (a: Position, b: Position) =>
 	a.sequence < b.sequence || (a.sequence === b.sequence && a.offset <= b.offset);
 
+/** Rejects (and terminates the worker) if `promise` does not settle in time. */
+function withinDeadline<T>(
+	promise: Promise<T>,
+	worker: Worker,
+	label: string,
+	ms = 20_000
+): Promise<T> {
+	let timer: NodeJS.Timeout;
+	return Promise.race([
+		promise,
+		new Promise<T>((_, reject) => {
+			timer = setTimeout(() => {
+				void worker.terminate();
+				reject(new Error(`${label} did not settle within ${ms}ms`));
+			}, ms);
+		}),
+	]).finally(() => clearTimeout(timer));
+}
+
 function collectWarnings(filter: string): { warnings: string[]; stop: () => void } {
 	const warnings: string[] = [];
 	const onWarning = (message: string) => {
@@ -274,6 +293,29 @@ describe('conflict before the transaction-log write', () => {
 				}));
 		}
 
+		for (const mode of ['async', 'sync', 'sync-promise'] as const) {
+			it(`${mode}: keeps the callback's value across a durable re-commit`, () =>
+				dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
+					const log = db.useLog('audit');
+					forceTryAgainForTesting(1);
+					const body = (txn: Transaction) => {
+						txn.putSync('k', 'v');
+						log.addEntry(Buffer.from('k'), txn.id);
+						return 42;
+					};
+					let value: unknown;
+					if (mode === 'async') {
+						value = await db.transaction(async (txn) => body(txn));
+					} else if (mode === 'sync') {
+						value = db.transactionSync(body);
+					} else {
+						value = await db.transactionSync(async (txn) => body(txn));
+					}
+					expect(value).toBe(42);
+					expect(await db.get('k')).toBe('v');
+				}));
+		}
+
 		it('commits the write set its log batch describes even when nothing is staged again', () =>
 			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db, dbPath }) => {
 				const log = db.useLog('audit');
@@ -373,16 +415,22 @@ describe('conflict before the transaction-log write', () => {
 						),
 						{ eval: true, workerData: { path: dbPath, log: 'audit', key: 'orphan' } }
 					);
-					const message = await new Promise<{
-						code?: string;
-						hasDurableLog?: boolean;
-						error?: string;
-					}>((resolveMessage, reject) => {
-						worker.once('message', resolveMessage);
-						worker.once('error', reject);
-					});
+					const exited = new Promise<void>((resolveExit) =>
+						worker.once('exit', () => resolveExit())
+					);
+					const message = await withinDeadline(
+						new Promise<{ code?: string; hasDurableLog?: boolean; error?: string }>(
+							(resolveMessage, reject) => {
+								worker.once('message', resolveMessage);
+								worker.once('error', reject);
+								worker.once('exit', () => reject(new Error('worker exited without a result')));
+							}
+						),
+						worker,
+						'logged-pending worker'
+					);
 					expect(message).toEqual({ code: 'ERR_TRY_AGAIN', hasDurableLog: true });
-					await new Promise<void>((resolveExit) => worker.once('exit', () => resolveExit()));
+					await withinDeadline(exited, worker, 'logged-pending worker exit');
 					await vi.waitFor(() => expect(warnings).toHaveLength(1));
 					expect(registryStatus().find((entry) => entry.path === dbPath)!.transactions).toBe(0);
 
@@ -446,7 +494,7 @@ describe('conflict before the transaction-log write', () => {
 				const loggedDone = Date.now();
 				expect(txn.hasDurableLog).toBe(true);
 
-				const directResult = await direct;
+				const directResult = await withinDeadline(direct, worker, 'direct write');
 				await competitor;
 				// Both competitors started inside the window and could only finish once the logged
 				// commit released its reservation (a free putSync returns in well under a millisecond).
@@ -457,7 +505,7 @@ describe('conflict before the transaction-log write', () => {
 				expect(['direct', 'competitor']).toContain(await db.get('k'));
 				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
 				expect([...log.query({ start: 0 })]).toHaveLength(1);
-				await exited;
+				await withinDeadline(exited, worker, 'worker exit');
 			}));
 
 		it('a direct write from another thread waits out a synchronous logged commit', () =>
@@ -485,13 +533,13 @@ describe('conflict before the transaction-log write', () => {
 				const loggedDone = Date.now();
 				expect(txn.hasDurableLog).toBe(true);
 
-				const directResult = await direct;
+				const directResult = await withinDeadline(direct, worker, 'direct write');
 				expect(directResult.error).toBeUndefined();
 				expect(directResult.started).toBeLessThan(loggedDone);
 				expect(directResult.done - directResult.started).toBeGreaterThanOrEqual(900);
 				expect(db.getSync('k')).toBe('direct');
 				expect(await logBytes(dbPath, 'audit')).toBe(oneEntryBytes(1));
-				await exited;
+				await withinDeadline(exited, worker, 'worker exit');
 			}));
 	});
 });

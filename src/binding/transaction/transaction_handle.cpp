@@ -124,23 +124,31 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	this->createdAt = std::chrono::steady_clock::now();
 }
 
+void TransactionHandle::publishDurableLog(LogPosition position) noexcept {
+	this->committedPosition = position;
+	try {
+		this->durableWrites = std::make_unique<rocksdb::WriteBatch>(*this->txn->GetWriteBatch()->GetWriteBatch());
+		this->durableVtSlots = this->lockedVTSlots;
+	} catch (...) {
+		this->durableWrites.reset();
+		this->durableVtSlots.clear();
+	}
+	this->logDurable.store(true, std::memory_order_release);
+}
+
 void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	// clear/delete the previous transaction and create a new transaction so that it can be retried
 	this->closeIterators();
-	// A durable log batch already describes this transaction's writes, so they survive the
-	// reset: a retry commits them as they are (what crash replay would apply), whether or not
-	// the caller stages anything again.
-	std::unique_ptr<rocksdb::WriteBatch> durableWrites;
 	if (this->txn) {
-		if (this->hasDurableLog()) {
-			durableWrites = std::make_unique<rocksdb::WriteBatch>(*this->txn->GetWriteBatch()->GetWriteBatch());
-		}
 		this->txn->ClearSnapshot();
 		delete this->txn;
 	}
 
 	this->logEntryBatch.reset();
-	if (!durableWrites) {
+	// A durable batch's write set survives the reset (it is what the log describes and what
+	// crash replay would apply), and so do the families it names.
+	const bool restoreDurable = this->hasDurableLog();
+	if (!restoreDurable) {
 		this->touchedColumnFamilies.clear();
 	}
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
@@ -161,14 +169,34 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 		throw rocksdb_js::DBException("Invalid database");
 	}
 
-	if (durableWrites && durableWrites->Count() > 0) {
-		rocksdb::Status restored = this->txn->RebuildFromWriteBatch(durableWrites.get());
-		if (!restored.ok()) {
-			DEBUG_LOG("%p TransactionHandle::resetTransaction could not restore the durable write set of transaction %llu: %s\n",
-				this, (unsigned long long)this->id, restored.ToString().c_str());
-			this->durableWritesLost.store(true, std::memory_order_relaxed);
-		}
+	if (!restoreDurable) {
+		return;
 	}
+	if (!this->durableWrites) {
+		this->durableWritesLost.store(true, std::memory_order_relaxed);
+		return;
+	}
+	bool restored = false;
+	try {
+		restored = this->txn->RebuildFromWriteBatch(this->durableWrites.get()).ok();
+		if (restored && !this->durableVtSlots.empty()) {
+			auto* vt = DBSettings::getInstance().getVerificationTableRaw();
+			if (vt) {
+				const uint64_t dbId = descriptor->vtEpoch;
+				for (auto* slot : this->durableVtSlots) {
+					if (LockTracker* tracker = vt->lockSlotForWrite(slot, dbId)) {
+						this->lockedVTSlots.push_back(slot);
+						this->heldTrackers.push_back(tracker);
+					}
+				}
+			}
+		}
+	} catch (...) {
+		restored = false;
+	}
+	DEBUG_LOG("%p TransactionHandle::resetTransaction restored durable write set of transaction %llu: %s\n",
+		this, (unsigned long long)this->id, restored ? "ok" : "failed");
+	this->durableWritesLost.store(!restored, std::memory_order_relaxed);
 }
 
 /**
@@ -194,16 +222,10 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
 		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
-	// #668 (defense in depth): the write-ahead log is write-once per transaction. If
-	// committedPosition is already set, this transaction's batch was durably written by a
-	// prior commit attempt (committedPosition survives resetTransaction). A commit that
-	// returned IsBusy is retried by re-running the transaction body to re-drive the RocksDB
-	// commit; re-staging the log here would write the records a second time at a new
-	// position, orphaning the original (commitFinished is gated on !IsBusy, so the original
-	// is never finalized) and pinning the committed-read watermark at it forever — silent
-	// committed-read truncation (HarperFast/harper-pro#426). Higher layers are expected to
-	// suppress the re-log on retry (e.g. harper's DatabaseTransaction.isRetry), but enforce
-	// write-once here too so a stray re-stage from any caller cannot corrupt the watermark.
+	// #668: the write-ahead log is write-once per transaction. A durable batch survives
+	// resetTransaction, and callers re-stage their entries on every attempt (a pre-log refusal
+	// leaves nothing to skip); re-logging here would write the records again at a new position,
+	// orphan the original and pin the committed-read watermark on it (HarperFast/harper-pro#426).
 	if (this->committedPosition.logSequenceNumber > 0) {
 		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %llu "
 			"(WAL already written at seq %u)\n",
@@ -484,6 +506,8 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 	this->touchedColumnFamilies.clear();
+	this->durableWrites.reset();
+	this->durableVtSlots.clear();
 
 	// Note: close() is deliberately napi-free. The transaction holds no napi
 	// refs (the JS database is passed to UseLog by the TS layer per-call), so
@@ -839,7 +863,9 @@ rocksdb::Status TransactionHandle::putSync(
 	// the invariant that a cached version is only trusted when there is a
 	// single visible version of the record across all transactions.
 	if (status.ok()) {
-		this->durableWritesLost.store(false, std::memory_order_relaxed);
+		if (!this->durableWrites) {
+			this->durableWritesLost.store(false, std::memory_order_relaxed);
+		}
 		if (dbHandle->enableVerificationTable) {
 			this->lockVTSlot(dbHandle, key);
 		}
@@ -888,7 +914,9 @@ rocksdb::Status TransactionHandle::removeSync(
 	}
 
 	if (status.ok()) {
-		this->durableWritesLost.store(false, std::memory_order_relaxed);
+		if (!this->durableWrites) {
+			this->durableWritesLost.store(false, std::memory_order_relaxed);
+		}
 		if (dbHandle->enableVerificationTable) {
 			this->lockVTSlot(dbHandle, key);
 		}

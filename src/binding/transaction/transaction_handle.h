@@ -346,15 +346,23 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	}
 
 	/**
-	 * A reset could not restore the durable write set (allocation failure in
-	 * `RebuildFromWriteBatch`); the commit refuses until the caller stages it again.
+	 * The write set the durable log batch describes, copied when the batch was
+	 * written and rebuilt into every later transaction by `resetTransaction()`,
+	 * with the VT slots its writes held so their intents are reinstalled too.
+	 * Null when the copy itself could not be allocated.
+	 */
+	std::unique_ptr<rocksdb::WriteBatch> durableWrites;
+	std::vector<std::atomic<uint64_t>*> durableVtSlots;
+
+	/**
+	 * The last reset could not rebuild `durableWrites` in full; commit refuses
+	 * until a reset succeeds (or, with no copy to rebuild from, until the caller
+	 * stages the writes again).
 	 */
 	std::atomic<bool> durableWritesLost{false};
 
-	void publishDurableLog(LogPosition position) {
-		this->committedPosition = position;
-		this->logDurable.store(true, std::memory_order_release);
-	}
+	/** Records the log position and captures the write set it describes. */
+	void publishDurableLog(LogPosition position) noexcept;
 
 	/**
 	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),
