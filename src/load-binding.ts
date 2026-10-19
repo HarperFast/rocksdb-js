@@ -109,7 +109,6 @@ export type NativeTransactionOptions = {
 
 export type NativeTransaction = {
 	id: number;
-	/** See `Transaction.hasDurableLog`. */
 	readonly hasDurableLog: boolean;
 	new (context: NativeDatabase, options?: NativeTransactionOptions): NativeTransaction;
 	abandonWrites(): void;

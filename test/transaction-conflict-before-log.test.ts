@@ -45,7 +45,6 @@ function oneEntryBytes(payloadLength: number): number {
 	return TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + payloadLength;
 }
 
-/** The store's own write counters: one batch, `entries` entries, whatever was mapped since. */
 function expectLoggedOnce(log: TransactionLog, entries = 1, bytes?: number) {
 	const totals = log.getStats().totals;
 	expect(totals.transactionsWritten).toBe(1);
@@ -57,7 +56,6 @@ type Position = { sequence: number; offset: number };
 const positionAtMost = (a: Position, b: Position) =>
 	a.sequence < b.sequence || (a.sequence === b.sequence && a.offset <= b.offset);
 
-/** Rejects (and terminates the worker) if `promise` does not settle in time. */
 function withinDeadline<T>(
 	promise: Promise<T>,
 	worker: Worker,

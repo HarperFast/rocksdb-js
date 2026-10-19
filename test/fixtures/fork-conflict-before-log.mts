@@ -35,7 +35,6 @@ RocksDatabase.config({ occValidation: policy as 'parallel' | 'serial' });
 const db = RocksDatabase.open(dbPath, { verificationTable: true });
 const log = db.useLog('audit');
 
-// 1. An ordinary conflict is refused before any log byte.
 await db.put('k', 'initial');
 const durableAtStart: boolean[] = [];
 let handle: Transaction | undefined;
@@ -67,7 +66,6 @@ assert(handle!.hasDurableLog === true, 'hasDurableLog must be true once the comm
 assert(db.getSync('k') === 'committed', 'the retry must have committed');
 assert(logBytes('audit') === oneEntry(5), `one log entry expected, got ${logBytes('audit')} bytes`);
 
-// 2. A batch left durable by a failure past the log write can neither be aborted nor dropped.
 const logged = new Transaction(db.store);
 logged.putSync('j', 'logged');
 log.addEntry(Buffer.from('j'), logged.id);

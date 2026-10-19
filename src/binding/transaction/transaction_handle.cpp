@@ -125,13 +125,17 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 }
 
 bool TransactionHandle::captureDurableWrites() noexcept {
+	// The write set is fixed once durable, so an earlier copy stays valid when a later one fails.
+	if (this->durableWrites) {
+		return true;
+	}
 	try {
-		this->durableWrites = std::make_unique<rocksdb::WriteBatch>(*this->txn->GetWriteBatch()->GetWriteBatch());
-		this->durableVtSlots = this->lockedVTSlots;
+		auto writes = std::make_unique<rocksdb::WriteBatch>(*this->txn->GetWriteBatch()->GetWriteBatch());
+		std::vector<std::atomic<uint64_t>*> slots = this->lockedVTSlots;
+		this->durableWrites = std::move(writes);
+		this->durableVtSlots = std::move(slots);
 		return true;
 	} catch (...) {
-		this->durableWrites.reset();
-		this->durableVtSlots.clear();
 		return false;
 	}
 }
