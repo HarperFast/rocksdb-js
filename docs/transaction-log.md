@@ -127,8 +127,9 @@ await db.transaction((txn) => {
   check: a commit that fails with `ERR_BUSY`/`ERR_TRY_AGAIN` before that point leaves no entry and
   `txn.hasDurableLog` stays `false`
 - Once an attempt has written the batch (`txn.hasDurableLog === true`) it is written once for the
-  transaction's lifetime: retries re-stage their RocksDB writes but not the log entries, and the
-  transaction can no longer be aborted
+  transaction's lifetime: the write set it describes is fixed (`put()`/`remove()` throw
+  `TransactionLoggedError`), a retry re-commits that write set as it is, and the transaction can no
+  longer be aborted
 - If the transaction log handle is garbage collected, buffered (uncommitted) log entries are lost
 - Calling `addEntry()` with an unknown transaction ID throws an error
 

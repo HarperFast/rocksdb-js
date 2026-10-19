@@ -293,7 +293,6 @@ describe('conflict before the transaction-log write', () => {
 				expect(caught).toMatchObject({ code: 'ERR_TRANSACTION_LOGGED', txn });
 				expect(txn.hasDurableLog).toBe(true);
 
-				// Its write set is fixed by the durable batch: staging is refused, the re-commit lands it.
 				expect(() => txn.putSync('k', 'other')).toThrow(TransactionLoggedError);
 				expect(() => txn.removeSync('k')).toThrow(TransactionLoggedError);
 				await expect(txn.put('k', 'other')).rejects.toBeInstanceOf(TransactionLoggedError);
@@ -553,7 +552,6 @@ describe('conflict before the transaction-log write', () => {
 						expect(warnings).toHaveLength(1);
 						expect(await db.get('orphan')).toBeUndefined();
 
-						// A later commit publishes nothing past the orphan's position ...
 						await db.transaction(async (txn) => {
 							txn.putSync('later', 1);
 							log.addEntry(Buffer.from('later'), txn.id);
@@ -565,7 +563,6 @@ describe('conflict before the transaction-log write', () => {
 						]);
 						expect([...log.query({ start: 0, readUncommitted: true })]).toHaveLength(3);
 
-						// ... and a flush cannot move the replay boundary past it.
 						db.flushSync();
 						expect(positionAtMost(log.getStats().lastFlushedPosition, pinned)).toBe(true);
 					} finally {
