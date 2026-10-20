@@ -201,16 +201,10 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 			throw rocksdb_js::DBException(errorMessage);
 		}
 	} else {
-		// Bind under transactionBindMutex so the bind+increment is atomic with
-		// respect to tryClose()'s phase-3 check-and-mark-closing sequence.
-		// transactionBindMutex is never held during I/O, so this cannot stall the
-		// event loop the way holding writeMutex here would.
-		std::lock_guard<std::mutex> lock(entry->store->transactionBindMutex);
-		if (entry->store->isClosing.load(std::memory_order_relaxed)) {
+		if (!entry->store->tryBindTransaction()) {
 			throw rocksdb_js::DBException("Transaction log store is closed");
 		}
 		this->boundLogStore = entry->store;
-		entry->store->pendingTransactionCount++;
 		DEBUG_LOG("%p TransactionHandle::addLogEntry Binding transaction %llu to log store \"%s\"\n",
 			this, (unsigned long long)this->id, entry->store->name.c_str());
 	}

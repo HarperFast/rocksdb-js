@@ -1797,17 +1797,11 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 	if (!boundStore) {
-		// Bind under transactionBindMutex so the bind+increment is atomic with
-		// respect to tryClose()'s phase-3 check-and-mark-closing sequence.
-		// transactionBindMutex is never held during I/O, so this cannot stall
-		// the event loop the way holding writeMutex here would.
-		std::lock_guard<std::mutex> lock(store->transactionBindMutex);
-		if (store->isClosing.load(std::memory_order_relaxed)) {
+		if (!store->tryBindTransaction()) {
 			::napi_throw_error(env, nullptr, "Transaction log store is closed");
 			return nullptr;
 		}
 		(*txnHandle)->boundLogStore = store;
-		store->pendingTransactionCount++;
 		DEBUG_LOG("%p Transaction::UseLog Binding transaction %llu to log store \"%s\"\n",
 			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id, name.c_str());
 	}

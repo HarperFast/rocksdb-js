@@ -119,9 +119,11 @@ bool TransactionLogStore::tryClose() {
 	// Phase 1 — quick count check under transactionBindMutex.
 	// transactionBindMutex is a lightweight lock used only for pendingTransactionCount
 	// increments and the isClosing assignment; it is never held during I/O.
+	uint64_t bindGeneration;
 	{
 		std::lock_guard<std::mutex> bindLock(this->transactionBindMutex);
 		if (this->isClosing.load(std::memory_order_relaxed)) return true;
+		bindGeneration = this->transactionBindGeneration;
 		if (this->pendingTransactionCount.load(std::memory_order_relaxed) > 0) {
 			DEBUG_LOG("%p TransactionLogStore::tryClose Skipping (phase 1): pendingTransactionCount=%d\n",
 				this, this->pendingTransactionCount.load(std::memory_order_relaxed));
@@ -148,16 +150,19 @@ bool TransactionLogStore::tryClose() {
 		}
 	}
 
-	// Phase 3 — re-check count and atomically set isClosing under transactionBindMutex.
-	// A new UseLog/addLogEntry may have bound a transaction between phases 1 and 3,
-	// so we must re-verify. Once isClosing is set here, all future bind attempts
-	// will fail (they also check isClosing under transactionBindMutex).
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (this->tryCloseBeforeClosingLatchForTests) {
+		this->tryCloseBeforeClosingLatchForTests();
+	}
+#endif
+
+	// Phase 3 — latch isClosing unless a transaction bound since phase 1: it may
+	// have written and left the count after phase 2's scan, so neither check saw it.
 	{
 		std::lock_guard<std::mutex> bindLock(this->transactionBindMutex);
 		if (this->isClosing.load(std::memory_order_relaxed)) return true;
-		if (this->pendingTransactionCount.load(std::memory_order_relaxed) > 0) {
-			DEBUG_LOG("%p TransactionLogStore::tryClose Skipping (phase 3): pendingTransactionCount=%d\n",
-				this, this->pendingTransactionCount.load(std::memory_order_relaxed));
+		if (this->transactionBindGeneration != bindGeneration) {
+			DEBUG_LOG("%p TransactionLogStore::tryClose Skipping (phase 3): transaction bound during check\n", this);
 			return false;
 		}
 		bool expected = false;
@@ -173,6 +178,16 @@ bool TransactionLogStore::tryClose() {
 		std::lock_guard<std::mutex> dataLock(this->dataSetsMutex);
 		this->doClose();
 	}
+	return true;
+}
+
+bool TransactionLogStore::tryBindTransaction() {
+	std::lock_guard<std::mutex> bindLock(this->transactionBindMutex);
+	if (this->isClosing.load(std::memory_order_relaxed)) {
+		return false;
+	}
+	this->pendingTransactionCount++;
+	this->transactionBindGeneration++;
 	return true;
 }
 
