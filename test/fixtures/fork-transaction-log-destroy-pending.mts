@@ -22,9 +22,9 @@ try {
 		}
 	});
 
-	const deadline = Date.now() + 5000;
+	const deadline = performance.now() + 5000;
 	while (!isTransactionCommitExecuteDelayedForTesting()) {
-		assert(Date.now() < deadline, 'commit did not reach the execute delay');
+		assert(performance.now() < deadline, 'commit did not reach the execute delay');
 		await delay(1);
 	}
 
