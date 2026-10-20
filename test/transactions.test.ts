@@ -1,3 +1,4 @@
+import { registryStatus } from '../src/index.ts';
 import { Transaction } from '../src/transaction.ts';
 import { withResolvers } from '../src/util.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
@@ -367,6 +368,52 @@ for (const { name, options, txnOptions } of testOptions) {
 					txn.abort();
 				});
 				await expect(db.get('foo')).toBeUndefined();
+			}));
+
+		it(`${name} async should abort while async gets are in flight`, () =>
+			dbRunner({ dbOptions: [{ ...options, noBlockCache: true }] }, async ({ db }) => {
+				const COLD_KEYS = 256;
+				const STAGED_KEYS = 200;
+				for (let i = 0; i < COLD_KEYS; i++) {
+					await db.put(`cold-${i}`, `value-${i}`);
+				}
+				await db.flush();
+
+				let asyncReads = 0;
+				for (let iteration = 0; iteration < 200; iteration++) {
+					const txn = new Transaction(db.store, txnOptions);
+					// Staged writes fill the write batch that the in-flight gets read.
+					for (let i = 0; i < STAGED_KEYS; i++) {
+						txn.putSync(`staged-${i}`, i);
+					}
+					const reads: Promise<unknown>[] = [];
+					for (let i = 0; i < 8; i++) {
+						const result = txn.get(`cold-${(iteration * 8 + i) % COLD_KEYS}`);
+						if (result instanceof Promise) {
+							asyncReads++;
+							reads.push(result);
+						}
+					}
+					// Vary the gap so abort lands at different points of the worker reads.
+					const spinUntil = performance.now() + (iteration % 10) * 0.01;
+					while (performance.now() < spinUntil) {}
+					txn.abort();
+
+					for (const outcome of await Promise.allSettled(reads)) {
+						if (outcome.status === 'fulfilled') {
+							expect(outcome.value).toMatch(/^value-\d+$/);
+						} else {
+							expect(outcome.reason.message).toMatch(
+								/Database closed during transaction get operation/
+							);
+						}
+					}
+				}
+				expect(asyncReads).toBeGreaterThan(0);
+				for (let i = 0; i < STAGED_KEYS; i++) {
+					expect(db.getSync(`staged-${i}`)).toBeUndefined();
+				}
+				expect(registryStatus().find((entry) => entry.path === db.path)?.transactions).toBe(0);
 			}));
 
 		it(`${name} async should abort twice in the callback`, () =>

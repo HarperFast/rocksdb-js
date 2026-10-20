@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.ts';
+import { RocksDatabase, steadyClockNow } from '../../src/index.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { parentPort, workerData } from 'node:worker_threads';
 
@@ -12,7 +12,7 @@ port.once('message', async () => {
 	if (workerData.destroyStartDelayMs > 0) await delay(workerData.destroyStartDelayMs);
 	try {
 		db.destroy();
-		port.postMessage({ destroyed: true });
+		port.postMessage({ destroyed: true, destroyedAt: steadyClockNow() });
 	} catch (error) {
 		port.postMessage({ error: error instanceof Error ? error.message : String(error) });
 	}

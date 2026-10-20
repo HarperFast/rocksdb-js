@@ -152,12 +152,44 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 	bool hadLogWrites = (*txnHandle)->committedPosition.logSequenceNumber > 0;
 
-	(*txnHandle)->closeIterators();
-	(*txnHandle)->state = TransactionState::Aborted;
+	// Rollback() frees the write batch an admitted async get may be reading, so
+	// admitted work drains first. That drain can wait on a disk read; the guard
+	// keeps finishClose()'s closables sweep off this transaction meanwhile. An
+	// already-cancelled handle, or a closing descriptor, means a teardown close()
+	// owns the rollback. See src/binding/transaction/DESIGN.md.
+	const AsyncWorkHandle::IdleCancel idle = (*txnHandle)->cancelIfIdle();
+	const bool drainAsyncWork = idle == AsyncWorkHandle::IdleCancel::Busy;
+	std::shared_ptr<DBDescriptor> descriptor;
+	if (drainAsyncWork) {
+		descriptor = (*txnHandle)->owningDescriptor.lock();
+	}
+	{
+		OperationGuard operationGuard(descriptor);
+		const bool teardownOwnsRollback = idle == AsyncWorkHandle::IdleCancel::AlreadyCancelled ||
+			(drainAsyncWork && (!descriptor || descriptor->isClosing()));
 
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
-	DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
-	(*txnHandle)->close();
+		if (teardownOwnsRollback) {
+			// Terminal to later writes and commits now; `state` is that close()'s to set.
+			(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
+		} else {
+			(*txnHandle)->closeIterators();
+			if (drainAsyncWork) {
+				(*txnHandle)->cancelAllAsyncWork();
+				(*txnHandle)->waitForAsyncWorkCompletion();
+			}
+			(*txnHandle)->state = TransactionState::Aborted;
+
+			ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
+			DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
+			(*txnHandle)->close();
+		}
+	}
+	if (descriptor) {
+		// The pin can make a concurrent last-handle close skip its purge.
+		DBKey key = descriptorKey(*descriptor);
+		descriptor.reset();
+		DBRegistry::PurgeIfUnreferenced(key);
+	}
 
 	if (hadLogWrites) {
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABANDONED", "Transaction was abandoned after writing to the transaction log");
