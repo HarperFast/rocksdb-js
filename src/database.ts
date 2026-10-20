@@ -589,6 +589,18 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * Syncs the write-ahead log to stable storage (`DB::SyncWAL`), so every write committed
+	 * before the call survives a power loss afterwards. Unlike {@link flush} it writes no SST
+	 * file and never stalls writers; it costs one fsync of the active WAL file. Writes that
+	 * skipped the WAL (`disableWAL`) are not covered. Runs on the libuv threadpool.
+	 *
+	 * On a read-only database the returned promise resolves without syncing.
+	 */
+	syncWal(): Promise<void> {
+		return new Promise((resolve, reject) => this.store.db.syncWal(resolve, reject));
+	}
+
+	/**
 	 * Returns the most recent {@link BackgroundError} observed on this database, or
 	 * `null` when none has occurred. The `'error'` event is the push counterpart;
 	 * this is the pull equivalent for on-demand checks (e.g. a health probe) and

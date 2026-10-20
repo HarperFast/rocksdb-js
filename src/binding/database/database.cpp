@@ -1034,6 +1034,90 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Syncs the write-ahead log to stable storage asynchronously on the libuv
+ * threadpool. Resolves without syncing on a read-only database.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * await new Promise((resolve, reject) => db.syncWal(resolve, reject));
+ * ```
+ */
+napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	napi_value resolve = argv[0];
+	napi_value reject = argv[1];
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		napi_value recv;
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
+		napi_value ignored;
+		NAPI_STATUS_THROWS(::napi_call_function(env, recv, resolve, 0, nullptr, &ignored));
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"database.syncWal",
+		NAPI_AUTO_LENGTH,
+		&name
+	));
+
+	auto state = new BaseAsyncState<std::shared_ptr<DBHandle>>(env, *dbHandle);
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,       // node_env
+		nullptr,   // async_resource
+		name,      // async_resource_name
+		[](napi_env doNotUse, void* data) { // execute
+			auto state = reinterpret_cast<BaseAsyncState<std::shared_ptr<DBHandle>>*>(data);
+			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during WAL sync");
+			} else {
+				state->status = state->handle->descriptor->syncWal();
+			}
+			state->signalExecuteCompleted();
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			auto state = reinterpret_cast<BaseAsyncState<std::shared_ptr<DBHandle>>*>(data);
+
+			state->deleteAsyncWork();
+
+			if (status != napi_cancelled) {
+				if (state->status.ok()) {
+					napi_value undefined;
+					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+					state->callResolve(undefined);
+				} else {
+					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "WAL sync failed");
+					state->callReject(error);
+				}
+			}
+
+			delete state;
+		},
+		state,
+		&state->asyncWork
+	));
+
+	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	if (!queueAsyncWorkOrReject(env, state, "Failed to queue WAL sync work")) {
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Asynchronously gets a value from the RocksDB database. The first argument, that specifies the key, can be a buffer or a number
  * indicating the length of the key that was written to the shared buffer.
  *
@@ -2980,6 +3064,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "estimateCount", nullptr, EstimateCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "syncWal", nullptr, SyncWal, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },

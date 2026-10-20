@@ -2789,6 +2789,14 @@ rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
 	);
 }
 
+rocksdb::Status DBDescriptor::syncWal() {
+	if (this->readOnly) {
+		DEBUG_LOG("%p DBDescriptor::syncWal Skipping WAL sync for readonly database\n", this);
+		return rocksdb::Status::OK();
+	}
+	return this->db->SyncWAL();
+}
+
 rocksdb::Status DBDescriptor::catchUpWithPrimary() {
 	std::lock_guard<std::mutex> lock(this->catchUpMutex);
 	DEBUG_LOG("%p DBDescriptor::catchUpWithPrimary Catching up with primary for \"%s\"\n", this, this->path.c_str());
