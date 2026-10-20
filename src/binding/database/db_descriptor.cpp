@@ -2272,16 +2272,17 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	}
 
 	// Rejects the caller with the pending exception (the callback's own throw,
-	// or a throwing `then`), else a generic error. With no promise to reject,
-	// the exception is left pending for Node's uncaught-exception policy.
+	// or a throwing `then`), else a generic error. The exception is cleared even
+	// with no promise to receive it: Deno does not report one left pending when
+	// this callback returns, and the next waiter's call would fail on it.
 	auto fail = [&]() {
-		if (!complete() || callbackData->deferred == nullptr) {
-			return;
-		}
 		napi_value error = nullptr;
 		bool pending = false;
 		if (::napi_is_exception_pending(env, &pending) == napi_ok && pending) {
 			::napi_get_and_clear_last_exception(env, &error);
+		}
+		if (!complete() || callbackData->deferred == nullptr) {
+			return;
 		}
 		if (error == nullptr) {
 			napi_value message;
