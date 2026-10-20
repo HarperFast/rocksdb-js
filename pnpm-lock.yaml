@@ -10,13 +10,13 @@ importers:
     dependencies:
       '@harperfast/extended-iterable':
         specifier: ^1.0.3
-        version: 1.0.3
+        version: 1.0.4
       msgpackr:
         specifier: ^2.0.6
-        version: 2.1.1
+        version: 2.1.2
       ordered-binary:
         specifier: ^1.6.1
-        version: 1.6.2
+        version: 1.6.3
     devDependencies:
       '@rollup/plugin-replace':
         specifier: 6.0.3
@@ -277,8 +277,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@harperfast/extended-iterable@1.0.3':
-    resolution: {integrity: sha512-sSAYhQca3rDWtQUHSAPeO7axFIUJOI6hn1gjRC5APVE1a90tuyT8f5WIgRsFhhWA7htNkju2veB9eWL6YHi/Lw==}
+  '@harperfast/extended-iterable@1.0.4':
+    resolution: {integrity: sha512-/ReTjp82KnBVOzqBgoJN70Lk1ltoyqf0dAwXpMlD3wvMt6/KDjMDpfhA7fR7uFFs9bal4ngORLUSk/Y938goNQ==}
 
   '@harperfast/rocksdb-js-darwin-arm64@2.12.0':
     resolution: {integrity: sha512-FKD53RHsloAmO3v60Z5xcxub8S0y1v6Z5KNcaE3c8O0hf/xj8jtL4YBSgwjVx4y8rxppCIkeIo9U58uvfTcc9Q==}
@@ -1354,8 +1354,8 @@ packages:
   msgpackr@1.12.1:
     resolution: {integrity: sha512-4EUH9tQHnMmEgzW/MdAP0KIfa1T9AF+htl0ffe2n5vb2EKn9y2co8ccpgWko6S52Jy1PQZKwRnx5/KkYjtd9MQ==}
 
-  msgpackr@2.1.1:
-    resolution: {integrity: sha512-MoVDM7oZZ38VXpCtnzbKGCkh7otCUem69cwTlvOHf23wzPKBJoWQ4J8/uYXtRAGjL9mXcFcSiPvOJ9e6kpGS1g==}
+  msgpackr@2.1.2:
+    resolution: {integrity: sha512-JHAdwubWNEadHQsFAib6uXOzKFxY8QOWHu9LCCksOINMC+TjgaKS2Tdrw7dW5SY0LLz8YK2/YqLSi2vigQt05w==}
 
   nanoid@3.3.20:
     resolution: {integrity: sha512-uKdg2G3GNCKQn9byYOpxbGqrT2fGO5KRt5J/8b3pok8rT6qxGWF6hxMyJiEYtAf+FVyYuD9hRaDqX5uPFYJ4ZQ==}
@@ -1398,8 +1398,8 @@ packages:
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
 
-  ordered-binary@1.6.2:
-    resolution: {integrity: sha512-BY+qgDArmYpvvmij141xbkB4Cw8RFLBQM5Zj4MODFb1SyXBRE/xO4Xj/QWbR7aUEBxbkjuNdsFVCL2TmbYrlNg==}
+  ordered-binary@1.6.3:
+    resolution: {integrity: sha512-Bc8LnA2x4ZHRQ9LjCm/NOdD3+CTQPhGNu8m7/6+ERtiB6Bb/fn7nCySwcmAC+5WCqwelpSAQgo1VX9BGpsC0tQ==}
 
   oxfmt@0.73.0:
     resolution: {integrity: sha512-Ke4xbpuzqIBP4bkd48q815RhqWNJqOBzxVA9199M4qcF0y0LtpUv7UTg1dJ5ea6jw0RBUDZvX3qOUMNmmxfxbw==}
@@ -1852,7 +1852,7 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@harperfast/extended-iterable@1.0.3': {}
+  '@harperfast/extended-iterable@1.0.4': {}
 
   '@harperfast/rocksdb-js-darwin-arm64@2.12.0':
     optional: true
@@ -2522,11 +2522,11 @@ snapshots:
 
   lmdb@3.5.7:
     dependencies:
-      '@harperfast/extended-iterable': 1.0.3
+      '@harperfast/extended-iterable': 1.0.4
       msgpackr: 1.12.1
       node-addon-api: 6.1.0
       node-gyp-build-optional-packages: 5.2.2
-      ordered-binary: 1.6.2
+      ordered-binary: 1.6.3
       weak-lru-cache: 1.2.2
     optionalDependencies:
       '@lmdb/lmdb-darwin-arm64': 3.5.7
@@ -2577,7 +2577,7 @@ snapshots:
     optionalDependencies:
       msgpackr-extract: 3.0.4
 
-  msgpackr@2.1.1:
+  msgpackr@2.1.2:
     optionalDependencies:
       msgpackr-extract: 3.0.4
 
@@ -2622,7 +2622,7 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  ordered-binary@1.6.2: {}
+  ordered-binary@1.6.3: {}
 
   oxfmt@0.73.0:
     dependencies:

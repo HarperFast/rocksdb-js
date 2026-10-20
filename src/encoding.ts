@@ -1,6 +1,6 @@
 import * as orderedBinary from 'ordered-binary';
 
-export type Key = Key[] | string | symbol | number | boolean | Uint8Array | Buffer | null;
+export type Key = Key[] | string | symbol | number | bigint | boolean | Uint8Array | Buffer | null;
 
 export interface BufferWithDataView extends Buffer {
 	dataView: DataView;
