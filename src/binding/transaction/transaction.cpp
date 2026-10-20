@@ -136,6 +136,29 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Whether a durable handle may be aborted because none of its writes can ever land. The check
+ * reads the transaction and the families it touched, which a foreign teardown's sweep destroys,
+ * so it runs under an `OperationGuard`; a closing or gone descriptor refuses, because that
+ * teardown's `close()` then owns the handle and pins its position. The descriptor pin can make a
+ * concurrent last-handle close skip its purge, so the purge is retried after it is released.
+ */
+static bool durableAbortAllowed(TransactionHandle& handle) {
+	std::shared_ptr<DBDescriptor> descriptor = handle.owningDescriptor.lock();
+	if (!descriptor) {
+		return false;
+	}
+	const DBKey key = descriptorKey(*descriptor);
+	bool allowed = false;
+	{
+		OperationGuard guard(descriptor);
+		allowed = !descriptor->isClosing() && handle.durableWritesUnlandable();
+	}
+	descriptor.reset();
+	DBRegistry::PurgeIfUnreferenced(key);
+	return allowed;
+}
+
+/**
  * Aborts the transaction.
  */
 napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
@@ -153,11 +176,11 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	// Refused while the durable batch's data can still land; writes abandoned for a dropped
 	// column family never will, so that handle may close (its position is released, DESIGN.md).
 	if ((*txnHandle)->hasDurableLog()) {
-		if (!(*txnHandle)->durableWritesUnlandable()) {
+		if (!durableAbortAllowed(**txnHandle)) {
 			NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED",
 				"Cannot abort: the transaction log batch is already durable; retry commit() until it succeeds");
 		}
-		(*txnHandle)->durableUnlandable = true;
+		(*txnHandle)->durableUnlandable.store(true, std::memory_order_relaxed);
 	}
 
 	// Rollback() frees the write batch an admitted async get may be reading, so

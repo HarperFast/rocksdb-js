@@ -19,7 +19,7 @@ export class TransactionAlreadyAbortedError extends Error {
  * Base for commit conflicts the native layer has already recovered from by resetting the
  * transaction in place (fresh RocksDB snapshot). While {@link Transaction.hasDurableLog} is
  * `false` the caller re-runs the transaction body and retries the commit; once it is `true`
- * the write set the log describes was restored into the reset transaction, so the caller
+ * the transaction is not reset and still holds the write set the log describes, so the caller
  * retries `commit()` without staging anything again. `hasLog` reports whether the
  * transaction carried transaction-log entries, staged or already written (it drives the
  * default retry decision).

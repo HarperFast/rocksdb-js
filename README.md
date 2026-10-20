@@ -289,7 +289,9 @@ Sets global database settings.
       while a transaction whose log batch is durable still holds the key.
     - `'serial'` checks for conflicts inside RocksDB's write group instead, and allocates no bucket
       pool, which saves its memory. Because the check and the write happen in one step, a column
-      family cannot be dropped between them. The cost: RocksDB never batches a serial-validated
+      family cannot be dropped between them. A logged transaction validates before its log write
+      and lands with a plain write under both policies, so the policy decides only how an unlogged
+      commit validates. The cost: RocksDB never batches a serial-validated
       commit with another writer, including the database's other commit threads, so it gives back
       what `commitThreads` gains. With four worker threads
       committing 64-key transactions to one database it committed about 4,500 transactions per

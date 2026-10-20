@@ -8,16 +8,16 @@
 // commit still published its log entries — the change-feed entry became visible while the
 // record was rolled back.
 //
-// The fix treats TryAgain like Busy: the native layer resets the transaction onto a fresh
-// snapshot (committedPosition survives, so the WAL stays write-once, #668) and the retry
-// re-runs the body to validate against current state. commitFinished now fires only on a real
-// commit, so the entry is published exactly once, after the data lands — no premature publish,
-// no phantom entry if the retry is ultimately abandoned.
+// The fix treats TryAgain like Busy. A transaction that has not logged yet is reset onto a fresh
+// snapshot and its body re-run. A logged optimistic transaction is not validated a second time
+// after its log write (a plain write lands the batch), so a failure there leaves the handle
+// pending and intact and the retry writes the same batch once, without re-running the body
+// (committedPosition survives, so the WAL stays write-once, #668). commitFinished fires only on a
+// real commit, so the entry is published exactly once, after the data lands: no premature
+// publish, no phantom entry if the retry is ultimately abandoned.
 //
-// This forces exactly that stranded-snapshot TryAgain and asserts the retry converges on the
-// *same* native transaction (harper#1696 replayed onto a fresh transaction at the JS layer; the
-// native reset makes that unnecessary), writing the log entry once and keeping committed reads
-// intact.
+// This forces a failed landing and asserts the retry converges on the *same* native transaction,
+// writing the log entry once and keeping committed reads intact.
 
 import { forceTryAgainForTesting } from '../src/load-binding.ts';
 import { Transaction } from '../src/transaction.ts';
@@ -38,7 +38,7 @@ function spyOnCommitCodes() {
 	return { codes, restore: () => (Transaction.prototype.commit = original) };
 }
 
-describe('#1695 ERR_TRY_AGAIN retry resets onto a fresh snapshot and converges', () => {
+describe('#1695 a failed commit of a logged transaction retries on the same transaction and converges', () => {
 	it('converges on the same transaction after a stranded snapshot, WAL written once', () =>
 		dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
 			const key = 'k';
@@ -73,8 +73,6 @@ describe('#1695 ERR_TRY_AGAIN retry resets onto a fresh snapshot and converges',
 			// Premise: the first attempt actually failed with TryAgain (not Busy), else the test
 			// would prove nothing about the TryAgain path.
 			expect(codes).toContain('ERR_TRY_AGAIN');
-			// Attempt 1 wrote its log batch before the stranded snapshot, so the retry re-committed
-			// the restored write set on the same native transaction without re-running the body.
 			expect(calls).toBe(1);
 			expect(handle!.hasDurableLog).toBe(true);
 

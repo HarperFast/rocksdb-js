@@ -499,7 +499,7 @@ void TransactionHandle::close() {
 		auto store = this->boundLogStore.lock();
 		// A batch whose every write names a dropped column family can never land, so its entry
 		// is not an obligation: the position is released like before, and the warning says why.
-		const bool unlandable = this->durableUnlandable || this->durableWritesUnlandable();
+		const bool unlandable = this->durableUnlandable.load(std::memory_order_relaxed) || this->durableWritesUnlandable();
 		if (unlandable && store) {
 			store->commitAborted(this->committedPosition);
 		}

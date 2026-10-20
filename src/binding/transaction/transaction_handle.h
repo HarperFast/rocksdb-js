@@ -365,9 +365,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	/**
 	 * `abort()` found the batch unlandable and is about to roll back, which empties the batch
-	 * `close()` would otherwise inspect. Written and read on the aborting thread only.
+	 * `close()` would otherwise inspect.
 	 */
-	bool durableUnlandable = false;
+	std::atomic<bool> durableUnlandable{false};
 
 	/**
 	 * Keys this transaction keeps reserved between a failed post-log commit and
