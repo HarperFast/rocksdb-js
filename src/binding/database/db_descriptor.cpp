@@ -2185,7 +2185,7 @@ static napi_value settleLockCallback(napi_env env, napi_callback_info info, bool
 	}
 	if (callbackData->deferred != nullptr) {
 		if (rejected) {
-			::napi_reject_deferred(env, callbackData->deferred, argc > 0 ? argv[0] : undefined);
+			::napi_reject_deferred(env, callbackData->deferred, argv[0]);
 		} else {
 			::napi_resolve_deferred(env, callbackData->deferred, undefined);
 		}
