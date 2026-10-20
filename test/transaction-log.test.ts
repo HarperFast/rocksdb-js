@@ -1272,7 +1272,6 @@ describe('Transaction Log', () => {
 					await txn.put('foo', Buffer.from('hello2'));
 				});
 
-				// Nothing was logged, so the abort is ordinary and only the second entry exists.
 				await expect(firstTxn).rejects.toMatchObject({ code: 'ERR_BUSY', hasLog: true });
 				expect(await db.get('foo')).toEqual(Buffer.from('hello2'));
 

@@ -22,7 +22,7 @@ namespace rocksdb {
  * pointers are equal (the addon is built without RTTI, so `dynamic_cast` cannot
  * recover the complete object). A signature change on an upgrade fails the
  * link; `test/native/optimistic_validation_test.cc` fails if the verdict stops
- * matching `Commit()`, which a wrong `this` cannot survive.
+ * matching `Commit()`.
  */
 class OptimisticTransaction {
 private:

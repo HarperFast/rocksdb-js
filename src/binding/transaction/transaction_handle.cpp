@@ -124,22 +124,6 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	this->createdAt = std::chrono::steady_clock::now();
 }
 
-bool TransactionHandle::captureDurableWrites() noexcept {
-	// The write set is fixed once durable, so an earlier copy stays valid when a later one fails.
-	if (this->durableWrites) {
-		return true;
-	}
-	try {
-		auto writes = std::make_unique<rocksdb::WriteBatch>(*this->txn->GetWriteBatch()->GetWriteBatch());
-		std::vector<std::atomic<uint64_t>*> slots = this->lockedVTSlots;
-		this->durableWrites = std::move(writes);
-		this->durableVtSlots = std::move(slots);
-		return true;
-	} catch (...) {
-		return false;
-	}
-}
-
 void TransactionHandle::publishDurableLog(LogPosition position) noexcept {
 	this->committedPosition = position;
 	this->logDurable.store(true, std::memory_order_release);
@@ -171,9 +155,7 @@ struct ColumnFamilyIds final : rocksdb::WriteBatch::Handler {
 } // namespace
 
 bool TransactionHandle::durableWritesUnlandable() const noexcept {
-	const rocksdb::WriteBatch* batch = this->durableWrites
-		? this->durableWrites.get()
-		: (this->txn ? this->txn->GetWriteBatch()->GetWriteBatch() : nullptr);
+	const rocksdb::WriteBatch* batch = this->txn ? this->txn->GetWriteBatch()->GetWriteBatch() : nullptr;
 	if (!batch || batch->Count() == 0) {
 		return false;
 	}
@@ -204,34 +186,6 @@ bool TransactionHandle::durableWritesUnlandable() const noexcept {
 	}
 }
 
-bool TransactionHandle::restoreDurableWrites(DBDescriptor* descriptor) noexcept {
-	if (!this->durableWrites) {
-		return false;
-	}
-	try {
-		if (!this->txn->RebuildFromWriteBatch(this->durableWrites.get()).ok()) {
-			return false;
-		}
-		if (!this->durableVtSlots.empty()) {
-			auto* vt = DBSettings::getInstance().getVerificationTableRaw();
-			if (vt) {
-				this->lockedVTSlots.reserve(this->lockedVTSlots.size() + this->durableVtSlots.size());
-				this->heldTrackers.reserve(this->heldTrackers.size() + this->durableVtSlots.size());
-				const uint64_t dbId = descriptor->vtEpoch;
-				for (auto* slot : this->durableVtSlots) {
-					if (LockTracker* tracker = vt->lockSlotForWrite(slot, dbId)) {
-						this->lockedVTSlots.push_back(slot);
-						this->heldTrackers.push_back(tracker);
-					}
-				}
-			}
-		}
-		return true;
-	} catch (...) {
-		return false;
-	}
-}
-
 void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	// clear/delete the previous transaction and create a new transaction so that it can be retried
 	this->closeIterators();
@@ -240,18 +194,12 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 		delete this->txn;
 	}
 
-	// A durable batch's write set survives the reset (it is what the log describes and what
-	// crash replay would apply), and so do the families it names. A batch refused before the
-	// log write is carried so a caller that staged it only once still logs it.
-	const bool restoreDurable = this->hasDurableLog();
-	if (restoreDurable) {
-		this->logEntryBatch.reset();
-	} else if (this->logEntryBatch) {
+	// A batch refused before the log write is carried so a caller that staged it only once still
+	// logs it. A durable handle is never reset: its intact batch lands with a plain write.
+	if (this->logEntryBatch) {
 		this->logBatchCarried = true;
 	}
-	if (!restoreDurable) {
-		this->touchedColumnFamilies.clear();
-	}
+	this->touchedColumnFamilies.clear();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
 	auto dbHandle = this->dbHandle;
@@ -269,14 +217,6 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	} else {
 		throw rocksdb_js::DBException("Invalid database");
 	}
-
-	if (!restoreDurable) {
-		return;
-	}
-	const bool restored = this->restoreDurableWrites(descriptor);
-	DEBUG_LOG("%p TransactionHandle::resetTransaction restored durable write set of transaction %llu: %s\n",
-		this, (unsigned long long)this->id, restored ? "ok" : "failed");
-	this->durableWritesLost.store(!restored, std::memory_order_relaxed);
 }
 
 /**
@@ -557,7 +497,7 @@ void TransactionHandle::close() {
 		auto store = this->boundLogStore.lock();
 		// A batch whose every write names a dropped column family can never land, so its entry
 		// is not an obligation: the position is released like before, and the warning says why.
-		const bool unlandable = this->durableWritesUnlandable();
+		const bool unlandable = this->durableUnlandable || this->durableWritesUnlandable();
 		if (unlandable && store) {
 			store->commitAborted(this->committedPosition);
 		}
@@ -605,8 +545,6 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 	this->touchedColumnFamilies.clear();
-	this->durableWrites.reset();
-	this->durableVtSlots.clear();
 
 	// Note: close() is deliberately napi-free. The transaction holds no napi
 	// refs (the JS database is passed to UseLog by the TS layer per-call), so

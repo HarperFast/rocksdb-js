@@ -195,6 +195,57 @@ TEST(OptimisticValidation, ValidationLeavesTheTransactionUsable) {
 	EXPECT_EQ(value, "v1");
 }
 
+// A logged optimistic handle lands its batch with a plain `Write()` instead of `Commit()`
+// (transaction.cpp `landTransaction`). That rests on four RocksDB facts, pinned here under both
+// OCC policies so an upgrade that changes one fails this test rather than a production commit.
+class DirectWriteLanding : public ::testing::TestWithParam<rocksdb::OccValidationPolicy> {};
+
+TEST_P(DirectWriteLanding, LandsABatchThatCommitRefusesAndLeavesNothingBehind) {
+	Fixture fixture(GetParam());
+	fixture.base->Put(rocksdb::WriteOptions(), "k", "v0");
+	std::unique_ptr<rocksdb::Transaction> txn(fixture.begin());
+	txn->SetSnapshot();
+	ASSERT_TRUE(txn->Put("k", "mine").ok());
+	ASSERT_TRUE(txn->Put(fixture.other, "o", "mine-other").ok());
+	fixture.base->Put(rocksdb::WriteOptions(), "k", "theirs");
+
+	// A failed Commit() leaves the batch intact: nothing landed and nothing was cleared.
+	EXPECT_TRUE(txn->Commit().IsBusy());
+	EXPECT_EQ(txn->GetNumPuts(), 2u);
+	std::string value;
+	ASSERT_TRUE(fixture.base->Get(rocksdb::ReadOptions(), "k", &value).ok());
+	EXPECT_EQ(value, "theirs");
+
+	// The plain write has no tracker to validate against, so it lands every record in both families.
+	rocksdb::Status written =
+		fixture.odb->Write(*txn->GetWriteOptions(), txn->GetWriteBatch()->GetWriteBatch());
+	ASSERT_TRUE(written.ok()) << written.ToString();
+	ASSERT_TRUE(txn->Rollback().ok());
+	ASSERT_TRUE(fixture.base->Get(rocksdb::ReadOptions(), "k", &value).ok());
+	EXPECT_EQ(value, "mine");
+	ASSERT_TRUE(fixture.base->Get(rocksdb::ReadOptions(), fixture.other, "o", &value).ok());
+	EXPECT_EQ(value, "mine-other");
+	EXPECT_EQ(txn->GetNumPuts(), 0u);
+}
+
+TEST_P(DirectWriteLanding, RefusesARangeDeletionBeforeAnythingLands) {
+	Fixture fixture(GetParam());
+	std::unique_ptr<rocksdb::Transaction> txn(fixture.begin());
+	ASSERT_TRUE(txn->Put("k", "v1").ok());
+	rocksdb::WriteBatch batch;
+	ASSERT_TRUE(batch.Put("k", "v2").ok());
+	ASSERT_TRUE(batch.DeleteRange("a", "z").ok());
+	EXPECT_TRUE(fixture.odb->Write(rocksdb::WriteOptions(), &batch).IsNotSupported());
+	std::string value;
+	EXPECT_TRUE(fixture.base->Get(rocksdb::ReadOptions(), "k", &value).IsNotFound());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+	Policies,
+	DirectWriteLanding,
+	::testing::Values(rocksdb::OccValidationPolicy::kValidateParallel, rocksdb::OccValidationPolicy::kValidateSerial)
+);
+
 TEST(OptimisticValidation, CommitKeyHashesCoverEveryFamilyOnceAndFailClosedOnRanges) {
 	Fixture fixture;
 	std::unique_ptr<rocksdb::Transaction> txn(fixture.begin());

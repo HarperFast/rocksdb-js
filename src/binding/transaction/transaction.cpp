@@ -152,9 +152,12 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 	// Refused while the durable batch's data can still land; writes abandoned for a dropped
 	// column family never will, so that handle may close (its position is released, DESIGN.md).
-	if ((*txnHandle)->hasDurableLog() && !(*txnHandle)->durableWritesUnlandable()) {
-		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED",
-			"Cannot abort: the transaction log batch is already durable; retry commit() until it succeeds");
+	if ((*txnHandle)->hasDurableLog()) {
+		if (!(*txnHandle)->durableWritesUnlandable()) {
+			NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED",
+				"Cannot abort: the transaction log batch is already durable; retry commit() until it succeeds");
+		}
+		(*txnHandle)->durableUnlandable = true;
 	}
 
 	// Rollback() frees the write batch an admitted async get may be reading, so
@@ -407,7 +410,6 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	// RocksDB's conflict check ran this attempt (ahead of the log write, or inside Commit()): the
 	// point from which VT intents are released and a coordinated retry may park.
 	bool conflictChecked = false;
-	bool durableCaptured = false;
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
 	DBDescriptor* operationDescriptor = nullptr;
@@ -594,13 +596,6 @@ static CommitPreparation prepareCommit(
 ) {
 	CommitPreparation result;
 	result.hasLogEntries = txnHandle->logEntryBatch != nullptr || txnHandle->hasDurableLog();
-	if (txnHandle->durableWritesLost.load(std::memory_order_relaxed)) {
-		if (!txnHandle->restoreDurableWrites(&descriptor)) {
-			result.status = rocksdb::Status::MemoryLimit();
-			return result;
-		}
-		txnHandle->durableWritesLost.store(false, std::memory_order_relaxed);
-	}
 	if (descriptor.mode == DBMode::Optimistic) {
 		try {
 			std::vector<uint64_t> hashes;
@@ -618,7 +613,11 @@ static CommitPreparation prepareCommit(
 			return result;
 		}
 		if (txnHandle->logEntryBatch && !txnHandle->hasDurableLog()) {
-			result.status = validateOptimisticTransaction(txnHandle->txn, descriptor.db.get());
+			try {
+				result.status = validateOptimisticTransaction(txnHandle->txn, descriptor.db.get());
+			} catch (...) {
+				result.status = rocksdb::Status::MemoryLimit();
+			}
 			if (!result.status.ok()) {
 				DEBUG_LOG("%p Transaction::Commit refused before the log write for transaction %llu: %s\n",
 					txnHandle.get(), (unsigned long long)txnHandle->id, result.status.ToString().c_str());
@@ -678,7 +677,33 @@ static CommitPreparation prepareCommit(
 }
 
 /**
- * After `txn->Commit()` returned: a durable batch whose commit must be retried
+ * Lands the transaction's writes. A logged optimistic handle writes its batch with a plain
+ * `Write()`: the conflict verdict was taken under the reservation before the log write and
+ * that reservation (the durable hold on a retry) still excludes every in-process writer of
+ * those keys, so a second validation can only fail for a reason that no longer matters to a
+ * batch the log already promises (a memtable flush that trimmed history, harper#1695). Nothing
+ * is reset or rebuilt, and a failure leaves the batch intact for the next attempt. Other
+ * transactions commit through RocksDB, which validates. Never throws.
+ */
+static rocksdb::Status landTransaction(TransactionHandle& txnHandle, DBDescriptor& descriptor) noexcept {
+	try {
+		if (descriptor.mode != DBMode::Optimistic || !txnHandle.hasDurableLog()) {
+			return txnHandle.txn->Commit();
+		}
+		rocksdb::Status status = descriptor.db->Write(
+			*txnHandle.txn->GetWriteOptions(), txnHandle.txn->GetWriteBatch()->GetWriteBatch());
+		if (status.ok()) {
+			// For an optimistic transaction this only clears the tracker and the batch.
+			txnHandle.txn->Rollback();
+		}
+		return status;
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit();
+	}
+}
+
+/**
+ * After the transaction landed (or failed): a durable batch whose commit must be retried
  * keeps its keys as a durable hold, so no later-logged writer passes it; every
  * other outcome releases them, and a landed commit releases any earlier hold.
  */
@@ -781,27 +806,21 @@ static void executeCommitWork(TransactionCommitState* state) {
 			}
 			state->conflictChecked = true;
 			if (testForceTryAgain()) {
-				// Test seam: a stranded snapshot. Like the real thing, Commit() is skipped (nothing
-				// lands) and the write batch stays intact for the retry.
-				state->status = rocksdb::Status::TryAgain("forced stranded snapshot (test seam)");
+				// Test seam: a failed landing attempt. Nothing lands and the write batch stays
+				// intact for the retry.
+				state->status = rocksdb::Status::TryAgain("forced failed landing (test seam)");
 			} else {
-				state->status = txnHandle->txn->Commit();
+				state->status = landTransaction(*txnHandle, *descriptor);
 			}
 			state->claim.release(descriptor);
 			if (state->status.ok()) {
 				crashForTesting(kCommitCrashAfterCommit);
-			} else if (txnHandle->hasDurableLog()) {
-				// The intact batch and its VT slots are copied before the intents are released; if
-				// the copy cannot be made the transaction is retried as it is, unreset.
-				state->durableCaptured = txnHandle->captureDurableWrites();
 			}
 		}
 		settleReservation(*txnHandle, state->reservation, state->status);
 
-		// A durable handle that keeps its writes (a hard error, or a copy that could not be made)
-		// keeps their VT intents too; a reset reinstalls them from the copy.
-		const bool keepsWrites = txnHandle->hasDurableLog() && !state->status.ok() &&
-			!((state->status.IsBusy() || state->status.IsTryAgain()) && state->durableCaptured);
+		// A durable handle keeps its writes, and so their VT intents, until it lands.
+		const bool keepsWrites = txnHandle->hasDurableLog() && !state->status.ok();
 		if (state->conflictChecked && !keepsWrites) {
 			// For coordinated retry: save slot pointers before
 			// releaseIntent() clears them so the complete callback
@@ -818,14 +837,13 @@ static void executeCommitWork(TransactionCommitState* state) {
 		}
 
 		// Publish the log entries (advance the committed-read watermark) only when the data
-		// transaction actually committed. IsBusy and TryAgain are both retried on a reset
-		// transaction (committedPosition survives, so the WAL batch is not rewritten — #668),
-		// and the eventual successful commit is what publishes. A hard error leaves the handle
-		// pending for another commit(); a handle that is closed instead keeps its position
-		// uncommitted so the watermark never passes data that was not applied (DESIGN.md).
-		// Gating on !IsBusy (rather than ok()) published on a failed TryAgain commit, making
-		// the entry visible while the record was rolled back and only re-committed later on a
-		// retry — a change-feed entry ahead of its data for every reader in that window.
+		// actually landed. A durable handle that fails stays pending and intact for another
+		// commit() (the WAL batch is write-once, #668); a handle that is closed instead keeps its
+		// position uncommitted so the watermark never passes data that was not applied
+		// (DESIGN.md). Gating on !IsBusy (rather than ok()) published on a failed TryAgain
+		// commit, making the entry visible while the record was rolled back and only
+		// re-committed later on a retry — a change-feed entry ahead of its data for every reader
+		// in that window.
 		if (txnHandle->hasDurableLog() && state->status.ok()) {
 			auto store = txnHandle->boundLogStore.lock();
 			if (store) {
@@ -845,15 +863,15 @@ static void executeCommitWork(TransactionCommitState* state) {
 			DEBUG_LOG("%p Transaction::Commit ERROR: Commit failed with %s, resetting transaction\n",
 				txnHandle.get(), state->status.IsBusy() ? "IsBusy" : "TryAgain");
 			// Clear/delete the previous transaction and create a new one so the retry re-drives the
-			// commit. resetTransaction preserves committedPosition (the WAL batch stays write-once,
-			// #668) but takes a fresh RocksDB snapshot: IsBusy converges by re-tracking keys at the
+			// commit on a fresh RocksDB snapshot: IsBusy converges by re-tracking keys at the
 			// current sequence, and TryAgain — whose snapshot was stranded outside the memtable
 			// window after a flush, so recommitting the same transaction re-checks the same lost
 			// history forever (harper#1695) — converges because the re-run reads and validates
 			// against current state instead. The caller must re-run the transaction body so the
-			// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
+			// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this). A
+			// durable handle is not reset: it lands its intact batch with a plain write.
 			if (txnHandle->dbHandle && !txnHandle->dbHandle->isCancelled()) {
-				if (!txnHandle->hasDurableLog() || state->durableCaptured) {
+				if (!txnHandle->hasDurableLog()) {
 					txnHandle->resetTransaction(descriptor);
 				}
 			} else {
@@ -1445,25 +1463,21 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	}
 
 	rocksdb::Status status = prepared.status;
-	bool durableCaptured = false;
 	if (status.ok()) {
 		conflictChecked = true;
 		if (testForceTryAgain()) {
-			status = rocksdb::Status::TryAgain("forced stranded snapshot (test seam)");
+			status = rocksdb::Status::TryAgain("forced failed landing (test seam)");
 		} else {
-			status = (*txnHandle)->txn->Commit();
+			status = landTransaction(**txnHandle, *descriptor);
 		}
 		if (status.ok()) {
 			crashForTesting(kCommitCrashAfterCommit);
-		} else if ((*txnHandle)->hasDurableLog()) {
-			durableCaptured = (*txnHandle)->captureDurableWrites();
 		}
 	}
 	claim.release(descriptor.get());
 	settleReservation(**txnHandle, reservation, status);
 
-	const bool keepsWrites = (*txnHandle)->hasDurableLog() && !status.ok() &&
-		!((status.IsBusy() || status.IsTryAgain()) && durableCaptured);
+	const bool keepsWrites = (*txnHandle)->hasDurableLog() && !status.ok();
 	if (conflictChecked && !keepsWrites && !(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();
 	}
@@ -1493,7 +1507,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		if (status.IsBusy() || status.IsTryAgain()) {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Commit failed with %s, resetting transaction\n",
 				(*txnHandle).get(), status.IsBusy() ? "IsBusy" : "TryAgain");
-			if (!(*txnHandle)->hasDurableLog() || durableCaptured) {
+			if (!(*txnHandle)->hasDurableLog()) {
 				(*txnHandle)->resetTransaction(descriptor.get());
 			}
 		}

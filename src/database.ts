@@ -86,7 +86,6 @@ function backgroundErrorSeverityName(severity: number): string {
 	return BACKGROUND_ERROR_SEVERITY_NAMES[severity] ?? 'unknown';
 }
 
-/** Backoff between re-commits of a durable handle: doubling from 2 ms, capped at 50 ms. */
 function durableRetryDelayMs(attempt: number): number {
 	return Math.min(50, 2 ** Math.min(attempt, 6));
 }

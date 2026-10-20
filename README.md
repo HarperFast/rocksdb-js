@@ -1279,8 +1279,8 @@ at `1` and ends at `maxRetries`.
 On an optimistic database the conflict check runs before the transaction-log batch is written, so
 a commit that fails with `ERR_BUSY` (or `ERR_TRY_AGAIN`) on its first attempt has written nothing
 to the log and `txn.hasDurableLog` is `false`; the retry re-runs the callback, which re-stages the
-log entries. Once an attempt has written the batch — a stranded snapshot after a memtable flush, or
-an error past the log write — `txn.hasDurableLog` is `true`, the batch is write-once (later
+log entries. Once an attempt has written the batch — an I/O error past the log write, say —
+`txn.hasDurableLog` is `true`, the batch is write-once (later
 attempts' `addEntry` calls are ignored), and the transaction is retried until it commits regardless
 of `maxRetries`: aborting it would leave a log entry without its data. `abort()` on such a
 transaction throws `TransactionLoggedError` (`ERR_TRANSACTION_LOGGED`) without rolling anything
@@ -1375,14 +1375,16 @@ transaction operations are permitted.
 Once a commit attempt has written the transaction's log batch (`txn.hasDurableLog === true`),
 `abort()`, `abandonWrites()`, `put()` and `remove()` throw `TransactionLoggedError`
 (`code: 'ERR_TRANSACTION_LOGGED'`) before changing anything: the transaction stays pending, its
-write set (restored across any reset) is the one the log describes, its keys stay reserved
+write set is the one the log describes (it is never reset; each retry writes it as it is), its keys stay reserved
 (another writer's `putSync` or commit on them fails with `ERR_BUSY` until it lands), and the caller
 retries `commit()` until it succeeds. A durable
 transaction that is dropped instead (garbage collected, or left pending by an exiting worker or a
 closing database) is not rolled back either: its log position stays uncommitted, so committed log
 readers, the flushed position recorded for crash replay, and retention (which never purges past
 that position) all stop before it until the process restarts and replays it, and a `log.warn`
-event names it.
+event names it. Its keys are released when it closes, so a later write to them can land before that
+replay: a consumer that replays the entry must apply it only when it is newer than what is already
+stored for the same key.
 
 #### `txn.commit(): Promise<void>`
 

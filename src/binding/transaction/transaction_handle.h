@@ -349,37 +349,25 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	}
 
 	/**
-	 * The write set the durable log batch describes — copied from the intact
-	 * transaction when a post-log commit fails (never on the success path) and
-	 * rebuilt into every later transaction by `resetTransaction()`, with the VT
-	 * slots its writes held so their intents are reinstalled too. Immutable
-	 * once durable: staging refuses with `ERR_TRANSACTION_LOGGED`.
-	 */
-	std::unique_ptr<rocksdb::WriteBatch> durableWrites;
-	std::vector<std::atomic<uint64_t>*> durableVtSlots;
-
-	/** The last reset could not rebuild `durableWrites` in full; the next commit retries it. */
-	std::atomic<bool> durableWritesLost{false};
-
-	/**
 	 * A log batch carried across a pre-log refusal: the retry may stage its
 	 * entries again (which replaces the carried batch) or rely on them.
 	 */
 	bool logBatchCarried = false;
 
-	/** Copies the intact write set before a reset; false when it could not be allocated. */
-	bool captureDurableWrites() noexcept;
-
 	void publishDurableLog(LogPosition position) noexcept;
 
-	/** Rebuilds `durableWrites` into the current transaction; true on success. */
-	bool restoreDurableWrites(DBDescriptor* descriptor) noexcept;
-
 	/**
-	 * Whether every write in the durable batch names a dropped column family,
-	 * so the batch can never land and its position may be released.
+	 * Whether every write in the transaction's batch names a dropped column family,
+	 * so the batch can never land and its position may be released. The write set is
+	 * immutable once durable (staging refuses with `ERR_TRANSACTION_LOGGED`).
 	 */
 	bool durableWritesUnlandable() const noexcept;
+
+	/**
+	 * `abort()` found the batch unlandable and is about to roll back, which empties the batch
+	 * `close()` would otherwise inspect. Written and read on the aborting thread only.
+	 */
+	bool durableUnlandable = false;
 
 	/**
 	 * Keys this transaction keeps reserved between a failed post-log commit and

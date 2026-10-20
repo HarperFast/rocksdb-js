@@ -350,7 +350,6 @@ describe('conflict before the transaction-log write', () => {
 					} else {
 						db.transactionSync(body, { maxRetries: 2, retryOnBusy: false });
 					}
-					// The durable batch describes attempt 1's writes, so they are what lands.
 					expect(calls).toBe(1);
 					expect(handle!.hasDurableLog).toBe(true);
 					expect(await db.get('k')).toBe(1);
