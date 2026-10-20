@@ -581,11 +581,11 @@ static void crashForTesting(int point) {
 }
 
 /**
- * The commit steps ahead of `txn->Commit()`, shared by every commit mode
+ * The commit steps ahead of landing the writes, shared by every commit mode
  * (`src/binding/transaction/DESIGN.md`): reserve the write set against every
  * other in-process writer, run RocksDB's conflict check for a logged first
  * attempt before any log byte exists, then write the log batch. The caller
- * releases `reservation` after `txn->Commit()` returns; on failure it is
+ * releases `reservation` after `landTransaction()` returns; on failure it is
  * released here. `conflictChecked` reports a settled conflict verdict.
  */
 static CommitPreparation prepareCommit(
@@ -872,7 +872,12 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// durable handle is not reset: it lands its intact batch with a plain write.
 			if (txnHandle->dbHandle && !txnHandle->dbHandle->isCancelled()) {
 				if (!txnHandle->hasDurableLog()) {
-					txnHandle->resetTransaction(descriptor);
+					try {
+						txnHandle->resetTransaction(descriptor);
+					} catch (...) {
+						// A commit task must not throw; the handle keeps its previous transaction.
+						state->status = rocksdb::Status::MemoryLimit();
+					}
 				}
 			} else {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
@@ -1508,7 +1513,12 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Commit failed with %s, resetting transaction\n",
 				(*txnHandle).get(), status.IsBusy() ? "IsBusy" : "TryAgain");
 			if (!(*txnHandle)->hasDurableLog()) {
-				(*txnHandle)->resetTransaction(descriptor.get());
+				try {
+					(*txnHandle)->resetTransaction(descriptor.get());
+				} catch (...) {
+					// An exception must not cross N-API; the handle keeps its previous transaction.
+					status = rocksdb::Status::MemoryLimit();
+				}
 			}
 		}
 		if ((*txnHandle)->state == TransactionState::Committing) {

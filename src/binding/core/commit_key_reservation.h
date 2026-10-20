@@ -15,11 +15,11 @@ namespace rocksdb_js {
  * (see `src/binding/transaction/DESIGN.md`).
  *
  * A logged optimistic commit validates its write set before writing the
- * transaction-log batch and only then runs `txn->Commit()`, which validates
- * again. A **transient** hold is what makes the first verdict still hold at
- * the second: every writer of the database — transactional commits, logged or
- * not, and direct `Put`/`Delete` — holds its keys while it writes, so nothing
- * can land between the two. A **durable** hold is what a transaction keeps on
+ * transaction-log batch and then lands the batch without validating again. A
+ * **transient** hold is what makes that one verdict still hold when the batch
+ * lands: every writer of the database — transactional commits, logged or not,
+ * and direct `Put`/`Delete` — holds its keys while it writes, so nothing can
+ * land in between. A **durable** hold is what a transaction keeps on
  * its keys once its log batch is written but its commit still has to be
  * retried: log order would otherwise diverge from data order, since a later
  * writer could log and commit those keys before the retry lands. A durable

@@ -187,12 +187,30 @@ bool TransactionHandle::durableWritesUnlandable() const noexcept {
 }
 
 void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
-	// clear/delete the previous transaction and create a new transaction so that it can be retried
+	// The replacement is built before the previous transaction is destroyed, so an allocation
+	// failure leaves the handle with a valid (if stale) transaction instead of a dangling one.
+	rocksdb::WriteOptions writeOptions;
+	writeOptions.disableWAL = this->dbHandle->disableWAL;
+
+	rocksdb::Transaction* fresh = nullptr;
+	if (descriptor->mode == DBMode::Pessimistic) {
+		auto* tdb = static_cast<rocksdb::TransactionDB*>(descriptor->db.get());
+		rocksdb::TransactionOptions txnOptions;
+		fresh = tdb->BeginTransaction(writeOptions, txnOptions);
+	} else if (descriptor->mode == DBMode::Optimistic) {
+		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(descriptor->db.get());
+		rocksdb::OptimisticTransactionOptions txnOptions;
+		fresh = odb->BeginTransaction(writeOptions, txnOptions);
+	} else {
+		throw rocksdb_js::DBException("Invalid database");
+	}
+
 	this->closeIterators();
 	if (this->txn) {
 		this->txn->ClearSnapshot();
 		delete this->txn;
 	}
+	this->txn = fresh;
 
 	// A batch refused before the log write is carried so a caller that staged it only once still
 	// logs it. A durable handle is never reset: its intact batch lands with a plain write.
@@ -201,22 +219,6 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	}
 	this->touchedColumnFamilies.clear();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
-
-	auto dbHandle = this->dbHandle;
-	rocksdb::WriteOptions writeOptions;
-	writeOptions.disableWAL = dbHandle->disableWAL;
-
-	if (descriptor->mode == DBMode::Pessimistic) {
-		auto* tdb = static_cast<rocksdb::TransactionDB*>(descriptor->db.get());
-		rocksdb::TransactionOptions txnOptions;
-		this->txn = tdb->BeginTransaction(writeOptions, txnOptions);
-	} else if (descriptor->mode == DBMode::Optimistic) {
-		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(descriptor->db.get());
-		rocksdb::OptimisticTransactionOptions txnOptions;
-		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
-	} else {
-		throw rocksdb_js::DBException("Invalid database");
-	}
 }
 
 /**
@@ -242,9 +244,9 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
 		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
-	// #668: the write-ahead log is write-once per transaction. A durable batch survives
-	// resetTransaction; re-logging here would write the records again at a new position, orphan
-	// the original and pin the committed-read watermark on it (HarperFast/harper-pro#426).
+	// #668: the write-ahead log is write-once per transaction. Re-logging here would write the
+	// records again at a new position, orphan the original and pin the committed-read watermark
+	// on it (HarperFast/harper-pro#426).
 	if (this->committedPosition.logSequenceNumber > 0) {
 		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %llu "
 			"(WAL already written at seq %u)\n",
