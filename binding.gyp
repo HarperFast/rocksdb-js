@@ -270,6 +270,7 @@
 				'test/native/transaction_log_recovery_test.cc',
 				'test/native/transaction_log_retention_test.cc',
 				'test/native/transaction_log_retirement_test.cc',
+				'test/native/transaction_log_try_close_test.cc',
 				'test/native/transaction_log_validation_test.cc',
 				'test/native/transaction_log_writev_test.cc',
 				'test/native/verification_table_test.cc',

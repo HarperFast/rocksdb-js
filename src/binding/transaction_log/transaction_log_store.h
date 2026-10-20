@@ -358,6 +358,14 @@ struct TransactionLogStore final {
 	std::mutex transactionBindMutex;
 
 	/**
+	 * Incremented by every successful bind, under transactionBindMutex. tryClose()
+	 * refuses if it changed during its check: a transaction that binds and writes
+	 * mid-check passes through pendingTransactionCount and can be missed by both
+	 * the count and the position checks.
+	 */
+	uint64_t transactionBindGeneration = 0;
+
+	/**
 	 * A counter for the number of recentlyCommittedSequencePositions updates we have made so that we can use 2^n modulus
 	 * frequencies to assign to recentlyCommittedSequencePositions
 	 */
@@ -450,19 +458,34 @@ struct TransactionLogStore final {
 	void close();
 
 	/**
-	 * Attempts to close the transaction log store atomically. Returns false
-	 * (and does not close) if there are any active transactions — either
-	 * bound-but-not-yet-written (pendingTransactionCount > 0) or
-	 * written-but-not-yet-committed (non-sentinel uncommitted positions).
+	 * Attempts to close the transaction log store. Returns false (and does not
+	 * close) if there are any active transactions — either bound-but-not-yet-
+	 * written (pendingTransactionCount > 0) or written-but-not-yet-committed
+	 * (non-sentinel uncommitted positions) — or if any transaction bound while
+	 * the check ran (transactionBindGeneration changed).
 	 *
-	 * The check and the "mark as closing" transition are performed together
-	 * under writeMutex, the same lock held by writeBatch() for its entire
-	 * duration. This prevents the check from racing with a concurrent writeBatch
-	 * that is in the process of decrementing pendingTransactionCount.
+	 * The count and generation are read under transactionBindMutex and the
+	 * positions under writeMutex + dataSetsMutex, in separate critical sections,
+	 * so transactionBindMutex is never held while waiting on I/O.
 	 *
 	 * Used by purgeTransactionLogs() to safely destroy a store.
 	 */
 	bool tryClose();
+
+	/**
+	 * Admits a transaction to this store: increments pendingTransactionCount and
+	 * transactionBindGeneration under transactionBindMutex. Returns false, and
+	 * changes nothing, if the store is closing.
+	 */
+	bool tryBindTransaction();
+
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	/**
+	 * Runs inside tryClose() after the uncommitted-position check releases its
+	 * locks and before the isClosing latch takes transactionBindMutex.
+	 */
+	std::function<void()> tryCloseBeforeClosingLatchForTests;
+#endif
 
 	/**
 	 * Notifies the transaction log store that a RocksDB commit operation has finished.

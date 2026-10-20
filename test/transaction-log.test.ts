@@ -3544,6 +3544,34 @@ describe('Transaction Log', () => {
 				expect(lastCommittedPosUint32[1]).toBeGreaterThanOrEqual(2);
 				expect(lastCommittedPosUint32[0]).toBeGreaterThanOrEqual(10);
 			}));
+
+		it.each(['txn.useLog', 'log.addEntry'])(
+			'destroy keeps a store whose written transaction has not committed (bound via %s)',
+			(bindVia) =>
+				dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+					const result = await new Promise<{ code: number | null; stderr: string }>(
+						(resolve, reject) => {
+							const child = spawn(
+								process.execPath,
+								[
+									join(__dirname, 'fixtures', 'fork-transaction-log-destroy-pending.mts'),
+									dbPath,
+									bindVia,
+								],
+								{
+									env: { ...process.env, ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500' },
+									timeout: 20_000,
+								}
+							);
+							let stderr = '';
+							child.stderr.on('data', (chunk) => (stderr += chunk));
+							child.once('error', reject);
+							child.once('close', (code) => resolve({ code, stderr }));
+						}
+					);
+					expect(result.code, result.stderr).toBe(0);
+				})
+		);
 	});
 
 	describe('flushSync()', () => {
