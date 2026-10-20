@@ -171,11 +171,12 @@ A separate native reproduction confirmed [#860](https://github.com/HarperFast/ro
 `tryClose()` releases its written-position lock before latching admission closed.
 A transaction can bind, finish `writeBatch()` and reduce the pending count back to zero
 between those checks. A temporary scheduling hook before phase 3 reproduced
-`pending=0`, one real uncommitted position, and `tryClose() == true`. This is a
+`pending=0`, one real uncommitted position, and `tryClose() == true`. This was a
 pre-existing close-protocol defect, not fixed by the completion-lock change. Its
 production trigger is a concurrent destructive log purge; no customer incident or
-JavaScript-level data loss was reproduced. Keep the binding lock until a separately
-reviewed admission/drain fix resolves that handoff.
+JavaScript-level data loss was reproduced. It is now fixed without changing the binding
+lock: every bind advances a generation that `tryClose()` rechecks before latching (see
+"Conditional close" in `src/binding/transaction_log/DESIGN.md`).
 
 The investigation also found [#859](https://github.com/HarperFast/rocksdb-js/issues/859):
 the DB-instance stress test awaits an empty promise array in its worker-close phase.

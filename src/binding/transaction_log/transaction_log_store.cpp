@@ -117,8 +117,8 @@ bool TransactionLogStore::tryClose() {
 	}
 
 	// Phase 1 — quick count check under transactionBindMutex.
-	// transactionBindMutex is a lightweight lock used only for bind accounting
-	// and the isClosing assignment; it is never held during I/O.
+	// transactionBindMutex is a lightweight lock used only for pendingTransactionCount
+	// increments and the isClosing assignment; it is never held during I/O.
 	uint64_t bindGeneration;
 	{
 		std::lock_guard<std::mutex> bindLock(this->transactionBindMutex);
@@ -156,12 +156,8 @@ bool TransactionLogStore::tryClose() {
 	}
 #endif
 
-	// Phase 3 — refuse if any transaction bound since phase 1, else atomically set
-	// isClosing under transactionBindMutex. One that bound after phase 1 may have
-	// written and left pendingTransactionCount after phase 2 scanned positions, so
-	// neither the count nor the positions can prove it is gone. With the
-	// generation unchanged, the count is still the zero phase 1 saw. Once
-	// isClosing is set here, tryBindTransaction() fails.
+	// Phase 3 — latch isClosing unless a transaction bound since phase 1: it may
+	// have written and left the count after phase 2's scan, so neither check saw it.
 	{
 		std::lock_guard<std::mutex> bindLock(this->transactionBindMutex);
 		if (this->isClosing.load(std::memory_order_relaxed)) return true;

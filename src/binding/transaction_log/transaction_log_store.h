@@ -348,8 +348,9 @@ struct TransactionLogStore final {
 	std::mutex dataSetsMutex;
 
 	/**
-	 * A fast mutex that guards only pendingTransactionCount increments/decrements
-	 * and the isClosing flag assignment in tryClose(). It is never held during I/O
+	 * A fast mutex that guards pendingTransactionCount increments/decrements,
+	 * transactionBindGeneration, and the isClosing assignment in tryClose(). It is
+	 * never held during I/O
 	 * or any long operation, so it cannot cause the main-thread stalls that
 	 * holding writeMutex from UseLog/addLogEntry would cause.
 	 *
@@ -358,10 +359,8 @@ struct TransactionLogStore final {
 	std::mutex transactionBindMutex;
 
 	/**
-	 * Incremented by every successful bind, under transactionBindMutex. tryClose()
-	 * refuses if it changed during its check: a transaction that binds and writes
-	 * mid-check passes through pendingTransactionCount and can be missed by both
-	 * the count and the position checks.
+	 * Counts successful binds, so tryClose() can tell that a transaction bound
+	 * during its check (see "Conditional close" in DESIGN.md).
 	 */
 	uint64_t transactionBindGeneration = 0;
 
@@ -464,25 +463,19 @@ struct TransactionLogStore final {
 	 * (non-sentinel uncommitted positions) — or if any transaction bound while
 	 * the check ran (transactionBindGeneration changed).
 	 *
-	 * The count and generation are read under transactionBindMutex and the
-	 * positions under writeMutex + dataSetsMutex, in separate critical sections,
-	 * so transactionBindMutex is never held while waiting on I/O.
-	 *
 	 * Used by purgeTransactionLogs() to safely destroy a store.
 	 */
 	bool tryClose();
 
 	/**
-	 * Admits a transaction to this store: increments pendingTransactionCount and
-	 * transactionBindGeneration under transactionBindMutex. Returns false, and
-	 * changes nothing, if the store is closing.
+	 * Binds a transaction to this store, or returns false if it is closing.
 	 */
 	bool tryBindTransaction();
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 	/**
-	 * Runs inside tryClose() after the uncommitted-position check releases its
-	 * locks and before the isClosing latch takes transactionBindMutex.
+	 * Runs in tryClose() between the position check and the isClosing latch, with
+	 * no locks held.
 	 */
 	std::function<void()> tryCloseBeforeClosingLatchForTests;
 #endif
