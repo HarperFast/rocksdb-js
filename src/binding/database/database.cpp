@@ -1036,8 +1036,8 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 /**
  * Syncs the write-ahead log to stable storage asynchronously on the libuv
  * threadpool. Resolves without syncing on a read-only database. RocksDB
- * serializes concurrent syncs of one WAL, so a caller keeps one in flight
- * per database (Harper: one per 5 s floor tick) rather than parking workers.
+ * serializes concurrent syncs of one WAL, so callers keep one in flight per
+ * database rather than parking pool workers on a queue of them.
  *
  * @example
  * ```typescript
@@ -1069,17 +1069,43 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 		&name
 	));
 
-	// owned until the work is admitted: a failed N-API setup must not leak the state and its handle pin
+	// Same setup discipline as CatchUpWithPrimary: the registration precedes the
+	// allocation because ~BaseAsyncState unregisters unconditionally, and the
+	// state is owned until the work is queued so a failed N-API step frees it.
+	if (!(*dbHandle)->registerAsyncWork()) {
+		::napi_throw_error(env, nullptr, "Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
 	auto owned = std::make_unique<BaseAsyncState<std::shared_ptr<DBHandle>>>(env, *dbHandle);
 	auto state = owned.get();
+
+	// ~BaseAsyncState drops the resolve/reject refs without deleting them (the
+	// completion path deletes them as it calls them), so setup has to.
+	struct SetupRefs {
+		BaseAsyncState<std::shared_ptr<DBHandle>>* state;
+		bool released = false;
+		~SetupRefs() {
+			if (released) {
+				return;
+			}
+			if (state->resolveRef != nullptr) {
+				::napi_delete_reference(state->env, state->resolveRef);
+				state->resolveRef = nullptr;
+			}
+			if (state->rejectRef != nullptr) {
+				::napi_delete_reference(state->env, state->rejectRef);
+				state->rejectRef = nullptr;
+			}
+		}
+	} setupRefs{state};
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
 	NAPI_STATUS_THROWS(::napi_create_async_work(
-		env,       // node_env
-		nullptr,   // async_resource
-		name,      // async_resource_name
-		[](napi_env doNotUse, void* data) { // execute
+		env,
+		nullptr,
+		name,
+		[](napi_env doNotUse, void* data) {
 			auto state = reinterpret_cast<BaseAsyncState<std::shared_ptr<DBHandle>>*>(data);
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during WAL sync");
@@ -1088,7 +1114,7 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 			}
 			state->signalExecuteCompleted();
 		},
-		[](napi_env env, napi_status status, void* data) { // complete
+		[](napi_env env, napi_status status, void* data) {
 			auto state = reinterpret_cast<BaseAsyncState<std::shared_ptr<DBHandle>>*>(data);
 
 			state->deleteAsyncWork();
@@ -1110,15 +1136,14 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	// admission and queueing settle the promise and delete the state themselves on refusal
+	napi_status queued = ::napi_queue_async_work(env, state->asyncWork);
+	if (queued != napi_ok) {
+		// created but never run: the destructor unregisters it after it is deleted
+		owned->deleteAsyncWork();
+		NAPI_STATUS_THROWS(queued);
+	}
+	setupRefs.released = true;
 	owned.release();
-	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
-		NAPI_RETURN_UNDEFINED();
-	}
-
-	if (!queueAsyncWorkOrReject(env, state, "Failed to queue WAL sync work")) {
-		NAPI_RETURN_UNDEFINED();
-	}
 
 	NAPI_RETURN_UNDEFINED();
 }

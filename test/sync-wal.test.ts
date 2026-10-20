@@ -19,7 +19,6 @@ describe('syncWal', () => {
 			db.putSync('before', 'sync');
 			await expect(db.syncWal()).resolves.toBeUndefined();
 			expect(db.getSync('before')).toBe('sync');
-			// a second sync with nothing new to write is still a success
 			await expect(db.syncWal()).resolves.toBeUndefined();
 		}));
 
@@ -41,7 +40,7 @@ describe('syncWal', () => {
 			await expect(db.syncWal()).rejects.toThrow('Database not open');
 		}));
 
-	it('is refused while the database is closing and admitted again after reopen', () =>
+	it('rejects after a close and is admitted again after reopen', () =>
 		dbRunner(async ({ db }) => {
 			db.putSync('a', 1);
 			db.close();
