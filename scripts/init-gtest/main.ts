@@ -24,11 +24,11 @@ async function main() {
 	const marker = join(dest, 'googletest/include/gtest/gtest.h');
 	const versionFile = join(dest, '.version');
 
-	if (
-		existsSync(marker) &&
-		existsSync(versionFile) &&
-		(await readFile(versionFile, 'utf8')).trim() === GTEST_VERSION
-	) {
+	const installedVersion = await readFile(versionFile, 'utf8').then(
+		(version) => version.trim(),
+		() => undefined
+	);
+	if (existsSync(marker) && installedVersion === GTEST_VERSION) {
 		console.log(`GoogleTest ${GTEST_VERSION} is already installed.`);
 		process.exit(0);
 	}

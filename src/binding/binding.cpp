@@ -291,7 +291,7 @@ NAPI_MODULE_INIT() {
 	}
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "supportedCompression", supportedCompression));
 
-	[[maybe_unused]] int32_t refCount = ++moduleRefCount;
+	int32_t refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
 	// initialize the registries

@@ -5,7 +5,7 @@ import { defineConfig, type UserConfig } from 'tsdown';
 const { version } = JSON.parse(readFileSync('./package.json', 'utf8'));
 
 const config: UserConfig = defineConfig({
-	// The CJS build is a published entry point (`main` / `require`), not a legacy leftover.
+	// The CJS bundle is a published entry point (`main` / `exports.require`).
 	checks: { legacyCjs: false },
 	deps: {
 		neverBundle: ['msgpackr', 'ordered-binary'],
