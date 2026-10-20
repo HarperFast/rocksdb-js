@@ -1326,6 +1326,8 @@ In particular `0` does not disable it: `0`, negative, and unparseable values all
   exhausted unlogged retry rethrows the last conflict error.
 - `transaction()` and `transactionSync()` do not re-run the callback once the batch is durable;
   they re-commit the write set the log describes.
+- `transactionSync()` makes at most `maxRetries` attempts, as `transaction()` does; it used to
+  make `maxRetries + 1`. It also keeps one transaction handle across its attempts.
 
 ### Class: `Transaction`
 
