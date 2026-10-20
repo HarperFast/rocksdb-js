@@ -624,8 +624,8 @@ TEST_F(AppendBoundary, ExposedEmptySegmentRefusesAnOversizedBatch) {
 	auto batch = makeBatch(1001.0, { "oversized-first-entry" });
 	file.writeEntries(batch, 32);
 	EXPECT_EQ(batch.currentEntryIndex, 0u);
-	EXPECT_EQ(file.size.load(), TRANSACTION_LOG_FILE_HEADER_SIZE);
-	EXPECT_EQ(map->readableExtent.load(), TRANSACTION_LOG_FILE_HEADER_SIZE);
+	EXPECT_EQ(file.size.load(), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
+	EXPECT_EQ(map->readableExtent.load(), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 	EXPECT_EQ(file.getMemoryMap(32, /*isCurrent=*/true).get(), map.get());
 }
 
@@ -682,9 +682,9 @@ TEST_F(AppendBoundary, ZeroByteFirstAppendCanRotateAnExposedEmptySegment) {
 		auto oversized = makeBatch(1002.0, { "oversized-first-entry" });
 		store.writeBatch(oversized, position);
 		EXPECT_TRUE(oversized.isComplete());
-		EXPECT_EQ(store.getLogFileSize(1), TRANSACTION_LOG_FILE_HEADER_SIZE);
+		EXPECT_EQ(store.getLogFileSize(1), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 		EXPECT_GT(store.getLogFileSize(2), 32u);
-		EXPECT_EQ(emptyMap->readableExtent.load(), TRANSACTION_LOG_FILE_HEADER_SIZE);
+		EXPECT_EQ(emptyMap->readableExtent.load(), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 		EXPECT_EQ(store.getMemoryMap(1).get(), emptyMap.get());
 	}
 	std::filesystem::remove_all(storePath);
@@ -705,7 +705,7 @@ TEST_F(AppendBoundary, LazyAppendOpenFailureClosesTheRejectedFile) {
 	EXPECT_FALSE(file_->isOpen());
 	EXPECT_EQ(file_->size.load(), 0u);
 	EXPECT_EQ(batch.currentEntryIndex, 0u);
-	EXPECT_EQ(std::filesystem::file_size(path_), TRANSACTION_LOG_FILE_HEADER_SIZE);
+	EXPECT_EQ(std::filesystem::file_size(path_), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 }
 
 #endif // !_WIN32

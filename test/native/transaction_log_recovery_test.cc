@@ -911,7 +911,7 @@ TEST(TransactionLogTimestampIndex, SeeksPastAMidFileBreak) {
 	}
 	OpenedLogFile opened(img);
 	TransactionLogFile& file = opened.get();
-	EXPECT_EQ(file.findPositionByTimestamp(10.0, img.size(), /*isCurrent=*/true), TRANSACTION_LOG_FILE_HEADER_SIZE);
+	EXPECT_EQ(file.findPositionByTimestamp(10.0, img.size(), /*isCurrent=*/true), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 	EXPECT_EQ(file.findPositionByTimestamp(11.0, img.size(), /*isCurrent=*/true), resumeOffset);
 	EXPECT_EQ(file.findPositionByTimestamp(20.0, img.size(), /*isCurrent=*/true), offsets[0]);
 	EXPECT_EQ(file.findPositionByTimestamp(25.5, img.size(), /*isCurrent=*/true), offsets[6]);
@@ -1057,7 +1057,7 @@ TEST(TransactionLogTimestampIndex, PartialTrailingHeaderStopsTheWalk) {
 	img.raw({ '\x40', '\x24', '\x00', '\x00', '\x00' });
 	OpenedLogFile opened(img);
 	TransactionLogFile& file = opened.get();
-	EXPECT_EQ(file.findPositionByTimestamp(10.0, img.size(), /*isCurrent=*/true), TRANSACTION_LOG_FILE_HEADER_SIZE);
+	EXPECT_EQ(file.findPositionByTimestamp(10.0, img.size(), /*isCurrent=*/true), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 	EXPECT_EQ(file.findPositionByTimestamp(11.0, img.size(), /*isCurrent=*/true), tail);
 }
 
