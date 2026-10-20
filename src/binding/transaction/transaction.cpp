@@ -787,7 +787,9 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 				rejectRetryNowSetupFailure(env, state, tsfnStatus);
 				return;
 			}
-			::napi_unref_threadsafe_function(env, tsfn);
+			// Left ref'd so the parked commit keeps this env alive until its
+			// one release (wake, park timeout, close, or env teardown;
+			// rocksdb-js#797).
 
 			// Exactly-once gate: independent of `ctx` so a loser arriving after
 			// the winner's ctx/tsfn are already gone just loses the CAS.

@@ -742,6 +742,7 @@ public:
 	 */
 	void releaseLockCallbacksByEnv(napi_env env);
 	void onCallbackComplete(const std::string& key);
+	void dispatchNextLockCallback(const std::string& key);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
 	std::shared_ptr<TransactionHandle> transactionGet(uint64_t id);

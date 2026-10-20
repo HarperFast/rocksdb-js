@@ -231,6 +231,27 @@ describe('Lock', () => {
 				expect(spy).toHaveBeenCalledTimes(2);
 			}));
 
+		it('should reject and release the lock when the callback throws', () =>
+			dbRunner(async ({ db }) => {
+				await expect(
+					db.withLock('foo', () => {
+						throw new Error('sync boom');
+					})
+				).rejects.toThrow('sync boom');
+				expect(db.hasLock('foo')).toBe(false);
+
+				await expect(
+					db.withLock('foo', async () => {
+						throw new Error('async boom');
+					})
+				).rejects.toThrow('async boom');
+				expect(db.hasLock('foo')).toBe(false);
+
+				const spy = vi.fn();
+				await db.withLock('foo', spy);
+				expect(spy).toHaveBeenCalledTimes(1);
+			}));
+
 		it('should lock in a worker thread', () =>
 			dbRunner(async ({ db, dbPath }) => {
 				const spy = vi.fn();

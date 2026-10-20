@@ -1937,6 +1937,10 @@ Attempts to acquire a lock for a given key. If the lock is available, the functi
 and the optional `onUnlocked` callback is never called. If the lock is not available, the function
 returns `false` and the `onUnlocked` callback is queued until the lock is released.
 
+A queued `onUnlocked` callback keeps the thread's event loop alive until it is called, even when the
+lock is held by another thread. A thread with a callback queued on a lock that is never released
+will not exit on its own.
+
 When a database is closed, all locks associated to it will be unlocked.
 
 ```typescript
@@ -1977,7 +1981,9 @@ db.unlock('foo'); // false, already unlocked
 
 ### `db.withLock(key: Key, callback: () => void | Promise<void>): Promise<void>`
 
-Runs a function with guaranteed exclusive access across all threads.
+Runs a function with guaranteed exclusive access across all threads. The returned promise rejects
+with the error if the callback throws or its promise rejects; the lock is released either way. A
+pending `withLock()` keeps the thread's event loop alive until its callback has run.
 
 ```typescript
 await db.withLock('key', async () => {
@@ -2005,7 +2011,8 @@ await Promise.all([
 ]);
 ```
 
-Note: If the `callback` throws an error, Node.js suppress the error. Node.js 18.3.0 introduced a
+Note: If a `tryLock()` `onUnlocked` callback throws an error, Node.js suppresses the error. Node.js
+18.3.0 introduced a
 `--force-node-api-uncaught-exceptions-policy` flag which will cause errors to emit the
 `'uncaughtException'` event. Future Node.js releases will enable this flag by default.
 
