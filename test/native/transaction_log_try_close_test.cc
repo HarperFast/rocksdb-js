@@ -56,16 +56,6 @@ size_t realUncommittedCount(rocksdb_js::TransactionLogStore& store) {
 	return count;
 }
 
-uintmax_t logBytesOnDisk(const std::filesystem::path& storePath) {
-	uintmax_t total = 0;
-	for (const auto& entry : std::filesystem::directory_iterator(storePath)) {
-		if (entry.path().extension() == ".txnlog") {
-			total += entry.file_size();
-		}
-	}
-	return total;
-}
-
 } // namespace
 
 TEST(TransactionLogTryClose, RefusesWhileBoundTransactionHasNotWritten) {
@@ -125,7 +115,7 @@ TEST(TransactionLogTryClose, RefusesBindAndWriteBetweenPositionCheckAndClosingLa
 	EXPECT_FALSE(closed) << "tryClose() closed the store with a written, uncommitted transaction";
 	EXPECT_FALSE(store->isClosing.load());
 	EXPECT_EQ(realUncommittedCount(*store), 1u);
-	EXPECT_GT(logBytesOnDisk(storePath), 0u);
+	EXPECT_GT(store->getLogFileSize(position.logSequenceNumber), position.positionInLogFile);
 
 	if (!closed) {
 		commit(*store, position);
