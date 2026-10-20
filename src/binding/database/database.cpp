@@ -1034,10 +1034,8 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Syncs the write-ahead log to stable storage asynchronously on the libuv
- * threadpool. Resolves without syncing on a read-only database. RocksDB
- * serializes concurrent syncs of one WAL, so callers keep one in flight per
- * database rather than parking pool workers on a queue of them.
+ * `DB::SyncWAL` on the libuv threadpool; resolves without syncing on a
+ * read-only database.
  *
  * @example
  * ```typescript

@@ -883,12 +883,7 @@ public:
 	 */
 	rocksdb::Status flush(bool allowWriteStall = false);
 
-	/**
-	 * Syncs the write-ahead log to stable storage (`DB::SyncWAL`): every write
-	 * committed before the call survives a power loss afterwards, without a
-	 * memtable flush. Runs on the calling thread; RocksDB serializes it with
-	 * its own log mutex, so concurrent writes proceed.
-	 */
+	/** `DB::SyncWAL` on the calling thread: WAL-backed writes only, no memtable flush. */
 	rocksdb::Status syncWal();
 
 	/**
