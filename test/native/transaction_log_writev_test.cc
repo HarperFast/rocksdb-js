@@ -705,7 +705,7 @@ TEST_F(AppendBoundary, LazyAppendOpenFailureClosesTheRejectedFile) {
 	EXPECT_FALSE(file_->isOpen());
 	EXPECT_EQ(file_->size.load(), 0u);
 	EXPECT_EQ(batch.currentEntryIndex, 0u);
-	EXPECT_EQ(std::filesystem::file_size(path_), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
+	EXPECT_EQ(std::filesystem::file_size(path_), static_cast<uintmax_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 }
 
 #endif // !_WIN32
