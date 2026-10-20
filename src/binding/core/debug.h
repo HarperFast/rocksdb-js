@@ -36,10 +36,14 @@ void debugLog(const bool showTimestamp, const char* msg, ...);
 	#define DEBUG_LOG_MSG(msg, ...) \
 		rocksdb_js::debugLog(false, msg, ##__VA_ARGS__)
 #else
-	#define DEBUG_LOG(msg, ...) do { ; } while (0)
+	// Arguments stay referenced but are never evaluated, so a variable used only for
+	// logging (e.g. a caught exception) is not reported as unused (MSVC C4101).
+	#define DEBUG_LOG(msg, ...) \
+		do { if (false) { rocksdb_js::debugLog(true, msg, ##__VA_ARGS__); } } while (0)
 	#define DEBUG_LOG_KEY(key) do { ; } while (0)
 	#define DEBUG_LOG_KEY_LN(key) do { ; } while (0)
-	#define DEBUG_LOG_MSG(msg, ...) do { ; } while (0)
+	#define DEBUG_LOG_MSG(msg, ...) \
+		do { if (false) { rocksdb_js::debugLog(false, msg, ##__VA_ARGS__); } } while (0)
 #endif
 
 #endif
