@@ -741,7 +741,7 @@ public:
 	 * registered, on every lock this descriptor tracks. Never calls them.
 	 */
 	void releaseLockCallbacksByEnv(napi_env env);
-	void onCallbackComplete(const std::string& key);
+	void onCallbackComplete(const std::string& key, const std::weak_ptr<LockHandle>& lockHandle);
 	void dispatchNextLockCallback(const std::string& key);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
@@ -947,13 +947,24 @@ struct OperationGuard final {
  * State to pass into `napi_call_threadsafe_function()` for a lock callback.
  */
 struct LockCallbackCompletionData final {
-	LockCallbackCompletionData(const std::string& k, std::weak_ptr<DBDescriptor> d, napi_deferred def = nullptr)
-		: key(k), descriptor(d), deferred(def) {}
+	LockCallbackCompletionData(
+		const std::string& k,
+		std::weak_ptr<DBDescriptor> d,
+		std::weak_ptr<LockHandle> l,
+		napi_deferred def = nullptr
+	) : key(k), lockHandle(l), descriptor(d), deferred(def) {}
 
 	/**
 	 * The key of the lock.
 	 */
 	std::string key;
+
+	/**
+	 * The lock this callback was dispatched for. An `unlock()` or owner close
+	 * can erase it while the callback runs and a new lock take the same key;
+	 * completion must not touch that one.
+	 */
+	std::weak_ptr<LockHandle> lockHandle;
 
 	/**
 	 * The descriptor of the database.

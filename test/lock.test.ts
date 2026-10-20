@@ -252,6 +252,45 @@ describe('Lock', () => {
 				expect(spy).toHaveBeenCalledTimes(1);
 			}));
 
+		it('should settle once and release the lock when the returned promise has a throwing then()', () =>
+			dbRunner(async ({ db }) => {
+				const throwing = Promise.resolve();
+				// oxlint-disable-next-line unicorn/no-thenable -- overriding then() is the case under test
+				Object.defineProperty(throwing, 'then', {
+					value: () => {
+						throw new Error('then boom');
+					},
+				});
+				await expect(db.withLock('foo', () => throwing)).rejects.toThrow('then boom');
+				expect(db.hasLock('foo')).toBe(false);
+
+				// A then() that settles and then throws must not release the lock a
+				// second time, which would start the third callback while the second runs.
+				const settlesThenThrows = Promise.resolve();
+				// oxlint-disable-next-line unicorn/no-thenable -- overriding then() is the case under test
+				Object.defineProperty(settlesThenThrows, 'then', {
+					value: (onFulfilled: () => void) => {
+						onFulfilled();
+						throw new Error('after settling');
+					},
+				});
+				let releaseSecond!: () => void;
+				const third = vi.fn();
+				const first = db.withLock('foo', () => settlesThenThrows);
+				const second = db.withLock(
+					'foo',
+					() => new Promise<void>((resolve) => (releaseSecond = resolve))
+				);
+				const thirdDone = db.withLock('foo', third);
+				await first;
+				await delay(50);
+				expect(third).not.toHaveBeenCalled();
+				releaseSecond();
+				await Promise.all([second, thirdDone]);
+				expect(third).toHaveBeenCalledTimes(1);
+				expect(db.hasLock('foo')).toBe(false);
+			}));
+
 		it('should lock in a worker thread', () =>
 			dbRunner(async ({ db, dbPath }) => {
 				const spy = vi.fn();

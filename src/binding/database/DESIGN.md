@@ -116,27 +116,29 @@ A caller that verifies and then restores holds the shared `.backup.lock` across 
 A lock waiter (`withLock()`, or `tryLock(key, onUnlocked)` on a held key) and a coordinated-retry
 commit parked on another transaction's write intent are each delivered through a one-shot
 threadsafe function, often called from another env's thread. These stay **ref'd** from creation
-until their single release (delivery, park timeout, descriptor close, or env teardown). An unref'd
-one let a worker with no other handle exit with code 0 before its wake arrived (rocksdb-js#797,
-harper#2312). It also stranded an uncontended same-thread `await db.withLock()`, whose queued call
-never ran. Each wait has its own TSFN, so the existing release is the unref; adding a ref count like
-`registerCommitCompletion`'s would duplicate it. Do not unref these to let a process exit with a
-waiter queued. A waiter on a lock that is never released now keeps its thread alive, like any other
-pending I/O. A parked commit is bounded by `ROCKSDB_JS_PARK_TIMEOUT_MS`.
+until their single release (delivery, park timeout, descriptor close, or env teardown). Unref'd, a
+worker with no other handle exits with code 0 before its wake arrives (harper#2312), and an
+uncontended same-thread `await db.withLock()` never runs its queued call. Each wait has its own
+TSFN, so the existing release is the unref; a ref count like `registerCommitCompletion`'s would
+duplicate it. A waiter on a lock that is never released therefore keeps its thread alive, like any
+other pending I/O, and closing the waiter's own database does not cancel it. A parked commit is
+bounded by `ROCKSDB_JS_PARK_TIMEOUT_MS`.
 
-`lockCall` and `onCallbackComplete` dispatch the next waiter through `dispatchNextLockCallback`, which
-calls its TSFN under `locksMutex` as `lockReleaseByKey` does. Once popped, a callback is invisible to
-its env's cleanup hook (`releaseLockCallbacksByEnv`, invariant 23). Releasing the mutex before the
-call let a concurrently terminated env's TSFN be freed mid-call. A `napi_closing` status means the
-TSFN must not be released again, and that waiter is skipped.
+`lockCall` and `onCallbackComplete` dispatch the next waiter through `dispatchNextLockCallback`,
+which calls its TSFN under `locksMutex` as `lockReleaseByKey` does. Once popped, a callback is
+invisible to its env's cleanup hook (`releaseLockCallbacksByEnv`, invariant 23), so the mutex is
+what keeps a concurrently terminated env's TSFN alive through the call. `napi_closing` means the
+TSFN must not be released again; that waiter is skipped. `isRunning` is read and written only
+under `locksMutex`.
 
-`callJsCallback` (`db_descriptor.cpp`) has exactly one owner for a `withLock()` call's
-`LockCallbackCompletionData`: the `shared_ptr` it builds on entry. Each `.then()` handler holds its
-own reference, and that handler's finalizer frees it because only one handler ever runs. Every
-path that does not hand the callback off calls `onCallbackComplete()`, including a call delivered
-to a dying env (`env == nullptr`, or a failed `napi_call_function`), so the next waiter is never
-stranded. A callback that throws synchronously rejects its `withLock()` promise. Before this, error
-paths also ran `delete` on the shared data, a double free that aborted the host process. Triggers
-were a worker exiting with a queued lock call, or any `withLock()` callback that threw
-synchronously. Regressions: `test/pending-wake-liveness.test.ts` and the throw case in
-`test/lock.test.ts`.
+`callJsCallback` has exactly one owner for a `withLock()` call's `LockCallbackCompletionData`: the
+`shared_ptr` it builds on entry. Each `.then()` handler holds its own reference, freed by that
+handler's finalizer because only one handler ever runs. `completed` makes completion exactly-once
+across the direct path and the handlers. Every path that does not hand the callback off completes
+it, including a call delivered to a dying env (`env == nullptr`, or a failed `napi_call_function`),
+so the next waiter is never stranded; on a live env it also rejects the caller, with the callback's
+own exception when one is pending. Completion releases only the `LockHandle` it was dispatched
+for: `unlock()` or the owner's close can erase that lock mid-callback, and a key-only lookup would
+clear `isRunning` on a newer lock of the same key and break mutual exclusion. It releases the lock
+before settling the caller's promise, because Deno runs the caller's continuation inside the settle
+call. Regressions: `test/pending-wake-liveness.test.ts` and the throw case in `test/lock.test.ts`.

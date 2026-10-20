@@ -18,6 +18,7 @@
  * Prints SUCCESS and exits 0 on success.
  */
 import { RocksDatabase } from '../../src/index.ts';
+import { lockWakeCallbackCount, steadyClockNow } from '../../src/load-binding.ts';
 import { Transaction } from '../../src/transaction.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { mkdirSync } from 'node:fs';
@@ -36,10 +37,14 @@ if (!dbPath) {
 mkdirSync(dbPath, { recursive: true });
 
 /**
- * Runs `pending-wake-worker.mts` and calls `release` long enough after it
- * reports waiting for an unref'd loop to have drained. Returns the event order.
+ * Runs `pending-wake-worker.mts` and calls `release` long enough after the
+ * worker is waiting for an unref'd loop to have drained. Returns the event order.
  */
-async function runWaiter(key: string, release: () => unknown): Promise<string[]> {
+async function runWaiter(
+	key: string,
+	release: () => unknown,
+	waiting: () => Promise<void> = async () => {}
+): Promise<string[]> {
 	const events: string[] = [];
 	let released: Promise<unknown> = Promise.resolve();
 	const worker = new Worker(createWorkerBootstrapScript('./test/workers/pending-wake-worker.mts'), {
@@ -49,10 +54,12 @@ async function runWaiter(key: string, release: () => unknown): Promise<string[]>
 	await new Promise<void>((resolve, reject) => {
 		worker.on('message', (event: { waiting?: boolean; woken?: string }) => {
 			if (event.waiting) {
-				released = delay(250).then(() => {
-					events.push('released');
-					return release();
-				});
+				released = waiting()
+					.then(() => delay(250))
+					.then(() => {
+						events.push('released');
+						return release();
+					});
 			} else if (event.woken) {
 				events.push(`woken:${event.woken}`);
 			}
@@ -65,6 +72,21 @@ async function runWaiter(key: string, release: () => unknown): Promise<string[]>
 	});
 	await released;
 	return events;
+}
+
+/**
+ * The worker reports `waiting` from inside its transaction body, before the
+ * commit parks; releasing before the park registers would let the retry run
+ * without ever parking.
+ */
+async function parkRegistered(): Promise<void> {
+	const deadline = steadyClockNow() + 10_000;
+	while (lockWakeCallbackCount() === 0) {
+		if (steadyClockNow() > deadline) {
+			throw new Error('the worker commit never parked');
+		}
+		await delay(5);
+	}
 }
 
 function expectEvents(actual: string[], expected: string[]): void {
@@ -101,7 +123,7 @@ async function run(): Promise<void> {
 		db.populateVersion('hot', 1.5e12); // materialize the VT slot so write intents engage
 		const holder = new Transaction(db.store, { coordinatedRetry: true });
 		await holder.put('hot', 'held');
-		const events = await runWaiter('hot', () => holder.abort());
+		const events = await runWaiter('hot', () => holder.abort(), parkRegistered);
 		// The worker reports the value its retried transaction committed.
 		expectEvents(events, ['released', 'woken:attempt-2', 'exit:0']);
 		if ((await db.get('hot')) !== 'attempt-2') {
@@ -119,26 +141,51 @@ async function run(): Promise<void> {
 		}
 		db.close();
 	} else if (mode === 'worker-exit') {
+		// This thread's handle keeps the descriptor and the lock alive, so the
+		// worker's teardown cannot erase the lock: only completing its
+		// dispatched call passes the lock on.
+		const db = RocksDatabase.open(dbPath);
+		let releaseHolder!: () => void;
+		const holding = db.withLock(
+			'key',
+			() => new Promise<void>((resolve) => (releaseHolder = resolve))
+		);
+		const gate = new Int32Array(new SharedArrayBuffer(4));
 		const script = `
 			const { RocksDatabase } = await import(${JSON.stringify(new URL('../../src/index.ts', import.meta.url).href)});
-			const { workerData } = await import('node:worker_threads');
-			const db = RocksDatabase.open(workerData);
+			const { parentPort, workerData } = await import('node:worker_threads');
+			const db = RocksDatabase.open(workerData.path);
 			db.withLock('key', () => {});
+			parentPort.postMessage('queued');
+			// Never return to the loop: the call dispatched to this env must
+			// still be queued when it exits.
+			Atomics.wait(workerData.gate, 0, 0);
 			process.exit(0);
 		`;
-		for (let round = 0; round < 3; round++) {
-			const worker = new Worker(`(async () => {${script}})()`, { eval: true, workerData: dbPath });
-			const code = await new Promise<number>((resolve, reject) => {
-				worker.once('exit', resolve);
-				worker.once('error', reject);
-			});
-			if (code !== 0) {
-				throw new Error(`worker exited with ${code}`);
-			}
+		const worker = new Worker(`(async () => {${script}})()`, {
+			eval: true,
+			workerData: { path: dbPath, gate },
+		});
+		const exited = new Promise<number>((resolve, reject) => {
+			worker.once('exit', resolve);
+			worker.once('error', reject);
+		});
+		await new Promise((resolve) => worker.once('message', resolve));
+		releaseHolder();
+		await holding; // completion has dispatched the worker's call
+		Atomics.store(gate, 0, 1);
+		Atomics.notify(gate, 0);
+		const code = await exited;
+		if (code !== 0) {
+			throw new Error(`worker exited with ${code}`);
 		}
-		// The lock the exited workers queued must not be left held.
-		const db = RocksDatabase.open(dbPath);
-		await db.withLock('key', () => {});
+		let ran = false;
+		await db.withLock('key', () => {
+			ran = true;
+		});
+		if (!ran || db.hasLock('key')) {
+			throw new Error('the lock was not passed on after the worker exited');
+		}
 		db.close();
 	} else {
 		throw new Error(`Unknown mode: ${mode}`);
