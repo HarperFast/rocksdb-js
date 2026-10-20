@@ -1,19 +1,14 @@
 /**
- * Child-process repros for rocksdb-js#797. Each runs in its own process because
- * the failures are a process abort, or a waiter that exits with work pending
- * (and the commit-thread mode is fixed per process).
+ * Child-process scenarios for pending lock and park wakes, isolated because a
+ * failure is a process abort or a process that never exits, and the commit
+ * thread mode is fixed per process.
  *
- * - `withLock` / `tryLock` / `park`: a worker waits on a wake this thread
- *   delivers after a delay, holding nothing else that keeps its loop alive. With
- *   the wake's threadsafe function unref'd, the worker exited (code 0) before
- *   the wake arrived. `park` is a coordinated-retry transaction parked on this
- *   thread's write intent; it must resume and commit.
- * - `same-thread`: an uncontended `await db.withLock()` with nothing else keeping
- *   the loop alive never ran its callback; env teardown then ran the queued call
- *   and double-freed its completion data (SIGABRT).
- * - `worker-exit`: a worker queues a lock call and exits before its loop runs it.
- *   Teardown runs the call against a dying env: the same double free aborted the
- *   whole process, and the lock must still pass to the next waiter.
+ * - `withLock` / `tryLock` / `park`: a worker waits on a wake from this thread
+ *   while nothing else keeps its loop alive, and must receive it. `park` must
+ *   resume and commit its coordinated-retry transaction.
+ * - `same-thread`: an uncontended `await db.withLock()` with nothing else alive.
+ * - `worker-exit`: a worker exits with a lock call dispatched to it; the process
+ *   must survive and the lock must pass to the next waiter.
  *
  * Prints SUCCESS and exits 0 on success.
  */

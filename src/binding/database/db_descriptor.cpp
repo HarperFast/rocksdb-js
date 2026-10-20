@@ -1189,14 +1189,16 @@ void DBDescriptor::lockCall(
 	std::shared_ptr<DBHandle> owner
 ) {
 	bool isNewLock = false;
+	std::shared_ptr<LockHandle> lockHandle;
 	this->lockEnqueueCallback(
-		env,       // env
-		key,       // key
-		callback,  // callback
-		owner,     // owner
-		false,     // skipEnqueueIfNewLock
-		deferred,  // deferred
-		&isNewLock // [out] isNewLock
+		env,        // env
+		key,        // key
+		callback,   // callback
+		owner,      // owner
+		false,      // skipEnqueueIfNewLock
+		deferred,   // deferred
+		&isNewLock, // [out] isNewLock
+		&lockHandle // [out] lockHandle
 	);
 
 	if (!isNewLock) {
@@ -1205,7 +1207,7 @@ void DBDescriptor::lockCall(
 		return;
 	}
 
-	this->dispatchNextLockCallback(key);
+	this->dispatchNextLockCallback(key, lockHandle);
 }
 
 /**
@@ -1219,7 +1221,8 @@ void DBDescriptor::lockEnqueueCallback(
 	std::shared_ptr<DBHandle> owner,
 	bool skipEnqueueIfNewLock,
 	napi_deferred deferred,
-	bool* isNewLock
+	bool* isNewLock,
+	std::shared_ptr<LockHandle>* lockHandleOut
 ) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	std::shared_ptr<LockHandle> lockHandle;
@@ -1233,6 +1236,9 @@ void DBDescriptor::lockEnqueueCallback(
 		this->locks.emplace(key, lockHandle);
 		if (isNewLock != nullptr) {
 			*isNewLock = true;
+		}
+		if (lockHandleOut != nullptr) {
+			*lockHandleOut = lockHandle;
 		}
 		if (skipEnqueueIfNewLock) {
 			DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback skipping enqueue because lock already exists\n", this);
@@ -1270,8 +1276,7 @@ void DBDescriptor::lockEnqueueCallback(
 			&threadsafeCallback // [out] callback
 		));
 
-		// Stays ref'd: a pending wake, often delivered by another env, must keep
-		// this env alive until it is released.
+		// Must stay ref'd: see "Pending-wake threadsafe functions" in DESIGN.md.
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback enqueuing callback %p\n", this, threadsafeCallback);
 
 		// Create LockCallback and add to queue
@@ -2059,33 +2064,35 @@ size_t DBDescriptor::pendingReclaimCount() {
 void DBDescriptor::onCallbackComplete(const std::string& key, const std::weak_ptr<LockHandle>& lockHandle) {
 	// use a try-catch to handle the case where mutexes might be invalid
 	try {
+		std::shared_ptr<LockHandle> handle = lockHandle.lock();
+		if (!handle) {
+			DEBUG_LOG("%p DBDescriptor::onCallbackComplete lock already removed (key=\"%s\")\n", this, key.c_str());
+			return;
+		}
 		{
 			std::lock_guard<std::mutex> lock(this->locksMutex);
-			auto entry = this->locks.find(key);
-			if (entry == this->locks.end() || entry->second != lockHandle.lock()) {
-				DEBUG_LOG("%p DBDescriptor::onCallbackComplete lock already removed (key=\"%s\")\n", this, key.c_str());
-				return;
-			}
-			entry->second->isRunning.store(false);
+			handle->isRunning.store(false);
 		}
-		this->dispatchNextLockCallback(key);
+		this->dispatchNextLockCallback(key, handle);
 	} catch (const std::exception& e) {
 		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed (key=\"%s\"): %s\n", this, key.c_str(), e.what());
 	}
 }
 
 /**
- * Runs the next queued `withLock()` callback for `key` unless one is already
- * running, removing the lock once its queue is empty.
+ * Runs the next queued `withLock()` callback on `lockHandle` unless one is
+ * already running, removing the lock once its queue is empty. A no-op once
+ * `key` no longer maps to `lockHandle` (an `unlock()` or owner close erased it
+ * and another lock may have taken the key).
  */
-void DBDescriptor::dispatchNextLockCallback(const std::string& key) {
-	// Calls the tsfn under `locksMutex`, as lockReleaseByKey does: once popped,
-	// a callback is invisible to its env's cleanup hook, which takes this mutex
-	// and so cannot let Node free the tsfn mid-call.
+void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::shared_ptr<LockHandle>& lockHandle) {
+	// The tsfn is called under `locksMutex`, as in lockReleaseByKey: once
+	// popped, a callback is invisible to its env's cleanup hook, which takes
+	// this mutex and so cannot let Node free the tsfn mid-call.
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	while (true) {
 		auto entry = this->locks.find(key);
-		if (entry == this->locks.end()) {
+		if (entry == this->locks.end() || entry->second != lockHandle) {
 			return;
 		}
 
@@ -2101,8 +2108,7 @@ void DBDescriptor::dispatchNextLockCallback(const std::string& key) {
 			return;
 		}
 
-		// Allocated before anything is claimed or popped, so a throw leaves the
-		// lock and its queue as they were.
+		// Before the pop, so a throw leaves the queue intact.
 		auto callbackData = std::make_unique<LockCallbackCompletionData>(
 			key, weak_from_this(), handle, handle->threadsafeCallbacks.front().deferred
 		);
@@ -2259,23 +2265,23 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 	};
 
 	if (env == nullptr || jsCallback == nullptr) {
-		// The env is gone with this call still queued, so it will never run;
-		// pass the lock on rather than strand the waiters behind it.
+		// This call will never run; pass the lock on.
 		DEBUG_LOG("callJsCallback env is gone, completing (key=\"%s\")\n", callbackData->key.c_str());
 		complete();
 		return;
 	}
 
 	// Rejects the caller with the pending exception (the callback's own throw,
-	// or a throwing `then`), else a generic error.
+	// or a throwing `then`), else a generic error. With no promise to reject,
+	// the exception is left pending for Node's uncaught-exception policy.
 	auto fail = [&]() {
+		if (!complete() || callbackData->deferred == nullptr) {
+			return;
+		}
 		napi_value error = nullptr;
 		bool pending = false;
 		if (::napi_is_exception_pending(env, &pending) == napi_ok && pending) {
 			::napi_get_and_clear_last_exception(env, &error);
-		}
-		if (!complete() || callbackData->deferred == nullptr) {
-			return;
 		}
 		if (error == nullptr) {
 			napi_value message;
@@ -2283,7 +2289,7 @@ static void callJsCallback(napi_env env, napi_value jsCallback, void* context, v
 				::napi_create_string_utf8(env, "Failed to run the withLock() callback", NAPI_AUTO_LENGTH, &message) != napi_ok ||
 				::napi_create_error(env, nullptr, message, &error) != napi_ok
 			) {
-				return;
+				::napi_get_undefined(env, &error);
 			}
 		}
 		::napi_reject_deferred(env, callbackData->deferred, error);

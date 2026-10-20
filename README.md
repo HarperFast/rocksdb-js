@@ -1939,7 +1939,7 @@ returns `false` and the `onUnlocked` callback is queued until the lock is releas
 
 A queued `onUnlocked` callback keeps the thread's event loop alive until it is called, even when the
 lock is held by another thread. A thread with a callback queued on a lock that is never released
-will not exit on its own.
+will not exit on its own; closing the database that queued the callback does not cancel it.
 
 When a database is closed, all locks associated to it will be unlocked.
 

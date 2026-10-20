@@ -787,8 +787,8 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 				rejectRetryNowSetupFailure(env, state, tsfnStatus);
 				return;
 			}
-			// Stays ref'd so the parked commit keeps this env alive until its
-			// single release (wake, park timeout, close, or env teardown).
+			// Must stay ref'd: see "Pending-wake threadsafe functions" in
+			// database/DESIGN.md.
 
 			// Exactly-once gate: independent of `ctx` so a loser arriving after
 			// the winner's ctx/tsfn are already gone just loses the CAS.

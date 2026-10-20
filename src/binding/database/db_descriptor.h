@@ -730,7 +730,8 @@ public:
 		std::shared_ptr<DBHandle> owner,
 		bool skipEnqueueIfExists,
 		napi_deferred deferred,
-		bool* isNewLock
+		bool* isNewLock,
+		std::shared_ptr<LockHandle>* lockHandleOut = nullptr
 	);
 	bool lockExistsByKey(std::string& key);
 	bool lockReleaseByKey(std::string& key);
@@ -742,7 +743,7 @@ public:
 	 */
 	void releaseLockCallbacksByEnv(napi_env env);
 	void onCallbackComplete(const std::string& key, const std::weak_ptr<LockHandle>& lockHandle);
-	void dispatchNextLockCallback(const std::string& key);
+	void dispatchNextLockCallback(const std::string& key, const std::shared_ptr<LockHandle>& lockHandle);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
 	std::shared_ptr<TransactionHandle> transactionGet(uint64_t id);
