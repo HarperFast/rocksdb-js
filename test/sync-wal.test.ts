@@ -1,7 +1,19 @@
+import { stats } from '../src/index.ts';
 import { dbRunner } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
 describe('syncWal', () => {
+	it('performs a WAL sync, counted by the engine', () =>
+		dbRunner(
+			{ dbOptions: [{ enableStats: true, statsLevel: stats.StatsLevel.All }] },
+			async ({ db }) => {
+				db.putSync('counted', 1);
+				const before = db.getStat('rocksdb.wal.synced') as number;
+				await db.syncWal();
+				expect(db.getStat('rocksdb.wal.synced')).toBeGreaterThan(before);
+			}
+		));
+
 	it('syncs the WAL of an open database and keeps the data readable', () =>
 		dbRunner(async ({ db }) => {
 			db.putSync('before', 'sync');

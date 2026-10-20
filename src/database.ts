@@ -589,10 +589,12 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
-	 * Syncs the write-ahead log to stable storage (`DB::SyncWAL`), so every write committed
-	 * before the call survives a power loss afterwards. Unlike {@link flush} it writes no SST
-	 * file and never stalls writers; it costs one fsync of the active WAL file. Writes that
-	 * skipped the WAL (`disableWAL`) are not covered. Runs on the libuv threadpool.
+	 * Syncs the write-ahead log to stable storage (`DB::SyncWAL`), so every WAL-backed write
+	 * committed before the call survives a power loss afterwards. Unlike {@link flush} it writes
+	 * no SST file and never stalls writers. Not covered: writes that skipped the WAL
+	 * (`disableWAL`), and transaction-log files, which keep their own durability. Runs on the
+	 * libuv threadpool; RocksDB serializes concurrent syncs of one WAL, so keep one in flight
+	 * per database rather than parking pool workers on a queue of them.
 	 *
 	 * On a read-only database the returned promise resolves without syncing.
 	 */

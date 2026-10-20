@@ -1035,7 +1035,9 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 
 /**
  * Syncs the write-ahead log to stable storage asynchronously on the libuv
- * threadpool. Resolves without syncing on a read-only database.
+ * threadpool. Resolves without syncing on a read-only database. RocksDB
+ * serializes concurrent syncs of one WAL, so a caller keeps one in flight
+ * per database (Harper: one per 5 s floor tick) rather than parking workers.
  *
  * @example
  * ```typescript
@@ -1067,7 +1069,9 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 		&name
 	));
 
-	auto state = new BaseAsyncState<std::shared_ptr<DBHandle>>(env, *dbHandle);
+	// owned until the work is admitted: a failed N-API setup must not leak the state and its handle pin
+	auto owned = std::make_unique<BaseAsyncState<std::shared_ptr<DBHandle>>>(env, *dbHandle);
+	auto state = owned.get();
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -1106,6 +1110,8 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
+	// admission and queueing settle the promise and delete the state themselves on refusal
+	owned.release();
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();
 	}
