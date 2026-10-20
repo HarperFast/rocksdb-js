@@ -24,9 +24,11 @@ collide with its pending commit. Sorted acquisition keeps concurrent commits dea
 
 **Serial** (`kValidateSerial`) checks conflicts in an `OptimisticTransactionCallback` that runs
 inside the write group, and RocksDB allocates no bucket pool for it
-(`OptimisticTransactionDBImpl`'s constructor builds one only for `kValidateParallel`). The check
-and the write are atomic with respect to every other writer, and `DropColumnFamily` enters the
-same write thread. The callback's `AllowWriteBatching()` is false, so RocksDB never groups a
+(`OptimisticTransactionDBImpl`'s constructor builds one only for `kValidateParallel`). For a commit
+that goes through `Commit()` the check and the write are atomic with respect to every other
+writer, and `DropColumnFamily` enters the same write thread. A logged optimistic commit does not:
+it validates before its log write and lands with a plain `Write()` under either policy
+(`src/binding/transaction/DESIGN.md`). The callback's `AllowWriteBatching()` is false, so RocksDB never groups a
 serial commit with other writers, including the database's other commit threads. With four commit
 threads it gave back the whole gain they bring: four workers committing 64-key transactions got
 4.5k commits/s against 9.9k under parallel validation (4.6k on a single lane), and eight workers

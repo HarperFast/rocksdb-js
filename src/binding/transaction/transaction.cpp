@@ -142,20 +142,25 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
  * teardown's `close()` then owns the handle and pins its position. The descriptor pin can make a
  * concurrent last-handle close skip its purge, so the purge is retried after it is released.
  */
-static bool durableAbortAllowed(TransactionHandle& handle) {
-	std::shared_ptr<DBDescriptor> descriptor = handle.owningDescriptor.lock();
-	if (!descriptor) {
+static bool durableAbortAllowed(TransactionHandle& handle) noexcept {
+	try {
+		std::shared_ptr<DBDescriptor> descriptor = handle.owningDescriptor.lock();
+		if (!descriptor) {
+			return false;
+		}
+		const DBKey key = descriptorKey(*descriptor);
+		bool allowed = false;
+		{
+			OperationGuard guard(descriptor);
+			allowed = !descriptor->isClosing() && handle.durableWritesUnlandable();
+		}
+		descriptor.reset();
+		DBRegistry::PurgeIfUnreferenced(key);
+		return allowed;
+	} catch (...) {
+		// Refusing keeps the handle usable; an exception must not cross N-API.
 		return false;
 	}
-	const DBKey key = descriptorKey(*descriptor);
-	bool allowed = false;
-	{
-		OperationGuard guard(descriptor);
-		allowed = !descriptor->isClosing() && handle.durableWritesUnlandable();
-	}
-	descriptor.reset();
-	DBRegistry::PurgeIfUnreferenced(key);
-	return allowed;
 }
 
 /**

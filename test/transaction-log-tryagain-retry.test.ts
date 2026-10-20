@@ -46,11 +46,11 @@ describe('#1695 a failed commit of a logged transaction retries on the same tran
 			const log = db.useLog('repl');
 			await db.put(key, 'initial');
 
-			// Strand exactly the first commit with a real TryAgain (Commit() is skipped, so no data
-			// lands and the write batch stays intact). A genuine memtable flush produces the same
-			// status, but staging one deterministically through the public API hinges on OCC
-			// memtable-history eviction and is flaky; the seam exercises the native reset + JS retry
-			// path directly. Disarmed in the finally.
+			// Fail exactly the first landing attempt with TryAgain (nothing lands and the write batch
+			// stays intact). A genuine memtable flush produces the same status for an unlogged
+			// commit, but staging one deterministically through the public API hinges on OCC
+			// memtable-history eviction and is flaky; the seam exercises the JS retry path
+			// directly. Disarmed in the finally.
 			forceTryAgainForTesting(1);
 			const { codes, restore } = spyOnCommitCodes();
 			let calls = 0;
@@ -79,14 +79,12 @@ describe('#1695 a failed commit of a logged transaction retries on the same tran
 			// The transaction ultimately committed its value.
 			expect(await db.get(key)).toBe('committed');
 
-			// The WAL holds exactly one copy — committedPosition survived the reset, so the retry
-			// did not rewrite the batch. Asserted via the store's own logical write counter, not a
-			// raw filesystem stat: the discriminating query above (on the still-active log file)
-			// pre-extends the on-disk file to its configured max size on Windows (SetEndOfFile,
-			// only shrunk back by a reopen recovery scan — never on close), so a stat()-based byte
-			// count is platform-fragile once that query has run. getStats().totals.entriesWritten
-			// only increments in writeBatch() (once per transaction, skipped entirely by the
-			// write-once retry no-op), immune to that.
+			// The WAL holds exactly one copy: the retry did not rewrite the batch. Asserted via the
+			// store's own logical write counter, not a raw filesystem stat, because querying the
+			// still-active log file pre-extends it to its configured max size on Windows
+			// (SetEndOfFile, only shrunk back by a reopen recovery scan), so a stat()-based byte
+			// count is platform-fragile. getStats().totals.entriesWritten only increments in
+			// writeBatch(), once per transaction.
 			expect(log.getStats().totals.entriesWritten).toBe(1);
 
 			// A committed read from the start reaches the entry — the watermark advanced to head on

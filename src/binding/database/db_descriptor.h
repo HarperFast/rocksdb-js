@@ -544,8 +544,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	/**
 	 * Keys every in-process writer of an optimistic database holds while it
-	 * writes, so a logged commit's pre-log conflict check still holds when
-	 * `txn->Commit()` re-runs it (`core/commit_key_reservation.h`).
+	 * writes, so a logged commit's pre-log conflict check still holds when its
+	 * batch lands (`core/commit_key_reservation.h`).
 	 */
 	CommitKeyReservation commitReservation;
 
