@@ -928,7 +928,7 @@ export const currentThreadId: () => number = binding.currentThreadId;
  * Reads the process-wide steady clock: `std::chrono::steady_clock` as
  * fractional milliseconds from an unspecified origin that is fixed for the life
  * of the process. Every sample in the process — main thread and every
- * `worker_threads` worker, whenever started or restarted, on Node, Bun and Deno
+ * `worker_threads` worker, whenever started or restarted, on Node and Bun
  * — is in one domain, and the difference between two samples is real elapsed
  * time unaffected by wall-clock steps. Non-decreasing but not unique (two
  * samples may be equal; treat `==` as "not later"). Windows QPC samples from
