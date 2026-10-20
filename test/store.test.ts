@@ -1,8 +1,8 @@
+import type { Key } from '../src/encoding.ts';
 import { RocksDatabase } from '../src/index.ts';
 import { Store, type StoreContext, type StorePutOptions } from '../src/store.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { rm } from 'node:fs/promises';
-import type { Key } from 'ordered-binary';
 import { describe, expect, it } from 'vitest';
 
 describe('Custom Store', () => {
