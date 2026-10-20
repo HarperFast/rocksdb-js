@@ -487,6 +487,25 @@ describe('conflict before the transaction-log write', () => {
 				}
 			));
 
+		it('refuses to stage a log entry while its commit is in flight', () =>
+			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
+				const log = db.useLog('audit');
+				const txn = new Transaction(db.store);
+				txn.putSync('k', 'v');
+				log.addEntry(Buffer.from('first'), txn.id);
+				setCommitValidatedDelayForTesting(1, 10_000);
+				const committed = txn.commit();
+				await vi.waitFor(() => expect(isCommitValidatedDelayedForTesting()).toBe(true));
+				expect(() => log.addEntry(Buffer.from('late'), txn.id)).toThrow(
+					/while the transaction is committing/
+				);
+				setCommitValidatedDelayForTesting(0, 0);
+				await committed;
+				expect([...log.query({ start: 0 })].map((entry) => entry.data.toString())).toEqual([
+					'first',
+				]);
+			}));
+
 		it('commits the write set its log batch describes even when nothing is staged again', () =>
 			dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
 				const log = db.useLog('audit');

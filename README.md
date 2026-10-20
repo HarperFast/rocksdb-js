@@ -1281,10 +1281,12 @@ at `1` and ends at `maxRetries`.
 On an optimistic database the conflict check runs before the transaction-log batch is written, so
 a commit that fails with `ERR_BUSY` (or `ERR_TRY_AGAIN`) on its first attempt has written nothing
 to the log and `txn.hasDurableLog` is `false`; the retry re-runs the callback, which re-stages the
-log entries. Once an attempt has written the batch — an I/O error past the log write, say —
-`txn.hasDurableLog` is `true`, the batch is write-once (later
-attempts' `addEntry` calls are ignored), and the transaction is retried until it commits regardless
-of `maxRetries`: aborting it would leave a log entry without its data. `abort()` on such a
+log entries. Once an attempt has written the batch, `txn.hasDurableLog` is `true`, the batch is
+write-once (later attempts' `addEntry` calls are ignored, and `addEntry` while the commit is in
+flight throws), and a retryable failure (`ERR_BUSY`, `ERR_TRY_AGAIN`) is retried until it commits
+regardless of `maxRetries`: aborting it would leave a log entry without its data. Any other failure
+past the log write, an I/O error say, is rethrown as `TransactionLoggedError` with the handle on
+`error.txn`, to be committed again. `abort()` on such a
 transaction throws `TransactionLoggedError` (`ERR_TRANSACTION_LOGGED`) without rolling anything
 back, and `transaction()` rethrows that error with the handle on `error.txn` when the callback
 itself fails on a retry.

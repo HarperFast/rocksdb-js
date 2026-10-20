@@ -696,8 +696,8 @@ static CommitPreparation prepareCommit(
 		result.jsErrorCode = "ERR_TRANSACTION_LOG_WRITE";
 		return result;
 	}
-	txnHandle->logEntryBatch.reset();
 	txnHandle->publishDurableLog(position);
+	txnHandle->logEntryBatch.reset();
 	result.wroteLog = true;
 	conflictChecked = true;
 	crashForTesting(kCommitCrashAfterLogWrite);

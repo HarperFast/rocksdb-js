@@ -244,6 +244,12 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
 		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
+	// The commit thread owns the batch from the moment the commit starts; staging into it now
+	// would race the append that is reading it.
+	if (this->state == TransactionState::Committing) {
+		throw rocksdb_js::DBException("Cannot add a log entry while the transaction is committing");
+	}
+
 	// #668: the write-ahead log is write-once per transaction. Re-logging here would write the
 	// records again at a new position, orphan the original and pin the committed-read watermark
 	// on it (HarperFast/harper-pro#426).
