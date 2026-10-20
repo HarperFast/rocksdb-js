@@ -19,7 +19,8 @@ struct DBHandle;
 	#define DEBUG_LOG_NAPI_VALUE(value) \
 		rocksdb_js::debugLogNapiValue(env, value)
 #else
-	#define DEBUG_LOG_NAPI_VALUE(value) do { ; } while (0)
+	#define DEBUG_LOG_NAPI_VALUE(value) \
+		do { if (false) { rocksdb_js::debugLogNapiValue(env, value); } } while (0)
 #endif
 
 #define NAPI_ASSERT_OBJECT_OR_UNDEFINED(obj, errorMsg) \

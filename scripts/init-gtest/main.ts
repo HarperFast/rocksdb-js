@@ -13,8 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { x as extractTar } from 'tar';
 
-const GTEST_VERSION = '1.17.0';
-const GTEST_SHA256 = '65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c';
+const GTEST_VERSION = '1.18.0';
+const GTEST_SHA256 = '6e3191c1455468b3fc35a417fb565c1c5071aee1b7e7f85e30cf48a98d37d8b5';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const streamPipeline = promisify(pipeline);
@@ -22,8 +22,13 @@ const streamPipeline = promisify(pipeline);
 async function main() {
 	const dest = resolve(__dirname, '../../deps/googletest');
 	const marker = join(dest, 'googletest/include/gtest/gtest.h');
+	const versionFile = join(dest, '.version');
 
-	if (existsSync(marker)) {
+	const installedVersion = await readFile(versionFile, 'utf8').then(
+		(version) => version.trim(),
+		() => undefined
+	);
+	if (existsSync(marker) && installedVersion === GTEST_VERSION) {
 		console.log(`GoogleTest ${GTEST_VERSION} is already installed.`);
 		process.exit(0);
 	}
@@ -58,7 +63,7 @@ async function main() {
 	console.log(`Extracting ${tmpFile}...`);
 	await extractTar({ file: tmpFile, cwd: dest, strip: 1 });
 
-	await writeFile(join(dest, '.version'), `${GTEST_VERSION}\n`, 'utf8');
+	await writeFile(versionFile, `${GTEST_VERSION}\n`, 'utf8');
 	console.log(`GoogleTest ${GTEST_VERSION} installed to ${dest}`);
 }
 

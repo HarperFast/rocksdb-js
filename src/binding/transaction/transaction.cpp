@@ -114,7 +114,6 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 				auto* txnHandle = static_cast<std::shared_ptr<TransactionHandle>*>(data);
 				DEBUG_LOG("Transaction::Constructor NativeTransaction GC'd (txnHandle=%p, ref count=%ld)\n",
 					data, txnHandle->use_count());
-				[[maybe_unused]] auto id = (*txnHandle)->id;
 				if (*txnHandle) {
 					// Must run before the reset: the registry's own strong reference means
 					// resetting alone cannot destroy the handle.
