@@ -742,7 +742,7 @@ public:
 	 * registered, on every lock this descriptor tracks. Never calls them.
 	 */
 	void releaseLockCallbacksByEnv(napi_env env);
-	void onCallbackComplete(const std::string& key, const std::weak_ptr<LockHandle>& lockHandle);
+	void onLockCallbackComplete(const std::string& key, const std::weak_ptr<LockHandle>& lockHandle);
 	void dispatchNextLockCallback(const std::string& key, const std::shared_ptr<LockHandle>& lockHandle);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);

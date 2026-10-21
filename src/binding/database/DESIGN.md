@@ -124,14 +124,14 @@ duplicate it. A waiter on a lock that is never released therefore keeps its thre
 other pending I/O, and closing the waiter's own database does not cancel it. A parked commit is
 bounded by `ROCKSDB_JS_PARK_TIMEOUT_MS`.
 
-`lockCall` and `onCallbackComplete` dispatch the next waiter through `dispatchNextLockCallback`,
+`lockCall` and `onLockCallbackComplete` dispatch the next waiter through `dispatchNextLockCallback`,
 which calls its TSFN under `locksMutex` as `lockReleaseByKey` does. Once popped, a callback is
 invisible to its env's cleanup hook (`releaseLockCallbacksByEnv`, invariant 23), so the mutex is
 what keeps a concurrently terminated env's TSFN alive through the call. `napi_closing` means the
 TSFN must not be released again; that waiter is skipped. `isRunning` is read and written only
 under `locksMutex`.
 
-`callJsCallback` has exactly one owner for a `withLock()` call's `LockCallbackCompletionData`: the
+`lockCallbackCallJs` has exactly one owner for a `withLock()` call's `LockCallbackCompletionData`: the
 `shared_ptr` it builds on entry. Each `.then()` handler holds its own reference, freed by that
 handler's finalizer because only one handler ever runs. `completed` makes completion exactly-once
 across the direct path and the handlers. Every path that does not hand the callback off completes
