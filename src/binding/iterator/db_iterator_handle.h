@@ -93,11 +93,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	// Caller holds `iteratorMutex` and has checked the handle is still open.
 	void reuse(DBIteratorOptions& options);
 
-	/**
-	 * Ends the current range on a pooled handle: drops a bounded fallback
-	 * iterator and restores the unbounded one for the next `reuse()`. Caller
-	 * holds `iteratorMutex`.
-	 */
+	// Drops a bounded fallback, restoring the unbounded iterator. Caller holds `iteratorMutex`.
 	void endRange() noexcept;
 
 	/**
@@ -152,10 +148,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 */
 	static constexpr uint64_t POOLED_MAX_SKIPPABLE_INTERNAL_KEYS = 64;
 
-	/**
-	 * Removes the handle from the descriptor's closables if it was attached.
-	 * Call after `close()`.
-	 */
+	// Call after `close()`.
 	void detachFromDescriptor() noexcept;
 
 private:

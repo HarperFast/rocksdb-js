@@ -403,9 +403,8 @@ describe('Transaction iterator pool', () => {
 			for (let i = 0; i < 8; i++) {
 				const txn = new Transaction(db.store);
 				transactions.push(txn);
-				// Idle iterators interleave with busy ones and the transactions in
-				// the descriptor's closables, which the close sweep walks while each
-				// transaction's close detaches its pooled iterators.
+				// A self-close detaches nothing during the sweep (the handle drops its
+				// descriptor first); the shutdown() fixture below covers that path.
 				for (let j = 0; j < 3; j++) {
 					expect(txn.getRange().asArray.length).toBe(3);
 					const iterator = txn.getRange()[Symbol.iterator]();
