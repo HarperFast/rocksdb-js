@@ -157,11 +157,11 @@ private:
 	void setRange(DBIteratorOptions& options);
 
 	/**
-	 * Replaces the unbounded pooled iterator, which failed or hit its
-	 * tombstone skip limit, with a bounded one for the rest of this range, so
-	 * the caller sees exactly what a fresh iterator would: a bounded iterator
-	 * never reads past the range. Positions after `resumeAfter`, or at the
-	 * range start when it is null.
+	 * Replaces the unbounded pooled iterator, which failed or hit its skip
+	 * limit, with a bounded one for the rest of this range, positioned after
+	 * `resumeAfter` (or at the range start when null). A bounded iterator
+	 * never reads past the range, so an error or tombstone run outside it is
+	 * not reported. The re-seek does see writes staged since the range began.
 	 */
 	void fallBackToBounded(const rocksdb::Slice* resumeAfter);
 

@@ -186,12 +186,6 @@ void DBIteratorHandle::advanceFrom(const rocksdb::Slice& currentKey) {
 		this->advance();
 		return;
 	}
-	if (this->txnHandle->txn->GetNumDeletes() > POOLED_MAX_SKIPPABLE_INTERNAL_KEYS) {
-		// Deletes staged since the range began are not counted by the skip limit;
-		// stepping past the range end could walk every one of them.
-		this->fallBackToBounded(&currentKey);
-		return;
-	}
 	if (this->reverse) {
 		this->iterator->Prev();
 	} else {

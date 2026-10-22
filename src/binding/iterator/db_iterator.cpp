@@ -320,10 +320,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 		return nullptr; \
 	}
 
-/**
- * Closes the iterator, or gives a pooled one back to its transaction's pool.
- * A later `next()` throws "not initialized" either way.
- */
+// A later `next()` throws "not initialized" either way.
 static void closeOrRelease(IteratorWrap* wrap) {
 	wrap->exhaustedIn.reset();
 	if (!wrap->handle) {

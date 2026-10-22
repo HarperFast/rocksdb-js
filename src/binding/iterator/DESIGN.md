@@ -5,17 +5,18 @@
 A transaction-backed `getRange()` (`txn.getRange()` or `db.getRange({ transaction })`) borrows an
 idle native iterator from its transaction instead of building a RocksDB iterator per call. Invariant:
 a reused iterator returns the same rows, order and errors that a fresh iterator would for the same
-options in the same transaction at that moment. Writes to the transaction while one of its ranges is
-open are the exception: RocksDB leaves them unspecified, and a range that falls back to a bounded
-iterator re-seeks, so it can see a write a fresh iterator positioned before it would not. `test/iterator-pool.test.ts` compares every case
+options in the same transaction at that moment. The one exception needs both a fallback (below) and writes to the
+transaction while that range is open, which RocksDB leaves unspecified: the fallback re-seeks, so it
+can see a write a fresh iterator positioned before it would not. `test/iterator-pool.test.ts` compares every case
 against a fresh iterator and asserts a real pool hit.
 
 Why each rule holds, and where it is enforced:
 
 - **Eligibility** (`TransactionHandle::acquireIterator`): only with a fixed snapshot (`snapshotSet &&
   !disableSnapshot`), no advanced ReadOptions, at most 64 staged deletes, and not after repeated
-  fallbacks (see below). An open range re-checks the staged-delete count before each step and
-  falls back once it exceeds 64. Without a snapshot reads see the latest commit,
+  fallbacks (see below). Deletes staged while a range is open are walked when it reaches its end:
+  falling back there would re-seek, and a transaction that rewrites entries ahead of an open range
+  (delete, then re-insert further on) would see them twice. Without a snapshot reads see the latest commit,
   which a reused iterator would freeze. Database-level `getRange()` has no snapshot contract and is
   not pooled.
 - **Writes after creation are visible**: a RocksDB transaction iterator re-seeked after more writes
