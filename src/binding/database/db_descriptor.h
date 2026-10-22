@@ -1119,6 +1119,13 @@ struct ColumnFamilyDescriptor final {
 	ColumnFamilyLifetime lifetime;
 
 	/**
+	 * Bumped when `clear()` deletes this family's files. A deletion of files
+	 * is invisible to an iterator that already pinned them, so a pooled
+	 * transaction iterator built before it must not be reused after it.
+	 */
+	std::atomic<uint64_t> clearEpoch{0};
+
+	/**
 	 * Map of user shared buffers by key.
 	 */
 	std::unordered_map<std::string, std::shared_ptr<UserSharedBufferData>> userSharedBuffers;

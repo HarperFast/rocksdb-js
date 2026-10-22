@@ -98,7 +98,8 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 
 	/**
 	 * Whether the column family this pooled handle reads is still `target`'s
-	 * current one. Only meaningful while the caller holds an `OperationGuard`.
+	 * current one, and not cleared since. Only meaningful while the caller
+	 * holds an `OperationGuard`.
 	 */
 	bool readsColumnOf(const std::shared_ptr<DBHandle>& target) const;
 
@@ -166,6 +167,7 @@ private:
 	void fallBackToBounded(const rocksdb::Slice* resumeAfter);
 
 	std::weak_ptr<ColumnFamilyDescriptor> column;
+	uint64_t clearEpoch = 0;
 	std::unique_ptr<rocksdb::Iterator> unboundedIterator;
 	bool boundedFallback = false;
 	std::string lastKey;

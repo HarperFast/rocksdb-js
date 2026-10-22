@@ -300,6 +300,20 @@ describe('Transaction iterator pool', () => {
 			}
 		}));
 
+	it('does not serve a cleared column family from the pool', () =>
+		dbRunner(async ({ db }) => {
+			db.putSync('a', 1);
+			const txn = new Transaction(db.store);
+			try {
+				expect(txn.getRange().asArray.map((e) => e.key)).toEqual(['a']);
+				db.clearSync();
+				const fresh = txn.getRange(FRESH).asArray;
+				expect(txn.getRange().asArray).toEqual(fresh);
+			} finally {
+				txn.abort();
+			}
+		}));
+
 	it('does not serve a dropped and recreated column family from the pool', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			const column = RocksDatabase.open(dbPath, { name: 'pooled' });

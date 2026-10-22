@@ -87,6 +87,7 @@ DBIteratorHandle::DBIteratorHandle(
 	}
 	if (pooled) {
 		this->column = this->dbHandle->columnDescriptor;
+		this->clearEpoch = this->dbHandle->columnDescriptor->clearEpoch.load(std::memory_order_acquire);
 		this->setRange(options);
 		options.readOptions.max_skippable_internal_keys = POOLED_MAX_SKIPPABLE_INTERNAL_KEYS;
 	} else {
@@ -178,7 +179,8 @@ bool DBIteratorHandle::readsColumnOf(const std::shared_ptr<DBHandle>& target) co
 	// Control-block identity, without the atomic increment of lock(): a
 	// recreated family is a new descriptor and never shares it.
 	return !this->column.owner_before(target->columnDescriptor)
-		&& !target->columnDescriptor.owner_before(this->column);
+		&& !target->columnDescriptor.owner_before(this->column)
+		&& target->columnDescriptor->clearEpoch.load(std::memory_order_acquire) == this->clearEpoch;
 }
 
 void DBIteratorHandle::advanceFrom(const rocksdb::Slice& currentKey) {

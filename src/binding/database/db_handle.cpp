@@ -122,6 +122,7 @@ rocksdb::Status DBHandle::clear(std::atomic<bool>* compactCanceled) {
 	rocksdb::Status clearStatus = rocksdb::DeleteFilesInRange(
 		this->descriptor->db.get(), this->columnDescriptor->column.get(), nullptr, nullptr
 	);
+	this->columnDescriptor->clearEpoch.fetch_add(1, std::memory_order_release);
 	// After data is deleted, advance all non-lock VT slots to fresh
 	// settled-empty generations. This prevents stale pre-clear versions from
 	// being re-published via a concurrent populate CAS. The sweep is coarse

@@ -42,7 +42,8 @@ Why each rule holds, and where it is enforced:
 - **Matching** is by caller `DBHandle` (it also selects the shared key/value buffers `Next` writes
   into) and by column-family generation: a `weak_ptr` to the `ColumnFamilyDescriptor`, compared under
   the constructor's `OperationGuard`. A drop and same-name recreate behind one reopened `DBHandle`
-  must not serve the old generation. Weak, because a strong pin can destroy a column-family handle
+  must not serve the old generation. A `clear()` also invalidates it (`clearEpoch`): it deletes the
+  family's files outright, which an iterator that pinned them never notices. Weak, because a strong pin can destroy a column-family handle
   after its database (invariant 24's crash).
 - **Ownership**: idle handles sit in 4 inline slots on the `TransactionHandle` (no allocation when
   returning one) and stay registered in `activeIterators`, so every `closeIterators()` site closes
