@@ -128,6 +128,7 @@ export type NativeTransaction = {
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
 	setTimestamp(timestamp?: number): void;
+	trimIterators(): void;
 	// The transaction holds no napi_ref to its database (#741), so the owning
 	// NativeDatabase must be supplied per-call; native rejects a foreign one.
 	useLog(name: string | number, jsDatabase: NativeDatabase): TransactionLog;

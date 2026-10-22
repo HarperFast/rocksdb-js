@@ -26,8 +26,10 @@ Why each rule holds, and where it is enforced:
   error past the range) switches the handle to a fresh bounded iterator for the rest of the range
   (`fallBackToBounded`). The caller then sees what the bounded iterator reports. The test pins that a
   transaction iterator fails closed at the skip limit rather than yielding staged keys beyond it.
-  Cost: a probe followed by a long run of deleted keys pays the old construction cost plus 64 skips.
-  Staged deletes inside the transaction's own batch are not covered by the limit.
+  Costs a bounded iterator would not pay: a probe followed by a run of deleted keys pays the old
+  construction cost plus 64 skips; staged deletes in the transaction's own batch past the range are
+  walked uncapped; a range ending at a block or file boundary reads the next block or opens the next
+  file. The resume point is the key just copied out to JS (`advanceFrom`), so rows pay no extra copy.
 - **Matching** is by caller `DBHandle` (it also selects the shared key/value buffers `Next` writes
   into) and by column-family generation: a `weak_ptr` to the `ColumnFamilyDescriptor`, compared under
   the constructor's `OperationGuard`. A drop and same-name recreate behind one reopened `DBHandle`
@@ -39,14 +41,21 @@ Why each rule holds, and where it is enforced:
   cycle. `activeIteratorCount` counts busy handles only, so an idle one never blocks orphan close.
   A pooled handle is attached to the descriptor's closables once, when created, keeping the
   teardown barrier a foreign `destroy()`/`shutdown()` relies on, and is detached after its real close.
+  Because a transaction's close detaches other closables, the descriptor's close sweep re-reads the
+  map from `begin()` after every `close()` instead of keeping an iterator across it.
 - **Leaving the JS iterator**: on exhaustion, `return()` or `throw()` the handle goes back to the
   pool and the `NativeIterator` drops it, so a retained JS iterator can never drive a handle lent to
   another range. An exhausted one keeps reporting done until the transaction's `iteratorEpoch` moves
   (every `closeIterators()`), then throws "Iterator not initialized" as a closed iterator always has.
+  One history differs from an unpooled iterator: an exhausted iterator no longer defers the orphan
+  close of a transaction whose JS wrapper was collected, so re-polling it afterwards throws.
 - **Locks**: `iteratorMutex -> iteratorsMutex` (as `closeIfOpen` already nests). Acquire takes the
   slot under `iteratorsMutex`, drops it, then takes `iteratorMutex` to re-seek. Orphan close runs
   after `iteratorMutex` is released, because it closes every registered handle, including this one.
-- **Retention**: an idle handle pins its RocksDB SuperVersion (memtables and SST files) until the
-  transaction ends; a fresh iterator pins only while consumed.
+- **Retention** (`transactionsToTrim` in `src/store.ts`): an idle handle pins its RocksDB
+  SuperVersion, i.e. memtables charged to the WriteBufferManager and SST files compaction already
+  replaced. A request transaction can stay open across I/O for seconds, so the JS layer empties the
+  pool (`NativeTransaction.trimIterators()`) from a `setImmediate` once the macrotask that ran the
+  ranges ends. Reuse therefore spans one synchronous run of ranges, which is the pattern it targets.
 
 `ROCKSDB_JS_ITERATOR_POOL=0` disables pooling (read once per process).

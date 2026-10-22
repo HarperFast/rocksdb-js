@@ -71,6 +71,19 @@ const SAVE_BUFFER_SIZE = 8192;
 // const WRITE_BUFFER_SIZE = 65536;
 
 export type StoreContext = NativeDatabase | NativeTransaction;
+
+// Transactions whose ranges may have left idle pooled iterators. An idle native
+// iterator pins the memtables and SST files current at its creation, so the
+// pool is emptied once the current macrotask ends rather than at commit: a
+// transaction can stay open across I/O for far longer than its ranges take.
+const transactionsToTrim = new Set<NativeTransaction>();
+
+function trimIdleIterators(): void {
+	for (const transaction of transactionsToTrim) {
+		transaction.trimIterators();
+	}
+	transactionsToTrim.clear();
+}
 export type StoreGetOptions = GetOptions & DBITransactional;
 export type StoreIteratorOptions = IteratorOptions & DBITransactional;
 export type StorePutOptions = PutOptions & DBITransactional;
@@ -1155,6 +1168,17 @@ export class Store {
 				options.tailing !== undefined)
 				? options
 				: undefined;
+
+		if (advancedOptions === undefined && (txnId !== undefined || context !== this.db)) {
+			if (transactionsToTrim.size === 0) {
+				setImmediate(trimIdleIterators);
+			}
+			transactionsToTrim.add(
+				context !== this.db
+					? (context as NativeTransaction)
+					: (options!.transaction!._context as NativeTransaction)
+			);
+		}
 
 		return new ExtendedIterable(
 			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect

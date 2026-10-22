@@ -300,6 +300,59 @@ describe('Transaction iterator pool', () => {
 			}
 		}));
 
+	it('closes idle pooled iterators once the current macrotask ends', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			db.putSync('a', 'a');
+			const baseline = status(dbPath);
+			const txn = new Transaction(db.store);
+			try {
+				const before = iteratorPoolStats();
+				for (let i = 0; i < 3; i++) {
+					expect(txn.getRange().asArray.length).toBe(1);
+					expect(db.getRange({ transaction: txn }).asArray.length).toBe(1);
+				}
+				// Both routing forms use the database's own handle, so they share one iterator.
+				expect(delta(before)).toMatchObject({ created: 1, reused: 5 });
+				// The transaction and its one idle iterator.
+				expect(status(dbPath).closables).toBe(baseline.closables + 2);
+				// An idle iterator pins memtables; a transaction held open across I/O must not keep it.
+				await new Promise((resolve) => setImmediate(resolve));
+				expect(status(dbPath).closables).toBe(baseline.closables + 1);
+				expect(txn.getRange().asArray.length).toBe(1);
+				expect(delta(before)).toMatchObject({ created: 2, reused: 5 });
+			} finally {
+				txn.abort();
+			}
+		}));
+
+	it('closes a database whose pending transactions hold pooled iterators', () =>
+		dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+			const db = RocksDatabase.open(dbPath);
+			for (const key of ['a', 'b', 'c']) {
+				db.putSync(key, key);
+			}
+			const busy: Iterator<unknown>[] = [];
+			const transactions: Transaction[] = [];
+			for (let i = 0; i < 8; i++) {
+				const txn = new Transaction(db.store);
+				transactions.push(txn);
+				// Idle iterators interleave with busy ones and the transactions in
+				// the descriptor's closables, which the close sweep walks while each
+				// transaction's close detaches its pooled iterators.
+				for (let j = 0; j < 3; j++) {
+					expect(txn.getRange().asArray.length).toBe(3);
+					const iterator = txn.getRange()[Symbol.iterator]();
+					iterator.next();
+					busy.push(iterator);
+				}
+			}
+			db.close();
+			expect(registryStatus().find((entry) => entry.path === dbPath)).toBeUndefined();
+			for (const iterator of busy) {
+				expect(() => iterator.next()).toThrow('Iterator not initialized');
+			}
+		}));
+
 	it.skipIf(!forceGC)('closes a dropped transaction that only holds idle pooled iterators', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			db.putSync('a', 'a');

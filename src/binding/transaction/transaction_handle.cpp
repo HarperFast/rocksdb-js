@@ -303,6 +303,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+		// Erase even an idle entry: closeIterators() waits for the map to empty.
 		if (this->activeIterators.erase(iterator) == 0 || iterator->idle) {
 			return;
 		}
@@ -392,7 +393,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 				if (poolable) {
 					created = true;
-					IteratorPoolStats::created.fetch_add(1, std::memory_order_relaxed);
+					++iteratorPoolStats.created;
 				}
 				return iterator;
 			}
@@ -414,7 +415,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			throw;
 		}
 		if (reused) {
-			IteratorPoolStats::reused.fetch_add(1, std::memory_order_relaxed);
+			++iteratorPoolStats.reused;
 			return iterator;
 		}
 		// Closed while idle, or its column family was dropped/reopened since.
@@ -423,6 +424,20 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
 		}
 		iterator->detachFromDescriptor();
+	}
+}
+
+void TransactionHandle::closeIdleIterators() noexcept {
+	std::array<std::shared_ptr<DBIteratorHandle>, 4> idle;
+	{
+		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+		idle.swap(this->idleIterators);
+	}
+	for (auto& iterator : idle) {
+		if (iterator) {
+			iterator->close();
+			iterator->detachFromDescriptor();
+		}
 	}
 }
 

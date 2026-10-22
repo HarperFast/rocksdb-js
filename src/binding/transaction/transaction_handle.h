@@ -401,11 +401,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void closeIterators();
 
 	/**
-	 * Like `createIterator`, but reuses an idle pooled iterator over the same
-	 * caller handle and column family when the transaction reads a fixed
-	 * snapshot, and otherwise creates a pooled one (`created` is set). Falls back
-	 * to `createIterator` when pooling cannot give the same rows as a fresh
-	 * iterator: no snapshot (latest-committed reads must not be frozen).
+	 * Like `createIterator`, but when the transaction reads a fixed snapshot it
+	 * reuses an idle pooled iterator over the same caller handle and column
+	 * family, or creates a pooled one (`created` is set). Without a snapshot it
+	 * creates an unpooled iterator: latest-committed reads must not be frozen.
 	 */
 	std::shared_ptr<DBIteratorHandle> acquireIterator(
 		DBIteratorOptions& options,
@@ -421,6 +420,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * `closeOrphanIfUnused()` after dropping `iteratorMutex`.
 	 */
 	bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept;
+
+	/**
+	 * Closes every idle pooled iterator, releasing what they pin.
+	 */
+	void closeIdleIterators() noexcept;
 
 	/**
 	 * Closes a collected wrapper once no async work or iterator still depends

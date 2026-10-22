@@ -109,6 +109,18 @@ const scenarios: Scenario[] = [
 	},
 ];
 
+// Per-row cost of a long scan inside a transaction, reported per row.
+const scanRows = { name: 'txn.getRange full scan, per row', rowsPerRun: KEY_COUNT };
+function scan(runs: number): void {
+	db.transactionSync((txn) => {
+		for (let i = 0; i < runs; i++) {
+			for (const entry of txn.getRange({ start: keys[0], end: lastKey + '~' })) {
+				sink += entry.key.length;
+			}
+		}
+	});
+}
+
 function median(samples: number[]): number {
 	const sorted = [...samples].sort((a, b) => a - b);
 	return sorted[Math.floor(sorted.length / 2)];
@@ -128,6 +140,16 @@ for (const scenario of scenarios) {
 	}
 	console.log(`${scenario.name.padEnd(45)} ${median(samples).toFixed(2)} us/op`);
 }
+
+scan(5);
+const scanSamples: number[] = [];
+for (let b = 0; b < BATCHES; b++) {
+	const runs = Math.max(1, Math.round(PROBES / 1000));
+	const start = process.hrtime.bigint();
+	scan(runs);
+	scanSamples.push(Number(process.hrtime.bigint() - start) / 1000 / (runs * scanRows.rowsPerRun));
+}
+console.log(`${scanRows.name.padEnd(45)} ${median(scanSamples).toFixed(3)} us/row`);
 
 db.close();
 rmSync(dir, { recursive: true, force: true });

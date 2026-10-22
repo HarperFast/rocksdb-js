@@ -74,7 +74,8 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 
 	void advance() {
 		if (this->pooled && !this->boundedFallback) {
-			this->advancePooled();
+			this->lastKey.assign(this->iterator->key().data(), this->iterator->key().size());
+			this->advanceFrom(rocksdb::Slice(this->lastKey));
 		} else if (this->reverse) {
 			this->iterator->Prev();
 		} else {
@@ -83,8 +84,14 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	}
 
 	/**
-	 * Re-targets an idle pooled handle at a new range. Caller holds
-	 * `iteratorMutex` and has checked the handle is still open.
+	 * Like `advance()`, given a copy of the current key that stays valid until
+	 * this returns (the bytes just handed to JS), so a pooled iterator need not
+	 * copy every key to know where a bounded fallback resumes.
+	 */
+	void advanceFrom(const rocksdb::Slice& currentKey);
+
+	/**
+	 * Caller holds `iteratorMutex` and has checked the handle is still open.
 	 */
 	void reuse(DBIteratorOptions& options);
 
@@ -148,12 +155,7 @@ private:
 	 */
 	void seek();
 
-	/**
-	 * Copies the range's start/end keys into the handle.
-	 */
 	void setRange(DBIteratorOptions& options);
-
-	void advancePooled();
 
 	/**
 	 * Replaces the unbounded pooled iterator, which failed or hit its
@@ -162,7 +164,7 @@ private:
 	 * never reads past the range. Positions after `resumeAfter`, or at the
 	 * range start when it is null.
 	 */
-	void fallBackToBounded(const std::string* resumeAfter);
+	void fallBackToBounded(const rocksdb::Slice* resumeAfter);
 
 	std::weak_ptr<ColumnFamilyDescriptor> column;
 	std::unique_ptr<rocksdb::Iterator> unboundedIterator;
@@ -171,13 +173,15 @@ private:
 };
 
 /**
- * Process-wide pool counters, for tests and diagnostics.
+ * Pool counters for the calling thread, for tests. Thread-local so workers
+ * never contend on a shared cache line.
  */
 struct IteratorPoolStats {
-	static std::atomic<uint64_t> created;
-	static std::atomic<uint64_t> reused;
-	static std::atomic<uint64_t> fallbacks;
+	uint64_t created = 0;
+	uint64_t reused = 0;
+	uint64_t fallbacks = 0;
 };
+extern thread_local IteratorPoolStats iteratorPoolStats;
 
 /**
  * Whether transaction iterators may be pooled: RocksDB 11+ (the version

@@ -479,7 +479,7 @@ static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 			::memcpy(valueBuffer, valueSlice.data(), valueSlice.size());
 			state[1] = static_cast<uint32_t>(valueSlice.size());
 		}
-		it->advance();
+		it->advanceFrom(rocksdb::Slice(keyBuffer, keySlice.size()));
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_FAST, &result));
 		return result;
 	}

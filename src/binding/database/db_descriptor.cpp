@@ -641,6 +641,10 @@ void DBDescriptor::finishClose(bool destroying) {
 			txnsLock.unlock();
 			closable->close();
 			txnsLock.lock();
+			// close() can detach other closables (a transaction detaches its
+			// pooled iterators), invalidating `it`. Every entry before it was
+			// erased, so the first one is the next to process.
+			it = this->closables.begin();
 		} else {
 			// Handle was already GC'd, just remove the expired weak_ptr
 			it = this->closables.erase(it);

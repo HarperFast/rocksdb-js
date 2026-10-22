@@ -28,9 +28,7 @@ constexpr uint64_t POOLED_MAX_SKIPPABLE_INTERNAL_KEYS = 64;
 
 }
 
-std::atomic<uint64_t> IteratorPoolStats::created{0};
-std::atomic<uint64_t> IteratorPoolStats::reused{0};
-std::atomic<uint64_t> IteratorPoolStats::fallbacks{0};
+thread_local IteratorPoolStats iteratorPoolStats;
 
 bool iteratorPoolEnabled() {
 	if constexpr (ROCKSDB_MAJOR < 11) {
@@ -182,23 +180,28 @@ void DBIteratorHandle::endRange() noexcept {
 }
 
 bool DBIteratorHandle::readsColumnOf(const std::shared_ptr<DBHandle>& target) const {
-	auto current = this->column.lock();
-	return current && current == target->columnDescriptor;
+	// Control-block identity, without the atomic increment of lock(): a
+	// recreated family is a new descriptor and never shares it.
+	return !this->column.owner_before(target->columnDescriptor)
+		&& !target->columnDescriptor.owner_before(this->column);
 }
 
-void DBIteratorHandle::advancePooled() {
-	this->lastKey.assign(this->iterator->key().data(), this->iterator->key().size());
+void DBIteratorHandle::advanceFrom(const rocksdb::Slice& currentKey) {
+	if (!this->pooled || this->boundedFallback) {
+		this->advance();
+		return;
+	}
 	if (this->reverse) {
 		this->iterator->Prev();
 	} else {
 		this->iterator->Next();
 	}
 	if (!this->iterator->status().ok()) {
-		this->fallBackToBounded(&this->lastKey);
+		this->fallBackToBounded(&currentKey);
 	}
 }
 
-void DBIteratorHandle::fallBackToBounded(const std::string* resumeAfter) {
+void DBIteratorHandle::fallBackToBounded(const rocksdb::Slice* resumeAfter) {
 	auto column = this->column.lock();
 	if (!column || !this->txnHandle || !this->txnHandle->txn) {
 		// Leave the failed pooled iterator in place: its non-OK status is reported.
@@ -216,7 +219,7 @@ void DBIteratorHandle::fallBackToBounded(const std::string* resumeAfter) {
 	std::unique_ptr<rocksdb::Iterator> bounded(
 		this->txnHandle->txn->GetIterator(boundedOptions.readOptions, column->column.get())
 	);
-	IteratorPoolStats::fallbacks.fetch_add(1, std::memory_order_relaxed);
+	++iteratorPoolStats.fallbacks;
 	this->unboundedIterator = std::move(this->iterator);
 	this->iterator = std::move(bounded);
 	this->boundedFallback = true;
@@ -225,7 +228,7 @@ void DBIteratorHandle::fallBackToBounded(const std::string* resumeAfter) {
 		this->seek();
 		return;
 	}
-	const rocksdb::Slice resume(*resumeAfter);
+	const rocksdb::Slice& resume = *resumeAfter;
 	if (this->reverse) {
 		this->iterator->SeekForPrev(resume);
 		if (this->iterator->Valid() && this->iterator->key().compare(resume) == 0) {
