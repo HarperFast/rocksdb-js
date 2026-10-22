@@ -489,6 +489,32 @@ describe('Transaction iterator pool', () => {
 			}
 		}));
 
+	it.skipIf(!forceGC)(
+		'keeps reporting done from an exhausted iterator after its transaction is collected',
+		() =>
+			dbRunner(async ({ db, dbPath }) => {
+				db.putSync('a', 'a');
+				const baseline = status(dbPath);
+				const exhaust = (options: Record<string, unknown>) => {
+					const txn = new Transaction(db.store);
+					const iterator = txn.getRange(options)[Symbol.iterator]();
+					while (!iterator.next().done);
+					return iterator;
+				};
+				// Unpooled: the exhausted iterator defers the orphan close and reports done.
+				const unpooled = exhaust(FRESH);
+				const pooled = exhaust({});
+				for (let i = 0; i < 20 && status(dbPath).transactions > baseline.transactions + 1; i++) {
+					forceGC!();
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				}
+				// The pooled transaction has been closed as an orphan; the unpooled one is still pinned.
+				expect(status(dbPath).transactions).toBe(baseline.transactions + 1);
+				expect(unpooled.next().done).toBe(true);
+				expect(pooled.next().done).toBe(true);
+			})
+	);
+
 	it.skipIf(!forceGC)('closes a dropped transaction that only holds idle pooled iterators', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			db.putSync('a', 'a');
@@ -510,6 +536,24 @@ describe('Transaction iterator pool', () => {
 			});
 		})
 	);
+});
+
+describe('Transaction iterator pool and the WriteBufferManager', () => {
+	it('does not pool while the WriteBufferManager may stall writers', () => {
+		const result = spawnSync(
+			process.execPath,
+			[
+				join(import.meta.dirname, 'fixtures', 'fork-pooled-iterator-wbm-stall.mts'),
+				generateDBPath(),
+			],
+			{ encoding: 'utf8', timeout: 60_000 }
+		);
+		expect(result.status, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({
+			stalling: { created: 0, reused: 0 },
+			notStalling: { created: 1, reused: 2 },
+		});
+	});
 });
 
 describe('Transaction iterator pool teardown', () => {

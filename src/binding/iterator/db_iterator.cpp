@@ -23,9 +23,10 @@ namespace {
 struct IteratorWrap final {
 	std::shared_ptr<DBIteratorHandle> handle;
 	// Set when a pooled handle left on exhaustion: next() keeps reporting done
-	// until the transaction closes its iterators, when a closed iterator would
-	// start throwing.
-	std::weak_ptr<TransactionHandle> exhaustedIn;
+	// until the transaction closes its iterators (other than by an orphan close,
+	// which an unpooled iterator would have deferred), when a closed iterator
+	// would start throwing. Strong, as the exhausted handle it replaces was.
+	std::shared_ptr<TransactionHandle> exhaustedIn;
 	uint64_t exhaustedEpoch = 0;
 };
 
@@ -390,9 +391,11 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 
 static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 	if (!wrap->handle) {
-		auto txnHandle = wrap->exhaustedIn.lock();
-		if (txnHandle && !txnHandle->closed.load()
-			&& txnHandle->iteratorEpoch.load(std::memory_order_relaxed) == wrap->exhaustedEpoch
+		const auto& txnHandle = wrap->exhaustedIn;
+		const uint64_t epoch = txnHandle ? txnHandle->iteratorEpoch.load(std::memory_order_relaxed) : 0;
+		if (txnHandle && (epoch == wrap->exhaustedEpoch
+			|| (epoch == wrap->exhaustedEpoch + 1
+				&& txnHandle->orphanCloseEpoch.load(std::memory_order_relaxed) == epoch))
 		) {
 			napi_value result;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_DONE, &result));

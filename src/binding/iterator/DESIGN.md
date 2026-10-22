@@ -11,9 +11,13 @@ against a fresh iterator and asserts a real pool hit.
 Why each rule holds, and where it is enforced:
 
 - **Eligibility** (`TransactionHandle::acquireIterator`): only with a fixed snapshot (`snapshotSet &&
-  !disableSnapshot`) and no advanced ReadOptions. Without a snapshot reads see the latest commit,
-  which a reused iterator would freeze. Database-level `getRange()` has no snapshot contract and is
-  not pooled.
+  !disableSnapshot`), no advanced ReadOptions, and no stalling WriteBufferManager. Without a
+  snapshot reads see the latest commit, which a reused iterator would freeze. Database-level
+  `getRange()` has no snapshot contract and is not pooled. With `writeBufferManagerAllowStall`, a
+  synchronous write can block the JS thread until memory is released, and the trim that releases
+  idle iterators' pinned memtables (below) runs on that same thread; `allowStall` is mutable, so
+  release re-checks it. A non-stalling manager (Harper's default) only lets usage run over budget
+  for the rest of the macrotask.
 - **Retargeting keeps RocksDB's own bounds** (`DBIteratorHandle::reuse`): the iterator's
   `ReadOptions` hold pointers to the handle's `startKey`/`endKey` Slices, and RocksDB re-reads bound
   pointers on every seek (upstream `DBIteratorTest.IterateBoundChangedBeforeSeek`;
@@ -44,8 +48,9 @@ Why each rule holds, and where it is enforced:
   pool and the `NativeIterator` drops it, so a retained JS iterator can never drive a handle lent to
   another range. An exhausted one keeps reporting done until the transaction's `iteratorEpoch` moves
   (every `closeIterators()`), then throws "Iterator not initialized" as a closed iterator always has.
-  One history differs from an unpooled iterator: an exhausted iterator no longer defers the orphan
-  close of a transaction whose JS wrapper was collected, so re-polling it afterwards throws.
+  The exception is an orphan close (the transaction's JS wrapper was collected): an unpooled
+  exhausted iterator deferred that close and kept reporting done, so a pooled one keeps reporting
+  done when the only close since it finished was that one (`orphanCloseEpoch`).
 - **Locks**: `iteratorMutex -> iteratorsMutex` (as `closeIfOpen` already nests). Acquire takes the
   slot under `iteratorsMutex`, drops it, then takes `iteratorMutex` to re-seek. Orphan close runs
   after `iteratorMutex` is released, because it closes every registered handle, including this one.

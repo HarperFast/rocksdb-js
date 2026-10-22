@@ -370,7 +370,12 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				throw std::runtime_error("Database not open");
 			}
 			this->ensureSnapshot();
-			const bool poolable = this->snapshotSet && !this->disableSnapshot;
+			// A stalling WriteBufferManager can block a synchronous write on the JS
+			// thread until memory is released, and the per-macrotask trim that
+			// releases idle iterators' pinned memtables runs on that same thread.
+			const bool poolable = this->snapshotSet && !this->disableSnapshot
+				&& !(targetHandle->descriptor->attachedWriteBufferManager
+					&& DBSettings::getInstance().getWriteBufferManagerAllowStall());
 			if (poolable) {
 				for (auto& slot : this->idleIterators) {
 					if (slot && slot->dbHandle == targetHandle && slot->boundsMatch(options)) {
@@ -451,7 +456,9 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 	checkOrphan = false;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-		if (this->closed.load() || !this->txn || this->state != TransactionState::Pending) {
+		if (this->closed.load() || !this->txn || this->state != TransactionState::Pending
+			|| DBSettings::getInstance().getWriteBufferManagerAllowStall()
+		) {
 			return false;
 		}
 		auto registered = this->activeIterators.find(iterator);
@@ -506,6 +513,7 @@ void TransactionHandle::closeOrphanIfUnused() {
 	// object alive until close() returns even when the final dependent releases
 	// on a worker thread.
 	auto keepAlive = this->shared_from_this();
+	this->orphanCloseEpoch.store(this->iteratorEpoch.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 	this->close();
 }
 
