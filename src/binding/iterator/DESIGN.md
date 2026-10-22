@@ -68,6 +68,7 @@ Why each rule holds, and where it is enforced:
   ranges ends. A handle that was busy across that trim (a range consumed across an `await`) is
   closed when released, not pooled (`trimGeneration`). Reuse therefore spans one synchronous run of
   ranges, which is the pattern it targets. A transaction that runs one range per macrotask gets no
-  reuse; measured, it costs the same as before.
+  reuse; measured (turbo off, cached data) it is no slower: 10.1 to 9.7 µs memtable, 12.1 to 11.6
+  µs one SST, 15.8 to 14.7 µs eight SST files, `setImmediate` included.
 
 `ROCKSDB_JS_ITERATOR_POOL=0` disables pooling (read once per process).
