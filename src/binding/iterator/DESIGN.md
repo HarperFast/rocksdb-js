@@ -61,6 +61,11 @@ Why each rule holds, and where it is enforced:
 - **Locks**: `iteratorMutex -> iteratorsMutex` (as `closeIfOpen` already nests). Acquire takes the
   slot under `iteratorsMutex`, drops it, then takes `iteratorMutex` to re-seek. Orphan close runs
   after `iteratorMutex` is released, because it closes every registered handle, including this one.
+- **Long scans** pay 2-6% more per row through a pooled iterator (5,000 rows, cached, turbo off),
+  plausibly the handle's per-row bound compare: a bounded RocksDB iterator skips that compare for
+  blocks wholly inside its bound. Unmeasured on cold data: without an upper bound, RocksDB's
+  `auto_readahead_size` cannot trim readahead at the range end, so a multi-block forward range over
+  uncached data can prefetch past it.
 - **Retention** (`transactionsToTrim` in `src/store.ts`): an idle handle pins its RocksDB
   SuperVersion, i.e. memtables charged to the WriteBufferManager and SST files compaction already
   replaced. A request transaction can stay open across I/O for seconds, so the JS layer empties the

@@ -191,7 +191,8 @@ void DBIteratorHandle::advanceFrom(const rocksdb::Slice& currentKey) {
 	} else {
 		this->iterator->Next();
 	}
-	if (!this->iterator->status().ok()) {
+	// Valid() implies an OK status, and is far cheaper to ask.
+	if (!this->iterator->Valid() && !this->iterator->status().ok()) {
 		this->fallBackToBounded(&currentKey);
 	}
 }

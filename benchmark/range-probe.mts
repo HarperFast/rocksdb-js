@@ -131,11 +131,13 @@ const scenarios: Scenario[] = [
 	},
 ];
 
-const scanRows = { name: 'txn.getRange full scan, per row', rowsPerRun: KEY_COUNT };
+const scanRows = { name: 'txn.getRange full scan, per row', rowsPerRun: KEY_COUNT - 1 };
 function scan(runs: number): void {
 	db.transactionSync((txn) => {
 		for (let i = 0; i < runs; i++) {
-			for (const entry of txn.getRange({ start: keys[0], end: lastKey + '~' })) {
+			// Ends one key short, so the scan stops on a live key rather than at the
+			// deleted-key run (which would fall back and then stop pooling).
+			for (const entry of txn.getRange({ start: keys[0], end: keys[KEY_COUNT - 2] + '~' })) {
 				sink += entry.key.length;
 			}
 		}

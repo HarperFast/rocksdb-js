@@ -420,6 +420,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * reuses an idle pooled iterator over the same caller handle and column
 	 * family, or creates a pooled one (`created` is set). Without a snapshot it
 	 * creates an unpooled iterator: latest-committed reads must not be frozen.
+	 * Caller holds an `OperationGuard` (reuse reads the target's column family).
 	 */
 	std::shared_ptr<DBIteratorHandle> acquireIterator(
 		DBIteratorOptions& options,
