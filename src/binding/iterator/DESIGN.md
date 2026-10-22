@@ -11,7 +11,7 @@ against a fresh iterator and asserts a real pool hit.
 Why each rule holds, and where it is enforced:
 
 - **Eligibility** (`TransactionHandle::acquireIterator`): only with a fixed snapshot (`snapshotSet &&
-  !disableSnapshot`) and no advanced ReadOptions. Without a snapshot reads see the latest commit,
+  !disableSnapshot`), no advanced ReadOptions, and at most 64 staged deletes (see below). Without a snapshot reads see the latest commit,
   which a reused iterator would freeze. Database-level `getRange()` has no snapshot contract and is
   not pooled.
 - **Writes after creation are visible**: a RocksDB transaction iterator re-seeked after more writes
@@ -27,9 +27,11 @@ Why each rule holds, and where it is enforced:
   (`fallBackToBounded`). The caller then sees what the bounded iterator reports. The test pins that a
   transaction iterator fails closed at the skip limit rather than yielding staged keys beyond it.
   Costs a bounded iterator would not pay: a probe followed by a run of deleted keys pays the old
-  construction cost plus 64 skips; staged deletes in the transaction's own batch past the range are
-  walked uncapped; a range ending at a block or file boundary reads the next block or opens the next
-  file. The resume point is the key just copied out to JS (`advanceFrom`), so rows pay no extra copy.
+  construction cost plus 64 skips; a range ending at a block or file boundary reads the next block
+  or opens the next file (unmeasured). Staged deletes in the transaction's own batch are not counted
+  by the skip limit, so a transaction with more than 64 of them is not pooled. The resume point is
+  the key just copied out to JS (`advanceFrom`: the shared key buffer, or the slow path's Buffer),
+  so rows pay no extra copy.
 - **Matching** is by caller `DBHandle` (it also selects the shared key/value buffers `Next` writes
   into) and by column-family generation: a `weak_ptr` to the `ColumnFamilyDescriptor`, compared under
   the constructor's `OperationGuard`. A drop and same-name recreate behind one reopened `DBHandle`
@@ -56,6 +58,8 @@ Why each rule holds, and where it is enforced:
   SuperVersion, i.e. memtables charged to the WriteBufferManager and SST files compaction already
   replaced. A request transaction can stay open across I/O for seconds, so the JS layer empties the
   pool (`NativeTransaction.trimIterators()`) from a `setImmediate` once the macrotask that ran the
-  ranges ends. Reuse therefore spans one synchronous run of ranges, which is the pattern it targets.
+  ranges ends. A handle that was busy across that trim (a range consumed across an `await`) is
+  closed when released, not pooled (`trimGeneration`). Reuse therefore spans one synchronous run of
+  ranges, which is the pattern it targets.
 
 `ROCKSDB_JS_ITERATOR_POOL=0` disables pooling (read once per process).

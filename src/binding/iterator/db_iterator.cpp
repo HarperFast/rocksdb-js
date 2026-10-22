@@ -353,13 +353,14 @@ static napi_value buildSlowResult(
 	napi_env env,
 	rocksdb::Slice& keySlice,
 	bool includeValue,
-	rocksdb::Slice& valueSlice
+	rocksdb::Slice& valueSlice,
+	void** keyCopy
 ) {
 	napi_value resultObj;
 	NAPI_STATUS_THROWS(::napi_create_object(env, &resultObj));
 
 	napi_value keyVal;
-	NAPI_STATUS_THROWS(::napi_create_buffer_copy(env, keySlice.size(), keySlice.data(), nullptr, &keyVal));
+	NAPI_STATUS_THROWS(::napi_create_buffer_copy(env, keySlice.size(), keySlice.data(), keyCopy, &keyVal));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, resultObj, "key", keyVal));
 
 	if (includeValue) {
@@ -485,8 +486,13 @@ static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 	}
 
 	// Slow path: at least one of key or value can't go in the shared buffer.
-	napi_value slowResult = buildSlowResult(env, keySlice, it->values, valueSlice);
-	it->advance();
+	void* keyCopy = nullptr;
+	napi_value slowResult = buildSlowResult(env, keySlice, it->values, valueSlice, &keyCopy);
+	if (keyCopy != nullptr) {
+		it->advanceFrom(rocksdb::Slice(static_cast<const char*>(keyCopy), keySlice.size()));
+	} else {
+		it->advance();
+	}
 	return slowResult;
 }
 

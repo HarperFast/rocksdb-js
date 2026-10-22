@@ -1,7 +1,9 @@
 import { RocksDatabase, registryStatus } from '../src/index.ts';
 import { iteratorPoolStats } from '../src/load-binding.ts';
 import { Transaction } from '../src/transaction.ts';
-import { dbRunner } from './lib/util.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -325,6 +327,71 @@ describe('Transaction iterator pool', () => {
 			}
 		}));
 
+	it('closes, rather than pools, an iterator that was busy when the pool was trimmed', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			for (const key of ['a', 'b', 'c']) {
+				db.putSync(key, key);
+			}
+			const baseline = status(dbPath);
+			const txn = new Transaction(db.store);
+			try {
+				const iterator = txn.getRange()[Symbol.iterator]();
+				iterator.next();
+				await new Promise((resolve) => setImmediate(resolve));
+				while (!iterator.next().done);
+				// Released after the trim ran: it must not sit idle until the transaction ends.
+				expect(status(dbPath).closables).toBe(baseline.closables + 1);
+			} finally {
+				txn.abort();
+			}
+		}));
+
+	it('does not pool once the transaction has staged many deletes', () =>
+		dbRunner(async ({ db }) => {
+			db.putSync('a', 'a');
+			db.putSync('z', 'z');
+			const txn = new Transaction(db.store);
+			try {
+				for (let i = 0; i < 100; i++) {
+					txn.removeSync(`m${1000 + i}`);
+				}
+				const before = iteratorPoolStats();
+				for (let i = 0; i < 3; i++) {
+					expect(txn.getRange({ start: 'a', end: 'b' }).asArray.map((e) => e.key)).toEqual(['a']);
+				}
+				expect(delta(before)).toEqual({ created: 0, reused: 0, fallbacks: 0 });
+			} finally {
+				txn.abort();
+			}
+		}));
+
+	it('resumes a bounded fallback after a row returned on the slow path', () =>
+		dbRunner(async ({ db }) => {
+			const big = 'x'.repeat(200_000);
+			db.putSync('a', big);
+			for (let i = 0; i < 300; i++) {
+				db.putSync(`m${1000 + i}`, 'x');
+			}
+			for (let i = 0; i < 300; i++) {
+				db.removeSync(`m${1000 + i}`);
+			}
+			db.putSync('z', 'z');
+			const txn = new Transaction(db.store);
+			try {
+				txn.putSync('n', 'staged');
+				expect(txn.getRange({ end: 'a~' }).asArray.length).toBe(1);
+				const before = iteratorPoolStats();
+				const rows = txn.getRange().asArray;
+				expect(rows.map((e) => e.key)).toEqual(['a', 'n', 'z']);
+				expect(rows[0].value).toBe(big);
+				expect(rows).toEqual(txn.getRange(FRESH).asArray);
+				expect(delta(before)).toMatchObject({ reused: 1 });
+				expect(delta(before).fallbacks).toBeGreaterThan(0);
+			} finally {
+				txn.abort();
+			}
+		}));
+
 	it('closes a database whose pending transactions hold pooled iterators', () =>
 		dbRunner({ skipOpen: true }, async ({ dbPath }) => {
 			const db = RocksDatabase.open(dbPath);
@@ -373,5 +440,25 @@ describe('Transaction iterator pool', () => {
 				transactions: baseline.transactions,
 			});
 		})
+	);
+});
+
+describe('Transaction iterator pool teardown', () => {
+	it.skipIf(process.platform === 'win32')(
+		'survives shutdown() while transactions hold pooled iterators',
+		async () => {
+			for (let i = 0; i < 3; i++) {
+				const result = spawnSync(
+					process.execPath,
+					[
+						join(import.meta.dirname, 'fixtures', 'fork-pooled-iterator-shutdown.mts'),
+						generateDBPath(),
+					],
+					{ encoding: 'utf8', env: { ...process.env, MALLOC_PERTURB_: '165' }, timeout: 60_000 }
+				);
+				expect(result.signal, result.stderr).toBeNull();
+				expect(result.status, result.stderr).toBe(0);
+			}
+		}
 	);
 });

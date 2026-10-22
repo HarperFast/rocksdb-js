@@ -300,6 +300,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::array<std::shared_ptr<DBIteratorHandle>, 4> idleIterators;
 
 	/**
+	 * Bumped by `closeIdleIterators()`. A handle busy across a trim is closed on
+	 * release instead of pooled, or it would stay idle until the transaction
+	 * ends. Guarded by `iteratorsMutex`.
+	 */
+	uint64_t trimGeneration = 0;
+
+	/**
 	 * Bumped by every `closeIterators()`. A JS iterator that finished and gave
 	 * its handle back to the pool keeps reporting done while this is unchanged,
 	 * and "not initialized" afterwards, as a closed iterator always has.
@@ -421,9 +428,6 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept;
 
-	/**
-	 * Closes every idle pooled iterator, releasing what they pin.
-	 */
 	void closeIdleIterators() noexcept;
 
 	/**

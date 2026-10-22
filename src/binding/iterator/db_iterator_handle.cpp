@@ -21,11 +21,6 @@ bool needsBoundCheck(const DBIteratorOptions& options, bool writeBatch) {
 		|| (options.reverse && options.exclusiveStart && options.startKeyStr != nullptr);
 }
 
-// Bounds how far an unbounded pooled iterator may skip deletion tombstones in
-// one step before it reports Incomplete and the handle falls back to a
-// bounded iterator, which never reads past the range.
-constexpr uint64_t POOLED_MAX_SKIPPABLE_INTERNAL_KEYS = 64;
-
 }
 
 thread_local IteratorPoolStats iteratorPoolStats;

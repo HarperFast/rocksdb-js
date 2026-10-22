@@ -90,9 +90,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 */
 	void advanceFrom(const rocksdb::Slice& currentKey);
 
-	/**
-	 * Caller holds `iteratorMutex` and has checked the handle is still open.
-	 */
+	// Caller holds `iteratorMutex` and has checked the handle is still open.
 	void reuse(DBIteratorOptions& options);
 
 	/**
@@ -141,6 +139,18 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 * JS finalizer detaches it afterwards.
 	 */
 	std::atomic<bool> attached{false};
+
+	/**
+	 * The transaction's `trimGeneration` when this handle was last lent out.
+	 * Guarded by the transaction's `iteratorsMutex`.
+	 */
+	uint64_t poolGeneration = 0;
+
+	/**
+	 * How many internal keys an unbounded pooled iterator may skip in one step
+	 * before it reports Incomplete and the handle falls back to a bounded one.
+	 */
+	static constexpr uint64_t POOLED_MAX_SKIPPABLE_INTERNAL_KEYS = 64;
 
 	/**
 	 * Removes the handle from the descriptor's closables if it was attached.

@@ -972,7 +972,7 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
 export const lockWakeCallbackCount: () => number = binding.lockWakeCallbackCount;
 
 /**
- * Process-wide counters for the per-transaction iterator pool: pooled
+ * The calling thread's counters for the per-transaction iterator pool: pooled
  * iterators created, idle ones reused by a later range, and ranges that fell
  * back to a bounded iterator. Internal — used by tests to prove a range was
  * served by a reused iterator.

@@ -360,6 +360,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 	const std::shared_ptr<DBHandle>& targetHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	for (;;) {
 		std::shared_ptr<DBIteratorHandle> iterator;
+		std::shared_ptr<DBIteratorHandle> discarded;
 		{
 			std::lock_guard<std::mutex> lock(this->iteratorsMutex);
 			if (this->closed.load() || !this->txn || this->state != TransactionState::Pending) {
@@ -369,12 +370,21 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				throw std::runtime_error("Database not open");
 			}
 			this->ensureSnapshot();
-			const bool poolable = this->snapshotSet && !this->disableSnapshot;
+			// Staged deletes are not covered by the pooled iterator's skip limit:
+			// past a range's end it would walk every one of them.
+			const bool poolable = this->snapshotSet && !this->disableSnapshot
+				&& this->txn->GetNumDeletes() <= DBIteratorHandle::POOLED_MAX_SKIPPABLE_INTERNAL_KEYS;
 			if (poolable) {
 				for (auto& slot : this->idleIterators) {
 					if (slot && slot->dbHandle == targetHandle) {
+						if (this->activeIterators.count(slot.get()) == 0) {
+							// Closed while idle; closeIterators() empties the slots next.
+							discarded = std::move(slot);
+							continue;
+						}
 						iterator = std::move(slot);
 						iterator->idle = false;
+						iterator->poolGeneration = this->trimGeneration;
 						break;
 					}
 				}
@@ -390,6 +400,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				assert(inserted && "Transaction iterator registered twice");
 				(void)inserted;
 				iterator->transactionRegistered = true;
+				iterator->poolGeneration = this->trimGeneration;
 				this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 				if (poolable) {
 					created = true;
@@ -400,8 +411,8 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 		}
 
-		// Busy again and still registered: a close from here on waits on
-		// iteratorMutex, and unregisterIterator() decrements the busy count.
+		// Busy and registered: any close from here on, ours or a foreign one,
+		// decrements the busy count exactly once through unregisterIterator().
 		bool reused = false;
 		try {
 			std::lock_guard<std::mutex> lock(iterator->iteratorMutex);
@@ -418,11 +429,8 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			++iteratorPoolStats.reused;
 			return iterator;
 		}
-		// Closed while idle, or its column family was dropped/reopened since.
-		if (!iterator->closeIfOpen()) {
-			// Already closed, and unregistered as idle: undo this busy count.
-			this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
-		}
+		// Closed since it was taken, or its column family was dropped/reopened.
+		iterator->close();
 		iterator->detachFromDescriptor();
 	}
 }
@@ -432,6 +440,7 @@ void TransactionHandle::closeIdleIterators() noexcept {
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
 		idle.swap(this->idleIterators);
+		++this->trimGeneration;
 	}
 	for (auto& iterator : idle) {
 		if (iterator) {
@@ -449,7 +458,8 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 			return false;
 		}
 		auto registered = this->activeIterators.find(iterator);
-		if (registered == this->activeIterators.end()) {
+		if (registered == this->activeIterators.end() || iterator->poolGeneration != this->trimGeneration) {
+			// A trim ran while this one was busy: it would idle past the trim.
 			return false;
 		}
 		std::shared_ptr<DBIteratorHandle>* freeSlot = nullptr;

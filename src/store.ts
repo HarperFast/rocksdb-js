@@ -79,10 +79,13 @@ export type StoreContext = NativeDatabase | NativeTransaction;
 const transactionsToTrim = new Set<NativeTransaction>();
 
 function trimIdleIterators(): void {
-	for (const transaction of transactionsToTrim) {
-		transaction.trimIterators();
+	try {
+		for (const transaction of transactionsToTrim) {
+			transaction.trimIterators();
+		}
+	} finally {
+		transactionsToTrim.clear();
 	}
-	transactionsToTrim.clear();
 }
 export type StoreGetOptions = GetOptions & DBITransactional;
 export type StoreIteratorOptions = IteratorOptions & DBITransactional;
