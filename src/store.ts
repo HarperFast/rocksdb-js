@@ -1169,33 +1169,28 @@ export class Store {
 				? options
 				: undefined;
 
+		const nativeIterator = new NativeIterator(
+			context,
+			flags,
+			startKeyEnd,
+			endKeyStart,
+			endKeyEnd,
+			advancedOptions,
+			txnId
+		);
 		if (advancedOptions === undefined && (txnId !== undefined || context !== this.db)) {
-			if (transactionsToTrim.size === 0) {
-				setImmediate(trimIdleIterators);
+			const nativeTransaction = context !== this.db ? context : options?.transaction?._context;
+			if (nativeTransaction instanceof NativeTransaction) {
+				if (transactionsToTrim.size === 0) {
+					setImmediate(trimIdleIterators);
+				}
+				transactionsToTrim.add(nativeTransaction);
 			}
-			transactionsToTrim.add(
-				context !== this.db
-					? (context as NativeTransaction)
-					: (options!.transaction!._context as NativeTransaction)
-			);
 		}
 
 		return new ExtendedIterable(
 			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect
-			new DBIterator(
-				new NativeIterator(
-					context,
-					flags,
-					startKeyEnd,
-					endKeyStart,
-					endKeyEnd,
-					advancedOptions,
-					txnId
-				),
-				this,
-				includeValues,
-				options?.limit
-			)
+			new DBIterator(nativeIterator, this, includeValues, options?.limit)
 		);
 	}
 
