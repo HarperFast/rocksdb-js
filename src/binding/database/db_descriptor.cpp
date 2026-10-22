@@ -1012,8 +1012,12 @@ void DBDescriptor::attach(std::shared_ptr<Closable> closable) {
  * closed.
  */
 void DBDescriptor::detach(std::shared_ptr<Closable> closable) {
+	this->detach(closable.get());
+}
+
+void DBDescriptor::detach(Closable* closable) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	this->closables.erase(closable.get());
+	this->closables.erase(closable);
 }
 
 #define SET_DOUBLE_PROP(obj, name, value) \

@@ -971,6 +971,15 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
 export const lockWakeCallbackCount: () => number = binding.lockWakeCallbackCount;
 
 /**
+ * Process-wide counters for the per-transaction iterator pool: pooled
+ * iterators created, idle ones reused by a later range, and ranges that fell
+ * back to a bounded iterator. Internal — used by tests to prove a range was
+ * served by a reused iterator.
+ */
+export const iteratorPoolStats: () => { created: number; reused: number; fallbacks: number } =
+	binding.iteratorPoolStats;
+
+/**
  * Test-only: force the next `count` transaction commits to fail with TryAgain (rolled back, so
  * no data is committed), reproducing a stranded-snapshot conflict deterministically. Pass 0 to
  * disarm. Used by the ERR_TRY_AGAIN retry regression test.

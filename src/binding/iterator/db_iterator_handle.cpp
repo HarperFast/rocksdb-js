@@ -3,6 +3,8 @@
 #include <rocksdb/version.h>
 #include "core/test_seam.h"
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <thread>
 
 namespace rocksdb_js {
@@ -19,6 +21,28 @@ bool needsBoundCheck(const DBIteratorOptions& options, bool writeBatch) {
 		|| (options.reverse && options.exclusiveStart && options.startKeyStr != nullptr);
 }
 
+// Bounds how far an unbounded pooled iterator may skip deletion tombstones in
+// one step before it reports Incomplete and the handle falls back to a
+// bounded iterator, which never reads past the range.
+constexpr uint64_t POOLED_MAX_SKIPPABLE_INTERNAL_KEYS = 64;
+
+}
+
+std::atomic<uint64_t> IteratorPoolStats::created{0};
+std::atomic<uint64_t> IteratorPoolStats::reused{0};
+std::atomic<uint64_t> IteratorPoolStats::fallbacks{0};
+
+bool iteratorPoolEnabled() {
+	if constexpr (ROCKSDB_MAJOR < 11) {
+		return false;
+	} else {
+		// Read once: getenv races a process.env write from another thread.
+		static const bool enabled = [] {
+			const char* value = ::getenv("ROCKSDB_JS_ITERATOR_POOL");
+			return value == nullptr || (::strcmp(value, "0") != 0 && ::strcmp(value, "false") != 0);
+		}();
+		return enabled;
+	}
 }
 
 DBIteratorHandle::DBIteratorHandle(
@@ -31,7 +55,8 @@ DBIteratorHandle::DBIteratorHandle(
 	reverse(options.reverse),
 	values(options.values),
 	needsStableValueBuffer(options.needsStableValueBuffer),
-	enforceBounds(needsBoundCheck(options, false))
+	enforceBounds(needsBoundCheck(options, false)),
+	pooled(false)
 {
 	DEBUG_LOG("%p DBIteratorHandle::Constructor dbHandle=%p\n", this, dbHandle.get());
 	this->init(options);
@@ -43,13 +68,14 @@ DBIteratorHandle::DBIteratorHandle(
 		)
 	);
 
-	this->seek(options);
+	this->seek();
 }
 
 DBIteratorHandle::DBIteratorHandle(
 	std::shared_ptr<TransactionHandle> txnHandle,
 	DBIteratorOptions& options,
-	std::shared_ptr<DBHandle> dbHandleOverride
+	std::shared_ptr<DBHandle> dbHandleOverride,
+	bool pooled
 ) :
 	dbHandle(dbHandleOverride ? dbHandleOverride : txnHandle->dbHandle),
 	txnHandle(std::move(txnHandle)),
@@ -58,14 +84,21 @@ DBIteratorHandle::DBIteratorHandle(
 	reverse(options.reverse),
 	values(options.values),
 	needsStableValueBuffer(options.needsStableValueBuffer),
-	enforceBounds(needsBoundCheck(options, true))
+	enforceBounds(pooled || needsBoundCheck(options, true)),
+	pooled(pooled)
 {
-	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", this->txnHandle.get(), dbHandle->descriptor.get());
+	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p pooled=%d\n", this->txnHandle.get(), dbHandle->descriptor.get(), pooled);
 	this->txnHandle->ensureSnapshot();
 	if (this->txnHandle->snapshotSet) {
 		options.readOptions.snapshot = this->txnHandle->txn->GetSnapshot();
 	}
-	this->init(options);
+	if (pooled) {
+		this->column = this->dbHandle->columnDescriptor;
+		this->setRange(options);
+		options.readOptions.max_skippable_internal_keys = POOLED_MAX_SKIPPABLE_INTERNAL_KEYS;
+	} else {
+		this->init(options);
+	}
 
 	this->iterator = std::unique_ptr<rocksdb::Iterator>(
 		this->txnHandle->txn->GetIterator(
@@ -74,7 +107,10 @@ DBIteratorHandle::DBIteratorHandle(
 		)
 	);
 
-	this->seek(options);
+	this->seek();
+	if (pooled && !this->iterator->status().ok()) {
+		this->fallBackToBounded(nullptr);
+	}
 }
 
 DBIteratorHandle::~DBIteratorHandle() {
@@ -91,12 +127,116 @@ bool DBIteratorHandle::closeIfOpen() {
 	if (!this->iterator) return false;
 	this->iterator->Reset();
 	this->iterator.reset();
+	this->unboundedIterator.reset();
 	if (this->txnHandle && this->transactionRegistered) {
 		this->transactionRegistered = false;
 		auto txnHandle = std::move(this->txnHandle);
 		txnHandle->unregisterIterator(this);
 	}
 	return true;
+}
+
+void DBIteratorHandle::setRange(DBIteratorOptions& options) {
+	if (options.startKeyStr != nullptr) {
+		this->startKeyStr.assign(options.startKeyStr + options.startKeyStart, options.startKeyEnd - options.startKeyStart);
+	} else {
+		this->startKeyStr.clear();
+	}
+	this->startKey = rocksdb::Slice(this->startKeyStr);
+
+	if (options.endKeyStr != nullptr) {
+		this->endKeyStr.assign(options.endKeyStr + options.endKeyStart, options.endKeyEnd - options.endKeyStart);
+		if (options.inclusiveEnd) {
+			this->endKeyStr.push_back('\0');
+		}
+	} else {
+		this->endKeyStr.clear();
+	}
+	this->endKey = rocksdb::Slice(this->endKeyStr);
+}
+
+void DBIteratorHandle::reuse(DBIteratorOptions& options) {
+	this->exclusiveStart = options.exclusiveStart;
+	this->inclusiveEnd = options.inclusiveEnd;
+	this->reverse = options.reverse;
+	this->values = options.values;
+	this->needsStableValueBuffer = options.needsStableValueBuffer;
+	this->setRange(options);
+	this->seek();
+	if (!this->iterator->status().ok()) {
+		this->fallBackToBounded(nullptr);
+	}
+}
+
+void DBIteratorHandle::detachFromDescriptor() noexcept {
+	if (this->attached.exchange(false) && this->dbHandle && this->dbHandle->descriptor) {
+		this->dbHandle->descriptor->detach(static_cast<Closable*>(this));
+	}
+}
+
+void DBIteratorHandle::endRange() noexcept {
+	if (this->boundedFallback) {
+		this->iterator = std::move(this->unboundedIterator);
+		this->boundedFallback = false;
+	}
+}
+
+bool DBIteratorHandle::readsColumnOf(const std::shared_ptr<DBHandle>& target) const {
+	auto current = this->column.lock();
+	return current && current == target->columnDescriptor;
+}
+
+void DBIteratorHandle::advancePooled() {
+	this->lastKey.assign(this->iterator->key().data(), this->iterator->key().size());
+	if (this->reverse) {
+		this->iterator->Prev();
+	} else {
+		this->iterator->Next();
+	}
+	if (!this->iterator->status().ok()) {
+		this->fallBackToBounded(&this->lastKey);
+	}
+}
+
+void DBIteratorHandle::fallBackToBounded(const std::string* resumeAfter) {
+	auto column = this->column.lock();
+	if (!column || !this->txnHandle || !this->txnHandle->txn) {
+		// Leave the failed pooled iterator in place: its non-OK status is reported.
+		return;
+	}
+	DBIteratorOptions boundedOptions;
+	boundedOptions.setReadOptionDefaults();
+	boundedOptions.readOptions.snapshot = this->txnHandle->txn->GetSnapshot();
+	if (this->startKey.size() > 0) {
+		boundedOptions.readOptions.iterate_lower_bound = &this->startKey;
+	}
+	if (this->endKey.size() > 0) {
+		boundedOptions.readOptions.iterate_upper_bound = &this->endKey;
+	}
+	std::unique_ptr<rocksdb::Iterator> bounded(
+		this->txnHandle->txn->GetIterator(boundedOptions.readOptions, column->column.get())
+	);
+	IteratorPoolStats::fallbacks.fetch_add(1, std::memory_order_relaxed);
+	this->unboundedIterator = std::move(this->iterator);
+	this->iterator = std::move(bounded);
+	this->boundedFallback = true;
+
+	if (resumeAfter == nullptr) {
+		this->seek();
+		return;
+	}
+	const rocksdb::Slice resume(*resumeAfter);
+	if (this->reverse) {
+		this->iterator->SeekForPrev(resume);
+		if (this->iterator->Valid() && this->iterator->key().compare(resume) == 0) {
+			this->iterator->Prev();
+		}
+	} else {
+		this->iterator->Seek(resume);
+		if (this->iterator->Valid() && this->iterator->key().compare(resume) == 0) {
+			this->iterator->Next();
+		}
+	}
 }
 
 void DBIteratorHandle::init(DBIteratorOptions& options) {
@@ -146,8 +286,8 @@ bool DBIteratorHandle::countRemaining(uint64_t& count) {
 	return true;
 }
 
-void DBIteratorHandle::seek(DBIteratorOptions& options) {
-	if (options.reverse) {
+void DBIteratorHandle::seek() {
+	if (this->reverse) {
 		if (this->endKey.size() > 0) {
 			this->iterator->SeekForPrev(this->endKey);
 			if (this->iterator->Valid() && this->iterator->key().compare(this->endKey) == 0) {
@@ -164,10 +304,10 @@ void DBIteratorHandle::seek(DBIteratorOptions& options) {
 		}
 	}
 
-	if (options.exclusiveStart && options.startKeyStr != nullptr && this->iterator->Valid()) {
+	if (this->exclusiveStart && this->startKey.size() > 0 && this->iterator->Valid()) {
 		rocksdb::Slice currentKey = this->iterator->key();
 		if (currentKey.compare(this->startKey) == 0) {
-			if (options.reverse) {
+			if (this->reverse) {
 				this->iterator->Prev();
 			} else {
 				this->iterator->Next();

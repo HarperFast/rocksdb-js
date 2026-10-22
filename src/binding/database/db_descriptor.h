@@ -695,6 +695,7 @@ public:
 
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
+	void detach(Closable* closable);
 
 	/**
 	 * Gets a single statistic value.

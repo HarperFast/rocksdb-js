@@ -1,7 +1,9 @@
 #ifndef __DB_ITERATOR_HANDLE_H__
 #define __DB_ITERATOR_HANDLE_H__
 
+#include <atomic>
 #include <mutex>
+#include <string>
 #include "database/db_handle.h"
 #include "iterator/db_iterator.h"
 #include "transaction/transaction_handle.h"
@@ -34,7 +36,8 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	DBIteratorHandle(
 		std::shared_ptr<TransactionHandle> txnHandle,
 		DBIteratorOptions& options,
-		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr,
+		bool pooled = false
 	);
 
 	/**
@@ -70,12 +73,33 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	bool valid() const;
 
 	void advance() {
-		if (this->reverse) {
+		if (this->pooled && !this->boundedFallback) {
+			this->advancePooled();
+		} else if (this->reverse) {
 			this->iterator->Prev();
 		} else {
 			this->iterator->Next();
 		}
 	}
+
+	/**
+	 * Re-targets an idle pooled handle at a new range. Caller holds
+	 * `iteratorMutex` and has checked the handle is still open.
+	 */
+	void reuse(DBIteratorOptions& options);
+
+	/**
+	 * Ends the current range on a pooled handle: drops a bounded fallback
+	 * iterator and restores the unbounded one for the next `reuse()`. Caller
+	 * holds `iteratorMutex`.
+	 */
+	void endRange() noexcept;
+
+	/**
+	 * Whether the column family this pooled handle reads is still `target`'s
+	 * current one. Only meaningful while the caller holds an `OperationGuard`.
+	 */
+	bool readsColumnOf(const std::shared_ptr<DBHandle>& target) const;
 
 	std::shared_ptr<DBHandle> dbHandle;
 	std::shared_ptr<TransactionHandle> txnHandle;
@@ -93,13 +117,74 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	std::mutex iteratorMutex;
 	bool transactionRegistered = false;
 
+	/**
+	 * Owned by the transaction's iterator pool: the RocksDB iterator has no
+	 * read bounds (the handle enforces them) and is re-seeked for each range.
+	 */
+	const bool pooled;
+
+	/**
+	 * Sitting in the transaction's idle slots. Guarded by the transaction's
+	 * `iteratorsMutex`; an idle handle is not counted in `activeIteratorCount`.
+	 */
+	bool idle = false;
+
+	/**
+	 * Attached to the descriptor's closables, so whoever closes it outside the
+	 * JS finalizer detaches it afterwards.
+	 */
+	std::atomic<bool> attached{false};
+
+	/**
+	 * Removes the handle from the descriptor's closables if it was attached.
+	 * Call after `close()`.
+	 */
+	void detachFromDescriptor() noexcept;
+
 private:
 	/**
 	 * Seeks the iterator to the first or last key, or the start key if
 	 * `exclusiveStart` is true.
 	 */
-	void seek(DBIteratorOptions& options);
+	void seek();
+
+	/**
+	 * Copies the range's start/end keys into the handle.
+	 */
+	void setRange(DBIteratorOptions& options);
+
+	void advancePooled();
+
+	/**
+	 * Replaces the unbounded pooled iterator, which failed or hit its
+	 * tombstone skip limit, with a bounded one for the rest of this range, so
+	 * the caller sees exactly what a fresh iterator would: a bounded iterator
+	 * never reads past the range. Positions after `resumeAfter`, or at the
+	 * range start when it is null.
+	 */
+	void fallBackToBounded(const std::string* resumeAfter);
+
+	std::weak_ptr<ColumnFamilyDescriptor> column;
+	std::unique_ptr<rocksdb::Iterator> unboundedIterator;
+	bool boundedFallback = false;
+	std::string lastKey;
 };
+
+/**
+ * Process-wide pool counters, for tests and diagnostics.
+ */
+struct IteratorPoolStats {
+	static std::atomic<uint64_t> created;
+	static std::atomic<uint64_t> reused;
+	static std::atomic<uint64_t> fallbacks;
+};
+
+/**
+ * Whether transaction iterators may be pooled: RocksDB 11+ (the version
+ * `test/native/transaction_iterator_reuse_test.cc` pins the reseek
+ * semantics for) and not disabled with `ROCKSDB_JS_ITERATOR_POOL=0`.
+ */
+bool iteratorPoolEnabled();
 
 } // namespace rocksdb_js
 

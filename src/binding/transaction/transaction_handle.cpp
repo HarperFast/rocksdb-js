@@ -303,7 +303,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-		if (this->activeIterators.erase(iterator) == 0) {
+		if (this->activeIterators.erase(iterator) == 0 || iterator->idle) {
 			return;
 		}
 	}
@@ -318,6 +318,7 @@ void TransactionHandle::closeIterators() {
 	// Never allocates: teardown paths cannot throw. A handle mid-destruction on
 	// another thread cannot be pinned, but its destructor resets the RocksDB
 	// iterator before erasing its entry, so wait for that before `txn` is freed.
+	this->iteratorEpoch.fetch_add(1, std::memory_order_relaxed);
 	for (;;) {
 		std::shared_ptr<DBIteratorHandle> iterator;
 		bool expired = false;
@@ -333,12 +334,129 @@ void TransactionHandle::closeIterators() {
 		}
 		if (iterator) {
 			iterator->close();
+			if (iterator->pooled) {
+				iterator->detachFromDescriptor();
+			}
 		} else if (expired) {
 			std::this_thread::yield();
 		} else {
-			return;
+			break;
 		}
 	}
+	std::array<std::shared_ptr<DBIteratorHandle>, 4> idle;
+	{
+		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+		idle.swap(this->idleIterators);
+	}
+}
+
+std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
+	DBIteratorOptions& options,
+	std::shared_ptr<DBHandle> dbHandleOverride,
+	bool& created
+) {
+	created = false;
+	const std::shared_ptr<DBHandle>& targetHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	for (;;) {
+		std::shared_ptr<DBIteratorHandle> iterator;
+		{
+			std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+			if (this->closed.load() || !this->txn || this->state != TransactionState::Pending) {
+				throw std::runtime_error("Transaction is not in pending state");
+			}
+			if (!targetHandle || !targetHandle->opened()) {
+				throw std::runtime_error("Database not open");
+			}
+			this->ensureSnapshot();
+			const bool poolable = this->snapshotSet && !this->disableSnapshot;
+			if (poolable) {
+				for (auto& slot : this->idleIterators) {
+					if (slot && slot->dbHandle == targetHandle) {
+						iterator = std::move(slot);
+						iterator->idle = false;
+						break;
+					}
+				}
+			}
+			if (!iterator) {
+				iterator = std::make_shared<DBIteratorHandle>(
+					this->shared_from_this(),
+					options,
+					dbHandleOverride,
+					poolable
+				);
+				const bool inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
+				assert(inserted && "Transaction iterator registered twice");
+				(void)inserted;
+				iterator->transactionRegistered = true;
+				this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
+				if (poolable) {
+					created = true;
+					IteratorPoolStats::created.fetch_add(1, std::memory_order_relaxed);
+				}
+				return iterator;
+			}
+			this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
+		}
+
+		// Busy again and still registered: a close from here on waits on
+		// iteratorMutex, and unregisterIterator() decrements the busy count.
+		bool reused = false;
+		try {
+			std::lock_guard<std::mutex> lock(iterator->iteratorMutex);
+			if (iterator->iterator && iterator->readsColumnOf(targetHandle)) {
+				iterator->reuse(options);
+				reused = true;
+			}
+		} catch (...) {
+			iterator->close();
+			iterator->detachFromDescriptor();
+			throw;
+		}
+		if (reused) {
+			IteratorPoolStats::reused.fetch_add(1, std::memory_order_relaxed);
+			return iterator;
+		}
+		// Closed while idle, or its column family was dropped/reopened since.
+		if (!iterator->closeIfOpen()) {
+			// Already closed, and unregistered as idle: undo this busy count.
+			this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
+		}
+		iterator->detachFromDescriptor();
+	}
+}
+
+bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept {
+	checkOrphan = false;
+	{
+		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+		if (this->closed.load() || !this->txn || this->state != TransactionState::Pending) {
+			return false;
+		}
+		auto registered = this->activeIterators.find(iterator);
+		if (registered == this->activeIterators.end()) {
+			return false;
+		}
+		std::shared_ptr<DBIteratorHandle>* freeSlot = nullptr;
+		for (auto& slot : this->idleIterators) {
+			if (!slot) {
+				freeSlot = &slot;
+				break;
+			}
+		}
+		if (!freeSlot) {
+			return false;
+		}
+		*freeSlot = registered->second.lock();
+		if (!*freeSlot) {
+			return false;
+		}
+		iterator->idle = true;
+	}
+	const uint32_t previous = this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
+	assert(previous > 0 && "Transaction iterator count underflow");
+	checkOrphan = previous == 1;
+	return true;
 }
 
 void TransactionHandle::closeOrphanIfUnused() {

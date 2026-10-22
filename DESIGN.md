@@ -7,4 +7,5 @@
 - [Database resources](src/binding/database/DESIGN.md): optimistic commit validation policy,
   per-database lock buckets, concurrent commit threads, and backup table verification.
 - [Transaction abort](src/binding/transaction/DESIGN.md): abort drains in-flight async gets before `Rollback()` and holds an `OperationGuard` so teardown cannot close the transaction under it.
+- [Pooled transaction iterators](src/binding/iterator/DESIGN.md): transaction `getRange()` reuses idle unbounded native iterators with handle-enforced bounds and a bounded fallback.
 - [N-API error builders](src/binding/napi/DESIGN.md): `createRocksDBError`/`createJSError` always write their out-param, even when their own N-API calls fail.

@@ -1,0 +1,52 @@
+# Iterator design notes
+
+## Pooled transaction iterators
+
+A transaction-backed `getRange()` (`txn.getRange()` or `db.getRange({ transaction })`) borrows an
+idle native iterator from its transaction instead of building a RocksDB iterator per call. Invariant:
+a reused iterator returns the same rows, order and errors that a fresh iterator would for the same
+options in the same transaction at that moment. `test/iterator-pool.test.ts` compares every case
+against a fresh iterator and asserts a real pool hit.
+
+Why each rule holds, and where it is enforced:
+
+- **Eligibility** (`TransactionHandle::acquireIterator`): only with a fixed snapshot (`snapshotSet &&
+  !disableSnapshot`) and no advanced ReadOptions. Without a snapshot reads see the latest commit,
+  which a reused iterator would freeze. Database-level `getRange()` has no snapshot contract and is
+  not pooled.
+- **Writes after creation are visible**: a RocksDB transaction iterator re-seeked after more writes
+  to the transaction sees them (puts, overwrites, deletes, batch growth). Pinned for the linked
+  RocksDB by `test/native/transaction_iterator_reuse_test.cc`; pooling compiles out below RocksDB 11
+  (`iteratorPoolEnabled`). No savepoints are used: `RollbackToSavePoint` rebuilds the batch index
+  under live iterators.
+- **No RocksDB bounds; the handle enforces them** (`DBIteratorHandle::valid`, `seek`): one iterator
+  serves ranges with different bounds. Two consequences follow. Running past the end of a range can
+  read data a bounded iterator never would, so the pooled iterator is created with
+  `max_skippable_internal_keys = 64`, and any non-OK status (that limit's `Incomplete`, or a read
+  error past the range) switches the handle to a fresh bounded iterator for the rest of the range
+  (`fallBackToBounded`). The caller then sees what the bounded iterator reports. The test pins that a
+  transaction iterator fails closed at the skip limit rather than yielding staged keys beyond it.
+  Cost: a probe followed by a long run of deleted keys pays the old construction cost plus 64 skips.
+  Staged deletes inside the transaction's own batch are not covered by the limit.
+- **Matching** is by caller `DBHandle` (it also selects the shared key/value buffers `Next` writes
+  into) and by column-family generation: a `weak_ptr` to the `ColumnFamilyDescriptor`, compared under
+  the constructor's `OperationGuard`. A drop and same-name recreate behind one reopened `DBHandle`
+  must not serve the old generation. Weak, because a strong pin can destroy a column-family handle
+  after its database (invariant 24's crash).
+- **Ownership**: idle handles sit in 4 inline slots on the `TransactionHandle` (no allocation when
+  returning one) and stay registered in `activeIterators`, so every `closeIterators()` site closes
+  them; `closeIterators()` then empties the slots, which breaks the handle-to-transaction reference
+  cycle. `activeIteratorCount` counts busy handles only, so an idle one never blocks orphan close.
+  A pooled handle is attached to the descriptor's closables once, when created, keeping the
+  teardown barrier a foreign `destroy()`/`shutdown()` relies on, and is detached after its real close.
+- **Leaving the JS iterator**: on exhaustion, `return()` or `throw()` the handle goes back to the
+  pool and the `NativeIterator` drops it, so a retained JS iterator can never drive a handle lent to
+  another range. An exhausted one keeps reporting done until the transaction's `iteratorEpoch` moves
+  (every `closeIterators()`), then throws "Iterator not initialized" as a closed iterator always has.
+- **Locks**: `iteratorMutex -> iteratorsMutex` (as `closeIfOpen` already nests). Acquire takes the
+  slot under `iteratorsMutex`, drops it, then takes `iteratorMutex` to re-seek. Orphan close runs
+  after `iteratorMutex` is released, because it closes every registered handle, including this one.
+- **Retention**: an idle handle pins its RocksDB SuperVersion (memtables and SST files) until the
+  transaction ends; a fresh iterator pins only while consumed.
+
+`ROCKSDB_JS_ITERATOR_POOL=0` disables pooling (read once per process).
