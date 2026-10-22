@@ -387,6 +387,37 @@ describe('Transaction iterator pool', () => {
 			}
 		}));
 
+	it('matches a fresh iterator when deletes are staged mid-range', () =>
+		dbRunner(async ({ db }) => {
+			for (const key of ['a', 'b', 'c', 'z']) {
+				db.putSync(key, key);
+			}
+			const scanWhileDeleting = (options: Record<string, unknown>) => {
+				const txn = new Transaction(db.store);
+				try {
+					const keys: string[] = [];
+					for (const { key } of txn.getRange({ end: 'd', ...options })) {
+						keys.push(key as string);
+						if (key === 'a') {
+							for (let i = 0; i < 100; i++) {
+								txn.removeSync(`m${1000 + i}`);
+							}
+							txn.removeSync('c');
+						}
+					}
+					return keys;
+				} finally {
+					txn.abort();
+				}
+			};
+			// RocksDB leaves writes during iteration unspecified; a pooled range
+			// must still not differ from a fresh one, so it does not re-seek here.
+			const fresh = scanWhileDeleting(FRESH);
+			const before = iteratorPoolStats();
+			expect(scanWhileDeleting({})).toEqual(fresh);
+			expect(delta(before)).toMatchObject({ created: 1, fallbacks: 0 });
+		}));
+
 	it('resumes a bounded fallback after a row returned on the slow path', () =>
 		dbRunner(async ({ db }) => {
 			const big = 'x'.repeat(200_000);

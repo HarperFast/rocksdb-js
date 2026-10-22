@@ -13,7 +13,9 @@ Why each rule holds, and where it is enforced:
 - **Eligibility** (`TransactionHandle::acquireIterator`): only with a fixed snapshot (`snapshotSet &&
   !disableSnapshot`), no advanced ReadOptions, at most 64 staged deletes, and not after repeated
   fallbacks (see below). Deletes staged while a pooled range is being consumed are still walked when
-  it reaches its end. Without a snapshot reads see the latest commit,
+  it reaches its end: switching to a bounded iterator there would re-seek, and a re-seeked iterator
+  sees writes a fresh one positioned before them does not (RocksDB leaves writes during iteration
+  unspecified, but pooled and fresh ranges must not differ). Without a snapshot reads see the latest commit,
   which a reused iterator would freeze. Database-level `getRange()` has no snapshot contract and is
   not pooled.
 - **Writes after creation are visible**: a RocksDB transaction iterator re-seeked after more writes
