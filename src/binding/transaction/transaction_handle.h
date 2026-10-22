@@ -307,14 +307,6 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	uint64_t trimGeneration = 0;
 
 	/**
-	 * Pooled ranges lent out, and those that had to fall back to a bounded
-	 * iterator. A fallback costs more than a fresh iterator, so a transaction
-	 * whose ranges keep landing next to runs of deleted keys stops pooling.
-	 */
-	std::atomic<uint32_t> pooledLends{0};
-	std::atomic<uint32_t> pooledFallbacks{0};
-
-	/**
 	 * Bumped by every `closeIterators()`. A JS iterator that finished and gave
 	 * its handle back to the pool keeps reporting done while this is unchanged,
 	 * and "not initialized" afterwards, as a closed iterator always has.

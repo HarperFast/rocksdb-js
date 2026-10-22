@@ -370,15 +370,10 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				throw std::runtime_error("Database not open");
 			}
 			this->ensureSnapshot();
-			// Staged deletes are not covered by the pooled iterator's skip limit:
-			// past a range's end it would walk every one of them.
-			const uint32_t fallbacks = this->pooledFallbacks.load(std::memory_order_relaxed);
-			const bool poolable = this->snapshotSet && !this->disableSnapshot
-				&& this->txn->GetNumDeletes() <= DBIteratorHandle::POOLED_MAX_SKIPPABLE_INTERNAL_KEYS
-				&& (fallbacks < 2 || fallbacks * 2 < this->pooledLends.load(std::memory_order_relaxed));
+			const bool poolable = this->snapshotSet && !this->disableSnapshot;
 			if (poolable) {
 				for (auto& slot : this->idleIterators) {
-					if (slot && slot->dbHandle == targetHandle) {
+					if (slot && slot->dbHandle == targetHandle && slot->boundsMatch(options)) {
 						if (this->activeIterators.count(slot.get()) == 0) {
 							// Closed while idle; closeIterators() empties the slots next.
 							discarded = std::move(slot);
@@ -406,7 +401,6 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 				if (poolable) {
 					created = true;
-					this->pooledLends.fetch_add(1, std::memory_order_relaxed);
 					++iteratorPoolStats.created;
 				}
 				return iterator;
@@ -429,7 +423,6 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			throw;
 		}
 		if (reused) {
-			this->pooledLends.fetch_add(1, std::memory_order_relaxed);
 			++iteratorPoolStats.reused;
 			return iterator;
 		}

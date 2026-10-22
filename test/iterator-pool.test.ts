@@ -20,7 +20,6 @@ function delta(before: ReturnType<typeof iteratorPoolStats>) {
 	return {
 		created: after.created - before.created,
 		reused: after.reused - before.reused,
-		fallbacks: after.fallbacks - before.fallbacks,
 	};
 }
 
@@ -67,7 +66,12 @@ describe('Transaction iterator pool', () => {
 		dbRunner(async ({ db }) => {
 			for (const key of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
 				db.putSync(key, `committed-${key}`);
+				if (key === 'c' || key === 'e') {
+					// Spread rows over SST files and the memtable.
+					db.flushSync();
+				}
 			}
+			db.putSync('b', 'overwritten-b');
 			const txn = new Transaction(db.store);
 			try {
 				txn.putSync('bc', 'staged-bc');
@@ -83,9 +87,9 @@ describe('Transaction iterator pool', () => {
 						expect(db.getRange({ ...options, transaction: txn }).asArray).toEqual(fresh);
 					}
 				}
-				const counts = delta(before);
-				expect(counts.reused).toBeGreaterThanOrEqual(RANGE_OPTIONS.length * 4 - 2);
-				expect(counts.created).toBeLessThanOrEqual(2);
+				// One pooled iterator per bound shape (no bound, lower, upper, both);
+				// every other range reuses one, re-pointed at its own bounds.
+				expect(delta(before)).toEqual({ created: 4, reused: RANGE_OPTIONS.length * 4 - 4 });
 			} finally {
 				txn.abort();
 			}
@@ -117,7 +121,8 @@ describe('Transaction iterator pool', () => {
 				// A commit by another writer after the snapshot stays invisible to a reused iterator.
 				db.putSync('bb', 'outside');
 				expect(txn.getRange({ start: 'b', end: 'c' }).asArray.map((e) => e.key)).toEqual(['b']);
-				expect(delta(before)).toMatchObject({ created: 0, reused: 4 });
+				// The lower-bound-only and two-bound ranges each need their own iterator.
+				expect(delta(before)).toMatchObject({ created: 2, reused: 2 });
 			} finally {
 				txn.abort();
 			}
@@ -142,7 +147,8 @@ describe('Transaction iterator pool', () => {
 				expect(iterator.return!().done).toBe(true);
 				expect(txn.getRange({ limit: 1 }).asArray.map((e) => e.key)).toEqual(['a']);
 				expect(txn.getRange({ start: 'c' }).asArray.map((e) => e.key)).toEqual(['c', 'd']);
-				expect(delta(before)).toMatchObject({ created: 0, reused: 4 });
+				// The last range has a lower bound, so it cannot reuse the unbounded one.
+				expect(delta(before)).toMatchObject({ created: 1, reused: 3 });
 			} finally {
 				txn.abort();
 			}
@@ -163,7 +169,7 @@ describe('Transaction iterator pool', () => {
 					}
 				}
 				expect(pairs).toEqual(['aa', 'bb', 'ba', 'cc', 'cb', 'ca', 'dd', 'dc', 'db', 'da']);
-				// outer + one inner handle, reused for every later inner range
+				// outer + one inner handle (upper bound only), reused for every later inner range
 				expect(delta(before)).toMatchObject({ created: 2, reused: 3 });
 
 				const first = txn.getRange()[Symbol.iterator]();
@@ -172,7 +178,8 @@ describe('Transaction iterator pool', () => {
 				expect([first.next().value.key, second.next().value.key]).toEqual(['b', 'c']);
 				first.return!();
 				second.return!();
-				expect(delta(before)).toMatchObject({ created: 2, reused: 5 });
+				// first reuses the outer handle; second has no idle unbounded handle left.
+				expect(delta(before)).toMatchObject({ created: 3, reused: 4 });
 			} finally {
 				txn.abort();
 			}
@@ -222,7 +229,7 @@ describe('Transaction iterator pool', () => {
 				// Without a snapshot reads see the latest commit, which a reused iterator would miss.
 				db.putSync('b', 2);
 				expect(txn.getRange().asArray.map((e) => e.key)).toEqual(['a', 'b']);
-				expect(delta(before)).toEqual({ created: 0, reused: 0, fallbacks: 0 });
+				expect(delta(before)).toEqual({ created: 0, reused: 0 });
 			} finally {
 				txn.abort();
 			}
@@ -231,13 +238,13 @@ describe('Transaction iterator pool', () => {
 				const before = iteratorPoolStats();
 				expect(snapshotTxn.getRange({ fillCache: true }).asArray.length).toBe(2);
 				expect(snapshotTxn.getRange({ readaheadSize: 0 }).asArray.length).toBe(2);
-				expect(delta(before)).toEqual({ created: 0, reused: 0, fallbacks: 0 });
+				expect(delta(before)).toEqual({ created: 0, reused: 0 });
 			} finally {
 				snapshotTxn.abort();
 			}
 		}));
 
-	it('falls back to a bounded iterator across a run of deleted keys', () =>
+	it('matches a fresh iterator next to runs of deleted keys', () =>
 		dbRunner(async ({ db }) => {
 			db.putSync('a', 'a');
 			for (let i = 0; i < 500; i++) {
@@ -269,34 +276,10 @@ describe('Transaction iterator pool', () => {
 						const fresh = txn.getRange({ ...options, ...FRESH }).asArray;
 						expect(txn.getRange(options).asArray, JSON.stringify(options)).toEqual(fresh);
 					}
-					const counts = delta(before);
-					expect(counts.fallbacks).toBeGreaterThan(0);
-					expect(counts.reused).toBeGreaterThan(0);
+					expect(delta(before).reused).toBeGreaterThan(0);
 				} finally {
 					txn.abort();
 				}
-			}
-		}));
-
-	it('stops pooling in a transaction whose ranges keep falling back', () =>
-		dbRunner(async ({ db }) => {
-			db.putSync('a', 'a');
-			for (let i = 0; i < 300; i++) {
-				db.putSync(`m${1000 + i}`, 'x');
-			}
-			for (let i = 0; i < 300; i++) {
-				db.removeSync(`m${1000 + i}`);
-			}
-			const txn = new Transaction(db.store);
-			try {
-				const before = iteratorPoolStats();
-				for (let i = 0; i < 10; i++) {
-					expect(txn.getRange({ start: 'a', end: 'a~' }).asArray.map((e) => e.key)).toEqual(['a']);
-				}
-				// Two fallbacks out of two pooled ranges, then the transaction builds bounded iterators.
-				expect(delta(before)).toEqual({ created: 1, reused: 1, fallbacks: 2 });
-			} finally {
-				txn.abort();
 			}
 		}));
 
@@ -382,7 +365,7 @@ describe('Transaction iterator pool', () => {
 			}
 		}));
 
-	it('does not pool once the transaction has staged many deletes', () =>
+	it('stops at the range end despite many staged deletes past it', () =>
 		dbRunner(async ({ db }) => {
 			db.putSync('a', 'a');
 			db.putSync('z', 'z');
@@ -395,7 +378,7 @@ describe('Transaction iterator pool', () => {
 				for (let i = 0; i < 3; i++) {
 					expect(txn.getRange({ start: 'a', end: 'b' }).asArray.map((e) => e.key)).toEqual(['a']);
 				}
-				expect(delta(before)).toEqual({ created: 0, reused: 0, fallbacks: 0 });
+				expect(delta(before)).toEqual({ created: 1, reused: 2 });
 			} finally {
 				txn.abort();
 			}
@@ -429,7 +412,7 @@ describe('Transaction iterator pool', () => {
 			for (const deletes of [10, 100]) {
 				const before = iteratorPoolStats();
 				expect(scanWhileDeleting(deletes)).toEqual(scanWhileDeleting(deletes, FRESH));
-				expect(delta(before)).toMatchObject({ created: 1, fallbacks: 0 });
+				expect(delta(before)).toMatchObject({ created: 1 });
 			}
 
 			// Deletes staged after the range is taken but before its first row.
@@ -453,7 +436,7 @@ describe('Transaction iterator pool', () => {
 			expect(stageBeforeFirstRow({})).toEqual(stageBeforeFirstRow(FRESH));
 		}));
 
-	it('resumes a bounded fallback after a row returned on the slow path', () =>
+	it('returns slow-path rows from a reused iterator', () =>
 		dbRunner(async ({ db }) => {
 			const big = 'x'.repeat(200_000);
 			db.putSync('a', big);
@@ -467,14 +450,13 @@ describe('Transaction iterator pool', () => {
 			const txn = new Transaction(db.store);
 			try {
 				txn.putSync('n', 'staged');
-				expect(txn.getRange({ end: 'a~' }).asArray.length).toBe(1);
+				expect(txn.getRange({ limit: 1 }).asArray.length).toBe(1);
 				const before = iteratorPoolStats();
 				const rows = txn.getRange().asArray;
 				expect(rows.map((e) => e.key)).toEqual(['a', 'n', 'z']);
 				expect(rows[0].value).toBe(big);
 				expect(rows).toEqual(txn.getRange(FRESH).asArray);
 				expect(delta(before)).toMatchObject({ reused: 1 });
-				expect(delta(before).fallbacks).toBeGreaterThan(0);
 			} finally {
 				txn.abort();
 			}

@@ -73,28 +73,23 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	bool valid() const;
 
 	void advance() {
-		if (this->pooled && !this->boundedFallback) {
-			this->lastKey.assign(this->iterator->key().data(), this->iterator->key().size());
-			this->advanceFrom(rocksdb::Slice(this->lastKey));
-		} else if (this->reverse) {
+		if (this->reverse) {
 			this->iterator->Prev();
 		} else {
 			this->iterator->Next();
 		}
 	}
 
-	/**
-	 * Like `advance()`, given a copy of the current key that stays valid until
-	 * this returns (the bytes just handed to JS), so a pooled iterator need not
-	 * copy every key to know where a bounded fallback resumes.
-	 */
-	void advanceFrom(const rocksdb::Slice& currentKey);
-
-	// Caller holds `iteratorMutex` and has checked the handle is still open.
+	// Caller holds `iteratorMutex` and has checked the handle is still open
+	// and `boundsMatch(options)`.
 	void reuse(DBIteratorOptions& options);
 
-	// Caller holds `iteratorMutex`.
-	void endRange() noexcept;
+	/**
+	 * Whether `options` sets the same read bounds (lower, upper) as this
+	 * handle's iterator was created with: a bound's presence is fixed for the
+	 * life of a RocksDB iterator, only its value can change.
+	 */
+	bool boundsMatch(const DBIteratorOptions& options) const;
 
 	/**
 	 * Whether the column family this pooled handle reads is still `target`'s
@@ -120,10 +115,11 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	bool transactionRegistered = false;
 
 	/**
-	 * Owned by the transaction's iterator pool: the RocksDB iterator has no
-	 * read bounds (the handle enforces them) and is re-seeked for each range.
+	 * Owned by the transaction's iterator pool and re-seeked for each range.
 	 */
 	const bool pooled;
+	const bool hasLowerBound;
+	const bool hasUpperBound;
 
 	/**
 	 * Sitting in the transaction's idle slots. Guarded by the transaction's
@@ -143,7 +139,6 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 */
 	uint64_t poolGeneration = 0;
 
-	static constexpr uint64_t POOLED_MAX_SKIPPABLE_INTERNAL_KEYS = 64;
 
 	// Call after `close()`.
 	void detachFromDescriptor() noexcept;
@@ -155,22 +150,8 @@ private:
 	 */
 	void seek();
 
-	void setRange(DBIteratorOptions& options);
-
-	/**
-	 * Replaces the unbounded pooled iterator, which failed or hit its skip
-	 * limit, with a bounded one for the rest of this range, positioned after
-	 * `resumeAfter` (or at the range start when null). A bounded iterator
-	 * never reads past the range, so an error or tombstone run outside it is
-	 * not reported. The re-seek does see writes staged since the range began.
-	 */
-	void fallBackToBounded(const rocksdb::Slice* resumeAfter);
-
 	std::weak_ptr<ColumnFamilyDescriptor> column;
 	uint64_t clearEpoch = 0;
-	std::unique_ptr<rocksdb::Iterator> unboundedIterator;
-	bool boundedFallback = false;
-	std::string lastKey;
 };
 
 /**
@@ -180,7 +161,6 @@ private:
 struct IteratorPoolStats {
 	uint64_t created = 0;
 	uint64_t reused = 0;
-	uint64_t fallbacks = 0;
 };
 extern thread_local IteratorPoolStats iteratorPoolStats;
 

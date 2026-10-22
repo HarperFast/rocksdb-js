@@ -5,46 +5,32 @@
 A transaction-backed `getRange()` (`txn.getRange()` or `db.getRange({ transaction })`) borrows an
 idle native iterator from its transaction instead of building a RocksDB iterator per call. Invariant:
 a reused iterator returns the same rows, order and errors that a fresh iterator would for the same
-options in the same transaction at that moment. The one exception needs both a fallback (below) and writes to the
-transaction while that range is open, which RocksDB leaves unspecified: the fallback re-seeks, so it
-can see a write a fresh iterator positioned before it would not. `test/iterator-pool.test.ts` compares every case
+options in the same transaction at that moment. `test/iterator-pool.test.ts` compares every case
 against a fresh iterator and asserts a real pool hit.
 
 Why each rule holds, and where it is enforced:
 
 - **Eligibility** (`TransactionHandle::acquireIterator`): only with a fixed snapshot (`snapshotSet &&
-  !disableSnapshot`), no advanced ReadOptions, at most 64 staged deletes, and not after repeated
-  fallbacks (see below). Deletes staged while a range is open are walked when it reaches its end:
-  falling back there would re-seek, and a transaction that rewrites entries ahead of an open range
-  (delete, then re-insert further on) would see them twice. Without a snapshot reads see the latest commit,
+  !disableSnapshot`) and no advanced ReadOptions. Without a snapshot reads see the latest commit,
   which a reused iterator would freeze. Database-level `getRange()` has no snapshot contract and is
   not pooled.
-- **Writes after creation are visible**: a RocksDB transaction iterator re-seeked after more writes
-  to the transaction sees them (puts, overwrites, deletes, batch growth). Pinned for the linked
-  RocksDB by `test/native/transaction_iterator_reuse_test.cc`; pooling compiles out below RocksDB 11
-  (`iteratorPoolEnabled`). No savepoints are used: `RollbackToSavePoint` rebuilds the batch index
-  under live iterators.
-- **No RocksDB bounds; the handle enforces them** (`DBIteratorHandle::valid`, `seek`): one iterator
-  serves ranges with different bounds. Two consequences follow. Running past the end of a range can
-  read data a bounded iterator never would, so the pooled iterator is created with
-  `max_skippable_internal_keys = 64`, and any non-OK status (that limit's `Incomplete`, or a read
-  error past the range) switches the handle to a fresh bounded iterator for the rest of the range
-  (`fallBackToBounded`). The caller then sees what the bounded iterator reports. The test pins that a
-  transaction iterator fails closed at the skip limit rather than yielding staged keys beyond it.
-  Costs a bounded iterator would not pay: a probe followed by a run of deleted keys pays an unbounded
-  seek, 64 skips and then a fresh bounded iterator (about twice the old cost with 8 SST files), so a
-  transaction stops pooling once at least half of its pooled ranges fell back (`pooledFallbacks`,
-  minimum 2); a range ending at a block or file boundary reads the next block or opens the next file
-  (with 8 SST files, a probe at a file's last key still measures faster than a fresh iterator). Staged deletes in the transaction's own batch are not counted
-  by the skip limit, hence the 64-delete eligibility rule above. The resume point is
-  the key just copied out to JS (`advanceFrom`: the shared key buffer, or the slow path's Buffer),
-  so rows pay no extra copy.
+- **Retargeting keeps RocksDB's own bounds** (`DBIteratorHandle::reuse`): the iterator's
+  `ReadOptions` hold pointers to the handle's `startKey`/`endKey` Slices, and RocksDB re-reads bound
+  pointers on every seek (upstream `DBIteratorTest.IterateBoundChangedBeforeSeek`;
+  `BlockBasedTableIterator::SeekImpl` recomputes its cached block bound check on reseek). Reuse
+  rewrites those Slices in place and re-seeks, so a reused range stops, reads ahead and reports
+  errors exactly like a bounded fresh one. A bound's _presence_ is fixed for an iterator's life, so
+  an idle handle only serves ranges with the same lower/upper presence (`boundsMatch`).
+  `test/native/transaction_iterator_reuse_test.cc` pins both RocksDB behaviors this needs for the
+  transaction iterator (later writes visible after a reseek; retargeted bounds equal fresh ones
+  across blocks, files and levels); pooling compiles out below RocksDB 11 (`iteratorPoolEnabled`).
+  No savepoints are used: `RollbackToSavePoint` rebuilds the batch index under live iterators.
 - **Matching** is by caller `DBHandle` (it also selects the shared key/value buffers `Next` writes
-  into) and by column-family generation: a `weak_ptr` to the `ColumnFamilyDescriptor`, compared under
-  the constructor's `OperationGuard`. A drop and same-name recreate behind one reopened `DBHandle`
-  must not serve the old generation. A `clear()` also invalidates it (`clearEpoch`): it deletes the
-  family's files outright, which an iterator that pinned them never notices. Weak, because a strong pin can destroy a column-family handle
-  after its database (invariant 24's crash).
+  into), bound presence, and column-family state: a `weak_ptr` to the `ColumnFamilyDescriptor`
+  (compared by control block under the constructor's `OperationGuard`) and its `clearEpoch`. A drop
+  and same-name recreate behind one reopened `DBHandle`, or a `clear()` (which deletes the family's
+  files outright, unseen by an iterator that pinned them), must not serve old rows. Weak, because a
+  strong pin can destroy a column-family handle after its database (invariant 24's crash).
 - **Ownership**: idle handles sit in 4 inline slots on the `TransactionHandle` (no allocation when
   returning one) and stay registered in `activeIterators`, so every `closeIterators()` site closes
   them; `closeIterators()` then empties the slots, which breaks the handle-to-transaction reference
@@ -52,7 +38,8 @@ Why each rule holds, and where it is enforced:
   A pooled handle is attached to the descriptor's closables once, when created, keeping the
   teardown barrier a foreign `destroy()`/`shutdown()` relies on, and is detached after its real close.
   Because a transaction's close detaches other closables, the descriptor's close sweep re-reads the
-  map from `begin()` after every `close()` instead of keeping an iterator across it.
+  map from `begin()` after every `close()` instead of keeping an iterator across it
+  (`test/fixtures/fork-pooled-iterator-shutdown.mts` segfaults without that).
 - **Leaving the JS iterator**: on exhaustion, `return()` or `throw()` the handle goes back to the
   pool and the `NativeIterator` drops it, so a retained JS iterator can never drive a handle lent to
   another range. An exhausted one keeps reporting done until the transaction's `iteratorEpoch` moves
@@ -62,19 +49,13 @@ Why each rule holds, and where it is enforced:
 - **Locks**: `iteratorMutex -> iteratorsMutex` (as `closeIfOpen` already nests). Acquire takes the
   slot under `iteratorsMutex`, drops it, then takes `iteratorMutex` to re-seek. Orphan close runs
   after `iteratorMutex` is released, because it closes every registered handle, including this one.
-- **Long scans** pay 2-6% more per row through a pooled iterator (5,000 rows, cached, turbo off),
-  plausibly the handle's per-row bound compare: a bounded RocksDB iterator skips that compare for
-  blocks wholly inside its bound. Unmeasured on cold data: without an upper bound, RocksDB's
-  `auto_readahead_size` cannot trim readahead at the range end, so a multi-block forward range over
-  uncached data can prefetch past it.
 - **Retention** (`transactionsToTrim` in `src/store.ts`): an idle handle pins its RocksDB
   SuperVersion, i.e. memtables charged to the WriteBufferManager and SST files compaction already
   replaced. A request transaction can stay open across I/O for seconds, so the JS layer empties the
   pool (`NativeTransaction.trimIterators()`) from a `setImmediate` once the macrotask that ran the
   ranges ends. A handle that was busy across that trim (a range consumed across an `await`) is
   closed when released, not pooled (`trimGeneration`). Reuse therefore spans one synchronous run of
-  ranges, which is the pattern it targets. A transaction that runs one range per macrotask gets no
-  reuse; measured (turbo off, cached data) it is no slower: 10.1 to 9.7 µs memtable, 12.1 to 11.6
-  µs one SST, 15.8 to 14.7 µs eight SST files, `setImmediate` included.
+  ranges, which is the pattern it targets; a transaction that runs one range per macrotask gets no
+  reuse and measured no slower.
 
 `ROCKSDB_JS_ITERATOR_POOL=0` disables pooling (read once per process).

@@ -1,9 +1,10 @@
 // Pins the RocksDB behavior that transaction iterator reuse depends on: an
 // iterator from Transaction::GetIterator (a BaseDeltaIterator over the
 // transaction's WriteBatchWithIndex) observes writes staged in the transaction
-// AFTER the iterator was created, once it is re-positioned with a Seek. The
-// pooled iterators in TransactionHandle rely on this, so a fresh iterator and a
-// reused one return the same rows. Must stay green on every RocksDB upgrade.
+// AFTER the iterator was created once it is re-positioned with a Seek, and
+// honors read bounds rewritten in place before that Seek. The pooled iterators
+// in TransactionHandle rely on both, so a fresh iterator and a reused one return
+// the same rows. Must stay green on every RocksDB upgrade.
 #include <gtest/gtest.h>
 #include <filesystem>
 #include <memory>
@@ -11,6 +12,7 @@
 #include <vector>
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
+#include "rocksdb/table.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "rocksdb/utilities/transaction.h"
 #include "rocksdb/utilities/transaction_db.h"
@@ -133,59 +135,163 @@ TEST(TransactionIteratorReuse, PessimisticIteratorSeesLaterWritesAfterReseek) {
 	std::filesystem::remove_all(root);
 }
 
-// A pooled iterator has no RocksDB bounds, so running past the end of a range
-// can mean skipping every deletion tombstone up to the next live key. The pool
-// caps that with `max_skippable_internal_keys` and falls back to a bounded
-// iterator on `Incomplete`, which is only correct if the transaction iterator
-// fails closed there rather than silently yielding the staged keys beyond.
-TEST(TransactionIteratorReuse, SkipLimitFailsClosedThroughTransactionIterator) {
-	auto root = testRoot("skip-limit");
+namespace {
+
+// A pooled iterator keeps its RocksDB read bounds and is retargeted by
+// rewriting the Slices those bounds point to, then re-seeking. RocksDB re-reads
+// the bound pointers on every seek (DBIteratorTest.IterateBoundChangedBeforeSeek
+// upstream); this checks the transaction iterator does too, against a fresh
+// bounded iterator, over data spread across blocks, files and levels.
+void checkRetargetedBoundsMatchFresh(rocksdb::DB* db, rocksdb::Transaction* txn) {
+	txn->SetSnapshot();
+	rocksdb::ReadOptions base;
+	base.snapshot = txn->GetSnapshot();
+	// Staged writes: new keys, overwrites and deletes of committed keys.
+	for (int i = 0; i < 600; i += 7) {
+		ASSERT_TRUE(txn->Put("k" + std::to_string(10000 + i) + "s", "staged").ok());
+	}
+	for (int i = 3; i < 600; i += 11) {
+		ASSERT_TRUE(txn->Delete("k" + std::to_string(10000 + i)).ok());
+	}
+
+	std::string lowerStr, upperStr;
+	rocksdb::Slice lower, upper;
+	rocksdb::ReadOptions pooledOptions = base;
+	pooledOptions.iterate_lower_bound = &lower;
+	pooledOptions.iterate_upper_bound = &upper;
+	lowerStr = "k10000";
+	upperStr = "k10001";
+	lower = rocksdb::Slice(lowerStr);
+	upper = rocksdb::Slice(upperStr);
+	std::unique_ptr<rocksdb::Iterator> pooled(txn->GetIterator(pooledOptions));
+
+	auto collect = [](rocksdb::Iterator* it, bool reverse, const rocksdb::Slice& lo, const rocksdb::Slice& hi) {
+		std::vector<std::string> rows;
+		if (reverse) {
+			it->SeekForPrev(hi);
+			if (it->Valid() && it->key().compare(hi) == 0) {
+				it->Prev();
+			}
+		} else {
+			it->Seek(lo);
+		}
+		for (; it->Valid(); reverse ? it->Prev() : it->Next()) {
+			rows.push_back(it->key().ToString() + "=" + it->value().ToString());
+		}
+		EXPECT_TRUE(it->status().ok()) << it->status().ToString();
+		return rows;
+	};
+
+	uint32_t seed = 12345;
+	auto nextRandom = [&seed](uint32_t bound) {
+		seed = seed * 1103515245u + 12345u;
+		return (seed >> 8) % bound;
+	};
+	for (int round = 0; round < 400; round++) {
+		// Ranges from one key to the whole keyspace, so bounds grow and shrink
+		// across rounds, including right after an exhausted scan.
+		const uint32_t start = nextRandom(620);
+		const uint32_t width = round % 5 == 0 ? nextRandom(620) : nextRandom(4) + 1;
+		lowerStr = "k" + std::to_string(10000 + start);
+		upperStr = "k" + std::to_string(10000 + start + width);
+		lower = rocksdb::Slice(lowerStr);
+		upper = rocksdb::Slice(upperStr);
+		const bool reverse = nextRandom(2) == 1;
+
+		rocksdb::ReadOptions freshOptions = base;
+		rocksdb::Slice freshLower(lowerStr), freshUpper(upperStr);
+		freshOptions.iterate_lower_bound = &freshLower;
+		freshOptions.iterate_upper_bound = &freshUpper;
+		std::unique_ptr<rocksdb::Iterator> fresh(txn->GetIterator(freshOptions));
+		ASSERT_EQ(collect(pooled.get(), reverse, lower, upper), collect(fresh.get(), reverse, freshLower, freshUpper))
+			<< "round " << round << " [" << lowerStr << ", " << upperStr << ") reverse=" << reverse;
+		if (round == 200) {
+			// More staged writes mid-way, as a transaction interleaving reads and writes would.
+			for (int i = 1; i < 600; i += 13) {
+				ASSERT_TRUE(txn->Put("k" + std::to_string(10000 + i), "restaged").ok());
+			}
+		}
+	}
+}
+
+void populateLayered(rocksdb::DB* db) {
+	// Older half compacted to the bottom level, newer half in two L0 files,
+	// with overwrites and deletes across them.
+	// Two overlapping flushes, so the compaction rewrites (and cuts into
+	// several files) instead of trivially moving one file down.
+	for (int pass = 0; pass < 2; pass++) {
+		for (int i = 0; i < 600; i++) {
+			ASSERT_TRUE(db->Put({}, "k" + std::to_string(10000 + i), std::string(40, 'a' + pass)).ok());
+		}
+		ASSERT_TRUE(db->Flush({}).ok());
+	}
+	ASSERT_TRUE(db->CompactRange({}, nullptr, nullptr).ok());
+	for (int i = 0; i < 600; i += 2) {
+		ASSERT_TRUE(db->Put({}, "k" + std::to_string(10000 + i), std::string(40, 'c')).ok());
+	}
+	ASSERT_TRUE(db->Flush({}).ok());
+	for (int i = 0; i < 600; i += 5) {
+		ASSERT_TRUE(db->Delete({}, "k" + std::to_string(10000 + i)).ok());
+	}
+	ASSERT_TRUE(db->Flush({}).ok());
+	for (int i = 1; i < 600; i += 9) {
+		ASSERT_TRUE(db->Put({}, "k" + std::to_string(10000 + i), "memtable").ok());
+	}
+}
+
+rocksdb::Options layeredOptions() {
 	rocksdb::Options options;
 	options.create_if_missing = true;
+	options.target_file_size_base = 4 * 1024;
+	options.disable_auto_compactions = true;
+	options.compression = rocksdb::kNoCompression;
+	rocksdb::BlockBasedTableOptions table;
+	table.block_size = 256;
+	options.table_factory.reset(rocksdb::NewBlockBasedTableFactory(table));
+	return options;
+}
+
+} // namespace
+
+TEST(TransactionIteratorReuse, OptimisticRetargetedBoundsMatchFreshIterator) {
+	auto root = testRoot("retarget-optimistic");
 	rocksdb::OptimisticTransactionDB* rawDb = nullptr;
-	rocksdb::Status s = rocksdb::OptimisticTransactionDB::Open(options, (root / "db").string(), &rawDb);
+	rocksdb::Status s = rocksdb::OptimisticTransactionDB::Open(layeredOptions(), (root / "db").string(), &rawDb);
 	ASSERT_TRUE(s.ok()) << s.ToString();
 	std::unique_ptr<rocksdb::OptimisticTransactionDB> db(rawDb);
-	ASSERT_TRUE(db->Put({}, "a", "live").ok());
-	for (int i = 0; i < 1000; i++) {
-		ASSERT_TRUE(db->Put({}, "m" + std::to_string(10000 + i), "x").ok());
+	populateLayered(db.get());
+	// Several files below L0 plus L0 files, so ranges cross file and level boundaries.
+	int lowerLevelFiles = 0;
+	for (int level = 1; level < 7; level++) {
+		std::string files;
+		ASSERT_TRUE(db->GetProperty("rocksdb.num-files-at-level" + std::to_string(level), &files));
+		lowerLevelFiles += std::stoi(files);
 	}
-	for (int i = 0; i < 1000; i++) {
-		ASSERT_TRUE(db->Delete({}, "m" + std::to_string(10000 + i)).ok());
-	}
-	ASSERT_TRUE(db->Put({}, "z", "live").ok());
-	for (bool flush : { false, true }) {
-		if (flush) {
-			ASSERT_TRUE(db->Flush({}).ok());
-		}
-		std::unique_ptr<rocksdb::Transaction> txn(db->BeginTransaction({}));
-		ASSERT_TRUE(txn->Put("b", "staged").ok());
-		ASSERT_TRUE(txn->Put("n", "staged").ok());
-		rocksdb::ReadOptions readOptions;
-		readOptions.max_skippable_internal_keys = 16;
-		std::unique_ptr<rocksdb::Iterator> it(txn->GetIterator(readOptions));
+	std::string l0Files;
+	ASSERT_TRUE(db->GetProperty("rocksdb.num-files-at-level0", &l0Files));
+	std::string levelStats;
+	db->GetProperty("rocksdb.levelstats", &levelStats);
+	EXPECT_GT(lowerLevelFiles, 1) << levelStats;
+	EXPECT_EQ(std::stoi(l0Files), 2);
+	std::unique_ptr<rocksdb::Transaction> txn(db->BeginTransaction({}));
+	checkRetargetedBoundsMatchFresh(db.get(), txn.get());
+	ASSERT_TRUE(txn->Rollback().ok());
+	txn.reset();
+	db.reset();
+	std::filesystem::remove_all(root);
+}
 
-		it->Seek("a");
-		ASSERT_TRUE(it->Valid());
-		EXPECT_EQ(it->key().ToString(), "a");
-		// The staged "b" comes next, but the base side has to skip the tombstones to
-		// find its own next key first; the merged iterator must not yield "b" or "n".
-		it->Next();
-		EXPECT_FALSE(it->Valid());
-		EXPECT_TRUE(it->status().IsIncomplete()) << it->status().ToString();
-		it->Seek("b");
-		EXPECT_FALSE(it->Valid());
-		EXPECT_TRUE(it->status().IsIncomplete()) << it->status().ToString();
-		// A reseek past the tombstones recovers.
-		it->Seek("y");
-		ASSERT_TRUE(it->Valid()) << it->status().ToString();
-		EXPECT_EQ(it->key().ToString(), "z");
-		// Reverse across the same run fails closed too.
-		it->SeekForPrev("y");
-		EXPECT_FALSE(it->Valid());
-		EXPECT_TRUE(it->status().IsIncomplete()) << it->status().ToString();
-		ASSERT_TRUE(txn->Rollback().ok());
-	}
+TEST(TransactionIteratorReuse, PessimisticRetargetedBoundsMatchFreshIterator) {
+	auto root = testRoot("retarget-pessimistic");
+	rocksdb::TransactionDB* rawDb = nullptr;
+	rocksdb::Status s = rocksdb::TransactionDB::Open(layeredOptions(), {}, (root / "db").string(), &rawDb);
+	ASSERT_TRUE(s.ok()) << s.ToString();
+	std::unique_ptr<rocksdb::TransactionDB> db(rawDb);
+	populateLayered(db.get());
+	std::unique_ptr<rocksdb::Transaction> txn(db->BeginTransaction({}));
+	checkRetargetedBoundsMatchFresh(db.get(), txn.get());
+	ASSERT_TRUE(txn->Rollback().ok());
+	txn.reset();
 	db.reset();
 	std::filesystem::remove_all(root);
 }

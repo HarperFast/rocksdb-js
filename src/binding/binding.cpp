@@ -265,7 +265,6 @@ napi_value IteratorPoolStatsFn(napi_env env, napi_callback_info info) {
 	const std::pair<const char*, uint64_t> counters[] = {
 		{ "created", iteratorPoolStats.created },
 		{ "reused", iteratorPoolStats.reused },
-		{ "fallbacks", iteratorPoolStats.fallbacks },
 	};
 	for (const auto& [name, value] : counters) {
 		napi_value jsValue;

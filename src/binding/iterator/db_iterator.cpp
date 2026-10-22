@@ -35,7 +35,6 @@ void releasePooled(IteratorWrap* wrap, std::unique_lock<std::mutex>& iteratorLoc
 	bool released = false;
 	bool checkOrphan = false;
 	if (pool && txnHandle && handle->iterator) {
-		handle->endRange();
 		released = txnHandle->releaseIterator(handle.get(), checkOrphan);
 	}
 	iteratorLock.unlock();
@@ -346,14 +345,13 @@ static napi_value buildSlowResult(
 	napi_env env,
 	rocksdb::Slice& keySlice,
 	bool includeValue,
-	rocksdb::Slice& valueSlice,
-	void** keyCopy
+	rocksdb::Slice& valueSlice
 ) {
 	napi_value resultObj;
 	NAPI_STATUS_THROWS(::napi_create_object(env, &resultObj));
 
 	napi_value keyVal;
-	NAPI_STATUS_THROWS(::napi_create_buffer_copy(env, keySlice.size(), keySlice.data(), keyCopy, &keyVal));
+	NAPI_STATUS_THROWS(::napi_create_buffer_copy(env, keySlice.size(), keySlice.data(), nullptr, &keyVal));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, resultObj, "key", keyVal));
 
 	if (includeValue) {
@@ -473,19 +471,14 @@ static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 			::memcpy(valueBuffer, valueSlice.data(), valueSlice.size());
 			state[1] = static_cast<uint32_t>(valueSlice.size());
 		}
-		it->advanceFrom(rocksdb::Slice(keyBuffer, keySlice.size()));
+		it->advance();
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_FAST, &result));
 		return result;
 	}
 
 	// Slow path: at least one of key or value can't go in the shared buffer.
-	void* keyCopy = nullptr;
-	napi_value slowResult = buildSlowResult(env, keySlice, it->values, valueSlice, &keyCopy);
-	if (keyCopy != nullptr) {
-		it->advanceFrom(rocksdb::Slice(static_cast<const char*>(keyCopy), keySlice.size()));
-	} else {
-		it->advance();
-	}
+	napi_value slowResult = buildSlowResult(env, keySlice, it->values, valueSlice);
+	it->advance();
 	return slowResult;
 }
 
