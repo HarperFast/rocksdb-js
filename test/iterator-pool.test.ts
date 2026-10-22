@@ -417,6 +417,26 @@ describe('Transaction iterator pool', () => {
 				expect(scanWhileDeleting(deletes)).toEqual(scanWhileDeleting(deletes, FRESH));
 				expect(delta(before)).toMatchObject({ created: 1, fallbacks: 0 });
 			}
+
+			// Deletes staged after the range is taken but before its first row.
+			const stageBeforeFirstRow = (options: Record<string, unknown>) => {
+				const txn = new Transaction(db.store);
+				try {
+					const iterator = txn.getRange({ end: 'd', ...options })[Symbol.iterator]();
+					for (let i = 0; i < 100; i++) {
+						txn.removeSync(`m${1000 + i}`);
+					}
+					txn.removeSync('b');
+					const keys: string[] = [];
+					for (let result = iterator.next(); !result.done; result = iterator.next()) {
+						keys.push(result.value.key as string);
+					}
+					return keys;
+				} finally {
+					txn.abort();
+				}
+			};
+			expect(stageBeforeFirstRow({})).toEqual(stageBeforeFirstRow(FRESH));
 		}));
 
 	it('resumes a bounded fallback after a row returned on the slow path', () =>
