@@ -2495,7 +2495,7 @@ Contract:
   `QueryPerformanceCounter` on Windows).
 - **Origin and lifetime**: the origin is unspecified and fixed for the life of the process. Every
   sample taken in the process is in one domain — the main thread and every `worker_threads` worker,
-  including workers started or restarted at any later time, under Node, Bun and Deno alike. Samples
+  including workers started or restarted at any later time, under Node and Bun alike. Samples
   are not meaningful across processes or restarts, and are unrelated to the Unix epoch: never compare
   them with `Date.now()`, `db.getMonotonicTimestamp()` or transaction timestamps.
 - **Monotonic, not unique**: a sample taken after another (in real time, on any thread) is `>=` it.

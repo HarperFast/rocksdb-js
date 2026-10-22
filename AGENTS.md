@@ -20,7 +20,8 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 - `pnpm coverage:native` - Native tests with gcov/lcov report in `coverage/native/html/` (Unix only)
 - `node --expose-gc ./node_modules/vitest/vitest.mjs test/specific.test.ts` - Run single test file
 - `pnpm test:bun` - Run all tests with Vitest using Bun
-- `pnpm test:deno` - Run all tests with Vitest using Deno
+- `pnpm test:deno` - Run all tests with Vitest using Deno. Local only: Deno is not a supported
+  runtime and is not run in CI (#947), but Deno-specific fixes and test guards are kept
 - `pnpm test:stress` - Run all stress tests with Vitest using Node.js
 - `pnpm test:native` - Build and run C++ GoogleTest unit tests (no Node runtime in test binary)
 - `pnpm bench` - Run all benchmarks with Vitest using Node.js

@@ -87,7 +87,7 @@ separate properties. No promise is made that runtime timers use the same suspend
 ## Verification
 
 The end-to-end route is the real N-API export through `src/index.ts`, parent/worker bracketing on
-Node, Bun and Deno, staggered/restarted and concurrent workers (including `workerFirst >= parentBefore + stagger - tolerance`), elapsed
+Node and Bun (Deno: local `pnpm test:deno` only, #947), staggered/restarted and concurrent workers (including `workerFirst >= parentBefore + stagger - tolerance`), elapsed
 progression, and built ESM/CJS
 exports. Temporarily substituting a worker-local clock must make those brackets fail, proving
 they reject the motivating defect.
