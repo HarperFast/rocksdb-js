@@ -215,6 +215,7 @@ void DBIteratorHandle::fallBackToBounded(const rocksdb::Slice* resumeAfter) {
 		this->txnHandle->txn->GetIterator(boundedOptions.readOptions, column->column.get())
 	);
 	++iteratorPoolStats.fallbacks;
+	this->txnHandle->pooledFallbacks.fetch_add(1, std::memory_order_relaxed);
 	this->unboundedIterator = std::move(this->iterator);
 	this->iterator = std::move(bounded);
 	this->boundedFallback = true;

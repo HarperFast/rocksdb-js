@@ -372,8 +372,13 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			this->ensureSnapshot();
 			// Staged deletes are not covered by the pooled iterator's skip limit:
 			// past a range's end it would walk every one of them.
+			const uint32_t fallbacks = this->pooledFallbacks.load(std::memory_order_relaxed);
 			const bool poolable = this->snapshotSet && !this->disableSnapshot
-				&& this->txn->GetNumDeletes() <= DBIteratorHandle::POOLED_MAX_SKIPPABLE_INTERNAL_KEYS;
+				&& this->txn->GetNumDeletes() <= DBIteratorHandle::POOLED_MAX_SKIPPABLE_INTERNAL_KEYS
+				&& (fallbacks < 2 || fallbacks * 2 < this->pooledLends);
+			if (poolable) {
+				++this->pooledLends;
+			}
 			if (poolable) {
 				for (auto& slot : this->idleIterators) {
 					if (slot && slot->dbHandle == targetHandle) {

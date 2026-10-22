@@ -11,7 +11,9 @@ against a fresh iterator and asserts a real pool hit.
 Why each rule holds, and where it is enforced:
 
 - **Eligibility** (`TransactionHandle::acquireIterator`): only with a fixed snapshot (`snapshotSet &&
-  !disableSnapshot`), no advanced ReadOptions, and at most 64 staged deletes (see below). Without a snapshot reads see the latest commit,
+  !disableSnapshot`), no advanced ReadOptions, at most 64 staged deletes, and not after repeated
+  fallbacks (see below). Deletes staged while a pooled range is being consumed are still walked when
+  it reaches its end. Without a snapshot reads see the latest commit,
   which a reused iterator would freeze. Database-level `getRange()` has no snapshot contract and is
   not pooled.
 - **Writes after creation are visible**: a RocksDB transaction iterator re-seeked after more writes
@@ -26,9 +28,11 @@ Why each rule holds, and where it is enforced:
   error past the range) switches the handle to a fresh bounded iterator for the rest of the range
   (`fallBackToBounded`). The caller then sees what the bounded iterator reports. The test pins that a
   transaction iterator fails closed at the skip limit rather than yielding staged keys beyond it.
-  Costs a bounded iterator would not pay: a probe followed by a run of deleted keys pays the old
-  construction cost plus 64 skips; a range ending at a block or file boundary reads the next block
-  or opens the next file (unmeasured). Staged deletes in the transaction's own batch are not counted
+  Costs a bounded iterator would not pay: a probe followed by a run of deleted keys pays an unbounded
+  seek, 64 skips and then a fresh bounded iterator (about twice the old cost with 8 SST files), so a
+  transaction stops pooling once at least half of its pooled ranges fell back (`pooledFallbacks`,
+  minimum 2); a range ending at a block or file boundary reads the next block or opens the next file
+  (with 8 SST files, a probe at a file's last key still measures faster than a fresh iterator). Staged deletes in the transaction's own batch are not counted
   by the skip limit, so a transaction with more than 64 of them is not pooled. The resume point is
   the key just copied out to JS (`advanceFrom`: the shared key buffer, or the slow path's Buffer),
   so rows pay no extra copy.

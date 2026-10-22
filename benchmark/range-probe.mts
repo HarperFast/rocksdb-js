@@ -2,7 +2,7 @@
  * Short-range probe microbenchmark: the cost of `getRange()` over one key,
  * consumed to completion, against a point get.
  *
- *   node benchmark/range-probe.mts [--sst] [--batches 21] [--probes 20000]
+ *   node benchmark/range-probe.mts [--sst | --files 8] [--batches 21] [--probes 20000]
  *
  * Runs against `src` (native type stripping), so it needs only the native
  * binding built. Prints the median per-probe time in microseconds for each
@@ -17,6 +17,9 @@ import { parseArgs } from 'node:util';
 const { values: args } = parseArgs({
 	options: {
 		sst: { type: 'boolean', default: false },
+		// Flush after every 1/N of the keys: N SST files with disjoint key ranges,
+		// so a probe at the end of one file's range steps into the next file.
+		files: { type: 'string', default: '0' },
 		batches: { type: 'string', default: '21' },
 		probes: { type: 'string', default: '20000' },
 	},
@@ -24,6 +27,7 @@ const { values: args } = parseArgs({
 const BATCHES = Number(args.batches);
 const PROBES = Number(args.probes);
 const KEY_COUNT = 5000;
+const FILES = Number(args.files);
 
 const dir = mkdtempSync(join(tmpdir(), 'range-probe-'));
 const db = RocksDatabase.open(join(dir, 'db'));
@@ -33,6 +37,9 @@ for (let i = 0; i < KEY_COUNT; i++) {
 	const key = `k${String(i).padStart(6, '0')}`;
 	keys.push(key);
 	db.putSync(key, value);
+	if (FILES > 0 && (i + 1) % Math.ceil(KEY_COUNT / FILES) === 0) {
+		db.flushSync();
+	}
 }
 // A run of deleted keys right after the last probe key, for the tombstone scenario.
 const lastKey = keys[KEY_COUNT - 1];
@@ -43,7 +50,7 @@ for (let i = 0; i < 1000; i++) {
 	db.removeSync(`t${i}`);
 }
 db.putSync('u', value);
-if (args.sst) {
+if (args.sst || FILES > 0) {
 	db.flushSync();
 }
 
@@ -96,6 +103,20 @@ const scenarios: Scenario[] = [
 		},
 	},
 	{
+		name: 'txn.getRange probe at a file range end',
+		run(n) {
+			const step = Math.ceil(KEY_COUNT / Math.max(FILES, 1));
+			db.transactionSync((txn) => {
+				for (let i = 0; i < n; i++) {
+					const key = keys[(((i % Math.max(FILES, 1)) + 1) * step - 1) % KEY_COUNT];
+					for (const entry of txn.getRange({ start: key, end: key + '~' })) {
+						sink += entry.key.length;
+					}
+				}
+			});
+		},
+	},
+	{
 		name: 'txn.getRange probe before 1,000 deleted keys',
 		run(n) {
 			db.transactionSync((txn) => {
@@ -109,7 +130,6 @@ const scenarios: Scenario[] = [
 	},
 ];
 
-// Per-row cost of a long scan inside a transaction, reported per row.
 const scanRows = { name: 'txn.getRange full scan, per row', rowsPerRun: KEY_COUNT };
 function scan(runs: number): void {
 	db.transactionSync((txn) => {
@@ -127,7 +147,8 @@ function median(samples: number[]): number {
 }
 
 console.log(
-	`node ${process.version}, ${KEY_COUNT} keys, ${args.sst ? 'flushed to SST' : 'memtable only'}, ` +
+	`node ${process.version}, ${KEY_COUNT} keys, ` +
+		`${FILES > 0 ? `${FILES} SST files` : args.sst ? 'flushed to SST' : 'memtable only'}, ` +
 		`${BATCHES} batches x ${PROBES} probes`
 );
 for (const scenario of scenarios) {

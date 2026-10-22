@@ -278,6 +278,28 @@ describe('Transaction iterator pool', () => {
 			}
 		}));
 
+	it('stops pooling in a transaction whose ranges keep falling back', () =>
+		dbRunner(async ({ db }) => {
+			db.putSync('a', 'a');
+			for (let i = 0; i < 300; i++) {
+				db.putSync(`m${1000 + i}`, 'x');
+			}
+			for (let i = 0; i < 300; i++) {
+				db.removeSync(`m${1000 + i}`);
+			}
+			const txn = new Transaction(db.store);
+			try {
+				const before = iteratorPoolStats();
+				for (let i = 0; i < 10; i++) {
+					expect(txn.getRange({ start: 'a', end: 'a~' }).asArray.map((e) => e.key)).toEqual(['a']);
+				}
+				// Two fallbacks out of two pooled ranges, then the transaction builds bounded iterators.
+				expect(delta(before)).toEqual({ created: 1, reused: 1, fallbacks: 2 });
+			} finally {
+				txn.abort();
+			}
+		}));
+
 	it('does not serve a dropped and recreated column family from the pool', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			const column = RocksDatabase.open(dbPath, { name: 'pooled' });
