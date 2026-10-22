@@ -536,6 +536,9 @@ NAPI_MODULE_INIT() {
 	napi_value iteratorPoolStatsFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "iteratorPoolStats", NAPI_AUTO_LENGTH, IteratorPoolStatsFn, nullptr, &iteratorPoolStatsFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "iteratorPoolStats", iteratorPoolStatsFn));
+	napi_value iteratorPoolEnabledValue;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, iteratorPoolEnabled(), &iteratorPoolEnabledValue));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "iteratorPoolEnabled", iteratorPoolEnabledValue));
 
 	// constants
 	napi_value constants;

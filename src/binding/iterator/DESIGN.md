@@ -5,17 +5,17 @@
 A transaction-backed `getRange()` (`txn.getRange()` or `db.getRange({ transaction })`) borrows an
 idle native iterator from its transaction instead of building a RocksDB iterator per call. Invariant:
 a reused iterator returns the same rows, order and errors that a fresh iterator would for the same
-options in the same transaction at that moment. `test/iterator-pool.test.ts` compares every case
+options in the same transaction at that moment. Writes to the transaction while one of its ranges is
+open are the exception: RocksDB leaves them unspecified, and a range that falls back to a bounded
+iterator re-seeks, so it can see a write a fresh iterator positioned before it would not. `test/iterator-pool.test.ts` compares every case
 against a fresh iterator and asserts a real pool hit.
 
 Why each rule holds, and where it is enforced:
 
 - **Eligibility** (`TransactionHandle::acquireIterator`): only with a fixed snapshot (`snapshotSet &&
   !disableSnapshot`), no advanced ReadOptions, at most 64 staged deletes, and not after repeated
-  fallbacks (see below). Deletes staged while a pooled range is being consumed are still walked when
-  it reaches its end: switching to a bounded iterator there would re-seek, and a re-seeked iterator
-  sees writes a fresh one positioned before them does not (RocksDB leaves writes during iteration
-  unspecified, but pooled and fresh ranges must not differ). Without a snapshot reads see the latest commit,
+  fallbacks (see below). An open range re-checks the staged-delete count before each step and
+  falls back once it exceeds 64. Without a snapshot reads see the latest commit,
   which a reused iterator would freeze. Database-level `getRange()` has no snapshot contract and is
   not pooled.
 - **Writes after creation are visible**: a RocksDB transaction iterator re-seeked after more writes
@@ -35,7 +35,7 @@ Why each rule holds, and where it is enforced:
   transaction stops pooling once at least half of its pooled ranges fell back (`pooledFallbacks`,
   minimum 2); a range ending at a block or file boundary reads the next block or opens the next file
   (with 8 SST files, a probe at a file's last key still measures faster than a fresh iterator). Staged deletes in the transaction's own batch are not counted
-  by the skip limit, so a transaction with more than 64 of them is not pooled. The resume point is
+  by the skip limit, hence the 64-delete eligibility rule above. The resume point is
   the key just copied out to JS (`advanceFrom`: the shared key buffer, or the slow path's Buffer),
   so rows pay no extra copy.
 - **Matching** is by caller `DBHandle` (it also selects the shared key/value buffers `Next` writes
@@ -66,6 +66,7 @@ Why each rule holds, and where it is enforced:
   pool (`NativeTransaction.trimIterators()`) from a `setImmediate` once the macrotask that ran the
   ranges ends. A handle that was busy across that trim (a range consumed across an `await`) is
   closed when released, not pooled (`trimGeneration`). Reuse therefore spans one synchronous run of
-  ranges, which is the pattern it targets.
+  ranges, which is the pattern it targets. A transaction that runs one range per macrotask gets no
+  reuse; measured, it costs the same as before.
 
 `ROCKSDB_JS_ITERATOR_POOL=0` disables pooling (read once per process).

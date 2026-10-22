@@ -375,10 +375,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			const uint32_t fallbacks = this->pooledFallbacks.load(std::memory_order_relaxed);
 			const bool poolable = this->snapshotSet && !this->disableSnapshot
 				&& this->txn->GetNumDeletes() <= DBIteratorHandle::POOLED_MAX_SKIPPABLE_INTERNAL_KEYS
-				&& (fallbacks < 2 || fallbacks * 2 < this->pooledLends);
-			if (poolable) {
-				++this->pooledLends;
-			}
+				&& (fallbacks < 2 || fallbacks * 2 < this->pooledLends.load(std::memory_order_relaxed));
 			if (poolable) {
 				for (auto& slot : this->idleIterators) {
 					if (slot && slot->dbHandle == targetHandle) {
@@ -409,6 +406,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 				if (poolable) {
 					created = true;
+					this->pooledLends.fetch_add(1, std::memory_order_relaxed);
 					++iteratorPoolStats.created;
 				}
 				return iterator;
@@ -431,6 +429,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			throw;
 		}
 		if (reused) {
+			this->pooledLends.fetch_add(1, std::memory_order_relaxed);
 			++iteratorPoolStats.reused;
 			return iterator;
 		}

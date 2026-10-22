@@ -9,6 +9,7 @@
  * scenario. Run it under `bench-run` (turbo off, one core) for stable numbers.
  */
 import { RocksDatabase } from '../src/index.ts';
+import { Transaction } from '../src/transaction.ts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -141,6 +142,17 @@ function scan(runs: number): void {
 	});
 }
 
+// Harper's async request shape: one range per macrotask, so the pool is trimmed
+// between ranges and nothing is reused. Includes the setImmediate itself.
+async function probePerMacrotask(n: number): Promise<void> {
+	const txn = new Transaction(db.store);
+	for (let i = 0; i < n; i++) {
+		probe(txn);
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+	txn.abort();
+}
+
 function median(samples: number[]): number {
 	const sorted = [...samples].sort((a, b) => a - b);
 	return sorted[Math.floor(sorted.length / 2)];
@@ -161,6 +173,17 @@ for (const scenario of scenarios) {
 	}
 	console.log(`${scenario.name.padEnd(45)} ${median(samples).toFixed(2)} us/op`);
 }
+
+await probePerMacrotask(PROBES);
+const macrotaskSamples: number[] = [];
+for (let b = 0; b < BATCHES; b++) {
+	const start = process.hrtime.bigint();
+	await probePerMacrotask(PROBES);
+	macrotaskSamples.push(Number(process.hrtime.bigint() - start) / 1000 / PROBES);
+}
+console.log(
+	`${'txn.getRange probe, one per macrotask'.padEnd(45)} ${median(macrotaskSamples).toFixed(2)} us/op`
+);
 
 scan(5);
 const scanSamples: number[] = [];

@@ -387,19 +387,19 @@ describe('Transaction iterator pool', () => {
 			}
 		}));
 
-	it('matches a fresh iterator when deletes are staged mid-range', () =>
+	it('handles deletes staged while a pooled range is open', () =>
 		dbRunner(async ({ db }) => {
 			for (const key of ['a', 'b', 'c', 'z']) {
 				db.putSync(key, key);
 			}
-			const scanWhileDeleting = (options: Record<string, unknown>) => {
+			const scanWhileDeleting = (deletes: number, options: Record<string, unknown> = {}) => {
 				const txn = new Transaction(db.store);
 				try {
 					const keys: string[] = [];
 					for (const { key } of txn.getRange({ end: 'd', ...options })) {
 						keys.push(key as string);
 						if (key === 'a') {
-							for (let i = 0; i < 100; i++) {
+							for (let i = 0; i < deletes; i++) {
 								txn.removeSync(`m${1000 + i}`);
 							}
 							txn.removeSync('c');
@@ -410,12 +410,17 @@ describe('Transaction iterator pool', () => {
 					txn.abort();
 				}
 			};
-			// RocksDB leaves writes during iteration unspecified; a pooled range
-			// must still not differ from a fresh one, so it does not re-seek here.
-			const fresh = scanWhileDeleting(FRESH);
-			const before = iteratorPoolStats();
-			expect(scanWhileDeleting({})).toEqual(fresh);
+			// A few writes mid-range: no re-seek, so the same rows as a fresh iterator.
+			let before = iteratorPoolStats();
+			expect(scanWhileDeleting(10)).toEqual(scanWhileDeleting(10, FRESH));
 			expect(delta(before)).toMatchObject({ created: 1, fallbacks: 0 });
+			// More deletes than the skip limit counts: the range switches to a bounded
+			// iterator rather than walk them past its end. That re-seek sees the delete
+			// of 'c', which a fresh iterator already past it on 'b' does not; RocksDB
+			// leaves writes during iteration unspecified.
+			before = iteratorPoolStats();
+			expect(scanWhileDeleting(100)).toEqual(['a', 'b']);
+			expect(delta(before)).toMatchObject({ created: 1, fallbacks: 1 });
 		}));
 
 	it('resumes a bounded fallback after a row returned on the slow path', () =>

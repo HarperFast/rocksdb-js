@@ -1823,9 +1823,9 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Closes the transaction's idle pooled iterators. The JS layer calls this once
- * the synchronous run of ranges that filled the pool has ended: an idle
- * iterator pins the memtables and SST files current at its creation.
+ * Called by the JS layer once the synchronous run of ranges that filled the
+ * pool has ended: an idle iterator pins the memtables and SST files current at
+ * its creation.
  */
 napi_value Transaction::TrimIterators(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();

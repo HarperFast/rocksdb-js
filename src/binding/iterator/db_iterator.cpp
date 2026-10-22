@@ -29,7 +29,6 @@ struct IteratorWrap final {
 	uint64_t exhaustedEpoch = 0;
 };
 
-// Takes the handle out of `wrap`, then pools it or closes it.
 void releasePooled(IteratorWrap* wrap, std::unique_lock<std::mutex>& iteratorLock, bool pool) {
 	std::shared_ptr<DBIteratorHandle> handle = std::move(wrap->handle);
 	std::shared_ptr<TransactionHandle> txnHandle = handle->txnHandle;

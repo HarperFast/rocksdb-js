@@ -21,6 +21,7 @@ import {
 } from './encoding.ts';
 import {
 	constants,
+	iteratorPoolEnabled,
 	NativeDatabase,
 	type NativeDatabaseOptions,
 	NativeIterator,
@@ -1181,7 +1182,11 @@ export class Store {
 			advancedOptions,
 			txnId
 		);
-		if (advancedOptions === undefined && (txnId !== undefined || context !== this.db)) {
+		if (
+			iteratorPoolEnabled &&
+			advancedOptions === undefined &&
+			(txnId !== undefined || context !== this.db)
+		) {
 			const nativeTransaction = context !== this.db ? context : options?.transaction?._context;
 			if (nativeTransaction instanceof NativeTransaction) {
 				if (transactionsToTrim.size === 0) {

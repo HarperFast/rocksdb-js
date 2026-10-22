@@ -311,7 +311,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * iterator. A fallback costs more than a fresh iterator, so a transaction
 	 * whose ranges keep landing next to runs of deleted keys stops pooling.
 	 */
-	uint32_t pooledLends = 0;
+	std::atomic<uint32_t> pooledLends{0};
 	std::atomic<uint32_t> pooledFallbacks{0};
 
 	/**
