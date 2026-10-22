@@ -24,7 +24,7 @@ for (let i = 0; i < 32; i++) {
 	const txn = new Transaction(db.store);
 	retained.push(txn);
 	for (let j = 0; j < 3; j++) {
-		txn.getRange().asArray;
+		retained.push(txn.getRange().asArray);
 		const busy = txn.getRange()[Symbol.iterator]();
 		busy.next();
 		retained.push(busy);
