@@ -3296,8 +3296,7 @@ describe('Transaction Log', () => {
 					})
 			);
 
-			// The other advance site: the source segment's last entry is filtered out rather than
-			// yielded, so the crossing happens inside the same `next()` call that skipped it.
+			// the crossing happens inside the same `next()` call that filtered the source's last entry
 			it.skipIf(process.platform === 'win32')(
 				'should report a purged run crossed after a filtered entry',
 				() =>

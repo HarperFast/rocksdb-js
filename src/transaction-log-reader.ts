@@ -278,7 +278,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// position-vs-size logic then routes through the existing advance-to-next-log
 				// path, which correctly returns done when no log file can be mapped.
 				size = 0;
-				if (position <= TRANSACTION_LOG_FILE_HEADER_SIZE || this.getLogFileSize(logId) > 0) {
+				if (
+					position <= TRANSACTION_LOG_FILE_HEADER_SIZE ||
+					(logId > 0 && this.getLogFileSize(logId) > 0)
+				) {
 					// the starting segment is not written yet, or is live but could not be mapped: what
 					// it holds past `position` is ours to read, so losing it unread is a gap
 					gapFloor = logId - 1;
@@ -507,7 +510,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 	},
 });
 
-// Out-parameter of `nextReadableLogBuffer()`: a module slot, so an ordinary advance allocates nothing.
+// Out-parameter of `nextReadableLogBuffer()`: how many skipped sequence numbers above `gapFloor`
+// could not be read. A module slot, so an ordinary advance allocates nothing.
 let unavailableLogCount = 0;
 
 /**
@@ -517,9 +521,6 @@ let unavailableLogCount = 0;
  * The jump target is `_nextLogId()`, the successor over the store's registered segments — *not*
  * `_findPosition(0)`, which names the bottom of the contiguous run ending at the current segment
  * and so lands *past* a survivor sitting between two holes.
- *
- * Leaves in `unavailableLogCount` how many skipped sequence numbers above `gapFloor` could not be
- * read, so the caller can report the discontinuity.
  */
 function nextReadableLogBuffer(
 	transactionLog: TransactionLog,
