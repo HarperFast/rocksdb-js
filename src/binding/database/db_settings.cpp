@@ -251,6 +251,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	// mutation, so a rejected costToCache change leaves the live manager
 	// untouched.
 	bool enableStallAfterDrain = false;
+	uint64_t stallGeneration = 0;
 	{
 		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
 		const bool wbmAlreadyCreated = (settings.writeBufferManager != nullptr);
@@ -278,7 +279,12 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 
 		settings.writeBufferManagerCostToCache.store(newCostToCache, std::memory_order_relaxed);
-		settings.writeBufferManagerAllowStall.store(newAllowStall, std::memory_order_relaxed);
+		// Only a supplied value: storing the value read before this mutex would
+		// let a concurrent config() undo another's change.
+		if (allowStallProvided) {
+			settings.writeBufferManagerAllowStall.store(newAllowStall, std::memory_order_relaxed);
+			stallGeneration = ++settings.allowStallGeneration;
+		}
 
 		// Propagate allowStall to the live manager if it exists — this is
 		// the RocksDB-supported runtime knob.
@@ -296,10 +302,17 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		// A stalling manager can block a synchronous write on the JS thread
 		// that alone releases idle pooled iterators' pinned memtables. The flag
 		// stored above already stops new pooling; close what is idle now, then
-		// let the manager stall (unless a concurrent config turned it off).
-		DBRegistry::CloseIdlePooledIterators();
+		// let the manager stall unless a later change superseded this one (a
+		// superseding enable runs its own drain). If the drain fails, the flag
+		// keeps pooling off and the manager is left not stalling.
+		try {
+			DBRegistry::CloseIdlePooledIterators();
+		} catch (const std::exception& e) {
+			::napi_throw_error(env, nullptr, e.what());
+			return nullptr;
+		}
 		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
-		if (settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed) && settings.writeBufferManager) {
+		if (settings.allowStallGeneration == stallGeneration && settings.writeBufferManager) {
 			settings.writeBufferManager->SetAllowStall(true);
 			DBStats::getInstance().ensureWriteBufferManagerWatchdog();
 		}
