@@ -2363,6 +2363,21 @@ The iterator produces an object with the log entry timestamp and data.
   - `timestamp: number` The entry timestamp used to collate entries by transaction.
   - `endTxn: boolean` This is `true` when the entry is the last entry in a transaction.
 
+`next()` can throw one of two errors. In both cases the iterator stays usable: calling `next()`
+again continues past the problem.
+
+- `TransactionLogGapError`: the iterator reached segments it had not read yet and could not read
+  them, usually because retention purged them while the reader lagged. Their entries are not in
+  this log anymore, so a consumer that replicates the log should treat its copy as discontinuous
+  (for example, by resyncing from a full copy) rather than continuing. Properties: `logId` (the
+  last segment read), `resumeLogId` (the segment the next `next()` call reads), and
+  `unavailableLogCount`. A new query positioned within the retained segments does not report the
+  segments purged before its starting point.
+- `CorruptFrameError` (a `RangeError`): an entry's framing is broken. `resyncPosition` is where
+  valid framing resumes, or `undefined` when nothing follows the break.
+
+Both classes are exported from the package.
+
 ```typescript
 const log = db.useLog('foo');
 const iter = log.query({});

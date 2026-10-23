@@ -1455,9 +1455,24 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
       rotation and purge, while excluding physical bytes a failed append landed past the last safe
       logical boundary. Walking frames cannot recover that distinction: a partial append may leave
       a complete-looking frame, so the old zero-marker scan could promote data that never committed.
-    - `nextReadableLogBuffer()` in `src/transaction-log-reader.ts` skips a deleted run when an
-      iterator advances: those segments are genuinely gone (no mapping exists), and stopping at the
-      hole stopped the iterator permanently — every later poll stopped at the same place. Only a
+    - `nextReadableLogBuffer()` in `src/transaction-log-reader.ts` moves past a deleted run when
+      an iterator advances: those segments are genuinely gone (no mapping exists), and stopping at
+      the hole stopped the iterator permanently — every later poll stopped at the same place. It
+      must not move past it **silently**, though (#805): before yielding from the survivor, the
+      iterator throws `TransactionLogGapError` with the count of segments it could not read. It
+      leaves its cursor on the survivor first, so the next `next()` resumes there and does not
+      repeat the error. Without the throw, a replicating consumer applies the survivor's entries as
+      if they were contiguous with the last one it read, and the replica diverges with nothing to
+      flag it. Mapped-empty segments are not counted (nothing was lost), and neither is anything
+      at or below the segment the iterator was _positioned_ at (`gapFloor`). A
+      `startFromLastFlushed` query whose starting segment was already purged gets a
+      placeholder buffer with `logId` 0, and counting from that would report a prefix the reader
+      never owned. Initial positioning before the oldest retained entry is therefore not signalled:
+      the purged segments' timestamps no longer exist to compare against, and Harper guards that
+      case at reconnect (`shouldForceBaseCopyForRetention`). A missing sequence number means
+      continuity is unknown, not that it held entries (a rotation can skip a sequence whose
+      creation failed). The error is deliberately not a `RangeError`, because consumers
+      classify corrupt frames by that class. Only a
       segment the store has no bytes for is skipped — one it still knows is merely unmappable for
       now (mid-rotation, 0 bytes at mmap time, transient resource pressure), so iteration stops and
       retries on the next poll rather than stepping over durable history. That gate is the
