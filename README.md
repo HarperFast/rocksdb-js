@@ -2363,8 +2363,9 @@ The iterator produces an object with the log entry timestamp and data.
   - `timestamp: number` The entry timestamp used to collate entries by transaction.
   - `endTxn: boolean` This is `true` when the entry is the last entry in a transaction.
 
-`next()` can throw one of two errors. In both cases the iterator stays usable: calling `next()`
-again continues past the problem.
+`next()` can throw two errors that leave the iterator usable, so calling `next()` again continues
+past the problem. Other errors, such as a failure to open a segment, do not move the iterator, so
+retrying them without a fix fails the same way.
 
 - `TransactionLogGapError`: the iterator reached segments it had not read yet and could not read
   them, usually because retention purged them while the reader lagged. Their entries are not in

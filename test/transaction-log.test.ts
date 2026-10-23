@@ -3229,11 +3229,11 @@ describe('Transaction Log', () => {
 					})
 			);
 
-			// Collects what an iterator yields, recording each gap it reports and continuing past it.
 			const drain = (iterator: Iterator<{ data: Buffer }>) => {
 				const entries: number[] = [];
 				const gaps: TransactionLogGapError[] = [];
-				for (;;) {
+				// a synchronous spin cannot trip the test timeout, so a gap that never advances must fail here
+				for (let calls = 0; calls < 1000; calls++) {
 					try {
 						const result = iterator.next();
 						if (result.done) {
@@ -3247,6 +3247,7 @@ describe('Transaction Log', () => {
 						gaps.push(error);
 					}
 				}
+				throw new Error('iterator did not finish');
 			};
 			const gapOf = (logId: number, resumeLogId: number, unavailableLogCount: number) =>
 				expect.objectContaining({ logId, resumeLogId, unavailableLogCount });
@@ -3285,10 +3286,8 @@ describe('Transaction Log', () => {
 						expect(error).toBeInstanceOf(TransactionLogGapError);
 						expect(error).not.toBeInstanceOf(RangeError);
 						expect(error).toEqual(gapOf(1, 5, 3));
-						// positioned at the survivor: it is yielded once and the gap is not repeated
 						expect(drain(iterator)).toEqual({ entries: [5], gaps: [] });
 						expect(drain(iterator)).toEqual({ entries: [], gaps: [] });
-						// a fresh query is positioned within what is retained, so there is nothing to report
 						expect(drain(log.query({ start: 0, readUncommitted }))).toEqual({
 							entries: [5],
 							gaps: [],
@@ -3343,7 +3342,27 @@ describe('Transaction Log', () => {
 					}
 				}));
 
-			// An empty segment held nothing, so crossing it loses nothing and is not counted.
+			// A reader created before its starting segment exists owns everything later written to it.
+			it.each([{ start: 0 }, {}])(
+				'should report a starting segment written and purged before it was read (%o)',
+				(options) =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+						const log = db.useLog('foo');
+						const iterator = log.query(options);
+						await writeEntry(db, log, 1, 300);
+						await writeEntry(db, log, 2, 300);
+						db.flushSync();
+						await writeEntry(db, log, 3, 300);
+						db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+
+						const { entries, gaps } = drain(iterator);
+						expect(entries).toEqual([3]);
+						expect(gaps).toEqual([
+							expect.objectContaining({ resumeLogId: 3, unavailableLogCount: 2 }),
+						]);
+					})
+			);
+
 			it('should not count an empty segment as unavailable', () =>
 				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
 					let database = db;

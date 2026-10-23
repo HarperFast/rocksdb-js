@@ -243,9 +243,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 			}
 		}
-		// Captured before the fallback below can substitute a placeholder with `logId` 0: a reader
-		// positioned past a purged prefix (e.g. `startFromLastFlushed`) never owned that prefix.
-		const gapFloor = logId;
+		// Segments at or below this were never part of this iterator's history, so crossing them is
+		// not a gap. Captured before the fallback below substitutes a placeholder with `logId` 0.
+		let gapFloor = logId;
 
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
@@ -278,6 +278,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// position-vs-size logic then routes through the existing advance-to-next-log
 				// path, which correctly returns done when no log file can be mapped.
 				size = 0;
+				if (position <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+					// positioned at the start of a segment not written yet: all of it is ours to read
+					gapFloor = logId - 1;
+				}
 			}
 		}
 
@@ -514,8 +518,7 @@ let unavailableLogCount = 0;
  * and so lands *past* a survivor sitting between two holes.
  *
  * Leaves in `unavailableLogCount` how many skipped sequence numbers above `gapFloor` could not be
- * read, so the caller can report the discontinuity (#805). `gapFloor` is the segment the iterator
- * was positioned at: segments at or below it were never part of this iterator's history.
+ * read, so the caller can report the discontinuity (#805).
  */
 function nextReadableLogBuffer(
 	transactionLog: TransactionLog,
@@ -553,7 +556,6 @@ function nextReadableLogBuffer(
 		if (nextLogId === 0) {
 			return;
 		}
-		// sequence numbers the store no longer registers
 		unavailableLogCount += Math.max(0, nextLogId - 1 - Math.max(candidateLogId, gapFloor));
 		candidateLogId = nextLogId;
 	}
