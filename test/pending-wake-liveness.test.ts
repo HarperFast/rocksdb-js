@@ -67,6 +67,9 @@ describe.skipIf(Boolean(process.versions.deno || process.versions.bun))(
 
 		it('uncontended same-thread withLock() runs and resolves', () => expectSuccess('same-thread'));
 
+		it('terminating a worker during an async lock callback passes the lock to a live waiter', () =>
+			expectSuccess('worker-active-exit'));
+
 		it('a worker exiting with a queued lock call neither crashes the process nor strands the lock', () =>
 			expectSuccess('worker-exit'));
 	}

@@ -2011,10 +2011,7 @@ await Promise.all([
 ]);
 ```
 
-Note: If a `tryLock()` `onUnlocked` callback throws an error, Node.js suppresses the error. Node.js
-18.3.0 introduced a
-`--force-node-api-uncaught-exceptions-policy` flag which will cause errors to emit the
-`'uncaughtException'` event. Future Node.js releases will enable this flag by default.
+Note: Errors thrown by a `tryLock()` `onUnlocked` callback are discarded.
 
 ## File Locking
 

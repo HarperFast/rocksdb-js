@@ -124,19 +124,31 @@ duplicate it. A waiter on a lock that is never released therefore keeps its thre
 other pending I/O, and closing the waiter's own database does not cancel it. A parked commit is
 bounded by `ROCKSDB_JS_PARK_TIMEOUT_MS`.
 
-`lockCall` and `onLockCallbackComplete` dispatch the next waiter through `dispatchNextLockCallback`,
-which calls its TSFN under `locksMutex` as `lockReleaseByKey` does. Once popped, a callback is
-invisible to its env's cleanup hook (`releaseLockCallbacksByEnv`, invariant 23), so the mutex is
-what keeps a concurrently terminated env's TSFN alive through the call. `napi_closing` means the
-TSFN must not be released again; that waiter is skipped. `isRunning` is read and written only
-under `locksMutex`.
+`lockCall`, `onLockCallbackComplete`, and env cleanup dispatch the next waiter through
+`dispatchNextLockCallback` with `locksMutex` held. The mutex protects both the TSFN call and
+publication of `LockHandle::activeCall`, so cleanup cannot miss a dispatched call or let Node free
+its TSFN mid-call. Cleanup first drops the dying env's queued callbacks, then marks its active
+completion done and hands the lock to a surviving waiter. This covers both a call still queued on
+the env's loop and an async callback whose promise never settles before worker termination.
+`napi_closing` means the TSFN must not be released again; that waiter is skipped. `isRunning` and
+`activeCall` are read and written only under `locksMutex`.
 
-`lockCallbackCallJs` has exactly one owner for a `withLock()` call's `LockCallbackCompletionData`: the
-`shared_ptr` it builds on entry. Each `.then()` handler holds its own reference, freed by that
-handler's finalizer because only one handler ever runs. `completed` makes completion exactly-once
-across the direct path and the handlers. Every path that does not hand the callback off completes
-it, including a call delivered to a dying env (`env == nullptr`, or a failed `napi_call_function`),
-so the next waiter is never stranded; on a live env it also rejects the caller, with the callback's
-own exception when one is pending. Completion and dispatch act only on the `LockHandle` the callback was dispatched for, never on whatever the key maps to now: `unlock()` or the owner's close can erase that lock mid-callback, and a key-only lookup would clear `isRunning` on, or erase, a newer lock of the same key and break mutual exclusion. A failure clears the pending exception even when no promise can receive it: Deno does not report an exception left pending when a TSFN callback returns, so the next waiter's `napi_call_function` would fail on it and pass the lock on early. It releases the lock
-before settling the caller's promise, because Deno runs the caller's continuation inside the settle
-call. Regressions: `test/pending-wake-liveness.test.ts` and the throw case in `test/lock.test.ts`.
+Completion state and its shared ownership are allocated during enqueue, before a callback is
+accepted into the queue. Handoff and delivery only copy existing shared pointers, so allocation
+failure cannot strand an accepted queue during completion. The TSFN's context owns a reference
+until its finalizer runs; each `.then()` handler owns another reference freed by its finalizer
+because only one handler ever runs. The lock retains the active call independently of those JS
+handlers until completion or env teardown.
+
+`completed` makes completion exactly-once across direct delivery, promise handlers, and teardown.
+Every path that does not hand the callback off completes it, including a call delivered to a dying
+env (`env == nullptr`, or a failed `napi_call_function`); on a live env it also rejects the caller,
+with the callback's own exception when one is pending. Completion and dispatch act only on the
+`LockHandle` the callback was dispatched for, never on whatever the key maps to now: `unlock()` or
+the owner's close can erase that lock mid-callback, and a key-only lookup would clear `isRunning`
+on, or erase, a newer lock of the same key and break mutual exclusion. Both callback paths clear
+pending exceptions, including the notification-only path used by `unlock()` and owner close:
+Deno does not report an exception left pending when a TSFN callback returns, so the next waiter's
+`napi_call_function` would fail on it and pass the lock on early. Completion releases the lock
+before settling the caller's promise because Deno runs the caller's continuation inside the settle
+call. Regressions: `test/pending-wake-liveness.test.ts` and `test/lock.test.ts`.

@@ -1207,6 +1207,7 @@ void DBDescriptor::lockCall(
 		return;
 	}
 
+	std::lock_guard<std::mutex> lock(this->locksMutex);
 	this->dispatchNextLockCallback(key, lockHandle);
 }
 
@@ -1227,13 +1228,13 @@ void DBDescriptor::lockEnqueueCallback(
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	std::shared_ptr<LockHandle> lockHandle;
 	auto lockHandleIterator = this->locks.find(key);
+	const bool newLock = lockHandleIterator == this->locks.end();
 
-	if (lockHandleIterator == this->locks.end()) {
+	if (newLock) {
 		// no lock found
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback no lock found for key:", this);
 		DEBUG_LOG_KEY_LN(key);
 		lockHandle = std::make_shared<LockHandle>(owner, env);
-		this->locks.emplace(key, lockHandle);
 		if (isNewLock != nullptr) {
 			*isNewLock = true;
 		}
@@ -1241,6 +1242,7 @@ void DBDescriptor::lockEnqueueCallback(
 			*lockHandleOut = lockHandle;
 		}
 		if (skipEnqueueIfNewLock) {
+			this->locks.emplace(key, lockHandle);
 			DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback skipping enqueue because lock already exists\n", this);
 			return;
 		}
@@ -1261,6 +1263,9 @@ void DBDescriptor::lockEnqueueCallback(
 			&resourceName
 		));
 
+		auto callbackData = std::make_unique<std::shared_ptr<LockCallbackCompletionData>>(
+			std::make_shared<LockCallbackCompletionData>(key, weak_from_this(), lockHandle, deferred, env)
+		);
 		napi_threadsafe_function threadsafeCallback;
 		NAPI_STATUS_THROWS_VOID(::napi_create_threadsafe_function(
 			env,                // env
@@ -1269,9 +1274,11 @@ void DBDescriptor::lockEnqueueCallback(
 			resourceName,       // async_resource_name
 			0,                  // max_queue_size
 			1,                  // initial_thread_count
-			nullptr,            // thread_finalize_data
-			nullptr,            // thread_finalize_callback
-			nullptr,            // context
+			callbackData.get(), // thread_finalize_data
+			[](napi_env, void* data, void*) {
+				delete static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
+			},
+			callbackData.get(), // context
 			lockCallbackCallJs, // call_js_cb
 			&threadsafeCallback // [out] callback
 		));
@@ -1279,8 +1286,16 @@ void DBDescriptor::lockEnqueueCallback(
 		// Must stay ref'd: see "Pending-wake threadsafe functions" in DESIGN.md.
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback enqueuing callback %p\n", this, threadsafeCallback);
 
-		// Create LockCallback and add to queue
-		lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, deferred, env));
+		auto completion = *callbackData.release(); // owned by the TSFN finalizer now
+		try {
+			lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, env, std::move(completion)));
+		} catch (...) {
+			::napi_release_threadsafe_function(threadsafeCallback, napi_tsfn_release);
+			throw;
+		}
+	}
+	if (newLock) {
+		this->locks.emplace(key, lockHandle);
 	}
 }
 
@@ -1346,7 +1361,9 @@ bool DBDescriptor::lockReleaseByKey(std::string& key) {
  */
 void DBDescriptor::releaseLockCallbacksByEnv(napi_env env) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
-	for (auto& [_key, lockHandle] : this->locks) {
+	for (auto it = this->locks.begin(); it != this->locks.end();) {
+		auto entry = it++;
+		auto lockHandle = entry->second;
 		std::queue<LockCallback> kept;
 		while (!lockHandle->threadsafeCallbacks.empty()) {
 			LockCallback lockCallback = lockHandle->threadsafeCallbacks.front();
@@ -1359,6 +1376,12 @@ void DBDescriptor::releaseLockCallbacksByEnv(napi_env env) {
 			}
 		}
 		lockHandle->threadsafeCallbacks = std::move(kept);
+		if (lockHandle->activeCall && lockHandle->activeCall->env == env) {
+			lockHandle->activeCall->completed.store(true);
+			lockHandle->activeCall.reset();
+			lockHandle->isRunning.store(false);
+			this->dispatchNextLockCallback(entry->first, lockHandle);
+		}
 	}
 }
 
@@ -2069,10 +2092,9 @@ void DBDescriptor::onLockCallbackComplete(const std::string& key, const std::wea
 			DEBUG_LOG("%p DBDescriptor::onLockCallbackComplete lock already removed (key=\"%s\")\n", this, key.c_str());
 			return;
 		}
-		{
-			std::lock_guard<std::mutex> lock(this->locksMutex);
-			handle->isRunning.store(false);
-		}
+		std::lock_guard<std::mutex> lock(this->locksMutex);
+		handle->activeCall.reset();
+		handle->isRunning.store(false);
 		this->dispatchNextLockCallback(key, handle);
 	} catch (const std::exception& e) {
 		DEBUG_LOG("%p DBDescriptor::onLockCallbackComplete failed (key=\"%s\"): %s\n", this, key.c_str(), e.what());
@@ -2086,10 +2108,8 @@ void DBDescriptor::onLockCallbackComplete(const std::string& key, const std::wea
  * and another lock may have taken the key).
  */
 void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::shared_ptr<LockHandle>& lockHandle) {
-	// The tsfn is called under `locksMutex`, as in lockReleaseByKey: once
-	// popped, a callback is invisible to its env's cleanup hook, which takes
-	// this mutex and so cannot let Node free the tsfn mid-call.
-	std::lock_guard<std::mutex> lock(this->locksMutex);
+	// Callers hold locksMutex through the TSFN call and active-call publication,
+	// so env cleanup cannot miss the call or let Node free its TSFN mid-call.
 	while (true) {
 		auto entry = this->locks.find(key);
 		if (entry == this->locks.end() || entry->second != lockHandle) {
@@ -2108,26 +2128,23 @@ void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::s
 			return;
 		}
 
-		// Before the pop, so a throw leaves the queue intact.
-		auto callbackData = std::make_unique<LockCallbackCompletionData>(
-			key, weak_from_this(), handle, handle->threadsafeCallbacks.front().deferred
-		);
 		LockCallback lockCallback = handle->threadsafeCallbacks.front();
 		handle->threadsafeCallbacks.pop();
 		handle->isRunning.store(true);
+		handle->activeCall = lockCallback.completion;
 
 		DEBUG_LOG("%p DBDescriptor::dispatchNextLockCallback calling callback %p (key=\"%s\")\n", this, lockCallback.callback, key.c_str());
-		napi_status status = ::napi_call_threadsafe_function(lockCallback.callback, callbackData.get(), napi_tsfn_blocking);
+		napi_status status = ::napi_call_threadsafe_function(lockCallback.callback, lockCallback.completion.get(), napi_tsfn_blocking);
 		if (status != napi_closing) {
 			::napi_release_threadsafe_function(lockCallback.callback, napi_tsfn_release);
 		}
 		if (status == napi_ok) {
-			callbackData.release(); // owned by lockCallbackCallJs now
 			return;
 		}
 
 		// That callback will never run: pass the lock to the next waiter.
 		DEBUG_LOG("%p DBDescriptor::dispatchNextLockCallback failed to call threadsafe function (key=\"%s\")\n", this, key.c_str());
+		handle->activeCall.reset();
 		handle->isRunning.store(false);
 	}
 }
@@ -2245,11 +2262,18 @@ static void lockCallbackCallJs(napi_env env, napi_value jsCallback, void* contex
 			napi_value result;
 			::napi_call_function(env, global, jsCallback, 0, nullptr, &result);
 		}
+		// Deno leaves TSFN exceptions pending for the next native callback.
+		bool pending = false;
+		if (::napi_is_exception_pending(env, &pending) == napi_ok && pending) {
+			napi_value error;
+			::napi_get_and_clear_last_exception(env, &error);
+		}
 		return;
 	}
 
-	// The sole owner from here on; the `.then()` handlers below share it.
-	std::shared_ptr<LockCallbackCompletionData> callbackData(static_cast<LockCallbackCompletionData*>(data));
+	// The TSFN owns context until its finalizer; copying the preallocated
+	// shared_ptr does not allocate during handoff or delivery.
+	auto callbackData = *static_cast<std::shared_ptr<LockCallbackCompletionData>*>(context);
 
 	// Claims completion, then hands the lock to the next waiter. False when a
 	// `.then()` handler already did: a user-overridden `then` can run one and

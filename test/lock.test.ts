@@ -60,6 +60,24 @@ describe('Lock', () => {
 				expect(unlockCounter).toBe(2);
 			}));
 
+		it('should run the next lock callback after an unlock notification throws', () =>
+			dbRunner(async ({ db }) => {
+				const spy = vi.fn();
+				expect(db.tryLock('foo')).toBe(true);
+				const next = new Promise<void>((resolve, reject) => {
+					expect(
+						db.tryLock('foo', () => {
+							Promise.resolve(db.withLock('bar', spy)).then(resolve, reject);
+							throw new Error('notification boom');
+						})
+					).toBe(false);
+				});
+				db.unlock('foo');
+				await next;
+				expect(spy).toHaveBeenCalledTimes(1);
+				expect(db.hasLock('bar')).toBe(false);
+			}));
+
 		it('should lock in a lock', () =>
 			dbRunner(async ({ db }) => {
 				expect(db.tryLock('foo', () => {})).toBe(true);

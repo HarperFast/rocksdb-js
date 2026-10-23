@@ -739,10 +739,11 @@ public:
 
 	/**
 	 * Env-cleanup hook: release every queued unlock callback that a dying env
-	 * registered, on every lock this descriptor tracks. Never calls them.
+	 * registered, and complete its active calls. Never calls JS in the dying env.
 	 */
 	void releaseLockCallbacksByEnv(napi_env env);
 	void onLockCallbackComplete(const std::string& key, const std::weak_ptr<LockHandle>& lockHandle);
+	// Requires locksMutex. Handoff uses only state allocated during enqueue.
 	void dispatchNextLockCallback(const std::string& key, const std::shared_ptr<LockHandle>& lockHandle);
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
@@ -952,8 +953,9 @@ struct LockCallbackCompletionData final {
 		const std::string& k,
 		std::weak_ptr<DBDescriptor> d,
 		std::weak_ptr<LockHandle> l,
-		napi_deferred def = nullptr
-	) : key(k), lockHandle(l), descriptor(d), deferred(def) {}
+		napi_deferred def,
+		napi_env e
+	) : key(k), lockHandle(l), descriptor(d), deferred(def), env(e) {}
 
 	/**
 	 * The key of the lock.
@@ -976,6 +978,7 @@ struct LockCallbackCompletionData final {
 	 * Optional deferred promise to resolve when the lock is released (for withLock).
 	 */
 	napi_deferred deferred;
+	napi_env env;
 
 	/**
 	 * Flag indicating resolve/reject callback has been called and prevent
@@ -988,11 +991,11 @@ struct LockCallbackCompletionData final {
  * Holds a threadsafe callback and its associated deferred promise (if any).
  */
 struct LockCallback final {
-	LockCallback(napi_threadsafe_function callback, napi_deferred deferred = nullptr, napi_env env = nullptr)
-		: callback(callback), deferred(deferred), env(env) {}
+	LockCallback(napi_threadsafe_function callback, napi_env env, std::shared_ptr<LockCallbackCompletionData> completion)
+		: callback(callback), completion(std::move(completion)), env(env) {}
 
 	napi_threadsafe_function callback;
-	napi_deferred deferred;
+	std::shared_ptr<LockCallbackCompletionData> completion;
 
 	/**
 	 * The env that queued this callback. A worker's env can be torn down while
@@ -1023,6 +1026,9 @@ struct LockHandle final {
 	 * A queue of threadsafe callbacks to fire in sequence.
 	 */
 	std::queue<LockCallback> threadsafeCallbacks;
+
+	// Retained until completion so env teardown can find an async call.
+	std::shared_ptr<LockCallbackCompletionData> activeCall;
 
 	/**
 	 * The owner of the lock. Used to release any locks owned by a database

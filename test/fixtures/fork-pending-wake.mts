@@ -9,6 +9,8 @@
  * - `same-thread`: an uncontended `await db.withLock()` with nothing else alive.
  * - `worker-exit`: a worker exits with a lock call dispatched to it; the process
  *   must survive and the lock must pass to the next waiter.
+ * - `worker-active-exit`: terminate a worker after its async lock callback starts;
+ *   a main-owned lock must pass to the next live waiter.
  *
  * Prints SUCCESS and exits 0 on success.
  */
@@ -24,7 +26,7 @@ const [mode, dbPath] = process.argv.slice(2);
 
 if (!dbPath) {
 	console.error(
-		'Usage: fork-pending-wake.mts <withLock|tryLock|park|same-thread|worker-exit> <dbPath>'
+		'Usage: fork-pending-wake.mts <withLock|tryLock|park|same-thread|worker-exit|worker-active-exit> <dbPath>'
 	);
 	process.exit(1);
 }
@@ -133,6 +135,48 @@ async function run(): Promise<void> {
 		});
 		if (!ran) {
 			throw new Error('withLock resolved without running its callback');
+		}
+		db.close();
+	} else if (mode === 'worker-active-exit') {
+		const db = RocksDatabase.open(dbPath);
+		let releaseHolder!: () => void;
+		const holding = db.withLock(
+			'key',
+			() => new Promise<void>((resolve) => (releaseHolder = resolve))
+		);
+		const script = `
+			const { RocksDatabase } = await import(${JSON.stringify(new URL('../../src/index.ts', import.meta.url).href)});
+			const { parentPort, workerData } = await import('node:worker_threads');
+			parentPort.on('message', () => {});
+			const db = RocksDatabase.open(workerData.path);
+			db.withLock('key', () => {
+				parentPort.postMessage('started');
+				return new Promise(() => {});
+			});
+			parentPort.postMessage('queued');
+		`;
+		const worker = new Worker(`(async () => {${script}})()`, {
+			eval: true,
+			workerData: { path: dbPath },
+		});
+		const started = new Promise<void>((resolve, reject) => {
+			worker.on('message', (message) => {
+				if (message === 'started') resolve();
+			});
+			worker.once('error', reject);
+		});
+		await new Promise((resolve) => worker.once('message', resolve));
+		let ran = false;
+		const next = db.withLock('key', () => {
+			ran = true;
+		});
+		releaseHolder();
+		await holding;
+		await started;
+		await worker.terminate();
+		await next;
+		if (!ran || db.hasLock('key')) {
+			throw new Error('the active worker call stranded the next waiter');
 		}
 		db.close();
 	} else if (mode === 'worker-exit') {
