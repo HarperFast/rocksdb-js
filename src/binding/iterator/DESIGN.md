@@ -15,9 +15,11 @@ Why each rule holds, and where it is enforced:
   snapshot reads see the latest commit, which a reused iterator would freeze. Database-level
   `getRange()` has no snapshot contract and is not pooled. With `writeBufferManagerAllowStall`, a
   synchronous write can block the JS thread until memory is released, and the trim that releases
-  idle iterators' pinned memtables (below) runs on that same thread; `allowStall` is mutable, so
-  release re-checks it. A non-stalling manager (Harper's default) only lets usage run over budget
-  for the rest of the macrotask.
+  idle iterators' pinned memtables (below) runs on that same thread. So turning stalls on publishes
+  the flag (no new pooling, no re-pooling on release), closes every idle pooled iterator in the
+  process (`DBRegistry::CloseIdlePooledIterators`), and only then lets the manager stall
+  (`DBSettings` config). A non-stalling manager (Harper's default) cannot block a writer; it only
+  lets usage run over budget until the macrotask ends.
 - **Retargeting keeps RocksDB's own bounds** (`DBIteratorHandle::reuse`): the iterator's
   `ReadOptions` hold pointers to the handle's `startKey`/`endKey` Slices, and RocksDB re-reads bound
   pointers on every seek (upstream `DBIteratorTest.IterateBoundChangedBeforeSeek`;
@@ -45,22 +47,23 @@ Why each rule holds, and where it is enforced:
   map from `begin()` after every `close()` instead of keeping an iterator across it
   (`test/fixtures/fork-pooled-iterator-shutdown.mts` segfaults without that).
 - **Leaving the JS iterator**: on exhaustion, `return()` or `throw()` the handle goes back to the
-  pool and the `NativeIterator` drops it, so a retained JS iterator can never drive a handle lent to
-  another range. An exhausted one keeps reporting done until the transaction's `iteratorEpoch` moves
-  (every `closeIterators()`), then throws "Iterator not initialized" as a closed iterator always has.
-  The exception is an orphan close (the transaction's JS wrapper was collected): an unpooled
-  exhausted iterator deferred that close and kept reporting done, so a pooled one keeps reporting
-  done when the only close since it finished was that one (`orphanCloseEpoch`).
+  pool (`ITERATOR_RESULT_RELEASED` / `return()` → true) and the `NativeIterator` drops it, so a
+  retained JS iterator can never drive a handle lent to another range. Terminal behavior matches an
+  unpooled iterator, which stayed registered until collected: an exhausted one keeps reporting done
+  until the transaction's `iteratorEpoch` moves (every `closeIterators()`), then throws "Iterator not
+  initialized". The JS `DBIterator` keeps a reference to its native transaction after exhaustion
+  (as the registered unpooled iterator deferred the orphan close of a dropped transaction) and
+  drops it on `return()`/`throw()` (after which an orphan close could already proceed).
 - **Locks**: `iteratorMutex -> iteratorsMutex` (as `closeIfOpen` already nests). Acquire takes the
   slot under `iteratorsMutex`, drops it, then takes `iteratorMutex` to re-seek. Orphan close runs
   after `iteratorMutex` is released, because it closes every registered handle, including this one.
-- **Retention** (`transactionsToTrim` in `src/store.ts`): an idle handle pins its RocksDB
+- **Retention** (`scheduleTrim` in `src/dbi-iterator.ts`): an idle handle pins its RocksDB
   SuperVersion, i.e. memtables charged to the WriteBufferManager and SST files compaction already
-  replaced. A request transaction can stay open across I/O for seconds, so the JS layer empties the
-  pool (`NativeTransaction.trimIterators()`) from a `setImmediate` once the macrotask that ran the
-  ranges ends. A handle that was busy across that trim (a range consumed across an `await`) is
-  closed when released, not pooled (`trimGeneration`). Reuse therefore spans one synchronous run of
-  ranges, which is the pattern it targets; a transaction that runs one range per macrotask gets no
-  reuse and measured no slower.
+  replaced. A request transaction can stay open across I/O for seconds, so when a handle goes back
+  to the pool the JS iterator queues its transaction, and a `setImmediate` empties those pools
+  (`NativeTransaction.trimIterators()`) once the macrotask ends. A handle that was busy across a trim
+  (a range consumed across an `await` while others released) is closed when released, not pooled
+  (`trimGeneration`). Reuse therefore spans one synchronous run of ranges, which is the pattern it
+  targets; a transaction that runs one range per macrotask gets no reuse and measured no slower.
 
 `ROCKSDB_JS_ITERATOR_POOL=0` disables pooling (read once per process).

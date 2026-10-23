@@ -268,8 +268,9 @@ export declare class NativeIteratorCls {
 		transactionId?: number
 	);
 	next(): NativeIteratorResult;
-	return(): void;
-	throw(err?: unknown): void;
+	/** Returns whether the native iterator went back to its transaction's pool. */
+	return(): boolean;
+	throw(err?: unknown): boolean;
 }
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
@@ -870,6 +871,7 @@ export const constants: {
 	ITERATOR_HAS_TRANSACTION_ID_FLAG: number;
 	ITERATOR_RESULT_DONE: number;
 	ITERATOR_RESULT_FAST: number;
+	ITERATOR_RESULT_RELEASED: number;
 } = binding.constants;
 /**
  * The friendly names of every compression algorithm compiled into the loaded

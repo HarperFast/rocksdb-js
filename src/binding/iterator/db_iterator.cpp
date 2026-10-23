@@ -23,14 +23,15 @@ namespace {
 struct IteratorWrap final {
 	std::shared_ptr<DBIteratorHandle> handle;
 	// Set when a pooled handle left on exhaustion: next() keeps reporting done
-	// until the transaction closes its iterators (other than by an orphan close,
-	// which an unpooled iterator would have deferred), when a closed iterator
-	// would start throwing. Strong, as the exhausted handle it replaces was.
-	std::shared_ptr<TransactionHandle> exhaustedIn;
+	// until the transaction closes its iterators, when a closed iterator would
+	// start throwing. The JS iterator holds the transaction's wrapper, so it
+	// cannot be closed as an orphan while this is reachable.
+	std::weak_ptr<TransactionHandle> exhaustedIn;
 	uint64_t exhaustedEpoch = 0;
 };
 
-void releasePooled(IteratorWrap* wrap, std::unique_lock<std::mutex>& iteratorLock, bool pool) {
+// Returns whether the handle went back to the pool (and so needs a trim).
+bool releasePooled(IteratorWrap* wrap, std::unique_lock<std::mutex>& iteratorLock, bool pool) {
 	std::shared_ptr<DBIteratorHandle> handle = std::move(wrap->handle);
 	std::shared_ptr<TransactionHandle> txnHandle = handle->txnHandle;
 	bool released = false;
@@ -46,6 +47,7 @@ void releasePooled(IteratorWrap* wrap, std::unique_lock<std::mutex>& iteratorLoc
 	if (checkOrphan) {
 		txnHandle->closeOrphanIfUnused();
 	}
+	return released;
 }
 
 }
@@ -321,18 +323,18 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	}
 
 // A later `next()` throws "not initialized" either way.
-static void closeOrRelease(IteratorWrap* wrap) {
+static bool closeOrRelease(IteratorWrap* wrap) {
 	wrap->exhaustedIn.reset();
 	if (!wrap->handle) {
-		return;
+		return false;
 	}
 	if (!wrap->handle->pooled) {
 		wrap->handle->close();
-		return;
+		return false;
 	}
 	std::unique_lock<std::mutex> iteratorLock(wrap->handle->iteratorMutex);
 	const bool healthy = wrap->handle->iterator && wrap->handle->iterator->status().ok();
-	releasePooled(wrap, iteratorLock, healthy);
+	return releasePooled(wrap, iteratorLock, healthy);
 }
 
 static napi_value nextImpl(napi_env env, IteratorWrap* wrap);
@@ -391,12 +393,8 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 
 static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 	if (!wrap->handle) {
-		const auto& txnHandle = wrap->exhaustedIn;
-		const uint64_t epoch = txnHandle ? txnHandle->iteratorEpoch.load(std::memory_order_relaxed) : 0;
-		if (txnHandle && (epoch == wrap->exhaustedEpoch
-			|| (epoch == wrap->exhaustedEpoch + 1
-				&& txnHandle->orphanCloseEpoch.load(std::memory_order_relaxed) == epoch))
-		) {
+		auto txnHandle = wrap->exhaustedIn.lock();
+		if (txnHandle && txnHandle->iteratorEpoch.load(std::memory_order_relaxed) == wrap->exhaustedEpoch) {
 			napi_value result;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_DONE, &result));
 			return result;
@@ -438,7 +436,10 @@ static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 				wrap->exhaustedIn = txnHandle;
 				wrap->exhaustedEpoch = txnHandle->iteratorEpoch.load(std::memory_order_relaxed);
 			}
-			releasePooled(wrap, iteratorLock, true);
+			if (releasePooled(wrap, iteratorLock, true)) {
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_RELEASED, &result));
+				return result;
+			}
 		}
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_DONE, &result));
 		return result;
@@ -493,13 +494,16 @@ static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_ITERATOR_WRAP();
+	bool released = false;
 	try {
-		closeOrRelease(wrap);
+		released = closeOrRelease(wrap);
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
-	NAPI_RETURN_UNDEFINED();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, released, &result));
+	return result;
 }
 
 /**
@@ -509,13 +513,16 @@ napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_ITERATOR_WRAP();
+	bool released = false;
 	try {
-		closeOrRelease(wrap);
+		released = closeOrRelease(wrap);
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
-	NAPI_RETURN_UNDEFINED();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, released, &result));
+	return result;
 }
 
 /**

@@ -21,7 +21,6 @@ import {
 } from './encoding.ts';
 import {
 	constants,
-	iteratorPoolEnabled,
 	NativeDatabase,
 	type NativeDatabaseOptions,
 	NativeIterator,
@@ -73,21 +72,6 @@ const SAVE_BUFFER_SIZE = 8192;
 
 export type StoreContext = NativeDatabase | NativeTransaction;
 
-// Transactions whose ranges may have left idle pooled iterators. An idle native
-// iterator pins the memtables and SST files current at its creation, so the
-// pool is emptied once the current macrotask ends rather than at commit: a
-// transaction can stay open across I/O for far longer than its ranges take.
-const transactionsToTrim = new Set<NativeTransaction>();
-
-function trimIdleIterators(): void {
-	try {
-		for (const transaction of transactionsToTrim) {
-			transaction.trimIterators();
-		}
-	} finally {
-		transactionsToTrim.clear();
-	}
-}
 export type StoreGetOptions = GetOptions & DBITransactional;
 export type StoreIteratorOptions = IteratorOptions & DBITransactional;
 export type StorePutOptions = PutOptions & DBITransactional;
@@ -1182,23 +1166,15 @@ export class Store {
 			advancedOptions,
 			txnId
 		);
-		if (
-			iteratorPoolEnabled &&
-			advancedOptions === undefined &&
-			(txnId !== undefined || context !== this.db)
-		) {
-			const nativeTransaction = context !== this.db ? context : options?.transaction?._context;
-			if (nativeTransaction instanceof NativeTransaction) {
-				if (transactionsToTrim.size === 0) {
-					setImmediate(trimIdleIterators);
-				}
-				transactionsToTrim.add(nativeTransaction);
-			}
-		}
+		// The transaction whose pool this range's native iterator may return to.
+		const transaction =
+			context !== this.db
+				? (context as NativeTransaction)
+				: (options?.transaction?._context as NativeTransaction | undefined);
 
 		return new ExtendedIterable(
 			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect
-			new DBIterator(nativeIterator, this, includeValues, options?.limit)
+			new DBIterator(nativeIterator, this, includeValues, options?.limit, transaction)
 		);
 	}
 

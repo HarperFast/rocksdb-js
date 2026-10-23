@@ -767,6 +767,9 @@ public:
 	 */
 	void closeTransactionsByEnv(napi_env env);
 
+	// Appends every registered transaction, under `txnsMutex`.
+	void collectTransactions(std::vector<std::shared_ptr<TransactionHandle>>& transactions);
+
 	/**
 	 * Releases the `logRefs` napi_refs of every attached DBHandle created by
 	 * `env`, from that env's module cleanup hook. A worker env that exits

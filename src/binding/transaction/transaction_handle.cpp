@@ -513,7 +513,6 @@ void TransactionHandle::closeOrphanIfUnused() {
 	// object alive until close() returns even when the final dependent releases
 	// on a worker thread.
 	auto keepAlive = this->shared_from_this();
-	this->orphanCloseEpoch.store(this->iteratorEpoch.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
 	this->close();
 }
 

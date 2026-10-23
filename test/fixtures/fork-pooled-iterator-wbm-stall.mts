@@ -1,11 +1,12 @@
 /**
- * With a stalling WriteBufferManager, transaction ranges must not pool: a
+ * Transaction iterator pooling against a stalling WriteBufferManager: a
  * synchronous write can block the JS thread waiting for memory that idle
- * pooled iterators pin, and only that thread can release them. Prints the
- * pool counters for a run with stalls on and one with them switched off at
- * runtime.
+ * pooled iterators pin, and only that thread's trim would release them. So
+ * pooling is off while stalls are enabled, and enabling them closes every idle
+ * pooled iterator before the manager starts stalling. Prints pool counters and
+ * closable counts as JSON.
  */
-import { RocksDatabase } from '../../src/index.ts';
+import { registryStatus, RocksDatabase } from '../../src/index.ts';
 import { iteratorPoolStats } from '../../src/load-binding.ts';
 import { Transaction } from '../../src/transaction.ts';
 
@@ -16,26 +17,32 @@ if (!dbPath) {
 
 RocksDatabase.config({
 	writeBufferManagerSize: 64 * 1024 * 1024,
-	writeBufferManagerAllowStall: true,
+	writeBufferManagerAllowStall: false,
 });
 const db = RocksDatabase.open(dbPath);
 db.putSync('a', 'a');
+const closables = () =>
+	registryStatus().find((entry) => entry.path === db.store.identityPath)!.closables;
 
-function run(): { created: number; reused: number } {
+function ranges(txn: Transaction): { created: number; reused: number } {
 	const before = iteratorPoolStats();
-	const txn = new Transaction(db.store);
 	for (let i = 0; i < 3; i++) {
 		if (txn.getRange().asArray.length !== 1) {
 			throw new Error('wrong rows');
 		}
 	}
-	txn.abort();
 	const after = iteratorPoolStats();
 	return { created: after.created - before.created, reused: after.reused - before.reused };
 }
 
-const stalling = run();
-RocksDatabase.config({ writeBufferManagerAllowStall: false });
-const notStalling = run();
+// Not stalling: pooled, and an idle iterator is left behind in this macrotask.
+const txn = new Transaction(db.store);
+const notStalling = ranges(txn);
+const idleBefore = closables();
+// Enabling stalls closes it synchronously, before this macrotask can yield.
+RocksDatabase.config({ writeBufferManagerAllowStall: true });
+const idleAfter = closables();
+const stalling = ranges(txn);
+txn.abort();
 db.close();
-console.log(JSON.stringify({ stalling, notStalling }));
+console.log(JSON.stringify({ notStalling, stalling, drained: idleBefore - idleAfter }));

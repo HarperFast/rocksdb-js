@@ -1,4 +1,6 @@
 import type { RocksDatabase } from '../src/index.ts';
+import { iteratorPoolStats } from '../src/load-binding.ts';
+import { Transaction } from '../src/transaction.ts';
 import { dbRunner } from './lib/util.ts';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -57,6 +59,38 @@ describe('Iterator status', () => {
 				`the range ended after ${seen} of ${COUNT} entries without an error`
 			).toBeDefined();
 			expectCorruption(error);
+		}));
+
+	it('should report corruption through a reused transaction iterator and not pool it again', () =>
+		dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+			writeAndCorrupt(db, dbPath, 0.5);
+			const txn = new Transaction(db.store);
+			try {
+				const scan = (options: Record<string, unknown>) => {
+					try {
+						let seen = 0;
+						for (const _ of txn.getRange(options)) {
+							seen++;
+						}
+						return seen;
+					} catch (err) {
+						return err;
+					}
+				};
+				// A healthy range near the start leaves an idle pooled iterator behind.
+				expect(scan({ start: key(0), end: key(10) })).toBe(10);
+				const before = iteratorPoolStats();
+				const reused = scan({ start: key(0), end: key(COUNT) });
+				expect(iteratorPoolStats().reused - before.reused).toBe(1);
+				expectCorruption(reused);
+				expectCorruption(scan({ start: key(0), end: key(COUNT), fillCache: false }));
+				// The damaged iterator was closed rather than pooled.
+				const afterError = iteratorPoolStats();
+				expect(scan({ start: key(0), end: key(10) })).toBe(10);
+				expect(iteratorPoolStats().created - afterError.created).toBe(1);
+			} finally {
+				txn.abort();
+			}
 		}));
 
 	it('should reject when an asynchronous range reaches a corrupted block', () =>

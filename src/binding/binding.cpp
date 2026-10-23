@@ -562,6 +562,7 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, ITERATOR_HAS_TRANSACTION_ID_FLAG)
 	EXPORT_CONSTANT(constants, ITERATOR_RESULT_DONE)
 	EXPORT_CONSTANT(constants, ITERATOR_RESULT_FAST)
+	EXPORT_CONSTANT(constants, ITERATOR_RESULT_RELEASED)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
 	// stats

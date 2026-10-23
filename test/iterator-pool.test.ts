@@ -356,9 +356,11 @@ describe('Transaction iterator pool', () => {
 			try {
 				const iterator = txn.getRange()[Symbol.iterator]();
 				iterator.next();
+				// Another range releases its iterator, so a trim runs while this one is busy.
+				expect(txn.getRange({ start: 'b' }).asArray.length).toBe(2);
 				await new Promise((resolve) => setImmediate(resolve));
 				while (!iterator.next().done);
-				// Released after the trim ran: it must not sit idle until the transaction ends.
+				// Released after a trim ran: closed, not left idle.
 				expect(status(dbPath).closables).toBe(baseline.closables + 1);
 			} finally {
 				txn.abort();
@@ -490,7 +492,7 @@ describe('Transaction iterator pool', () => {
 		}));
 
 	it.skipIf(!forceGC)(
-		'keeps reporting done from an exhausted iterator after its transaction is collected',
+		'treats a dropped transaction like an unpooled iterator would, exhausted or returned',
 		() =>
 			dbRunner(async ({ db, dbPath }) => {
 				db.putSync('a', 'a');
@@ -501,17 +503,30 @@ describe('Transaction iterator pool', () => {
 					while (!iterator.next().done);
 					return iterator;
 				};
-				// Unpooled: the exhausted iterator defers the orphan close and reports done.
+				const collect = async () => {
+					for (let i = 0; i < 10; i++) {
+						forceGC!();
+						await new Promise((resolve) => setTimeout(resolve, 10));
+					}
+				};
+				// A retained exhausted iterator keeps its dropped transaction open and keeps
+				// reporting done; return() lets the transaction be closed as an orphan.
 				const unpooled = exhaust(FRESH);
 				const pooled = exhaust({});
-				for (let i = 0; i < 20 && status(dbPath).transactions > baseline.transactions + 1; i++) {
-					forceGC!();
-					await new Promise((resolve) => setTimeout(resolve, 10));
-				}
-				// The pooled transaction has been closed as an orphan; the unpooled one is still pinned.
-				expect(status(dbPath).transactions).toBe(baseline.transactions + 1);
+				await collect();
+				expect(status(dbPath).transactions).toBe(baseline.transactions + 2);
 				expect(unpooled.next().done).toBe(true);
 				expect(pooled.next().done).toBe(true);
+				unpooled.return!();
+				pooled.return!();
+				await collect();
+				// The returned unpooled iterator stays attached until it is collected.
+				expect(status(dbPath)).toMatchObject({
+					closables: baseline.closables + 1,
+					transactions: baseline.transactions,
+				});
+				expect(() => unpooled.next()).toThrow('Iterator not initialized');
+				expect(() => pooled.next()).toThrow('Iterator not initialized');
 			})
 	);
 
@@ -539,7 +554,7 @@ describe('Transaction iterator pool', () => {
 });
 
 describe('Transaction iterator pool and the WriteBufferManager', () => {
-	it('does not pool while the WriteBufferManager may stall writers', () => {
+	it('does not pool, and drains idle iterators, once the WriteBufferManager may stall', () => {
 		const result = spawnSync(
 			process.execPath,
 			[
@@ -550,8 +565,32 @@ describe('Transaction iterator pool and the WriteBufferManager', () => {
 		);
 		expect(result.status, result.stderr).toBe(0);
 		expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({
-			stalling: { created: 0, reused: 0 },
 			notStalling: { created: 1, reused: 2 },
+			stalling: { created: 0, reused: 0 },
+			drained: 1,
+		});
+	});
+});
+
+describe('Transaction iterator pool disabled', () => {
+	it('does not pool with ROCKSDB_JS_ITERATOR_POOL=0', () => {
+		const result = spawnSync(
+			process.execPath,
+			[
+				join(import.meta.dirname, 'fixtures', 'fork-pooled-iterator-disabled.mts'),
+				generateDBPath(),
+			],
+			{ encoding: 'utf8', env: { ...process.env, ROCKSDB_JS_ITERATOR_POOL: '0' }, timeout: 60_000 }
+		);
+		expect(result.status, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({
+			enabled: false,
+			stats: { created: 0, reused: 0 },
+			rows: [
+				['b', 'c'],
+				['b', 'c'],
+				['b', 'c'],
+			],
 		});
 	});
 });

@@ -197,6 +197,14 @@ public:
 	static CloseResult PurgeIfUnreferenced(const DBKey& key);
 	static napi_value RegistryStatus(napi_env env, napi_callback_info info);
 	static void CloseTransactionsByEnv(napi_env env);
+
+	/**
+	 * Closes every transaction's idle pooled iterators, in every database and
+	 * env. Run before a WriteBufferManager starts stalling writers, so no idle
+	 * iterator pins memory a blocked writer waits on. Takes `databasesMutex`
+	 * then each `txnsMutex`; never call it under the settings mutex.
+	 */
+	static void CloseIdlePooledIterators();
 	static void RemoveListenersByEnv(napi_env env);
 	static void ReleaseCommitCompletionsByEnv(napi_env env);
 	static void ReleaseParkTimeoutsByEnv(napi_env env);

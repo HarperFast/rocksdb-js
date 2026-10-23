@@ -314,13 +314,6 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::atomic<uint64_t> iteratorEpoch{0};
 
 	/**
-	 * The `iteratorEpoch` an orphan close produced, or 0. An unpooled iterator,
-	 * even exhausted, deferred that close and so kept reporting done; a pooled
-	 * one has returned its handle, so it reads this to report the same.
-	 */
-	std::atomic<uint64_t> orphanCloseEpoch{0};
-
-	/**
 	 * A batch of log entries to write to the transaction log. It can only be
 	 * set once via `addLogEntry()`.
 	 */

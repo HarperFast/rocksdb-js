@@ -1357,6 +1357,26 @@ void DBRegistry::CloseTransactionsByEnv(napi_env env) {
 	}
 }
 
+void DBRegistry::CloseIdlePooledIterators() {
+	if (!instance) {
+		return;
+	}
+	// Transactions only: carrying a descriptor past databasesMutex can make a
+	// racing last-handle close skip its purge.
+	std::vector<std::shared_ptr<TransactionHandle>> transactions;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		for (auto& [_key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				entry.descriptor->collectTransactions(transactions);
+			}
+		}
+	}
+	for (auto& transaction : transactions) {
+		transaction->closeIdleIterators();
+	}
+}
+
 /**
  * Scrub per-descriptor event listeners owned by the given env. Called from the
  * env-cleanup hook so a worker thread exiting does not leave threadsafe-fn

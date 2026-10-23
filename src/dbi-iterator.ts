@@ -1,8 +1,38 @@
 import type { BufferWithDataView, Key } from './encoding.ts';
-import { constants, type NativeIteratorCls, type NativeIteratorResult } from './load-binding.ts';
+import {
+	constants,
+	type NativeIteratorCls,
+	type NativeIteratorResult,
+	type NativeTransaction,
+} from './load-binding.ts';
 import { ITERATOR_STATE, KEY_BUFFER, type Store, VALUE_BUFFER } from './store.ts';
 
-const { ITERATOR_RESULT_DONE, ITERATOR_RESULT_FAST } = constants;
+const { ITERATOR_RESULT_DONE, ITERATOR_RESULT_FAST, ITERATOR_RESULT_RELEASED } = constants;
+
+// Transactions holding idle pooled native iterators. An idle iterator pins the
+// memtables and SST files current at its creation, so the pool is emptied once
+// the current macrotask ends rather than at commit: a transaction can stay
+// open across I/O for far longer than its ranges take.
+const transactionsToTrim = new Set<NativeTransaction>();
+
+function trimIdleIterators(): void {
+	try {
+		for (const transaction of transactionsToTrim) {
+			transaction.trimIterators();
+		}
+	} finally {
+		transactionsToTrim.clear();
+	}
+}
+
+function scheduleTrim(transaction: NativeTransaction | undefined): void {
+	if (transaction !== undefined) {
+		if (transactionsToTrim.size === 0) {
+			setImmediate(trimIdleIterators);
+		}
+		transactionsToTrim.add(transaction);
+	}
+}
 
 export interface DBIteratorValue<T> {
 	key: Key;
@@ -31,16 +61,19 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	// notion of a count bound, so the limit is enforced here in the JS layer.
 	#limit: number | undefined;
 	#yielded = 0;
+	#transaction: NativeTransaction | undefined;
 
 	constructor(
 		iterator: InstanceType<typeof NativeIteratorCls>,
 		store: Store,
 		includeValues: boolean,
-		limit?: number
+		limit?: number,
+		transaction?: NativeTransaction
 	) {
 		this.iterator = iterator;
 		this.store = store;
 		this.#includeValues = includeValues;
+		this.#transaction = transaction;
 		// Normalize a nullish limit to `undefined` (no limit). A caller passing `null` must not be
 		// read as a 0 limit by the `#yielded >= this.#limit` check below (null coerces to 0).
 		this.#limit = limit ?? undefined;
@@ -53,7 +86,7 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	next(): IteratorResult<DBIteratorValue<T>> {
 		if (this.#limit !== undefined && this.#yielded >= this.#limit) {
 			// Reached the requested limit: release the native iterator and stop.
-			this.iterator.return?.();
+			this.#release(this.iterator.return());
 			return DONE_RESULT as IteratorResult<DBIteratorValue<T>>;
 		}
 
@@ -66,7 +99,7 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 			// throws, so release the native iterator here instead of leaving it,
 			// and the snapshot it holds, to garbage collection.
 			try {
-				this.iterator.return?.();
+				this.#release(this.iterator.return());
 			} catch {
 				// Ignore cleanup errors to avoid masking the original error
 			}
@@ -74,6 +107,10 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 		}
 
 		if (result === ITERATOR_RESULT_DONE) {
+			return DONE_RESULT as IteratorResult<DBIteratorValue<T>>;
+		}
+		if (result === ITERATOR_RESULT_RELEASED) {
+			scheduleTrim(this.#transaction);
 			return DONE_RESULT as IteratorResult<DBIteratorValue<T>>;
 		}
 
@@ -103,12 +140,23 @@ export class DBIterator<T> implements Iterator<DBIteratorValue<T>> {
 	}
 
 	return(value?: any): IteratorResult<DBIteratorValue<T>, any> {
-		this.iterator.return?.();
+		this.#release(this.iterator.return());
 		return { done: true, value };
 	}
 
 	throw(err: unknown): IteratorResult<DBIteratorValue<T>, any> {
-		this.iterator.throw?.(err);
+		this.#release(this.iterator.throw(err));
 		throw err;
+	}
+
+	// After return()/throw() the native iterator is closed or pooled, so the
+	// transaction may be closed as an orphan, as it could when a closed
+	// iterator stayed registered. Exhaustion keeps the reference: an exhausted
+	// unpooled iterator stayed registered and deferred that close.
+	#release(pooled: boolean): void {
+		if (pooled) {
+			scheduleTrim(this.#transaction);
+		}
+		this.#transaction = undefined;
 	}
 }

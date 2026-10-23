@@ -5,6 +5,7 @@
 #include <limits>
 #include <random>
 #include <thread>
+#include "database/db_registry.h"
 #include "database/db_stats.h"
 #include "napi/macros.h"
 #include "napi/helpers.h"
@@ -249,6 +250,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	// consistent view of the manager. Throwing happens before any state
 	// mutation, so a rejected costToCache change leaves the live manager
 	// untouched.
+	bool enableStallAfterDrain = false;
 	{
 		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
 		const bool wbmAlreadyCreated = (settings.writeBufferManager != nullptr);
@@ -281,12 +283,25 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		// Propagate allowStall to the live manager if it exists — this is
 		// the RocksDB-supported runtime knob.
 		if (wbmAlreadyCreated && allowStallProvided) {
-			settings.writeBufferManager->SetAllowStall(newAllowStall);
 			if (newAllowStall) {
-				DBStats::getInstance().ensureWriteBufferManagerWatchdog();
+				enableStallAfterDrain = true;
 			} else {
+				settings.writeBufferManager->SetAllowStall(false);
 				DBStats::getInstance().disableWriteBufferManagerWatchdog();
 			}
+		}
+	}
+
+	if (enableStallAfterDrain) {
+		// A stalling manager can block a synchronous write on the JS thread
+		// that alone releases idle pooled iterators' pinned memtables. The flag
+		// stored above already stops new pooling; close what is idle now, then
+		// let the manager stall (unless a concurrent config turned it off).
+		DBRegistry::CloseIdlePooledIterators();
+		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
+		if (settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed) && settings.writeBufferManager) {
+			settings.writeBufferManager->SetAllowStall(true);
+			DBStats::getInstance().ensureWriteBufferManagerWatchdog();
 		}
 	}
 
