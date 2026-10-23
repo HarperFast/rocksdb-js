@@ -470,6 +470,7 @@ export type NativeDatabase = {
 	dropSync(): void;
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback, options?: FlushOptions): void;
 	flushSync(options?: FlushOptions): void;
+	syncWal(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
 	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
 	get(

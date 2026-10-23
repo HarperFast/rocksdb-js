@@ -1034,6 +1034,119 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * `DB::SyncWAL` on the libuv threadpool; resolves without syncing on a
+ * read-only database.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * await new Promise((resolve, reject) => db.syncWal(resolve, reject));
+ * ```
+ */
+napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	napi_value resolve = argv[0];
+	napi_value reject = argv[1];
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		napi_value recv;
+		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
+		napi_value ignored;
+		NAPI_STATUS_THROWS(::napi_call_function(env, recv, resolve, 0, nullptr, &ignored));
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(
+		env,
+		"database.syncWal",
+		NAPI_AUTO_LENGTH,
+		&name
+	));
+
+	// Same setup discipline as CatchUpWithPrimary: the registration precedes the
+	// allocation because ~BaseAsyncState unregisters unconditionally, and the
+	// state is owned until the work is queued so a failed N-API step frees it.
+	if (!(*dbHandle)->registerAsyncWork()) {
+		::napi_throw_error(env, nullptr, "Database is closing");
+		NAPI_RETURN_UNDEFINED();
+	}
+	auto owned = std::make_unique<BaseAsyncState<std::shared_ptr<DBHandle>>>(env, *dbHandle);
+	auto state = owned.get();
+
+	// ~BaseAsyncState drops the resolve/reject refs without deleting them (the
+	// completion path deletes them as it calls them), so setup has to.
+	struct SetupRefs {
+		BaseAsyncState<std::shared_ptr<DBHandle>>* state;
+		bool released = false;
+		~SetupRefs() {
+			if (released) {
+				return;
+			}
+			if (state->resolveRef != nullptr) {
+				::napi_delete_reference(state->env, state->resolveRef);
+				state->resolveRef = nullptr;
+			}
+			if (state->rejectRef != nullptr) {
+				::napi_delete_reference(state->env, state->rejectRef);
+				state->rejectRef = nullptr;
+			}
+		}
+	} setupRefs{state};
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,
+		nullptr,
+		name,
+		[](napi_env doNotUse, void* data) {
+			auto state = reinterpret_cast<BaseAsyncState<std::shared_ptr<DBHandle>>*>(data);
+			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during WAL sync");
+			} else {
+				state->status = state->handle->descriptor->syncWal();
+			}
+			state->signalExecuteCompleted();
+		},
+		[](napi_env env, napi_status status, void* data) {
+			auto state = reinterpret_cast<BaseAsyncState<std::shared_ptr<DBHandle>>*>(data);
+
+			state->deleteAsyncWork();
+
+			if (status != napi_cancelled) {
+				if (state->status.ok()) {
+					napi_value undefined;
+					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+					state->callResolve(undefined);
+				} else {
+					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "WAL sync failed");
+					state->callReject(error);
+				}
+			}
+
+			delete state;
+		},
+		state,
+		&state->asyncWork
+	));
+
+	napi_status queued = ::napi_queue_async_work(env, state->asyncWork);
+	if (queued != napi_ok) {
+		// created but never run: the destructor unregisters it after it is deleted
+		owned->deleteAsyncWork();
+		NAPI_STATUS_THROWS(queued);
+	}
+	setupRefs.released = true;
+	owned.release();
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Asynchronously gets a value from the RocksDB database. The first argument, that specifies the key, can be a buffer or a number
  * indicating the length of the key that was written to the shared buffer.
  *
@@ -2980,6 +3093,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "estimateCount", nullptr, EstimateCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "syncWal", nullptr, SyncWal, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },

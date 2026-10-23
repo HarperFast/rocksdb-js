@@ -883,6 +883,9 @@ public:
 	 */
 	rocksdb::Status flush(bool allowWriteStall = false);
 
+	/** `DB::SyncWAL` on the calling thread: WAL-backed writes only, no memtable flush. */
+	rocksdb::Status syncWal();
+
 	/**
 	 * Advances a secondary instance to the primary's current state by tailing
 	 * and replaying its MANIFEST and WAL. Serialized on `catchUpMutex`; returns

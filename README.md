@@ -119,9 +119,10 @@ Creates a new database instance.
   - `readOnly: boolean` When `true`, the database is opened in read-only mode. Read operations are
     permitted. Write operations will throw an error with code `ERR_DATABASE_READONLY`. Transactions
     are a no-op in read-only mode. [`flush()`](#dbflushoptions-promisevoid),
-    [`flushSync()`](#dbflushsyncoptions-void), [`compact()`](#dbcompactoptions-promisevoid) and
-    [`compactSync()`](#dbcompactsyncoptions-void) are the exception: they have nothing to do when
-    there are no writes, so they succeed as no-ops rather than throwing.
+    [`flushSync()`](#dbflushsyncoptions-void), [`compact()`](#dbcompactoptions-promisevoid),
+    [`compactSync()`](#dbcompactsyncoptions-void) and [`syncWal()`](#dbsyncwal-promisevoid) are the
+    exception: they have nothing to do when there are no writes, so they succeed as no-ops rather
+    than throwing.
 
     A read-only open is a **point-in-time snapshot**: it never sees later writes. It is safe
     against a quiescent database, but **unsafe against a live writer**: the open holds no reference
@@ -805,6 +806,22 @@ db.flushSync({ allowWriteStall: true });
 
 On a [read-only](#new-rocksdatabasepath-options) database it validates its options and then returns
 without flushing, rather than throwing.
+
+### `db.syncWal(): Promise<void>`
+
+Syncs the write-ahead log to stable storage (`DB::SyncWAL`), so every WAL-backed write committed
+before the call survives a power loss afterwards. Unlike [`flush()`](#dbflushoptions-promisevoid) it
+writes no SST file and never stalls writers. Writes that skipped the WAL (`disableWAL`) and
+transaction-log files, which keep their own durability, are not covered. RocksDB serializes
+concurrent syncs of one WAL, so keep one in flight per database rather than queueing them on the
+libuv threadpool.
+
+```typescript
+await db.syncWal();
+```
+
+On a [read-only](#new-rocksdatabasepath-options) database the returned promise resolves without
+syncing.
 
 ### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
 
