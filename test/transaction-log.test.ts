@@ -3255,8 +3255,10 @@ describe('Transaction Log', () => {
 			// A reader that fell behind retention used to stop at the hole and stop there on
 			// every later poll, so it never saw another entry. It resumes past the hole, but
 			// reports the crossing first: a replicating consumer must not mistake the survivor
-			// for the continuation of what it last read (#805).
-			it.each([false, true])(
+			// for the continuation of what it last read (#805). POSIX-only, like every first-run purge
+			// outcome here: on Windows the reader's mapping of segment 1 can refuse its unlink, and an
+			// ordinary purge stops at the first refusal, keeping 2–4 (invariant 30).
+			it.skipIf(process.platform === 'win32').each([false, true])(
 				'should report a purged run, then resume past it (readUncommitted: %s)',
 				(readUncommitted) =>
 					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
@@ -3297,26 +3299,29 @@ describe('Transaction Log', () => {
 
 			// The other advance site: the source segment's last entry is filtered out rather than
 			// yielded, so the crossing happens inside the same `next()` call that skipped it.
-			it('should report a purged run crossed after a filtered entry', () =>
-				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
-					const log = db.useLog('foo');
-					await writeEntry(db, log, 1, 300);
-					const [first] = log.query({ start: 0 });
-					const iterator = log.query({
-						start: first.timestamp,
-						exactStart: true,
-						exclusiveStart: true,
-					});
+			it.skipIf(process.platform === 'win32')(
+				'should report a purged run crossed after a filtered entry',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+						const log = db.useLog('foo');
+						await writeEntry(db, log, 1, 300);
+						const [first] = log.query({ start: 0 });
+						const iterator = log.query({
+							start: first.timestamp,
+							exactStart: true,
+							exclusiveStart: true,
+						});
 
-					for (const fill of [2, 3, 4]) {
-						await writeEntry(db, log, fill, 300);
-					}
-					db.flushSync();
-					await writeEntry(db, log, 5, 300);
-					db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+						for (const fill of [2, 3, 4]) {
+							await writeEntry(db, log, fill, 300);
+						}
+						db.flushSync();
+						await writeEntry(db, log, 5, 300);
+						db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
 
-					expect(drain(iterator)).toEqual({ entries: [5], gaps: [gapOf(1, 5, 3)] });
-				}));
+						expect(drain(iterator)).toEqual({ entries: [5], gaps: [gapOf(1, 5, 3)] });
+					})
+			);
 
 			it('should report each of two separated gaps and keep the survivor between them', () =>
 				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
