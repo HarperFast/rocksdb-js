@@ -29,7 +29,7 @@
 namespace rocksdb_js {
 
 // forward declarations
-static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data);
+static void lockCallbackCallJs(napi_env env, napi_value jsCallback, void* context, void* data);
 
 // Process-global monotonic source for DBDescriptor::vtEpoch. Starts at 1 so a
 // valid epoch is never 0. 64-bit: never wraps in practice, so every descriptor
@@ -1189,14 +1189,16 @@ void DBDescriptor::lockCall(
 	std::shared_ptr<DBHandle> owner
 ) {
 	bool isNewLock = false;
+	std::shared_ptr<LockHandle> lockHandle;
 	this->lockEnqueueCallback(
-		env,       // env
-		key,       // key
-		callback,  // callback
-		owner,     // owner
-		false,     // skipEnqueueIfNewLock
-		deferred,  // deferred
-		&isNewLock // [out] isNewLock
+		env,        // env
+		key,        // key
+		callback,   // callback
+		owner,      // owner
+		false,      // skipEnqueueIfNewLock
+		deferred,   // deferred
+		&isNewLock, // [out] isNewLock
+		&lockHandle // [out] lockHandle
 	);
 
 	if (!isNewLock) {
@@ -1205,67 +1207,8 @@ void DBDescriptor::lockCall(
 		return;
 	}
 
-	// lock found
-	std::unique_lock<std::mutex> locksMutex(this->locksMutex);
-	auto lockHandle = this->locks.find(key);
-
-	if (lockHandle == this->locks.end()) {
-		DEBUG_LOG("%p DBDescriptor::lockCall no lock found for key:", this);
-		DEBUG_LOG_KEY_LN(key);
-		return;
-	}
-
-	auto& handle = lockHandle->second;
-
-	// try to acquire the "lock" atomically
-	bool expected = false;
-	if (!handle->isRunning.compare_exchange_strong(expected, true)) {
-		// another callback is already running
-		DEBUG_LOG("%p DBDescriptor::lockCall another callback is already running for key:", this);
-		DEBUG_LOG_KEY_LN(key);
-		return;
-	}
-
-	// we now "own" the execution for this key
-	if (handle->threadsafeCallbacks.empty()) {
-		handle->isRunning.store(false);
-		DEBUG_LOG("%p DBDescriptor::lockCall no callbacks left, removing lock for key:", this);
-		DEBUG_LOG_KEY_LN(key);
-		// remove the empty lock handle from the map
-		this->locks.erase(key);
-		return;
-	}
-
-	LockCallback lockCallback = handle->threadsafeCallbacks.front();
-	handle->threadsafeCallbacks.pop();
-	napi_threadsafe_function threadsafeCallback = lockCallback.callback;
-
-	// release the mutex before calling the callback to avoid holding locks
-	// during callback execution
-	locksMutex.unlock();
-
-	if (!threadsafeCallback) {
-		DEBUG_LOG("%p DBDescriptor::lockCall threadsafe lock callback is null for key:", this);
-		DEBUG_LOG_KEY_LN(key);
-		return;
-	}
-
-	DEBUG_LOG("%p DBDescriptor::lockCall calling callback for key:", this);
-	DEBUG_LOG_KEY_LN(key);
-
-	// create callback data that includes the key for completion and deferred promise
-	auto* callbackData = new LockCallbackCompletionData(key, weak_from_this(), lockCallback.deferred);
-
-	// use threadsafe function instead of direct call
-	napi_status status = ::napi_call_threadsafe_function(threadsafeCallback, callbackData, napi_tsfn_blocking);
-	if (status != napi_ok && status != napi_closing) {
-		DEBUG_LOG("%p DBDescriptor::lockCall failed to call threadsafe function\n", this);
-		delete callbackData;
-		this->onCallbackComplete(key);
-	}
-
-	// release the threadsafe function
-	::napi_release_threadsafe_function(threadsafeCallback, napi_tsfn_release);
+	std::lock_guard<std::mutex> lock(this->locksMutex);
+	this->dispatchNextLockCallback(key, lockHandle);
 }
 
 /**
@@ -1279,22 +1222,27 @@ void DBDescriptor::lockEnqueueCallback(
 	std::shared_ptr<DBHandle> owner,
 	bool skipEnqueueIfNewLock,
 	napi_deferred deferred,
-	bool* isNewLock
+	bool* isNewLock,
+	std::shared_ptr<LockHandle>* lockHandleOut
 ) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
 	std::shared_ptr<LockHandle> lockHandle;
 	auto lockHandleIterator = this->locks.find(key);
+	const bool newLock = lockHandleIterator == this->locks.end();
 
-	if (lockHandleIterator == this->locks.end()) {
+	if (newLock) {
 		// no lock found
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback no lock found for key:", this);
 		DEBUG_LOG_KEY_LN(key);
 		lockHandle = std::make_shared<LockHandle>(owner, env);
-		this->locks.emplace(key, lockHandle);
 		if (isNewLock != nullptr) {
 			*isNewLock = true;
 		}
+		if (lockHandleOut != nullptr) {
+			*lockHandleOut = lockHandle;
+		}
 		if (skipEnqueueIfNewLock) {
+			this->locks.emplace(key, lockHandle);
 			DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback skipping enqueue because lock already exists\n", this);
 			return;
 		}
@@ -1315,6 +1263,9 @@ void DBDescriptor::lockEnqueueCallback(
 			&resourceName
 		));
 
+		auto callbackData = std::make_unique<std::shared_ptr<LockCallbackCompletionData>>(
+			std::make_shared<LockCallbackCompletionData>(key, weak_from_this(), lockHandle, deferred, env)
+		);
 		napi_threadsafe_function threadsafeCallback;
 		NAPI_STATUS_THROWS_VOID(::napi_create_threadsafe_function(
 			env,                // env
@@ -1323,18 +1274,28 @@ void DBDescriptor::lockEnqueueCallback(
 			resourceName,       // async_resource_name
 			0,                  // max_queue_size
 			1,                  // initial_thread_count
-			nullptr,            // thread_finalize_data
-			nullptr,            // thread_finalize_callback
-			nullptr,            // context
-			callJsCallback,     // call_js_cb
+			callbackData.get(), // thread_finalize_data
+			[](napi_env, void* data, void*) {
+				delete static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
+			},
+			callbackData.get(), // context
+			lockCallbackCallJs, // call_js_cb
 			&threadsafeCallback // [out] callback
 		));
 
+		// Must stay ref'd: see "Pending-wake threadsafe functions" in DESIGN.md.
 		DEBUG_LOG("%p DBDescriptor::lockEnqueueCallback enqueuing callback %p\n", this, threadsafeCallback);
-		NAPI_STATUS_THROWS_VOID(::napi_unref_threadsafe_function(env, threadsafeCallback));
 
-		// Create LockCallback and add to queue
-		lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, deferred, env));
+		auto completion = *callbackData.release(); // owned by the TSFN finalizer now
+		try {
+			lockHandle->threadsafeCallbacks.push(LockCallback(threadsafeCallback, env, std::move(completion)));
+		} catch (...) {
+			::napi_release_threadsafe_function(threadsafeCallback, napi_tsfn_release);
+			throw;
+		}
+	}
+	if (newLock) {
+		this->locks.emplace(key, lockHandle);
 	}
 }
 
@@ -1400,7 +1361,9 @@ bool DBDescriptor::lockReleaseByKey(std::string& key) {
  */
 void DBDescriptor::releaseLockCallbacksByEnv(napi_env env) {
 	std::lock_guard<std::mutex> lock(this->locksMutex);
-	for (auto& [_key, lockHandle] : this->locks) {
+	for (auto it = this->locks.begin(); it != this->locks.end();) {
+		auto entry = it++;
+		auto lockHandle = entry->second;
 		std::queue<LockCallback> kept;
 		while (!lockHandle->threadsafeCallbacks.empty()) {
 			LockCallback lockCallback = lockHandle->threadsafeCallbacks.front();
@@ -1413,6 +1376,12 @@ void DBDescriptor::releaseLockCallbacksByEnv(napi_env env) {
 			}
 		}
 		lockHandle->threadsafeCallbacks = std::move(kept);
+		if (lockHandle->activeCall && lockHandle->activeCall->env == env) {
+			lockHandle->activeCall->completed.store(true);
+			lockHandle->activeCall.reset();
+			lockHandle->isRunning.store(false);
+			this->dispatchNextLockCallback(entry->first, lockHandle);
+		}
 	}
 }
 
@@ -2115,93 +2084,83 @@ size_t DBDescriptor::pendingReclaimCount() {
  * Called when a lock callback completes (async or sync) to clean up the lock
  * handle and fire the next callback in the queue.
  */
-void DBDescriptor::onCallbackComplete(const std::string& key) {
-	// try to mark the current callback as complete and fire the next one
+void DBDescriptor::onLockCallbackComplete(const std::string& key, const std::weak_ptr<LockHandle>& lockHandle) {
 	// use a try-catch to handle the case where mutexes might be invalid
 	try {
+		std::shared_ptr<LockHandle> handle = lockHandle.lock();
+		if (!handle) {
+			DEBUG_LOG("%p DBDescriptor::onLockCallbackComplete lock already removed (key=\"%s\")\n", this, key.c_str());
+			return;
+		}
 		std::lock_guard<std::mutex> lock(this->locksMutex);
-		auto lockHandle = this->locks.find(key);
-		if (lockHandle != this->locks.end()) {
-			lockHandle->second->isRunning.store(false);
-			DEBUG_LOG("%p DBDescriptor::onCallbackComplete marking as complete (key=\"%s\")\n", this, key.c_str());
-		} else {
-			DEBUG_LOG("%p DBDescriptor::onCallbackComplete lock already removed (key=\"%s\")\n", this, key.c_str());
-			return; // lock was already cleaned up, nothing to do
-		}
+		handle->activeCall.reset();
+		handle->isRunning.store(false);
+		this->dispatchNextLockCallback(key, handle);
 	} catch (const std::exception& e) {
-		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to acquire lock (key=\"%s\"): %s\n", this, key.c_str(), e.what());
-		return; // mutex is invalid, descriptor is likely being destroyed
+		DEBUG_LOG("%p DBDescriptor::onLockCallbackComplete failed (key=\"%s\"): %s\n", this, key.c_str(), e.what());
 	}
+}
 
-	// fire the next callback in the queue
-	DEBUG_LOG("%p DBDescriptor::onCallbackComplete firing next callback (key=\"%s\")\n", this, key.c_str());
-	try {
-		std::unique_lock<std::mutex> lock(this->locksMutex);
-		auto lockHandle = this->locks.find(key);
-
-		if (lockHandle == this->locks.end()) {
-			DEBUG_LOG("%p DBDescriptor::onCallbackComplete no lock found (key=\"%s\")\n", this, key.c_str());
+/**
+ * Runs the next queued `withLock()` callback on `lockHandle` unless one is
+ * already running, removing the lock once its queue is empty. A no-op once
+ * `key` no longer maps to `lockHandle` (an `unlock()` or owner close erased it
+ * and another lock may have taken the key).
+ */
+void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::shared_ptr<LockHandle>& lockHandle) {
+	// Callers hold locksMutex through the TSFN call and active-call publication,
+	// so env cleanup cannot miss the call or let Node free its TSFN mid-call.
+	while (true) {
+		auto entry = this->locks.find(key);
+		if (entry == this->locks.end() || entry->second != lockHandle) {
 			return;
 		}
 
-		auto& handle = lockHandle->second;
-
-		// try to acquire the "lock" atomically
-		bool expected = false;
-		if (!handle->isRunning.compare_exchange_strong(expected, true)) {
-			// another callback is already running
-			DEBUG_LOG("%p DBDescriptor::onCallbackComplete another callback is already running (key=\"%s\")\n", this, key.c_str());
+		auto& handle = entry->second;
+		if (handle->isRunning.load()) {
+			DEBUG_LOG("%p DBDescriptor::dispatchNextLockCallback another callback is already running (key=\"%s\")\n", this, key.c_str());
 			return;
 		}
 
-		// we now "own" the execution for this key
 		if (handle->threadsafeCallbacks.empty()) {
-			handle->isRunning.store(false);
-			DEBUG_LOG("%p DBDescriptor::onCallbackComplete no callbacks left (key=\"%s\"), removing lock\n", this, key.c_str());
-			// remove the empty lock handle from the map
-			this->locks.erase(key);
+			DEBUG_LOG("%p DBDescriptor::dispatchNextLockCallback no callbacks left, removing lock (key=\"%s\")\n", this, key.c_str());
+			this->locks.erase(entry);
 			return;
 		}
 
 		LockCallback lockCallback = handle->threadsafeCallbacks.front();
 		handle->threadsafeCallbacks.pop();
-		auto callback = lockCallback.callback;
+		handle->isRunning.store(true);
+		handle->activeCall = lockCallback.completion;
 
-		// release the mutex before calling the callback to avoid holding locks during callback execution
-		lock.unlock();
-
-		DEBUG_LOG("%p DBDescriptor::onCallbackComplete calling callback %p (key=\"%s\")\n", this, callback, key.c_str());
-
-		// create callback data that includes the key for completion and deferred promise
-		auto* callbackData = new LockCallbackCompletionData(key, weak_from_this(), lockCallback.deferred);
-
-		// use threadsafe function instead of direct call
-		napi_status status = ::napi_call_threadsafe_function(callback, callbackData, napi_tsfn_blocking);
-		if (status != napi_ok && status != napi_closing) {
-			DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to call threadsafe function (key=\"%s\")\n", this, key.c_str());
-			delete callbackData;
-			this->onCallbackComplete(key);
+		DEBUG_LOG("%p DBDescriptor::dispatchNextLockCallback calling callback %p (key=\"%s\")\n", this, lockCallback.callback, key.c_str());
+		napi_status status = ::napi_call_threadsafe_function(lockCallback.callback, lockCallback.completion.get(), napi_tsfn_blocking);
+		if (status != napi_closing) {
+			::napi_release_threadsafe_function(lockCallback.callback, napi_tsfn_release);
+		}
+		if (status == napi_ok) {
+			return;
 		}
 
-		// release the threadsafe function
-		::napi_release_threadsafe_function(callback, napi_tsfn_release);
-	} catch (const std::exception& e) {
-		DEBUG_LOG("%p DBDescriptor::onCallbackComplete failed to fire next callback (key=\"%s\"): %s\n", this, key.c_str(), e.what());
+		// That callback will never run: pass the lock to the next waiter.
+		DEBUG_LOG("%p DBDescriptor::dispatchNextLockCallback failed to call threadsafe function (key=\"%s\")\n", this, key.c_str());
+		handle->activeCall.reset();
+		handle->isRunning.store(false);
 	}
 }
 
 /**
- * `callJsCallback()` helper macros.
+ * `lockCallbackCallJs()` helper macros.
  */
 #ifdef DEBUG
 	#define CALL_JS_CB_DEBUG_LOG(msg, ...) \
 		do { \
 			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
-			rocksdb_js::debugLog(true, "callJsCallback() " msg ": %s (key=\"%s\")", ##__VA_ARGS__, errorStr.c_str(), callbackData->key.c_str()); \
+			rocksdb_js::debugLog(true, "lockCallbackCallJs() " msg ": %s (key=\"%s\")", ##__VA_ARGS__, errorStr.c_str(), callbackData->key.c_str()); \
 		} while (0)
 #else
 	#define CALL_JS_CB_DEBUG_LOG(msg, ...) \
-		do { if (false) { rocksdb_js::debugLog(true, "callJsCallback() " msg, ##__VA_ARGS__); } } while (0)
+		do { if (false) { rocksdb_js::debugLog(true, "lockCallbackCallJs() " msg, ##__VA_ARGS__); } } while (0)
 #endif
 
 #define CALL_JS_CB_NAPI_STATUS_CHECK(call, code, msg, ...) \
@@ -2215,14 +2174,75 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
 	} while (0)
 
 /**
+ * Settles a `withLock()` callback's returned promise: resolves or rejects the
+ * caller's deferred and hands the lock to the next waiter. Bound to `.then()`
+ * as both handlers; `data` is the handler's own reference to the shared
+ * completion data, freed by its finalizer since only one handler ever runs.
+ */
+static napi_value settleLockCallback(napi_env env, napi_callback_info info, bool rejected) {
+	size_t argc = 1;
+	napi_value argv[1];
+	void* data = nullptr;
+	napi_value undefined;
+	::napi_get_undefined(env, &undefined);
+	if (::napi_get_cb_info(env, info, &argc, argv, nullptr, &data) != napi_ok || data == nullptr) {
+		return undefined;
+	}
+
+	auto& callbackData = *static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
+	if (callbackData->completed.exchange(true)) {
+		return undefined;
+	}
+
+	DEBUG_LOG("lockCallbackCallJs promise %s, calling onLockCallbackComplete() (key=\"%s\")\n", rejected ? "rejected" : "resolved", callbackData->key.c_str());
+	// Release before settling: a runtime may run the caller's continuation
+	// inside the settle call (Deno does), and it must see the lock released.
+	if (auto desc = callbackData->descriptor.lock()) {
+		desc->onLockCallbackComplete(callbackData->key, callbackData->lockHandle);
+	}
+	if (callbackData->deferred != nullptr) {
+		if (rejected) {
+			::napi_reject_deferred(env, callbackData->deferred, argv[0]);
+		} else {
+			::napi_resolve_deferred(env, callbackData->deferred, undefined);
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Creates a `.then()` handler holding its own reference to `callbackData`.
+ */
+static napi_status createLockSettleCallback(
+	napi_env env,
+	const std::shared_ptr<LockCallbackCompletionData>& callbackData,
+	const char* name,
+	napi_callback callback,
+	napi_value* result
+) {
+	auto* ref = new std::shared_ptr<LockCallbackCompletionData>(callbackData);
+	napi_status status = ::napi_create_function(env, name, NAPI_AUTO_LENGTH, callback, ref, result);
+	if (status == napi_ok) {
+		status = ::napi_add_finalizer(env, *result, ref, [](napi_env, void* data, void*) {
+			delete static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
+		}, nullptr, nullptr);
+	}
+	if (status != napi_ok) {
+		// The function, if created, is unreachable: it is never handed to `.then()`.
+		delete ref;
+	}
+	return status;
+}
+
+/**
  * Custom wrapper used by `napi_call_threadsafe_function()` to call user-
  * defined lock callback function. If the lock callback returns a Promise, it
- * is awaited before calling the `onCallbackComplete()` handler.
+ * is awaited before calling the `onLockCallbackComplete()` handler.
  *
  * For example, the callback passed into `db.tryLock()` or `db.withLock()` is
  * what is passed in as `jsCallback`. The code then invokes `jsCallback` and
  * checks if it returned a promise. If it did, it calls `then()` on the promise
- * with resolve and reject callbacks that call `onCallbackComplete()`.
+ * with resolve and reject callbacks that call `onLockCallbackComplete()`.
  *
  * This mechanism is key to ensuring that only a single async lock callback
  * is running at a time.
@@ -2230,261 +2250,137 @@ void DBDescriptor::onCallbackComplete(const std::string& key) {
  * Note: Node.js runs this function which ever thread (main or worker) that
  * created the threadsafe function.
  */
-static void callJsCallback(napi_env env, napi_value jsCallback, void* context, void* data) {
-	if (env == nullptr || jsCallback == nullptr) {
-		return;
-	}
-
-	// get the callback data from the function's data
-	LockCallbackCompletionData* callbackData = static_cast<LockCallbackCompletionData*>(data);
-	if (callbackData == nullptr) {
-		DEBUG_LOG("callJsCallback callbackData is nullptr - calling js callback\n");
+static void lockCallbackCallJs(napi_env env, napi_value jsCallback, void* context, void* data) {
+	if (data == nullptr) {
 		// this is a tryLock callback - call it without completion callback
+		if (env == nullptr || jsCallback == nullptr) {
+			return;
+		}
+		DEBUG_LOG("lockCallbackCallJs callbackData is nullptr - calling js callback\n");
 		napi_value global;
-		napi_status status = ::napi_get_global(env, &global);
-		if (status == napi_ok) {
+		if (::napi_get_global(env, &global) == napi_ok) {
 			napi_value result;
 			::napi_call_function(env, global, jsCallback, 0, nullptr, &result);
 		}
+		// Deno leaves TSFN exceptions pending for the next native callback.
+		bool pending = false;
+		if (::napi_is_exception_pending(env, &pending) == napi_ok && pending) {
+			napi_value error;
+			::napi_get_and_clear_last_exception(env, &error);
+		}
 		return;
 	}
 
-	// create shared_ptr from raw pointer for RAII management
-	std::shared_ptr<LockCallbackCompletionData> callbackDataPtr(callbackData);
+	// The TSFN owns context until its finalizer; copying the preallocated
+	// shared_ptr does not allocate during handoff or delivery.
+	auto callbackData = *static_cast<std::shared_ptr<LockCallbackCompletionData>*>(context);
 
-	// create a completion callback function
-	napi_value completionCallback;
-	CALL_JS_CB_NAPI_STATUS_CHECK(
-		::napi_create_function(
-			env,
-			"rocksdb-js.lock.callback.complete",
-			NAPI_AUTO_LENGTH,
-			[](napi_env env, napi_callback_info info) -> napi_value {
-				// get the callback data from the function's data
-				void* data;
-				::napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
-				LockCallbackCompletionData* callbackData = static_cast<LockCallbackCompletionData*>(data);
+	// Claims completion, then hands the lock to the next waiter. False when a
+	// `.then()` handler already did: a user-overridden `then` can run one and
+	// still fail the call.
+	auto complete = [&callbackData]() {
+		if (callbackData->completed.exchange(true)) {
+			return false;
+		}
+		if (auto desc = callbackData->descriptor.lock()) {
+			desc->onLockCallbackComplete(callbackData->key, callbackData->lockHandle);
+		}
+		return true;
+	};
 
-				if (callbackData) {
-					// check if this callback is still valid
-					if (auto desc = callbackData->descriptor.lock()) {
-						// call the completion handler
-						DEBUG_LOG("callJsCallback calling onCallbackComplete() (key=\"%s\")\n", callbackData->key.c_str());
-						desc->onCallbackComplete(callbackData->key);
-					} else {
-						DEBUG_LOG("callJsCallback completion callback has no descriptor (key=\"%s\")\n", callbackData->key.c_str());
-					}
-					delete callbackData;
-				}
+	if (env == nullptr || jsCallback == nullptr) {
+		// This call will never run; pass the lock on.
+		DEBUG_LOG("lockCallbackCallJs env is gone, completing (key=\"%s\")\n", callbackData->key.c_str());
+		complete();
+		return;
+	}
 
-				NAPI_RETURN_UNDEFINED();
-			},
-			callbackData,
-			&completionCallback
-		),
-		delete callbackData,
-		"failed to create completion callback"
-	);
+	// Rejects the caller with the pending exception (the callback's own throw,
+	// or a throwing `then`), else a generic error. The exception is cleared even
+	// with no promise to receive it: Deno does not report one left pending when
+	// this callback returns, and the next waiter's call would fail on it.
+	auto fail = [&]() {
+		napi_value error = nullptr;
+		bool pending = false;
+		if (::napi_is_exception_pending(env, &pending) == napi_ok && pending) {
+			::napi_get_and_clear_last_exception(env, &error);
+		}
+		if (!complete() || callbackData->deferred == nullptr) {
+			return;
+		}
+		if (error == nullptr) {
+			napi_value message;
+			if (
+				::napi_create_string_utf8(env, "Failed to run the withLock() callback", NAPI_AUTO_LENGTH, &message) != napi_ok ||
+				::napi_create_error(env, nullptr, message, &error) != napi_ok
+			) {
+				::napi_get_undefined(env, &error);
+			}
+		}
+		::napi_reject_deferred(env, callbackData->deferred, error);
+	};
 
-	// call the original callback without any arguments
 	napi_value global;
-	CALL_JS_CB_NAPI_STATUS_CHECK(
-		::napi_get_global(env, &global),
-		delete callbackData,
-		"napi_get_global() failed"
-	);
+	CALL_JS_CB_NAPI_STATUS_CHECK(::napi_get_global(env, &global), fail(), "napi_get_global() failed");
 
 	napi_value result;
-	DEBUG_LOG("callJsCallback calling js callback (key=\"%s\")\n", callbackData->key.c_str());
+	DEBUG_LOG("lockCallbackCallJs calling js callback (key=\"%s\")\n", callbackData->key.c_str());
 	CALL_JS_CB_NAPI_STATUS_CHECK(
 		::napi_call_function(env, global, jsCallback, 0, nullptr, &result),
-		{
-			if (auto desc = callbackData->descriptor.lock()) {
-				desc->onCallbackComplete(callbackData->key);
-			}
-			delete callbackData;
-		},
+		fail(),
 		"napi_call_function() failed"
 	);
 
-	// check if the result is a Promise
-	napi_value promiseCtor;
-	CALL_JS_CB_NAPI_STATUS_CHECK(
-		::napi_get_named_property(env, global, "Promise", &promiseCtor),
-		// not a promise environment, complete immediately
-		if (auto desc = callbackData->descriptor.lock()) {
-			desc->onCallbackComplete(callbackData->key);
-		}
-		delete callbackData,
-		"failed to get Promise constructor"
-	);
-
-	bool isPromise;
-	CALL_JS_CB_NAPI_STATUS_CHECK(
-		::napi_instanceof(env, result, promiseCtor, &isPromise),
-		// assume not a promise, complete immediately
-		if (auto desc = callbackData->descriptor.lock()) {
-			desc->onCallbackComplete(callbackData->key);
-		}
-		delete callbackData,
-		"napi_instanceof() failed"
-	);
+	bool isPromise = false;
+	CALL_JS_CB_NAPI_STATUS_CHECK(::napi_is_promise(env, result, &isPromise), fail(), "napi_is_promise() failed");
 
 	if (!isPromise) {
-		DEBUG_LOG("callJsCallback result is not a Promise, completing immediately (key=\"%s\")\n", callbackData->key.c_str());
-
-		// If this is a withLock call with a deferred promise, resolve it
-		if (callbackData->deferred != nullptr) {
-			DEBUG_LOG("callJsCallback resolving deferred promise for synchronous withLock (key=\"%s\")\n", callbackData->key.c_str());
+		DEBUG_LOG("lockCallbackCallJs result is not a Promise, completing immediately (key=\"%s\")\n", callbackData->key.c_str());
+		if (complete() && callbackData->deferred != nullptr) {
 			napi_value undefined;
-			napi_get_undefined(env, &undefined);
-			napi_resolve_deferred(env, callbackData->deferred, undefined);
-		}
-
-		if (auto desc = callbackData->descriptor.lock()) {
-			desc->onCallbackComplete(callbackData->key);
+			::napi_get_undefined(env, &undefined);
+			::napi_resolve_deferred(env, callbackData->deferred, undefined);
 		}
 		return;
 	}
 
-	DEBUG_LOG("callJsCallback result is a Promise, attaching .then() callback (key=\"%s\")\n", callbackData->key.c_str());
+	DEBUG_LOG("lockCallbackCallJs result is a Promise, attaching .then() callback (key=\"%s\")\n", callbackData->key.c_str());
 
-	// get the 'then' method from the promise
 	napi_value thenMethod;
 	CALL_JS_CB_NAPI_STATUS_CHECK(
 		::napi_get_named_property(env, result, "then", &thenMethod),
-		if (auto desc = callbackData->descriptor.lock()) {
-			desc->onCallbackComplete(callbackData->key);
-		}
-		delete callbackData,
+		fail(),
 		"failed to get .then() method"
 	);
 
-	// create resolve and reject callbacks that both complete the lock
-	// we need to store the shared_ptr in a way N-API callbacks can access it
-	auto* resolveDataPtr = new std::shared_ptr<LockCallbackCompletionData>(callbackDataPtr);
-
-	napi_value resolveCallback;
+	napi_value thenArgs[2];
 	CALL_JS_CB_NAPI_STATUS_CHECK(
-		::napi_create_function(
+		createLockSettleCallback(
 			env,
+			callbackData,
 			"rocksdb-js.lock.callback.resolve",
-			NAPI_AUTO_LENGTH,
-			[](napi_env env, napi_callback_info info) -> napi_value {
-				napi_value result;
-				::napi_get_undefined(env, &result);
-
-				DEBUG_LOG("callJsCallback promise resolve callback\n");
-
-				void* data;
-				::napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
-				auto* callbackDataPtr = static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
-
-				if (callbackDataPtr && *callbackDataPtr) {
-					auto& callbackData = **callbackDataPtr;
-					auto desc = callbackData.descriptor.lock();
-					if (!callbackData.completed.exchange(true) && desc) {
-						DEBUG_LOG("callJsCallback promise resolved, calling onCallbackComplete() (key=\"%s\")\n", callbackData.key.c_str());
-
-						// if this is a withLock call with a deferred promise, resolve it
-						if (callbackData.deferred != nullptr) {
-							DEBUG_LOG("callJsCallback resolving deferred promise for withLock (key=\"%s\")\n", callbackData.key.c_str());
-							napi_value undefined;
-							napi_get_undefined(env, &undefined);
-							napi_resolve_deferred(env, callbackData.deferred, undefined);
-						}
-
-						desc->onCallbackComplete(callbackData.key);
-					} else {
-						DEBUG_LOG("callJsCallback promise resolve callback already completed (key=\"%s\")\n", callbackData.key.c_str());
-					}
-				}
-
-				// clean up the shared_ptr wrapper
-				delete callbackDataPtr;
-				return result;
-			},
-			resolveDataPtr,
-			&resolveCallback
+			[](napi_env env, napi_callback_info info) { return settleLockCallback(env, info, false); },
+			&thenArgs[0]
 		),
-		/* cleanup */ {
-			if (auto desc = callbackData->descriptor.lock()) {
-				desc->onCallbackComplete(callbackData->key);
-			}
-			delete resolveDataPtr;
-		},
+		fail(),
 		"failed to create resolve callback"
 	);
-
-	// create reject callback - shared_ptr handles safe sharing between resolve/reject
-	auto* rejectDataPtr = new std::shared_ptr<LockCallbackCompletionData>(callbackDataPtr);
-
-	napi_value rejectCallback;
 	CALL_JS_CB_NAPI_STATUS_CHECK(
-		::napi_create_function(
+		createLockSettleCallback(
 			env,
+			callbackData,
 			"rocksdb-js.lock.callback.reject",
-			NAPI_AUTO_LENGTH,
-			[](napi_env env, napi_callback_info info) -> napi_value {
-				napi_value result;
-				::napi_get_undefined(env, &result);
-
-				void* data;
-				::napi_get_cb_info(env, info, nullptr, nullptr, nullptr, &data);
-				auto* callbackDataPtr = static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
-
-				if (callbackDataPtr && *callbackDataPtr) {
-					auto& callbackData = **callbackDataPtr;
-					if (auto desc = callbackData.descriptor.lock()) {
-						DEBUG_LOG("callJsCallback promise rejected, calling onCallbackComplete() (key=\"%s\")\n", callbackData.key.c_str());
-
-						// if this is a withLock call with a deferred promise, reject it
-						if (callbackData.deferred != nullptr) {
-							DEBUG_LOG("callJsCallback rejecting deferred promise for withLock (key=\"%s\")\n", callbackData.key.c_str());
-							// get the error from the first argument of the reject callback
-							size_t argc = 1;
-							napi_value argv[1];
-							napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr);
-							napi_value error = argc > 0 ? argv[0] : nullptr;
-							if (error == nullptr) {
-								napi_get_undefined(env, &error);
-							}
-							napi_reject_deferred(env, callbackData.deferred, error);
-						}
-
-						desc->onCallbackComplete(callbackData.key);
-					}
-				}
-
-				// clean up the shared_ptr wrapper
-				delete callbackDataPtr;
-				return result;
-			},
-			rejectDataPtr,
-			&rejectCallback
+			[](napi_env env, napi_callback_info info) { return settleLockCallback(env, info, true); },
+			&thenArgs[1]
 		),
-		/* cleanup */ {
-			if (auto desc = callbackData->descriptor.lock()) {
-				desc->onCallbackComplete(callbackData->key);
-			}
-			delete rejectDataPtr;
-			delete resolveDataPtr;
-		},
+		fail(),
 		"failed to create reject callback"
 	);
 
-	// call `promise.then(resolveCallback, rejectCallback)` for key "key"
-	napi_value thenArgs[] = { resolveCallback, rejectCallback };
 	napi_value thenResult;
 	CALL_JS_CB_NAPI_STATUS_CHECK(
 		::napi_call_function(env, result, thenMethod, 2, thenArgs, &thenResult),
-		{
-			if (auto desc = callbackData->descriptor.lock()) {
-				desc->onCallbackComplete(callbackData->key);
-			}
-			delete resolveDataPtr;
-			delete rejectDataPtr;
-		},
+		fail(),
 		"failed to call .then()"
 	);
 }
