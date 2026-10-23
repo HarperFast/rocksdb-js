@@ -129,13 +129,12 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	bool idle = false;
 	uint64_t poolGeneration = 0;
 
-	// Attached to the descriptor's closables: a closer other than the JS
-	// finalizer detaches it after closing.
-	std::atomic<bool> attached{false};
+	// The descriptor whose closables this handle is attached to; `closeIfOpen`
+	// detaches it.
+	std::atomic<DBDescriptor*> attachedDescriptor{nullptr};
 
-
-	// Call after `close()`.
-	void detachFromDescriptor() noexcept;
+	// The transaction's `iteratorEpoch` when this handle was last lent out.
+	uint64_t lentEpoch = 0;
 
 private:
 	/**

@@ -119,6 +119,12 @@ bool DBIteratorHandle::closeIfOpen() {
 	if (!this->iterator) return false;
 	this->iterator->Reset();
 	this->iterator.reset();
+	// Detach only after the reset: until then a foreign close sweep must still
+	// find this handle and wait on `iteratorMutex`. The descriptor is alive: its
+	// close cannot finish before that sweep has closed this attached handle.
+	if (DBDescriptor* descriptor = this->attachedDescriptor.exchange(nullptr)) {
+		descriptor->detach(static_cast<Closable*>(this));
+	}
 	if (this->txnHandle && this->transactionRegistered) {
 		this->transactionRegistered = false;
 		auto txnHandle = std::move(this->txnHandle);
@@ -154,12 +160,6 @@ void DBIteratorHandle::reuse(DBIteratorOptions& options) {
 		this->endKey = rocksdb::Slice(this->endKeyStr);
 	}
 	this->seek();
-}
-
-void DBIteratorHandle::detachFromDescriptor() noexcept {
-	if (this->attached.exchange(false) && this->dbHandle && this->dbHandle->descriptor) {
-		this->dbHandle->descriptor->detach(static_cast<Closable*>(this));
-	}
 }
 
 bool DBIteratorHandle::readsColumnOf(const std::shared_ptr<DBHandle>& target) const {

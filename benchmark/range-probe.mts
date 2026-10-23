@@ -69,7 +69,7 @@ function probe(context: { getRange: (options: any) => Iterable<any> }, options?:
 	}
 }
 
-type Scenario = { name: string; run: (n: number) => void };
+type Scenario = { name: string; run: (n: number) => void | Promise<void> };
 const scenarios: Scenario[] = [
 	{
 		name: 'point get (getBinaryFastSync)',
@@ -104,13 +104,15 @@ const scenarios: Scenario[] = [
 		},
 	},
 	{
-		// A request-sized transaction: a new transaction every 11 probes.
+		// A request-sized transaction: 11 probes, then the macrotask ends (so the
+		// pool trim runs and is timed).
 		name: 'txn.getRange probe, 11 per transaction',
-		run(n) {
+		async run(n) {
 			for (let i = 0; i < n; i += 11) {
 				db.transactionSync((txn) => {
 					for (let j = 0; j < 11; j++) probe(txn);
 				});
+				await new Promise((resolve) => setImmediate(resolve));
 			}
 		},
 	},
@@ -175,11 +177,11 @@ console.log(
 		`${BATCHES} batches x ${PROBES} probes`
 );
 for (const scenario of scenarios) {
-	scenario.run(PROBES); // warm up
+	await scenario.run(PROBES); // warm up
 	const samples: number[] = [];
 	for (let b = 0; b < BATCHES; b++) {
 		const start = process.hrtime.bigint();
-		scenario.run(PROBES);
+		await scenario.run(PROBES);
 		samples.push(Number(process.hrtime.bigint() - start) / 1000 / PROBES);
 	}
 	console.log(`${scenario.name.padEnd(45)} ${median(samples).toFixed(2)} us/op`);

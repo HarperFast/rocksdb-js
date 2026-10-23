@@ -335,9 +335,6 @@ void TransactionHandle::closeIterators() {
 		}
 		if (iterator) {
 			iterator->close();
-			if (iterator->pooled) {
-				iterator->detachFromDescriptor();
-			}
 		} else if (expired) {
 			std::this_thread::yield();
 		} else {
@@ -380,13 +377,14 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				for (auto& slot : this->idleIterators) {
 					if (slot && slot->dbHandle == targetHandle && slot->boundsMatch(options)) {
 						if (this->activeIterators.count(slot.get()) == 0) {
-							// Closed while idle; closeIterators() empties the slots next.
+							// Closed while idle; destroyed outside this lock.
 							discarded = std::move(slot);
-							continue;
+							break;
 						}
 						iterator = std::move(slot);
 						iterator->idle = false;
 						iterator->poolGeneration = this->trimGeneration;
+						iterator->lentEpoch = this->iteratorEpoch.load(std::memory_order_relaxed);
 						break;
 					}
 				}
@@ -403,6 +401,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				(void)inserted;
 				iterator->transactionRegistered = true;
 				iterator->poolGeneration = this->trimGeneration;
+				iterator->lentEpoch = this->iteratorEpoch.load(std::memory_order_relaxed);
 				iterator->writeBufferManagerAttached = targetHandle->descriptor->attachedWriteBufferManager != nullptr;
 				this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 				if (poolable) {
@@ -425,7 +424,6 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			}
 		} catch (...) {
 			iterator->close();
-			iterator->detachFromDescriptor();
 			throw;
 		}
 		if (reused) {
@@ -434,7 +432,6 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 		}
 		// Closed since it was taken, or its column family was dropped/reopened.
 		iterator->close();
-		iterator->detachFromDescriptor();
 	}
 }
 
@@ -448,7 +445,6 @@ void TransactionHandle::closeIdleIterators() noexcept {
 	for (auto& iterator : idle) {
 		if (iterator) {
 			iterator->close();
-			iterator->detachFromDescriptor();
 		}
 	}
 }

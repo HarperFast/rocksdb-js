@@ -1,5 +1,5 @@
 import { RocksDatabase, registryStatus } from '../src/index.ts';
-import { iteratorPoolStats } from '../src/load-binding.ts';
+import { iteratorPoolEnabled, iteratorPoolStats } from '../src/load-binding.ts';
 import { Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawnSync } from 'node:child_process';
@@ -61,7 +61,8 @@ const RANGE_OPTIONS: Record<string, unknown>[] = [
 	{ reverse: true, values: false, limit: 2 },
 ];
 
-describe('Transaction iterator pool', () => {
+// Pooling compiles out below RocksDB 11 and is off with ROCKSDB_JS_ITERATOR_POOL=0.
+describe.skipIf(!iteratorPoolEnabled)('Transaction iterator pool', () => {
 	it('returns the same rows as a fresh iterator for every range shape', () =>
 		dbRunner(async ({ db }) => {
 			for (const key of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) {
@@ -520,9 +521,8 @@ describe('Transaction iterator pool', () => {
 				unpooled.return!();
 				pooled.return!();
 				await collect();
-				// The returned unpooled iterator stays attached until it is collected.
 				expect(status(dbPath)).toMatchObject({
-					closables: baseline.closables + 1,
+					closables: baseline.closables,
 					transactions: baseline.transactions,
 				});
 				expect(() => unpooled.next()).toThrow('Iterator not initialized');
@@ -553,24 +553,30 @@ describe('Transaction iterator pool', () => {
 	);
 });
 
-describe('Transaction iterator pool and the WriteBufferManager', () => {
-	it('does not pool, and drains idle iterators, once the WriteBufferManager may stall', () => {
-		const result = spawnSync(
-			process.execPath,
-			[
-				join(import.meta.dirname, 'fixtures', 'fork-pooled-iterator-wbm-stall.mts'),
-				generateDBPath(),
-			],
-			{ encoding: 'utf8', timeout: 60_000 }
-		);
-		expect(result.status, result.stderr).toBe(0);
-		expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({
-			notStalling: { created: 1, reused: 2 },
-			stalling: { created: 0, reused: 0 },
-			drained: 1,
-		});
-	});
-});
+describe.skipIf(!iteratorPoolEnabled)(
+	'Transaction iterator pool and the WriteBufferManager',
+	() => {
+		for (const from of ['main', 'worker']) {
+			it(`does not pool, and drains idle iterators, once stalls are enabled from ${from}`, () => {
+				const result = spawnSync(
+					process.execPath,
+					[
+						join(import.meta.dirname, 'fixtures', 'fork-pooled-iterator-wbm-stall.mts'),
+						generateDBPath(),
+						from,
+					],
+					{ encoding: 'utf8', timeout: 60_000 }
+				);
+				expect(result.status, result.stderr).toBe(0);
+				expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({
+					notStalling: { created: 1, reused: 2 },
+					stalling: { created: 0, reused: 0 },
+					drained: 1,
+				});
+			});
+		}
+	}
+);
 
 describe('Transaction iterator pool disabled', () => {
 	it('does not pool with ROCKSDB_JS_ITERATOR_POOL=0', () => {
@@ -595,7 +601,7 @@ describe('Transaction iterator pool disabled', () => {
 	});
 });
 
-describe('Transaction iterator pool teardown', () => {
+describe.skipIf(!iteratorPoolEnabled)('Transaction iterator pool teardown', () => {
 	it.skipIf(process.platform === 'win32')(
 		'survives shutdown() while transactions hold pooled iterators',
 		async () => {

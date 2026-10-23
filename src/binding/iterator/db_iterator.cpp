@@ -42,7 +42,6 @@ bool releasePooled(IteratorWrap* wrap, std::unique_lock<std::mutex>& iteratorLoc
 	iteratorLock.unlock();
 	if (!released) {
 		handle->close();
-		handle->detachFromDescriptor();
 	}
 	if (checkOrphan) {
 		txnHandle->closeOrphanIfUnused();
@@ -272,7 +271,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	// attach this iterator to the descriptor so it gets cleaned up when the descriptor is closed
 	if (attach && wrap->handle->dbHandle && wrap->handle->dbHandle->descriptor) {
 		wrap->handle->dbHandle->descriptor->attach(wrap->handle);
-		wrap->handle->attached.store(true);
+		wrap->handle->attachedDescriptor.store(wrap->handle->dbHandle->descriptor.get());
 	}
 
 	DEBUG_LOG("DBIterator::Constructor wrap=%p\n", wrap);
@@ -286,15 +285,11 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 				DEBUG_LOG("DBIterator::Constructor NativeIterator GC'd wrap=%p\n", data);
 				auto* wrap = static_cast<IteratorWrap*>(data);
 				if (wrap->handle) {
-					// Close before detaching: while attached, a concurrent
-					// destroy()/shutdown() sweep sees this iterator in
-					// `closables` and calls its close() too, serialized
-					// against this one by `iteratorMutex` (closeIfOpen()
-					// is idempotent). Detaching first would let that sweep
-					// skip this iterator and reset the DB out from under a
-					// still-running native `Reset()` here.
+					// close() detaches only after resetting the RocksDB
+					// iterator: while attached, a concurrent destroy()/shutdown()
+					// sweep sees this iterator in `closables` and calls its
+					// close() too, serialized against this one by `iteratorMutex`.
 					wrap->handle->close();
-					wrap->handle->detachFromDescriptor();
 				}
 				delete wrap;
 			},
@@ -306,7 +301,6 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	} catch (const std::exception& e) {
 		if (wrap->handle) {
 			wrap->handle->close();
-			wrap->handle->detachFromDescriptor();
 		}
 		delete wrap;
 		::napi_throw_error(env, nullptr, e.what());
@@ -394,7 +388,9 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 	if (!wrap->handle) {
 		auto txnHandle = wrap->exhaustedIn.lock();
-		if (txnHandle && txnHandle->iteratorEpoch.load(std::memory_order_relaxed) == wrap->exhaustedEpoch) {
+		if (txnHandle && !txnHandle->closed.load()
+			&& txnHandle->iteratorEpoch.load(std::memory_order_relaxed) == wrap->exhaustedEpoch
+		) {
 			napi_value result;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_DONE, &result));
 			return result;
@@ -434,7 +430,9 @@ static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 			std::shared_ptr<TransactionHandle> txnHandle = it->txnHandle;
 			if (txnHandle) {
 				wrap->exhaustedIn = txnHandle;
-				wrap->exhaustedEpoch = txnHandle->iteratorEpoch.load(std::memory_order_relaxed);
+				// The epoch it was lent in, not the current one: a close that has
+				// already bumped it is waiting on this iterator's mutex.
+				wrap->exhaustedEpoch = it->lentEpoch;
 			}
 			if (releasePooled(wrap, iteratorLock, true)) {
 				NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_RELEASED, &result));
