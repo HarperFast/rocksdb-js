@@ -43,6 +43,12 @@ Why each rule holds, and where it is enforced:
   cycle. `activeIteratorCount` counts busy handles only, so an idle one never blocks orphan close.
   A pooled handle is attached to the descriptor's closables once, when created, keeping the
   teardown barrier a foreign `destroy()`/`shutdown()` relies on, and is detached after its real close.
+  Every iterator detaches inside `closeIfOpen()`, after resetting its RocksDB iterator, through the
+  descriptor pointer recorded at attach (never `DBHandle::descriptor`, which only the owner thread
+  may read, and never a locked `weak_ptr`, whose transient reference can make a racing last-handle
+  close skip its purge). The raw pointer is safe because it is only read while the iterator is
+  still open, and the descriptor cannot finish closing until its sweep has closed every attached
+  handle under that handle's `iteratorMutex`.
   Because a transaction's close detaches other closables, the descriptor's close sweep re-reads the
   map from `begin()` after every `close()` instead of keeping an iterator across it
   (`test/fixtures/fork-pooled-iterator-shutdown.mts` segfaults without that).

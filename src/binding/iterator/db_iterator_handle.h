@@ -124,13 +124,14 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 */
 	bool writeBufferManagerAttached = false;
 
-	// In the transaction's idle slots; not counted in `activeIteratorCount`.
-	// Guarded, like `poolGeneration`, by the transaction's `iteratorsMutex`.
+	// Guarded by the transaction's `iteratorsMutex`. An idle handle is not
+	// counted in `activeIteratorCount`.
 	bool idle = false;
 	uint64_t poolGeneration = 0;
 
-	// The descriptor whose closables this handle is attached to; `closeIfOpen`
-	// detaches it.
+	// Raw, and only dereferenced by `closeIfOpen` while the RocksDB iterator is
+	// still open: the descriptor's close sweep must close this attached handle,
+	// under `iteratorMutex`, before the descriptor can be destroyed.
 	std::atomic<DBDescriptor*> attachedDescriptor{nullptr};
 
 	// The transaction's `iteratorEpoch` when this handle was last lent out.
