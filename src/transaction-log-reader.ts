@@ -60,6 +60,36 @@ export class CorruptFrameError extends RangeError {
 }
 
 /**
+ * Thrown when an iterator advances past segments it never read and that can no longer be read —
+ * typically ones retention purged while the reader lagged. The entries they held cannot be
+ * recovered from this log, so a consumer replicating it must not treat the stream as contiguous.
+ * Missing sequence numbers prove only that continuity is unknown, not that each held entries.
+ *
+ * The iterator is left positioned at the start of `resumeLogId`, so a caller that accepts the
+ * discontinuity calls `next()` again to continue from there.
+ *
+ * Not a `RangeError`: this is not broken framing, and consumers classify those by class.
+ */
+export class TransactionLogGapError extends Error {
+	/** Sequence number of the last segment this iterator read up to. */
+	logId: number;
+	/** Sequence number of the segment iteration resumes in. */
+	resumeLogId: number;
+	/** Segments between `logId` and `resumeLogId` that could not be read. Empty segments are not counted. */
+	unavailableLogCount: number;
+
+	constructor(logId: number, resumeLogId: number, unavailableLogCount: number) {
+		super(
+			`Transaction log iterator skipped ${unavailableLogCount} unavailable segment(s) between log ${logId} and log ${resumeLogId}; entries in them were not read`
+		);
+		this.name = 'TransactionLogGapError';
+		this.logId = logId;
+		this.resumeLogId = resumeLogId;
+		this.unavailableLogCount = unavailableLogCount;
+	}
+}
+
+/**
  * Whether a complete, in-bounds frame begins at `pos`. The only sane bound on an entry's length is
  * the written extent: a single entry can legitimately exceed the rotation threshold (the first
  * entry written to a fresh file is always written in full). A zero timestamp is the
@@ -213,6 +243,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 			}
 		}
+		// Segments at or below this were never part of this iterator's history, so crossing them is
+		// not a gap. Captured before the fallback below substitutes a placeholder with `logId` 0.
+		let gapFloor = logId;
 
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
@@ -245,6 +278,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// position-vs-size logic then routes through the existing advance-to-next-log
 				// path, which correctly returns done when no log file can be mapped.
 				size = 0;
+				if (
+					position <= TRANSACTION_LOG_FILE_HEADER_SIZE ||
+					(logId > 0 && this.getLogFileSize(logId) > 0)
+				) {
+					// the starting segment is not written yet, or is live but could not be mapped: what
+					// it holds past `position` is ours to read, so losing it unread is a gap
+					gapFloor = logId - 1;
+				}
 			}
 		}
 
@@ -280,12 +321,15 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
+							const fromLogId = logBuffer!.logId;
 							const nextLogBuffer = nextReadableLogBuffer(
 								transactionLog,
-								logBuffer!.logId,
-								latestLogId
+								fromLogId,
+								latestLogId,
+								gapFloor
 							);
 							if (nextLogBuffer) {
+								const unavailable = unavailableLogCount;
 								dataView = nextLogBuffer.dataView;
 								logBuffer = nextLogBuffer;
 								if (latestLogId > logBuffer!.logId) {
@@ -295,6 +339,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 									size = latestSize; // use the latest position from loadLastPosition
 								}
 								position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+								if (unavailable > 0) {
+									throw new TransactionLogGapError(
+										Math.max(fromLogId, gapFloor),
+										logBuffer.logId,
+										unavailable
+									);
+								}
 							}
 						}
 					}
@@ -413,10 +464,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								continue;
 							}
 
+							const fromLogId = logBuffer!.logId;
 							const nextLogBuffer = nextReadableLogBuffer(
 								transactionLog,
-								logBuffer!.logId,
-								latestLogId
+								fromLogId,
+								latestLogId,
+								gapFloor
 							);
 							if (!nextLogBuffer) {
 								// nothing past this segment is mappable yet (mid-rotation, 0-byte at
@@ -424,6 +477,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								// undefined buffer, and pick it up on the next poll
 								return { done: true, value: undefined };
 							}
+							const unavailable = unavailableLogCount;
 							logBuffer = nextLogBuffer;
 							dataView = logBuffer.dataView;
 							if (latestLogId === logBuffer.logId) {
@@ -440,6 +494,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								}
 							}
 							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+							if (unavailable > 0) {
+								throw new TransactionLogGapError(
+									Math.max(fromLogId, gapFloor),
+									logBuffer.logId,
+									unavailable
+								);
+							}
 						}
 					}
 				}
@@ -448,6 +509,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		};
 	},
 });
+
+// Out-parameter of `nextReadableLogBuffer()`: how many skipped sequence numbers above `gapFloor`
+// could not be read. A module slot, so an ordinary advance allocates nothing.
+let unavailableLogCount = 0;
 
 /**
  * Maps the next readable segment after `fromLogId`, skipping a run retention has deleted —
@@ -460,8 +525,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 function nextReadableLogBuffer(
 	transactionLog: TransactionLog,
 	fromLogId: number,
-	latestLogId: number
+	latestLogId: number,
+	gapFloor: number
 ): LogBuffer | undefined {
+	unavailableLogCount = 0;
 	let candidateLogId = fromLogId + 1;
 	while (candidateLogId <= latestLogId) {
 		const logBuffer = getLogMemoryMap(transactionLog, candidateLogId);
@@ -472,19 +539,27 @@ function nextReadableLogBuffer(
 			) {
 				return logBuffer;
 			}
-		} else if (transactionLog.getLogFileSize(candidateLogId) > TRANSACTION_LOG_FILE_HEADER_SIZE) {
-			// the store still has entries in it, so it is durable history that is merely
-			// unmappable right now; stop and pick it up on the next poll
-			return;
+		} else {
+			const fileSize = transactionLog.getLogFileSize(candidateLogId);
+			if (fileSize > TRANSACTION_LOG_FILE_HEADER_SIZE) {
+				// the store still has entries in it, so it is durable history that is merely
+				// unmappable right now; stop and pick it up on the next poll
+				return;
+			}
+			if (fileSize === 0 && candidateLogId > gapFloor) {
+				unavailableLogCount++;
+			}
 		}
 		// A registered segment can also be absent — unlinked out of band, or by another
 		// process's retention, before this process's purge run forgets it. Its successor can
 		// be absent too, so keep probing rather than stopping at the first one that will not
 		// map: stopping there is the permanent wedge this function exists to prevent.
-		candidateLogId = transactionLog._nextLogId(candidateLogId);
-		if (candidateLogId === 0) {
+		const nextLogId = transactionLog._nextLogId(candidateLogId);
+		if (nextLogId === 0) {
 			return;
 		}
+		unavailableLogCount += Math.max(0, nextLogId - 1 - Math.max(candidateLogId, gapFloor));
+		candidateLogId = nextLogId;
 	}
 }
 

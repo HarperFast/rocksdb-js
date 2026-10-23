@@ -1,4 +1,10 @@
-import { CorruptFrameError, RocksDatabase, Transaction, registryStatus } from '../src/index.ts';
+import {
+	CorruptFrameError,
+	RocksDatabase,
+	Transaction,
+	TransactionLogGapError,
+	registryStatus,
+} from '../src/index.ts';
 import {
 	constants,
 	coolTransactionLogs,
@@ -21,6 +27,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	truncateSync,
 	unlinkSync,
 } from 'node:fs';
 import { appendFile, mkdir, readdir, stat, unlink, utimes, writeFile } from 'node:fs/promises';
@@ -3222,27 +3229,216 @@ describe('Transaction Log', () => {
 					})
 			);
 
-			// A reader that fell behind retention used to stop at the hole and stop there on
-			// every later poll, so it never saw another entry.
-			it('should resume past a purged run rather than stopping at the hole', () =>
-				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
-					const log = db.useLog('foo');
-					const logDirectory = join(dbPath, 'transaction_logs', 'foo');
-					await writeEntry(db, log, 1, 300);
-					const iterator = log.query({ start: 0 });
-					expect(iterator.next().value?.data[0]).toBe(1);
+			const drain = (iterator: Iterator<{ data: Buffer }>) => {
+				const entries: number[] = [];
+				const gaps: TransactionLogGapError[] = [];
+				// a synchronous spin cannot trip the test timeout, so a gap that never advances must fail here
+				for (let calls = 0; calls < 1000; calls++) {
+					try {
+						const result = iterator.next();
+						if (result.done) {
+							return { entries, gaps };
+						}
+						entries.push(result.value.data[0]);
+					} catch (error) {
+						if (!(error instanceof TransactionLogGapError)) {
+							throw error;
+						}
+						gaps.push(error);
+					}
+				}
+				throw new Error('iterator did not finish');
+			};
+			const gapOf = (logId: number, resumeLogId: number, unavailableLogCount: number) =>
+				expect.objectContaining({ logId, resumeLogId, unavailableLogCount });
 
-					for (const fill of [2, 3, 4]) {
+			// A reader that fell behind retention resumes past the hole, but reports the crossing
+			// first: a replicating consumer must not mistake the survivor for the continuation of
+			// what it last read. POSIX-only, like every first-run purge
+			// outcome here: on Windows the reader's mapping of segment 1 can refuse its unlink, and an
+			// ordinary purge stops at the first refusal, keeping 2–4 (invariant 30).
+			it.skipIf(process.platform === 'win32').each([false, true])(
+				'should report a purged run, then resume past it (readUncommitted: %s)',
+				(readUncommitted) =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						await writeEntry(db, log, 1, 300);
+						const iterator = log.query({ start: 0, readUncommitted });
+						expect(iterator.next().value?.data[0]).toBe(1);
+
+						for (const fill of [2, 3, 4]) {
+							await writeEntry(db, log, fill, 300);
+						}
+						db.flushSync();
+						await writeEntry(db, log, 5, 300);
+						expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual(
+							expect.arrayContaining(
+								[2, 3, 4].map((sequence) => join(logDirectory, `${sequence}.txnlog`))
+							)
+						);
+
+						let error: unknown;
+						try {
+							iterator.next();
+						} catch (thrown) {
+							error = thrown;
+						}
+						expect(error).toBeInstanceOf(TransactionLogGapError);
+						expect(error).not.toBeInstanceOf(RangeError);
+						expect(error).toEqual(gapOf(1, 5, 3));
+						expect(drain(iterator)).toEqual({ entries: [5], gaps: [] });
+						expect(drain(iterator)).toEqual({ entries: [], gaps: [] });
+						expect(drain(log.query({ start: 0, readUncommitted }))).toEqual({
+							entries: [5],
+							gaps: [],
+						});
+					})
+			);
+
+			// the crossing happens inside the same `next()` call that filtered the source's last entry
+			it.skipIf(process.platform === 'win32')(
+				'should report a purged run crossed after a filtered entry',
+				() =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+						const log = db.useLog('foo');
+						await writeEntry(db, log, 1, 300);
+						const [first] = log.query({ start: 0 });
+						const iterator = log.query({
+							start: first.timestamp,
+							exactStart: true,
+							exclusiveStart: true,
+						});
+
+						for (const fill of [2, 3, 4]) {
+							await writeEntry(db, log, fill, 300);
+						}
+						db.flushSync();
+						await writeEntry(db, log, 5, 300);
+						db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+
+						expect(drain(iterator)).toEqual({ entries: [5], gaps: [gapOf(1, 5, 3)] });
+					})
+			);
+
+			it('should report each of two separated gaps and keep the survivor between them', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						let log = database.useLog('foo');
+						for (const fill of [1, 2, 3, 4, 5]) {
+							await writeEntry(database, log, fill, 300);
+						}
+						database.close();
+						unlinkSync(join(logDirectory, '2.txnlog'));
+						unlinkSync(join(logDirectory, '4.txnlog'));
+
+						database = RocksDatabase.open(dbPath);
+						log = database.useLog('foo');
+						expect(drain(log.query({ start: 0 }))).toEqual({
+							entries: [1, 3, 5],
+							gaps: [gapOf(1, 3, 1), gapOf(3, 5, 1)],
+						});
+					} finally {
+						database.close();
+					}
+				}));
+
+			// A reader created before its starting segment exists owns everything later written to it.
+			it.each([{ start: 0 }, {}])(
+				'should report a starting segment written and purged before it was read (%o)',
+				(options) =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+						const log = db.useLog('foo');
+						const iterator = log.query(options);
+						await writeEntry(db, log, 1, 300);
+						await writeEntry(db, log, 2, 300);
+						db.flushSync();
+						await writeEntry(db, log, 3, 300);
+						db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+
+						const { entries, gaps } = drain(iterator);
+						expect(entries).toEqual([3]);
+						expect(gaps).toEqual([
+							expect.objectContaining({ resumeLogId: 3, unavailableLogCount: 2 }),
+						]);
+					})
+			);
+
+			it('should report a live starting segment it could not map, once it is purged unread', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+					const log = db.useLog('foo');
+					await writeEntry(db, log, 1, 150);
+					const realGetMmapDescriptor = Object.getOwnPropertyDescriptor(
+						Object.getPrototypeOf(log),
+						'_getMemoryMapOfFile'
+					)!;
+					Object.defineProperty(log, '_getMemoryMapOfFile', {
+						value: () => undefined,
+						configurable: true,
+						writable: true,
+					});
+					let iterator: IterableIterator<{ data: Buffer }>;
+					try {
+						iterator = log.query({});
+					} finally {
+						Object.defineProperty(log, '_getMemoryMapOfFile', realGetMmapDescriptor);
+					}
+
+					// entry 2 lands in segment 1 after the tail position; entry 3 rotates to segment 2,
+					// whose unflushed entry 4 keeps it out of the purge
+					await writeEntry(db, log, 2, 150);
+					await writeEntry(db, log, 3, 300);
+					db.flushSync();
+					await writeEntry(db, log, 4, 50);
+					db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+
+					expect(drain(iterator)).toEqual({
+						entries: [3, 4],
+						gaps: [expect.objectContaining({ resumeLogId: 2, unavailableLogCount: 1 })],
+					});
+				}));
+
+			it('should not count an empty segment as unavailable', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						let log = database.useLog('foo');
+						for (const fill of [1, 2, 3, 4, 5]) {
+							await writeEntry(database, log, fill, 300);
+						}
+						database.close();
+						truncateSync(join(logDirectory, '2.txnlog'), TRANSACTION_LOG_FILE_HEADER_SIZE);
+						truncateSync(join(logDirectory, '4.txnlog'), TRANSACTION_LOG_FILE_HEADER_SIZE);
+						unlinkSync(join(logDirectory, '3.txnlog'));
+
+						database = RocksDatabase.open(dbPath);
+						log = database.useLog('foo');
+						expect(drain(log.query({ start: 0 }))).toEqual({
+							entries: [1, 5],
+							gaps: [gapOf(1, 5, 1)],
+						});
+					} finally {
+						database.close();
+					}
+				}));
+
+			it('should not report a gap below where a startFromLastFlushed reader was positioned', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+					const log = db.useLog('foo');
+					for (const fill of [1, 2, 3]) {
 						await writeEntry(db, log, fill, 300);
 					}
 					db.flushSync();
-					await writeEntry(db, log, 5, 300);
-					expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toEqual(
-						[1, 2, 3, 4].map((sequence) => join(logDirectory, `${sequence}.txnlog`))
-					);
+					await writeEntry(db, log, 4, 300);
+					db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
 
-					expect(Array.from(iterator).map((entry) => entry.data[0])).toEqual([5]);
-					expect(Array.from(log.query({ start: 0 })).map((entry) => entry.data[0])).toEqual([5]);
+					expect(drain(log.query({ startFromLastFlushed: true }))).toEqual({
+						entries: [4],
+						gaps: [],
+					});
 				}));
 
 			it.skipIf(!globalThis.gc || process.platform !== 'linux')(
@@ -3326,9 +3522,10 @@ describe('Transaction Log', () => {
 						// end to end over a three-wide gap — 2 and 4 were never registered, 3 is
 						// registered but absent — so positioning descends past it and advancing
 						// probes across all three. The old lookup started at 5 and yielded only [5].
-						expect(Array.from(log.query({ start: 0 })).map((entry) => entry.data[0])).toEqual([
-							1, 5,
-						]);
+						expect(drain(log.query({ start: 0 }))).toEqual({
+							entries: [1, 5],
+							gaps: [gapOf(1, 5, 3)],
+						});
 
 						// a timestamp newer than everything exercises the other exit: the walk runs
 						// out above rather than below, and must land on a segment that is on disk
@@ -3336,7 +3533,7 @@ describe('Transaction Log', () => {
 						const beyondId = logIdOf(log._findPosition(beyond));
 						expect([1, 5]).toContain(beyondId);
 						expect(existsSync(join(logDirectory, `${beyondId}.txnlog`))).toBe(true);
-						expect(Array.from(log.query({ start: beyond }))).toEqual([]);
+						expect(drain(log.query({ start: beyond })).entries).toEqual([]);
 					} finally {
 						database.close();
 					}
