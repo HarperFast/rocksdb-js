@@ -47,8 +47,10 @@ Why each rule holds, and where it is enforced:
   descriptor pointer recorded at attach (never `DBHandle::descriptor`, which only the owner thread
   may read, and never a locked `weak_ptr`, whose transient reference can make a racing last-handle
   close skip its purge). The raw pointer is safe because it is only read while the iterator is
-  still open, and the descriptor cannot finish closing until its sweep has closed every attached
-  handle under that handle's `iteratorMutex`.
+  still open, and a descriptor is never released with an attached iterator still open: its close
+  sweep closes every attached handle under that handle's `iteratorMutex`, and a descriptor
+  quarantined by a failed close (whose sweep never ran) gets the same sweep from
+  `DBRegistry::Teardown` before it is released at exit.
   Because a transaction's close detaches other closables, the descriptor's close sweep re-reads the
   map from `begin()` after every `close()` instead of keeping an iterator across it
   (`test/fixtures/fork-pooled-iterator-shutdown.mts` segfaults without that).
