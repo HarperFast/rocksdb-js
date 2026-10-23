@@ -104,6 +104,17 @@ const scenarios: Scenario[] = [
 		},
 	},
 	{
+		// A request-sized transaction: a new transaction every 11 probes.
+		name: 'txn.getRange probe, 11 per transaction',
+		run(n) {
+			for (let i = 0; i < n; i += 11) {
+				db.transactionSync((txn) => {
+					for (let j = 0; j < 11; j++) probe(txn);
+				});
+			}
+		},
+	},
+	{
 		name: 'txn.getRange probe at a file range end',
 		run(n) {
 			const step = Math.ceil(KEY_COUNT / Math.max(FILES, 1));

@@ -403,6 +403,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 				(void)inserted;
 				iterator->transactionRegistered = true;
 				iterator->poolGeneration = this->trimGeneration;
+				iterator->writeBufferManagerAttached = targetHandle->descriptor->attachedWriteBufferManager != nullptr;
 				this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 				if (poolable) {
 					created = true;
@@ -457,7 +458,7 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
 		if (this->closed.load() || !this->txn || this->state != TransactionState::Pending
-			|| DBSettings::getInstance().getWriteBufferManagerAllowStall()
+			|| (iterator->writeBufferManagerAttached && DBSettings::getInstance().getWriteBufferManagerAllowStall())
 		) {
 			return false;
 		}

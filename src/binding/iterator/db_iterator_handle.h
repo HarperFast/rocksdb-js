@@ -114,30 +114,24 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	std::mutex iteratorMutex;
 	bool transactionRegistered = false;
 
-	/**
-	 * Owned by the transaction's iterator pool and re-seeked for each range.
-	 */
 	const bool pooled;
 	const bool hasLowerBound;
 	const bool hasUpperBound;
 
 	/**
-	 * Sitting in the transaction's idle slots. Guarded by the transaction's
-	 * `iteratorsMutex`; an idle handle is not counted in `activeIteratorCount`.
+	 * Its database draws on the process WriteBufferManager, so the handle may
+	 * not idle in the pool while that manager can stall writers.
 	 */
+	bool writeBufferManagerAttached = false;
+
+	// In the transaction's idle slots; not counted in `activeIteratorCount`.
+	// Guarded, like `poolGeneration`, by the transaction's `iteratorsMutex`.
 	bool idle = false;
-
-	/**
-	 * Attached to the descriptor's closables, so whoever closes it outside the
-	 * JS finalizer detaches it afterwards.
-	 */
-	std::atomic<bool> attached{false};
-
-	/**
-	 * The transaction's `trimGeneration` when this handle was last lent out.
-	 * Guarded by the transaction's `iteratorsMutex`.
-	 */
 	uint64_t poolGeneration = 0;
+
+	// Attached to the descriptor's closables: a closer other than the JS
+	// finalizer detaches it after closing.
+	std::atomic<bool> attached{false};
 
 
 	// Call after `close()`.

@@ -488,8 +488,8 @@ static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 
 /**
  * Called when the consuming code returns before the iterator is done. The JS
- * wrapper constructs the `{ done: true, value }` result, so this method just
- * closes the iterator and returns undefined.
+ * wrapper constructs the `{ done: true, value }` result; this returns whether
+ * the iterator went back to its transaction's pool rather than closing.
  */
 napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
@@ -508,7 +508,7 @@ napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 
 /**
  * Called when the consuming code throws before the iterator is done. The JS
- * wrapper rethrows after this returns.
+ * wrapper rethrows after this returns; returns as `Return` does.
  */
 napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
