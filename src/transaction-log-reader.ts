@@ -278,8 +278,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// position-vs-size logic then routes through the existing advance-to-next-log
 				// path, which correctly returns done when no log file can be mapped.
 				size = 0;
-				if (position <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
-					// positioned at the start of a segment not written yet: all of it is ours to read
+				if (position <= TRANSACTION_LOG_FILE_HEADER_SIZE || this.getLogFileSize(logId) > 0) {
+					// the starting segment is not written yet, or is live but could not be mapped: what
+					// it holds past `position` is ours to read, so losing it unread is a gap
 					gapFloor = logId - 1;
 				}
 			}
@@ -518,7 +519,7 @@ let unavailableLogCount = 0;
  * and so lands *past* a survivor sitting between two holes.
  *
  * Leaves in `unavailableLogCount` how many skipped sequence numbers above `gapFloor` could not be
- * read, so the caller can report the discontinuity (#805).
+ * read, so the caller can report the discontinuity.
  */
 function nextReadableLogBuffer(
 	transactionLog: TransactionLog,

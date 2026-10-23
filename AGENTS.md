@@ -1465,8 +1465,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
       if they were contiguous with the last one it read, and the replica diverges with nothing to
       flag it. Mapped-empty segments are not counted (nothing was lost), and neither is anything
       at or below the segment the iterator was _positioned_ at (`gapFloor`), unless that segment
-      did not exist yet and the iterator starts at its header: then everything later written to it
-      is the reader's, so the floor is one lower. A
+      did not map at query time while still the reader's to read — not written yet (positioned at
+      its header) or live but unmappable (the store still has it) — so the floor is one lower. A
       `startFromLastFlushed` query whose starting segment was already purged gets a
       placeholder buffer with `logId` 0, and counting from that would report a prefix the reader
       never owned. Initial positioning before the oldest retained entry is therefore not signalled:

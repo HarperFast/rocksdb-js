@@ -3252,10 +3252,9 @@ describe('Transaction Log', () => {
 			const gapOf = (logId: number, resumeLogId: number, unavailableLogCount: number) =>
 				expect.objectContaining({ logId, resumeLogId, unavailableLogCount });
 
-			// A reader that fell behind retention used to stop at the hole and stop there on
-			// every later poll, so it never saw another entry. It resumes past the hole, but
-			// reports the crossing first: a replicating consumer must not mistake the survivor
-			// for the continuation of what it last read (#805). POSIX-only, like every first-run purge
+			// A reader that fell behind retention resumes past the hole, but reports the crossing
+			// first: a replicating consumer must not mistake the survivor for the continuation of
+			// what it last read. POSIX-only, like every first-run purge
 			// outcome here: on Windows the reader's mapping of segment 1 can refuse its unlink, and an
 			// ordinary purge stops at the first refusal, keeping 2–4 (invariant 30).
 			it.skipIf(process.platform === 'win32').each([false, true])(
@@ -3367,6 +3366,40 @@ describe('Transaction Log', () => {
 						]);
 					})
 			);
+
+			it('should report a live starting segment it could not map, once it is purged unread', () =>
+				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+					const log = db.useLog('foo');
+					await writeEntry(db, log, 1, 150);
+					const realGetMmapDescriptor = Object.getOwnPropertyDescriptor(
+						Object.getPrototypeOf(log),
+						'_getMemoryMapOfFile'
+					)!;
+					Object.defineProperty(log, '_getMemoryMapOfFile', {
+						value: () => undefined,
+						configurable: true,
+						writable: true,
+					});
+					let iterator: IterableIterator<{ data: Buffer }>;
+					try {
+						iterator = log.query({});
+					} finally {
+						Object.defineProperty(log, '_getMemoryMapOfFile', realGetMmapDescriptor);
+					}
+
+					// entry 2 lands in segment 1 after the tail position; entry 3 rotates to segment 2,
+					// whose unflushed entry 4 keeps it out of the purge
+					await writeEntry(db, log, 2, 150);
+					await writeEntry(db, log, 3, 300);
+					db.flushSync();
+					await writeEntry(db, log, 4, 50);
+					db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+
+					expect(drain(iterator)).toEqual({
+						entries: [3, 4],
+						gaps: [expect.objectContaining({ resumeLogId: 2, unavailableLogCount: 1 })],
+					});
+				}));
 
 			it('should not count an empty segment as unavailable', () =>
 				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
