@@ -693,6 +693,15 @@ public:
 	 */
 	void finishClose(bool destroying = false);
 
+	/**
+	 * Closes every attached handle, transaction and iterator. For a descriptor
+	 * released without `finishClose()` reaching its sweep (a quarantined close
+	 * at process exit): an iterator left attached would otherwise reset its
+	 * RocksDB iterator, and detach, against the destroyed database later.
+	 */
+	void closeRemainingClosables();
+
+	void closeClosables(std::unique_lock<std::mutex>& txnsLock);
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
 	void detach(Closable* closable);

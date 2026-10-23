@@ -1630,6 +1630,11 @@ void DBRegistry::Teardown() {
 	// short-circuits its own close() and is simply released here.
 	DEBUG_LOG("%p DBRegistry::Teardown Releasing %zu remaining descriptor(s)\n",
 		instance.get(), entries.size());
+	for (auto& [_key, entry] : entries) {
+		if (entry.descriptor) {
+			entry.descriptor->closeRemainingClosables();
+		}
+	}
 	entries.clear();
 }
 

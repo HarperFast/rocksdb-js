@@ -48,11 +48,12 @@ const nodeExecutable =
 function runDestroyFixture(
 	fixture: string,
 	dbPath: string,
-	env?: NodeJS.ProcessEnv
+	env?: NodeJS.ProcessEnv,
+	args: string[] = []
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
 		// These fixtures depend on Node's type stripping, GC flag, and worker semantics.
-		const child = spawn(nodeExecutable, ['--expose-gc', fixture, dbPath], {
+		const child = spawn(nodeExecutable, ['--expose-gc', fixture, dbPath, ...args], {
 			env: { ...process.env, ...env },
 		});
 		let stderr = '';
@@ -527,5 +528,14 @@ describe('Destroy', () => {
 		await runDestroyFixture(quarantinedExitFixture, generateDBPath(), {
 			ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2',
 		});
+	}, 15_000);
+
+	it('exits cleanly with iterators still open on a descriptor quarantined at process exit', async () => {
+		await runDestroyFixture(
+			quarantinedExitFixture,
+			generateDBPath(),
+			{ ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2', MALLOC_PERTURB_: '165' },
+			['iterators']
+		);
 	}, 15_000);
 });

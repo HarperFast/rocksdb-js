@@ -494,6 +494,33 @@ void DBDescriptor::close() {
 	this->finishClose();
 }
 
+void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
+	// Close all handles that still exist and reset their descriptor references
+	for (auto it = this->closables.begin(); it != this->closables.end(); ) {
+		if (auto closable = it->second.lock()) {
+			// Remove from map before closing to avoid re-entrant detach() calls
+			it = this->closables.erase(it);
+
+			// Release mutex during close to avoid deadlocks
+			txnsLock.unlock();
+			closable->close();
+			txnsLock.lock();
+			// close() can detach other closables (a transaction detaches its
+			// pooled iterators), invalidating `it`. Every entry before it was
+			// erased, so the first one is the next to process.
+			it = this->closables.begin();
+		} else {
+			// Handle was already GC'd, just remove the expired weak_ptr
+			it = this->closables.erase(it);
+		}
+	}
+}
+
+void DBDescriptor::closeRemainingClosables() {
+	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
+	this->closeClosables(txnsLock);
+}
+
 void DBDescriptor::finishClose(bool destroying) {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
@@ -630,26 +657,7 @@ void DBDescriptor::finishClose(bool destroying) {
 	}
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
-
-	// Close all handles that still exist and reset their descriptor references
-	for (auto it = this->closables.begin(); it != this->closables.end(); ) {
-		if (auto closable = it->second.lock()) {
-			// Remove from map before closing to avoid re-entrant detach() calls
-			it = this->closables.erase(it);
-
-			// Release mutex during close to avoid deadlocks
-			txnsLock.unlock();
-			closable->close();
-			txnsLock.lock();
-			// close() can detach other closables (a transaction detaches its
-			// pooled iterators), invalidating `it`. Every entry before it was
-			// erased, so the first one is the next to process.
-			it = this->closables.begin();
-		} else {
-			// Handle was already GC'd, just remove the expired weak_ptr
-			it = this->closables.erase(it);
-		}
-	}
+	this->closeClosables(txnsLock);
 
 	// Safety-net: cancel any VT locks still held by this DB after all
 	// TransactionHandles have been closed. Under normal operation the
