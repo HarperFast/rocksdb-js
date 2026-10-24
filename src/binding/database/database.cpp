@@ -15,6 +15,7 @@
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
 #include "core/platform.h"
+#include "core/optimistic_validation.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "core/verification_table.h"
@@ -2781,6 +2782,33 @@ napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * A non-transactional write holds its key in the database's commit reservation
+ * while it writes, so it cannot land inside a logged commit's validated window
+ * (`src/binding/transaction/DESIGN.md`). Pessimistic databases exclude
+ * concurrent writers with RocksDB's own row locks.
+ */
+static rocksdb::Status reserveDirectWrite(
+	CommitKeyReservationScope& reservation,
+	DBHandle& dbHandle,
+	const rocksdb::Slice& key
+) noexcept {
+	if (dbHandle.descriptor->mode != DBMode::Optimistic) {
+		return rocksdb::Status::OK();
+	}
+	try {
+		const bool reserved = reservation.acquireOne(
+			dbHandle.descriptor->commitReservation,
+			commitKeyHash(dbHandle.getColumnFamilyHandle()->GetID(), key),
+			&dbHandle);
+		return reserved
+			? rocksdb::Status::OK()
+			: rocksdb::Status::Busy("Key reserved by a transaction with a durable log batch");
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit();
+	}
+}
+
+/**
  * Puts a key-value pair into the RocksDB database.
  */
 napi_value Database::PutSync(napi_env env, napi_callback_info info) {
@@ -2820,6 +2848,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		if (txnHandle->writesAbandoned.load(std::memory_order_relaxed)) {
 			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 		}
+		if (txnHandle->hasDurableLog()) {
+			NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED", "Transaction write set is fixed by its durable log batch; retry commit()");
+		}
 		status = txnHandle->putSync(
 			keySlice,
 			valueSlice,
@@ -2850,12 +2881,16 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		if (!(*dbHandle)->columnDescriptor->droppable ||
 			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
 		) {
-			status = (*dbHandle)->descriptor->db->Put(
-				writeOptions,
-				(*dbHandle)->getColumnFamilyHandle(),
-				keySlice,
-				valueSlice
-			);
+			CommitKeyReservationScope reservation;
+			status = reserveDirectWrite(reservation, **dbHandle, keySlice);
+			if (status.ok()) {
+				status = (*dbHandle)->descriptor->db->Put(
+					writeOptions,
+					(*dbHandle)->getColumnFamilyHandle(),
+					keySlice,
+					valueSlice
+				);
+			}
 		}
 		if (vt && vtSlot) {
 			vt->releaseWriteIntent(vtSlot, vtTracker);
@@ -2907,6 +2942,9 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		if (txnHandle->writesAbandoned.load(std::memory_order_relaxed)) {
 			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 		}
+		if (txnHandle->hasDurableLog()) {
+			NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOGGED", "Transaction write set is fixed by its durable log batch; retry commit()");
+		}
 		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {
 		// Same lock-before-write, settle-after pattern as PutSync above.
@@ -2928,11 +2966,15 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		if (!(*dbHandle)->columnDescriptor->droppable ||
 			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
 		) {
-			status = (*dbHandle)->descriptor->db->Delete(
-				writeOptions,
-				(*dbHandle)->getColumnFamilyHandle(),
-				keySlice
-			);
+			CommitKeyReservationScope reservation;
+			status = reserveDirectWrite(reservation, **dbHandle, keySlice);
+			if (status.ok()) {
+				status = (*dbHandle)->descriptor->db->Delete(
+					writeOptions,
+					(*dbHandle)->getColumnFamilyHandle(),
+					keySlice
+				);
+			}
 		}
 		if (vt && vtSlot) {
 			vt->releaseWriteIntent(vtSlot, vtTracker);

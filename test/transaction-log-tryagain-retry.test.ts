@@ -8,16 +8,16 @@
 // commit still published its log entries — the change-feed entry became visible while the
 // record was rolled back.
 //
-// The fix treats TryAgain like Busy: the native layer resets the transaction onto a fresh
-// snapshot (committedPosition survives, so the WAL stays write-once, #668) and the retry
-// re-runs the body to validate against current state. commitFinished now fires only on a real
-// commit, so the entry is published exactly once, after the data lands — no premature publish,
-// no phantom entry if the retry is ultimately abandoned.
+// The fix treats TryAgain like Busy. A transaction that has not logged yet is reset onto a fresh
+// snapshot and its body re-run. A logged optimistic transaction is not validated a second time
+// after its log write (a plain write lands the batch), so a failure there leaves the handle
+// pending and intact and the retry writes the same batch once, without re-running the body
+// (committedPosition survives, so the WAL stays write-once, #668). commitFinished fires only on a
+// real commit, so the entry is published exactly once, after the data lands: no premature
+// publish, no phantom entry if the retry is ultimately abandoned.
 //
-// This forces exactly that stranded-snapshot TryAgain and asserts the retry converges on the
-// *same* native transaction (harper#1696 replayed onto a fresh transaction at the JS layer; the
-// native reset makes that unnecessary), writing the log entry once and keeping committed reads
-// intact.
+// This forces a failed landing and asserts the retry converges on the *same* native transaction,
+// writing the log entry once and keeping committed reads intact.
 
 import { forceTryAgainForTesting } from '../src/load-binding.ts';
 import { Transaction } from '../src/transaction.ts';
@@ -38,7 +38,7 @@ function spyOnCommitCodes() {
 	return { codes, restore: () => (Transaction.prototype.commit = original) };
 }
 
-describe('#1695 ERR_TRY_AGAIN retry resets onto a fresh snapshot and converges', () => {
+describe('#1695 a failed commit of a logged transaction retries on the same transaction and converges', () => {
 	it('converges on the same transaction after a stranded snapshot, WAL written once', () =>
 		dbRunner({ dbOptions: [{ path: generateDBPath() }] }, async ({ db }) => {
 			const key = 'k';
@@ -46,29 +46,20 @@ describe('#1695 ERR_TRY_AGAIN retry resets onto a fresh snapshot and converges',
 			const log = db.useLog('repl');
 			await db.put(key, 'initial');
 
-			// Strand exactly the first commit with a real TryAgain (rolled back, so no data lands).
-			// A genuine memtable flush produces the same status, but staging one deterministically
-			// through the public API hinges on OCC memtable-history eviction and is flaky; the seam
-			// exercises the native reset + JS retry path directly. Disarmed in the finally.
+			// Fail exactly the first landing attempt with TryAgain (nothing lands and the write batch
+			// stays intact). A genuine memtable flush produces the same status for an unlogged
+			// commit, but staging one deterministically through the public API hinges on OCC
+			// memtable-history eviction and is flaky; the seam exercises the JS retry path
+			// directly. Disarmed in the finally.
 			forceTryAgainForTesting(1);
 			const { codes, restore } = spyOnCommitCodes();
-			const txnIds = new Set<number>();
-			let attempts = 0;
+			let calls = 0;
+			let handle: Transaction | undefined;
 			try {
 				await db.transaction(
-					async (txn, attempt) => {
-						attempts = attempt;
-						txnIds.add(txn.id);
-						if (attempt === 2) {
-							// Entering the retry: attempt 1 wrote its log batch, then failed TryAgain and
-							// rolled back. The entry must NOT be visible yet — commitFinished fires only on a
-							// real commit, so the watermark did not advance on the failed attempt. (Under the
-							// old `!IsBusy` gate this query would already return the prematurely-published
-							// entry, ahead of its never-committed data.)
-							expect([...db.useLog('repl').query({ start: 0 })].length).toBe(0);
-						}
-						// The retry re-runs on the reset transaction's fresh snapshot; the put re-tracks
-						// the key at the current sequence, so the commit validates cleanly.
+					async (txn) => {
+						calls++;
+						handle = txn;
 						await txn.put(key, 'committed');
 						log.addEntry(payload, txn.id);
 					},
@@ -82,23 +73,18 @@ describe('#1695 ERR_TRY_AGAIN retry resets onto a fresh snapshot and converges',
 			// Premise: the first attempt actually failed with TryAgain (not Busy), else the test
 			// would prove nothing about the TryAgain path.
 			expect(codes).toContain('ERR_TRY_AGAIN');
-			// A retry actually happened.
-			expect(attempts).toBeGreaterThanOrEqual(2);
-			// The reset reuses one native transaction across attempts (stable id) — the whole point
-			// of aligning with the Busy reset path instead of building a fresh transaction.
-			expect(txnIds.size).toBe(1);
+			expect(calls).toBe(1);
+			expect(handle!.hasDurableLog).toBe(true);
 
 			// The transaction ultimately committed its value.
 			expect(await db.get(key)).toBe('committed');
 
-			// The WAL holds exactly one copy — committedPosition survived the reset, so the retry
-			// did not rewrite the batch. Asserted via the store's own logical write counter, not a
-			// raw filesystem stat: the discriminating query above (on the still-active log file)
-			// pre-extends the on-disk file to its configured max size on Windows (SetEndOfFile,
-			// only shrunk back by a reopen recovery scan — never on close), so a stat()-based byte
-			// count is platform-fragile once that query has run. getStats().totals.entriesWritten
-			// only increments in writeBatch() (once per transaction, skipped entirely by the
-			// write-once retry no-op), immune to that.
+			// The WAL holds exactly one copy: the retry did not rewrite the batch. Asserted via the
+			// store's own logical write counter, not a raw filesystem stat, because querying the
+			// still-active log file pre-extends it to its configured max size on Windows
+			// (SetEndOfFile, only shrunk back by a reopen recovery scan), so a stat()-based byte
+			// count is platform-fragile. getStats().totals.entriesWritten only increments in
+			// writeBatch(), once per transaction.
 			expect(log.getStats().totals.entriesWritten).toBe(1);
 
 			// A committed read from the start reaches the entry — the watermark advanced to head on

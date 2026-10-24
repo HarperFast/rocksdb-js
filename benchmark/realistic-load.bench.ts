@@ -41,7 +41,7 @@ describe('Realistic write load with workers', () => {
 								}
 							})
 							.catch((error) => {
-								if (error.code !== 'ERR_BUSY' && error.code !== 'ERR_TRANSACTION_ABANDONED') {
+								if (error.code !== 'ERR_BUSY' && error.code !== 'ERR_TRANSACTION_LOGGED') {
 									console.error('Error occurred during transaction:', error);
 								}
 							});

@@ -136,6 +136,22 @@ inline std::atomic<int>& registryStatusColumnsDelayMsFlag() {
 	return delayMs;
 }
 
+// Test-only crash point inside the next transaction commit that reaches it, armed
+// from JS via `setCommitCrashPointForTesting(point)`: 1 = after the transaction-log
+// batch is written and before `txn->Commit()`, 2 = after `txn->Commit()` returned
+// and before the completion runs, 3 = after a pre-log conflict rejection. The
+// process ends with `std::_Exit(137)` so nothing is flushed or torn down, which is
+// what the crash-recovery fixtures need to look at. Process-global like
+// forceTryAgainCounter().
+inline std::atomic<int>& commitCrashPointFlag() {
+	static std::atomic<int> point{0};
+	return point;
+}
+
+constexpr int kCommitCrashAfterLogWrite = 1;
+constexpr int kCommitCrashAfterCommit = 2;
+constexpr int kCommitCrashAfterRejection = 3;
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -222,6 +238,46 @@ inline bool testForceTryAgain() {
 		}
 	}
 	return false;
+}
+
+// Parks the next `countdown`th commit after its pre-log conflict check passed, while it
+// still holds its key reservation and before its transaction-log batch is written, for
+// `delayMs`. Lets a test start competing writers inside the validated window. Set from JS
+// via `setCommitValidatedDelayForTesting(countdown, delayMs)`; process-global like
+// forceTryAgainCounter().
+inline std::atomic<int>& commitValidatedDelayCountdown() {
+	static std::atomic<int> countdown{0};
+	return countdown;
+}
+
+inline std::atomic<int>& commitValidatedDelayMs() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
+inline std::atomic<bool>& commitValidatedDelayActive() {
+	static std::atomic<bool> active{false};
+	return active;
+}
+
+inline void setCommitValidatedDelayForTesting(int countdown, int delayMs) {
+	if (countdown == 0) {
+		commitValidatedDelayActive().store(false, std::memory_order_release);
+	}
+	commitValidatedDelayMs().store(delayMs > 60000 ? 60000 : delayMs, std::memory_order_relaxed);
+	commitValidatedDelayCountdown().store(countdown, std::memory_order_relaxed);
+}
+
+inline int consumeCommitValidatedDelayForTesting() {
+	int remaining = commitValidatedDelayCountdown().load(std::memory_order_relaxed);
+	while (remaining > 0) {
+		if (commitValidatedDelayCountdown().compare_exchange_weak(
+				remaining, remaining - 1, std::memory_order_relaxed
+			)) {
+			return remaining == 1 ? commitValidatedDelayMs().load(std::memory_order_relaxed) : 0;
+		}
+	}
+	return 0;
 }
 
 // Forces DBDescriptor::reclaimColumnFamily to report failure. 0 = inert; 1 = fail without

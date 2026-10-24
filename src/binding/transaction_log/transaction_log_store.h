@@ -499,6 +499,14 @@ struct TransactionLogStore final {
 	void commitAborted(LogPosition position);
 
 	/**
+	 * Drops the position a failed `writeBatch()` had reserved. Nothing of that
+	 * batch is logically in a segment (a failed append retires the segment at
+	 * its last safe extent), so the transaction stays unlogged and must not pin
+	 * the watermark.
+	 */
+	void forgetFailedPosition(LogPosition position);
+
+	/**
 	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
 	 */
 	void databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber);
@@ -646,7 +654,14 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition);
+	/**
+	 * Appends `batch` and reports its position. `appended` turns true the moment
+	 * the complete batch has landed, before any bookkeeping that can still fail:
+	 * a caller that sees it set on a throw owns a durable batch. A throw before
+	 * it is set has forgotten the reserved position; the transaction stays
+	 * unlogged.
+	 */
+	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, bool* appended = nullptr);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log

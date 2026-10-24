@@ -282,13 +282,16 @@ Sets global database settings.
     open keep their policy. Pessimistic, read-only and secondary opens are unaffected.
     - `'parallel'` locks the commit's keys in a per-database pool of `occLockBuckets` mutexes,
       checks for conflicts, and holds the locks through the write. Commits on different threads
-      that touch different buckets can then be batched into one RocksDB write. Non-transactional
-      writes (`db.putSync()` and friends) take no bucket, so one that lands between a commit's
-      conflict check and its write is overwritten by that commit without an `ERR_BUSY`.
+      that touch different buckets can then be batched into one RocksDB write. Every optimistic
+      writer, transactional or not, also holds its keys in a per-database reservation while it
+      writes (see "Transaction Retry Logic"), so a non-transactional write cannot land between a
+      commit's conflict check and its write; `db.putSync()`/`removeSync()` throw `ERR_BUSY` only
+      while a transaction whose log batch is durable still holds the key.
     - `'serial'` checks for conflicts inside RocksDB's write group instead, and allocates no bucket
-      pool, which saves its memory. Because the check and the write happen in one step, a
-      non-transactional write cannot land between them and be silently overwritten, and a column
-      family cannot be dropped between them. The cost: RocksDB never batches a serial-validated
+      pool, which saves its memory. Because the check and the write happen in one step, a column
+      family cannot be dropped between them. A logged transaction validates before its log write
+      and lands with a plain write under both policies, so the policy decides only how an unlogged
+      commit validates. The cost: RocksDB never batches a serial-validated
       commit with another writer, including the database's other commit threads, so it gives back
       what `commitThreads` gains. With four worker threads
       committing 64-key transactions to one database it committed about 4,500 transactions per
@@ -1275,29 +1278,56 @@ The retry mechanism will only be active when the `retryOnBusy` option is `true` 
 `retryOnBusy` is `undefined` and the transaction is bound to a transaction log. The attempts starts
 at `1` and ends at `maxRetries`.
 
-When using a transaction log and the commit fails with `ERR_BUSY`, the transaction log will be in
-a bad state and the transaction will need to be retried. If the max retries is reached or the
-transaction is not retried, a `ERR_TRANSACTION_ABANDONED` error will be thrown.
+On an optimistic database the conflict check runs before the transaction-log batch is written, so
+a commit that fails with `ERR_BUSY` (or `ERR_TRY_AGAIN`) on its first attempt has written nothing
+to the log and `txn.hasDurableLog` is `false`; the retry re-runs the callback, which re-stages the
+log entries. Once an attempt has written the batch, `txn.hasDurableLog` is `true`, the batch is
+write-once (later attempts' `addEntry` calls are ignored, and `addEntry` while the commit is in
+flight throws), and a retryable failure (`ERR_BUSY`, `ERR_TRY_AGAIN`) is retried until it commits
+regardless of `maxRetries`: aborting it would leave a log entry without its data. Any other failure
+past the log write, an I/O error say, is rethrown as `TransactionLoggedError` with the handle on
+`error.txn`, to be committed again. `abort()` on such a
+transaction throws `TransactionLoggedError` (`ERR_TRANSACTION_LOGGED`) without rolling anything
+back, and `transaction()` rethrows that error with the handle on `error.txn` when the callback
+itself fails on a retry.
 
-Users should use the `attempt` transaction callback parameter to ensure duplicate transaction log
-entries are not added.
+A log batch refused before the log write is carried into the retry, so a callback may stage its
+entries once or on every attempt (a re-stage replaces the carried batch; once the batch is durable
+a re-stage is ignored). `hasLog` on the conflict error reports that the transaction carried log
+entries, staged or written, which is what makes a logged transaction retry by default. Once the
+batch is durable the write set it describes is fixed: `put()`/`remove()` on the transaction throw
+`ERR_TRANSACTION_LOGGED`, and `transaction()` / `transactionSync()` re-commit it without re-running
+the callback.
 
 When `coordinatedRetry: true`, the retry behavior changes for `IsBusy` conflicts: instead of
 rejecting (or retrying immediately and potentially conflicting again), the commit waits until the
 conflicting transaction has committed and released its write intent, then re-runs the transaction
-body immediately with no backoff. This is still bounded by `maxRetries` — if the transaction has
-not committed after the configured number of coordinated retries, the transaction is abandoned with
-an `ERR_TRANSACTION_ABANDONED` error. Coordinated retry requires the column family to be opened with
-`verificationTable: true`.
+body immediately with no backoff. This is still bounded by `maxRetries` while nothing has been
+written to a transaction log — if the transaction has not committed after the configured number of
+coordinated retries, it is aborted and the last conflict error is thrown. Coordinated retry
+requires the column family to be opened with `verificationTable: true`.
 
 That wait is bounded so a conflicting transaction that is never committed or aborted cannot block
 the commit forever: if the write intent has not been released after `ROCKSDB_JS_PARK_TIMEOUT_MS`
 (default `5000`), the commit resolves anyway and consumes a retry attempt exactly as a real release
 would. A conflicting transaction held for longer than roughly `maxRetries` times that timeout
-therefore ends in `ERR_TRANSACTION_ABANDONED` rather than waiting indefinitely. Deployments where
+therefore ends in the last conflict error rather than waiting indefinitely. Deployments where
 waiting is preferable to failing should raise the timeout; there is no way to disable the bound.
 In particular `0` does not disable it: `0`, negative, and unparseable values all fall back to the
 `5000` default, and a value between `1` and `49` is clamped up to `50`.
+
+#### Migrating from the write-then-check order (rocksdb-js ≤ 2.12)
+
+- A callback that stages its transaction-log entries only on `attempt === 1` keeps working: a
+  batch refused before the log write is carried into the retry, and a retry that stages again
+  replaces it.
+- `ERR_TRANSACTION_ABANDONED` is no longer thrown. `abort()` on a transaction whose batch is
+  durable throws `ERR_TRANSACTION_LOGGED` (`TransactionLoggedError`) and changes nothing; an
+  exhausted unlogged retry rethrows the last conflict error.
+- `transaction()` and `transactionSync()` do not re-run the callback once the batch is durable;
+  they re-commit the write set the log describes.
+- `transactionSync()` makes at most `maxRetries` attempts, as `transaction()` does; it used to
+  make `maxRetries + 1`. It also keeps one transaction handle across its attempts.
 
 ### Class: `Transaction`
 
@@ -1310,10 +1340,15 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.abort()` Rolls back and closes the transaction. This method is automatically called after the
   transaction callback returns, so you shouldn't need to call it, but it's ok to do so. Once called,
   no further transaction operations are permitted. Calling this method multiple times has no effect.
+  Refused with `TransactionLoggedError` once `txn.hasDurableLog` is `true`.
 - `txn.commit(): Promise<void>` Asynchronously commits the transaction and closes the transaction.
 - `txn.commitSync()` Synchronously commits and closes the transaction.
 - `txn.getTimestamp(): number` Retrieves the transaction timestamp in milliseconds as a decimal. It
   defaults to a process-wide monotonic value assigned when the transaction was created.
+- `txn.hasDurableLog: boolean` Whether a commit attempt has written the transaction's log batch.
+  `false` through every outcome before the log write (an optimistic conflict is checked first);
+  `true` from the first attempt whose log write returned, across retries, after the commit lands,
+  and after close.
 - `txn.id: number` The read-only transaction ID. Transaction IDs are unique to the RocksDB database
   path, regardless the database name/column family.
 - `txn.setTimestamp(ts?: number): void` Overrides the transaction timestamp in milliseconds. If
@@ -1342,6 +1377,20 @@ handle's eventual `abort()`.
 Rolls back and closes the transaction. This method is automatically called after the transaction
 callback returns, so you shouldn't need to call it, but it's ok to do so. Once called, no further
 transaction operations are permitted.
+
+Once a commit attempt has written the transaction's log batch (`txn.hasDurableLog === true`),
+`abort()`, `abandonWrites()`, `put()` and `remove()` throw `TransactionLoggedError`
+(`code: 'ERR_TRANSACTION_LOGGED'`) before changing anything: the transaction stays pending, its
+write set is the one the log describes (it is never reset; each retry writes it as it is), its keys stay reserved
+(another writer's `putSync` or commit on them fails with `ERR_BUSY` until it lands), and the caller
+retries `commit()` until it succeeds. A durable
+transaction that is dropped instead (garbage collected, or left pending by an exiting worker or a
+closing database) is not rolled back either: its log position stays uncommitted, so committed log
+readers, the flushed position recorded for crash replay, and retention (which never purges past
+that position) all stop before it until the process restarts and replays it, and a `log.warn`
+event names it. Its keys are released when it closes, so a later write to them can land before that
+replay: a consumer that replays the entry must apply it only when it is newer than what is already
+stored for the same key.
 
 #### `txn.commit(): Promise<void>`
 

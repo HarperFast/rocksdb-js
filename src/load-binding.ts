@@ -109,6 +109,7 @@ export type NativeTransactionOptions = {
 
 export type NativeTransaction = {
 	id: number;
+	readonly hasDurableLog: boolean;
 	new (context: NativeDatabase, options?: NativeTransactionOptions): NativeTransaction;
 	abandonWrites(): void;
 	abort(): void;
@@ -990,6 +991,26 @@ export const forceDropFailureForTesting: (mode: 0 | 1 | 2) => void =
 /** Parks one selected transaction write after its retirement precheck. */
 export const setTransactionStagingDelayForTesting: (countdown: number, delayMs: number) => void =
 	binding.setTransactionStagingDelayForTesting;
+
+/**
+ * Test-only: parks the `countdown`th upcoming logged commit after its pre-log
+ * conflict check passed, while it still holds its key reservation and before
+ * its log batch is written. Process-global, like `forceTryAgainForTesting`.
+ */
+export const setCommitValidatedDelayForTesting: (countdown: number, delayMs: number) => void =
+	binding.setCommitValidatedDelayForTesting;
+
+/**
+ * Test-only: ends the process with exit code 137 inside the next commit that
+ * reaches the point — `1` after the log batch is written and before the RocksDB
+ * commit, `2` after the RocksDB commit and before its completion, `3` after a
+ * pre-log conflict rejection. Only child-process fixtures arm it.
+ */
+export const setCommitCrashPointForTesting: (point: 0 | 1 | 2 | 3) => void =
+	binding.setCommitCrashPointForTesting;
+
+export const isCommitValidatedDelayedForTesting: () => boolean =
+	binding.isCommitValidatedDelayedForTesting;
 
 /** Reports whether the selected transaction write is parked. */
 export const isTransactionStagingDelayedForTesting: () => boolean =

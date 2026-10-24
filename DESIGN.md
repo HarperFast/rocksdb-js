@@ -4,6 +4,7 @@
 - [Transaction-log retention](src/binding/transaction_log/DESIGN.md#retention-and-the-sequence-witness) — purging the current segment, and `txn.state` as the restart sequence witness.
 - [Transaction-log conditional close](src/binding/transaction_log/DESIGN.md#conditional-close) — why `tryClose()` refuses when any transaction bound during its check.
 - [Verification table](src/binding/core/DESIGN.md): slots store versions encoded with a per-key tag; a park cancels its lock wake registration when it ends.
+- [Conflict before the log write](src/binding/transaction/DESIGN.md): a logged optimistic commit validates under a per-key reservation before its log batch is written; `hasDurableLog`; a durable handle is never aborted or forgotten.
 - [Database resources](src/binding/database/DESIGN.md): optimistic commit validation policy,
   per-database lock buckets, concurrent commit threads, backup table verification, and why
   pending lock/park wake TSFNs stay ref'd.

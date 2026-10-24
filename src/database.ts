@@ -40,8 +40,8 @@ import {
 import {
 	RETRY_NOW,
 	Transaction,
-	TransactionAbandonedError,
 	TransactionAlreadyAbortedError,
+	TransactionLoggedError,
 	TransactionRetryableError,
 } from './transaction.ts';
 import { Encoder as MsgpackEncoder } from 'msgpackr';
@@ -84,6 +84,15 @@ export type RocksDBStats = StatsDefault | StatsAll;
 const BACKGROUND_ERROR_SEVERITY_NAMES = ['none', 'soft', 'hard', 'fatal', 'unrecoverable'];
 function backgroundErrorSeverityName(severity: number): string {
 	return BACKGROUND_ERROR_SEVERITY_NAMES[severity] ?? 'unknown';
+}
+
+function durableRetryDelayMs(attempt: number): number {
+	return Math.min(50, 2 ** Math.min(attempt, 6));
+}
+
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+function sleepSync(ms: number): void {
+	Atomics.wait(sleepCell, 0, 0, ms);
 }
 
 /**
@@ -1188,30 +1197,32 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 		const maxRetries = options?.maxRetries ?? 3;
 		const txn = new Transaction(this.store, options);
-		let result: T | PromiseLike<T>;
+		let result: T | PromiseLike<T> | undefined;
 
 		this.notify('begin-transaction');
 
-		for (let attempt = 1; attempt <= maxRetries; attempt++) {
-			try {
-				result = await callback(txn, attempt);
-			} catch (callbackErr) {
-				return this.#abortTransaction(txn, callbackErr);
+		for (let attempt = 1; ; attempt++) {
+			if (!txn.hasDurableLog) {
+				try {
+					result = await callback(txn, attempt);
+				} catch (callbackErr) {
+					return this.#abortTransaction(txn, callbackErr);
+				}
 			}
 
 			let commitResult: typeof RETRY_NOW | void;
 			try {
 				commitResult = await txn.commit();
 			} catch (commitErr) {
-				if (commitErr instanceof TransactionAlreadyAbortedError) {
+				if (commitErr instanceof TransactionAlreadyAbortedError && !txn.hasDurableLog) {
 					return;
 				}
-				if (
-					commitErr instanceof TransactionRetryableError &&
-					(options?.retryOnBusy ?? commitErr.hasLog) &&
-					attempt < maxRetries
-				) {
-					// retry the transaction (native reset gave it a fresh snapshot; re-run the body)
+				if (this.#mayRetry(txn, commitErr, attempt, maxRetries, options)) {
+					if (txn.hasDurableLog) {
+						await new Promise<void>((resolveTick) =>
+							setTimeout(resolveTick, durableRetryDelayMs(attempt))
+						);
+					}
 					continue;
 				}
 
@@ -1226,7 +1237,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			// if attempts remain. On the final attempt a RETRY_NOW must not fall
 			// out of the loop silently (that would resolve undefined and leave the
 			// transaction un-aborted); abandon it like an exhausted ERR_BUSY retry.
-			if (attempt >= maxRetries) {
+			if (!(attempt < maxRetries || txn.hasDurableLog)) {
 				this.#abandonTransaction(
 					txn,
 					new Error(`Transaction did not commit after ${maxRetries} coordinated retries`)
@@ -1234,6 +1245,24 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				return;
 			}
 		}
+	}
+
+	/**
+	 * `maxRetries` and `retryOnBusy` bound unlogged attempts. Once an attempt has written the
+	 * transaction's log batch the commit is carried out whatever they say: the log already
+	 * describes the write, so giving up would leave an entry without its data.
+	 */
+	#mayRetry(
+		txn: Transaction,
+		err: unknown,
+		attempt: number,
+		maxRetries: number,
+		options?: TransactionOptions
+	): boolean {
+		if (!(err instanceof TransactionRetryableError)) {
+			return false;
+		}
+		return txn.hasDurableLog || ((options?.retryOnBusy ?? err.hasLog) && attempt < maxRetries);
 	}
 
 	/**
@@ -1262,59 +1291,62 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 
 		const maxRetries = options?.maxRetries ?? 3;
+		const txn = new Transaction(this.store, options);
 
-		const isRetryable = (err: Error | unknown, attempt: number) => {
-			return (
-				err instanceof TransactionRetryableError &&
-				(options?.retryOnBusy ?? err.hasLog) &&
-				attempt <= maxRetries
-			);
-		};
-
-		const runAttempt = (attempt: number): T | PromiseLike<T> | void => {
-			const txn = new Transaction(this.store, options);
-			let result: T | PromiseLike<T>;
-
-			try {
-				result = callback(txn, attempt);
-			} catch (callbackErr) {
-				return this.#abortTransaction(txn, callbackErr);
-			}
-
-			// despite being 'sync', we need to support async operations
-			if (typeof (result as PromiseLike<T>)?.then === 'function') {
-				return (result as PromiseLike<T>).then((value: T | undefined) => {
-					try {
-						txn.commitSync();
-						return value;
-					} catch (commitErr) {
-						if (commitErr instanceof TransactionAlreadyAbortedError) {
-							return;
-						}
-						if (isRetryable(commitErr, attempt)) {
-							return runAttempt(attempt + 1) as PromiseLike<T>;
-						}
-						this.#abandonTransaction(txn, commitErr);
-					}
-				}) as PromiseLike<T>;
-			}
-
+		const commitAttempt = (attempt: number, value: T | PromiseLike<T> | void) => {
 			try {
 				txn.commitSync();
-				return result;
+				return { value };
 			} catch (commitErr) {
-				if (commitErr instanceof TransactionAlreadyAbortedError) {
-					return;
+				if (commitErr instanceof TransactionAlreadyAbortedError && !txn.hasDurableLog) {
+					return { value: undefined };
 				}
-				if (isRetryable(commitErr, attempt)) {
-					return runAttempt(attempt + 1);
+				if (this.#mayRetry(txn, commitErr, attempt, maxRetries, options)) {
+					if (txn.hasDurableLog) {
+						sleepSync(durableRetryDelayMs(attempt));
+					}
+					return null;
 				}
 				this.#abandonTransaction(txn, commitErr);
+				return { value: undefined };
 			}
 		};
 
+		const runAttempts = (attempt: number, carried?: T): T | PromiseLike<T> | void => {
+			let result: T | PromiseLike<T> | undefined = carried;
+			for (; ; attempt++) {
+				if (!txn.hasDurableLog) {
+					try {
+						result = callback(txn, attempt);
+					} catch (callbackErr) {
+						return this.#abortTransaction(txn, callbackErr);
+					}
+				}
+				// despite being 'sync', we need to support async operations
+				if (typeof (result as PromiseLike<T>)?.then === 'function') {
+					return continueAsync(attempt, result as PromiseLike<T>);
+				}
+				const outcome = commitAttempt(attempt, result);
+				if (outcome) {
+					return outcome.value;
+				}
+			}
+		};
+
+		const continueAsync = (attempt: number, pending: PromiseLike<T>): PromiseLike<T> =>
+			pending.then(
+				(value: T | undefined) => {
+					const outcome = commitAttempt(attempt, value);
+					return outcome ? (outcome.value as T) : (runAttempts(attempt + 1, value) as T);
+				},
+				(callbackErr: unknown) => {
+					this.#abortTransaction(txn, callbackErr);
+					return undefined as T;
+				}
+			);
+
 		this.notify('begin-transaction');
-		return runAttempt(1);
+		return runAttempts(1);
 	}
 
 	#abortTransaction(txn: Transaction, callbackErr: Error | unknown): void {
@@ -1326,6 +1358,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			if (abortErr instanceof TransactionAlreadyAbortedError) {
 				return;
 			}
+			if (abortErr instanceof TransactionLoggedError) {
+				// The log already describes this transaction's writes, so the handle is handed
+				// back (`error.txn`) for the caller to commit instead of being dropped.
+				throw new TransactionLoggedError(abortErr, txn, { cause: callbackErr });
+			}
 		}
 		// rethrow the user error
 		throw callbackErr;
@@ -1335,8 +1372,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		try {
 			txn.abort();
 		} catch (abortErr) {
-			if (abortErr instanceof TransactionAbandonedError) {
-				throw abortErr;
+			if (abortErr instanceof TransactionLoggedError) {
+				throw new TransactionLoggedError(abortErr, txn, { cause: commitErr });
 			}
 		}
 

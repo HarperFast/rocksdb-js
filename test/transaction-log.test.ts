@@ -326,7 +326,10 @@ describe('Transaction Log', () => {
 					firstTransactionCompletions.push(firstTxnCommit);
 					const catchFailedCommit = async (error) => {
 						if (error.code === 'ERR_BUSY') {
+							// Refused before the log write, so the entry has to be staged again.
+							expect(transaction.hasDurableLog).toBe(false);
 							db.getSync('key1', { transaction });
+							log.addEntry(Buffer.alloc(10, i.toString()), transaction.id);
 							await delay(10);
 							db.putSync('key1', 'updated' + i, { transaction });
 							await transaction.commit().catch(catchFailedCommit);
@@ -1246,7 +1249,7 @@ describe('Transaction Log', () => {
 				});
 			}));
 
-		it('should error if async transaction is abandoned after a failed commit', () =>
+		it('should abort an async transaction whose conflict was refused before the log write', () =>
 			dbRunner(async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
 
@@ -1269,16 +1272,15 @@ describe('Transaction Log', () => {
 					await txn.put('foo', Buffer.from('hello2'));
 				});
 
-				await expect(firstTxn).rejects.toThrow(
-					'Transaction was abandoned after writing to the transaction log'
-				);
+				await expect(firstTxn).rejects.toMatchObject({ code: 'ERR_BUSY', hasLog: true });
+				expect(await db.get('foo')).toEqual(Buffer.from('hello2'));
 
 				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 				const info = parseTransactionLog(logPath);
-				expect(info.entries.length).toBe(2);
+				expect(info.entries.length).toBe(1);
 			}));
 
-		it('should error if sync transaction is abandoned after a failed commit', () =>
+		it('should abort a sync transaction whose conflict was refused before the log write', () =>
 			dbRunner(async ({ db, dbPath }) => {
 				const log = db.useLog('foo');
 
@@ -1301,13 +1303,12 @@ describe('Transaction Log', () => {
 					txn.putSync('foo', Buffer.from('hello2'));
 				});
 
-				await expect(firstTxn).rejects.toThrow(
-					'Transaction was abandoned after writing to the transaction log'
-				);
+				await expect(firstTxn).rejects.toMatchObject({ code: 'ERR_BUSY', hasLog: true });
+				expect(await db.get('foo')).toEqual(Buffer.from('hello2'));
 
 				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 				const info = parseTransactionLog(logPath);
-				expect(info.entries.length).toBe(2);
+				expect(info.entries.length).toBe(1);
 			}));
 
 		it('should recover from a failed async commit', () =>
@@ -1315,9 +1316,9 @@ describe('Transaction Log', () => {
 				const log = db.useLog('foo');
 
 				const firstTxn = db.transaction(async (txn, attempt) => {
-					if (attempt === 1) {
-						log.addEntry(Buffer.from('hello'), txn.id);
-					}
+					// Re-staged on every attempt: the first attempt's conflict was refused before
+					// the log write, and a durable batch ignores the re-stage.
+					log.addEntry(Buffer.from('hello'), txn.id);
 					await txn.put('foo', Buffer.from('hello'));
 					if (attempt === 1) {
 						await delay(50);
@@ -1345,9 +1346,7 @@ describe('Transaction Log', () => {
 				const log = db.useLog('foo');
 
 				const firstTxn = db.transactionSync(async (txn, attempt) => {
-					if (attempt === 1) {
-						log.addEntry(Buffer.from('hello'), txn.id);
-					}
+					log.addEntry(Buffer.from('hello'), txn.id);
 					await txn.put('foo', Buffer.from('hello'));
 					if (attempt === 1) {
 						await delay(50);

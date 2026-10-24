@@ -17,6 +17,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "core/commit_key_reservation.h"
 #include "core/verification_table.h"
 
 namespace rocksdb_js {
@@ -123,6 +124,8 @@ struct InlineVector final {
 struct TouchedColumnFamily final {
 	std::weak_ptr<ColumnFamilyDescriptor> descriptor;
 	ColumnFamilyDescriptor* raw = nullptr;
+	// RocksDB's id, kept so a reclaimed generation (expired `descriptor`) is still recognizable.
+	uint32_t id = 0;
 };
 
 /**
@@ -333,6 +336,45 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	~TransactionHandle();
 
 	void resetTransaction(DBDescriptor* descriptor);
+
+	/**
+	 * Published by the committing thread once `writeBatch()` returned, so the JS
+	 * accessor can read it while a commit is in flight; `committedPosition` itself
+	 * is read natively only on the owning thread with the handle pending.
+	 */
+	std::atomic<bool> logDurable{false};
+
+	bool hasDurableLog() const {
+		return this->logDurable.load(std::memory_order_acquire);
+	}
+
+	/**
+	 * A log batch carried across a pre-log refusal: the retry may stage its
+	 * entries again (which replaces the carried batch) or rely on them.
+	 */
+	bool logBatchCarried = false;
+
+	void publishDurableLog(LogPosition position) noexcept;
+
+	/**
+	 * Whether every write in the transaction's batch names a dropped column family,
+	 * so the batch can never land and its position may be released. The write set is
+	 * immutable once durable (staging refuses with `ERR_TRANSACTION_LOGGED`).
+	 */
+	bool durableWritesUnlandable() const noexcept;
+
+	/**
+	 * `abort()` found the batch unlandable and is about to roll back, which empties the batch
+	 * `close()` would otherwise inspect.
+	 */
+	std::atomic<bool> durableUnlandable{false};
+
+	/**
+	 * Keys this transaction keeps reserved between a failed post-log commit and
+	 * the retry that lands it (`CommitKeyReservation`), so no later-logged writer
+	 * can pass it on them. Released by the commit that lands or by `close()`.
+	 */
+	DurableKeyHold durableHold;
 
 	/**
 	 * Attempts to install a LockTracker in the VT slot for (db, cf, key),

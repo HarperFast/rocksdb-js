@@ -8,6 +8,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "transaction/transaction_handle.h"
 #include "core/test_seam.h"
+#include "napi/global_events.h"
 #include "napi/macros.h"
 
 namespace rocksdb_js {
@@ -123,33 +124,101 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	this->createdAt = std::chrono::steady_clock::now();
 }
 
+void TransactionHandle::publishDurableLog(LogPosition position) noexcept {
+	this->committedPosition = position;
+	this->logDurable.store(true, std::memory_order_release);
+}
+
+namespace {
+
+struct ColumnFamilyIds final : rocksdb::WriteBatch::Handler {
+	std::vector<uint32_t> ids;
+
+	rocksdb::Status PutCF(uint32_t id, const rocksdb::Slice&, const rocksdb::Slice&) override {
+		this->ids.push_back(id);
+		return rocksdb::Status::OK();
+	}
+	rocksdb::Status DeleteCF(uint32_t id, const rocksdb::Slice&) override {
+		this->ids.push_back(id);
+		return rocksdb::Status::OK();
+	}
+	rocksdb::Status SingleDeleteCF(uint32_t id, const rocksdb::Slice&) override {
+		this->ids.push_back(id);
+		return rocksdb::Status::OK();
+	}
+	rocksdb::Status MergeCF(uint32_t id, const rocksdb::Slice&, const rocksdb::Slice&) override {
+		this->ids.push_back(id);
+		return rocksdb::Status::OK();
+	}
+};
+
+} // namespace
+
+bool TransactionHandle::durableWritesUnlandable() const noexcept {
+	const rocksdb::WriteBatch* batch = this->txn ? this->txn->GetWriteBatch()->GetWriteBatch() : nullptr;
+	if (!batch || batch->Count() == 0) {
+		return false;
+	}
+	try {
+		ColumnFamilyIds written;
+		if (!batch->Iterate(&written).ok()) {
+			return false;
+		}
+		for (uint32_t id : written.ids) {
+			bool retired = false;
+			this->touchedColumnFamilies.forEach([&](const TouchedColumnFamily& touched) {
+				if (touched.id != id) {
+					return;
+				}
+				auto column = touched.descriptor.lock();
+				// An expired descriptor is a dropped generation that was already reclaimed.
+				if (!column || column->lifetime.isRetired()) {
+					retired = true;
+				}
+			});
+			if (!retired) {
+				return false;
+			}
+		}
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
 void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
-	// clear/delete the previous transaction and create a new transaction so that it can be retried
+	// The replacement is built before the previous transaction is destroyed, so an allocation
+	// failure leaves the handle with a valid (if stale) transaction instead of a dangling one.
+	rocksdb::WriteOptions writeOptions;
+	writeOptions.disableWAL = this->dbHandle->disableWAL;
+
+	rocksdb::Transaction* fresh = nullptr;
+	if (descriptor->mode == DBMode::Pessimistic) {
+		auto* tdb = static_cast<rocksdb::TransactionDB*>(descriptor->db.get());
+		rocksdb::TransactionOptions txnOptions;
+		fresh = tdb->BeginTransaction(writeOptions, txnOptions);
+	} else if (descriptor->mode == DBMode::Optimistic) {
+		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(descriptor->db.get());
+		rocksdb::OptimisticTransactionOptions txnOptions;
+		fresh = odb->BeginTransaction(writeOptions, txnOptions);
+	} else {
+		throw rocksdb_js::DBException("Invalid database");
+	}
+
 	this->closeIterators();
 	if (this->txn) {
 		this->txn->ClearSnapshot();
 		delete this->txn;
 	}
+	this->txn = fresh;
 
-	this->logEntryBatch.reset();
+	// A batch refused before the log write is carried so a caller that staged it only once still
+	// logs it. A durable handle is never reset: its intact batch lands with a plain write.
+	if (this->logEntryBatch) {
+		this->logBatchCarried = true;
+	}
 	this->touchedColumnFamilies.clear();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
-
-	auto dbHandle = this->dbHandle;
-	rocksdb::WriteOptions writeOptions;
-	writeOptions.disableWAL = dbHandle->disableWAL;
-
-	if (descriptor->mode == DBMode::Pessimistic) {
-		auto* tdb = static_cast<rocksdb::TransactionDB*>(descriptor->db.get());
-		rocksdb::TransactionOptions txnOptions;
-		this->txn = tdb->BeginTransaction(writeOptions, txnOptions);
-	} else if (descriptor->mode == DBMode::Optimistic) {
-		auto* odb = static_cast<rocksdb::OptimisticTransactionDB*>(descriptor->db.get());
-		rocksdb::OptimisticTransactionOptions txnOptions;
-		this->txn = odb->BeginTransaction(writeOptions, txnOptions);
-	} else {
-		throw rocksdb_js::DBException("Invalid database");
-	}
 }
 
 /**
@@ -175,21 +244,25 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
 		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
-	// #668 (defense in depth): the write-ahead log is write-once per transaction. If
-	// committedPosition is already set, this transaction's batch was durably written by a
-	// prior commit attempt (committedPosition survives resetTransaction). A commit that
-	// returned IsBusy is retried by re-running the transaction body to re-drive the RocksDB
-	// commit; re-staging the log here would write the records a second time at a new
-	// position, orphaning the original (commitFinished is gated on !IsBusy, so the original
-	// is never finalized) and pinning the committed-read watermark at it forever — silent
-	// committed-read truncation (HarperFast/harper-pro#426). Higher layers are expected to
-	// suppress the re-log on retry (e.g. harper's DatabaseTransaction.isRetry), but enforce
-	// write-once here too so a stray re-stage from any caller cannot corrupt the watermark.
+	// The commit thread owns the batch from the moment the commit starts; staging into it now
+	// would race the append that is reading it.
+	if (this->state == TransactionState::Committing) {
+		throw rocksdb_js::DBException("Cannot add a log entry while the transaction is committing");
+	}
+
+	// #668: the write-ahead log is write-once per transaction. Re-logging here would write the
+	// records again at a new position, orphan the original and pin the committed-read watermark
+	// on it (HarperFast/harper-pro#426).
 	if (this->committedPosition.logSequenceNumber > 0) {
 		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %llu "
 			"(WAL already written at seq %u)\n",
 			this, (unsigned long long)this->id, this->committedPosition.logSequenceNumber);
 		return;
+	}
+	// A carried batch is replaced only once its successor holds the entry (allocation can throw).
+	std::unique_ptr<TransactionLogEntryBatch> replacement;
+	if (this->logBatchCarried) {
+		replacement = std::make_unique<TransactionLogEntryBatch>(this->startTimestamp);
 	}
 
 	// check if this transaction is already bound to a different log store
@@ -209,6 +282,12 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 			this, (unsigned long long)this->id, entry->store->name.c_str());
 	}
 
+	if (replacement) {
+		replacement->addEntry(std::move(entry));
+		this->logEntryBatch = std::move(replacement);
+		this->logBatchCarried = false;
+		return;
+	}
 	if (!this->logEntryBatch) {
 		this->logEntryBatch = std::make_unique<TransactionLogEntryBatch>(this->startTimestamp);
 	}
@@ -418,14 +497,34 @@ void TransactionHandle::close() {
 		this->state = TransactionState::Aborted;
 	}
 
-	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
-	// to remove the committed position from the log store
+	// A durable log batch that never committed stays in the store's uncommitted set: the
+	// committed-read watermark and the flush correlation (`txn.state`) cannot pass it, so a
+	// restart replays it instead of publishing an entry whose data was never applied. Only a
+	// non-conflict failure, a dropped handle, or teardown can reach this (DESIGN.md).
 	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
 		auto store = this->boundLogStore.lock();
-		if (store) {
+		// A batch whose every write names a dropped column family can never land, so its entry
+		// is not an obligation: the position is released like before, and the warning says why.
+		const bool unlandable = this->durableUnlandable.load(std::memory_order_relaxed) || this->durableWritesUnlandable();
+		if (unlandable && store) {
 			store->commitAborted(this->committedPosition);
 		}
+		try {
+			std::ostringstream msg;
+			msg << "Transaction " << this->id << " closed with a durable transaction-log batch"
+				<< (store ? " in store \"" + store->name + "\"" : std::string())
+				<< " at sequence " << this->committedPosition.logSequenceNumber
+				<< " offset " << this->committedPosition.positionInLogFile
+				<< (unlandable
+					? " whose writes name a dropped column family; the entry is released without its data"
+					: " that was never committed; the position stays uncommitted so the committed-read"
+					  " watermark holds and a restart replays it");
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		} catch (...) {
+			// Best effort: teardown must not throw for a diagnostic.
+		}
 	}
+	this->durableHold.release(this);
 
 	// If the transaction was bound to a log store but writeBatch() was never called (committedPosition
 	// is still zero), the pendingTransactionCount was incremented at bind time but never decremented
@@ -712,6 +811,7 @@ void ColumnFamilySet::add(const std::shared_ptr<ColumnFamilyDescriptor>& column)
 	TouchedColumnFamily entry;
 	entry.descriptor = column;
 	entry.raw = column.get();
+	entry.id = column->column ? column->column->GetID() : 0;
 	this->entries.add(std::move(entry));
 	this->last = column.get();
 }
@@ -779,6 +879,9 @@ rocksdb::Status TransactionHandle::putSync(
 		DEBUG_LOG("%p TransactionHandle::putSync Transaction is not in pending state (state=%d)\n", this, this->state);
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
+	if (this->hasDurableLog()) {
+		return rocksdb::Status::InvalidArgument("ERR_TRANSACTION_LOGGED");
+	}
 
 	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
@@ -829,6 +932,9 @@ rocksdb::Status TransactionHandle::removeSync(
 	if (this->state != TransactionState::Pending) {
 		DEBUG_LOG("%p TransactionHandle::removeSync Transaction is not in pending state (state=%d)\n", this, this->state);
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
+	}
+	if (this->hasDurableLog()) {
+		return rocksdb::Status::InvalidArgument("ERR_TRANSACTION_LOGGED");
 	}
 
 	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {

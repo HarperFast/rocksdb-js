@@ -1287,8 +1287,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     staging error: the transaction's writes are abandoned at that point, so its later `commit()`
     throws `ERR_WRITES_ABANDONED` rather than applying the families it wrote first. On the first
     attempt that decision precedes every log byte;
-    after an `IsBusy`/`TryAgain` retry, the original attempt's write-once log position survives, so a
-    later refusal is correctly reported as `ERR_TRANSACTION_ABANDONED`. A commit admitted before
+    after an `IsBusy`/`TryAgain` retry past the log write, the original attempt's write-once log
+    position survives, so a later refusal leaves a durable handle (invariant 34). A commit admitted before
     the retire lands in the dying generation, linearized before the drop; reads through retained
     handles continue; non-transactional writes keep #725's silent discard. `DBRegistry::OpenDB`
     finds a `retiring` entry for the name under `columnsMutex` (so a drop cannot slip between the
@@ -1551,6 +1551,13 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 33. **Transaction-log reader mappings cannot be outgrown**: the native writer checks every
     append against the smallest exposed capacity under `fileMutex`; creation and the first append
     share that lock. See [transaction-log design](src/binding/transaction_log/DESIGN.md).
+
+34. **An optimistic conflict is detected before the transaction-log batch is written, under a
+    reservation every in-process writer takes**: a durable batch can be left uncommitted only by a
+    non-conflict failure, `hasDurableLog` is the authoritative state, `abort()`/`abandonWrites()`
+    refuse a durable handle before touching it, and a durable handle closed without committing
+    keeps its position uncommitted so the watermark and `txn.state` never pass it. See
+    [conflict before the log write](src/binding/transaction/DESIGN.md).
 
 ## Debugging native heap corruption
 
