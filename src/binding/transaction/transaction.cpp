@@ -146,10 +146,15 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 		"the log store refuses appends until a retry marks it";
 	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
-		// already aborted; a cancellation that is still unresolved is reported again
-		if ((*txnHandle)->cancellation == TransactionHandle::Cancellation::Failed) {
+		if ((*txnHandle)->committedPosition.logSequenceNumber > 0) {
+			auto cancellation = (*txnHandle)->cancellation.load();
+			if (cancellation == TransactionHandle::Cancellation::None && (*txnHandle)->cancelOnAbort) {
+				// a teardown close() owns the abort and has not marked the batch yet
+				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABANDONED", "Transaction was abandoned after writing to the transaction log");
+			}
 			auto store = (*txnHandle)->boundLogStore.lock();
-			if (store && store->isFailedCancellation((*txnHandle)->committedPosition)) {
+			if (cancellation == TransactionHandle::Cancellation::Failed && store &&
+				store->isFailedCancellation((*txnHandle)->committedPosition)) {
 				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABORT_UNRESOLVED", unresolvedMessage);
 			}
 		}
@@ -556,6 +561,13 @@ static rocksdb::Status admitCommit(TransactionCommitState* state, const std::sha
  * transactions with no log entries so total dispatch order is preserved into
  * the commit lane.
  */
+/** An attempt behind an older transaction's write intent (transaction/DESIGN.md, "Write-intent refusal"). */
+static const rocksdb::Status& intentRefusal() {
+	static const rocksdb::Status status =
+		rocksdb::Status::Busy("an older transaction holds a write intent on one of this transaction's keys");
+	return status;
+}
+
 /** Writes the handle's batch, recording what an abort marker would name. */
 static void writeLogBatch(TransactionHandle& txnHandle, TransactionLogStore& store) {
 	txnHandle.batchTimestamp = txnHandle.logEntryBatch->timestamp;
@@ -589,10 +601,9 @@ static void executeLogWork(TransactionCommitState* state) {
 			txnHandle.get(), (unsigned long long)txnHandle->id);
 		auto store = txnHandle->boundLogStore.lock();
 		if (txnHandle->intentConflictSlot) {
-			// Refused before logging, so this attempt can leave no batch behind (DESIGN.md, "Abort markers").
 			txnHandle->lastConflictKind = TransactionHandle::ConflictIntentBeforeLog;
 			state->refusedBeforeLog = true;
-			state->status = rocksdb::Status::Busy("an older transaction holds a write intent on one of this transaction's keys");
+			state->status = intentRefusal();
 		} else if (store) {
 			try {
 				// write the batch to the store
@@ -667,10 +678,8 @@ static void executeCommitWork(TransactionCommitState* state) {
 			std::atomic<uint64_t>* refusedOn =
 				txnHandle->committedPosition.logSequenceNumber > 0 ? txnHandle->intentConflictSlot : nullptr;
 			if (refusedOn) {
-				// A logged retry behind an older holder: park instead of committing into a conflict, and
-				// keep the batch it already wrote.
 				txnHandle->lastConflictKind = TransactionHandle::ConflictIntentAfterLog;
-				state->status = rocksdb::Status::Busy("an older transaction holds a write intent on one of this transaction's keys");
+				state->status = intentRefusal();
 			} else if (testForceTryAgain()) {
 				// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
 				// so the retry path (reset onto a fresh snapshot + re-run) is exercised. A failed
@@ -1321,12 +1330,10 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	// A sync commit refuses on an older holder's intent rather than parking: the holder may need this
 	// very event loop to finish. The caller retries.
-	static const rocksdb::Status intentRefusal =
-		rocksdb::Status::Busy("an older transaction holds a write intent on one of this transaction's keys");
 	if ((*txnHandle)->logEntryBatch && (*txnHandle)->intentConflictSlot) {
 		(*txnHandle)->lastConflictKind = TransactionHandle::ConflictIntentBeforeLog;
 		refusedBeforeLog = true;
-		status = intentRefusal;
+		status = intentRefusal();
 	} else if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %llu\n",
 			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
@@ -1352,7 +1359,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if (!refusedBeforeLog) {
 		if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && (*txnHandle)->intentConflictSlot) {
 			(*txnHandle)->lastConflictKind = TransactionHandle::ConflictIntentAfterLog;
-			status = intentRefusal;
+			status = intentRefusal();
 		} else {
 			status = (*txnHandle)->txn->Commit();
 			if (status.IsBusy() || status.IsTryAgain()) {

@@ -361,14 +361,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	double batchTimestamp = 0;
 
 	/**
-	 * Whether `transactionLogAbortMarkers` was on when the batch was logged: if so, ending this handle
-	 * without a commit marks the batch aborted rather than leaving it live (DESIGN.md, "Abort markers").
+	 * Whether `transactionLogAbortMarkers` was on for the attempt that logged the batch: if so, ending
+	 * this handle without a commit marks the batch aborted (DESIGN.md, "Abort markers").
 	 */
 	bool cancelOnAbort = false;
 
-	enum class Cancellation : uint8_t { None, Marked, Failed };
-	/** Outcome of marking the logged batch aborted, set by close(). */
-	Cancellation cancellation = Cancellation::None;
+	// Released: the position was released without a marker (markers off, or no batch landed).
+	enum class Cancellation : uint8_t { None, Released, Marked, Failed };
+	/** Outcome of marking the logged batch aborted. Set by close(), which may run on another thread. */
+	std::atomic<Cancellation> cancellation = Cancellation::None;
 
 	/**
 	 * Logical age for write-intent precedence: the constructor's startTimestamp, kept when JS changes

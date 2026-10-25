@@ -197,14 +197,25 @@ struct LockTracker {
 	std::atomic<uint32_t> refcount{1};  // 1 for the slot reference + 1 per holder
 	std::atomic<uint32_t> holders{0};   // count of active intent registrations
 
-	// Ages of the live holders that registered one (writerMutex_). Beyond the inline slots a
-	// holder is only counted; an unaged holder (a non-transactional write, or one taken with
-	// abort markers off) has no age. A joiner treats both as possibly older.
-	static constexpr uint8_t kInlineAges = 4;
-	IntentAge ages[kInlineAges];
-	uint8_t   ageCount{0};
-	uint32_t  agedHolders{0};
-	uint32_t  overflowAged{0};
+	/**
+	 * Live holders' ages, for write-intent refusal (writerMutex_). Allocated by the first aged
+	 * registration, so a tracker whose holders carry no age (abort markers off) pays one pointer.
+	 * Repeat registrations by one holder share an entry. A holder with no age (a non-transactional
+	 * write, or one registered with abort markers off), or a fifth distinct aged holder, is only
+	 * counted, and a joiner treats it as possibly older.
+	 */
+	struct HolderAges {
+		static constexpr uint8_t kInline = 4;
+		struct Holder {
+			IntentAge age;
+			uint32_t intents;
+		};
+		Holder inline_[kInline];
+		uint8_t count = 0;
+		uint32_t agedIntents = 0;
+		uint32_t uncountedAgedIntents = 0;
+	};
+	std::unique_ptr<HolderAges> ages;
 	uint16_t              generation;   // immutable after install; matches slot encoding
 	size_t                slotIndex;    // index in VT slots_ array (for cancelForDB)
 	uint64_t              dbId;         // per-open epoch of the owning DB (DBDescriptor::vtEpoch)

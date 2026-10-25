@@ -585,13 +585,13 @@ void TransactionHandle::close() {
 		auto store = this->boundLogStore.lock();
 		if (store) {
 			if (this->cancelOnAbort && this->batchAddress.logSequenceNumber > 0) {
-				// Terminal: mark the batch so no reader applies it, and make the marker durable, before
-				// its watermark position is released. A failure leaves the position pinned in the store.
+				// Durable before the position is released (transaction_log/DESIGN.md, "Abort markers").
 				this->cancellation = store->cancelBatch(this->batchAddress, this->batchTimestamp, this->committedPosition)
 					? Cancellation::Marked
 					: Cancellation::Failed;
 			} else {
 				store->commitAborted(this->committedPosition);
+				this->cancellation = Cancellation::Released;
 			}
 		}
 	}

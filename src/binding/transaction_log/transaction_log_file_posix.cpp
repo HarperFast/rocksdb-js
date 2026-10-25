@@ -312,7 +312,7 @@ void TransactionLogFile::flushSyncHeld() {
 	this->lastFlushedGeneration = generation;
 }
 
-bool TransactionLogFile::writeAbortMarkerLocked(uint32_t offset, uint32_t extent, double expectedTimestamp) {
+void TransactionLogFile::writeAbortMarkerLocked(uint32_t offset, uint32_t extent, double expectedTimestamp) {
 	// Not this->fd: it is O_APPEND, and Linux pwrite() on an O_APPEND descriptor ignores the offset.
 	int markFd = ::open(this->path.c_str(), O_RDWR | O_CLOEXEC);
 	if (markFd < 0) {
@@ -331,9 +331,6 @@ bool TransactionLogFile::writeAbortMarkerLocked(uint32_t offset, uint32_t extent
 	}
 	this->checkAbortMarkerHeader(header, offset, extent, expectedTimestamp);
 	uint8_t flags = static_cast<uint8_t>(header[TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1]);
-	if (flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) {
-		return false;
-	}
 	char marked = static_cast<char>(flags | TRANSACTION_LOG_ENTRY_ABORTED_FLAG);
 	ssize_t written;
 	do {
@@ -344,7 +341,6 @@ bool TransactionLogFile::writeAbortMarkerLocked(uint32_t offset, uint32_t extent
 		throw rocksdb_js::DBException(
 			"Failed to write an abort marker to " + this->path.string() + ": " + std::string(::strerror(error)));
 	}
-	return true;
 }
 
 bool TransactionLogFile::openFile(bool createIfMissing) {

@@ -431,7 +431,8 @@ struct TransactionLogFile final {
 	 * Sets TRANSACTION_LOG_ENTRY_ABORTED_FLAG on the entry header at `offset`, as `current | 0x02`,
 	 * writing that one byte and nothing else. The header must start a frame inside the logical extent
 	 * and carry `expectedTimestamp`. Returns the mutation generation a syncThrough() must reach for the
-	 * marker to be durable; an entry already marked writes nothing. Throws on a mismatch or I/O error.
+	 * marker to be durable. An entry already marked is written again: after a failed sync the kernel
+	 * may have dropped the dirty page, so a retry must dirty it anew. Throws on a mismatch or I/O error.
 	 */
 	uint64_t markEntryAborted(uint32_t offset, double expectedTimestamp);
 
@@ -798,10 +799,9 @@ private:
 	/**
 	 * Platform specific: reads the entry header at `offset` through a separate, non-appending
 	 * descriptor, checks it with checkAbortMarkerHeader(), and writes back its flags byte with the
-	 * aborted flag set. Returns false, writing nothing, when the flag is already set. Caller holds
-	 * fileMutex.
+	 * aborted flag set. Caller holds fileMutex.
 	 */
-	bool writeAbortMarkerLocked(uint32_t offset, uint32_t extent, double expectedTimestamp);
+	void writeAbortMarkerLocked(uint32_t offset, uint32_t extent, double expectedTimestamp);
 
 	/** Throws unless `header` starts a frame of `expectedTimestamp` that ends inside `extent`. */
 	void checkAbortMarkerHeader(const char* header, uint32_t offset, uint32_t extent, double expectedTimestamp);

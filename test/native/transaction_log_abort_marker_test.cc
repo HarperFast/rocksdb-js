@@ -113,19 +113,29 @@ TEST(TransactionLogAbortMarker, RefusesAnAddressThatDoesNotStartItsBatchWithoutW
 	EXPECT_EQ(readBytes(path), before);
 }
 
-TEST(TransactionLogAbortMarker, MarkingAgainWritesNothingAndSyncsNothing) {
+TEST(TransactionLogAbortMarker, ARetryAfterAFailedSyncWritesTheMarkerAgain) {
 	auto storePath = uniqueStorePath();
 	RemoveOnExit cleanup{storePath.parent_path()};
 	auto path = writeSegment(storePath);
 	auto file = openSegment(path);
 	std::atomic<int> syncs = 0;
-	file->beforeSyncForTests = [&]() { syncs++; };
-	uint64_t generation = file->markEntryAborted(SECOND_BATCH, T2);
-	file->syncThrough(generation);
+	bool failNext = true;
+	file->beforeSyncForTests = [&]() {
+		syncs++;
+		if (failNext) {
+			failNext = false;
+			throw rocksdb_js::DBException("injected sync failure");
+		}
+	};
+	uint64_t first = file->markEntryAborted(SECOND_BATCH, T2);
+	EXPECT_THROW(file->syncThrough(first), rocksdb_js::DBException);
 	std::string marked = readBytes(path);
-	EXPECT_EQ(file->markEntryAborted(SECOND_BATCH, T2), generation);
-	file->syncThrough(generation);
-	EXPECT_EQ(syncs.load(), 1);
+	// After a failed fsync the kernel may have cleaned the page without writing it, so a retry
+	// rewrites the byte and needs a sync of its own rather than counting the failed one.
+	uint64_t retried = file->markEntryAborted(SECOND_BATCH, T2);
+	EXPECT_GT(retried, first);
+	file->syncThrough(retried);
+	EXPECT_EQ(syncs.load(), 2);
 	EXPECT_EQ(readBytes(path), marked);
 	file->close();
 }

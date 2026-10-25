@@ -143,8 +143,8 @@ inline std::atomic<int>& clearDeleteDelayMsFlag() {
 	return delayMs;
 }
 
-// Number of transaction-log abort markers to fail (a count). Read on the commit and teardown
-// threads that write markers, so snapshotted like the fault flags above.
+// Number of transaction-log abort-marker syncs to fail after the marker is written (a count). Read
+// on the commit and teardown threads that write markers, so snapshotted like the fault flags above.
 inline std::atomic<int>& abortMarkFailureFlag() {
 	static std::atomic<int> pending{0};
 	return pending;

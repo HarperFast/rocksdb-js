@@ -1187,6 +1187,9 @@ void TransactionLogFile::flush() {
 }
 
 void TransactionLogFile::syncThrough(uint64_t generation) {
+	if (testConsumeAbortMarkFailure()) {
+		throw DBException("Injected abort marker sync failure (test seam): " + this->path.string());
+	}
 	std::lock_guard<std::mutex> syncLock(this->syncMutex);
 	{
 		std::lock_guard<std::mutex> lock(this->fileMutex);
@@ -1210,19 +1213,14 @@ uint64_t TransactionLogFile::markEntryAborted(uint32_t offset, double expectedTi
 		this->beforeMarkForTests();
 	}
 #endif
-	if (testConsumeAbortMarkFailure()) {
-		throw DBException("Injected abort marker failure (test seam): " + this->path.string());
-	}
 	uint32_t extent = this->size.load(std::memory_order_relaxed);
 	if (offset < TRANSACTION_LOG_FILE_HEADER_SIZE || extent < TRANSACTION_LOG_ENTRY_HEADER_SIZE ||
 		offset > extent - TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
 		throw DBException("Abort marker offset " + std::to_string(offset) + " is outside the written extent of " +
 			this->path.string());
 	}
-	if (this->writeAbortMarkerLocked(offset, extent, expectedTimestamp)) {
-		return ++this->mutationGeneration;
-	}
-	return this->mutationGeneration;
+	this->writeAbortMarkerLocked(offset, extent, expectedTimestamp);
+	return ++this->mutationGeneration;
 }
 
 void TransactionLogFile::checkAbortMarkerHeader(

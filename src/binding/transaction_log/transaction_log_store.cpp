@@ -655,6 +655,14 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 	std::vector<uint64_t> byteLimits;
 	uint32_t current;
 	{
+		// With abort markers in use, no append may be mid-flight while the sizes and the unresolved
+		// set are captured: an appending batch's bytes count in `size` before its position stops
+		// equalling nextLogPosition, the sentinel skipped below.
+		const bool markersInUse = this->abortMarkersInUse.load(std::memory_order_relaxed);
+		std::unique_lock<std::mutex> writeLock(this->writeMutex, std::defer_lock);
+		if (markersInUse) {
+			writeLock.lock();
+		}
 		std::unique_lock<std::mutex> lock(this->dataSetsMutex);
 		current = this->currentSequenceNumber.load(std::memory_order_relaxed);
 		files.reserve(this->sequenceFiles.size());
@@ -688,7 +696,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 			// capture the pre-append extent). Captured with the unresolved set below.
 			byteLimits.push_back(file->size.load(std::memory_order_relaxed));
 		}
-		if (this->abortMarkersInUse.load(std::memory_order_relaxed)) {
+		if (markersInUse) {
 			// A batch still unresolved here may yet be marked aborted, which a copy taken now would
 			// not show, and a restore would replay it. Wait until every one commits or is marked.
 			std::vector<LogPosition> unresolved;
@@ -698,6 +706,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 					unresolved.push_back(position);
 				}
 			}
+			writeLock.unlock();
 			this->waitForResolution(lock, unresolved);
 		}
 	}
@@ -1510,6 +1519,9 @@ bool TransactionLogStore::retryFailedCancellations() noexcept {
 
 bool TransactionLogStore::isFailedCancellation(LogPosition position) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	if (this->cancellationRecordLost) {
+		return true;
+	}
 	for (const auto& cancellation : this->failedCancellations) {
 		if (cancellation.position.logSequenceNumber == position.logSequenceNumber &&
 			cancellation.position.positionInLogFile == position.positionInLogFile) {

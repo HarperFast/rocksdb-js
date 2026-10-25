@@ -272,9 +272,11 @@ LockTracker* VerificationTable::lockSlotForWrite(
 	LockTracker* t;
 	if (vtIsLock(v)) {
 		t = vtDecodeLock(v);
-		olderHolder = t->holders.load(std::memory_order_relaxed) > t->agedHolders || t->overflowAged > 0;
-		for (uint8_t i = 0; i < t->ageCount && !olderHolder; i++) {
-			olderHolder = t->ages[i].olderThan(age);
+		const LockTracker::HolderAges* ages = t->ages.get();
+		olderHolder = t->holders.load(std::memory_order_relaxed) > (ages ? ages->agedIntents : 0) ||
+			(ages && ages->uncountedAgedIntents > 0);
+		for (uint8_t i = 0; ages && i < ages->count && !olderHolder; i++) {
+			olderHolder = ages->inline_[i].age.olderThan(age);
 		}
 		t->holders.fetch_add(1, std::memory_order_relaxed);
 		t->refcount.fetch_add(1, std::memory_order_relaxed);
@@ -285,11 +287,21 @@ LockTracker* VerificationTable::lockSlotForWrite(
 		t->refcount.store(1, std::memory_order_relaxed);
 		slot->store(vtEncodeLock(t, gen), std::memory_order_release);
 	}
-	t->agedHolders++;
-	if (t->ageCount < LockTracker::kInlineAges) {
-		t->ages[t->ageCount++] = age;
+	if (!t->ages) {
+		t->ages = std::make_unique<LockTracker::HolderAges>();
+	}
+	LockTracker::HolderAges& ages = *t->ages;
+	ages.agedIntents++;
+	for (uint8_t i = 0; i < ages.count; i++) {
+		if (ages.inline_[i].age.age == age.age && ages.inline_[i].age.tie == age.tie) {
+			ages.inline_[i].intents++;
+			return t;
+		}
+	}
+	if (ages.count < LockTracker::HolderAges::kInline) {
+		ages.inline_[ages.count++] = { age, 1 };
 	} else {
-		t->overflowAged++;
+		ages.uncountedAgedIntents++;
 	}
 	return t;
 }
@@ -297,16 +309,17 @@ LockTracker* VerificationTable::lockSlotForWrite(
 void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTracker* t, const IntentAge* age) {
 	if (!t) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
-	if (age) {
-		t->agedHolders--;
+	if (age && t->ages) {
+		LockTracker::HolderAges& ages = *t->ages;
+		ages.agedIntents--;
 		uint8_t i = 0;
-		while (i < t->ageCount && (t->ages[i].age != age->age || t->ages[i].tie != age->tie)) {
+		while (i < ages.count && (ages.inline_[i].age.age != age->age || ages.inline_[i].age.tie != age->tie)) {
 			i++;
 		}
-		if (i < t->ageCount) {
-			t->ages[i] = t->ages[--t->ageCount];
-		} else {
-			t->overflowAged--;
+		if (i == ages.count) {
+			ages.uncountedAgedIntents--;
+		} else if (--ages.inline_[i].intents == 0) {
+			ages.inline_[i] = ages.inline_[--ages.count];
 		}
 	}
 	bool lastHolder = (t->holders.fetch_sub(1, std::memory_order_acq_rel) == 1);

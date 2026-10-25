@@ -1,7 +1,7 @@
 import { RocksDatabase, Transaction } from '../../src/index.ts';
 
-// Run with ROCKSDB_JS_ABORT_MARK_FAILURE=2: the abort's marker fails, and so does the retry the
-// next append makes first, so that append is refused; the append after it retries successfully.
+// Run with ROCKSDB_JS_ABORT_MARK_FAILURE=2: the abort's marker sync fails, and so does the retry
+// the next append makes first, so that append is refused; the append after it retries successfully.
 const dbPath = process.argv[2];
 const fail = (message: string): never => {
 	throw new Error(message);
