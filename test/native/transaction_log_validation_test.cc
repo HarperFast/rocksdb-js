@@ -17,6 +17,8 @@
 using rocksdb_js::DBException;
 using rocksdb_js::TransactionLogFile;
 using rocksdb_js::TransactionLogFormatException;
+using rocksdb_js::TransactionLogVersionException;
+using rocksdb_js::checkTransactionLogSegmentVersion;
 using rocksdb_js::TransactionLogFileValidation;
 using rocksdb_js::TransactionLogStoreValidation;
 using rocksdb_js::validateTransactionLogImage;
@@ -551,7 +553,10 @@ TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures)
 	auto badVersionPath = dir / "3.txnlog";
 	LogImage(TRANSACTION_LOG_TOKEN, /*version=*/2).writeTo(badVersionPath);
 	TransactionLogFile badVersion(badVersionPath, 3);
-	EXPECT_THROW(badVersion.open(0), TransactionLogFormatException);
+	EXPECT_THROW(badVersion.open(0), TransactionLogVersionException);
+	EXPECT_THROW(checkTransactionLogSegmentVersion(badVersionPath), TransactionLogVersionException);
+	EXPECT_NO_THROW(checkTransactionLogSegmentVersion(badTokenPath));
+	EXPECT_NO_THROW(checkTransactionLogSegmentVersion(tooSmallPath));
 
 	TransactionLogFile ioFailure(dir, 4);
 	EXPECT_THROW(ioFailure.open(0), DBException);
