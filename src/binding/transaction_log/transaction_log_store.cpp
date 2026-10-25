@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -1152,6 +1151,10 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	}
 
 	bool rotatedAfterOpenFailure = false;
+	bool firstEntryRecorded = false;
+	if (firstEntry) {
+		*firstEntry = LogPosition(0, 0);
+	}
 	// write entries across multiple log files until all are written
 	while (!batch.isComplete()) {
 		std::shared_ptr<TransactionLogFile> logFile = nullptr;
@@ -1203,7 +1206,11 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 		// write as much as possible to this file
 		try {
-			logFile->writeEntries(batch, this->maxFileSize, this->latestTimestamp);
+			uint32_t appendedAt = logFile->writeEntries(batch, this->maxFileSize, this->latestTimestamp);
+			if (firstEntry && appendedAt > 0 && !firstEntryRecorded) {
+				*firstEntry = LogPosition(appendedAt, logFile->sequenceNumber);
+				firstEntryRecorded = true;
+			}
 		} catch (const TransactionLogOpenException& e) {
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what());
 			this->writeFailures.fetch_add(1, std::memory_order_relaxed);
@@ -1224,10 +1231,6 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			throw;
 		}
 		logFile->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
-		if (firstEntry && firstEntry->fullPosition == 0 && logFile->size > sizeBefore) {
-			firstEntry->positionInLogFile = std::max<uint32_t>(sizeBefore, TRANSACTION_LOG_FILE_HEADER_SIZE);
-			firstEntry->logSequenceNumber = logFile->sequenceNumber;
-		}
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed));

@@ -542,8 +542,10 @@ struct TransactionLogFile final {
 	 * @param batch The batch of entries to write with state tracking.
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
 	 * @param latestTimestamp The header timestamp when creating a segment.
+	 * @returns The offset the first entry of this call was appended at, read after the lazy open, or
+	 * 0 when nothing was written.
 	 */
-	void writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0,
+	uint32_t writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0,
 		double latestTimestamp = 0);
 
 	/**
@@ -778,8 +780,9 @@ private:
 	 *
 	 * @param batch The batch of entries to write with state tracking.
 	 * @param maxFileSize The maximum file size limit (0 = no limit).
+	 * @returns The offset the entries were appended at, or 0 when nothing was written.
 	 */
-	void writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
+	uint32_t writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize);
 };
 
 struct MemoryMap final {

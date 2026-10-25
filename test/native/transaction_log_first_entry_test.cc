@@ -35,7 +35,7 @@ void writeOne(
 	rocksdb_js::TransactionLogEntryBatch batch(timestamp);
 	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
 		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
-	firstEntry = rocksdb_js::LogPosition(0, 0);
+	firstEntry = rocksdb_js::LogPosition(1, 99); // writeBatch must overwrite whatever the caller had
 	store.writeBatch(batch, position, &firstEntry);
 }
 
@@ -67,7 +67,6 @@ TEST(TransactionLogFirstEntry, BatchThatRotatesIsAddressedInTheNewSegment) {
 	auto storePath = uniqueFirstEntryStorePath();
 	std::filesystem::create_directories(storePath);
 	{
-		// Room for one 10-byte entry after the header; a 40-byte batch then cannot fit.
 		const uint32_t maxFileSize = TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 20;
 		rocksdb_js::TransactionLogStore store("store", storePath, maxFileSize, std::chrono::milliseconds(0), 0);
 		rocksdb_js::LogPosition position;
@@ -79,10 +78,54 @@ TEST(TransactionLogFirstEntry, BatchThatRotatesIsAddressedInTheNewSegment) {
 		EXPECT_EQ(firstEntry.logSequenceNumber, 2u);
 		EXPECT_EQ(firstEntry.positionInLogFile, static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 		EXPECT_EQ(timestampAt(storePath / "2.txnlog", firstEntry.positionInLogFile), 1770000000002.0);
-		// The watermark key was taken before rotation and does not address the batch.
 		EXPECT_FALSE(
 			position.logSequenceNumber == firstEntry.logSequenceNumber &&
 			position.positionInLogFile == firstEntry.positionInLogFile);
+		store.close();
+	}
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogFirstEntry, LazilyOpenedSegmentWithDataIsAddressedAtItsEnd) {
+	auto storePath = uniqueFirstEntryStorePath();
+	std::filesystem::create_directories(storePath);
+	uint32_t existingSize = 0;
+	{
+		rocksdb_js::TransactionLogFile file(storePath / "1.txnlog", 1);
+		file.open(1770000000000.0);
+		std::string payload = "already on disk";
+		rocksdb_js::TransactionLogEntryBatch batch(1770000000001.0);
+		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		file.writeEntries(batch);
+		existingSize = file.size.load(std::memory_order_relaxed);
+		file.close();
+	}
+	ASSERT_GT(existingSize, static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
+	{
+		// constructed without load(): segment 1 is opened lazily by the first append
+		rocksdb_js::TransactionLogStore store("store", storePath, 0, std::chrono::milliseconds(0), 0);
+		rocksdb_js::LogPosition position;
+		rocksdb_js::LogPosition firstEntry;
+		writeOne(store, 1770000000002.0, "appended", position, firstEntry);
+		EXPECT_EQ(firstEntry.logSequenceNumber, 1u);
+		EXPECT_EQ(firstEntry.positionInLogFile, existingSize);
+		EXPECT_EQ(timestampAt(storePath / "1.txnlog", firstEntry.positionInLogFile), 1770000000002.0);
+		store.close();
+	}
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogFirstEntry, EmptyBatchRecordsNoAddress) {
+	auto storePath = uniqueFirstEntryStorePath();
+	std::filesystem::create_directories(storePath);
+	{
+		rocksdb_js::TransactionLogStore store("store", storePath, 0, std::chrono::milliseconds(0), 0);
+		rocksdb_js::LogPosition position;
+		rocksdb_js::LogPosition firstEntry(1, 99);
+		rocksdb_js::TransactionLogEntryBatch batch(1770000000001.0);
+		store.writeBatch(batch, position, &firstEntry);
+		EXPECT_EQ(firstEntry.fullPosition, 0);
 		store.close();
 	}
 	std::filesystem::remove_all(storePath.parent_path());
