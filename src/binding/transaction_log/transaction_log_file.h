@@ -98,10 +98,7 @@ public:
 };
 
 /**
- * Throws TransactionLogVersionException when the first five bytes of `logPath` carry the token and a
- * version above TRANSACTION_LOG_FORMAT_VERSION. Returns true for a complete current-version header,
- * and false when the file cannot be read or is not a well-formed segment, which the normal open path
- * then handles.
+ * Returns false for anything open() rejects as malformed, so the normal open path handles it.
  */
 bool checkTransactionLogSegmentVersion(const std::filesystem::path& logPath);
 
