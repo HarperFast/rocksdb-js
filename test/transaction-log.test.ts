@@ -1210,6 +1210,22 @@ describe('Transaction Log', () => {
 					expect(entries.map((entry) => entry.endTxn)).toEqual([true, false, true]);
 				}));
 
+			it('finds an aborted batch after an unclosed run, and stops skipping where an aborted batch lost its last entry', () =>
+				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+					await craft(dbPath, 'boundaries', [
+						{ timestamp: T1, flags: 0, data: 'legacy-unclosed' },
+						{ timestamp: T2, flags: ABORTED, data: 'aborted-1' },
+						{ timestamp: T2, flags: LAST, data: 'aborted-2' },
+						{ timestamp: T3, flags: ABORTED, data: 'aborted-torn' },
+						{ timestamp: T3 + 1, flags: LAST, data: 'committed' },
+					]);
+					db.open();
+					const entries = [...db.useLog('boundaries').query({ start: 0 })].map((entry) =>
+						entry.data.toString()
+					);
+					expect(entries).toEqual(['legacy-unclosed', 'committed']);
+				}));
+
 			it('resolves an exact start to the live copy, not the aborted one', () =>
 				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 					await craft(dbPath, 'aborted', retried);

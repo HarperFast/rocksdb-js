@@ -226,9 +226,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let tailLogId = 0;
 		let tailPosition = 0;
 		let segmentRemovals = 0;
-		// Every start position is the first entry of a transaction, which carries the batch's abort
-		// flag; an aborted batch is skipped through its last entry.
-		let atTransactionStart = true;
+		// A transaction starts after an entry carrying LAST_FLAG, at a timestamp change (every entry of
+		// a batch carries the batch's timestamp), or at an entry carrying the abort flag; an aborted
+		// transaction is skipped until the next start.
+		let previousEndedTransaction = true;
+		let previousTimestamp = Number.NaN;
 		let skippingAborted = false;
 
 		if (start === undefined && !startFromLastFlushed) {
@@ -431,7 +433,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							!!readUncommitted
 						);
 						position = broken.nextPosition;
-						atTransactionStart = true;
 						throw broken.error;
 					}
 					const length = dataView.getUint32(position + 8);
@@ -453,15 +454,16 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							!!readUncommitted
 						);
 						position = broken.nextPosition;
-						atTransactionStart = true;
 						throw broken.error;
 					}
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 					const flags = logBuffer![position - 1];
-					if (atTransactionStart) {
-						skippingAborted = (flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) !== 0;
+					const aborted = (flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) !== 0;
+					if (previousEndedTransaction || timestamp !== previousTimestamp || aborted) {
+						skippingAborted = aborted;
 					}
-					atTransactionStart = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) !== 0;
+					previousEndedTransaction = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) !== 0;
+					previousTimestamp = timestamp;
 					let matchesRange: boolean;
 					if (skippingAborted) {
 						matchesRange = false;
@@ -517,7 +519,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							done: false,
 							value: {
 								timestamp,
-								endTxn: atTransactionStart,
+								endTxn: previousEndedTransaction,
 								data: logBuffer!.subarray(entryStart, position),
 							},
 						};

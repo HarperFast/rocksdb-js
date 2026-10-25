@@ -1,4 +1,4 @@
-import { backups, RocksDatabase, validateTransactionLogStore } from '../src/index.ts';
+import { backups, constants, RocksDatabase, validateTransactionLogStore } from '../src/index.ts';
 import { writeCraftedSegment } from './lib/transaction-log-fixtures.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { mkdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
@@ -23,6 +23,12 @@ async function writeLog(db: RocksDatabase, name: string, count = 5): Promise<voi
 		});
 	}
 }
+
+const {
+	TRANSACTION_LOG_FILE_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+	TRANSACTION_LOG_TOKEN,
+} = constants;
 
 describe('validateTransactionLogStore', () => {
 	afterEach(() => {
@@ -85,9 +91,9 @@ describe('validateTransactionLogStore', () => {
 				{ timestamp: T1, flags: 0x01, data: 'aborted-2' },
 				{ timestamp: T1, flags: 0x01, data: 'retry' },
 			],
-			13,
-			13,
-			0x574f4f46
+			TRANSACTION_LOG_FILE_HEADER_SIZE,
+			TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+			TRANSACTION_LOG_TOKEN
 		);
 		const valid = await validateTransactionLogStore(storePath);
 		expect(valid.valid).toBe(true);
@@ -100,9 +106,9 @@ describe('validateTransactionLogStore', () => {
 				{ timestamp: T1, flags: 0, data: 'first' },
 				{ timestamp: T1, flags: 0x03, data: 'second' },
 			],
-			13,
-			13,
-			0x574f4f46
+			TRANSACTION_LOG_FILE_HEADER_SIZE,
+			TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+			TRANSACTION_LOG_TOKEN
 		);
 		const misplaced = await validateTransactionLogStore(storePath);
 		expect(misplaced.files[0].warnings).toEqual([
