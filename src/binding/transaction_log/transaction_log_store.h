@@ -396,6 +396,14 @@ struct TransactionLogStore final {
 	std::atomic<bool> flushedStateWarningEmitted = false;
 
 	/**
+	 * Set when a segment sync before a database flush fails, and never cleared for this store
+	 * instance: after a failed fsync the kernel may drop the dirty pages, so a later successful
+	 * sync proves nothing about them. While set, txn.state does not advance, so a restart replays
+	 * from the last position known to be durable.
+	 */
+	std::atomic<bool> logSyncFailed = false;
+
+	/**
 	 * Generation of the correlation ring and txn.state. An all-segment purge
 	 * advances it while holding dataSetsMutex; a flush callback captures it with
 	 * its position scan and checks it after acquiring flushedStateMutex.
@@ -732,6 +740,9 @@ private:
 	void recordFlushedPosition(rocksdb::SequenceNumber rocksSequenceNumber);
 	void writeFlushedPosition(LogPosition latestSequencePosition, uint64_t observedGeneration);
 	void warnFlushedStateFailure(const char* what, const char* detail) noexcept;
+
+	/** Latches logSyncFailed and reports it once. Runs on RocksDB's flush thread. */
+	void noteLogSyncFailure(uint32_t sequenceNumber, const char* detail) noexcept;
 
 	void doPurge(
 		std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor = nullptr,

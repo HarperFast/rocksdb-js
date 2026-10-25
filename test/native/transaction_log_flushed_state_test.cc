@@ -21,6 +21,10 @@ struct TransactionLogStoreTestPeer {
 	) {
 		store.writeFlushedPosition(position, generation);
 	}
+
+	static std::shared_ptr<TransactionLogFile> logFile(TransactionLogStore& store, uint32_t sequenceNumber) {
+		return store.getLogFile(sequenceNumber);
+	}
 };
 
 } // namespace rocksdb_js
@@ -368,6 +372,46 @@ TEST(TransactionLogFlushedState, OutOfOrderCommitsKeepFlushCorrelationBehindUnfl
 	store->databaseFlushed(11);
 	flushed = store->getLastFlushedPosition();
 	EXPECT_GT(flushed.fullPosition, later.fullPosition);
+
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
+
+TEST(TransactionLogFlushedState, FailedSegmentSyncStopsFlushedStateFromAdvancing) {
+	auto storePath = uniqueFlushedStatePath();
+	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+	auto commit = [&](double timestamp, rocksdb::SequenceNumber sequence) {
+		std::string payload = "entry";
+		rocksdb_js::TransactionLogEntryBatch batch(timestamp);
+		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		rocksdb_js::LogPosition position;
+		store->writeBatch(batch, position);
+		store->commitFinished(position, [sequence]() { return sequence; });
+		return position;
+	};
+
+	auto first = commit(1001.0, 10);
+	store->databaseFlushBegin(10);
+	store->databaseFlushed(10);
+	auto durable = store->getLastFlushedPosition();
+	ASSERT_GT(durable.positionInLogFile, first.positionInLogFile);
+
+	auto logFile = rocksdb_js::TransactionLogStoreTestPeer::logFile(*store, first.logSequenceNumber);
+	logFile->beforeSyncForTests = []() { throw std::runtime_error("injected sync failure"); };
+	commit(1002.0, 20);
+	store->databaseFlushBegin(20);
+	store->databaseFlushed(20);
+	expectFlushedPosition(*store, durable.positionInLogFile, durable.logSequenceNumber);
+
+	// A later successful sync does not prove the pages the failed one may have dropped.
+	logFile->beforeSyncForTests = nullptr;
+	commit(1003.0, 30);
+	store->databaseFlushBegin(30);
+	store->databaseFlushed(30);
+	expectFlushedPosition(*store, durable.positionInLogFile, durable.logSequenceNumber);
+	EXPECT_TRUE(store->logSyncFailed.load());
 
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());

@@ -239,6 +239,11 @@ void TransactionLogFile::flush() {
 	lock.unlock();
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (fd=%d, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), fdToFlush, currentSize, this->lastFlushedSize);
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (this->beforeSyncForTests) {
+		this->beforeSyncForTests();
+	}
+#endif
 
 	// macOS doesn't have fdatasync, use fsync instead
 	// fdatasync is faster on Linux as it doesn't sync metadata

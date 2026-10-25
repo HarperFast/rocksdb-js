@@ -165,6 +165,11 @@ void TransactionLogFile::flush() {
 	// Perform the flush without holding the lock (since FlushFileBuffers can be slow)
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (handle=%p, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), handleToFlush, currentSize, this->lastFlushedSize);
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (this->beforeSyncForTests) {
+		this->beforeSyncForTests();
+	}
+#endif
 	if (!::FlushFileBuffers(handleToFlush)) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
