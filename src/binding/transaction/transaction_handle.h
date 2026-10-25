@@ -336,6 +336,18 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	LogPosition batchAddress;
 	double batchTimestamp = 0;
 
+	/**
+	 * Prototype (ROCKSDB_JS_ABORT_MODE=hybrid-vt): a slot whose write intent another transaction
+	 * already held when this attempt staged a write to it; null if none. Cleared on reset.
+	 */
+	std::atomic<uint64_t>* intentConflictSlot = nullptr;
+
+	/** Prototype: process-wide creation order, kept across retries; lower is older. */
+	uint64_t ageSeq = 0;
+
+	/** Set by close() when it marked this handle's logged batch aborted. */
+	bool abortMarked = false;
+
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 

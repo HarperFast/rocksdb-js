@@ -11,6 +11,7 @@ import type { BufferWithDataView, Encoder, EncoderFunction, Key } from './encodi
 import {
 	addGlobalListener,
 	config,
+	getCommitDiagnostics,
 	globalListenerCount,
 	globalNotify,
 	removeGlobalListener,
@@ -100,6 +101,13 @@ function backgroundErrorSeverityName(severity: number): string {
  * ```
  */
 export class RocksDatabase extends DBI<DBITransactional> {
+	/**
+	 * Prototype measurement counters (abort-marker design), process-wide.
+	 */
+	getCommitDiagnostics(): Record<string, number> {
+		return getCommitDiagnostics();
+	}
+
 	/**
 	 * The name of the database's column family.
 	 */

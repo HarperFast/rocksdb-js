@@ -33,6 +33,7 @@ export {
 	stats,
 	shutdown,
 	steadyClockNow,
+	getCommitDiagnostics,
 	supportedCompression,
 	TransactionLog,
 	type FlushOptions,

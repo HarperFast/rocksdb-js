@@ -165,6 +165,7 @@ private:
 		std::shared_ptr<std::atomic<bool>> fired;
 		DeadlineIndex::iterator deadlineIt;
 		LockTracker::WakeRegistration wakeRegistration;
+		std::chrono::steady_clock::time_point parkedAt;
 	};
 
 	/** Detaches `id` from both indexes; null if already claimed. Holds `mutex`. */
@@ -175,7 +176,7 @@ private:
 	 * unless another side already won the exactly-once gate. Every caller holds
 	 * `mutex`.
 	 */
-	static void resolve(ParkTimeout& park);
+	static void resolve(ParkTimeout& park, bool timedOut = false);
 
 	/** Runs on `thread` until `shutdown()` stops it. */
 	void runLoop();

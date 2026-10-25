@@ -1,3 +1,4 @@
+#include "core/commit_diag.h"
 #include "napi/binding.h"
 #include "database/backup.h"
 #include "database/database.h"
@@ -166,6 +167,27 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 	napi_value result;
 	auto threadId = getThreadId();
 	NAPI_STATUS_THROWS(::napi_create_int64(env, threadId, &result));
+	return result;
+}
+
+napi_value GetCommitDiagnostics(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	auto& d = rocksdb_js::commitDiag();
+	auto set = [&](const char* name, uint64_t value) -> napi_status {
+		napi_value v;
+		napi_status status = ::napi_create_double(env, static_cast<double>(value), &v);
+		return status == napi_ok ? ::napi_set_named_property(env, result, name, v) : status;
+	};
+	NAPI_STATUS_THROWS(set("refusedByIntent", d.refusedByIntent.load()));
+	NAPI_STATUS_THROWS(set("refusedByValidation", d.refusedByValidation.load()));
+	NAPI_STATUS_THROWS(set("conflictAfterLog", d.conflictAfterLog.load()));
+	NAPI_STATUS_THROWS(set("abortsMarked", d.abortsMarked.load()));
+	NAPI_STATUS_THROWS(set("abortMarkFailures", d.abortMarkFailures.load()));
+	NAPI_STATUS_THROWS(set("parks", d.parks.load()));
+	NAPI_STATUS_THROWS(set("parkTimeouts", d.parkTimeouts.load()));
+	NAPI_STATUS_THROWS(set("parkTotalUs", d.parkTotalUs.load()));
+	NAPI_STATUS_THROWS(set("parkMaxUs", d.parkMaxUs.load()));
 	return result;
 }
 
@@ -492,6 +514,9 @@ NAPI_MODULE_INIT() {
 	napi_value steadyClockNowFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "steadyClockNow", NAPI_AUTO_LENGTH, SteadyClockNow, nullptr, &steadyClockNowFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "steadyClockNow", steadyClockNowFn));
+	napi_value commitDiagnosticsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "getCommitDiagnostics", NAPI_AUTO_LENGTH, GetCommitDiagnostics, nullptr, &commitDiagnosticsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "getCommitDiagnostics", commitDiagnosticsFn));
 
 	// file lock functions (see src/backup.ts)
 	napi_value tryFileLockFn;

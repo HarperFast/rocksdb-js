@@ -187,6 +187,13 @@ export class Transaction extends DBI {
 	}
 
 	/**
+	 * Prototype: whether this transaction's current log batch has been written to the log.
+	 */
+	logWritten(): boolean {
+		return this.#txn.logWritten();
+	}
+
+	/**
 	 * Get the transaction id.
 	 */
 	get id(): number {

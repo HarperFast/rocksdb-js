@@ -4,6 +4,7 @@
 #include "core/platform.h"
 #include "core/test_seam.h"
 #include "database/db_descriptor.h"
+#include "core/commit_diag.h"
 #include "database/db_settings.h"
 #include "napi/global_events.h"
 #include "napi/helpers.h"
@@ -841,6 +842,7 @@ uint64_t ParkTimeoutRegistry::schedule(
 	entry->env = env;
 	entry->tsfn = tsfn;
 	entry->fired = std::move(fired);
+	entry->parkedAt = std::chrono::steady_clock::now();
 	uint64_t id = entry->id;
 	auto deadlineIt = this->deadlines.emplace(
 		std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs),
@@ -868,10 +870,14 @@ std::unique_ptr<ParkTimeoutRegistry::ParkTimeout> ParkTimeoutRegistry::take(uint
 	return owned;
 }
 
-void ParkTimeoutRegistry::resolve(ParkTimeout& park) {
+void ParkTimeoutRegistry::resolve(ParkTimeout& park, bool timedOut) {
 	// Before the call: JS that observes this resolution must not find the park
 	// still registered.
 	park.wakeRegistration.cancel();
+	commitDiag().recordPark(
+		static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+			std::chrono::steady_clock::now() - park.parkedAt).count()),
+		timedOut);
 	bool expected = false;
 	if (park.fired->compare_exchange_strong(expected, true)) {
 		// A closing tsfn (env teardown racing this resolve) must not be
@@ -915,7 +921,7 @@ void ParkTimeoutRegistry::runLoop() {
 			}
 			std::unique_ptr<ParkTimeout> due = std::move(parkIt->second);
 			this->parks.erase(parkIt);
-			ParkTimeoutRegistry::resolve(*due);
+			ParkTimeoutRegistry::resolve(*due, true);
 		}
 	}
 }

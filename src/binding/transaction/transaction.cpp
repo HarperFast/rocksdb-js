@@ -24,6 +24,7 @@
 #include "napi/async.h"
 #include "core/verification_table.h"
 #include "core/optimistic_validation.h"
+#include "core/commit_diag.h"
 
 #define UNWRAP_TRANSACTION_HANDLE(fnName) \
 	std::shared_ptr<TransactionHandle>* txnHandle = nullptr; \
@@ -191,7 +192,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 		DBRegistry::PurgeIfUnreferenced(key);
 	}
 
-	if (hadLogWrites) {
+	if (hadLogWrites && !(*txnHandle)->abortMarked) {
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABANDONED", "Transaction was abandoned after writing to the transaction log");
 	}
 
@@ -397,6 +398,8 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
+	// Prototype: the slot a pre-log refusal parks on (another transaction's write intent).
+	std::atomic<uint64_t>* prelogParkSlot = nullptr;
 
 	TransactionCommitState(
 		napi_env env,
@@ -551,7 +554,34 @@ static bool prelogValidationEnabled() {
 	return enabled;
 }
 
-static rocksdb::Status prelogValidate(const std::shared_ptr<TransactionHandle>& txnHandle) {
+static rocksdb::Status prelogValidate(
+	const std::shared_ptr<TransactionHandle>& txnHandle,
+	std::atomic<uint64_t>** parkSlot = nullptr
+) {
+	AbortMarkerMode mode = abortMarkerMode();
+	if (mode == AbortMarkerMode::Hybrid) {
+		return rocksdb::Status::OK();
+	}
+	if (mode == AbortMarkerMode::HybridIntent) {
+		// Only an attempt that has not logged yet can be refused; after the log write a conflict takes
+		// the write-once retry path.
+		if (txnHandle->committedPosition.logSequenceNumber > 0) {
+			return rocksdb::Status::OK();
+		}
+		if (txnHandle->intentConflictSlot) {
+			commitDiag().refusedByIntent.fetch_add(1, std::memory_order_relaxed);
+			if (parkSlot) *parkSlot = txnHandle->intentConflictSlot;
+			return rocksdb::Status::Busy("refused before the log write: another transaction holds a write intent");
+		}
+		if (txnHandle->dbHandle->descriptor->mode != DBMode::Optimistic) {
+			return rocksdb::Status::OK();
+		}
+		rocksdb::Status status = validateOptimisticTransaction(txnHandle->txn, txnHandle->dbHandle->descriptor->db.get());
+		if (!status.ok()) {
+			commitDiag().refusedByValidation.fetch_add(1, std::memory_order_relaxed);
+		}
+		return status;
+	}
 	if (!prelogValidationEnabled() || txnHandle->dbHandle->descriptor->mode != DBMode::Optimistic) {
 		return rocksdb::Status::OK();
 	}
@@ -607,7 +637,7 @@ static void executeLogWork(TransactionCommitState* state) {
 		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %llu\n",
 			txnHandle.get(), (unsigned long long)txnHandle->id);
 		auto store = txnHandle->boundLogStore.lock();
-		if (rocksdb::Status prelog = prelogValidate(txnHandle); !prelog.ok()) {
+		if (rocksdb::Status prelog = prelogValidate(txnHandle, &state->prelogParkSlot); !prelog.ok()) {
 			state->status = prelog;
 		} else if (store) {
 			try {
@@ -656,9 +686,15 @@ static void executeCommitWork(TransactionCommitState* state) {
 		if (!state->status.ok()) {
 			state->claim.release(descriptor);
 			if (state->status.IsBusy() || state->status.IsTryAgain()) {
-				// refused by the pre-log check: nothing was logged, so release intents as a failed commit does
+				// refused by the pre-log check: nothing was logged, so release intents as a failed commit
+				// does. Park only on another transaction's intent; a validation refusal means the
+				// conflicting writer already committed, so the retry runs at once.
 				if (state->status.IsBusy() && txnHandle->coordinatedRetry) {
-					state->savedSlots = txnHandle->lockedVTSlots;
+					if (abortMarkerMode() == AbortMarkerMode::Full) {
+						state->savedSlots = txnHandle->lockedVTSlots;
+					} else if (state->prelogParkSlot) {
+						state->savedSlots = { state->prelogParkSlot };
+					}
 				}
 				if (!txnHandle->lockedVTSlots.empty()) {
 					txnHandle->releaseIntent();
@@ -723,7 +759,11 @@ static void executeCommitWork(TransactionCommitState* state) {
 		// Gating on !IsBusy (rather than ok()) published on a failed TryAgain commit, making
 		// the entry visible while the record was rolled back and only re-committed later on a
 		// retry — a change-feed entry ahead of its data for every reader in that window.
-		if (!state->status.ok() && abortLoggedAttempt(txnHandle)) {
+		if (!state->status.ok() && (state->status.IsBusy() || state->status.IsTryAgain()) &&
+			txnHandle->committedPosition.logSequenceNumber > 0) {
+			commitDiag().conflictAfterLog.fetch_add(1, std::memory_order_relaxed);
+		}
+		if (!state->status.ok() && abortMarkerMode() == AbortMarkerMode::Full && abortLoggedAttempt(txnHandle)) {
 			state->hasLog = false;
 		}
 
@@ -1345,7 +1385,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	rocksdb::Status status = prelogStatus.ok() ? (*txnHandle)->txn->Commit() : prelogStatus;
 	claim.release(descriptor.get());
-	if (!status.ok() && abortLoggedAttempt(*txnHandle)) {
+	if (!status.ok() && (status.IsBusy() || status.IsTryAgain()) &&
+		(*txnHandle)->committedPosition.logSequenceNumber > 0) {
+		commitDiag().conflictAfterLog.fetch_add(1, std::memory_order_relaxed);
+	}
+	if (!status.ok() && abortMarkerMode() == AbortMarkerMode::Full && abortLoggedAttempt(*txnHandle)) {
 		hasLog = false;
 	}
 
@@ -1675,6 +1719,18 @@ napi_value Transaction::GetTimestamp(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Prototype: whether this transaction's current batch is in the log (a conflict retry after the log
+ * write keeps it; a pre-log refusal or an aborted attempt does not).
+ */
+napi_value Transaction::LogWritten(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_HANDLE("LogWritten");
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, (*txnHandle)->committedPosition.logSequenceNumber > 0, &result));
+	return result;
+}
+
+/**
  * Retrieves the ID of the transaction.
  */
 napi_value Transaction::Id(napi_env env, napi_callback_info info) {
@@ -1908,6 +1964,7 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getTimestamp", nullptr, GetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "logWritten", nullptr, LogWritten, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },

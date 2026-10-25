@@ -125,6 +125,7 @@ export type NativeTransaction = {
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
 	getTimestamp(): number;
+	logWritten(): boolean;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
 	setTimestamp(timestamp?: number): void;
@@ -941,6 +942,8 @@ export const currentThreadId: () => number = binding.currentThreadId;
  * platform-defined. No open database is needed.
  */
 export const steadyClockNow: () => number = binding.steadyClockNow;
+/** Prototype measurement counters (abort-marker design). */
+export const getCommitDiagnostics: () => Record<string, number> = binding.getCommitDiagnostics;
 
 /**
  * Advises the kernel that the file-backed pages of every mapped transaction log

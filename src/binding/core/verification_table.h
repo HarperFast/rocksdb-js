@@ -184,6 +184,8 @@ struct LockTracker {
 
 	std::atomic<uint32_t> refcount{1};  // 1 for the slot reference + 1 per holder
 	std::atomic<uint32_t> holders{0};   // count of active intent registrations
+	// Prototype: smallest age (TransactionHandle::ageSeq) of any holder so far; 0 for a non-transactional write.
+	std::atomic<uint64_t> oldestHolderAge{0};
 	uint16_t              generation;   // immutable after install; matches slot encoding
 	size_t                slotIndex;    // index in VT slots_ array (for cancelForDB)
 	uint64_t              dbId;         // per-open epoch of the owning DB (DBDescriptor::vtEpoch)
@@ -392,7 +394,9 @@ public:
 	 * tracker. Returns the tracker the caller now holds an intent on (to be
 	 * passed to releaseWriteIntent), or nullptr if the slot is null.
 	 */
-	LockTracker* lockSlotForWrite(std::atomic<uint64_t>* slot, uint64_t dbId);
+	LockTracker* lockSlotForWrite(
+		std::atomic<uint64_t>* slot, uint64_t dbId, bool* joinedExisting = nullptr, uint64_t holderAge = 0,
+		uint64_t* priorOldestHolderAge = nullptr);
 
 	/**
 	 * Releases one write intent previously taken via lockSlotForWrite. When the

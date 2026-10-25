@@ -238,7 +238,9 @@ uint64_t vtNextSettleGen() {
 	return vtGlobalSettleGen.fetch_add(1, std::memory_order_relaxed) & VT_SETTLED_GEN_MASK;
 }
 
-LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, uint64_t dbId) {
+LockTracker* VerificationTable::lockSlotForWrite(
+	std::atomic<uint64_t>* slot, uint64_t dbId, bool* joinedExisting, uint64_t holderAge, uint64_t* priorOldestHolderAge
+) {
 	if (!slot) return nullptr;
 	std::lock_guard<std::mutex> lock(writerMutex_);
 	uint64_t v = slot->load(std::memory_order_acquire);
@@ -251,12 +253,17 @@ LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, ui
 		LockTracker* t = vtDecodeLock(v);
 		t->holders.fetch_add(1, std::memory_order_relaxed);
 		t->refcount.fetch_add(1, std::memory_order_relaxed);
+		if (joinedExisting) *joinedExisting = true;
+		uint64_t oldest = t->oldestHolderAge.load(std::memory_order_relaxed);
+		if (priorOldestHolderAge) *priorOldestHolderAge = oldest;
+		if (holderAge < oldest) t->oldestHolderAge.store(holderAge, std::memory_order_relaxed);
 		return t;
 	}
 	// Slot holds 0 or a version — install a fresh tracker.
 	uint16_t gen = vtNextGen();
 	LockTracker* t = new LockTracker(slotIndexOf(slot), gen, dbId);
 	t->holders.store(1, std::memory_order_relaxed);
+	t->oldestHolderAge.store(holderAge, std::memory_order_relaxed);
 	t->refcount.store(1, std::memory_order_relaxed); // 1 reference == this holder
 	slot->store(vtEncodeLock(t, gen), std::memory_order_release);
 	return t;

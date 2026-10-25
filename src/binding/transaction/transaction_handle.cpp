@@ -7,6 +7,8 @@
 #include "database/db_settings.h"
 #include "iterator/db_iterator_handle.h"
 #include "transaction/transaction_handle.h"
+#include "core/commit_diag.h"
+#include <algorithm>
 #include "core/test_seam.h"
 #include "napi/macros.h"
 
@@ -121,6 +123,8 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+	static std::atomic<uint64_t> nextAgeSeq{1};
+	this->ageSeq = nextAgeSeq.fetch_add(1, std::memory_order_relaxed);
 	this->createdAt = std::chrono::steady_clock::now();
 }
 
@@ -133,6 +137,7 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	}
 
 	this->logEntryBatch.reset();
+	this->intentConflictSlot = nullptr;
 	this->touchedColumnFamilies.clear();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 
@@ -240,7 +245,16 @@ void TransactionHandle::lockVTSlot(
 	// if a second concurrent writer skipped registering an intent, a reader
 	// could repopulate the slot with a now-stale version after the first writer
 	// released but before the second committed.
-	LockTracker* t = vt->lockSlotForWrite(slot, dbId);
+	// A slot this transaction already holds (an earlier write to a colliding key) is not a conflict.
+	bool ownSlot = std::find(lockedVTSlots.begin(), lockedVTSlots.end(), slot) != lockedVTSlots.end();
+	bool joinedExisting = false;
+	uint64_t priorOldest = 0;
+	LockTracker* t = vt->lockSlotForWrite(slot, dbId, &joinedExisting, this->ageSeq, &priorOldest);
+	// Precedence: only an older holder refuses this attempt; the older of two crossing transactions
+	// proceeds while the younger backs off, so they cannot refuse each other forever.
+	if (joinedExisting && !ownSlot && priorOldest < this->ageSeq && !this->intentConflictSlot) {
+		this->intentConflictSlot = slot;
+	}
 	if (t) {
 		lockedVTSlots.push_back(slot);
 		heldTrackers.push_back(t);
@@ -424,6 +438,17 @@ void TransactionHandle::close() {
 	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
 		auto store = this->boundLogStore.lock();
 		if (store) {
+			if (abortMarkerMode() != AbortMarkerMode::Full) {
+				// Terminal failure of a logged batch: hide it from every reader before releasing its
+				// watermark position. A failed marker leaves the orphan visible, as on main.
+				try {
+					store->markAborted(this->batchAddress, this->batchTimestamp);
+					this->abortMarked = true;
+					commitDiag().abortsMarked.fetch_add(1, std::memory_order_relaxed);
+				} catch (...) {
+					commitDiag().abortMarkFailures.fetch_add(1, std::memory_order_relaxed);
+				}
+			}
 			store->commitAborted(this->committedPosition);
 		}
 	}
