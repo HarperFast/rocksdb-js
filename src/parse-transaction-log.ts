@@ -97,7 +97,7 @@ export function parseTransactionLog(
 		const entries: LogEntry[] = [];
 		let entryAnomalyCount = 0;
 
-		// batch starts are found the way the reader finds them
+		// the reader's batch-start rule, minus "an aborted entry starts one"
 		let previousEndedTransaction = true;
 		let previousTimestamp = Number.NaN;
 		while (fileOffset < size) {

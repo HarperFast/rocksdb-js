@@ -147,7 +147,7 @@ TransactionLogFileValidation validateTransactionLogImage(
 	// in the recovery scan's own widened arithmetic.
 	size_t anomalyCount = 0;
 	uint64_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
-	// Batch starts are found the way the reader finds them (DESIGN.md, "Aborted batches").
+	// The reader's batch-start rule, minus "an aborted entry starts one" (DESIGN.md, "Aborted batches").
 	bool previousEndedTransaction = true;
 	double previousTimestamp = std::numeric_limits<double>::quiet_NaN();
 	while (pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= scan.validEnd) {

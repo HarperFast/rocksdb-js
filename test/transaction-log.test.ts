@@ -1230,6 +1230,30 @@ describe('Transaction Log', () => {
 					expect(parsed.entryAnomalyCount).toBe(0);
 				}));
 
+			it('does not carry an unclosed aborted batch into the next segment', () =>
+				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+					const logDirectory = join(dbPath, 'transaction_logs', 'segments');
+					await mkdir(logDirectory, { recursive: true });
+					const write = (name: string, entries: Parameters<typeof writeCraftedSegment>[1]) =>
+						writeCraftedSegment(
+							join(logDirectory, name),
+							entries,
+							TRANSACTION_LOG_FILE_HEADER_SIZE,
+							TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+							TRANSACTION_LOG_TOKEN
+						);
+					write('1.txnlog', [
+						{ timestamp: T1, flags: LAST, data: 'first' },
+						{ timestamp: T2, flags: ABORTED, data: 'aborted-unclosed' },
+					]);
+					write('2.txnlog', [{ timestamp: T2, flags: LAST, data: 'retry' }]);
+					db.open();
+					const entries = [...db.useLog('segments').query({ start: 0 })].map((entry) =>
+						entry.data.toString()
+					);
+					expect(entries).toEqual(['first', 'retry']);
+				}));
+
 			it('resolves an exact start to the live copy, not the aborted one', () =>
 				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 					await craft(dbPath, 'aborted', retried);

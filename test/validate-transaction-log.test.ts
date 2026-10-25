@@ -100,6 +100,21 @@ describe('validateTransactionLogStore', () => {
 		expect(valid.files[0].warnings).toEqual([]);
 		expect(valid.files[0].entries).toBe(3);
 
+		const T2 = T1 + 1;
+		writeCraftedSegment(
+			join(storePath, '1.txnlog'),
+			[
+				{ timestamp: T1, flags: 0, data: 'legacy-unclosed' },
+				{ timestamp: T2, flags: 0x02, data: 'aborted-1' },
+				{ timestamp: T2, flags: 0x01, data: 'aborted-2' },
+			],
+			TRANSACTION_LOG_FILE_HEADER_SIZE,
+			TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+			TRANSACTION_LOG_TOKEN
+		);
+		const afterUnclosed = await validateTransactionLogStore(storePath);
+		expect(afterUnclosed.files[0].warnings).toEqual([]);
+
 		writeCraftedSegment(
 			join(storePath, '1.txnlog'),
 			[
