@@ -108,6 +108,10 @@ void TransactionLogStore::close() {
 		return;
 	}
 
+	if (this->cancellationUnresolved.load(std::memory_order_acquire)) {
+		this->retryFailedCancellations();
+	}
+
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
 	this->doClose();
@@ -1185,6 +1189,11 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		throw rocksdb_js::DBException("Transaction log store is closed");
 	}
 
+	if (this->cancellationUnresolved.load(std::memory_order_acquire) && !this->retryFailedCancellations()) {
+		throw rocksdb_js::DBException("Transaction log store \"" + this->name +
+			"\" refuses appends until an aborted batch it could not mark is resolved");
+	}
+
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Adding batch with %zu entries to store \"%s\" (current=%u, next=%u, timestamp=%llu)\n",
 		this, batch.entries.size(), this->name.c_str(), this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, batch.timestamp);
 
@@ -1366,6 +1375,112 @@ void TransactionLogStore::commitAborted(const LogPosition position) {
 }
 
 
+void TransactionLogStore::markAndSync(LogPosition firstEntry, double timestamp) {
+	std::shared_ptr<TransactionLogFile> logFile;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		auto it = this->sequenceFiles.find(firstEntry.logSequenceNumber);
+		if (it != this->sequenceFiles.end()) {
+			logFile = it->second;
+		}
+	}
+	if (!logFile) {
+		throw DBException("Transaction log segment " + std::to_string(firstEntry.logSequenceNumber) +
+			" of an aborted batch is no longer registered");
+	}
+	logFile->syncThrough(logFile->markEntryAborted(firstEntry.positionInLogFile, timestamp));
+}
+
+bool TransactionLogStore::cancelBatch(LogPosition firstEntry, double timestamp, LogPosition position) noexcept {
+	std::string failure;
+	try {
+		this->markAndSync(firstEntry, timestamp);
+		this->abortsMarked.fetch_add(1, std::memory_order_relaxed);
+		this->commitAborted(position);
+		return true;
+	} catch (const std::exception& e) {
+		try {
+			failure = e.what();
+		} catch (...) {
+		}
+	} catch (...) {
+	}
+	this->abortMarkFailures.fetch_add(1, std::memory_order_relaxed);
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		try {
+			this->failedCancellations.push_back({ firstEntry, timestamp, position });
+		} catch (...) {
+			// Without a record nothing can retry it, so the store refuses appends for good.
+			this->cancellationRecordLost = true;
+		}
+		this->cancellationUnresolved.store(true, std::memory_order_release);
+	}
+	if (GlobalEvents::hasListeners()) {
+		try {
+			std::ostringstream msg;
+			msg << "Transaction log store " << this->displayPath.string() << " could not mark an aborted batch at "
+				<< firstEntry.logSequenceNumber << ":" << firstEntry.positionInLogFile << " ("
+				<< (failure.empty() ? "unknown error" : failure) << "). It stays unresolved, and the store refuses"
+				<< " appends, until a retry on the next append, database flush or close succeeds.";
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		} catch (...) {
+		}
+	}
+	return false;
+}
+
+bool TransactionLogStore::retryFailedCancellations() noexcept {
+	std::vector<FailedCancellation> pending;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		try {
+			pending = this->failedCancellations;
+		} catch (...) {
+			return false;
+		}
+	}
+	for (const auto& cancellation : pending) {
+		try {
+			this->markAndSync(cancellation.firstEntry, cancellation.timestamp);
+		} catch (...) {
+			this->abortMarkFailures.fetch_add(1, std::memory_order_relaxed);
+			continue;
+		}
+		bool claimed = false;
+		{
+			std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+			for (auto it = this->failedCancellations.begin(); it != this->failedCancellations.end(); ++it) {
+				if (it->position.logSequenceNumber == cancellation.position.logSequenceNumber &&
+					it->position.positionInLogFile == cancellation.position.positionInLogFile) {
+					this->failedCancellations.erase(it);
+					claimed = true;
+					break;
+				}
+			}
+		}
+		if (claimed) {
+			this->abortsMarked.fetch_add(1, std::memory_order_relaxed);
+			this->commitAborted(cancellation.position);
+		}
+	}
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	bool resolved = this->failedCancellations.empty() && !this->cancellationRecordLost;
+	this->cancellationUnresolved.store(!resolved, std::memory_order_release);
+	return resolved;
+}
+
+bool TransactionLogStore::isFailedCancellation(LogPosition position) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	for (const auto& cancellation : this->failedCancellations) {
+		if (cancellation.position.logSequenceNumber == position.logSequenceNumber &&
+			cancellation.position.positionInLogFile == position.positionInLogFile) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool operator>(const LogPosition a, const LogPosition b) {
 	// as noted in the header, 64-bit comparison on little-endian machines seems like it would be an optimization
 	return a.logSequenceNumber == b.logSequenceNumber ?
@@ -1382,6 +1497,10 @@ bool operator>(const LogPosition a, const LogPosition b) {
 void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber) {
 	if (this->isClosing.load(std::memory_order_relaxed)) {
 		return;
+	}
+
+	if (this->cancellationUnresolved.load(std::memory_order_acquire)) {
+		this->retryFailedCancellations();
 	}
 
 	std::vector<std::shared_ptr<TransactionLogFile>> logFilesToFlush;

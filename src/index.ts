@@ -61,7 +61,7 @@ export {
 	type StoreRangeOptions,
 	type StoreRemoveOptions,
 } from './store.ts';
-export { Transaction } from './transaction.ts';
+export { ConflictKind, Transaction, TransactionAbortUnresolvedError } from './transaction.ts';
 
 import './transaction-log-reader.ts'; // installs TransactionLog.prototype.query
 export { CorruptFrameError, TransactionLogGapError } from './transaction-log-reader.ts';

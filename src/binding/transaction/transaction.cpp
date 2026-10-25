@@ -141,9 +141,18 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_TRANSACTION_HANDLE("Abort");
 
+	static const char* unresolvedMessage =
+		"Transaction was aborted after writing to the transaction log, and its batch could not be marked aborted; "
+		"the log store refuses appends until a retry marks it";
 	TransactionState txnState = (*txnHandle)->state;
 	if (txnState == TransactionState::Aborted) {
-		// already aborted
+		// already aborted; a cancellation that is still unresolved is reported again
+		if ((*txnHandle)->cancellation == TransactionHandle::Cancellation::Failed) {
+			auto store = (*txnHandle)->boundLogStore.lock();
+			if (store && store->isFailedCancellation((*txnHandle)->committedPosition)) {
+				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABORT_UNRESOLVED", unresolvedMessage);
+			}
+		}
 		return nullptr;
 	}
 	if (txnState == TransactionState::Committing || txnState == TransactionState::Committed) {
@@ -191,6 +200,12 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 
 	if (hadLogWrites) {
+		if ((*txnHandle)->cancellation == TransactionHandle::Cancellation::Marked) {
+			NAPI_RETURN_UNDEFINED();
+		}
+		if ((*txnHandle)->cancellation == TransactionHandle::Cancellation::Failed) {
+			NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABORT_UNRESOLVED", unresolvedMessage);
+		}
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_ABANDONED", "Transaction was abandoned after writing to the transaction log");
 	}
 
@@ -396,6 +411,8 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
+	// Refused on an older transaction's write intent before writing the batch: nothing was logged.
+	bool refusedBeforeLog = false;
 
 	TransactionCommitState(
 		napi_env env,
@@ -539,6 +556,13 @@ static rocksdb::Status admitCommit(TransactionCommitState* state, const std::sha
  * transactions with no log entries so total dispatch order is preserved into
  * the commit lane.
  */
+/** Writes the handle's batch, recording what an abort marker would name. */
+static void writeLogBatch(TransactionHandle& txnHandle, TransactionLogStore& store) {
+	txnHandle.batchTimestamp = txnHandle.logEntryBatch->timestamp;
+	txnHandle.cancelOnAbort = txnHandle.agedIntents;
+	store.writeBatch(*txnHandle.logEntryBatch, txnHandle.committedPosition, &txnHandle.batchAddress);
+}
+
 static void executeLogWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
 	if (!txnHandle) {
@@ -561,10 +585,15 @@ static void executeLogWork(TransactionCommitState* state) {
 		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %llu\n",
 			txnHandle.get(), (unsigned long long)txnHandle->id);
 		auto store = txnHandle->boundLogStore.lock();
-		if (store) {
+		if (txnHandle->intentConflictSlot) {
+			// Refused before logging, so this attempt can leave no batch behind (DESIGN.md, "Abort markers").
+			txnHandle->lastConflictKind = TransactionHandle::ConflictIntentBeforeLog;
+			state->refusedBeforeLog = true;
+			state->status = rocksdb::Status::Busy("an older transaction holds a write intent on one of this transaction's keys");
+		} else if (store) {
 			try {
 				// write the batch to the store
-				store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
+				writeLogBatch(*txnHandle, *store);
 				// free the batch after writing to avoid memory leak
 				txnHandle->logEntryBatch.reset();
 				state->hasLog = true;
@@ -605,6 +634,12 @@ static void executeCommitWork(TransactionCommitState* state) {
 		// ensure the log stage (or handle validation) hasn't errored
 		if (!state->status.ok()) {
 			state->claim.release(descriptor);
+			if (state->refusedBeforeLog) {
+				if (txnHandle->coordinatedRetry) {
+					state->savedSlots = { txnHandle->intentConflictSlot };
+				}
+				txnHandle->releaseIntent();
+			}
 			if (state->status.IsColumnFamilyDropped()) {
 				txnHandle->writesAbandoned.store(true, std::memory_order_relaxed);
 				if (!txnHandle->lockedVTSlots.empty()) {
@@ -626,7 +661,14 @@ static void executeCommitWork(TransactionCommitState* state) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(executeDelayMs));
 				transactionCommitExecuteDelayActive().store(false, std::memory_order_release);
 			}
-			if (testForceTryAgain()) {
+			std::atomic<uint64_t>* refusedOn =
+				txnHandle->committedPosition.logSequenceNumber > 0 ? txnHandle->intentConflictSlot : nullptr;
+			if (refusedOn) {
+				// A logged retry behind an older holder: park instead of committing into a conflict, and
+				// keep the batch it already wrote.
+				txnHandle->lastConflictKind = TransactionHandle::ConflictIntentAfterLog;
+				state->status = rocksdb::Status::Busy("an older transaction holds a write intent on one of this transaction's keys");
+			} else if (testForceTryAgain()) {
 				// Test seam: strand this commit. Roll back so no data lands, then report TryAgain
 				// so the retry path (reset onto a fresh snapshot + re-run) is exercised. A failed
 				// rollback (e.g. underlying DB corruption) is a real error, not a simulated one —
@@ -640,11 +682,19 @@ static void executeCommitWork(TransactionCommitState* state) {
 			}
 			state->claim.release(descriptor);
 
+			if (!refusedOn && (state->status.IsBusy() || state->status.IsTryAgain())) {
+				txnHandle->lastConflictKind = TransactionHandle::ConflictAtCommit;
+			}
+
 			// For coordinated retry: save slot pointers before
 			// releaseIntent() clears them so the complete callback
 			// can park on any new lock installed on those slots.
 			if (state->status.IsBusy() && txnHandle->coordinatedRetry) {
-				state->savedSlots = txnHandle->lockedVTSlots;
+				if (refusedOn) {
+					state->savedSlots = { refusedOn };
+				} else {
+					state->savedSlots = txnHandle->lockedVTSlots;
+				}
 			}
 
 			// Release VT locks that were installed at putSync/removeSync
@@ -799,8 +849,16 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			// when the descriptor is closing and when there is no descriptor
 			// at all (DBHandle::close() can reset it concurrently) -- either
 			// way there is no timeout thread behind this park.
-			uint64_t parkId = parkTimeouts
-				? parkTimeouts->schedule(env, parkTimeoutMs(), tsfn, fired)
+			unsigned timeoutMs = parkTimeoutMs();
+			if (state->handle->parkDeadline > 0) {
+				double remaining = state->handle->parkDeadline -
+					static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::system_clock::now().time_since_epoch()).count());
+				// past the deadline: resolve at once, so the caller can give up
+				timeoutMs = remaining < 1 ? 0 : static_cast<unsigned>(std::min<double>(timeoutMs, remaining));
+			}
+			uint64_t parkId = parkTimeouts && timeoutMs > 0
+				? parkTimeouts->schedule(env, timeoutMs, tsfn, fired)
 				: 0;
 
 			if (parkId == 0) {
@@ -897,6 +955,10 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		napi_status status = ::napi_get_boolean(env, hasLog, &hasLogValue);
 		if (status == napi_ok) {
 			::napi_set_named_property(env, error, "hasLog", hasLogValue);
+		}
+		napi_value refusedValue;
+		if (state->refusedBeforeLog && ::napi_get_boolean(env, true, &refusedValue) == napi_ok) {
+			::napi_set_named_property(env, error, "refusedBeforeLog", refusedValue);
 		}
 		state->callReject(error);
 	}
@@ -1222,6 +1284,8 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	std::shared_ptr<TransactionLogStore> store = nullptr;
 	bool hasLog = false;
+	bool refusedBeforeLog = false;
+	rocksdb::Status status;
 
 	std::shared_ptr<DBDescriptor> descriptor = (*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr;
 	if (!descriptor) {
@@ -1252,14 +1316,22 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	if ((*txnHandle)->logEntryBatch) {
+	// A sync commit refuses on an older holder's intent rather than parking: the holder may need this
+	// very event loop to finish. The caller retries.
+	static const rocksdb::Status intentRefusal =
+		rocksdb::Status::Busy("an older transaction holds a write intent on one of this transaction's keys");
+	if ((*txnHandle)->logEntryBatch && (*txnHandle)->intentConflictSlot) {
+		(*txnHandle)->lastConflictKind = TransactionHandle::ConflictIntentBeforeLog;
+		refusedBeforeLog = true;
+		status = intentRefusal;
+	} else if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %llu\n",
 			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
 		store = (*txnHandle)->boundLogStore.lock();
 		if (store) {
 			hasLog = true;
 			try {
-				store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
+				writeLogBatch(**txnHandle, *store);
 			} catch (const std::exception& e) {
 				(*txnHandle)->state = TransactionState::Pending;
 				claim.release(descriptor.get());
@@ -1274,7 +1346,17 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	rocksdb::Status status = (*txnHandle)->txn->Commit();
+	if (!refusedBeforeLog) {
+		if ((*txnHandle)->committedPosition.logSequenceNumber > 0 && (*txnHandle)->intentConflictSlot) {
+			(*txnHandle)->lastConflictKind = TransactionHandle::ConflictIntentAfterLog;
+			status = intentRefusal;
+		} else {
+			status = (*txnHandle)->txn->Commit();
+			if (status.IsBusy() || status.IsTryAgain()) {
+				(*txnHandle)->lastConflictKind = TransactionHandle::ConflictAtCommit;
+			}
+		}
+	}
 	claim.release(descriptor.get());
 
 	if (!(*txnHandle)->lockedVTSlots.empty()) {
@@ -1323,6 +1405,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_get_boolean(env,
 			hasLog || (*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
 		NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
+		if (refusedBeforeLog) {
+			napi_value refused;
+			NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &refused));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "refusedBeforeLog", refused));
+		}
 		NAPI_STATUS_THROWS(::napi_throw(env, error));
 	}
 
@@ -1603,6 +1690,45 @@ napi_value Transaction::GetTimestamp(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Whether this transaction's batch is in the transaction log: an attempt that conflicted after
+ * writing it keeps it for the retry, one refused before writing it does not.
+ */
+napi_value Transaction::LogWritten(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_HANDLE("LogWritten");
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, (*txnHandle)->committedPosition.logSequenceNumber > 0, &result));
+	return result;
+}
+
+/**
+ * Why the last attempt was refused or retried: 0 none, 1 refused on an older transaction's write
+ * intent before writing its batch, 2 the same after writing it, 3 a conflict found at commit.
+ */
+napi_value Transaction::LastConflictKind(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_HANDLE("LastConflictKind");
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, (*txnHandle)->lastConflictKind, &result));
+	return result;
+}
+
+/**
+ * Sets the epoch-millisecond time past which a coordinated-retry park resolves, so a parked
+ * attempt never waits past its caller's deadline. 0 clears it.
+ */
+napi_value Transaction::SetParkDeadline(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_HANDLE("SetParkDeadline");
+	double deadline = 0;
+	if (::napi_get_value_double(env, argv[0], &deadline) != napi_ok || !std::isfinite(deadline) || deadline < 0) {
+		NAPI_THROW_JS_ERROR("ERR_INVALID_ARG_TYPE", "Park deadline must be a non-negative number of epoch milliseconds");
+	}
+	(*txnHandle)->parkDeadline = deadline;
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Retrieves the ID of the transaction.
  */
 napi_value Transaction::Id(napi_env env, napi_callback_info info) {
@@ -1851,6 +1977,9 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getTimestamp", nullptr, GetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "logWritten", nullptr, LogWritten, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "lastConflictKind", nullptr, LastConflictKind, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setParkDeadline", nullptr, SetParkDeadline, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },

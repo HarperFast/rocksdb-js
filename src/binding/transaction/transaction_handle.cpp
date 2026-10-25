@@ -115,11 +115,13 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	coordinatedRetry(false),
 	state(TransactionState::Pending),
 	txn(nullptr),
-	committedPosition(0, 0) {
+	committedPosition(0, 0),
+	batchAddress(0, 0) {
 	this->resetTransaction(this->dbHandle->descriptor.get());
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 
 	this->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+	this->age = this->startTimestamp;
 	this->createdAt = std::chrono::steady_clock::now();
 }
 
@@ -134,6 +136,10 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	this->logEntryBatch.reset();
 	this->touchedColumnFamilies.clear();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
+	if (this->lockedVTSlots.empty()) {
+		// held intents are released with the setting they were taken under
+		this->agedIntents = DBSettings::getInstance().getTransactionLogAbortMarkers();
+	}
 
 	auto dbHandle = this->dbHandle;
 	rocksdb::WriteOptions writeOptions;
@@ -239,7 +245,16 @@ void TransactionHandle::lockVTSlot(
 	// if a second concurrent writer skipped registering an intent, a reader
 	// could repopulate the slot with a now-stale version after the first writer
 	// released but before the second committed.
-	LockTracker* t = vt->lockSlotForWrite(slot, dbId);
+	LockTracker* t;
+	if (this->agedIntents) {
+		bool olderHolder;
+		t = vt->lockSlotForWrite(slot, dbId, IntentAge{ this->age, reinterpret_cast<uintptr_t>(this) }, olderHolder);
+		if (olderHolder && !this->intentConflictSlot) {
+			this->intentConflictSlot = slot;
+		}
+	} else {
+		t = vt->lockSlotForWrite(slot, dbId);
+	}
 	if (t) {
 		lockedVTSlots.push_back(slot);
 		heldTrackers.push_back(t);
@@ -254,14 +269,16 @@ void TransactionHandle::releaseIntent() {
 		// only cleared (and waiters woken) when the last holder releases.
 		auto* vt = DBSettings::getInstance().getVerificationTableRaw();
 		if (vt) {
+			const IntentAge age{ this->age, reinterpret_cast<uintptr_t>(this) };
 			for (size_t i = 0; i < lockedVTSlots.size(); i++) {
-				vt->releaseWriteIntent(lockedVTSlots[i], heldTrackers[i]);
+				vt->releaseWriteIntent(lockedVTSlots[i], heldTrackers[i], this->agedIntents ? &age : nullptr);
 			}
 		}
 	}
 
 	lockedVTSlots.clear();
 	heldTrackers.clear();
+	this->intentConflictSlot = nullptr;
 }
 
 /**
@@ -567,7 +584,15 @@ void TransactionHandle::close() {
 	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
 		auto store = this->boundLogStore.lock();
 		if (store) {
-			store->commitAborted(this->committedPosition);
+			if (this->cancelOnAbort && this->batchAddress.logSequenceNumber > 0) {
+				// Terminal: mark the batch so no reader applies it, and make the marker durable, before
+				// its watermark position is released. A failure leaves the position pinned in the store.
+				this->cancellation = store->cancelBatch(this->batchAddress, this->batchTimestamp, this->committedPosition)
+					? Cancellation::Marked
+					: Cancellation::Failed;
+			} else {
+				store->commitAborted(this->committedPosition);
+			}
 		}
 	}
 

@@ -27,11 +27,19 @@ export class TransactionAlreadyAbortedError extends Error {
  */
 export class TransactionRetryableError extends Error {
 	readonly hasLog: boolean;
+	/**
+	 * The attempt was refused before writing its transaction-log batch, because an older
+	 * transaction held a write intent on one of its keys (`transactionLogAbortMarkers`). Nothing of
+	 * it is in the log, so a retry may stage its batch afresh.
+	 */
+	readonly refusedBeforeLog: boolean;
 	readonly txn: Transaction;
 
 	constructor(error: Error, txn: Transaction) {
 		super(error.message);
 		this.hasLog = (error as Error & { hasLog?: boolean }).hasLog ?? false;
+		this.refusedBeforeLog =
+			(error as Error & { refusedBeforeLog?: boolean }).refusedBeforeLog ?? false;
 		this.txn = txn;
 	}
 }
@@ -66,6 +74,35 @@ export class TransactionAbandonedError extends Error {
 }
 
 /**
+ * `abort()` of a transaction whose transaction-log batch could not be marked aborted
+ * (`transactionLogAbortMarkers`). The batch stays unresolved, so committed readers do not pass it and
+ * the log store refuses appends, until a retry on the next append, database flush or store close
+ * marks it.
+ */
+export class TransactionAbortUnresolvedError extends Error {
+	readonly code = 'ERR_TRANSACTION_ABORT_UNRESOLVED';
+	readonly txn: Transaction;
+
+	constructor(error: Error, txn: Transaction) {
+		super(error.message);
+		this.txn = txn;
+	}
+}
+
+/**
+ * Why a transaction's most recent attempt was refused or retried, from {@link Transaction.lastConflictKind}.
+ */
+export const ConflictKind = {
+	none: 0,
+	/** Refused on an older transaction's write intent before writing its log batch. */
+	intentBeforeLog: 1,
+	/** Refused on an older transaction's write intent after its log batch was written. */
+	intentAfterLog: 2,
+	/** RocksDB found a conflict at commit. */
+	atCommit: 3,
+} as const;
+
+/**
  * Provides transaction level operations to a transaction callback.
  */
 export class Transaction extends DBI {
@@ -81,9 +118,15 @@ export class Transaction extends DBI {
 		if (store.readOnly) {
 			super(store);
 			this.#txn = { id: 0 } as NativeTransaction;
-			this.abandonWrites = this.abort = this.commitSync = this.setTimestamp = () => {};
+			this.abandonWrites =
+				this.abort =
+				this.commitSync =
+				this.setTimestamp =
+				this.setParkDeadline =
+					() => {};
 			this.commit = async () => {};
-			this.getTimestamp = () => 0;
+			this.getTimestamp = this.lastConflictKind = () => 0;
+			this.logWritten = () => false;
 		} else {
 			const txn = new NativeTransaction(store.db, options);
 			super(store, txn);
@@ -112,6 +155,13 @@ export class Transaction extends DBI {
 		} catch (err) {
 			if (err instanceof Error && 'code' in err && err.code === 'ERR_TRANSACTION_ABANDONED') {
 				throw new TransactionAbandonedError(err, this);
+			}
+			if (
+				err instanceof Error &&
+				'code' in err &&
+				err.code === 'ERR_TRANSACTION_ABORT_UNRESOLVED'
+			) {
+				throw new TransactionAbortUnresolvedError(err, this);
 			}
 			throw err;
 		}
@@ -184,6 +234,31 @@ export class Transaction extends DBI {
 	 */
 	getTimestamp(): number {
 		return this.#txn.getTimestamp();
+	}
+
+	/**
+	 * Whether this transaction's batch is in the transaction log. A commit conflict after the batch
+	 * was written keeps it for the retry, which must not stage it again; an attempt refused before
+	 * writing it (`refusedBeforeLog`) leaves nothing.
+	 */
+	logWritten(): boolean {
+		return this.#txn.logWritten();
+	}
+
+	/**
+	 * Why the most recent attempt was refused or retried; one of {@link ConflictKind}.
+	 */
+	lastConflictKind(): number {
+		return this.#txn.lastConflictKind();
+	}
+
+	/**
+	 * Bounds coordinated-retry parks: past `deadline` (epoch milliseconds) a parked commit resolves
+	 * `RETRY_NOW` at once, so a caller enforcing its own deadline can abort instead of waiting out
+	 * the default park bound. 0 clears it.
+	 */
+	setParkDeadline(deadline: number): void {
+		this.#txn.setParkDeadline(deadline);
 	}
 
 	/**

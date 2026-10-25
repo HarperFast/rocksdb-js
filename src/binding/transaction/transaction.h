@@ -27,6 +27,9 @@ struct Transaction final {
 	static napi_value GetCount(napi_env env, napi_callback_info info);
 	static napi_value GetSync(napi_env env, napi_callback_info info);
 	static napi_value GetTimestamp(napi_env env, napi_callback_info info);
+	static napi_value LogWritten(napi_env env, napi_callback_info info);
+	static napi_value LastConflictKind(napi_env env, napi_callback_info info);
+	static napi_value SetParkDeadline(napi_env env, napi_callback_info info);
 	static napi_value Id(napi_env env, napi_callback_info info);
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);

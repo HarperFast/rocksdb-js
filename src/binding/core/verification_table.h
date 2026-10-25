@@ -16,6 +16,18 @@ namespace rocksdb_js {
 struct LockTracker;
 
 /**
+ * A write intent's precedence: a transaction's logical age, with its handle address breaking a tie.
+ * Lower is older. See transaction/DESIGN.md, "Write-intent refusal".
+ */
+struct IntentAge {
+	double age;
+	uintptr_t tie;
+	bool olderThan(const IntentAge& other) const {
+		return this->age < other.age || (this->age == other.age && this->tie < other.tie);
+	}
+};
+
+/**
  * Process-wide cache verification table.
  *
  * A fixed-size, lock-free array of std::atomic<uint64_t> slots, addressed by
@@ -184,6 +196,15 @@ struct LockTracker {
 
 	std::atomic<uint32_t> refcount{1};  // 1 for the slot reference + 1 per holder
 	std::atomic<uint32_t> holders{0};   // count of active intent registrations
+
+	// Ages of the live holders that registered one (writerMutex_). Beyond the inline slots a
+	// holder is only counted; an unaged holder (a non-transactional write, or one taken with
+	// abort markers off) has no age. A joiner treats both as possibly older.
+	static constexpr uint8_t kInlineAges = 4;
+	IntentAge ages[kInlineAges];
+	uint8_t   ageCount{0};
+	uint32_t  agedHolders{0};
+	uint32_t  overflowAged{0};
 	uint16_t              generation;   // immutable after install; matches slot encoding
 	size_t                slotIndex;    // index in VT slots_ array (for cancelForDB)
 	uint64_t              dbId;         // per-open epoch of the owning DB (DBDescriptor::vtEpoch)
@@ -395,11 +416,18 @@ public:
 	LockTracker* lockSlotForWrite(std::atomic<uint64_t>* slot, uint64_t dbId);
 
 	/**
+	 * lockSlotForWrite() for a holder with an age. `olderHolder` reports whether the slot was
+	 * already held by a live holder that is, or may be, older than `age`; this holder's own earlier
+	 * intent on the slot never counts. Release it with the same age.
+	 */
+	LockTracker* lockSlotForWrite(std::atomic<uint64_t>* slot, uint64_t dbId, const IntentAge& age, bool& olderHolder);
+
+	/**
 	 * Releases one write intent previously taken via lockSlotForWrite. When the
 	 * last holder releases, the slot is CAS'd back to 0 and parked waiters are
 	 * woken. Frees the tracker once its last reference is dropped.
 	 */
-	void releaseWriteIntent(std::atomic<uint64_t>* slot, LockTracker* tracker);
+	void releaseWriteIntent(std::atomic<uint64_t>* slot, LockTracker* tracker, const IntentAge* age = nullptr);
 
 	/**
 	 * If `slot` currently holds a lock, takes a temporary reference on its

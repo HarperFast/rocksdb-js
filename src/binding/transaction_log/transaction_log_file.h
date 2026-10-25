@@ -232,6 +232,21 @@ struct TransactionLogFile final {
 	uint32_t lastFlushedSize = 0;
 
 	/**
+	 * Advanced by every in-place abort marker (markEntryAborted), which rewrites a byte without
+	 * growing the file, so a flush must compare it as well as the size. Guarded by fileMutex.
+	 */
+	uint64_t mutationGeneration = 0;
+
+	/** `mutationGeneration` as of the last successful sync. Guarded by fileMutex. */
+	uint64_t lastFlushedGeneration = 0;
+
+	/**
+	 * Serializes syncs, so a sync that is already covered returns without another fdatasync: one sync
+	 * releases every abort marker written before it began. Lock order: syncMutex -> fileMutex.
+	 */
+	std::mutex syncMutex;
+
+	/**
 	 * Offset just past the last entry that closed a transaction (carried
 	 * `TRANSACTION_LOG_ENTRY_LAST_FLAG`), as observed by the open-time recovery
 	 * scan; 0 if this file holds no complete transaction or was never scanned.
@@ -408,9 +423,20 @@ struct TransactionLogFile final {
 	void close();
 
 	/**
-	 * Flushes any buffered data to disk.
+	 * Flushes any buffered data to disk, including abort markers written since the last flush.
 	 */
 	void flush();
+
+	/**
+	 * Sets TRANSACTION_LOG_ENTRY_ABORTED_FLAG on the entry header at `offset`, as `current | 0x02`,
+	 * writing that one byte and nothing else. The header must start a frame inside the logical extent
+	 * and carry `expectedTimestamp`. Returns the mutation generation a syncThrough() must reach for the
+	 * marker to be durable; an entry already marked writes nothing. Throws on a mismatch or I/O error.
+	 */
+	uint64_t markEntryAborted(uint32_t offset, double expectedTimestamp);
+
+	/** Syncs the file unless a sync since `generation` was reached already covers it. */
+	void syncThrough(uint64_t generation);
 
 	/**
 	 * Persists the current logical size as the last safe boundary. The marker is
@@ -742,6 +768,9 @@ struct TransactionLogFile final {
 	 */
 	std::function<void()> beforeSyncForTests;
 
+	/** Runs in markEntryAborted() before the marker is written; throwing simulates a failed write. */
+	std::function<void()> beforeMarkForTests;
+
 	static std::atomic<bool> forceMapFailureForTests;
 #endif
 
@@ -762,6 +791,20 @@ private:
 	 * Platform specific function that reads data from the log file.
 	 */
 	int64_t readFromFile(void* buffer, uint32_t size, int64_t offset = -1);
+
+	/** Platform specific body of flush(). Caller holds syncMutex, not fileMutex. */
+	void flushSyncHeld();
+
+	/**
+	 * Platform specific: reads the entry header at `offset` through a separate, non-appending
+	 * descriptor, checks it with checkAbortMarkerHeader(), and writes back its flags byte with the
+	 * aborted flag set. Returns false, writing nothing, when the flag is already set. Caller holds
+	 * fileMutex.
+	 */
+	bool writeAbortMarkerLocked(uint32_t offset, uint32_t extent, double expectedTimestamp);
+
+	/** Throws unless `header` starts a frame of `expectedTimestamp` that ends inside `extent`. */
+	void checkAbortMarkerHeader(const char* header, uint32_t offset, uint32_t extent, double expectedTimestamp);
 
 	/**
 	 * Reads `n` bytes at `offset` via readFromFile, retrying short reads and EINTR.

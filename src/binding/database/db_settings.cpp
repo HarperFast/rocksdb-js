@@ -39,6 +39,7 @@ DBSettings::DBSettings():
 	occLockBucketCount(1 << 16),
 	occValidateSerial(false),
 	commitThreads(defaultCommitThreads()),
+	transactionLogAbortMarkers(false),
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
@@ -320,6 +321,10 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
 
+	bool abortMarkers = settings.transactionLogAbortMarkers.load(std::memory_order_relaxed);
+	const bool abortMarkersProvided =
+		rocksdb_js::getProperty(env, params, "transactionLogAbortMarkers", abortMarkers, true) == napi_ok;
+
 	double lifecycleWaitSeconds = 0;
 	bool lifecycleWaitProvided = false;
 	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitProvided));
@@ -385,6 +390,9 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	}
 	if (commitThreadsProvided) {
 		settings.commitThreads.store(static_cast<uint32_t>(commitThreads), std::memory_order_relaxed);
+	}
+	if (abortMarkersProvided) {
+		settings.transactionLogAbortMarkers.store(abortMarkers, std::memory_order_relaxed);
 	}
 
 	NAPI_RETURN_UNDEFINED();

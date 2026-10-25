@@ -517,6 +517,25 @@ struct TransactionLogStore final {
 	void commitAborted(LogPosition position);
 
 	/**
+	 * Terminal failure of a logged batch: marks it aborted in place (TRANSACTION_LOG_ENTRY_ABORTED_FLAG
+	 * on the entry at `firstEntry`), syncs the marker, then releases `position` as commitAborted()
+	 * does. If marking or syncing fails, the batch becomes a failed cancellation: `position` stays
+	 * pinned, appends are refused, and retryFailedCancellations() tries again. Returns whether the batch
+	 * is resolved. See DESIGN.md, "Abort markers".
+	 */
+	bool cancelBatch(LogPosition firstEntry, double timestamp, LogPosition position) noexcept;
+
+	/** Retries every failed cancellation; returns whether none remain. */
+	bool retryFailedCancellations() noexcept;
+
+	/** Whether the batch logged at `position` is a failed cancellation still awaiting a retry. */
+	bool isFailedCancellation(LogPosition position);
+
+	/** Lifetime counts for stats: batches marked aborted, and marker writes or syncs that failed. */
+	std::atomic<uint64_t> abortsMarked = 0;
+	std::atomic<uint64_t> abortMarkFailures = 0;
+
+	/**
 	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
 	 */
 	void databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber);
@@ -708,6 +727,25 @@ private:
 #endif
 	/** See DESIGN.md, "A failed sync freezes the flushed state". */
 	std::atomic<bool> logSyncFailed = false;
+
+	struct FailedCancellation {
+		LogPosition firstEntry;
+		double timestamp;
+		LogPosition position;
+	};
+
+	/** Guarded by dataSetsMutex. */
+	std::vector<FailedCancellation> failedCancellations;
+
+	/**
+	 * Set while `failedCancellations` is non-empty, or for good once a failed cancellation could not
+	 * be recorded at all: the append path tests it without taking dataSetsMutex.
+	 */
+	std::atomic<bool> cancellationUnresolved = false;
+	bool cancellationRecordLost = false;
+
+	/** Marks and syncs one batch; throws on failure. */
+	void markAndSync(LogPosition firstEntry, double timestamp);
 
 	/**
 	 * Opens a log file for the given sequence number. If the log file does not

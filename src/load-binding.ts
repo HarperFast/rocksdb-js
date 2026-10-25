@@ -125,8 +125,11 @@ export type NativeTransaction = {
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
 	getTimestamp(): number;
+	lastConflictKind(): number;
+	logWritten(): boolean;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
+	setParkDeadline(deadline: number): void;
 	setTimestamp(timestamp?: number): void;
 	trimIterators(): void;
 	// The transaction holds no napi_ref to its database (#741), so the owning
@@ -578,6 +581,16 @@ export type RocksDatabaseConfig = {
 	 * concurrent `commitSync()` calls always have. Open databases keep their limit.
 	 */
 	commitThreads?: number;
+	/**
+	 * Marks a transaction-log batch aborted in place (`TRANSACTION_LOG_ENTRY_ABORTED_FLAG` on its
+	 * first entry) when its transaction ends without committing after the batch was written, so
+	 * readers skip it, and refuses a conflicting attempt before it writes its batch when an older
+	 * transaction holds a write intent on one of its keys. Off by default: with it off, behavior is
+	 * unchanged. Turn it on only once every reader of these logs (replicas, restores, repair tools)
+	 * skips aborted batches; an older reader shows an aborted batch as live. Read on each commit
+	 * attempt, so it can change at runtime.
+	 */
+	transactionLogAbortMarkers?: boolean;
 	/**
 	 * Number of slots in the process-global verification table. Each slot is
 	 * 8 bytes; the default of 128K slots is 1 MB. Set to 0 to disable.

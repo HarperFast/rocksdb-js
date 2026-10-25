@@ -151,29 +151,61 @@ void TransactionLogFile::closeLocked() {
 	}
 }
 
-void TransactionLogFile::flush() {
+namespace {
+
+struct CloseHandleOnExit {
+	HANDLE handle;
+	~CloseHandleOnExit() {
+		if (this->handle != INVALID_HANDLE_VALUE) {
+			::CloseHandle(this->handle);
+		}
+	}
+};
+
+/** A second handle that neither blocks a deletion nor conflicts with the store's own handle. */
+HANDLE openSideHandle(const std::filesystem::path& path) {
+	return ::CreateFileW(
+		path.wstring().c_str(),
+		GENERIC_READ | GENERIC_WRITE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr,
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL,
+		nullptr
+	);
+}
+
+} // namespace
+
+void TransactionLogFile::flushSyncHeld() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 	uint32_t currentSize = this->size.load(std::memory_order_relaxed);
-	// Only flush if there's new data since the last flush
-	if (this->fileHandle == INVALID_HANDLE_VALUE || currentSize <= this->lastFlushedSize) {
+	uint64_t generation = this->mutationGeneration;
+	bool marked = generation != this->lastFlushedGeneration;
+	// Only flush if there's new data, or an abort marker, since the last flush
+	if (currentSize <= this->lastFlushedSize && !marked) {
 		return; // return early
 	}
 	// Flush a duplicate taken under the lock, then flush without it: a concurrent close of
 	// this->fileHandle (ensureExtent's borrow) must not invalidate the handle being flushed. If the
-	// handle cannot be duplicated, flush the original under the lock.
+	// handle cannot be duplicated, flush the original under the lock. A closed segment with an
+	// unsynced marker is reopened for the flush: FlushFileBuffers on any handle flushes the file.
 	HANDLE duplicate = INVALID_HANDLE_VALUE;
-	if (!::DuplicateHandle(::GetCurrentProcess(), this->fileHandle, ::GetCurrentProcess(), &duplicate,
-			0, FALSE, DUPLICATE_SAME_ACCESS)) {
-		duplicate = INVALID_HANDLE_VALUE;
-	}
-	struct CloseOnExit {
-		HANDLE handle;
-		~CloseOnExit() {
-			if (this->handle != INVALID_HANDLE_VALUE) {
-				::CloseHandle(this->handle);
-			}
+	if (this->fileHandle != INVALID_HANDLE_VALUE) {
+		if (!::DuplicateHandle(::GetCurrentProcess(), this->fileHandle, ::GetCurrentProcess(), &duplicate,
+				0, FALSE, DUPLICATE_SAME_ACCESS)) {
+			duplicate = INVALID_HANDLE_VALUE;
 		}
-	} closeDuplicate{duplicate};
+	} else if (marked) {
+		duplicate = openSideHandle(this->path);
+		if (duplicate == INVALID_HANDLE_VALUE) {
+			throw rocksdb_js::DBException(
+				"Failed to open file for sync: " + this->path.string() + ": " + getWindowsErrorMessage(::GetLastError()));
+		}
+	} else {
+		return;
+	}
+	CloseHandleOnExit closeDuplicate{duplicate};
 	HANDLE handleToFlush = duplicate != INVALID_HANDLE_VALUE ? duplicate : this->fileHandle;
 	if (duplicate != INVALID_HANDLE_VALUE) {
 		lock.unlock();
@@ -198,7 +230,43 @@ void TransactionLogFile::flush() {
 	if (!lock.owns_lock()) {
 		lock.lock();
 	}
-	this->lastFlushedSize = currentSize;
+	if (currentSize > this->lastFlushedSize) {
+		this->lastFlushedSize = currentSize;
+	}
+	this->lastFlushedGeneration = generation;
+}
+
+bool TransactionLogFile::writeAbortMarkerLocked(uint32_t offset, uint32_t extent, double expectedTimestamp) {
+	// A separate handle with explicit offsets, so the store handle's file pointer (appends seek to
+	// `size` themselves) is never moved. WriteFile and readers' mapped views of a local file share the
+	// cache manager's pages, as the append path already relies on.
+	HANDLE markHandle = openSideHandle(this->path);
+	if (markHandle == INVALID_HANDLE_VALUE) {
+		throw rocksdb_js::DBException("Failed to open " + this->path.string() + " for an abort marker: " +
+			getWindowsErrorMessage(::GetLastError()));
+	}
+	CloseHandleOnExit closeMarkHandle{markHandle};
+	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+	OVERLAPPED readAt = {};
+	readAt.Offset = offset;
+	DWORD bytesRead = 0;
+	if (!::ReadFile(markHandle, header, sizeof(header), &bytesRead, &readAt) || bytesRead != sizeof(header)) {
+		throw rocksdb_js::DBException("Failed to read the entry an abort marker names in " + this->path.string());
+	}
+	this->checkAbortMarkerHeader(header, offset, extent, expectedTimestamp);
+	uint8_t flags = static_cast<uint8_t>(header[TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1]);
+	if (flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) {
+		return false;
+	}
+	char marked = static_cast<char>(flags | TRANSACTION_LOG_ENTRY_ABORTED_FLAG);
+	OVERLAPPED writeAt = {};
+	writeAt.Offset = offset + TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1;
+	DWORD written = 0;
+	if (!::WriteFile(markHandle, &marked, 1, &written, &writeAt) || written != 1) {
+		throw rocksdb_js::DBException("Failed to write an abort marker to " + this->path.string() + ": " +
+			getWindowsErrorMessage(::GetLastError()));
+	}
+	return true;
 }
 
 bool TransactionLogFile::openFile(bool createIfMissing) {

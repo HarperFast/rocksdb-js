@@ -25,6 +25,9 @@ private:
 	std::atomic<uint32_t> occLockBucketCount;
 	std::atomic<bool> occValidateSerial;
 	std::atomic<uint32_t> commitThreads;
+	// Writes transaction-log abort markers and refuses conflicting attempts on write intents before
+	// they log. Read per commit attempt; see transaction_log/DESIGN.md, "Abort markers".
+	std::atomic<bool> transactionLogAbortMarkers;
 
 	// Total memory limit (bytes) shared across all databases for active and
 	// immutable memtables. 0 disables the manager (each database uses its own
@@ -101,6 +104,10 @@ public:
 
 	uint32_t getCommitThreads() const {
 		return commitThreads.load(std::memory_order_relaxed);
+	}
+
+	bool getTransactionLogAbortMarkers() const {
+		return transactionLogAbortMarkers.load(std::memory_order_relaxed);
 	}
 
 	size_t getWriteBufferManagerSize() const {

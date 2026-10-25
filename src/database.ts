@@ -38,6 +38,7 @@ import {
 	VALUE_BUFFER,
 } from './store.ts';
 import {
+	ConflictKind,
 	RETRY_NOW,
 	Transaction,
 	TransactionAbandonedError,
@@ -48,6 +49,8 @@ import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import * as orderedBinary from 'ordered-binary';
+
+const backoffCell = new Int32Array(new SharedArrayBuffer(4));
 
 export type TransactionCallback<T> = (txn: Transaction, attempt: number) => T | PromiseLike<T>;
 
@@ -71,7 +74,8 @@ export interface TransactionOptions extends NativeTransactionOptions {
 	/**
 	 * Whether to retry the transaction if it fails with `IsBusy`.
 	 *
-	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
+	 * @default `true` when the transaction wrote a transaction-log batch or was refused before
+	 * writing one (`refusedBeforeLog`), otherwise `false`
 	 */
 	retryOnBusy?: boolean;
 }
@@ -1208,7 +1212,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				}
 				if (
 					commitErr instanceof TransactionRetryableError &&
-					(options?.retryOnBusy ?? commitErr.hasLog) &&
+					(options?.retryOnBusy ?? (commitErr.hasLog || commitErr.refusedBeforeLog)) &&
 					attempt < maxRetries
 				) {
 					// retry the transaction (native reset gave it a fresh snapshot; re-run the body)
@@ -1221,6 +1225,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 			if (commitResult !== RETRY_NOW) {
 				return result;
+			}
+			if (options?.retryOnBusy === false) {
+				this.#abandonTransaction(txn, new Error('Transaction conflicted and retryOnBusy is false'));
+				return;
 			}
 			// coordinatedRetry: the conflict resolved, retry immediately — but only
 			// if attempts remain. On the final attempt a RETRY_NOW must not fall
@@ -1264,11 +1272,22 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		const maxRetries = options?.maxRetries ?? 3;
 
 		const isRetryable = (err: Error | unknown, attempt: number) => {
-			return (
-				err instanceof TransactionRetryableError &&
-				(options?.retryOnBusy ?? err.hasLog) &&
-				attempt <= maxRetries
-			);
+			if (
+				!(
+					err instanceof TransactionRetryableError &&
+					(options?.retryOnBusy ?? (err.hasLog || err.refusedBeforeLog)) &&
+					attempt <= maxRetries
+				)
+			) {
+				return false;
+			}
+			const kind = txn.lastConflictKind();
+			if (kind === ConflictKind.intentBeforeLog || kind === ConflictKind.intentAfterLog) {
+				// commitSync() refuses rather than parks on an older holder's write intent. Back off so a
+				// holder on another thread can finish; one on this event loop cannot until this returns.
+				Atomics.wait(backoffCell, 0, 0, Math.min(2 ** attempt, 50));
+			}
+			return true;
 		};
 
 		// One transaction across attempts, as transaction() does: the native reset after a retryable

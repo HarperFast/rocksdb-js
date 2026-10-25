@@ -262,9 +262,53 @@ LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, ui
 	return t;
 }
 
-void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTracker* t) {
+LockTracker* VerificationTable::lockSlotForWrite(
+	std::atomic<uint64_t>* slot, uint64_t dbId, const IntentAge& age, bool& olderHolder
+) {
+	olderHolder = false;
+	if (!slot) return nullptr;
+	std::lock_guard<std::mutex> lock(writerMutex_);
+	uint64_t v = slot->load(std::memory_order_acquire);
+	LockTracker* t;
+	if (vtIsLock(v)) {
+		t = vtDecodeLock(v);
+		olderHolder = t->holders.load(std::memory_order_relaxed) > t->agedHolders || t->overflowAged > 0;
+		for (uint8_t i = 0; i < t->ageCount && !olderHolder; i++) {
+			olderHolder = t->ages[i].olderThan(age);
+		}
+		t->holders.fetch_add(1, std::memory_order_relaxed);
+		t->refcount.fetch_add(1, std::memory_order_relaxed);
+	} else {
+		uint16_t gen = vtNextGen();
+		t = new LockTracker(slotIndexOf(slot), gen, dbId);
+		t->holders.store(1, std::memory_order_relaxed);
+		t->refcount.store(1, std::memory_order_relaxed);
+		slot->store(vtEncodeLock(t, gen), std::memory_order_release);
+	}
+	t->agedHolders++;
+	if (t->ageCount < LockTracker::kInlineAges) {
+		t->ages[t->ageCount++] = age;
+	} else {
+		t->overflowAged++;
+	}
+	return t;
+}
+
+void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTracker* t, const IntentAge* age) {
 	if (!t) return;
 	std::lock_guard<std::mutex> lock(writerMutex_);
+	if (age) {
+		t->agedHolders--;
+		uint8_t i = 0;
+		while (i < t->ageCount && (t->ages[i].age != age->age || t->ages[i].tie != age->tie)) {
+			i++;
+		}
+		if (i < t->ageCount) {
+			t->ages[i] = t->ages[--t->ageCount];
+		} else {
+			t->overflowAged--;
+		}
+	}
 	bool lastHolder = (t->holders.fetch_sub(1, std::memory_order_acq_rel) == 1);
 	if (lastHolder) {
 		// Last writer out: settle the slot to a fresh settled-empty generation

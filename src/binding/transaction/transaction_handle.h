@@ -356,6 +356,44 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	LogPosition committedPosition;
 
+	/** Where the logged batch's first entry landed, and the batch's timestamp: what an abort marker names. */
+	LogPosition batchAddress;
+	double batchTimestamp = 0;
+
+	/**
+	 * Whether `transactionLogAbortMarkers` was on when the batch was logged: if so, ending this handle
+	 * without a commit marks the batch aborted rather than leaving it live (DESIGN.md, "Abort markers").
+	 */
+	bool cancelOnAbort = false;
+
+	enum class Cancellation : uint8_t { None, Marked, Failed };
+	/** Outcome of marking the logged batch aborted, set by close(). */
+	Cancellation cancellation = Cancellation::None;
+
+	/**
+	 * Logical age for write-intent precedence: the constructor's startTimestamp, kept when JS changes
+	 * startTimestamp and across retries. getMonotonicTimestamp() never returns a value twice in a
+	 * process; precedence still breaks a tie on the handle address.
+	 */
+	double age;
+
+	/** Whether this attempt's write intents carry `age` (the flag, read when the attempt began). */
+	bool agedIntents = false;
+
+	/**
+	 * A slot whose write intent an older live transaction held when this attempt joined it. Such an
+	 * attempt is refused before it writes its batch, or before Commit() once logged, and parks on the
+	 * slot. Null when none; cleared with the intents.
+	 */
+	std::atomic<uint64_t>* intentConflictSlot = nullptr;
+
+	enum ConflictKind : uint8_t { ConflictNone = 0, ConflictIntentBeforeLog = 1, ConflictIntentAfterLog = 2, ConflictAtCommit = 3 };
+	/** Why the most recent attempt was refused or retried. */
+	ConflictKind lastConflictKind = ConflictNone;
+
+	/** Epoch milliseconds past which a park resolves; 0 for the default bound only. */
+	double parkDeadline = 0;
+
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
