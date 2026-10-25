@@ -816,17 +816,14 @@ describe('Transaction Log', () => {
 					expect(() => db.open()).toThrow(/2\.txnlog has format version 2/);
 				}));
 
-			it('refuses to open a store whose historical segment has an unknown version', () =>
+			it('refuses to open a store whose newer-format segments end in a header-only one', () =>
 				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 					const logDirectory = join(dbPath, 'transaction_logs', 'newer');
-					const { path: lazyPath } = writeLazyTransactionLogSegments(
-						logDirectory,
-						TRANSACTION_LOG_FILE_HEADER_SIZE,
-						TRANSACTION_LOG_ENTRY_HEADER_SIZE,
-						TRANSACTION_LOG_TOKEN
-					);
-					await writeFile(lazyPath, segment(2, false));
-					expect(() => db.open()).toThrow(/has format version 2/);
+					await mkdir(logDirectory, { recursive: true });
+					await writeFile(join(logDirectory, '1.txnlog'), segment(1, true));
+					await writeFile(join(logDirectory, '2.txnlog'), segment(2, true));
+					await writeFile(join(logDirectory, '3.txnlog'), segment(2, false));
+					expect(() => db.open()).toThrow(/3\.txnlog has format version 2/);
 				}));
 
 			it('still opens a store whose newest segment is malformed', () =>

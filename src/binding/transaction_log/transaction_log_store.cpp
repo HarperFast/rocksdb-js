@@ -1538,7 +1538,6 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 							store.get(), filename.c_str());
 						continue;
 					}
-					checkTransactionLogSegmentVersion(filePath);
 					if (!store->registerLogFile(filePath, sequenceNumber)) {
 						store->markDiscoverySkipped(filePath);
 					}
@@ -1546,8 +1545,6 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			} catch (const TransactionLogAppendBoundaryException&) {
 				// The marker is the only authoritative record of a retired file's
 				// logical end. Ignoring it could expose orphaned bytes after restart.
-				throw;
-			} catch (const TransactionLogVersionException&) {
 				throw;
 			} catch (const std::filesystem::filesystem_error& e) {
 				store->markDiscoverySkipped(fileEntry.path());
@@ -1569,6 +1566,14 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		store->discoveryIncomplete = true;
 		DEBUG_LOG("%p TransactionLogStore::load Failed to iterate directory: %s\n",
 			store.get(), e.what());
+	}
+
+	// A newer release only ever adds segments past the ones it found, and this build refuses to
+	// append after them, so newer-format segments form a suffix: probe from the newest down.
+	for (auto it = store->sequenceFiles.rbegin(); it != store->sequenceFiles.rend(); ++it) {
+		if (checkTransactionLogSegmentVersion(it->second->path)) {
+			break;
+		}
 	}
 
 	LogPosition flushedPosition = store->getLastFlushedPosition();

@@ -87,9 +87,8 @@ public:
 };
 
 /**
- * A well-formed segment in a format version this build cannot read, written by a newer release.
- * Unlike a malformed segment it is not tolerated: skipping it would hide its history and let this
- * build append version-1 segments after it, so every path that meets one fails the store.
+ * A segment written by a newer release. Unlike a malformed segment it fails the store: skipping it
+ * would hide its history and let this build append older-format segments after it.
  */
 class TransactionLogVersionException final : public std::exception {
 	std::string message;
@@ -99,11 +98,11 @@ public:
 };
 
 /**
- * Throws TransactionLogVersionException when `logPath` carries the transaction-log token and a
- * format version other than 1. A missing, short, unreadable or token-less file is left to the
- * normal open path.
+ * Throws TransactionLogVersionException when the first five bytes of `logPath` carry the token and a
+ * version above TRANSACTION_LOG_FORMAT_VERSION. Returns true for the current version, and false when
+ * the file cannot be read or is not a well-formed segment, which the normal open path then handles.
  */
-void checkTransactionLogSegmentVersion(const std::filesystem::path& logPath);
+bool checkTransactionLogSegmentVersion(const std::filesystem::path& logPath);
 
 std::string unsupportedVersionMessage(const std::filesystem::path& logPath, unsigned version);
 
@@ -147,6 +146,7 @@ inline int64_t landedBytesFromFilePointer(int64_t pointerAfterWrite, int64_t wri
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
+#define TRANSACTION_LOG_FORMAT_VERSION 1
 #define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN 0x52455449
 #define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE 12
 
@@ -189,7 +189,7 @@ struct TransactionLogFile final {
 	/**
 	 * The version of the file format.
 	 */
-	uint8_t version = 1;
+	uint8_t version = TRANSACTION_LOG_FORMAT_VERSION;
 
 	/**
 	 * The timestamp of the most recent transaction log batch that has been

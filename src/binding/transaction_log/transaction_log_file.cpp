@@ -71,16 +71,17 @@ std::string unsupportedVersionMessage(const std::filesystem::path& logPath, unsi
 		", which this build cannot read; it was written by a newer release of rocksdb-js";
 }
 
-void checkTransactionLogSegmentVersion(const std::filesystem::path& logPath) {
+bool checkTransactionLogSegmentVersion(const std::filesystem::path& logPath) {
 	std::ifstream in(logPath, std::ios::binary);
 	char header[5];
 	if (!in.read(header, sizeof(header)) || readUint32BE(header) != TRANSACTION_LOG_TOKEN) {
-		return;
+		return false;
 	}
 	uint8_t version = readUint8(header + 4);
-	if (version != 1) {
+	if (version > TRANSACTION_LOG_FORMAT_VERSION) {
 		throw TransactionLogVersionException(unsupportedVersionMessage(logPath, version));
 	}
+	return version == TRANSACTION_LOG_FORMAT_VERSION;
 }
 
 uint32_t readTransactionLogAppendBoundaryMarker(const std::filesystem::path& logPath) {
@@ -300,9 +301,13 @@ bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfM
 		}
 		this->version = readUint8(buffer);
 
-		if (this->version != 1) {
+		if (this->version != TRANSACTION_LOG_FORMAT_VERSION) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Unsupported transaction log file version: %s\n", this, this->path.string().c_str());
-			throw rocksdb_js::TransactionLogVersionException(unsupportedVersionMessage(this->path, this->version));
+			if (this->version > TRANSACTION_LOG_FORMAT_VERSION) {
+				throw rocksdb_js::TransactionLogVersionException(unsupportedVersionMessage(this->path, this->version));
+			}
+			throw rocksdb_js::TransactionLogFormatException(
+				"Invalid transaction log file version " + std::to_string(this->version) + ": " + this->path.string());
 		}
 
 		// file timestamp

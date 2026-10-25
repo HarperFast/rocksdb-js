@@ -12,6 +12,7 @@
 #include "core/encoding.h"
 #include "core/exception.h"
 #include "transaction_log/transaction_log_file.h"
+#include "transaction_log/transaction_log_recovery.h"
 #include "transaction_log/transaction_log_validation.h"
 
 using rocksdb_js::DBException;
@@ -555,8 +556,20 @@ TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures)
 	TransactionLogFile badVersion(badVersionPath, 3);
 	EXPECT_THROW(badVersion.open(0), TransactionLogVersionException);
 	EXPECT_THROW(checkTransactionLogSegmentVersion(badVersionPath), TransactionLogVersionException);
-	EXPECT_NO_THROW(checkTransactionLogSegmentVersion(badTokenPath));
-	EXPECT_NO_THROW(checkTransactionLogSegmentVersion(tooSmallPath));
+	EXPECT_THROW(
+		rocksdb_js::scanTransactionLogForFloor(badVersionPath, 0, 0), TransactionLogVersionException);
+	EXPECT_FALSE(checkTransactionLogSegmentVersion(badTokenPath));
+	EXPECT_FALSE(checkTransactionLogSegmentVersion(tooSmallPath));
+
+	auto zeroVersionPath = dir / "5.txnlog";
+	LogImage(TRANSACTION_LOG_TOKEN, /*version=*/0).writeTo(zeroVersionPath);
+	TransactionLogFile zeroVersion(zeroVersionPath, 5);
+	EXPECT_THROW(zeroVersion.open(0), TransactionLogFormatException);
+	EXPECT_FALSE(checkTransactionLogSegmentVersion(zeroVersionPath));
+
+	auto currentPath = dir / "6.txnlog";
+	LogImage().writeTo(currentPath);
+	EXPECT_TRUE(checkTransactionLogSegmentVersion(currentPath));
 
 	TransactionLogFile ioFailure(dir, 4);
 	EXPECT_THROW(ioFailure.open(0), DBException);

@@ -58,7 +58,7 @@ The token is used to validate that the file is indeed a transaction log.
 
 #### `version`
 
-The transaction log file format version. Currently, version `1` is the latest.
+The transaction log file format version. Currently, version `1` is the latest. Opening a database whose transaction log has a segment with a higher version (written by a newer release) fails with an error naming the segment, rather than skipping it; a malformed or unreadable segment is still skipped.
 
 #### `timestamp`
 
