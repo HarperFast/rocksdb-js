@@ -247,19 +247,21 @@ void TransactionLogFile::flush() {
 
 	// macOS doesn't have fdatasync, use fsync instead
 	// fdatasync is faster on Linux as it doesn't sync metadata
+	int syncResult;
+	do {
 #ifdef __APPLE__
-	if (::fsync(fdToFlush) < 0) {
-		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fsync failed: %s (errno=%d)\n",
-			this, ::strerror(errno), errno);
-		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string());
-	}
+		syncResult = ::fsync(fdToFlush);
 #else
-	if (::fdatasync(fdToFlush) < 0) {
-		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fdatasync failed: %s (errno=%d)\n",
-			this, ::strerror(errno), errno);
-		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string());
-	}
+		syncResult = ::fdatasync(fdToFlush);
 #endif
+	} while (syncResult < 0 && errno == EINTR);
+	if (syncResult < 0) {
+		int error = errno;
+		DEBUG_LOG("%p TransactionLogFile::flush ERROR: sync failed: %s (errno=%d)\n",
+			this, ::strerror(error), error);
+		throw rocksdb_js::DBException(
+			"Failed to flush file: " + this->path.string() + ": " + std::string(::strerror(error)));
+	}
 
 	// Update the last flushed size after successful sync
 	lock.lock();

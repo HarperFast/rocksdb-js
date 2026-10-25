@@ -682,7 +682,7 @@ private:
 	friend struct TransactionLogStoreTestPeer;
 
 #endif
-	/** Latched by a failed segment sync; see DESIGN.md, "A failed sync freezes the flushed state". */
+	/** See DESIGN.md, "A failed sync freezes the flushed state". */
 	std::atomic<bool> logSyncFailed = false;
 
 	/**

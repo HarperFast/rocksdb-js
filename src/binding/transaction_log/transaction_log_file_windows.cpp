@@ -175,7 +175,7 @@ void TransactionLogFile::flush() {
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: FlushFileBuffers failed: %s (error=%lu: %s)\n",
 			this, this->path.string().c_str(), error, errorMessage.c_str());
-		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string());
+		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string() + ": " + errorMessage);
 	}
 
 	// Update the last flushed size after successful sync
