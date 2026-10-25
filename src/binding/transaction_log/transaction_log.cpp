@@ -564,6 +564,8 @@ napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
 	SET_STAT(totals, "purgeRuns", s.purgeRuns);
 	SET_STAT(totals, "databaseFlushes", s.databaseFlushes);
 	SET_STAT(totals, "writeFailures", s.writeFailures);
+	SET_STAT(totals, "abortsMarked", s.abortsMarked);
+	SET_STAT(totals, "abortMarkFailures", s.abortMarkFailures);
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "totals", totals));
 
 	// config

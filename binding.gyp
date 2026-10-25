@@ -267,6 +267,7 @@
 				'test/native/transaction_log_madvise_test.cc',
 				'test/native/transaction_log_erase_tail_test.cc',
 				'test/native/transaction_log_first_entry_test.cc',
+				'test/native/transaction_log_abort_marker_test.cc',
 				'test/native/transaction_log_flushed_state_test.cc',
 				'test/native/transaction_log_mmap_test.cc',
 				'test/native/transaction_log_recovery_test.cc',

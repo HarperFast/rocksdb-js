@@ -277,6 +277,12 @@ Sets global database settings.
     callers could already produce it. With `1`, a database's async commits run one at a time in
     the order `commit()` was called. Databases already open keep their limit.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
+  - `transactionLogAbortMarkers: boolean` When `true`, a transaction that wrote its
+    transaction-log batch and then ends without committing (an `abort()`, a commit error it gives
+    up on, or a worker torn down with it pending) gets that batch marked aborted in place, and every
+    reader skips it; see [Abort markers](#abort-markers). A conflicting attempt is also refused
+    before it writes its batch when an older transaction holds a write intent on one of its keys.
+    Defaults to `false`, which behaves as before. Read on every commit attempt.
   - `occValidation: 'parallel' | 'serial'` How writable optimistic databases opened after the call
     validate commits for conflicts. Defaults to `'parallel'` (RocksDB's default). Databases already
     open keep their policy. Pessimistic, read-only and secondary opens are unaffected.
@@ -1267,7 +1273,8 @@ The `attempt` parameter is the number of times the transaction has been retried.
 - `disableSnapshot?: boolean` Whether to disable snapshots. Defaults to `false`.
 - `maxRetries?: number` The maximum number of times to retry the transaction. Defaults to `3`.
 - `retryOnBusy?: boolean` Whether to retry the transaction if the commit fails with `IsBusy`.
-  Defaults to `true` when the transaction is bound to a transaction log, otherwise `false`.
+  Defaults to `true` when the transaction wrote a transaction-log batch or was refused before
+  writing one (`refusedBeforeLog`), otherwise `false`. `false` also stops a coordinated retry.
 
 ### Transaction Retry Logic
 
@@ -1280,7 +1287,36 @@ a bad state and the transaction will need to be retried. If the max retries is r
 transaction is not retried, a `ERR_TRANSACTION_ABANDONED` error will be thrown.
 
 Users should use the `attempt` transaction callback parameter to ensure duplicate transaction log
-entries are not added.
+entries are not added. `txn.logWritten()` reports whether the batch is already in the log: a commit
+that conflicts after writing it keeps it for the retry, while an attempt refused before writing it
+(`err.refusedBeforeLog`, with `transactionLogAbortMarkers`) leaves nothing and must stage it again.
+
+### Abort markers
+
+With `RocksDatabase.config({ transactionLogAbortMarkers: true })`, a transaction's log batch is
+never left live when the transaction does not commit:
+
+- A transaction that wrote its batch and then ends without committing has the batch marked aborted:
+  bit `0x02` (`TRANSACTION_LOG_ENTRY_ABORTED_FLAG`) is set on its first entry, and the change is
+  synced to disk before `abort()` returns or the batch stops holding back committed readers. Every
+  reader skips the batch. `abort()` then no longer throws `ERR_TRANSACTION_ABANDONED`.
+- If the marker cannot be written or synced, `abort()` throws `ERR_TRANSACTION_ABORT_UNRESOLVED`
+  (again on a second call), committed readers stay behind the batch, and the log refuses new batches
+  until a retry on the next batch, database flush or close marks it.
+- A commit that finds an older transaction holding a write intent on one of its keys (with
+  `verificationTable: true`) is refused before writing its batch, with `refusedBeforeLog` set on the
+  error, or, if its batch is already written from an earlier attempt, before committing. With
+  `coordinatedRetry` it waits for that transaction first. `commitSync()` never waits: it throws, and
+  `transactionSync()` retries after a short backoff.
+- `txn.setParkDeadline(epochMs)` bounds those waits by the caller's own deadline.
+- A backup waits for every batch it captures that has neither committed nor been aborted, and is
+  refused if one is still unresolved after `ROCKSDB_JS_BACKUP_UNRESOLVED_WAIT_MS` (default
+  `30000`).
+
+A reader older than the release that added aborted-batch support shows an aborted batch as live, so
+turn this on only once every reader of the logs (replicas, restores, repair tools) has it. A batch
+whose transaction was still unresolved when the process crashed is not marked, and is replayed as
+before.
 
 When `coordinatedRetry: true`, the retry behavior changes for `IsBusy` conflicts: instead of
 rejecting (or retrying immediately and potentially conflicting again), the commit waits until the
@@ -1314,6 +1350,11 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.commitSync()` Synchronously commits and closes the transaction.
 - `txn.getTimestamp(): number` Retrieves the transaction timestamp in milliseconds as a decimal. It
   defaults to a process-wide monotonic value assigned when the transaction was created.
+- `txn.lastConflictKind(): number` Why the most recent attempt was refused or retried, one of
+  `ConflictKind`: `none` (0), `intentBeforeLog` (1), `intentAfterLog` (2), `atCommit` (3).
+- `txn.logWritten(): boolean` Whether the transaction's batch is in the transaction log.
+- `txn.setParkDeadline(epochMs: number): void` Past this time a coordinated-retry wait resolves at
+  once. `0` clears it.
 - `txn.id: number` The read-only transaction ID. Transaction IDs are unique to the RocksDB database
   path, regardless the database name/column family.
 - `txn.setTimestamp(ts?: number): void` Overrides the transaction timestamp in milliseconds. If

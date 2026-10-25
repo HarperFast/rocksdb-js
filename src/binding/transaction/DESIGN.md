@@ -35,3 +35,9 @@ Other owning-thread mutations still run while an admitted get may be inside `txn
 unrelated disk reads; the candidate fix is for the worker to read through the database with a
 pinned transaction snapshot, since the setup's batch-consulting attempt already proved the key
 absent from the batch.
+
+# Write-intent refusal
+
+With `transactionLogAbortMarkers` on, a transaction's verification-table write intents carry its logical age (`TransactionHandle::age`, the constructor's timestamp, kept when JS changes the timestamp and across retries; `getMonotonicTimestamp()` never repeats within a process, and the handle address breaks a tie anyway). `lockSlotForWrite()` reports whether the slot already had a live holder that is, or may be, older: each tracker keeps its live holders' ages inline (four, under the VT `writerMutex_`), and a holder without an age (a non-transactional write, an intent taken with the flag off) or beyond the inline slots counts as possibly older. A monotonic minimum would not do: it would keep refusing behind a holder that has already released.
+
+An attempt that joined an older holder is refused with `Busy` before writing its batch (`refusedBeforeLog`), or, if an earlier attempt already wrote it, before `Commit()`. It releases its intents and, with `coordinatedRetry`, parks on that slot. The older of two crossing transactions is never refused by the younger, so they resolve. Only transactions with a log batch are refused: the refusal exists so an attempt that will fail never logs, and an unlogged transaction keeps RocksDB's own validation. `commitSync()` refuses without parking, because the holder may need the same event loop. A park is bounded by `ROCKSDB_JS_PARK_TIMEOUT_MS` and by `Transaction#setParkDeadline`.

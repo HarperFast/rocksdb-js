@@ -211,6 +211,10 @@ export type TransactionLogStats = {
 		purgeRuns: number;
 		databaseFlushes: number;
 		writeFailures: number;
+		/** Batches marked aborted (`transactionLogAbortMarkers`). */
+		abortsMarked: number;
+		/** Abort marker writes or syncs that failed; each leaves its batch unresolved until a retry. */
+		abortMarkFailures: number;
 	};
 	config: {
 		maxFileSize: number;

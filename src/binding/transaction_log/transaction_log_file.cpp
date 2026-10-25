@@ -8,6 +8,7 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
+#include "core/test_seam.h"
 #include "core/encoding.h"
 #include "core/platform.h"
 #include "napi/global_events.h"
@@ -1209,6 +1210,9 @@ uint64_t TransactionLogFile::markEntryAborted(uint32_t offset, double expectedTi
 		this->beforeMarkForTests();
 	}
 #endif
+	if (testConsumeAbortMarkFailure()) {
+		throw DBException("Injected abort marker failure (test seam): " + this->path.string());
+	}
 	uint32_t extent = this->size.load(std::memory_order_relaxed);
 	if (offset < TRANSACTION_LOG_FILE_HEADER_SIZE || extent < TRANSACTION_LOG_ENTRY_HEADER_SIZE ||
 		offset > extent - TRANSACTION_LOG_ENTRY_HEADER_SIZE) {

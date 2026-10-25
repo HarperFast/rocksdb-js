@@ -9,6 +9,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <functional>
 #include "rocksdb/db.h"
@@ -156,6 +157,8 @@ struct TransactionLogStoreStats {
 	uint64_t purgeRuns = 0;
 	uint64_t databaseFlushes = 0;
 	uint64_t writeFailures = 0;
+	uint64_t abortsMarked = 0;
+	uint64_t abortMarkFailures = 0;
 	double lastPurgeMs = 0;
 
 	// config
@@ -531,6 +534,12 @@ struct TransactionLogStore final {
 	/** Whether the batch logged at `position` is a failed cancellation still awaiting a retry. */
 	bool isFailedCancellation(LogPosition position);
 
+	/**
+	 * Set once a batch is logged with abort markers on: from then on a backup waits for the batches
+	 * it captures unresolved (see snapshotForBackup()).
+	 */
+	std::atomic<bool> abortMarkersInUse = false;
+
 	/** Lifetime counts for stats: batches marked aborted, and marker writes or syncs that failed. */
 	std::atomic<uint64_t> abortsMarked = 0;
 	std::atomic<uint64_t> abortMarkFailures = 0;
@@ -736,6 +745,17 @@ private:
 
 	/** Guarded by dataSetsMutex. */
 	std::vector<FailedCancellation> failedCancellations;
+
+	/** Signalled, while a backup waits, whenever an uncommitted position is released. */
+	std::condition_variable positionReleased;
+	std::atomic<uint32_t> positionReleaseWaiters = 0;
+
+	/**
+	 * Waits until no position in `unresolved` is still uncommitted, or throws once the backup wait
+	 * bound passes: a backup must not capture a batch that might yet be aborted. Caller holds
+	 * `lock` on dataSetsMutex.
+	 */
+	void waitForResolution(std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved);
 
 	/**
 	 * Set while `failedCancellations` is non-empty, or for good once a failed cancellation could not

@@ -42,6 +42,7 @@ import {
 	RETRY_NOW,
 	Transaction,
 	TransactionAbandonedError,
+	TransactionAbortUnresolvedError,
 	TransactionAlreadyAbortedError,
 	TransactionRetryableError,
 } from './transaction.ts';
@@ -1359,7 +1360,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		try {
 			txn.abort();
 		} catch (abortErr) {
-			if (abortErr instanceof TransactionAbandonedError) {
+			if (
+				abortErr instanceof TransactionAbandonedError ||
+				abortErr instanceof TransactionAbortUnresolvedError
+			) {
 				throw abortErr;
 			}
 		}

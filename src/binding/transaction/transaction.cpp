@@ -560,6 +560,9 @@ static rocksdb::Status admitCommit(TransactionCommitState* state, const std::sha
 static void writeLogBatch(TransactionHandle& txnHandle, TransactionLogStore& store) {
 	txnHandle.batchTimestamp = txnHandle.logEntryBatch->timestamp;
 	txnHandle.cancelOnAbort = txnHandle.agedIntents;
+	if (txnHandle.cancelOnAbort) {
+		store.abortMarkersInUse.store(true, std::memory_order_relaxed);
+	}
 	store.writeBatch(*txnHandle.logEntryBatch, txnHandle.committedPosition, &txnHandle.batchAddress);
 }
 
