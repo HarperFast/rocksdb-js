@@ -158,8 +158,19 @@ void TransactionLogFile::flush() {
 	if (this->fileHandle == INVALID_HANDLE_VALUE || currentSize <= this->lastFlushedSize) {
 		return; // return early
 	}
-	// Perform the flush without holding the lock (since fdatasync/fsync can be slow)
-	HANDLE handleToFlush = this->fileHandle;
+	// Flush a duplicate taken under the lock, then flush without it: a concurrent close of
+	// this->fileHandle (ensureExtent's borrow) must not invalidate the handle being flushed.
+	HANDLE handleToFlush = INVALID_HANDLE_VALUE;
+	if (!::DuplicateHandle(::GetCurrentProcess(), this->fileHandle, ::GetCurrentProcess(), &handleToFlush,
+			0, FALSE, DUPLICATE_SAME_ACCESS)) {
+		DWORD error = ::GetLastError();
+		throw rocksdb_js::DBException(
+			"Failed to flush file: " + this->path.string() + ": " + getWindowsErrorMessage(error));
+	}
+	struct CloseOnExit {
+		HANDLE handle;
+		~CloseOnExit() { ::CloseHandle(this->handle); }
+	} closeDuplicate{handleToFlush};
 	lock.unlock();
 
 	// Perform the flush without holding the lock (since FlushFileBuffers can be slow)

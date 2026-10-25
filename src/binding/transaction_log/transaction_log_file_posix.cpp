@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <fcntl.h>
 #include <limits.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
@@ -234,8 +235,19 @@ void TransactionLogFile::flush() {
 	if (this->fd == -1 || currentSize <= this->lastFlushedSize) {
 		return; // return early
 	}
-	int fdToFlush = this->fd;
-	// Perform the flush without holding the lock (since fdatasync/fsync can be slow)
+	// Sync a duplicate taken under the lock, then sync without it (fdatasync/fsync can be slow): a
+	// concurrent close of this->fd (ensureExtent's borrow) must not turn into EBADF, or a sync of
+	// whatever file reuses the descriptor number.
+	int fdToFlush = ::fcntl(this->fd, F_DUPFD_CLOEXEC, 0);
+	if (fdToFlush < 0) {
+		int error = errno;
+		throw rocksdb_js::DBException(
+			"Failed to flush file: " + this->path.string() + ": " + std::string(::strerror(error)));
+	}
+	struct CloseOnExit {
+		int fd;
+		~CloseOnExit() { ::close(this->fd); }
+	} closeDuplicate{fdToFlush};
 	lock.unlock();
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (fd=%d, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), fdToFlush, currentSize, this->lastFlushedSize);
