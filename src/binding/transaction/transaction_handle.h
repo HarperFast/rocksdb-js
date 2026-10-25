@@ -324,8 +324,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::weak_ptr<TransactionLogStore> boundLogStore;
 
 	/**
-	 * The position of the beginning of the log entries that were written for this transaction.
-	 * This is used for tracking of visible commits available in transaction log, once the transaction is successfully committed.
+	 * This transaction's committed-watermark key in the uncommitted set, released when the transaction
+	 * commits or aborts. It orders the batch but is not its address: it is taken before the segment is
+	 * chosen, so it can name a new segment's header or the previous segment's end. `writeBatch()`
+	 * reports the real first-entry address separately.
 	 */
 	LogPosition committedPosition;
 

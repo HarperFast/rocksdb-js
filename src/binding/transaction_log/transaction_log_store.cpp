@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -5,6 +6,7 @@
 #include <sstream>
 #include <vector>
 #include "transaction_log_store.h"
+#include <algorithm>
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/platform.h"
@@ -1128,7 +1130,7 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	return true;
 }
 
-void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
+void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry) {
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
 	if (this->isClosing.load(std::memory_order_relaxed)) {
@@ -1222,6 +1224,10 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			throw;
 		}
 		logFile->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
+		if (firstEntry && firstEntry->fullPosition == 0 && logFile->size > sizeBefore) {
+			firstEntry->positionInLogFile = std::max<uint32_t>(sizeBefore, TRANSACTION_LOG_FILE_HEADER_SIZE);
+			firstEntry->logSequenceNumber = logFile->sequenceNumber;
+		}
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed));
