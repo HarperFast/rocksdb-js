@@ -115,7 +115,8 @@ TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool di
 	coordinatedRetry(false),
 	state(TransactionState::Pending),
 	txn(nullptr),
-	committedPosition(0, 0) {
+	committedPosition(0, 0),
+	batchAddress(0, 0) {
 	this->resetTransaction(this->dbHandle->descriptor.get());
 	this->id = this->dbHandle->descriptor->transactionGetNextId();
 

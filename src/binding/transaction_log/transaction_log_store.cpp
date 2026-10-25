@@ -1128,7 +1128,7 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	return true;
 }
 
-void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
+void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry) {
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
 	if (this->isClosing.load(std::memory_order_relaxed)) {
@@ -1222,6 +1222,12 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 			throw;
 		}
 		logFile->fileLastWriteTime.store(std::chrono::system_clock::now(), std::memory_order_relaxed);
+		// The watermark position can be the previous segment's EOF or a new segment's offset 0; the
+		// batch's first entry is wherever its first bytes landed.
+		if (firstEntry && firstEntry->fullPosition == 0 && logFile->size > sizeBefore) {
+			firstEntry->positionInLogFile = std::max<uint32_t>(sizeBefore, TRANSACTION_LOG_FILE_HEADER_SIZE);
+			firstEntry->logSequenceNumber = logFile->sequenceNumber;
+		}
 
 		DEBUG_LOG("%p TransactionLogStore::writeBatch Wrote to log file for store \"%s\" (seq=%u, new size=%u)\n",
 			this, this->name.c_str(), logFile->sequenceNumber, logFile->size.load(std::memory_order_relaxed));
@@ -1299,6 +1305,21 @@ void TransactionLogStore::commitFinished(const LogPosition position, const std::
 	}
 	// record in the array
 	this->recentlyCommittedSequencePositions[index] = sequencePosition;
+}
+
+void TransactionLogStore::markAborted(const LogPosition firstEntry, double batchTimestamp) {
+	std::shared_ptr<TransactionLogFile> logFile;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		auto it = this->sequenceFiles.find(firstEntry.logSequenceNumber);
+		if (it != this->sequenceFiles.end()) {
+			logFile = it->second;
+		}
+	}
+	if (!logFile) {
+		throw rocksdb_js::DBException("Transaction log segment for an abort marker is gone");
+	}
+	logFile->markEntryAborted(firstEntry.positionInLogFile, batchTimestamp);
 }
 
 void TransactionLogStore::commitAborted(const LogPosition position) {

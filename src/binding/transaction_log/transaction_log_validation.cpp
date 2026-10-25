@@ -20,7 +20,7 @@ namespace {
 constexpr double MIN_VALID_TIMESTAMP = 1769472000000.0;
 
 // Only bit 0 (TRANSACTION_LOG_ENTRY_LAST_FLAG) is defined.
-constexpr uint8_t VALID_FLAGS_MASK = TRANSACTION_LOG_ENTRY_LAST_FLAG;
+constexpr uint8_t VALID_FLAGS_MASK = TRANSACTION_LOG_ENTRY_LAST_FLAG | TRANSACTION_LOG_ENTRY_ABORTED_FLAG;
 
 // Per-entry anomalies are reported individually up to this cap, then
 // summarized — a large corrupt file could otherwise produce millions of

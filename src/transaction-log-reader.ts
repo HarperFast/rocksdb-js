@@ -9,7 +9,11 @@ import {
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
 
-const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
+const {
+	TRANSACTION_LOG_FILE_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_ABORTED_FLAG,
+} = constants;
 
 /**
  * Number of consecutive well-formed frames that, on their own, signal that real log data has
@@ -182,6 +186,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		// life of the process (HarperFast/harper#2337)
 		let logBuffer: LogBuffer | undefined = this._currentLogBuffer?.deref(); // try the current one first
 		let foundExactStart = false;
+		// every start position is a transaction's first entry, which carries the batch's abort bit
+		let atTransactionStart = true;
+		let skippingAborted = false;
 
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
@@ -366,8 +373,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						throw broken.error;
 					}
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+					const flags = logBuffer![position - 1];
+					if (atTransactionStart)
+						skippingAborted = (flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) !== 0;
+					atTransactionStart = (flags & 1) !== 0;
 					let matchesRange: boolean;
-					if (foundExactStart) {
+					if (skippingAborted) {
+						matchesRange = false;
+					} else if (foundExactStart) {
 						// already found the exact start, only need to match on remaining conditions
 						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end;
 					} else if (exactStart) {

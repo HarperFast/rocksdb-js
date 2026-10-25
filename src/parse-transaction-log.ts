@@ -8,7 +8,7 @@ const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 const MIN_VALID_TIMESTAMP = Date.UTC(2026, 0, 27); // 2026-01-27
 
 // Currently only bit 0 (TRANSACTION_LOG_ENTRY_LAST_FLAG) is defined.
-const VALID_FLAGS_MASK = 0x01;
+const VALID_FLAGS_MASK = 0x03;
 
 interface LogEntry {
 	anomalies?: string[];

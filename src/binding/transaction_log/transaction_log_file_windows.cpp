@@ -830,3 +830,8 @@ size_t TransactionLogFile::adviseCold() {
 } // namespace rocksdb_js
 
 #endif
+
+void TransactionLogFile::markEntryAborted(uint32_t, double) {
+	// Prototype: the Windows write goes through a writable view of the store's own mapping object.
+	throw rocksdb_js::DBException("Transaction log abort markers are not implemented on Windows yet");
+}

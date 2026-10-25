@@ -219,6 +219,11 @@ void TransactionLogFile::closeLocked() {
 #endif
 	}
 
+	if (this->abortFd >= 0) {
+		::close(this->abortFd);
+		this->abortFd = -1;
+	}
+
 	if (this->fd >= 0) {
 		DEBUG_LOG("%p TransactionLogFile::close Closing file: %s (fd=%d)\n",
 			this, this->path.string().c_str(), this->fd);
@@ -230,8 +235,9 @@ void TransactionLogFile::closeLocked() {
 void TransactionLogFile::flush() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 	uint32_t currentSize = this->size.load(std::memory_order_relaxed);
-	// Only flush if there's new data since the last flush
-	if (this->fd == -1 || currentSize <= this->lastFlushedSize) {
+	uint32_t generation = this->mutationGeneration;
+	// Only flush if there's new data, or an in-place header write, since the last flush
+	if (this->fd == -1 || (currentSize <= this->lastFlushedSize && generation == this->lastFlushedGeneration)) {
 		return; // return early
 	}
 	int fdToFlush = this->fd;
@@ -259,6 +265,33 @@ void TransactionLogFile::flush() {
 	// Update the last flushed size after successful sync
 	lock.lock();
 	this->lastFlushedSize = currentSize;
+	this->lastFlushedGeneration = generation;
+}
+
+void TransactionLogFile::markEntryAborted(uint32_t offset, double expectedTimestamp) {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	if (offset < TRANSACTION_LOG_FILE_HEADER_SIZE ||
+		static_cast<uint64_t>(offset) + TRANSACTION_LOG_ENTRY_HEADER_SIZE > this->size.load(std::memory_order_relaxed)) {
+		throw rocksdb_js::DBException("Abort marker offset is outside the written extent: " + this->path.string());
+	}
+	if (this->abortFd < 0) {
+		this->abortFd = ::open(this->path.c_str(), O_RDWR | O_CLOEXEC);
+		if (this->abortFd < 0) {
+			throw rocksdb_js::DBException("Failed to open transaction log for an abort marker: " + this->path.string());
+		}
+	}
+	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+	if (::pread(this->abortFd, header, sizeof(header), offset) != static_cast<ssize_t>(sizeof(header))) {
+		throw rocksdb_js::DBException("Failed to read the entry an abort marker names: " + this->path.string());
+	}
+	if (readDoubleBE(header) != expectedTimestamp || readUint32BE(header + 8) == 0) {
+		throw rocksdb_js::DBException("Abort marker does not name the start of its batch: " + this->path.string());
+	}
+	char flags = static_cast<char>(header[12] | TRANSACTION_LOG_ENTRY_ABORTED_FLAG);
+	if (::pwrite(this->abortFd, &flags, 1, offset + 12) != 1) {
+		throw rocksdb_js::DBException("Failed to write an abort marker: " + this->path.string());
+	}
+	this->mutationGeneration++;
 }
 
 bool TransactionLogFile::openFile(bool createIfMissing) {

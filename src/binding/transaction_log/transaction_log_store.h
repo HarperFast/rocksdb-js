@@ -646,7 +646,13 @@ struct TransactionLogStore final {
 	/**
 	 * Writes a batch of transaction log entries to the store.
 	 */
-	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition);
+	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry = nullptr);
+
+	/**
+	 * Marks the batch whose first entry is at `firstEntry` aborted, in place. The caller then
+	 * releases its watermark position with commitAborted(). Throws if the marker cannot be written.
+	 */
+	void markAborted(LogPosition firstEntry, double batchTimestamp);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log

@@ -23,6 +23,7 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "core/verification_table.h"
+#include "core/optimistic_validation.h"
 
 #define UNWRAP_TRANSACTION_HANDLE(fnName) \
 	std::shared_ptr<TransactionHandle>* txnHandle = nullptr; \
@@ -539,6 +540,51 @@ static rocksdb::Status admitCommit(TransactionCommitState* state, const std::sha
  * transactions with no log entries so total dispatch order is preserved into
  * the commit lane.
  */
+/**
+ * Prototype switch for a conflict check ahead of the log write (no reservation, no hold).
+ */
+static bool prelogValidationEnabled() {
+	static const bool enabled = [] {
+		const char* value = ::getenv("ROCKSDB_JS_PRELOG_VALIDATE");
+		return value && value[0] == '1';
+	}();
+	return enabled;
+}
+
+static rocksdb::Status prelogValidate(const std::shared_ptr<TransactionHandle>& txnHandle) {
+	if (!prelogValidationEnabled() || txnHandle->dbHandle->descriptor->mode != DBMode::Optimistic) {
+		return rocksdb::Status::OK();
+	}
+	return validateOptimisticTransaction(txnHandle->txn, txnHandle->dbHandle->descriptor->db.get());
+}
+
+/**
+ * Marks a failed attempt's logged batch aborted, then releases its watermark position and log
+ * binding so a retry stages and logs a fresh batch. Returns false, leaving the position pinned, if
+ * the marker could not be written.
+ */
+static bool abortLoggedAttempt(const std::shared_ptr<TransactionHandle>& txnHandle) {
+	if (txnHandle->committedPosition.logSequenceNumber == 0) {
+		return true;
+	}
+	auto store = txnHandle->boundLogStore.lock();
+	if (!store) {
+		return false;
+	}
+	try {
+		store->markAborted(txnHandle->batchAddress, txnHandle->batchTimestamp);
+	} catch (const std::exception& e) {
+		DEBUG_LOG("%p Transaction::Commit ERROR: abort marker failed for transaction %llu: %s\n",
+			txnHandle.get(), (unsigned long long)txnHandle->id, e.what());
+		return false;
+	}
+	store->commitAborted(txnHandle->committedPosition);
+	txnHandle->committedPosition = LogPosition(0, 0);
+	txnHandle->batchAddress = LogPosition(0, 0);
+	txnHandle->boundLogStore.reset();
+	return true;
+}
+
 static void executeLogWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
 	if (!txnHandle) {
@@ -561,10 +607,14 @@ static void executeLogWork(TransactionCommitState* state) {
 		DEBUG_LOG("%p Transaction::Commit Committing log entries for transaction %llu\n",
 			txnHandle.get(), (unsigned long long)txnHandle->id);
 		auto store = txnHandle->boundLogStore.lock();
-		if (store) {
+		if (rocksdb::Status prelog = prelogValidate(txnHandle); !prelog.ok()) {
+			state->status = prelog;
+		} else if (store) {
 			try {
 				// write the batch to the store
-				store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition);
+				txnHandle->batchTimestamp = txnHandle->logEntryBatch->timestamp;
+				txnHandle->batchAddress = LogPosition(0, 0);
+				store->writeBatch(*txnHandle->logEntryBatch, txnHandle->committedPosition, &txnHandle->batchAddress);
 				// free the batch after writing to avoid memory leak
 				txnHandle->logEntryBatch.reset();
 				state->hasLog = true;
@@ -605,6 +655,15 @@ static void executeCommitWork(TransactionCommitState* state) {
 		// ensure the log stage (or handle validation) hasn't errored
 		if (!state->status.ok()) {
 			state->claim.release(descriptor);
+			if (state->status.IsBusy() || state->status.IsTryAgain()) {
+				// refused by the pre-log check: nothing was logged, so release intents as a failed commit does
+				if (state->status.IsBusy() && txnHandle->coordinatedRetry) {
+					state->savedSlots = txnHandle->lockedVTSlots;
+				}
+				if (!txnHandle->lockedVTSlots.empty()) {
+					txnHandle->releaseIntent();
+				}
+			}
 			if (state->status.IsColumnFamilyDropped()) {
 				txnHandle->writesAbandoned.store(true, std::memory_order_relaxed);
 				if (!txnHandle->lockedVTSlots.empty()) {
@@ -664,6 +723,10 @@ static void executeCommitWork(TransactionCommitState* state) {
 		// Gating on !IsBusy (rather than ok()) published on a failed TryAgain commit, making
 		// the entry visible while the record was rolled back and only re-committed later on a
 		// retry — a change-feed entry ahead of its data for every reader in that window.
+		if (!state->status.ok() && abortLoggedAttempt(txnHandle)) {
+			state->hasLog = false;
+		}
+
 		if (txnHandle->committedPosition.logSequenceNumber > 0 && state->status.ok()) {
 			auto store = txnHandle->boundLogStore.lock();
 			if (store) {
@@ -1222,6 +1285,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	std::shared_ptr<TransactionLogStore> store = nullptr;
 	bool hasLog = false;
+	rocksdb::Status prelogStatus;
 
 	std::shared_ptr<DBDescriptor> descriptor = (*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr;
 	if (!descriptor) {
@@ -1256,10 +1320,15 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %llu\n",
 			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
 		store = (*txnHandle)->boundLogStore.lock();
-		if (store) {
+		prelogStatus = prelogValidate(*txnHandle);
+		if (!prelogStatus.ok()) {
+			// refused before the log write; fall through to the failed-commit handling below
+		} else if (store) {
 			hasLog = true;
 			try {
-				store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition);
+				(*txnHandle)->batchTimestamp = (*txnHandle)->logEntryBatch->timestamp;
+				(*txnHandle)->batchAddress = LogPosition(0, 0);
+				store->writeBatch(*(*txnHandle)->logEntryBatch, (*txnHandle)->committedPosition, &(*txnHandle)->batchAddress);
 			} catch (const std::exception& e) {
 				(*txnHandle)->state = TransactionState::Pending;
 				claim.release(descriptor.get());
@@ -1274,8 +1343,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	rocksdb::Status status = (*txnHandle)->txn->Commit();
+	rocksdb::Status status = prelogStatus.ok() ? (*txnHandle)->txn->Commit() : prelogStatus;
 	claim.release(descriptor.get());
+	if (!status.ok() && abortLoggedAttempt(*txnHandle)) {
+		hasLog = false;
+	}
 
 	if (!(*txnHandle)->lockedVTSlots.empty()) {
 		(*txnHandle)->releaseIntent();

@@ -126,6 +126,8 @@ inline int64_t landedBytesFromFilePointer(int64_t pointerAfterWrite, int64_t wri
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
+// Set in place on the first entry of a batch whose commit failed; readers skip the whole batch.
+#define TRANSACTION_LOG_ENTRY_ABORTED_FLAG 0x02
 #define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN 0x52455449
 #define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE 12
 
@@ -353,6 +355,26 @@ struct TransactionLogFile final {
 	 * Flushes any buffered data to disk.
 	 */
 	void flush();
+
+	/**
+	 * Sets TRANSACTION_LOG_ENTRY_ABORTED_FLAG on the entry header at `offset`, after checking
+	 * that a frame with `expectedTimestamp` starts there. Throws on any mismatch or I/O failure.
+	 */
+	void markEntryAborted(uint32_t offset, double expectedTimestamp);
+
+	/**
+	 * Bumped by every in-place header write, so flush() syncs a file whose size did not grow.
+	 */
+	uint32_t mutationGeneration = 0;
+	uint32_t lastFlushedGeneration = 0;
+
+#ifndef PLATFORM_WINDOWS
+	/**
+	 * A non-append descriptor for in-place header writes: `pwrite` on the `O_APPEND` fd ignores its
+	 * offset on Linux. Opened on the first abort.
+	 */
+	int abortFd = -1;
+#endif
 
 	/**
 	 * Persists the current logical size as the last safe boundary. The marker is

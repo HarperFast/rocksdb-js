@@ -7,7 +7,7 @@
 // --lib points at another build's dist/index.mjs so one script can compare several builds;
 // --occ-lock-buckets and --occ-validation apply RocksDatabase.config() before any open.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -280,6 +280,19 @@ if (isMainThread) {
 				output.conflictsPerCommit = total.conflicts / total.commits;
 			}
 			for (const db of mainDbs) db.close();
+			if (config.log) {
+				// every .txnlog byte, aborted attempts included; successes counted across warmup too
+				let logBytes = 0;
+				for (const entry of readdirSync(root, { recursive: true, withFileTypes: true })) {
+					if (entry.isFile() && entry.name.endsWith('.txnlog'))
+						logBytes += statSync(resolve(entry.parentPath, entry.name)).size;
+				}
+				const successes =
+					config.scenario === 'conflict'
+						? workerResults.reduce((sum, r) => sum + r.increments!, 0)
+						: total.commits;
+				output.logBytesPerSuccess = Math.round(logBytes / successes);
+			}
 			console.log(JSON.stringify(output));
 		}
 	} finally {

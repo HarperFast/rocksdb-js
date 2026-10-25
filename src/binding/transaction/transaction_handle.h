@@ -329,6 +329,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	LogPosition committedPosition;
 
+	/**
+	 * Where this attempt's batch actually starts, and its timestamp, so a failed commit can mark
+	 * that batch aborted in place. `committedPosition` is the watermark key, not this address.
+	 */
+	LogPosition batchAddress;
+	double batchTimestamp = 0;
+
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
