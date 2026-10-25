@@ -570,6 +570,17 @@ TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures)
 	EXPECT_THROW(zeroVersion.open(0), TransactionLogFormatException);
 	EXPECT_FALSE(checkTransactionLogSegmentVersion(zeroVersionPath));
 
+	// A short header is malformed, as open() classifies it, even when its version byte is newer.
+	auto shortNewerPath = dir / "7.txnlog";
+	{
+		char bytes[5] = {0, 0, 0, 0, 2};
+		rocksdb_js::writeUint32BE(bytes, TRANSACTION_LOG_TOKEN);
+		std::ofstream(shortNewerPath, std::ios::binary).write(bytes, sizeof(bytes));
+	}
+	TransactionLogFile shortNewer(shortNewerPath, 7);
+	EXPECT_THROW(shortNewer.open(0), TransactionLogFormatException);
+	EXPECT_FALSE(checkTransactionLogSegmentVersion(shortNewerPath));
+
 	auto currentPath = dir / "6.txnlog";
 	LogImage().writeTo(currentPath);
 	EXPECT_TRUE(checkTransactionLogSegmentVersion(currentPath));

@@ -76,14 +76,14 @@ bool checkTransactionLogSegmentVersion(const std::filesystem::path& logPath) {
 	char header[TRANSACTION_LOG_FILE_HEADER_SIZE];
 	in.read(header, sizeof(header));
 	const auto headerBytes = in.gcount();
-	if (headerBytes < 5 || readUint32BE(header) != TRANSACTION_LOG_TOKEN) {
+	if (headerBytes < TRANSACTION_LOG_FILE_HEADER_SIZE || readUint32BE(header) != TRANSACTION_LOG_TOKEN) {
 		return false;
 	}
 	uint8_t version = readUint8(header + 4);
 	if (version > TRANSACTION_LOG_FORMAT_VERSION) {
 		throw TransactionLogVersionException(unsupportedVersionMessage(logPath, version));
 	}
-	return version == TRANSACTION_LOG_FORMAT_VERSION && headerBytes == TRANSACTION_LOG_FILE_HEADER_SIZE;
+	return version == TRANSACTION_LOG_FORMAT_VERSION;
 }
 
 uint32_t readTransactionLogAppendBoundaryMarker(const std::filesystem::path& logPath) {
