@@ -418,8 +418,7 @@ RecoveryScan scanTransactionLogForFloor(
 	}
 	uint8_t version = readUint8(header + 4);
 	if (version != 1) {
-		throw TransactionLogFormatException(
-			"Unsupported transaction log file version: " + std::to_string(version));
+		throw TransactionLogVersionException(unsupportedVersionMessage(path, version));
 	}
 
 	auto scan = scanTransactionLogForRecovery(extent, readFromStream, &input, plausibleBound,

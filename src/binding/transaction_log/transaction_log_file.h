@@ -86,6 +86,27 @@ public:
 	const char* what() const noexcept override { return message.c_str(); }
 };
 
+/**
+ * A well-formed segment in a format version this build cannot read, written by a newer release.
+ * Unlike a malformed segment it is not tolerated: skipping it would hide its history and let this
+ * build append version-1 segments after it, so every path that meets one fails the store.
+ */
+class TransactionLogVersionException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogVersionException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
+
+/**
+ * Throws TransactionLogVersionException when `logPath` carries the transaction-log token and a
+ * format version other than 1. A missing, short, unreadable or token-less file is left to the
+ * normal open path.
+ */
+void checkTransactionLogSegmentVersion(const std::filesystem::path& logPath);
+
+std::string unsupportedVersionMessage(const std::filesystem::path& logPath, unsigned version);
+
 class TransactionLogOpenException final : public std::exception {
 	std::string message;
 public:

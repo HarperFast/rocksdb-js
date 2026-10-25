@@ -1538,6 +1538,7 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 							store.get(), filename.c_str());
 						continue;
 					}
+					checkTransactionLogSegmentVersion(filePath);
 					if (!store->registerLogFile(filePath, sequenceNumber)) {
 						store->markDiscoverySkipped(filePath);
 					}
@@ -1545,6 +1546,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			} catch (const TransactionLogAppendBoundaryException&) {
 				// The marker is the only authoritative record of a retired file's
 				// logical end. Ignoring it could expose orphaned bytes after restart.
+				throw;
+			} catch (const TransactionLogVersionException&) {
 				throw;
 			} catch (const std::filesystem::filesystem_error& e) {
 				store->markDiscoverySkipped(fileEntry.path());
@@ -1633,6 +1636,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 				// The marker is authoritative; a segment we cannot reconcile with it
 				// must fail the load rather than expose orphaned bytes.
 				throw;
+			} catch (const TransactionLogVersionException&) {
+				throw;
 			} catch (const std::exception& e) {
 				// A newest segment we cannot open is not fatal: leave it registered
 				// (readers still see whatever a later ensureExtent() can resolve) and
@@ -1711,6 +1716,11 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					break;
 				}
 			}
+		} catch (const TransactionLogVersionException&) {
+			if (openedForScan && logFile->isOpen()) {
+				logFile->close();
+			}
+			throw;
 		} catch (const std::exception& e) {
 			if (openedForScan && logFile->isOpen()) {
 				logFile->close();
