@@ -1271,9 +1271,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			);
 		};
 
-		// One transaction across attempts, as transaction() does: a retryable commit failure resets it
-		// natively and keeps its transaction-log batch write-once. A fresh handle per attempt would log
-		// the batch again and leave the first attempt's batch behind as an orphan.
+		// One transaction across attempts, as transaction() does: the native reset after a retryable
+		// commit failure keeps its transaction-log batch write-once.
 		const txn = new Transaction(this.store, options);
 		const runAttempt = (attempt: number): T | PromiseLike<T> | void => {
 			let result: T | PromiseLike<T>;
@@ -1286,20 +1285,23 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 			// despite being 'sync', we need to support async operations
 			if (typeof (result as PromiseLike<T>)?.then === 'function') {
-				return (result as PromiseLike<T>).then((value: T | undefined) => {
-					try {
-						txn.commitSync();
-						return value;
-					} catch (commitErr) {
-						if (commitErr instanceof TransactionAlreadyAbortedError) {
-							return;
+				return (result as PromiseLike<T>).then(
+					(value: T | undefined) => {
+						try {
+							txn.commitSync();
+							return value;
+						} catch (commitErr) {
+							if (commitErr instanceof TransactionAlreadyAbortedError) {
+								return;
+							}
+							if (isRetryable(commitErr, attempt)) {
+								return runAttempt(attempt + 1) as PromiseLike<T>;
+							}
+							this.#abandonTransaction(txn, commitErr);
 						}
-						if (isRetryable(commitErr, attempt)) {
-							return runAttempt(attempt + 1) as PromiseLike<T>;
-						}
-						this.#abandonTransaction(txn, commitErr);
-					}
-				}) as PromiseLike<T>;
+					},
+					(callbackErr: unknown) => this.#abortTransaction(txn, callbackErr)
+				) as PromiseLike<T>;
 			}
 
 			try {
