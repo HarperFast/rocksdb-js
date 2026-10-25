@@ -1355,20 +1355,18 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
 }
 
 void TransactionLogStore::noteLogSyncFailure(uint32_t sequenceNumber, const char* detail) noexcept {
-	if (this->logSyncFailed.exchange(true, std::memory_order_acq_rel)) {
+	if (this->logSyncFailed.exchange(true, std::memory_order_acq_rel) || !GlobalEvents::hasListeners()) {
 		return;
 	}
 	try {
 		std::ostringstream msg;
 		msg << "Transaction log segment " << (this->displayPath / (std::to_string(sequenceNumber) + ".txnlog")).string()
 			<< " could not be synced before a database flush (" << detail << "). Its flushed state ("
-			<< (this->displayPath / "txn.state").string() << ") no longer advances until the database is reopened,"
-			<< " so a restart replays the log from the last position known to be durable; retention cannot"
-			<< " purge past it meanwhile.";
-		DEBUG_LOG("%p TransactionLogStore::databaseFlushBegin WARNING: %s\n", this, msg.str().c_str());
+			<< (this->displayPath / "txn.state").string() << ") stops advancing while this log store stays open,"
+			<< " so a restart replays from the last position known to be durable and retention cannot purge"
+			<< " past it meanwhile.";
 		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 	} catch (...) {
-		// reporting is best-effort on the flush thread
 	}
 }
 

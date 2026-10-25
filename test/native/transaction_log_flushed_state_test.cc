@@ -25,6 +25,10 @@ struct TransactionLogStoreTestPeer {
 	static std::shared_ptr<TransactionLogFile> logFile(TransactionLogStore& store, uint32_t sequenceNumber) {
 		return store.getLogFile(sequenceNumber);
 	}
+
+	static bool logSyncFailed(TransactionLogStore& store) {
+		return store.logSyncFailed.load();
+	}
 };
 
 } // namespace rocksdb_js
@@ -411,7 +415,7 @@ TEST(TransactionLogFlushedState, FailedSegmentSyncStopsFlushedStateFromAdvancing
 	store->databaseFlushBegin(30);
 	store->databaseFlushed(30);
 	expectFlushedPosition(*store, durable.positionInLogFile, durable.logSequenceNumber);
-	EXPECT_TRUE(store->logSyncFailed.load());
+	EXPECT_TRUE(rocksdb_js::TransactionLogStoreTestPeer::logSyncFailed(*store));
 
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());
