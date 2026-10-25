@@ -677,7 +677,6 @@ struct TransactionLogFile final {
 
 	/**
 	 * Runs in flush() just before the sync call; throwing from it simulates a failed sync.
-	 * Test-only.
 	 */
 	std::function<void()> beforeSyncForTests;
 

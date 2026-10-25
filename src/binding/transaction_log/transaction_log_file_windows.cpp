@@ -159,21 +159,26 @@ void TransactionLogFile::flush() {
 		return; // return early
 	}
 	// Flush a duplicate taken under the lock, then flush without it: a concurrent close of
-	// this->fileHandle (ensureExtent's borrow) must not invalidate the handle being flushed.
-	HANDLE handleToFlush = INVALID_HANDLE_VALUE;
-	if (!::DuplicateHandle(::GetCurrentProcess(), this->fileHandle, ::GetCurrentProcess(), &handleToFlush,
+	// this->fileHandle (ensureExtent's borrow) must not invalidate the handle being flushed. If the
+	// handle cannot be duplicated, flush the original under the lock.
+	HANDLE duplicate = INVALID_HANDLE_VALUE;
+	if (!::DuplicateHandle(::GetCurrentProcess(), this->fileHandle, ::GetCurrentProcess(), &duplicate,
 			0, FALSE, DUPLICATE_SAME_ACCESS)) {
-		DWORD error = ::GetLastError();
-		throw rocksdb_js::DBException(
-			"Failed to flush file: " + this->path.string() + ": " + getWindowsErrorMessage(error));
+		duplicate = INVALID_HANDLE_VALUE;
 	}
 	struct CloseOnExit {
 		HANDLE handle;
-		~CloseOnExit() { ::CloseHandle(this->handle); }
-	} closeDuplicate{handleToFlush};
-	lock.unlock();
+		~CloseOnExit() {
+			if (this->handle != INVALID_HANDLE_VALUE) {
+				::CloseHandle(this->handle);
+			}
+		}
+	} closeDuplicate{duplicate};
+	HANDLE handleToFlush = duplicate != INVALID_HANDLE_VALUE ? duplicate : this->fileHandle;
+	if (duplicate != INVALID_HANDLE_VALUE) {
+		lock.unlock();
+	}
 
-	// Perform the flush without holding the lock (since FlushFileBuffers can be slow)
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (handle=%p, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), handleToFlush, currentSize, this->lastFlushedSize);
 #ifdef ROCKSDB_JS_NATIVE_TESTS
@@ -190,7 +195,9 @@ void TransactionLogFile::flush() {
 	}
 
 	// Update the last flushed size after successful sync
-	lock.lock();
+	if (!lock.owns_lock()) {
+		lock.lock();
+	}
 	this->lastFlushedSize = currentSize;
 }
 

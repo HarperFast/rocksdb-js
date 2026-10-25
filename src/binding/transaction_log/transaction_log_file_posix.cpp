@@ -237,18 +237,20 @@ void TransactionLogFile::flush() {
 	}
 	// Sync a duplicate taken under the lock, then sync without it (fdatasync/fsync can be slow): a
 	// concurrent close of this->fd (ensureExtent's borrow) must not turn into EBADF, or a sync of
-	// whatever file reuses the descriptor number.
-	int fdToFlush = ::fcntl(this->fd, F_DUPFD_CLOEXEC, 0);
-	if (fdToFlush < 0) {
-		int error = errno;
-		throw rocksdb_js::DBException(
-			"Failed to flush file: " + this->path.string() + ": " + std::string(::strerror(error)));
-	}
+	// whatever file reuses the descriptor number. Out of descriptors, sync the original under the lock.
+	int duplicate = ::fcntl(this->fd, F_DUPFD_CLOEXEC, 0);
 	struct CloseOnExit {
 		int fd;
-		~CloseOnExit() { ::close(this->fd); }
-	} closeDuplicate{fdToFlush};
-	lock.unlock();
+		~CloseOnExit() {
+			if (this->fd >= 0) {
+				::close(this->fd);
+			}
+		}
+	} closeDuplicate{duplicate};
+	int fdToFlush = duplicate >= 0 ? duplicate : this->fd;
+	if (duplicate >= 0) {
+		lock.unlock();
+	}
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (fd=%d, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), fdToFlush, currentSize, this->lastFlushedSize);
 #ifdef ROCKSDB_JS_NATIVE_TESTS
@@ -276,7 +278,9 @@ void TransactionLogFile::flush() {
 	}
 
 	// Update the last flushed size after successful sync
-	lock.lock();
+	if (!lock.owns_lock()) {
+		lock.lock();
+	}
 	this->lastFlushedSize = currentSize;
 }
 
