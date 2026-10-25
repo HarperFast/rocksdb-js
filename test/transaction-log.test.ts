@@ -13,7 +13,10 @@ import {
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
 import { withResolvers } from '../src/util.ts';
-import { writeLazyTransactionLogSegments } from './lib/transaction-log-fixtures.ts';
+import {
+	writeCraftedSegment,
+	writeLazyTransactionLogSegments,
+} from './lib/transaction-log-fixtures.ts';
 import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import assert from 'node:assert';
@@ -1159,6 +1162,89 @@ describe('Transaction Log', () => {
 						log.addEntry(Buffer.from('after'), txn.id);
 					});
 					expect(log.getLogFileSize(3)).toBeGreaterThan(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				}));
+		});
+
+		describe('aborted batches', () => {
+			const T1 = Date.UTC(2026, 9, 1);
+			const T2 = T1 + 1;
+			const T3 = T1 + 2;
+			const LAST = 0x01;
+			const ABORTED = 0x02;
+			const craft = async (
+				dbPath: string,
+				name: string,
+				entries: Parameters<typeof writeCraftedSegment>[1]
+			) => {
+				const logDirectory = join(dbPath, 'transaction_logs', name);
+				await mkdir(logDirectory, { recursive: true });
+				const logPath = join(logDirectory, '1.txnlog');
+				writeCraftedSegment(
+					logPath,
+					entries,
+					TRANSACTION_LOG_FILE_HEADER_SIZE,
+					TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+					TRANSACTION_LOG_TOKEN
+				);
+				return logPath;
+			};
+			const retried = [
+				{ timestamp: T1, flags: ABORTED, data: 'aborted-1' },
+				{ timestamp: T1, flags: LAST, data: 'aborted-2' },
+				{ timestamp: T1, flags: LAST, data: 'retry' },
+				{ timestamp: T2, flags: ABORTED | LAST, data: 'aborted-single' },
+				{ timestamp: T3, flags: 0, data: 'next-1' },
+				{ timestamp: T3, flags: LAST, data: 'next-2' },
+			];
+
+			it('skips every entry of an aborted batch', () =>
+				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+					await craft(dbPath, 'aborted', retried);
+					db.open();
+					const entries = [...db.useLog('aborted').query({ start: 0 })];
+					expect(entries.map((entry) => entry.data.toString())).toEqual([
+						'retry',
+						'next-1',
+						'next-2',
+					]);
+					expect(entries.map((entry) => entry.endTxn)).toEqual([true, false, true]);
+				}));
+
+			it('resolves an exact start to the live copy, not the aborted one', () =>
+				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+					await craft(dbPath, 'aborted', retried);
+					db.open();
+					const log = db.useLog('aborted');
+					const fromRetry = [...log.query({ start: T1, exactStart: true })].map((entry) =>
+						entry.data.toString()
+					);
+					expect(fromRetry).toEqual(['retry', 'next-1', 'next-2']);
+					const fromAbortedOnly = [...log.query({ start: T2, exactStart: true })];
+					expect(fromAbortedOnly).toEqual([]);
+				}));
+
+			it('parses an abort flag as valid on a first entry and flags it elsewhere', () =>
+				dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+					const validPath = await craft(dbPath, 'aborted', retried);
+					const valid = parseTransactionLog(validPath);
+					expect(valid.entryAnomalyCount).toBe(0);
+					expect(valid.entries.map((entry) => entry.flags)).toEqual([
+						ABORTED,
+						LAST,
+						LAST,
+						ABORTED | LAST,
+						0,
+						LAST,
+					]);
+
+					const misplacedPath = await craft(dbPath, 'misplaced', [
+						{ timestamp: T1, flags: 0, data: 'first' },
+						{ timestamp: T1, flags: ABORTED | LAST, data: 'second' },
+					]);
+					const misplaced = parseTransactionLog(misplacedPath);
+					expect(misplaced.entries[1].anomalies).toEqual([
+						'abort flag on an entry that does not start a transaction',
+					]);
 				}));
 		});
 

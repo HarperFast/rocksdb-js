@@ -44,3 +44,7 @@ Two tighter alternatives are deliberately not used. Holding `transactionBindMute
 - **Purge after positioning.** A jump into another segment maps the tail, then re-checks `TransactionLogStore::segmentRemovals` (process-wide, bumped and read under `dataSetsMutex`). If it moved, the reader scans and reports the gap. A start that is already past the stop jumps inside `query()`, so a purge after `query()` returns is ordered after that jump.
 
 The first lookup in a process still indexes every segment from the newest down to the start. The index then persists per segment, so later lookups pay only the walk.
+
+# Aborted batches
+
+`TRANSACTION_LOG_ENTRY_ABORTED_FLAG` (0x02) on a batch's first entry marks a transaction that did not commit. Readers decide from the first entry of each transaction and skip through the entry carrying `LAST_FLAG`; every position a query starts from (`findPositionByTimestamp`, an exact-start match, the committed watermark) is a first entry, so the decision is made there. After a corrupt-frame resync the reader may resume mid-transaction and then uses that entry's own flag. The validators accept the flag only on a first entry. This release reads the flag but never writes it, so a later release can set it without leaving this one to read aborted transactions as live (the reader-first half of HarperFast/harper#3253).

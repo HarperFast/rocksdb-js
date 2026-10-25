@@ -11,7 +11,12 @@ const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
 // `_findExactStart()` out-parameter: [stop, tail, segment removals]
 const EXACT_START_SPAN = new Float64Array(3);
 
-const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
+const {
+	TRANSACTION_LOG_FILE_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_LAST_FLAG,
+	TRANSACTION_LOG_ENTRY_ABORTED_FLAG,
+} = constants;
 
 /**
  * Number of consecutive well-formed frames that, on their own, signal that real log data has
@@ -221,6 +226,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let tailLogId = 0;
 		let tailPosition = 0;
 		let segmentRemovals = 0;
+		// Every start position is the first entry of a transaction, which carries the batch's abort
+		// flag; an aborted batch is skipped through its last entry.
+		let atTransactionStart = true;
+		let skippingAborted = false;
 
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
@@ -422,6 +431,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							!!readUncommitted
 						);
 						position = broken.nextPosition;
+						atTransactionStart = true;
 						throw broken.error;
 					}
 					const length = dataView.getUint32(position + 8);
@@ -443,11 +453,19 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							!!readUncommitted
 						);
 						position = broken.nextPosition;
+						atTransactionStart = true;
 						throw broken.error;
 					}
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+					const flags = logBuffer![position - 1];
+					if (atTransactionStart) {
+						skippingAborted = (flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) !== 0;
+					}
+					atTransactionStart = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) !== 0;
 					let matchesRange: boolean;
-					if (foundExactStart) {
+					if (skippingAborted) {
+						matchesRange = false;
+					} else if (foundExactStart) {
 						// already found the exact start, only need to match on remaining conditions
 						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end;
 					} else if (exactStart) {
@@ -499,7 +517,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							done: false,
 							value: {
 								timestamp,
-								endTxn: Boolean(logBuffer![entryStart - 1] & 1),
+								endTxn: atTransactionStart,
 								data: logBuffer!.subarray(entryStart, position),
 							},
 						};
