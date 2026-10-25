@@ -13,6 +13,8 @@
 #include "core/exception.h"
 #include "transaction_log/transaction_log_file.h"
 #include "transaction_log/transaction_log_recovery.h"
+#include "transaction_log/transaction_log_store.h"
+#include "transaction_log/transaction_log_entry.h"
 #include "transaction_log/transaction_log_validation.h"
 
 using rocksdb_js::DBException;
@@ -574,6 +576,23 @@ TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures)
 	TransactionLogFile ioFailure(dir, 4);
 	EXPECT_THROW(ioFailure.open(0), DBException);
 
+	std::filesystem::remove_all(dir);
+}
+
+TEST(TransactionLogFileOpen, WriteDoesNotRotatePastANewerFormatSegment) {
+	auto dir = makeTempStoreDir("rocksdb-js-transaction-log-newer-format");
+	LogImage(TRANSACTION_LOG_TOKEN, /*version=*/2).writeTo(dir / "1.txnlog");
+	{
+		rocksdb_js::TransactionLogStore store("store", dir, 0, std::chrono::milliseconds(0), 0);
+		rocksdb_js::LogPosition position;
+		std::string payload = "entry";
+		rocksdb_js::TransactionLogEntryBatch batch(1770000000001.0);
+		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		EXPECT_THROW(store.writeBatch(batch, position), TransactionLogVersionException);
+		store.close();
+	}
+	EXPECT_FALSE(std::filesystem::exists(dir / "2.txnlog"));
 	std::filesystem::remove_all(dir);
 }
 

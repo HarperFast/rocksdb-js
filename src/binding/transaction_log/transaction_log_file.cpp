@@ -73,15 +73,17 @@ std::string unsupportedVersionMessage(const std::filesystem::path& logPath, unsi
 
 bool checkTransactionLogSegmentVersion(const std::filesystem::path& logPath) {
 	std::ifstream in(logPath, std::ios::binary);
-	char header[5];
-	if (!in.read(header, sizeof(header)) || readUint32BE(header) != TRANSACTION_LOG_TOKEN) {
+	char header[TRANSACTION_LOG_FILE_HEADER_SIZE];
+	in.read(header, sizeof(header));
+	const auto headerBytes = in.gcount();
+	if (headerBytes < 5 || readUint32BE(header) != TRANSACTION_LOG_TOKEN) {
 		return false;
 	}
 	uint8_t version = readUint8(header + 4);
 	if (version > TRANSACTION_LOG_FORMAT_VERSION) {
 		throw TransactionLogVersionException(unsupportedVersionMessage(logPath, version));
 	}
-	return version == TRANSACTION_LOG_FORMAT_VERSION;
+	return version == TRANSACTION_LOG_FORMAT_VERSION && headerBytes == TRANSACTION_LOG_FILE_HEADER_SIZE;
 }
 
 uint32_t readTransactionLogAppendBoundaryMarker(const std::filesystem::path& logPath) {
@@ -771,6 +773,12 @@ void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uin
 	if (!this->isOpen()) {
 		try {
 			this->openLocked(latestTimestamp);
+		} catch (const TransactionLogVersionException&) {
+			// Not an open failure to rotate past: appending after a newer-format segment would
+			// put older-format segments above it.
+			this->closeLocked();
+			this->size.store(0, std::memory_order_relaxed);
+			throw;
 		} catch (const std::exception& e) {
 			this->closeLocked();
 			this->size.store(0, std::memory_order_relaxed);

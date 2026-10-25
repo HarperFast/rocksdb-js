@@ -816,14 +816,17 @@ describe('Transaction Log', () => {
 					expect(() => db.open()).toThrow(/2\.txnlog has format version 2/);
 				}));
 
-			it('refuses to open a store whose newer-format segments end in a header-only one', () =>
+			it('refuses to open a store with a newer-format segment below a malformed newest one', () =>
 				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 					const logDirectory = join(dbPath, 'transaction_logs', 'newer');
 					await mkdir(logDirectory, { recursive: true });
 					await writeFile(join(logDirectory, '1.txnlog'), segment(1, true));
 					await writeFile(join(logDirectory, '2.txnlog'), segment(2, true));
-					await writeFile(join(logDirectory, '3.txnlog'), segment(2, false));
-					expect(() => db.open()).toThrow(/3\.txnlog has format version 2/);
+					await writeFile(
+						join(logDirectory, '3.txnlog'),
+						Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE)
+					);
+					expect(() => db.open()).toThrow(/2\.txnlog has format version 2/);
 				}));
 
 			it('still opens a store whose newest segment is malformed', () =>
