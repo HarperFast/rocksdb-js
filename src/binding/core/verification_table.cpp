@@ -274,7 +274,7 @@ LockTracker* VerificationTable::lockSlotForWrite(
 		t = vtDecodeLock(v);
 		const LockTracker::HolderAges* ages = t->ages.get();
 		olderHolder = t->holders.load(std::memory_order_relaxed) > (ages ? ages->agedIntents : 0) ||
-			(ages && ages->uncountedAgedIntents > 0);
+			(ages && ages->uncountedAgedIntents > 0 && ages->uncountedOldest.olderThan(age));
 		for (uint8_t i = 0; ages && i < ages->count && !olderHolder; i++) {
 			olderHolder = ages->inline_[i].age.olderThan(age);
 		}
@@ -301,7 +301,9 @@ LockTracker* VerificationTable::lockSlotForWrite(
 	if (ages.count < LockTracker::HolderAges::kInline) {
 		ages.inline_[ages.count++] = { age, 1 };
 	} else {
-		ages.uncountedAgedIntents++;
+		if (ages.uncountedAgedIntents++ == 0 || age.olderThan(ages.uncountedOldest)) {
+			ages.uncountedOldest = age;
+		}
 	}
 	return t;
 }
