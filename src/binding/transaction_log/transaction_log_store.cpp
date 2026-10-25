@@ -5,7 +5,6 @@
 #include <sstream>
 #include <vector>
 #include "transaction_log_store.h"
-#include <algorithm>
 #include "core/debug.h"
 #include "core/encoding.h"
 #include "core/platform.h"
@@ -1130,6 +1129,9 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 }
 
 void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry) {
+	if (firstEntry) {
+		*firstEntry = LogPosition(0, 0);
+	}
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
 	if (this->isClosing.load(std::memory_order_relaxed)) {
@@ -1152,9 +1154,6 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 	bool rotatedAfterOpenFailure = false;
 	bool firstEntryRecorded = false;
-	if (firstEntry) {
-		*firstEntry = LogPosition(0, 0);
-	}
 	// write entries across multiple log files until all are written
 	while (!batch.isComplete()) {
 		std::shared_ptr<TransactionLogFile> logFile = nullptr;

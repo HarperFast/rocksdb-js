@@ -11,6 +11,14 @@
 
 namespace {
 
+struct RemoveOnExit {
+	std::filesystem::path path;
+	~RemoveOnExit() {
+		std::error_code ignored;
+		std::filesystem::remove_all(this->path, ignored);
+	}
+};
+
 std::filesystem::path uniqueFirstEntryStorePath() {
 	auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
 	return std::filesystem::temp_directory_path() /
@@ -35,7 +43,7 @@ void writeOne(
 	rocksdb_js::TransactionLogEntryBatch batch(timestamp);
 	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
 		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
-	firstEntry = rocksdb_js::LogPosition(1, 99); // writeBatch must overwrite whatever the caller had
+	firstEntry = rocksdb_js::LogPosition(1, 99);
 	store.writeBatch(batch, position, &firstEntry);
 }
 
@@ -43,6 +51,7 @@ void writeOne(
 
 TEST(TransactionLogFirstEntry, FirstBatchOfANewSegmentStartsAfterTheFileHeader) {
 	auto storePath = uniqueFirstEntryStorePath();
+	RemoveOnExit cleanup{storePath.parent_path()};
 	std::filesystem::create_directories(storePath);
 	{
 		rocksdb_js::TransactionLogStore store("store", storePath, 0, std::chrono::milliseconds(0), 0);
@@ -60,11 +69,11 @@ TEST(TransactionLogFirstEntry, FirstBatchOfANewSegmentStartsAfterTheFileHeader) 
 		EXPECT_EQ(timestampAt(storePath / "1.txnlog", firstEntry.positionInLogFile), 1770000000002.0);
 		store.close();
 	}
-	std::filesystem::remove_all(storePath.parent_path());
 }
 
 TEST(TransactionLogFirstEntry, BatchThatRotatesIsAddressedInTheNewSegment) {
 	auto storePath = uniqueFirstEntryStorePath();
+	RemoveOnExit cleanup{storePath.parent_path()};
 	std::filesystem::create_directories(storePath);
 	{
 		const uint32_t maxFileSize = TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + 20;
@@ -83,11 +92,11 @@ TEST(TransactionLogFirstEntry, BatchThatRotatesIsAddressedInTheNewSegment) {
 			position.positionInLogFile == firstEntry.positionInLogFile);
 		store.close();
 	}
-	std::filesystem::remove_all(storePath.parent_path());
 }
 
 TEST(TransactionLogFirstEntry, LazilyOpenedSegmentWithDataIsAddressedAtItsEnd) {
 	auto storePath = uniqueFirstEntryStorePath();
+	RemoveOnExit cleanup{storePath.parent_path()};
 	std::filesystem::create_directories(storePath);
 	uint32_t existingSize = 0;
 	{
@@ -103,7 +112,6 @@ TEST(TransactionLogFirstEntry, LazilyOpenedSegmentWithDataIsAddressedAtItsEnd) {
 	}
 	ASSERT_GT(existingSize, static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 	{
-		// constructed without load(): segment 1 is opened lazily by the first append
 		rocksdb_js::TransactionLogStore store("store", storePath, 0, std::chrono::milliseconds(0), 0);
 		rocksdb_js::LogPosition position;
 		rocksdb_js::LogPosition firstEntry;
@@ -113,11 +121,11 @@ TEST(TransactionLogFirstEntry, LazilyOpenedSegmentWithDataIsAddressedAtItsEnd) {
 		EXPECT_EQ(timestampAt(storePath / "1.txnlog", firstEntry.positionInLogFile), 1770000000002.0);
 		store.close();
 	}
-	std::filesystem::remove_all(storePath.parent_path());
 }
 
 TEST(TransactionLogFirstEntry, EmptyBatchRecordsNoAddress) {
 	auto storePath = uniqueFirstEntryStorePath();
+	RemoveOnExit cleanup{storePath.parent_path()};
 	std::filesystem::create_directories(storePath);
 	{
 		rocksdb_js::TransactionLogStore store("store", storePath, 0, std::chrono::milliseconds(0), 0);
@@ -128,5 +136,4 @@ TEST(TransactionLogFirstEntry, EmptyBatchRecordsNoAddress) {
 		EXPECT_EQ(firstEntry.fullPosition, 0);
 		store.close();
 	}
-	std::filesystem::remove_all(storePath.parent_path());
 }

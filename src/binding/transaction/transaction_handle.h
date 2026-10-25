@@ -326,8 +326,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/**
 	 * This transaction's committed-watermark key in the uncommitted set, released when the transaction
 	 * commits or aborts. It orders the batch but is not its address: it is taken before the segment is
-	 * chosen, so it can name a new segment's header or the previous segment's end. `writeBatch()`
-	 * reports the real first-entry address separately.
+	 * chosen, so it can name a new segment's header or the previous segment's end; `writeBatch()`
+	 * can report the batch's real first-entry address.
 	 */
 	LogPosition committedPosition;
 
