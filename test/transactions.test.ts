@@ -630,6 +630,32 @@ for (const { name, options, txnOptions } of testOptions) {
 				expect(value).toBeUndefined();
 			}));
 
+		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
+			`${name} sync should log a retried transaction once`,
+			() =>
+				dbRunner({ dbOptions: [options] }, async ({ db }) => {
+					const log = db.useLog('retry');
+					db.putSync('k', 0);
+					const handles = new Set<Transaction>();
+					await db.transactionSync(
+						async (txn: Transaction, attempt) => {
+							handles.add(txn);
+							const current = txn.getSync('k') as number;
+							log.addEntry(Buffer.from(`attempt ${attempt}`), txn.id);
+							txn.putSync('k', current + 1);
+							// a concurrent write commits first, so the first commitSync() conflicts
+							if (attempt === 1) await db.put('k', 100);
+						},
+						{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
+					);
+					expect(handles.size).toBe(1);
+					expect(db.getSync('k')).toBe(101);
+					const entries = [...log.query({ start: 0 })];
+					expect(entries).toHaveLength(1);
+					expect(entries[0].data.toString()).toBe('attempt 1');
+				})
+		);
+
 		it(`${name} sync should rollback on error`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				await db.put('foo', 'bar');

@@ -1271,8 +1271,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			);
 		};
 
+		// One transaction across attempts, as transaction() does: a retryable commit failure resets it
+		// natively and keeps its transaction-log batch write-once. A fresh handle per attempt would log
+		// the batch again and leave the first attempt's batch behind as an orphan.
+		const txn = new Transaction(this.store, options);
 		const runAttempt = (attempt: number): T | PromiseLike<T> | void => {
-			const txn = new Transaction(this.store, options);
 			let result: T | PromiseLike<T>;
 
 			try {
