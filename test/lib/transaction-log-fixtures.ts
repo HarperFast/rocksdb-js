@@ -45,7 +45,6 @@ export interface CraftedEntry {
 	data: string;
 }
 
-/** Writes one version-1 segment holding exactly these entries. */
 export function writeCraftedSegment(
 	path: string,
 	entries: CraftedEntry[],

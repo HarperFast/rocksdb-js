@@ -226,9 +226,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let tailLogId = 0;
 		let tailPosition = 0;
 		let segmentRemovals = 0;
-		// A transaction starts after an entry carrying LAST_FLAG, at a timestamp change (every entry of
-		// a batch carries the batch's timestamp), or at an entry carrying the abort flag; an aborted
-		// transaction is skipped until the next start.
+		// Abort decisions are made where a transaction starts; see "Aborted batches" in
+		// src/binding/transaction_log/DESIGN.md.
 		let previousEndedTransaction = true;
 		let previousTimestamp = Number.NaN;
 		let skippingAborted = false;
@@ -379,6 +378,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 									size = latestSize; // use the latest position from loadLastPosition
 								}
 								position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+								previousEndedTransaction = true;
 								if (unavailable > 0) {
 									throw new TransactionLogGapError(
 										Math.max(fromLogId, gapFloor),
@@ -433,6 +433,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							!!readUncommitted
 						);
 						position = broken.nextPosition;
+						previousEndedTransaction = true;
 						throw broken.error;
 					}
 					const length = dataView.getUint32(position + 8);
@@ -454,6 +455,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							!!readUncommitted
 						);
 						position = broken.nextPosition;
+						previousEndedTransaction = true;
 						throw broken.error;
 					}
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
@@ -570,6 +572,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								}
 							}
 							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+							previousEndedTransaction = true;
 							if (unavailable > 0) {
 								throw new TransactionLogGapError(
 									Math.max(fromLogId, gapFloor),

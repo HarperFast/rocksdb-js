@@ -147,9 +147,9 @@ TransactionLogFileValidation validateTransactionLogImage(
 	// in the recovery scan's own widened arithmetic.
 	size_t anomalyCount = 0;
 	uint64_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
-	// A batch that continues from the previous segment starts mid-transaction, so the first entry of
-	// a file may carry the abort flag either way.
-	bool atTransactionStart = true;
+	// Batch starts are found the way the reader finds them (DESIGN.md, "Aborted batches").
+	bool previousEndedTransaction = true;
+	double previousTimestamp = std::numeric_limits<double>::quiet_NaN();
 	while (pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= scan.validEnd) {
 		double timestamp = readDoubleBE(data + pos);
 		if (timestamp == 0) {
@@ -170,12 +170,14 @@ TransactionLogFileValidation validateTransactionLogImage(
 				"Entry " + std::to_string(result.entryCount + 1) + " at offset " + offsetHex(pos) +
 				": flags " + offsetHex(flags) + " contains undefined bits");
 		}
-		if ((flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) != 0 && !atTransactionStart) {
+		bool startsTransaction = previousEndedTransaction || timestamp != previousTimestamp;
+		if ((flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) != 0 && !startsTransaction) {
 			addEntryAnomaly(result, anomalyCount,
 				"Entry " + std::to_string(result.entryCount + 1) + " at offset " + offsetHex(pos) +
 				": abort flag on an entry that does not start a transaction");
 		}
-		atTransactionStart = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
+		previousEndedTransaction = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
+		previousTimestamp = timestamp;
 
 		result.entryCount++;
 		pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;

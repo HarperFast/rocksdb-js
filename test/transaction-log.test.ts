@@ -1224,6 +1224,10 @@ describe('Transaction Log', () => {
 						entry.data.toString()
 					);
 					expect(entries).toEqual(['legacy-unclosed', 'committed']);
+					const parsed = parseTransactionLog(
+						join(dbPath, 'transaction_logs', 'boundaries', '1.txnlog')
+					);
+					expect(parsed.entryAnomalyCount).toBe(0);
 				}));
 
 			it('resolves an exact start to the live copy, not the aborted one', () =>

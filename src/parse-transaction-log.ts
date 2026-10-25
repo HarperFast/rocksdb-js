@@ -97,8 +97,9 @@ export function parseTransactionLog(
 		const entries: LogEntry[] = [];
 		let entryAnomalyCount = 0;
 
-		// a batch continued from the previous segment may start this file mid-transaction
-		let atTransactionStart = true;
+		// batch starts are found the way the reader finds them
+		let previousEndedTransaction = true;
+		let previousTimestamp = Number.NaN;
 		while (fileOffset < size) {
 			const timestamp = read(8).readDoubleBE(0);
 			if (timestamp === 0) {
@@ -131,10 +132,12 @@ export function parseTransactionLog(
 					`flags 0x${flags.toString(16).padStart(2, '0')} contains undefined bits (expected 0x00-0x03)`
 				);
 			}
-			if ((flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) !== 0 && !atTransactionStart) {
+			const startsTransaction = previousEndedTransaction || timestamp !== previousTimestamp;
+			if ((flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) !== 0 && !startsTransaction) {
 				entryAnomalies.push('abort flag on an entry that does not start a transaction');
 			}
-			atTransactionStart = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) !== 0;
+			previousEndedTransaction = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) !== 0;
+			previousTimestamp = timestamp;
 			const entry: LogEntry = {
 				timestamp,
 				length,
