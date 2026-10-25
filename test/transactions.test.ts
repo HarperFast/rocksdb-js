@@ -686,9 +686,11 @@ for (const { name, options, txnOptions } of testOptions) {
 				dbRunner({ dbOptions: [options] }, async ({ db }) => {
 					const log = db.useLog('retry');
 					db.putSync('k', 0);
+					let retained: Transaction | undefined;
 					await expect(
 						db.transactionSync(
 							async (txn: Transaction, attempt) => {
+								retained = txn;
 								const current = txn.getSync('k') as number;
 								log.addEntry(Buffer.from(`attempt ${attempt}`), txn.id);
 								txn.putSync('k', current + 1);
@@ -698,13 +700,15 @@ for (const { name, options, txnOptions } of testOptions) {
 							{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
 						)
 					).rejects.toThrow('rejected on retry');
-					// an aborted transaction no longer holds back the committed-read watermark
+					// a later entry is visible only if the rejected transaction released its log position;
+					// `retained` keeps GC from releasing it instead
 					await db.transaction(async (txn: Transaction) => {
 						log.addEntry(Buffer.from('later'), txn.id);
 						await txn.put('other', 1);
 					});
 					const entries = [...log.query({ start: 0 })].map((entry) => entry.data.toString());
 					expect(entries).toContain('later');
+					expect(retained).toBeDefined();
 				})
 		);
 
