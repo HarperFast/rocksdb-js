@@ -27,11 +27,18 @@ export class TransactionAlreadyAbortedError extends Error {
  */
 export class TransactionRetryableError extends Error {
 	readonly hasLog: boolean;
+	/**
+	 * The attempt was refused before its log batch was written (another transaction held a write
+	 * intent on one of its keys, or the pre-log conflict check failed). Nothing of it is in the log.
+	 */
+	readonly refusedBeforeLog: boolean;
 	readonly txn: Transaction;
 
 	constructor(error: Error, txn: Transaction) {
 		super(error.message);
 		this.hasLog = (error as Error & { hasLog?: boolean }).hasLog ?? false;
+		this.refusedBeforeLog =
+			(error as Error & { refusedBeforeLog?: boolean }).refusedBeforeLog ?? false;
 		this.txn = txn;
 	}
 }
@@ -191,6 +198,14 @@ export class Transaction extends DBI {
 	 */
 	logWritten(): boolean {
 		return this.#txn.logWritten();
+	}
+
+	/**
+	 * Prototype: why the last attempt was retried: 0 none, 1 refused on another transaction's write
+	 * intent, 2 refused by the pre-log check, 3 conflict found at commit after the log write.
+	 */
+	lastConflictKind(): number {
+		return this.#txn.lastConflictKind();
 	}
 
 	/**

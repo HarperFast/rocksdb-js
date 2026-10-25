@@ -126,6 +126,7 @@ export type NativeTransaction = {
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
 	getTimestamp(): number;
 	logWritten(): boolean;
+	lastConflictKind(): number;
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
 	setTimestamp(timestamp?: number): void;

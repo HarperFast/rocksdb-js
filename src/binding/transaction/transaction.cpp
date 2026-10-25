@@ -400,6 +400,8 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
 	// Prototype: the slot a pre-log refusal parks on (another transaction's write intent).
 	std::atomic<uint64_t>* prelogParkSlot = nullptr;
+	// Prototype: this attempt was refused before the log write, so nothing of it is in the log.
+	bool prelogRefused = false;
 
 	TransactionCommitState(
 		napi_env env,
@@ -570,15 +572,23 @@ static rocksdb::Status prelogValidate(
 		}
 		if (txnHandle->intentConflictSlot) {
 			commitDiag().refusedByIntent.fetch_add(1, std::memory_order_relaxed);
+			txnHandle->lastConflictKind = ConflictIntent;
+			txnHandle->conflictedOnce = true;
 			if (parkSlot) *parkSlot = txnHandle->intentConflictSlot;
 			return rocksdb::Status::Busy("refused before the log write: another transaction holds a write intent");
 		}
 		if (txnHandle->dbHandle->descriptor->mode != DBMode::Optimistic) {
 			return rocksdb::Status::OK();
 		}
+		PrelogCheck policy = prelogCheckPolicy();
+		if (policy == PrelogCheck::Never || (policy == PrelogCheck::AfterFirstConflict && !txnHandle->conflictedOnce)) {
+			return rocksdb::Status::OK();
+		}
 		rocksdb::Status status = validateOptimisticTransaction(txnHandle->txn, txnHandle->dbHandle->descriptor->db.get());
 		if (!status.ok()) {
 			commitDiag().refusedByValidation.fetch_add(1, std::memory_order_relaxed);
+			txnHandle->lastConflictKind = ConflictPrecheck;
+			txnHandle->conflictedOnce = true;
 		}
 		return status;
 	}
@@ -639,6 +649,7 @@ static void executeLogWork(TransactionCommitState* state) {
 		auto store = txnHandle->boundLogStore.lock();
 		if (rocksdb::Status prelog = prelogValidate(txnHandle, &state->prelogParkSlot); !prelog.ok()) {
 			state->status = prelog;
+			state->prelogRefused = true;
 		} else if (store) {
 			try {
 				// write the batch to the store
@@ -762,6 +773,8 @@ static void executeCommitWork(TransactionCommitState* state) {
 		if (!state->status.ok() && (state->status.IsBusy() || state->status.IsTryAgain()) &&
 			txnHandle->committedPosition.logSequenceNumber > 0) {
 			commitDiag().conflictAfterLog.fetch_add(1, std::memory_order_relaxed);
+			txnHandle->lastConflictKind = ConflictAfterLog;
+			txnHandle->conflictedOnce = true;
 		}
 		if (!state->status.ok() && abortMarkerMode() == AbortMarkerMode::Full && abortLoggedAttempt(txnHandle)) {
 			state->hasLog = false;
@@ -1000,6 +1013,12 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		napi_status status = ::napi_get_boolean(env, hasLog, &hasLogValue);
 		if (status == napi_ok) {
 			::napi_set_named_property(env, error, "hasLog", hasLogValue);
+		}
+		if (state->prelogRefused) {
+			napi_value refused;
+			if (::napi_get_boolean(env, true, &refused) == napi_ok) {
+				::napi_set_named_property(env, error, "refusedBeforeLog", refused);
+			}
 		}
 		state->callReject(error);
 	}
@@ -1388,6 +1407,8 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if (!status.ok() && (status.IsBusy() || status.IsTryAgain()) &&
 		(*txnHandle)->committedPosition.logSequenceNumber > 0) {
 		commitDiag().conflictAfterLog.fetch_add(1, std::memory_order_relaxed);
+		(*txnHandle)->lastConflictKind = ConflictAfterLog;
+		(*txnHandle)->conflictedOnce = true;
 	}
 	if (!status.ok() && abortMarkerMode() == AbortMarkerMode::Full && abortLoggedAttempt(*txnHandle)) {
 		hasLog = false;
@@ -1439,6 +1460,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_get_boolean(env,
 			hasLog || (*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
 		NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
+		if (!prelogStatus.ok()) {
+			napi_value refused;
+			NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &refused));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "refusedBeforeLog", refused));
+		}
 		NAPI_STATUS_THROWS(::napi_throw(env, error));
 	}
 
@@ -1722,6 +1748,14 @@ napi_value Transaction::GetTimestamp(napi_env env, napi_callback_info info) {
  * Prototype: whether this transaction's current batch is in the log (a conflict retry after the log
  * write keeps it; a pre-log refusal or an aborted attempt does not).
  */
+napi_value Transaction::LastConflictKind(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_HANDLE("LastConflictKind");
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, (*txnHandle)->lastConflictKind, &result));
+	return result;
+}
+
 napi_value Transaction::LogWritten(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_TRANSACTION_HANDLE("LogWritten");
@@ -1965,6 +1999,7 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getTimestamp", nullptr, GetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "logWritten", nullptr, LogWritten, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "lastConflictKind", nullptr, LastConflictKind, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "id", nullptr, nullptr, Id, nullptr, nullptr, napi_default, nullptr },
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },

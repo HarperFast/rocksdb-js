@@ -17,11 +17,27 @@ namespace rocksdb_js {
  */
 enum class AbortMarkerMode { Full, Hybrid, HybridIntent };
 
+/** Which pre-log conflict check an intent-mode attempt runs (hybrid-vt variants). */
+enum class PrelogCheck { Always, Never, AfterFirstConflict };
+
+inline PrelogCheck prelogCheckPolicy() {
+	static const PrelogCheck policy = [] {
+		const char* value = ::getenv("ROCKSDB_JS_ABORT_MODE");
+		if (value && std::strcmp(value, "hybrid-vt-intent") == 0) return PrelogCheck::Never;
+		if (value && std::strcmp(value, "hybrid-vt-eretry") == 0) return PrelogCheck::AfterFirstConflict;
+		return PrelogCheck::Always;
+	}();
+	return policy;
+}
+
+/** Why the last attempt of a transaction was retried (Transaction#lastConflictKind()). */
+enum ConflictKind : uint8_t { ConflictNone = 0, ConflictIntent = 1, ConflictPrecheck = 2, ConflictAfterLog = 3 };
+
 inline AbortMarkerMode abortMarkerMode() {
 	static const AbortMarkerMode mode = [] {
 		const char* value = ::getenv("ROCKSDB_JS_ABORT_MODE");
 		if (value && std::strcmp(value, "hybrid") == 0) return AbortMarkerMode::Hybrid;
-		if (value && std::strcmp(value, "hybrid-vt") == 0) return AbortMarkerMode::HybridIntent;
+		if (value && std::strncmp(value, "hybrid-vt", 9) == 0) return AbortMarkerMode::HybridIntent;
 		return AbortMarkerMode::Full;
 	}();
 	return mode;

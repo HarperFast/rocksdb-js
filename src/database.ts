@@ -1216,7 +1216,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				}
 				if (
 					commitErr instanceof TransactionRetryableError &&
-					(options?.retryOnBusy ?? commitErr.hasLog) &&
+					(options?.retryOnBusy ?? (commitErr.hasLog || commitErr.refusedBeforeLog)) &&
 					attempt < maxRetries
 				) {
 					// retry the transaction (native reset gave it a fresh snapshot; re-run the body)

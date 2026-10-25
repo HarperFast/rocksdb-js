@@ -348,6 +348,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/** Set by close() when it marked this handle's logged batch aborted. */
 	bool abortMarked = false;
 
+	/** Prototype: why the last attempt was retried (ConflictKind), and whether any attempt was. */
+	uint8_t lastConflictKind = 0;
+	bool conflictedOnce = false;
+
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
