@@ -301,16 +301,18 @@ bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfM
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Failed to read version from file: %s\n", this, this->path.string().c_str());
 			throw rocksdb_js::DBException("Failed to read version from file: " + this->path.string());
 		}
-		this->version = readUint8(buffer);
-
-		if (this->version != TRANSACTION_LOG_FORMAT_VERSION) {
+		// Validated before it is stored: a refused file object can be reused to create the segment
+		// later, and must then write the current version.
+		uint8_t version = readUint8(buffer);
+		if (version != TRANSACTION_LOG_FORMAT_VERSION) {
 			DEBUG_LOG("%p TransactionLogFile::open ERROR: Unsupported transaction log file version: %s\n", this, this->path.string().c_str());
-			if (this->version > TRANSACTION_LOG_FORMAT_VERSION) {
-				throw rocksdb_js::TransactionLogVersionException(unsupportedVersionMessage(this->path, this->version));
+			if (version > TRANSACTION_LOG_FORMAT_VERSION) {
+				throw rocksdb_js::TransactionLogVersionException(unsupportedVersionMessage(this->path, version));
 			}
 			throw rocksdb_js::TransactionLogFormatException(
-				"Invalid transaction log file version " + std::to_string(this->version) + ": " + this->path.string());
+				"Invalid transaction log file version " + std::to_string(version) + ": " + this->path.string());
 		}
+		this->version = version;
 
 		// file timestamp
 		result = this->readFromFile(buffer, 8, 5);

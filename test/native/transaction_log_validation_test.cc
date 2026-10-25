@@ -557,6 +557,7 @@ TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures)
 	LogImage(TRANSACTION_LOG_TOKEN, /*version=*/2).writeTo(badVersionPath);
 	TransactionLogFile badVersion(badVersionPath, 3);
 	EXPECT_THROW(badVersion.open(0), TransactionLogVersionException);
+	EXPECT_EQ(badVersion.version, TRANSACTION_LOG_FORMAT_VERSION);
 	EXPECT_THROW(checkTransactionLogSegmentVersion(badVersionPath), TransactionLogVersionException);
 	EXPECT_THROW(
 		rocksdb_js::scanTransactionLogForFloor(badVersionPath, 0, 0), TransactionLogVersionException);

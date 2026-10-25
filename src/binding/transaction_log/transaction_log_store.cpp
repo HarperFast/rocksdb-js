@@ -1568,9 +1568,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			store.get(), e.what());
 	}
 
-	// A newer release only adds segments past the ones it found, and from this release on nothing
-	// appends after a newer-format segment (writeEntries rethrows the version error rather than
-	// rotating), so newer-format segments form the newest run: probe from the top down.
+	// A newer release only adds segments past the ones it found, and this release never appends
+	// after a newer-format segment it can read (writeEntries rethrows the version error rather than
+	// rotating), so such segments form the newest run: probe from the top down.
 	for (auto it = store->sequenceFiles.rbegin(); it != store->sequenceFiles.rend(); ++it) {
 		if (checkTransactionLogSegmentVersion(it->second->path)) {
 			break;
