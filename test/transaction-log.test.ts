@@ -826,6 +826,8 @@ describe('Transaction Log', () => {
 						join(logDirectory, '3.txnlog'),
 						Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE)
 					);
+					// flushed through segment 3, so the committed-boundary scan never reaches segment 2
+					await writeFile(join(logDirectory, 'txn.state'), Buffer.from([13, 0, 0, 0, 3, 0, 0, 0]));
 					expect(() => db.open()).toThrow(/2\.txnlog has format version 2/);
 				}));
 
