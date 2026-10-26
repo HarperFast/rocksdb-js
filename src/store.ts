@@ -1166,7 +1166,6 @@ export class Store {
 			advancedOptions,
 			txnId
 		);
-		// The transaction whose pool this range's native iterator may return to.
 		const transaction =
 			context !== this.db
 				? (context as NativeTransaction)

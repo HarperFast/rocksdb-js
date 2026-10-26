@@ -131,8 +131,9 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 	// The budget comes from the manager this database holds, not `DBSettings`: a runtime
 	// `writeBufferManagerSize: 0` does not resize the live manager, so the global would read 0 while
 	// this database is still charged against the real budget. `allowStall` does come from the
-	// settings, which mirror the single manager's live value — `DBSettings::Config` pushes every
-	// change through `SetAllowStall`, and RocksDB exposes no getter for it.
+	// settings, because RocksDB exposes no getter for it. They match the manager except while
+	// `DBSettings::Config` drains idle pooled iterators before `SetAllowStall(true)`, or after that
+	// drain throws, when the setting stays enabled and the manager does not stall.
 	const uint64_t budget = static_cast<uint64_t>(writeBufferManager->buffer_size());
 	if (budget == 0) {
 		return;

@@ -93,8 +93,8 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 
 	/**
 	 * Whether the column family this pooled handle reads is still `target`'s
-	 * current one, and not cleared since. Only meaningful while the caller
-	 * holds an `OperationGuard`.
+	 * current one, with no clear running when the handle was built or begun
+	 * since. Only meaningful while the caller holds an `OperationGuard`.
 	 */
 	bool readsColumnOf(const std::shared_ptr<DBHandle>& target) const;
 

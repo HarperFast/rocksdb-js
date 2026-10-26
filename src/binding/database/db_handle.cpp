@@ -118,11 +118,16 @@ rocksdb::Status DBHandle::clear(std::atomic<bool>* compactCanceled) {
 		}
 		return status;
 	}
+	std::atomic<uint64_t>& clearEpoch = this->columnDescriptor->clearEpoch;
+	clearEpoch.fetch_add(1, std::memory_order_acq_rel);
 	// it appears we do not need to call WaitForCompact for this to work
 	rocksdb::Status clearStatus = rocksdb::DeleteFilesInRange(
 		this->descriptor->db.get(), this->columnDescriptor->column.get(), nullptr, nullptr
 	);
-	this->columnDescriptor->clearEpoch.fetch_add(1, std::memory_order_release);
+	if (int delayMs = clearDeleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+	}
+	clearEpoch.fetch_add(ColumnFamilyDescriptor::CLEAR_EPOCH_FINISHED - 1, std::memory_order_acq_rel);
 	// After data is deleted, advance all non-lock VT slots to fresh
 	// settled-empty generations. This prevents stale pre-clear versions from
 	// being re-published via a concurrent populate CAS. The sweep is coarse

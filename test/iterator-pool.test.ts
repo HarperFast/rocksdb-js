@@ -335,7 +335,6 @@ describe.skipIf(!iteratorPoolEnabled)('Transaction iterator pool', () => {
 				}
 				// Both routing forms use the database's own handle, so they share one iterator.
 				expect(delta(before)).toMatchObject({ created: 1, reused: 5 });
-				// The transaction and its one idle iterator.
 				expect(status(dbPath).closables).toBe(baseline.closables + 2);
 				// An idle iterator pins memtables; a transaction held open across I/O must not keep it.
 				await new Promise((resolve) => setImmediate(resolve));
@@ -577,6 +576,25 @@ describe.skipIf(!iteratorPoolEnabled)(
 		}
 	}
 );
+
+describe.skipIf(!iteratorPoolEnabled)('Transaction iterator pool and clear()', () => {
+	it('does not reuse an iterator while a clear on another thread is deleting files', () => {
+		const result = spawnSync(
+			process.execPath,
+			[
+				join(import.meta.dirname, 'fixtures', 'fork-pooled-iterator-clear-race.mts'),
+				generateDBPath(),
+			],
+			{
+				encoding: 'utf8',
+				env: { ...process.env, ROCKSDB_JS_CLEAR_DELAY_MS: '1000' },
+				timeout: 60_000,
+			}
+		);
+		expect(result.status, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout.trim().split('\n').pop()!)).toEqual({ fresh: 0, pooled: 0 });
+	});
+});
 
 describe('Transaction iterator pool disabled', () => {
 	it('does not pool with ROCKSDB_JS_ITERATOR_POOL=0', () => {

@@ -346,6 +346,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - `ROCKSDB_JS_ITERATOR_POOL` - `0`/`false` disables reuse of transaction iterators across
   `getRange()` calls (see `src/binding/iterator/DESIGN.md`). Read once per process, so it must be
   set in the environment a process is started with
+- `ROCKSDB_JS_CLEAR_DELAY_MS` - Test-only: delay inside `clear()` after it deletes the column
+  family's files and before it returns (`test/fixtures/fork-pooled-iterator-clear-race.mts`).
+  Snapshotted in `initializeTestSeams()`, so it must be set in the environment that starts the
+  process
 - `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` - How long `open()` of a column-family name whose
   previous generation is still awaiting its physical drop waits before throwing
   (default `30000`). The open polls in 20 ms slices; the bound covers the full

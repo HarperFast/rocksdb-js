@@ -167,6 +167,7 @@ bool DBIteratorHandle::readsColumnOf(const std::shared_ptr<DBHandle>& target) co
 	// recreated family is a new descriptor and never shares it.
 	return !this->column.owner_before(target->columnDescriptor)
 		&& !target->columnDescriptor.owner_before(this->column)
+		&& (this->clearEpoch & ColumnFamilyDescriptor::CLEAR_EPOCH_RUNNING) == 0
 		&& target->columnDescriptor->clearEpoch.load(std::memory_order_acquire) == this->clearEpoch;
 }
 

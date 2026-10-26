@@ -262,7 +262,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 		} else {
 			iteratorHandle = std::make_shared<DBIteratorHandle>(*dbHandle, itOptions);
 		}
-		wrap = new IteratorWrap{ std::move(iteratorHandle) };
+		wrap = new IteratorWrap{ std::move(iteratorHandle), {}, 0 };
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;

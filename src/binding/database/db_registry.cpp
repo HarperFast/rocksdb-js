@@ -1,5 +1,6 @@
 #include <chrono>
 #include <optional>
+#include <cstdio>
 #include <cstdlib>
 #include <sstream>
 #include <vector>
@@ -1632,7 +1633,12 @@ void DBRegistry::Teardown() {
 		instance.get(), entries.size());
 	for (auto& [_key, entry] : entries) {
 		if (entry.descriptor) {
-			entry.descriptor->closeRemainingClosables();
+			// One failed sweep must not release the rest unswept.
+			try {
+				entry.descriptor->closeRemainingClosables();
+			} catch (const std::exception& e) {
+				::fprintf(stderr, "rocksdb-js teardown of \"%s\" failed: %s\n", entry.descriptor->path.c_str(), e.what());
+			}
 		}
 	}
 	entries.clear();

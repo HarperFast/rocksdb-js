@@ -37,6 +37,11 @@ Why each rule holds, and where it is enforced:
   and same-name recreate behind one reopened `DBHandle`, or a `clear()` (which deletes the family's
   files outright, unseen by an iterator that pinned them), must not serve old rows. Weak, because a
   strong pin can destroy a column-family handle after its database (invariant 24's crash).
+  `clear()` counts itself as running in `clearEpoch` _before_ `DeleteFilesInRange` installs the
+  post-delete version, and finishes after: a range on another thread that already sees the
+  deletion through a fresh iterator must not then reuse an older one
+  (`test/fixtures/fork-pooled-iterator-clear-race.mts`, which uses `ROCKSDB_JS_CLEAR_DELAY_MS` to
+  hold that window open). An iterator built while a clear runs is never reused.
 - **Ownership**: idle handles sit in 4 inline slots on the `TransactionHandle` (no allocation when
   returning one) and stay registered in `activeIterators`, so every `closeIterators()` site closes
   them; `closeIterators()` then empties the slots, which breaks the handle-to-transaction reference
