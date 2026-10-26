@@ -48,9 +48,9 @@ if (!isMainThread) {
 		worker.postMessage('go');
 		if ((await message(worker)) !== 'parked') fail('worker did not park');
 		// parked once its wake callback is registered on the older transaction's intent
-		const deadline = Date.now() + 5000;
+		const deadline = performance.now() + 5000;
 		while (lockWakeCallbackCount() === 0) {
-			if (Date.now() > deadline) fail('worker commit never parked');
+			if (performance.now() > deadline) fail('worker commit never parked');
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 		await worker.terminate();

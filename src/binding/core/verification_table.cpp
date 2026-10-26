@@ -338,10 +338,14 @@ void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTrac
 	std::lock_guard<std::mutex> lock(writerMutex_);
 	if (age && t->ages) {
 		LockTracker::HolderAges& ages = *t->ages;
-		ages.agedIntents--;
+		if (ages.agedIntents > 0) {
+			ages.agedIntents--;
+		}
 		auto* holder = findHolder(ages, *age);
 		if (!holder) {
-			ages.unrecordedIntents--;
+			if (ages.unrecordedIntents > 0) {
+				ages.unrecordedIntents--;
+			}
 		} else if (--holder->intents == 0) {
 			if (holder >= ages.inline_ && holder < ages.inline_ + ages.count) {
 				*holder = ages.inline_[--ages.count];
