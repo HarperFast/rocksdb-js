@@ -1854,11 +1854,6 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 	}
 }
 
-/**
- * Closes every registered transaction owned by a handle created on `env`.
- * See the header for why this is env-scoped rather than part of
- * DBHandle::close().
- */
 void DBDescriptor::collectTransactions(std::vector<std::shared_ptr<TransactionHandle>>& transactions) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	for (auto& [_id, txnHandle] : this->transactions) {
@@ -1868,6 +1863,11 @@ void DBDescriptor::collectTransactions(std::vector<std::shared_ptr<TransactionHa
 	}
 }
 
+/**
+ * Closes every registered transaction owned by a handle created on `env`.
+ * See the header for why this is env-scoped rather than part of
+ * DBHandle::close().
+ */
 void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 	// Collect matches under the mutex, close outside it: close() calls
 	// transactionRemove(), which re-takes txnsMutex, and may block in

@@ -776,7 +776,6 @@ public:
 	 */
 	void closeTransactionsByEnv(napi_env env);
 
-	// Appends every registered transaction, under `txnsMutex`.
 	void collectTransactions(std::vector<std::shared_ptr<TransactionHandle>>& transactions);
 
 	/**
