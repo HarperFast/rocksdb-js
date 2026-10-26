@@ -205,7 +205,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 
 	if (hadLogWrites) {
-		if ((*txnHandle)->cancellation == TransactionHandle::Cancellation::Marked) {
+		if ((*txnHandle)->cancellation == TransactionHandle::Cancellation::Resolved) {
 			NAPI_RETURN_UNDEFINED();
 		}
 		if ((*txnHandle)->cancellation == TransactionHandle::Cancellation::Failed) {
@@ -817,7 +817,8 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			timeoutMs = remaining < 1 ? 0 : static_cast<unsigned>(std::min<double>(timeoutMs, remaining));
 		}
 		// Past the deadline nothing parks: RETRY_NOW resolves at once, so the caller can give up.
-		for (auto* slot : timeoutMs > 0 ? state->savedSlots : std::vector<std::atomic<uint64_t>*>{}) {
+		static const std::vector<std::atomic<uint64_t>*> noSlots;
+		for (auto* slot : timeoutMs > 0 ? state->savedSlots : noSlots) {
 			// refTrackerIfLocked takes a temporary reference under the VT
 			// writer mutex, so the tracker cannot be freed by a concurrent
 			// releaseWriteIntent between loading the slot and referencing it

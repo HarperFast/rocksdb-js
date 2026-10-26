@@ -241,6 +241,13 @@ struct TransactionLogFile final {
 	uint64_t lastFlushedGeneration = 0;
 
 	/**
+	 * `mutationGeneration` as of the last failed sync. After a failed fsync the kernel may have
+	 * cleaned pages it never wrote, so a marker at or below it is not made durable by a later sync:
+	 * syncThrough() refuses it and the caller writes it again. Guarded by fileMutex.
+	 */
+	uint64_t failedGeneration = 0;
+
+	/**
 	 * Serializes syncs, so a sync that is already covered returns without another fdatasync: one sync
 	 * releases every abort marker written before it began. Lock order: syncMutex -> fileMutex.
 	 */

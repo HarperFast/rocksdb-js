@@ -366,8 +366,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	bool cancelOnAbort = false;
 
-	// Released: the position was released without a marker (markers off, or no batch landed).
-	enum class Cancellation : uint8_t { None, Released, Marked, Failed };
+	// Released: the position was released without a marker, with markers off. Resolved: marked, or
+	// with markers on, no entry of the batch reached the logical log.
+	enum class Cancellation : uint8_t { None, Released, Resolved, Failed };
 	/** Outcome of marking the logged batch aborted. Set by close(), which may run on another thread. */
 	std::atomic<Cancellation> cancellation = Cancellation::None;
 

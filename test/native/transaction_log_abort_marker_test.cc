@@ -140,6 +140,28 @@ TEST(TransactionLogAbortMarker, ARetryAfterAFailedSyncWritesTheMarkerAgain) {
 	file->close();
 }
 
+TEST(TransactionLogAbortMarker, AFailedSyncFailsEveryMarkerWrittenBeforeIt) {
+	auto storePath = uniqueStorePath();
+	RemoveOnExit cleanup{storePath.parent_path()};
+	auto path = writeSegment(storePath);
+	auto file = openSegment(path);
+	bool failNext = true;
+	file->beforeSyncForTests = [&]() {
+		if (failNext) {
+			failNext = false;
+			throw rocksdb_js::DBException("injected sync failure");
+		}
+	};
+	uint64_t first = file->markEntryAborted(FIRST, T1);
+	uint64_t second = file->markEntryAborted(SECOND_BATCH, T2);
+	EXPECT_THROW(file->syncThrough(first), rocksdb_js::DBException);
+	// The failed sync may have dropped the second marker's page as well; a later sync that succeeds
+	// must not vouch for it.
+	EXPECT_THROW(file->syncThrough(second), rocksdb_js::DBException);
+	file->syncThrough(file->markEntryAborted(SECOND_BATCH, T2));
+	file->close();
+}
+
 TEST(TransactionLogAbortMarker, ConcurrentAbortsShareOneSync) {
 	auto storePath = uniqueStorePath();
 	RemoveOnExit cleanup{storePath.parent_path()};

@@ -1193,6 +1193,9 @@ void TransactionLogFile::syncThrough(uint64_t generation) {
 	std::lock_guard<std::mutex> syncLock(this->syncMutex);
 	{
 		std::lock_guard<std::mutex> lock(this->fileMutex);
+		if (this->failedGeneration >= generation) {
+			throw DBException("An earlier sync of " + this->path.string() + " failed after this abort marker was written");
+		}
 		if (this->lastFlushedGeneration >= generation) {
 			return;
 		}

@@ -26,7 +26,8 @@ private:
 	std::atomic<bool> occValidateSerial;
 	std::atomic<uint32_t> commitThreads;
 	// Writes transaction-log abort markers and refuses conflicting attempts on write intents before
-	// they log. Read per commit attempt; see transaction_log/DESIGN.md, "Abort markers".
+	// they log. Read when a transaction starts and at each retry reset; see
+	// transaction_log/DESIGN.md, "Abort markers".
 	std::atomic<bool> transactionLogAbortMarkers;
 
 	// Total memory limit (bytes) shared across all databases for active and

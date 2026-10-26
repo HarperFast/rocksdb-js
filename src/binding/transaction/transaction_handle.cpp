@@ -584,10 +584,15 @@ void TransactionHandle::close() {
 	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
 		auto store = this->boundLogStore.lock();
 		if (store) {
-			if (this->cancelOnAbort && this->batchAddress.logSequenceNumber > 0) {
+			if (this->cancelOnAbort && this->batchAddress.logSequenceNumber == 0) {
+				// A failed append whose entries never entered the logical log (the segment is retired at
+				// its last safe boundary): there is nothing to mark.
+				store->commitAborted(this->committedPosition);
+				this->cancellation = Cancellation::Resolved;
+			} else if (this->cancelOnAbort) {
 				// Durable before the position is released (transaction_log/DESIGN.md, "Abort markers").
 				this->cancellation = store->cancelBatch(this->batchAddress, this->batchTimestamp, this->committedPosition)
-					? Cancellation::Marked
+					? Cancellation::Resolved
 					: Cancellation::Failed;
 			} else {
 				store->commitAborted(this->committedPosition);

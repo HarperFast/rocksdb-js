@@ -213,13 +213,27 @@ void TransactionLogFile::flushSyncHeld() {
 
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (handle=%p, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), handleToFlush, currentSize, this->lastFlushedSize);
+	// A failed sync poisons every marker written so far: see failedGeneration.
+	auto recordFailure = [&]() {
+		std::unique_lock<std::mutex> failedLock(this->fileMutex, std::defer_lock);
+		if (!lock.owns_lock()) {
+			failedLock.lock();
+		}
+		this->failedGeneration = std::max(this->failedGeneration, generation);
+	};
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 	if (this->beforeSyncForTests) {
-		this->beforeSyncForTests();
+		try {
+			this->beforeSyncForTests();
+		} catch (...) {
+			recordFailure();
+			throw;
+		}
 	}
 #endif
 	if (!::FlushFileBuffers(handleToFlush)) {
 		DWORD error = ::GetLastError();
+		recordFailure();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: FlushFileBuffers failed: %s (error=%lu: %s)\n",
 			this, this->path.string().c_str(), error, errorMessage.c_str());
