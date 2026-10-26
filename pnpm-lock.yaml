@@ -769,8 +769,8 @@ packages:
       rollup:
         optional: true
 
-  '@rollup/pluginutils@5.4.0':
-    resolution: {integrity: sha512-MfPp06CjRLfXQ3wY0R8vJDYBy/MvVcc9OulEfR0B8Iv9ko+GCNaRZ+EpJYFl27LhKsZK0o420sYCRHCjfCgeUg==}
+  '@rollup/pluginutils@5.5.1':
+    resolution: {integrity: sha512-P9ZvnfouRu4MSC+ilERaw6FmZs8zqKhpHxEs4aGDGWQAMzQGXnhvCSvoNwokfNvdt7t3Y5Y4p6gStQgezeIqug==}
     engines: {node: '>=14.0.0'}
     peerDependencies:
       rollup: ^1.20.0||^2.0.0||^3.0.0||^4.0.0
@@ -2096,10 +2096,10 @@ snapshots:
 
   '@rollup/plugin-replace@6.0.3':
     dependencies:
-      '@rollup/pluginutils': 5.4.0
+      '@rollup/pluginutils': 5.5.1
       magic-string: 0.30.21
 
-  '@rollup/pluginutils@5.4.0':
+  '@rollup/pluginutils@5.5.1':
     dependencies:
       '@types/estree': 1.0.9
       estree-walker: 2.0.2
