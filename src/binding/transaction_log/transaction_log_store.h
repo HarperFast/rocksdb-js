@@ -661,7 +661,7 @@ struct TransactionLogStore final {
 	 * a silently incomplete backup; `collectTransactionLogBackupEntries()` converts
 	 * them to a `rocksdb::Status` before control returns to a backup worker.
 	 */
-	std::vector<TransactionLogBackupEntry> snapshotForBackup();
+	std::vector<TransactionLogBackupEntry> snapshotForBackup(const std::function<bool()>& abandon = nullptr);
 
 	/**
 	 * Holds off ordinary (non-destroy) retention purges of `store` until the
@@ -708,7 +708,8 @@ struct TransactionLogStore final {
 	 * previous segment's end. `firstEntry`, when given, receives the address where the batch's first
 	 * entry was actually written, or {0, 0} if nothing was written.
 	 */
-	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry = nullptr);
+	void writeBatch(
+		TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry = nullptr, bool cancellable = false);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log
@@ -756,6 +757,15 @@ private:
 	/** Guarded by dataSetsMutex. */
 	std::vector<FailedCancellation> failedCancellations;
 
+	/**
+	 * Positions of unresolved batches logged with abort markers on: the ones that may yet be marked,
+	 * so the ones a backup waits for. Guarded by dataSetsMutex.
+	 */
+	std::vector<LogPosition> cancellablePositions;
+
+	/** Drops `position` from cancellablePositions. Caller holds dataSetsMutex. */
+	void eraseCancellable(LogPosition position);
+
 	/** Signalled, while a backup waits, whenever an uncommitted position is released. */
 	std::condition_variable positionReleased;
 	std::atomic<uint32_t> positionReleaseWaiters = 0;
@@ -765,7 +775,8 @@ private:
 	 * bound passes: a backup must not capture a batch that might yet be aborted. Caller holds
 	 * `lock` on dataSetsMutex.
 	 */
-	void waitForResolution(std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved);
+	void waitForResolution(
+		std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved, const std::function<bool()>& abandon);
 
 	/**
 	 * Set while `failedCancellations` is non-empty, or for good once a failed cancellation could not

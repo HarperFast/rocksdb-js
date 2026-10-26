@@ -575,7 +575,7 @@ static void writeLogBatch(TransactionHandle& txnHandle, TransactionLogStore& sto
 	if (txnHandle.cancelOnAbort) {
 		store.abortMarkersInUse.store(true, std::memory_order_relaxed);
 	}
-	store.writeBatch(*txnHandle.logEntryBatch, txnHandle.committedPosition, &txnHandle.batchAddress);
+	store.writeBatch(*txnHandle.logEntryBatch, txnHandle.committedPosition, &txnHandle.batchAddress, txnHandle.cancelOnAbort);
 }
 
 static void executeLogWork(TransactionCommitState* state) {

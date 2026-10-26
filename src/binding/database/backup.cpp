@@ -236,7 +236,8 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		if (state->backupTransactionLogs) {
 			std::vector<NamedTransactionLogBackupEntry> entries;
 			rocksdb::Status snapshotStatus =
-				collectTransactionLogBackupEntries(state->descriptor.get(), entries);
+				collectTransactionLogBackupEntries(
+					state->descriptor.get(), entries, [state]() { return state->handle && state->handle->isCancelled(); });
 			if (!snapshotStatus.ok()) {
 				return snapshotStatus;
 			}
@@ -303,7 +304,8 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		if (status.ok() && state->backupTransactionLogs) {
 			std::filesystem::path logsDir =
 				std::filesystem::path(backupDir) / "transaction_logs" / std::to_string(state->backupId);
-			status = backupTransactionLogsToDir(state->descriptor.get(), logsDir, state->engineOptions.sync);
+			status = backupTransactionLogsToDir(state->descriptor.get(), logsDir, state->engineOptions.sync,
+				[state]() { return state->handle && state->handle->isCancelled(); });
 			if (!status.ok()) {
 				engine->DeleteBackup(state->backupId).PermitUncheckedError();
 			}

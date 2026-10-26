@@ -308,6 +308,32 @@ describe('transaction-log abort markers', () => {
 			rmSync(restoreDir, { recursive: true, force: true });
 		}));
 
+	it('stops a backup waiting on an unresolved batch when the database closes', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			RocksDatabase.config({ transactionLogAbortMarkers: true });
+			const log = db.useLog('foo');
+			const pinned = new Transaction(db.store);
+			log.addEntry(Buffer.from('pinned'), pinned.id);
+			await pinned.put('k', 'pinned');
+			await db.put('k', 'conflict');
+			await expect(pinned.commit()).rejects.toMatchObject({ code: 'ERR_BUSY' });
+
+			const backup = db.backup(`${dbPath}-backup`, {
+				transactionLogs: true,
+				checkDiskSpace: false,
+			});
+			const outcome = backup.then(
+				() => 'completed',
+				(err) => String(err?.message)
+			);
+			await delay(100);
+			const started = performance.now();
+			db.close();
+			expect(await outcome).toMatch(/closed/);
+			expect(performance.now() - started).toBeLessThan(5000);
+			rmSync(`${dbPath}-backup`, { recursive: true, force: true });
+		}));
+
 	it('refuses a backup whose captured batch stays unresolved past the wait bound', async () => {
 		const result = await runFixture('fork-abort-backup-timeout.mts', {
 			ROCKSDB_JS_BACKUP_UNRESOLVED_WAIT_MS: '200',

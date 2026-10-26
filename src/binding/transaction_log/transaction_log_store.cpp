@@ -602,7 +602,7 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 	file->close();
 }
 
-std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() {
+std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(const std::function<bool()>& abandon) {
 	// Capture txn.state (the flushed-position side file) FIRST, and inline its
 	// bytes. Reading it before the log-file sizes guarantees its recorded flushed
 	// position is <= the sizes we capture next (sizes only grow), so a restored
@@ -706,15 +706,9 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 		if (markersInUse) {
 			// A batch still unresolved here may yet be marked aborted, which a copy taken now would
 			// not show, and a restore would replay it. Wait until every one commits or is marked.
-			std::vector<LogPosition> unresolved;
-			for (const auto& position : this->uncommittedTransactionPositions) {
-				if (position.positionInLogFile != this->nextLogPosition.positionInLogFile ||
-					position.logSequenceNumber != this->nextLogPosition.logSequenceNumber) {
-					unresolved.push_back(position);
-				}
-			}
+			std::vector<LogPosition> unresolved = this->cancellablePositions;
 			writeLock.unlock();
-			this->waitForResolution(lock, unresolved);
+			this->waitForResolution(lock, unresolved, abandon);
 		}
 		break;
 	}
@@ -1230,7 +1224,8 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	return true;
 }
 
-void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry) {
+void TransactionLogStore::writeBatch(
+	TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry, bool cancellable) {
 	if (firstEntry) {
 		*firstEntry = LogPosition(0, 0);
 	}
@@ -1250,6 +1245,10 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 	{
 		std::lock_guard<std::mutex> logPositionLock(this->dataSetsMutex);
+		if (cancellable) {
+			// reserved before anything is written, so recording the position below cannot fail
+			this->cancellablePositions.reserve(this->cancellablePositions.size() + 1);
+		}
 		logPosition = this->nextLogPosition;
 		this->positionInsert(logPosition);
 	}
@@ -1369,6 +1368,9 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 		this->positionInsert(this->nextLogPosition);
+		if (cancellable) {
+			this->cancellablePositions.push_back(logPosition);
+		}
 	}
 
 	// Now that nextLogPosition has been advanced past logPosition, it is safe to
@@ -1392,6 +1394,9 @@ void TransactionLogStore::commitFinished(const LogPosition position, const std::
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	// This written transaction entry is no longer uncommitted, so we can remove it
 	this->positionErase(position);
+	if (!this->cancellablePositions.empty()) {
+		this->eraseCancellable(position);
+	}
 	if (this->positionReleaseWaiters.load(std::memory_order_relaxed) > 0) {
 		this->positionReleased.notify_all();
 	}
@@ -1422,6 +1427,9 @@ void TransactionLogStore::commitFinished(const LogPosition position, const std::
 void TransactionLogStore::commitAborted(const LogPosition position) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	this->positionErase(position);
+	if (!this->cancellablePositions.empty()) {
+		this->eraseCancellable(position);
+	}
 	if (this->positionReleaseWaiters.load(std::memory_order_relaxed) > 0) {
 		this->positionReleased.notify_all();
 	}
@@ -1549,13 +1557,24 @@ bool TransactionLogStore::isFailedCancellation(LogPosition position) {
 	return false;
 }
 
-void TransactionLogStore::waitForResolution(std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved) {
+void TransactionLogStore::eraseCancellable(LogPosition position) {
+	for (auto it = this->cancellablePositions.begin(); it != this->cancellablePositions.end(); ++it) {
+		if (it->positionInLogFile == position.positionInLogFile && it->logSequenceNumber == position.logSequenceNumber) {
+			*it = this->cancellablePositions.back();
+			this->cancellablePositions.pop_back();
+			return;
+		}
+	}
+}
+
+void TransactionLogStore::waitForResolution(
+	std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved, const std::function<bool()>& abandon) {
 	if (unresolved.empty()) {
 		return;
 	}
 	auto stillUnresolved = [&]() {
 		for (const auto& position : unresolved) {
-			for (const auto& pending : this->uncommittedTransactionPositions) {
+			for (const auto& pending : this->cancellablePositions) {
 				if (pending.positionInLogFile == position.positionInLogFile &&
 					pending.logSequenceNumber == position.logSequenceNumber) {
 					return true;
@@ -1564,14 +1583,24 @@ void TransactionLogStore::waitForResolution(std::unique_lock<std::mutex>& lock, 
 		}
 		return false;
 	};
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(backupUnresolvedWaitMs());
 	this->positionReleaseWaiters.fetch_add(1, std::memory_order_relaxed);
-	bool resolved = this->positionReleased.wait_for(
-		lock, std::chrono::milliseconds(backupUnresolvedWaitMs()), [&]() { return !stillUnresolved(); });
-	this->positionReleaseWaiters.fetch_sub(1, std::memory_order_relaxed);
-	if (!resolved) {
-		throw DBException("Transaction log store \"" + this->name + "\" still has a batch that has neither committed nor "
-			"been aborted after " + std::to_string(backupUnresolvedWaitMs()) + " ms; the backup is refused rather than "
-			"capture a batch a restore could replay");
+	struct WaiterRelease {
+		std::atomic<uint32_t>& waiters;
+		~WaiterRelease() { this->waiters.fetch_sub(1, std::memory_order_relaxed); }
+	} release{ this->positionReleaseWaiters };
+	// Polled: a database closing under this backup must not wait out the bound, since closing the
+	// transactions that would resolve these batches comes after the backup's operation drains.
+	while (stillUnresolved()) {
+		if (abandon && abandon()) {
+			throw DBException("The database closed while a transaction-log backup waited for unresolved batches");
+		}
+		if (std::chrono::steady_clock::now() >= deadline) {
+			throw DBException("Transaction log store \"" + this->name + "\" still has a batch that has neither committed nor "
+				"been aborted after " + std::to_string(backupUnresolvedWaitMs()) + " ms; the backup is refused rather than "
+				"capture a batch a restore could replay");
+		}
+		this->positionReleased.wait_for(lock, std::chrono::milliseconds(50));
 	}
 }
 
