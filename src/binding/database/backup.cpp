@@ -236,8 +236,7 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		if (state->backupTransactionLogs) {
 			std::vector<NamedTransactionLogBackupEntry> entries;
 			rocksdb::Status snapshotStatus =
-				collectTransactionLogBackupEntries(
-					state->descriptor.get(), entries, [state]() { return state->handle && state->handle->isCancelled(); });
+				collectTransactionLogBackupEntries(state->descriptor.get(), entries, nullptr, false);
 			if (!snapshotStatus.ok()) {
 				return snapshotStatus;
 			}

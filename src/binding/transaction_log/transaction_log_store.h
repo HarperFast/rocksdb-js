@@ -661,7 +661,8 @@ struct TransactionLogStore final {
 	 * a silently incomplete backup; `collectTransactionLogBackupEntries()` converts
 	 * them to a `rocksdb::Status` before control returns to a backup worker.
 	 */
-	std::vector<TransactionLogBackupEntry> snapshotForBackup(const std::function<bool()>& abandon = nullptr);
+	std::vector<TransactionLogBackupEntry> snapshotForBackup(
+		const std::function<bool()>& abandon = nullptr, bool waitForUnresolved = true);
 
 	/**
 	 * Holds off ordinary (non-destroy) retention purges of `store` until the

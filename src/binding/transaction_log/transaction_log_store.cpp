@@ -602,7 +602,8 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 	file->close();
 }
 
-std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(const std::function<bool()>& abandon) {
+std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
+	const std::function<bool()>& abandon, bool waitForUnresolved) {
 	// Capture txn.state (the flushed-position side file) FIRST, and inline its
 	// bytes. Reading it before the log-file sizes guarantees its recorded flushed
 	// position is <= the sizes we capture next (sizes only grow), so a restored
@@ -659,7 +660,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(co
 	// nextLogPosition, the sentinel skipped below. A batch sets abortMarkersInUse before its
 	// position is inserted under dataSetsMutex, so a capture that finds it set only at the end
 	// is redone under writeMutex.
-	for (bool markersInUse = this->abortMarkersInUse.load(std::memory_order_acquire);;) {
+	for (bool markersInUse = waitForUnresolved && this->abortMarkersInUse.load(std::memory_order_acquire);;) {
 		files.clear();
 		byteLimits.clear();
 		std::unique_lock<std::mutex> writeLock(this->writeMutex, std::defer_lock);
@@ -699,7 +700,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(co
 			// capture the pre-append extent). Captured with the unresolved set below.
 			byteLimits.push_back(file->size.load(std::memory_order_relaxed));
 		}
-		if (!markersInUse && this->abortMarkersInUse.load(std::memory_order_acquire)) {
+		if (!markersInUse && waitForUnresolved && this->abortMarkersInUse.load(std::memory_order_acquire)) {
 			markersInUse = true;
 			continue;
 		}
@@ -1245,9 +1246,9 @@ void TransactionLogStore::writeBatch(
 
 	{
 		std::lock_guard<std::mutex> logPositionLock(this->dataSetsMutex);
-		if (cancellable) {
+		if (cancellable && this->cancellablePositions.size() == this->cancellablePositions.capacity()) {
 			// reserved before anything is written, so recording the position below cannot fail
-			this->cancellablePositions.reserve(this->cancellablePositions.size() + 1);
+			this->cancellablePositions.reserve(std::max<size_t>(8, this->cancellablePositions.capacity() * 2));
 		}
 		logPosition = this->nextLogPosition;
 		this->positionInsert(logPosition);
@@ -1367,10 +1368,10 @@ void TransactionLogStore::writeBatch(
 
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
-		this->positionInsert(this->nextLogPosition);
 		if (cancellable) {
 			this->cancellablePositions.push_back(logPosition);
 		}
+		this->positionInsert(this->nextLogPosition);
 	}
 
 	// Now that nextLogPosition has been advanced past logPosition, it is safe to

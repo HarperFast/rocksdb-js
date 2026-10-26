@@ -38,7 +38,8 @@ struct NamedTransactionLogBackupEntry final {
 rocksdb::Status collectTransactionLogBackupEntries(
 	DBDescriptor* descriptor,
 	std::vector<NamedTransactionLogBackupEntry>& entries,
-	const std::function<bool()>& abandon = nullptr
+	const std::function<bool()>& abandon = nullptr,
+	bool waitForUnresolved = true
 );
 
 /**
