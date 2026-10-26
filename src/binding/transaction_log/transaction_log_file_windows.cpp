@@ -213,13 +213,14 @@ void TransactionLogFile::flushSyncHeld() {
 
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (handle=%p, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), handleToFlush, currentSize, this->lastFlushedSize);
-	// A failed sync poisons every marker written so far: see failedGeneration.
+	// A failed sync poisons every marker written so far, including one written while it ran: see
+	// failedGeneration.
 	auto recordFailure = [&]() {
 		std::unique_lock<std::mutex> failedLock(this->fileMutex, std::defer_lock);
 		if (!lock.owns_lock()) {
 			failedLock.lock();
 		}
-		this->failedGeneration = std::max(this->failedGeneration, generation);
+		this->failedGeneration = this->mutationGeneration;
 	};
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 	if (this->beforeSyncForTests) {

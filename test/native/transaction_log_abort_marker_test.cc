@@ -159,6 +159,16 @@ TEST(TransactionLogAbortMarker, AFailedSyncFailsEveryMarkerWrittenBeforeIt) {
 	// must not vouch for it.
 	EXPECT_THROW(file->syncThrough(second), rocksdb_js::DBException);
 	file->syncThrough(file->markEntryAborted(SECOND_BATCH, T2));
+
+	// A marker written while a failing sync runs is just as unproven.
+	uint64_t during = 0;
+	file->beforeSyncForTests = [&]() {
+		during = file->markEntryAborted(THIRD_BATCH, T3);
+		throw rocksdb_js::DBException("injected sync failure");
+	};
+	EXPECT_THROW(file->syncThrough(file->markEntryAborted(FIRST, T1)), rocksdb_js::DBException);
+	file->beforeSyncForTests = nullptr;
+	EXPECT_THROW(file->syncThrough(during), rocksdb_js::DBException);
 	file->close();
 }
 
