@@ -322,6 +322,31 @@ describe.skipIf(!iteratorPoolEnabled)('Transaction iterator pool', () => {
 			}
 		}));
 
+	// Reuse after a drop on the same handle is correct only because RocksDB keeps
+	// a dropped family readable through its retained handle (invariant 24).
+	it('returns what a fresh iterator does after its column family is dropped', () =>
+		dbRunner(async ({ db, dbPath }) => {
+			const column = RocksDatabase.open(dbPath, { name: 'pooled' });
+			try {
+				column.putSync('k1', 'v1');
+				column.putSync('k2', 'v2');
+				const txn = new Transaction(db.store);
+				try {
+					expect(column.getRange({ transaction: txn }).asArray.length).toBe(2);
+					column.dropSync();
+					const fresh = column.getRange({ transaction: txn, ...FRESH }).asArray;
+					expect(fresh.map((e) => e.key)).toEqual(['k1', 'k2']);
+					const before = iteratorPoolStats();
+					expect(column.getRange({ transaction: txn }).asArray).toEqual(fresh);
+					expect(delta(before).reused).toBe(1);
+				} finally {
+					txn.abort();
+				}
+			} finally {
+				column.close();
+			}
+		}));
+
 	it('closes idle pooled iterators once the current macrotask ends', () =>
 		dbRunner(async ({ db, dbPath }) => {
 			db.putSync('a', 'a');
