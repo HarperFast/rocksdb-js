@@ -41,7 +41,12 @@ Why each rule holds, and where it is enforced:
   post-delete version, and finishes after: a range on another thread that already sees the
   deletion through a fresh iterator must not then reuse an older one
   (`test/fixtures/fork-pooled-iterator-clear-race.mts`, which uses `ROCKSDB_JS_CLEAR_DELAY_MS` to
-  hold that window open). An iterator built while a clear runs is never reused.
+  hold that window open). An iterator built while a clear runs is never reused. A `dropSync()` on
+  the same open handle leaves its pooled iterators reusable on purpose: RocksDB keeps a dropped
+  family readable through its retained handle (invariant 24), so a fresh iterator returns the same
+  rows. That is a RocksDB behavior, pinned by the `iterator-pool` test "returns what a fresh
+  iterator does after its column family is dropped"; if it changes, `readsColumnOf` must also
+  refuse a retired family.
 - **Ownership**: idle handles sit in 4 inline slots on the `TransactionHandle` (no allocation when
   returning one) and stay registered in `activeIterators`, so every `closeIterators()` site closes
   them; `closeIterators()` then empties the slots, which breaks the handle-to-transaction reference

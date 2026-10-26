@@ -92,9 +92,10 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	bool boundsMatch(const DBIteratorOptions& options) const;
 
 	/**
-	 * Whether the column family this pooled handle reads is still `target`'s
-	 * current one, with no clear running when the handle was built or begun
-	 * since. Only meaningful while the caller holds an `OperationGuard`.
+	 * Whether this pooled handle reads the same `ColumnFamilyDescriptor` as
+	 * `target` (a dropped family still matches; see the iterator DESIGN.md),
+	 * with no clear running when the handle was built or begun since. Only
+	 * meaningful while the caller holds an `OperationGuard`.
 	 */
 	bool readsColumnOf(const std::shared_ptr<DBHandle>& target) const;
 
