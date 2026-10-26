@@ -1311,6 +1311,9 @@ never left live when the transaction does not commit:
   `coordinatedRetry` it waits for that transaction first. `commitSync()` never waits: it throws, and
   `transactionSync()` retries after a short backoff.
 - `txn.setParkDeadline(epochMs)` bounds those waits by the caller's own deadline.
+- `log.getStats().totals` reports `abortsMarked`, `abortMarkFailures`, and `watermarkPinnedUs` /
+  `pinnedTransactions`: how long logged batches held committed readers back after their first
+  conflict, until they committed or ended.
 - A backup waits for every batch it captures that has neither committed nor been aborted, and is
   refused if one is still unresolved after `ROCKSDB_JS_BACKUP_UNRESOLVED_WAIT_MS` (default
   `30000`).

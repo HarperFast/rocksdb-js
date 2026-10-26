@@ -159,6 +159,8 @@ struct TransactionLogStoreStats {
 	uint64_t writeFailures = 0;
 	uint64_t abortsMarked = 0;
 	uint64_t abortMarkFailures = 0;
+	uint64_t watermarkPinnedUs = 0;
+	uint64_t pinnedTransactions = 0;
 	double lastPurgeMs = 0;
 
 	// config
@@ -543,6 +545,14 @@ struct TransactionLogStore final {
 	/** Lifetime counts for stats: batches marked aborted, and marker writes or syncs that failed. */
 	std::atomic<uint64_t> abortsMarked = 0;
 	std::atomic<uint64_t> abortMarkFailures = 0;
+
+	/**
+	 * Time logged batches spent holding the committed-read watermark back after their first
+	 * conflict, until they committed or ended, and how many such batches. Readers behind the
+	 * watermark wait that long.
+	 */
+	std::atomic<uint64_t> watermarkPinnedUs = 0;
+	std::atomic<uint64_t> pinnedTransactions = 0;
 
 	/**
 	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.

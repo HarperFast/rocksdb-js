@@ -261,6 +261,16 @@ void TransactionHandle::lockVTSlot(
 	}
 }
 
+void TransactionHandle::recordPinnedTime(TransactionLogStore& store) {
+	if (this->pinnedSince.time_since_epoch().count() == 0) {
+		return;
+	}
+	auto pinned = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - this->pinnedSince);
+	this->pinnedSince = {};
+	store.watermarkPinnedUs.fetch_add(static_cast<uint64_t>(pinned.count()), std::memory_order_relaxed);
+	store.pinnedTransactions.fetch_add(1, std::memory_order_relaxed);
+}
+
 void TransactionHandle::releaseIntent() {
 	if (!lockedVTSlots.empty()) {
 		// The trackers were created via the VT, so it is materialized and
@@ -584,6 +594,7 @@ void TransactionHandle::close() {
 	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
 		auto store = this->boundLogStore.lock();
 		if (store) {
+			this->recordPinnedTime(*store);
 			if (this->cancelOnAbort && this->batchAddress.logSequenceNumber == 0) {
 				// A failed append whose entries never entered the logical log (the segment is retired at
 				// its last safe boundary): there is nothing to mark.

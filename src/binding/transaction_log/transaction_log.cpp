@@ -566,6 +566,8 @@ napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
 	SET_STAT(totals, "writeFailures", s.writeFailures);
 	SET_STAT(totals, "abortsMarked", s.abortsMarked);
 	SET_STAT(totals, "abortMarkFailures", s.abortMarkFailures);
+	SET_STAT(totals, "watermarkPinnedUs", s.watermarkPinnedUs);
+	SET_STAT(totals, "pinnedTransactions", s.pinnedTransactions);
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "totals", totals));
 
 	// config

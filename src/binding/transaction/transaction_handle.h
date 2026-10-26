@@ -396,6 +396,22 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/** Epoch milliseconds past which a park resolves; 0 for the default bound only. */
 	double parkDeadline = 0;
 
+	/**
+	 * When the logged batch first met a conflict, so the time it then holds the committed-read
+	 * watermark back is added to the store's `watermarkPinnedUs` once it commits or ends.
+	 */
+	std::chrono::steady_clock::time_point pinnedSince{};
+
+	/** Starts the pinned-time clock for a logged batch's first conflict. */
+	void notePinnedConflict() {
+		if (this->committedPosition.logSequenceNumber > 0 && this->pinnedSince.time_since_epoch().count() == 0) {
+			this->pinnedSince = std::chrono::steady_clock::now();
+		}
+	}
+
+	/** Adds the pinned time, if any, to `store`. */
+	void recordPinnedTime(TransactionLogStore& store);
+
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 

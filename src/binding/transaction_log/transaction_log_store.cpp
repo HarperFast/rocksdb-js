@@ -775,6 +775,8 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	out.writeFailures = this->writeFailures.load(std::memory_order_relaxed);
 	out.abortsMarked = this->abortsMarked.load(std::memory_order_relaxed);
 	out.abortMarkFailures = this->abortMarkFailures.load(std::memory_order_relaxed);
+	out.watermarkPinnedUs = this->watermarkPinnedUs.load(std::memory_order_relaxed);
+	out.pinnedTransactions = this->pinnedTransactions.load(std::memory_order_relaxed);
 	out.lastPurgeMs = this->lastPurgeMs.load(std::memory_order_relaxed);
 	out.maxFileSize = this->maxFileSize;
 	out.retentionMs = static_cast<uint64_t>(this->retentionMs.count());

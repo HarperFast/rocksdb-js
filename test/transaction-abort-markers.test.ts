@@ -265,6 +265,10 @@ describe('transaction-log abort markers', () => {
 			expect(logFlags(dbPath).length).toBe(entriesLogged);
 			expect(readEntries(db)).toEqual(['logged']);
 			expect(await db.get('hot')).toBe('logged-final');
+			// The batch held the watermark from its first conflict until it committed.
+			const totals = log.getStats().totals;
+			expect(totals.pinnedTransactions).toBe(1);
+			expect(totals.watermarkPinnedUs).toBeGreaterThan(0);
 		}));
 
 	it('makes a backup wait for a captured unresolved batch, so the restore skips it once aborted', () =>

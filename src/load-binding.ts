@@ -215,6 +215,12 @@ export type TransactionLogStats = {
 		abortsMarked: number;
 		/** Abort marker writes or syncs that failed; each leaves its batch unresolved until a retry. */
 		abortMarkFailures: number;
+		/**
+		 * Microseconds logged batches held the committed-read watermark back after their first commit
+		 * conflict, until they committed or ended; `pinnedTransactions` counts those batches.
+		 */
+		watermarkPinnedUs: number;
+		pinnedTransactions: number;
 	};
 	config: {
 		maxFileSize: number;
