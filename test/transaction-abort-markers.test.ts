@@ -364,12 +364,12 @@ describe('transaction-log abort markers', () => {
 					attempts++;
 					log.addEntry(Buffer.from('once'), txn.id);
 					await txn.put('hot', 'once');
-					setTimeout(() => holder.abort(), 20);
 				},
 				{ coordinatedRetry: true, retryOnBusy: false }
 			);
-			await expect(result).rejects.toThrow('retryOnBusy is false');
+			await expect(result).rejects.toMatchObject({ code: 'ERR_BUSY', refusedBeforeLog: true });
 			expect(attempts).toBe(1);
+			holder.abort();
 		}));
 
 	it('resolves a park at the transaction park deadline', () =>

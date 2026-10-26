@@ -6,6 +6,7 @@
 #include <functional>
 #include <list>
 #include <memory>
+#include <vector>
 #include <mutex>
 #include <utility>
 #include "rocksdb/slice.h"
@@ -200,10 +201,10 @@ struct LockTracker {
 	/**
 	 * Live holders' ages, for write-intent refusal (writerMutex_). Allocated by the first aged
 	 * registration, so a tracker whose holders carry no age (abort markers off) pays one pointer.
-	 * Repeat registrations by one holder share an entry. A holder with no age (a non-transactional
-	 * write, or one registered with abort markers off) is only counted, and a joiner treats it as
-	 * possibly older. Aged holders past the inline slots are counted with the oldest age among them,
-	 * kept until none is left, so the oldest transaction is still never refused by a younger one.
+	 * Repeat registrations by one holder share an entry; holders past the inline four go to
+	 * `overflow`. A holder with no age (a non-transactional write, or one registered with abort
+	 * markers off), or one whose entry could not be allocated, is only counted, and a joiner treats
+	 * it as possibly older.
 	 */
 	struct HolderAges {
 		static constexpr uint8_t kInline = 4;
@@ -213,9 +214,9 @@ struct LockTracker {
 		};
 		Holder inline_[kInline];
 		uint8_t count = 0;
+		std::vector<Holder> overflow;
 		uint32_t agedIntents = 0;
-		uint32_t uncountedAgedIntents = 0;
-		IntentAge uncountedOldest;
+		uint32_t unrecordedIntents = 0;
 	};
 	std::unique_ptr<HolderAges> ages;
 	uint16_t              generation;   // immutable after install; matches slot encoding

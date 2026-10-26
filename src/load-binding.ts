@@ -591,8 +591,8 @@ export type RocksDatabaseConfig = {
 	 * readers skip it, and refuses a conflicting attempt before it writes its batch when an older
 	 * transaction holds a write intent on one of its keys. Off by default: with it off, behavior is
 	 * unchanged. Turn it on only once every reader of these logs (replicas, restores, repair tools)
-	 * skips aborted batches; an older reader shows an aborted batch as live. Read on each commit
-	 * attempt, so it can change at runtime.
+	 * skips aborted batches; an older reader shows an aborted batch as live. Read when a transaction
+	 * starts and when it is reset for a retry, so it can change at runtime.
 	 */
 	transactionLogAbortMarkers?: boolean;
 	/**

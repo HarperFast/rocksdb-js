@@ -464,7 +464,7 @@ TEST(VerificationTableIntentAge, AReleasedHolderStopsRefusing) {
 	vt.releaseWriteIntent(slot, b, &middle);
 }
 
-TEST(VerificationTableIntentAge, AnUnagedHolderMayBeOlderAndUncountedOnesKeepTheirOldestAge) {
+TEST(VerificationTableIntentAge, AnUnagedHolderMayBeOlderAndHoldersPastTheInlineSlotsCountExactly) {
 	VerificationTable vt(8, 0xABCD);
 	auto* slot = vt.slotFor(0x1, 0, rocksdb::Slice("k"));
 	LockTracker* unaged = vt.lockSlotForWrite(slot, 0x1);
@@ -475,20 +475,27 @@ TEST(VerificationTableIntentAge, AnUnagedHolderMayBeOlderAndUncountedOnesKeepThe
 	vt.releaseWriteIntent(slot, unaged);
 	vt.releaseWriteIntent(slot, t, &oldest);
 
-	// Five distinct younger holders: the fifth is only counted, with its age, so the oldest joiner is
-	// still not refused while one between them is.
+	// Holders T2..T6 fill the inline slots and spill one; T0 spills too, then leaves.
 	std::vector<IntentAge> ages;
-	std::vector<LockTracker*> trackers;
-	for (int i = 0; i < 5; i++) {
-		ages.push_back(IntentAge{ 10.0 + i, static_cast<uintptr_t>(i + 10) });
+	for (int i = 2; i <= 6; i++) {
+		ages.push_back(IntentAge{ static_cast<double>(i), static_cast<uintptr_t>(i) });
 	}
+	std::vector<LockTracker*> trackers;
 	for (auto& age : ages) {
 		trackers.push_back(vt.lockSlotForWrite(slot, 0x1, age, older));
 	}
-	LockTracker* joiner = vt.lockSlotForWrite(slot, 0x1, oldest, older);
+	const IntentAge t0{ 0.0, 100 };
+	LockTracker* departing = vt.lockSlotForWrite(slot, 0x1, t0, older);
 	EXPECT_FALSE(older);
-	vt.releaseWriteIntent(slot, joiner, &oldest);
-	const IntentAge between{ 13.5, 99 };
+	const IntentAge t1{ 1.0, 101 };
+	LockTracker* joiner = vt.lockSlotForWrite(slot, 0x1, t1, older);
+	EXPECT_TRUE(older); // behind T0
+	vt.releaseWriteIntent(slot, joiner, &t1);
+	vt.releaseWriteIntent(slot, departing, &t0);
+	joiner = vt.lockSlotForWrite(slot, 0x1, t1, older);
+	EXPECT_FALSE(older); // T0 is gone, and every holder left is younger
+	vt.releaseWriteIntent(slot, joiner, &t1);
+	const IntentAge between{ 3.5, 102 };
 	joiner = vt.lockSlotForWrite(slot, 0x1, between, older);
 	EXPECT_TRUE(older);
 	vt.releaseWriteIntent(slot, joiner, &between);

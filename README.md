@@ -282,7 +282,8 @@ Sets global database settings.
     up on, or a worker torn down with it pending) gets that batch marked aborted in place, and every
     reader skips it; see [Abort markers](#abort-markers). A conflicting attempt is also refused
     before it writes its batch when an older transaction holds a write intent on one of its keys.
-    Defaults to `false`, which behaves as before. Read on every commit attempt.
+    Defaults to `false`, which behaves as before. Read when a transaction starts and when it is
+    reset for a retry.
   - `occValidation: 'parallel' | 'serial'` How writable optimistic databases opened after the call
     validate commits for conflicts. Defaults to `'parallel'` (RocksDB's default). Databases already
     open keep their policy. Pessimistic, read-only and secondary opens are unaffected.
@@ -1274,7 +1275,8 @@ The `attempt` parameter is the number of times the transaction has been retried.
 - `maxRetries?: number` The maximum number of times to retry the transaction. Defaults to `3`.
 - `retryOnBusy?: boolean` Whether to retry the transaction if the commit fails with `IsBusy`.
   Defaults to `true` when the transaction wrote a transaction-log batch or was refused before
-  writing one (`refusedBeforeLog`), otherwise `false`. `false` also stops a coordinated retry.
+  writing one (`refusedBeforeLog`), otherwise `false`. With `false`, `db.transaction()` also
+  commits without `coordinatedRetry`, so a conflict fails at once instead of waiting first.
 
 ### Transaction Retry Logic
 

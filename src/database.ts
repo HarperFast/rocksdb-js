@@ -1192,7 +1192,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 
 		const maxRetries = options?.maxRetries ?? 3;
-		const txn = new Transaction(this.store, options);
+		// A coordinated retry waits for the conflict to clear only to retry; with retries off, fail now.
+		const txn = new Transaction(
+			this.store,
+			options?.retryOnBusy === false && options.coordinatedRetry
+				? { ...options, coordinatedRetry: false }
+				: options
+		);
 		let result: T | PromiseLike<T>;
 
 		this.notify('begin-transaction');
@@ -1226,10 +1232,6 @@ export class RocksDatabase extends DBI<DBITransactional> {
 
 			if (commitResult !== RETRY_NOW) {
 				return result;
-			}
-			if (options?.retryOnBusy === false) {
-				this.#abandonTransaction(txn, new Error('Transaction conflicted and retryOnBusy is false'));
-				return;
 			}
 			// coordinatedRetry: the conflict resolved, retry immediately — but only
 			// if attempts remain. On the final attempt a RETRY_NOW must not fall

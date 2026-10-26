@@ -809,7 +809,15 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		bool parked = false;
 		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
 		std::shared_ptr<ParkTimeoutRegistry> parkTimeouts = state->parkTimeouts.lock();
-		for (auto* slot : state->savedSlots) {
+		unsigned timeoutMs = parkTimeoutMs();
+		if (state->handle->parkDeadline > 0) {
+			double remaining = state->handle->parkDeadline -
+				static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::system_clock::now().time_since_epoch()).count());
+			timeoutMs = remaining < 1 ? 0 : static_cast<unsigned>(std::min<double>(timeoutMs, remaining));
+		}
+		// Past the deadline nothing parks: RETRY_NOW resolves at once, so the caller can give up.
+		for (auto* slot : timeoutMs > 0 ? state->savedSlots : std::vector<std::atomic<uint64_t>*>{}) {
 			// refTrackerIfLocked takes a temporary reference under the VT
 			// writer mutex, so the tracker cannot be freed by a concurrent
 			// releaseWriteIntent between loading the slot and referencing it
@@ -861,14 +869,6 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			// when the descriptor is closing and when there is no descriptor
 			// at all (DBHandle::close() can reset it concurrently) -- either
 			// way there is no timeout thread behind this park.
-			unsigned timeoutMs = parkTimeoutMs();
-			if (state->handle->parkDeadline > 0) {
-				double remaining = state->handle->parkDeadline -
-					static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
-						std::chrono::system_clock::now().time_since_epoch()).count());
-				// past the deadline: resolve at once, so the caller can give up
-				timeoutMs = remaining < 1 ? 0 : static_cast<unsigned>(std::min<double>(timeoutMs, remaining));
-			}
 			uint64_t parkId = parkTimeouts && timeoutMs > 0
 				? parkTimeouts->schedule(env, timeoutMs, tsfn, fired)
 				: 0;

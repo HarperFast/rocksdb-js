@@ -262,6 +262,24 @@ LockTracker* VerificationTable::lockSlotForWrite(std::atomic<uint64_t>* slot, ui
 	return t;
 }
 
+namespace {
+
+LockTracker::HolderAges::Holder* findHolder(LockTracker::HolderAges& ages, const IntentAge& age) {
+	for (uint8_t i = 0; i < ages.count; i++) {
+		if (ages.inline_[i].age.age == age.age && ages.inline_[i].age.tie == age.tie) {
+			return &ages.inline_[i];
+		}
+	}
+	for (auto& holder : ages.overflow) {
+		if (holder.age.age == age.age && holder.age.tie == age.tie) {
+			return &holder;
+		}
+	}
+	return nullptr;
+}
+
+} // namespace
+
 LockTracker* VerificationTable::lockSlotForWrite(
 	std::atomic<uint64_t>* slot, uint64_t dbId, const IntentAge& age, bool& olderHolder
 ) {
@@ -269,14 +287,23 @@ LockTracker* VerificationTable::lockSlotForWrite(
 	if (!slot) return nullptr;
 	std::lock_guard<std::mutex> lock(writerMutex_);
 	uint64_t v = slot->load(std::memory_order_acquire);
+	LockTracker* existing = vtIsLock(v) ? vtDecodeLock(v) : nullptr;
+	// Allocated before anything is published, so a failure leaves no intent behind.
+	std::unique_ptr<LockTracker::HolderAges> freshAges;
+	if (!existing || !existing->ages) {
+		freshAges = std::make_unique<LockTracker::HolderAges>();
+	}
 	LockTracker* t;
-	if (vtIsLock(v)) {
-		t = vtDecodeLock(v);
+	if (existing) {
+		t = existing;
 		const LockTracker::HolderAges* ages = t->ages.get();
 		olderHolder = t->holders.load(std::memory_order_relaxed) > (ages ? ages->agedIntents : 0) ||
-			(ages && ages->uncountedAgedIntents > 0 && ages->uncountedOldest.olderThan(age));
+			(ages && ages->unrecordedIntents > 0);
 		for (uint8_t i = 0; ages && i < ages->count && !olderHolder; i++) {
 			olderHolder = ages->inline_[i].age.olderThan(age);
+		}
+		for (size_t i = 0; ages && i < ages->overflow.size() && !olderHolder; i++) {
+			olderHolder = ages->overflow[i].age.olderThan(age);
 		}
 		t->holders.fetch_add(1, std::memory_order_relaxed);
 		t->refcount.fetch_add(1, std::memory_order_relaxed);
@@ -288,21 +315,19 @@ LockTracker* VerificationTable::lockSlotForWrite(
 		slot->store(vtEncodeLock(t, gen), std::memory_order_release);
 	}
 	if (!t->ages) {
-		t->ages = std::make_unique<LockTracker::HolderAges>();
+		t->ages = std::move(freshAges);
 	}
 	LockTracker::HolderAges& ages = *t->ages;
 	ages.agedIntents++;
-	for (uint8_t i = 0; i < ages.count; i++) {
-		if (ages.inline_[i].age.age == age.age && ages.inline_[i].age.tie == age.tie) {
-			ages.inline_[i].intents++;
-			return t;
-		}
-	}
-	if (ages.count < LockTracker::HolderAges::kInline) {
+	if (auto* holder = findHolder(ages, age)) {
+		holder->intents++;
+	} else if (ages.count < LockTracker::HolderAges::kInline) {
 		ages.inline_[ages.count++] = { age, 1 };
 	} else {
-		if (ages.uncountedAgedIntents++ == 0 || age.olderThan(ages.uncountedOldest)) {
-			ages.uncountedOldest = age;
+		try {
+			ages.overflow.push_back({ age, 1 });
+		} catch (...) {
+			ages.unrecordedIntents++;
 		}
 	}
 	return t;
@@ -314,14 +339,20 @@ void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTrac
 	if (age && t->ages) {
 		LockTracker::HolderAges& ages = *t->ages;
 		ages.agedIntents--;
-		uint8_t i = 0;
-		while (i < ages.count && (ages.inline_[i].age.age != age->age || ages.inline_[i].age.tie != age->tie)) {
-			i++;
-		}
-		if (i == ages.count) {
-			ages.uncountedAgedIntents--;
-		} else if (--ages.inline_[i].intents == 0) {
-			ages.inline_[i] = ages.inline_[--ages.count];
+		auto* holder = findHolder(ages, *age);
+		if (!holder) {
+			ages.unrecordedIntents--;
+		} else if (--holder->intents == 0) {
+			if (holder >= ages.inline_ && holder < ages.inline_ + ages.count) {
+				*holder = ages.inline_[--ages.count];
+				if (!ages.overflow.empty()) {
+					ages.inline_[ages.count++] = ages.overflow.back();
+					ages.overflow.pop_back();
+				}
+			} else {
+				*holder = ages.overflow.back();
+				ages.overflow.pop_back();
+			}
 		}
 	}
 	bool lastHolder = (t->holders.fetch_sub(1, std::memory_order_acq_rel) == 1);

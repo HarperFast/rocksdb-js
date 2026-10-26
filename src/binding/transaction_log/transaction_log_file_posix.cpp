@@ -272,7 +272,7 @@ void TransactionLogFile::flushSyncHeld() {
 	if (this->fd >= 0) {
 		duplicate = ::fcntl(this->fd, F_DUPFD_CLOEXEC, 0);
 	} else if (marked) {
-		duplicate = ::open(this->path.c_str(), O_RDONLY | O_CLOEXEC);
+		duplicate = ::open(this->path.c_str(), O_RDWR | O_CLOEXEC);
 		if (duplicate < 0) {
 			int error = errno;
 			throw rocksdb_js::DBException(

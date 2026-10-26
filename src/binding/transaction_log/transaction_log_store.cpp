@@ -654,11 +654,14 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 	std::vector<std::pair<uint32_t, std::shared_ptr<TransactionLogFile>>> files;
 	std::vector<uint64_t> byteLimits;
 	uint32_t current;
-	{
-		// With abort markers in use, no append may be mid-flight while the sizes and the unresolved
-		// set are captured: an appending batch's bytes count in `size` before its position stops
-		// equalling nextLogPosition, the sentinel skipped below.
-		const bool markersInUse = this->abortMarkersInUse.load(std::memory_order_relaxed);
+	// With abort markers in use, no append may be mid-flight while the sizes and the unresolved set
+	// are captured: an appending batch's bytes count in `size` before its position stops equalling
+	// nextLogPosition, the sentinel skipped below. A batch sets abortMarkersInUse before its
+	// position is inserted under dataSetsMutex, so a capture that finds it set only at the end
+	// is redone under writeMutex.
+	for (bool markersInUse = this->abortMarkersInUse.load(std::memory_order_acquire);;) {
+		files.clear();
+		byteLimits.clear();
 		std::unique_lock<std::mutex> writeLock(this->writeMutex, std::defer_lock);
 		if (markersInUse) {
 			writeLock.lock();
@@ -696,6 +699,10 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 			// capture the pre-append extent). Captured with the unresolved set below.
 			byteLimits.push_back(file->size.load(std::memory_order_relaxed));
 		}
+		if (!markersInUse && this->abortMarkersInUse.load(std::memory_order_acquire)) {
+			markersInUse = true;
+			continue;
+		}
 		if (markersInUse) {
 			// A batch still unresolved here may yet be marked aborted, which a copy taken now would
 			// not show, and a restore would replay it. Wait until every one commits or is marked.
@@ -709,6 +716,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 			writeLock.unlock();
 			this->waitForResolution(lock, unresolved);
 		}
+		break;
 	}
 
 	std::vector<TransactionLogBackupEntry> entries;
@@ -1435,7 +1443,15 @@ void TransactionLogStore::markAndSync(LogPosition firstEntry, double timestamp) 
 		throw DBException("Transaction log segment " + std::to_string(firstEntry.logSequenceNumber) +
 			" of an aborted batch is no longer registered");
 	}
-	logFile->syncThrough(logFile->markEntryAborted(firstEntry.positionInLogFile, timestamp));
+	uint64_t generation = logFile->markEntryAborted(firstEntry.positionInLogFile, timestamp);
+	try {
+		logFile->syncThrough(generation);
+	} catch (const std::exception& e) {
+		// The kernel reports a writeback error once: this sync may have taken the report for appended
+		// pages too, so the flushed state must stop advancing as if databaseFlushBegin() had seen it.
+		this->noteLogSyncFailure(logFile->sequenceNumber, e.what());
+		throw;
+	}
 }
 
 bool TransactionLogStore::cancelBatch(LogPosition firstEntry, double timestamp, LogPosition position) noexcept {
