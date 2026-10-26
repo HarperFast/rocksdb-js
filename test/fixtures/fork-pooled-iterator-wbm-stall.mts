@@ -33,8 +33,10 @@ RocksDatabase.config({
 });
 const db = RocksDatabase.open(dbPath);
 db.putSync('a', 'a');
+// The registry may report the path as given or resolved (macOS /var -> /private/var).
 const closables = () =>
-	registryStatus().find((entry) => entry.path === db.store.identityPath)!.closables;
+	registryStatus().find((entry) => entry.path === dbPath || entry.path === db.store.identityPath)!
+		.closables;
 
 function ranges(txn: Transaction): { created: number; reused: number } {
 	const before = iteratorPoolStats();
