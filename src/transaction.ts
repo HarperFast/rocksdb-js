@@ -100,6 +100,11 @@ export const ConflictKind = {
 	intentAfterLog: 2,
 	/** RocksDB found a conflict at commit. */
 	atCommit: 3,
+	/**
+	 * RocksDB's conflict check, run before the log write, found a conflict with a write that already
+	 * committed (needs a RocksDB build that exports the check).
+	 */
+	checkBeforeLog: 4,
 } as const;
 
 /**

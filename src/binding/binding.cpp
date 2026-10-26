@@ -1,4 +1,5 @@
 #include "napi/binding.h"
+#include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "database/backup.h"
 #include "database/database.h"
 #include "database/db_stats.h"
@@ -547,6 +548,12 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, TRANSACTION_LOG_ENTRY_HEADER_SIZE)
 	EXPORT_CONSTANT(constants, TRANSACTION_LOG_ENTRY_LAST_FLAG)
 	EXPORT_CONSTANT(constants, TRANSACTION_LOG_ENTRY_ABORTED_FLAG)
+#ifdef ROCKSDB_HAS_CHECK_OPTIMISTIC_TRANSACTION_FOR_CONFLICTS
+	const uint32_t PRELOG_CONFLICT_CHECK = 1;
+#else
+	const uint32_t PRELOG_CONFLICT_CHECK = 0;
+#endif
+	EXPORT_CONSTANT(constants, PRELOG_CONFLICT_CHECK)
 	EXPORT_CONSTANT(constants, ONLY_IF_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, NOT_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)

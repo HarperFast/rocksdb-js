@@ -395,7 +395,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	std::atomic<uint64_t>* intentConflictSlot = nullptr;
 
-	enum ConflictKind : uint8_t { ConflictNone = 0, ConflictIntentBeforeLog = 1, ConflictIntentAfterLog = 2, ConflictAtCommit = 3 };
+	enum ConflictKind : uint8_t {
+		ConflictNone = 0,
+		ConflictIntentBeforeLog = 1,
+		ConflictIntentAfterLog = 2,
+		ConflictAtCommit = 3,
+		ConflictCheckBeforeLog = 4,
+	};
 	/** Why the most recent attempt was refused or retried. */
 	ConflictKind lastConflictKind = ConflictNone;
 

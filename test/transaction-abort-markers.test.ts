@@ -525,6 +525,29 @@ describe('transaction-log abort markers', () => {
 			holder.abort();
 		}));
 
+	it.skipIf(!constants.PRELOG_CONFLICT_CHECK)(
+		"refuses a stale attempt before it logs with RocksDB's conflict check",
+		() =>
+			dbRunner(async ({ db, dbPath }) => {
+				RocksDatabase.config({ transactionLogAbortMarkers: true });
+				await db.put('k', 'v0');
+				const log = db.useLog('foo');
+				const stale = new Transaction(db.store);
+				expect(await stale.get('k')).toBe('v0');
+				await db.put('k', 'v1'); // committed after `stale` read the key; no intent is left behind
+				log.addEntry(Buffer.from('stale'), stale.id);
+				await stale.put('k', 'stale');
+				await expect(stale.commit()).rejects.toMatchObject({
+					code: 'ERR_BUSY',
+					refusedBeforeLog: true,
+					hasLog: false,
+				});
+				expect(stale.lastConflictKind()).toBe(ConflictKind.checkBeforeLog);
+				expect(logFlags(dbPath)).toEqual([]);
+				stale.abort();
+			})
+	);
+
 	it('fails closed when a marker cannot be written, and resolves on a later retry', async () => {
 		const result = await runFixture('fork-abort-mark-failure.mts', {
 			ROCKSDB_JS_ABORT_MARK_FAILURE: '2',

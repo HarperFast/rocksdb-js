@@ -897,6 +897,8 @@ export const constants: {
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 	TRANSACTION_LOG_ENTRY_LAST_FLAG: number;
 	TRANSACTION_LOG_ENTRY_ABORTED_FLAG: number;
+	/** 1 when the linked RocksDB exports the conflict check run before the log write. */
+	PRELOG_CONFLICT_CHECK: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
 	ITERATOR_REVERSE_FLAG: number;
 	ITERATOR_INCLUSIVE_END_FLAG: number;
