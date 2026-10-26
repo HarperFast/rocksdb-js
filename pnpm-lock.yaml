@@ -1362,8 +1362,8 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  node-abi@3.99.0:
-    resolution: {integrity: sha512-lLdwkeg2XUVPTHqWjPltTxH81zbQNbUWC+AEb9ni50KjxkUzAAx1HGtMT21sbntzfUGfIphhcklvs3imJeqDXw==}
+  node-abi@3.101.0:
+    resolution: {integrity: sha512-bkb/RkuWCE64eWu1PCh3Fu2pGc9mKRs+kOE+FU2bGHRYlQa86/D321DSATV54AsCQMKz3/xSt9sRgraZTpqdhQ==}
     engines: {node: '>=10'}
 
   node-addon-api@6.1.0:
@@ -2583,7 +2583,7 @@ snapshots:
 
   nanoid@3.3.20: {}
 
-  node-abi@3.99.0:
+  node-abi@3.101.0:
     dependencies:
       semver: 7.8.5
 
@@ -2688,7 +2688,7 @@ snapshots:
     dependencies:
       minimist: 1.2.8
       mkdirp-classic: 0.5.3
-      node-abi: 3.99.0
+      node-abi: 3.101.0
       npm-run-path: 3.1.0
       pump: 3.0.4
       tar-fs: 2.1.5
