@@ -1444,6 +1444,7 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
  */
 std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	const std::string& path, const std::string& identityPath, const DBOptions& options) {
+	bool parallelValidation = false;
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
 
@@ -1706,6 +1707,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		occOptions.occ_lock_buckets = settings.getOccLockBucketCount();
 		occOptions.validate_policy = settings.getOccValidateSerial() ? rocksdb::OccValidationPolicy::kValidateSerial
 		                                                              : rocksdb::OccValidationPolicy::kValidateParallel;
+		parallelValidation = occOptions.validate_policy == rocksdb::OccValidationPolicy::kValidateParallel;
 		rocksdb::OptimisticTransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
 		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, occOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
@@ -1759,6 +1761,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
 	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, identityPath, options, cfOptions, db, attachedWriteBufferManager, std::move(columns), dbOptions.statistics));
+	descriptor->parallelValidation = parallelValidation;
 	descriptor->secondaryLockToken = secondaryLock.token;
 	secondaryLock.token = 0;
 

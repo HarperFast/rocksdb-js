@@ -251,6 +251,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	DBMode mode;
 
+	/** An optimistic database opened with `occValidation: 'parallel'`, which validates commits off the write thread. */
+	bool parallelValidation = false;
+
 	/**
 	 * Whether the database was opened in readonly mode via
 	 * `DB::OpenForReadOnly` or as a secondary via `DB::OpenAsSecondary`. When

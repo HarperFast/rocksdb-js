@@ -578,7 +578,8 @@ static const rocksdb::Status& intentRefusal() {
  */
 static rocksdb::Status checkBeforeLog(TransactionHandle& txnHandle, const DBDescriptor& descriptor) {
 #ifdef ROCKSDB_HAS_CHECK_OPTIMISTIC_TRANSACTION_FOR_CONFLICTS
-	if (txnHandle.agedIntents && descriptor.mode == DBMode::Optimistic &&
+	// Only where RocksDB itself already runs this check off the write thread, without the DB mutex.
+	if (txnHandle.agedIntents && descriptor.parallelValidation &&
 		!prelogConflictCheckDisabled().load(std::memory_order_relaxed) &&
 		(txnHandle.retries > 0 || !prelogConflictCheckRetriesOnly().load(std::memory_order_relaxed))) {
 		rocksdb::Status status = rocksdb::CheckOptimisticTransactionForConflicts(txnHandle.txn);
