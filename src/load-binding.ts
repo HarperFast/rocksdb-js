@@ -226,7 +226,7 @@ export type TransactionLog = {
 	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
 	_currentLogBuffer: WeakRef<LogBuffer> | undefined;
 	_findPosition(timestamp: number): number;
-	_findExactStart(timestamp: number): [number, number, number, number];
+	_findExactStart(timestamp: number, span: Float64Array): number;
 	_getLastCommittedPosition(): Buffer;
 	_getLastFlushed(): number;
 	_getMemoryMapOfFile(sequenceId: number): LogBuffer | undefined;

@@ -62,6 +62,7 @@ struct TransactionLogHandle final : Closable {
 
 	std::shared_ptr<MemoryMap> getMemoryMap(uint32_t sequenceNumber);
 	LogPosition findPosition(double timestamp, ExactStartSpan* span = nullptr);
+	double segmentRemovals();
 	LogPosition getLastFlushed();
 	uint64_t getLogFileSize(uint32_t sequenceNumber);
 	uint32_t nextSequenceAfter(uint32_t sequenceNumber);

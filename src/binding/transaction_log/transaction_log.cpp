@@ -384,15 +384,23 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
 }
 
 /**
- * `_findPosition` for an exact-start lookup: returns `[start, stop, tail, segmentRemovals]`, where
- * the reader may jump from `stop` to `tail` because no entry between them has a timestamp at or
- * below the target (both 0 when nothing can be skipped).
+ * `_findPosition` for an exact-start lookup. Also writes `[stop, tail, segmentRemovals]` into the
+ * Float64Array passed second: the reader may jump from `stop` to `tail` because no entry between
+ * them has a timestamp at or below the target (both 0 when nothing can be skipped).
  */
 napi_value TransactionLog::FindExactStart(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1);
+	NAPI_METHOD_ARGV(2);
 	UNWRAP_TRANSACTION_LOG_HANDLE("FindExactStart");
 	double timestamp = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
+	napi_typedarray_type type = napi_int8_array;
+	size_t length = 0;
+	void* data = nullptr;
+	if (::napi_get_typedarray_info(env, argv[1], &type, &length, &data, nullptr, nullptr) != napi_ok ||
+		type != napi_float64_array || length < 3 || data == nullptr) {
+		::napi_throw_type_error(env, nullptr, "Expected a Float64Array of at least 3 elements");
+		return nullptr;
+	}
 	LogPosition position = { 0, 0 };
 	ExactStartSpan span;
 	try {
@@ -401,30 +409,25 @@ napi_value TransactionLog::FindExactStart(napi_env env, napi_callback_info info)
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
-	double values[] = {
-		position.fullPosition,
-		span.stop.fullPosition,
-		span.tail.fullPosition,
-		static_cast<double>(span.segmentRemovals),
-	};
+	double* out = static_cast<double*>(data);
+	out[0] = span.stop.fullPosition;
+	out[1] = span.tail.fullPosition;
+	out[2] = static_cast<double>(span.segmentRemovals);
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, 4, &result));
-	for (uint32_t i = 0; i < 4; i++) {
-		napi_value value;
-		NAPI_STATUS_THROWS(::napi_create_double(env, values[i], &value));
-		NAPI_STATUS_THROWS(::napi_set_element(env, result, i, value));
-	}
+	NAPI_STATUS_THROWS(::napi_create_double(env, position.fullPosition, &result));
 	return result;
 }
 
 /**
- * The process-wide count of segments removed from any store, to compare against the count
- * `_findExactStart` returned.
+ * The count of removed segments to compare against the one `_findExactStart` reported, read under
+ * this log's store lock so a purge in progress is wholly before or after it; -1 when the store is
+ * gone, which never matches.
  */
 napi_value TransactionLog::SegmentRemovals(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("SegmentRemovals");
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_double(
-		env, static_cast<double>(TransactionLogStore::segmentRemovals.load(std::memory_order_relaxed)), &result));
+	NAPI_STATUS_THROWS(::napi_create_double(env, (*txnLogHandle)->segmentRemovals(), &result));
 	return result;
 }
 

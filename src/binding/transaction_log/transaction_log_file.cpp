@@ -1141,10 +1141,15 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 			this->publishReadableExtentLocked();
 		}
 	}
+	// now do the actual search: just a search for the lower bound
+	auto it = this->positionByTimestampIndex.lower_bound(timestamp);
 	if (span) {
 		// Every entry before the first maximum above the timestamp has a running maximum at or
 		// below it; past that point only an out-of-order entry can.
-		auto above = this->positionByTimestampIndex.upper_bound(timestamp);
+		auto above = it;
+		if (above != this->positionByTimestampIndex.end() && above->first == timestamp) {
+			++above;
+		}
 		uint32_t lastAtOrBelow = above == this->positionByTimestampIndex.end() ? this->lastIndexedPosition : above->second;
 		if (lastAtOrBelow <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
 			lastAtOrBelow = 0;
@@ -1158,8 +1163,6 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 		span->lastBreak = this->lastIndexedBreak;
 		span->complete = !stoppedAtUnindexedTail && this->lastIndexedPosition >= this->size.load(std::memory_order_relaxed);
 	}
-	// now do the actual search: just a search for the lower bound
-	auto it = this->positionByTimestampIndex.lower_bound(timestamp);
 	if (it != this->positionByTimestampIndex.end()) {
 		return it->second;
 	}

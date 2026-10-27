@@ -8,6 +8,8 @@ import {
 
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
+// `_findExactStart()` out-parameter: [stop, tail, segment removals]
+const EXACT_START_SPAN = new Float64Array(3);
 
 const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
@@ -238,14 +240,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 				start ??= 0; // if no start timestamp is specified, include all
 			} else if (exactStart) {
-				const [startPosition, stop, tail, removals] = this._findExactStart(start!);
-				FLOAT_TO_UINT32[0] = stop;
+				const startPosition = this._findExactStart(start!, EXACT_START_SPAN);
+				FLOAT_TO_UINT32[0] = EXACT_START_SPAN[0];
 				stopLogId = UINT32_FROM_FLOAT[1];
 				stopPosition = UINT32_FROM_FLOAT[0];
-				FLOAT_TO_UINT32[0] = tail;
+				FLOAT_TO_UINT32[0] = EXACT_START_SPAN[1];
 				tailLogId = UINT32_FROM_FLOAT[1];
 				tailPosition = UINT32_FROM_FLOAT[0];
-				segmentRemovals = removals;
+				segmentRemovals = EXACT_START_SPAN[2];
 				FLOAT_TO_UINT32[0] = startPosition;
 			} else {
 				// otherwise, find the log file that contains the start timestamp, and find the position within that file
@@ -319,50 +321,33 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 
-		function reachedStop(nextPosition: number): boolean {
-			const logId = logBuffer!.logId;
-			return logId > stopLogId || (logId === stopLogId && nextPosition >= stopPosition);
-		}
-
-		/**
-		 * Takes the one-shot jump to `tail`. Returns false, leaving the ordinary scan to continue, when
-		 * the jump would cross a segment removed since the span was computed (the scan reports that
-		 * gap) or the tail segment cannot be mapped.
-		 */
-		function skipToTail(): boolean {
-			stopLogId = 0;
-			const fromLogId = logBuffer!.logId;
-			if (tailLogId < fromLogId || (tailLogId === fromLogId && tailPosition <= position)) {
-				return false;
-			}
-			if (tailLogId !== fromLogId) {
-				if (transactionLog._segmentRemovals() !== segmentRemovals) {
-					return false;
-				}
-				const tailLogBuffer = getLogMemoryMap(transactionLog, tailLogId);
-				if (!tailLogBuffer) {
-					return false;
-				}
-				logBuffer = tailLogBuffer;
-				dataView = tailLogBuffer.dataView;
-			}
-			position = tailPosition;
-			// re-derived by next() for the segment we landed in
-			size = 0;
-			return true;
-		}
-
-		if (stopLogId !== 0 && reachedStop(position)) {
-			// nothing from the start position onward can match
-			skipToTail();
-		}
-
 		const iterator: IterableIterator<TransactionEntry> = {
 			[Symbol.iterator](): IterableIterator<TransactionEntry> {
 				return this;
 			},
 			next() {
 				let timestamp: number;
+				if (stopLogId !== 0 && pastStop(logBuffer!.logId, position, stopLogId, stopPosition)) {
+					// The one-shot jump to `tail`, taken on a frame boundary so a mapping error leaves a
+					// resumable cursor. It is declined, and the ordinary scan continues, when the tail is not
+					// ahead, cannot be mapped, or a segment was removed since the span was computed (the scan
+					// then reports that gap). The removal check follows the mapping and holds the store's
+					// lock, so a purge either cancels the jump or follows it like a purge of read segments.
+					stopLogId = 0;
+					const fromLogId = logBuffer!.logId;
+					if (tailLogId > fromLogId) {
+						const tailLogBuffer = getLogMemoryMap(transactionLog, tailLogId);
+						if (tailLogBuffer && transactionLog._segmentRemovals() === segmentRemovals) {
+							logBuffer = tailLogBuffer;
+							dataView = tailLogBuffer.dataView;
+							position = tailPosition;
+							size = 0;
+						}
+					} else if (tailLogId === fromLogId && tailPosition > position) {
+						position = tailPosition;
+						size = 0;
+					}
+				}
 				if (position >= size) {
 					// our position is beyond the size limit, get the updated
 					// size in case we can keep reading further from the same block
@@ -485,9 +470,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							stopLogId = 0;
 						} else {
 							matchesRange = false;
-							if (stopLogId !== 0 && reachedStop(position + length) && skipToTail()) {
-								return iterator.next();
-							}
 						}
 					} else {
 						// no exact start, so just match on conditions
@@ -506,6 +488,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								data: logBuffer!.subarray(entryStart, position),
 							},
 						};
+					}
+					if (stopLogId !== 0 && pastStop(logBuffer!.logId, position, stopLogId, stopPosition)) {
+						return iterator.next();
 					}
 					if (position >= size) {
 						// move to the next log file
@@ -569,6 +554,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		return iterator;
 	},
 });
+
+function pastStop(logId: number, position: number, stopLogId: number, stopPosition: number) {
+	return logId > stopLogId || (logId === stopLogId && position >= stopPosition);
+}
 
 // Out-parameter of `nextReadableLogBuffer()`: how many skipped sequence numbers above `gapFloor`
 // could not be read. A module slot, so an ordinary advance allocates nothing.

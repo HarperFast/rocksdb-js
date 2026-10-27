@@ -347,11 +347,7 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp, Exact
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	uint32_t currentSeq = this->currentSequenceNumber.load(std::memory_order_relaxed);
 
-	// The span is built newest segment first, alongside the descent. `tail` is where skipping must
-	// end: it starts at the newest indexed byte (nothing appended later is examined) and only ever
-	// moves down, to the first byte above which something unexamined remains — an unindexed
-	// suffix, a framing break the scan would report, or a missing sequence it would report as a
-	// gap. `stop` is the end of the newest entry that may be at or below the timestamp.
+	// Built newest segment first, during the descent; see DESIGN.md "Exact-start lookups".
 	LogPosition stop = { 0, 0 };
 	LogPosition tail = { 0, 0 };
 	bool stopFound = false;
@@ -419,7 +415,6 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp, Exact
 				span ? &segment : nullptr
 			);
 			if (positionInLogFile == 0xFFFFFFFF) {
-				// Every entry here is below the timestamp, so a match can only be appended later.
 				if (above != 0) {
 					return finish({ TRANSACTION_LOG_FILE_HEADER_SIZE, above });
 				}

@@ -95,6 +95,13 @@ LogPosition TransactionLogHandle::findPosition(double timestamp, ExactStartSpan*
 	return { 0, 0 };
 }
 
+double TransactionLogHandle::segmentRemovals() {
+	auto store = this->store.lock();
+	if (!store) return -1;
+	std::lock_guard<std::mutex> lock(store->dataSetsMutex);
+	return static_cast<double>(TransactionLogStore::segmentRemovals.load(std::memory_order_relaxed));
+}
+
 LogPosition TransactionLogHandle::getLastFlushed() {
 	auto store = this->store.lock();
 	if (store) return store->getLastFlushedPosition();

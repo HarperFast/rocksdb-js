@@ -618,7 +618,6 @@ describe('Transaction Log', () => {
 			const base = 1_800_000_000_000;
 			type Written = { timestamp: number; id: number };
 
-			// One transaction; its `count` entries share the timestamp, as a batch's entries do.
 			const write = (
 				db: RocksDatabase,
 				log: TransactionLog,
@@ -646,7 +645,6 @@ describe('Transaction Log', () => {
 			const idOf = (entry: { data: Buffer }) => entry.data.readUInt32BE(0);
 			const query = (log: TransactionLog, start: number, options = {}) =>
 				Array.from(log.query({ start, exactStart: true, ...options }), idOf);
-			// Entry headers the reader examined, so a test can tell a bounded lookup from a full scan.
 			const lookup = (log: TransactionLog, start: number) => {
 				const reads = vi.spyOn(DataView.prototype, 'getFloat64');
 				try {
@@ -684,11 +682,9 @@ describe('Transaction Log', () => {
 					}
 					expect(log.getLogFileSize(60)).toBeGreaterThan(0);
 					expect(log.getLogFileSize(61)).toBe(0);
-					// older than every segment, absent inside the range, absent in the newest segment, past the end
 					for (const start of [base - 5, base + 1005, base + 4705, base + 4795]) {
 						expect(lookup(log, start), `start ${start}`).toEqual({ ids: [], reads: 0 });
 					}
-					// one header read per entry scanned, so the counts above are not vacuous
 					const present = lookup(log, base + 1000);
 					expect(present.ids).toEqual(expected(written, base + 1000));
 					expect(present.reads).toBe(present.ids.length);
@@ -722,17 +718,14 @@ describe('Transaction Log', () => {
 					for (let i = 0; i < 200; i++) {
 						write(db, log, written, base + i * 10);
 					}
-					// in a later segment than the one the lower bound names
 					write(db, log, written, base + 155);
 					for (let i = 200; i < 400; i++) {
 						write(db, log, written, base + i * 10);
 					}
-					// the newest entry
 					write(db, log, written, base + 1005);
 					for (const start of [base + 155, base + 1005, base + 160, base + 1010]) {
 						expect(query(log, start), `start ${start}`).toEqual(expected(written, start));
 					}
-					// an absent start below both candidates skips the segments holding them
 					expect(lookup(log, base + 105)).toEqual({ ids: [], reads: 0 });
 				}));
 
@@ -784,7 +777,6 @@ describe('Transaction Log', () => {
 					expect(Array.from(polled, idOf)).toEqual([40, 41]);
 					expect(Array.from(unpolled, idOf)).toEqual([41]);
 
-					// and one written to a segment created after positioning
 					const rotated = log.query({ start: base + 125, exactStart: true });
 					expect(rotated.next().done).toBe(true);
 					for (let i = 0; i < 10; i++) {
@@ -861,6 +853,37 @@ describe('Transaction Log', () => {
 					})
 			);
 
+			it('leaves a resumable cursor when mapping the skip target fails', () =>
+				dbRunner(segmentOptions, async ({ db }) => {
+					const log = db.useLog('foo');
+					const written: Written[] = [];
+					for (let i = 0; i < 15; i++) {
+						write(db, log, written, base + i * 10);
+					}
+					// the last entry of segment 2 is a candidate, so the skip waits for the scan to reach it
+					write(db, log, written, base + 1);
+					for (let i = 16; i < 40; i++) {
+						write(db, log, written, base + i * 10);
+					}
+					const mapFile = log._getMemoryMapOfFile.bind(log);
+					let failures = 0;
+					Object.defineProperty(log, '_getMemoryMapOfFile', {
+						value(logId: number) {
+							if (logId === 5 && failures++ === 0) {
+								throw new Error('injected mapping failure');
+							}
+							return mapFile(logId);
+						},
+					});
+					const { entries, errors } = drainPastCorruption(
+						log.query({ start: base + 105, exactStart: true })
+					);
+					expect(entries).toEqual([]);
+					expect(errors.map((error) => error.message)).toEqual([
+						'injected mapping failure (log file ID: 5)',
+					]);
+				}));
+
 			it('still reports a framing break the skipped span would have crossed', () =>
 				dbRunner(segmentOptions, async ({ db, dbPath }) => {
 					let database = db;
@@ -871,7 +894,6 @@ describe('Transaction Log', () => {
 							write(database, log, written, base + i * 10);
 						}
 						database.close();
-						// zero the length of segment 3's third entry
 						const segment = join(dbPath, 'transaction_logs', 'foo', '3.txnlog');
 						const bytes = readFileSync(segment);
 						bytes.writeUInt32BE(
