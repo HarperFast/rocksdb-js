@@ -86,6 +86,24 @@ public:
 	const char* what() const noexcept override { return message.c_str(); }
 };
 
+/**
+ * A segment written by a newer release. Unlike a malformed segment it fails the store: skipping it
+ * would hide its history and let this build append older-format segments after it.
+ */
+class TransactionLogVersionException final : public std::exception {
+	std::string message;
+public:
+	explicit TransactionLogVersionException(std::string msg) noexcept : message(std::move(msg)) {}
+	const char* what() const noexcept override { return message.c_str(); }
+};
+
+/**
+ * Returns false for anything open() rejects as malformed, so the normal open path handles it.
+ */
+bool checkTransactionLogSegmentVersion(const std::filesystem::path& logPath);
+
+std::string unsupportedVersionMessage(const std::filesystem::path& logPath, unsigned version);
+
 class TransactionLogOpenException final : public std::exception {
 	std::string message;
 public:
@@ -126,6 +144,7 @@ inline int64_t landedBytesFromFilePointer(int64_t pointerAfterWrite, int64_t wri
 #define TRANSACTION_LOG_FILE_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
+#define TRANSACTION_LOG_FORMAT_VERSION 1
 #define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN 0x52455449
 #define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE 12
 
@@ -168,7 +187,7 @@ struct TransactionLogFile final {
 	/**
 	 * The version of the file format.
 	 */
-	uint8_t version = 1;
+	uint8_t version = TRANSACTION_LOG_FORMAT_VERSION;
 
 	/**
 	 * The timestamp of the most recent transaction log batch that has been

@@ -417,9 +417,12 @@ RecoveryScan scanTransactionLogForFloor(
 		throw TransactionLogFormatException("Invalid transaction log file: " + path.string());
 	}
 	uint8_t version = readUint8(header + 4);
-	if (version != 1) {
+	if (version > TRANSACTION_LOG_FORMAT_VERSION) {
+		throw TransactionLogVersionException(unsupportedVersionMessage(path, version));
+	}
+	if (version != TRANSACTION_LOG_FORMAT_VERSION) {
 		throw TransactionLogFormatException(
-			"Unsupported transaction log file version: " + std::to_string(version));
+			"Invalid transaction log file version " + std::to_string(version) + ": " + path.string());
 	}
 
 	auto scan = scanTransactionLogForRecovery(extent, readFromStream, &input, plausibleBound,

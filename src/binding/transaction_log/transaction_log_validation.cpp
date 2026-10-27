@@ -72,7 +72,7 @@ TransactionLogFileValidation validateTransactionLogImage(
 	}
 
 	uint8_t version = static_cast<uint8_t>(data[4]);
-	if (version != 1) {
+	if (version != TRANSACTION_LOG_FORMAT_VERSION) {
 		result.errors.push_back(
 			"Unsupported transaction log file version: " + std::to_string(version)
 		);

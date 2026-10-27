@@ -1576,6 +1576,15 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			store.get(), e.what());
 	}
 
+	// A newer release only adds segments past the ones it found, and this release never appends
+	// after a newer-format segment it can read (writeEntries rethrows the version error rather than
+	// rotating), so such segments form the newest run: probe from the top down.
+	for (auto it = store->sequenceFiles.rbegin(); it != store->sequenceFiles.rend(); ++it) {
+		if (checkTransactionLogSegmentVersion(it->second->path)) {
+			break;
+		}
+	}
+
 	LogPosition flushedPosition = store->getLastFlushedPosition();
 	store->lastWrittenFlushedPosition = flushedPosition;
 	if (!readOnly && flushedPosition.fullPosition == 0 && store->sequenceFiles.empty()) {
@@ -1640,6 +1649,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 			} catch (const TransactionLogAppendBoundaryException&) {
 				// The marker is authoritative; a segment we cannot reconcile with it
 				// must fail the load rather than expose orphaned bytes.
+				throw;
+			} catch (const TransactionLogVersionException&) {
 				throw;
 			} catch (const std::exception& e) {
 				// A newest segment we cannot open is not fatal: leave it registered
@@ -1719,6 +1730,11 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 					break;
 				}
 			}
+		} catch (const TransactionLogVersionException&) {
+			if (openedForScan && logFile->isOpen()) {
+				logFile->close();
+			}
+			throw;
 		} catch (const std::exception& e) {
 			if (openedForScan && logFile->isOpen()) {
 				logFile->close();

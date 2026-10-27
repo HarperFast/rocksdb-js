@@ -800,6 +800,62 @@ describe('Transaction Log', () => {
 				expect(() => log._getMemoryMapOfFile(lazySequence)).toThrow('Invalid transaction log file');
 			}));
 
+		describe('segment format version', () => {
+			const segment = (version: number, withEntry: boolean): Buffer => {
+				const header = Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				header.writeUInt32BE(TRANSACTION_LOG_TOKEN, 0);
+				header.writeUInt8(version, 4);
+				header.writeDoubleBE(Date.now(), 5);
+				if (!withEntry) return header;
+				const entry = Buffer.alloc(TRANSACTION_LOG_ENTRY_HEADER_SIZE + 1);
+				entry.writeDoubleBE(Date.now(), 0);
+				entry.writeUInt32BE(1, 8);
+				entry.writeUInt8(1, 12);
+				return Buffer.concat([header, entry]);
+			};
+
+			it('refuses to open a store whose newest segment has an unknown version', () =>
+				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+					const logDirectory = join(dbPath, 'transaction_logs', 'newer');
+					await mkdir(logDirectory, { recursive: true });
+					await writeFile(join(logDirectory, '1.txnlog'), segment(1, true));
+					await writeFile(join(logDirectory, '2.txnlog'), segment(2, true));
+					expect(() => db.open()).toThrow(/2\.txnlog has format version 2/);
+				}));
+
+			it('refuses to open a store with a newer-format segment below a malformed newest one', () =>
+				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+					const logDirectory = join(dbPath, 'transaction_logs', 'newer');
+					await mkdir(logDirectory, { recursive: true });
+					await writeFile(join(logDirectory, '1.txnlog'), segment(1, true));
+					await writeFile(join(logDirectory, '2.txnlog'), segment(2, true));
+					await writeFile(
+						join(logDirectory, '3.txnlog'),
+						Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE)
+					);
+					// flushed through segment 3, so the committed-boundary scan never reaches segment 2
+					await writeFile(join(logDirectory, 'txn.state'), Buffer.from([13, 0, 0, 0, 3, 0, 0, 0]));
+					expect(() => db.open()).toThrow(/2\.txnlog has format version 2/);
+				}));
+
+			it('still opens a store whose newest segment is malformed', () =>
+				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+					const logDirectory = join(dbPath, 'transaction_logs', 'malformed');
+					await mkdir(logDirectory, { recursive: true });
+					await writeFile(join(logDirectory, '1.txnlog'), segment(1, true));
+					await writeFile(
+						join(logDirectory, '2.txnlog'),
+						Buffer.alloc(TRANSACTION_LOG_FILE_HEADER_SIZE)
+					);
+					db.open();
+					const log = db.useLog('malformed');
+					await db.transaction(async (txn) => {
+						log.addEntry(Buffer.from('after'), txn.id);
+					});
+					expect(log.getLogFileSize(3)).toBeGreaterThan(TRANSACTION_LOG_FILE_HEADER_SIZE);
+				}));
+		});
+
 		it('should not commit the log if the transaction is aborted', () =>
 			dbRunner(async ({ db, dbPath }) => {
 				const log = db.useLog('foo');

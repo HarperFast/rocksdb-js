@@ -12,11 +12,16 @@
 #include "core/encoding.h"
 #include "core/exception.h"
 #include "transaction_log/transaction_log_file.h"
+#include "transaction_log/transaction_log_recovery.h"
+#include "transaction_log/transaction_log_store.h"
+#include "transaction_log/transaction_log_entry.h"
 #include "transaction_log/transaction_log_validation.h"
 
 using rocksdb_js::DBException;
 using rocksdb_js::TransactionLogFile;
 using rocksdb_js::TransactionLogFormatException;
+using rocksdb_js::TransactionLogVersionException;
+using rocksdb_js::checkTransactionLogSegmentVersion;
 using rocksdb_js::TransactionLogFileValidation;
 using rocksdb_js::TransactionLogStoreValidation;
 using rocksdb_js::validateTransactionLogImage;
@@ -551,11 +556,55 @@ TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures)
 	auto badVersionPath = dir / "3.txnlog";
 	LogImage(TRANSACTION_LOG_TOKEN, /*version=*/2).writeTo(badVersionPath);
 	TransactionLogFile badVersion(badVersionPath, 3);
-	EXPECT_THROW(badVersion.open(0), TransactionLogFormatException);
+	EXPECT_THROW(badVersion.open(0), TransactionLogVersionException);
+	EXPECT_EQ(badVersion.version, TRANSACTION_LOG_FORMAT_VERSION);
+	EXPECT_THROW(checkTransactionLogSegmentVersion(badVersionPath), TransactionLogVersionException);
+	EXPECT_THROW(
+		rocksdb_js::scanTransactionLogForFloor(badVersionPath, 0, 0), TransactionLogVersionException);
+	EXPECT_FALSE(checkTransactionLogSegmentVersion(badTokenPath));
+	EXPECT_FALSE(checkTransactionLogSegmentVersion(tooSmallPath));
+
+	auto zeroVersionPath = dir / "5.txnlog";
+	LogImage(TRANSACTION_LOG_TOKEN, /*version=*/0).writeTo(zeroVersionPath);
+	TransactionLogFile zeroVersion(zeroVersionPath, 5);
+	EXPECT_THROW(zeroVersion.open(0), TransactionLogFormatException);
+	EXPECT_FALSE(checkTransactionLogSegmentVersion(zeroVersionPath));
+
+	// A short header is malformed, as open() classifies it, even when its version byte is newer.
+	auto shortNewerPath = dir / "7.txnlog";
+	{
+		char bytes[5] = {0, 0, 0, 0, 2};
+		rocksdb_js::writeUint32BE(bytes, TRANSACTION_LOG_TOKEN);
+		std::ofstream(shortNewerPath, std::ios::binary).write(bytes, sizeof(bytes));
+	}
+	TransactionLogFile shortNewer(shortNewerPath, 7);
+	EXPECT_THROW(shortNewer.open(0), TransactionLogFormatException);
+	EXPECT_FALSE(checkTransactionLogSegmentVersion(shortNewerPath));
+
+	auto currentPath = dir / "6.txnlog";
+	LogImage().writeTo(currentPath);
+	EXPECT_TRUE(checkTransactionLogSegmentVersion(currentPath));
 
 	TransactionLogFile ioFailure(dir, 4);
 	EXPECT_THROW(ioFailure.open(0), DBException);
 
+	std::filesystem::remove_all(dir);
+}
+
+TEST(TransactionLogFileOpen, WriteDoesNotRotatePastANewerFormatSegment) {
+	auto dir = makeTempStoreDir("rocksdb-js-transaction-log-newer-format");
+	LogImage(TRANSACTION_LOG_TOKEN, /*version=*/2).writeTo(dir / "1.txnlog");
+	{
+		rocksdb_js::TransactionLogStore store("store", dir, 0, std::chrono::milliseconds(0), 0);
+		rocksdb_js::LogPosition position;
+		std::string payload = "entry";
+		rocksdb_js::TransactionLogEntryBatch batch(1770000000001.0);
+		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		EXPECT_THROW(store.writeBatch(batch, position), TransactionLogVersionException);
+		store.close();
+	}
+	EXPECT_FALSE(std::filesystem::exists(dir / "2.txnlog"));
 	std::filesystem::remove_all(dir);
 }
 
