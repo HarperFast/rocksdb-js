@@ -91,7 +91,6 @@ union LogPosition {
 struct ExactStartSpan final {
 	LogPosition stop = { 0, 0 };
 	LogPosition tail = { 0, 0 };
-	/** TransactionLogStore::segmentRemovals when the span was computed. */
 	uint64_t segmentRemovals = 0;
 };
 

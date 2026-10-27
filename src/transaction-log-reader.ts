@@ -480,7 +480,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 										dataView = tailLogBuffer.dataView;
 									}
 									position = tailPosition;
-									// re-derived by next() for the segment we landed in
 									size = 0;
 								}
 								tailLogBuffer = undefined;

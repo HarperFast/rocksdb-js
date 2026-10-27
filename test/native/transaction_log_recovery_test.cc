@@ -1929,6 +1929,9 @@ TEST(TransactionLogExactStartSpan, ATailStopsAtAnOlderSegmentsUnindexedSuffix) {
 		registerSegments(store, storePath, { { 1, &first }, { 2, &second } });
 		TransactionLogFile& older = *store.sequenceFiles[1];
 		ASSERT_TRUE(older.openExisting(1.0));
+		// Windows indexes the whole file while opening it; drop that to reach the short map.
+		older.downgradeMapToFrozen();
+		older.resetTimestampIndex();
 		uint32_t fullSize = first.size();
 		older.afterIndexMapAcquiredForTests = [&] { older.size.store(fullSize, std::memory_order_relaxed); };
 		older.size.store(cut + 5, std::memory_order_relaxed);
