@@ -581,12 +581,7 @@ static rocksdb::Status checkBeforeLog(TransactionHandle& txnHandle, const DBDesc
 	if (txnHandle.agedIntents && descriptor.mode == DBMode::Optimistic &&
 		!prelogConflictCheckDisabled().load(std::memory_order_relaxed) &&
 		(txnHandle.retries > 0 || !prelogConflictCheckRetriesOnly().load(std::memory_order_relaxed))) {
-		rocksdb::Status status;
-		try {
-			status = rocksdb::CheckOptimisticTransactionForConflicts(txnHandle.txn);
-		} catch (...) {
-			return rocksdb::Status::OK(); // advisory: Commit() still validates
-		}
+		rocksdb::Status status = rocksdb::CheckOptimisticTransactionForConflicts(txnHandle.txn);
 		if (status.IsBusy() || status.IsTryAgain()) {
 			txnHandle.lastConflictKind = TransactionHandle::ConflictCheckBeforeLog;
 			return status;
