@@ -578,7 +578,8 @@ let tailLogBuffer: LogBuffer | undefined;
 
 /**
  * Whether an exact-start lookup at `position` of `fromLogId` may take its one-shot jump to the tail.
- * next() calls it on a frame boundary, so a mapping error leaves a resumable cursor. The removal
+ * next() calls it on a frame boundary, so a mapping error leaves a resumable cursor; from query()
+ * the error escapes before any iterator exists. The removal
  * check follows the mapping and holds the store's lock, so a purge either declines the jump (the
  * scan then reports the gap) or follows it like a purge of segments already read.
  */
