@@ -630,6 +630,88 @@ for (const { name, options, txnOptions } of testOptions) {
 				expect(value).toBeUndefined();
 			}));
 
+		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
+			`${name} sync should log a retried transaction once`,
+			() =>
+				dbRunner({ dbOptions: [options] }, async ({ db }) => {
+					const log = db.useLog('retry');
+					db.putSync('k', 0);
+					const handles = new Set<Transaction>();
+					await db.transactionSync(
+						async (txn: Transaction, attempt) => {
+							handles.add(txn);
+							const current = txn.getSync('k') as number;
+							log.addEntry(Buffer.from(`attempt ${attempt}`), txn.id);
+							txn.putSync('k', current + 1);
+							if (attempt === 1) await db.put('k', 100);
+						},
+						{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
+					);
+					expect(handles.size).toBe(1);
+					expect(db.getSync('k')).toBe(101);
+					const entries = [...log.query({ start: 0 })];
+					expect(entries).toHaveLength(1);
+					expect(entries[0].data.toString()).toBe('attempt 1');
+				})
+		);
+
+		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
+			`${name} sync should log a retried transaction once with a synchronous callback`,
+			() =>
+				dbRunner({ dbOptions: [options] }, async ({ db }) => {
+					const log = db.useLog('retry');
+					db.putSync('k', 0);
+					const handles = new Set<Transaction>();
+					db.transactionSync(
+						(txn: Transaction, attempt) => {
+							handles.add(txn);
+							const current = txn.getSync('k') as number;
+							log.addEntry(Buffer.from(`attempt ${attempt}`), txn.id);
+							if (attempt === 1) db.putSync('k', 100);
+							txn.putSync('k', current + 1);
+						},
+						{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
+					);
+					expect(handles.size).toBe(1);
+					expect(db.getSync('k')).toBe(101);
+					const entries = [...log.query({ start: 0 })];
+					expect(entries).toHaveLength(1);
+					expect(entries[0].data.toString()).toBe('attempt 1');
+				})
+		);
+
+		it.skipIf(options?.pessimistic || txnOptions?.disableSnapshot)(
+			`${name} sync should abort a logged transaction whose async callback rejects on retry`,
+			() =>
+				dbRunner({ dbOptions: [options] }, async ({ db }) => {
+					const log = db.useLog('retry');
+					db.putSync('k', 0);
+					let retained: Transaction | undefined;
+					await expect(
+						db.transactionSync(
+							async (txn: Transaction, attempt) => {
+								retained = txn;
+								const current = txn.getSync('k') as number;
+								log.addEntry(Buffer.from(`attempt ${attempt}`), txn.id);
+								txn.putSync('k', current + 1);
+								if (attempt === 1) await db.put('k', 100);
+								else throw new Error('rejected on retry');
+							},
+							{ ...txnOptions, retryOnBusy: true, maxRetries: 5 }
+						)
+					).rejects.toThrow('rejected on retry');
+					// a later entry is visible only if the rejected transaction released its log position;
+					// `retained` keeps GC from releasing it instead
+					await db.transaction(async (txn: Transaction) => {
+						log.addEntry(Buffer.from('later'), txn.id);
+						await txn.put('other', 1);
+					});
+					const entries = [...log.query({ start: 0 })].map((entry) => entry.data.toString());
+					expect(entries).toContain('later');
+					expect(retained).toBeDefined();
+				})
+		);
+
 		it(`${name} sync should rollback on error`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				await db.put('foo', 'bar');
