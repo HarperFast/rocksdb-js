@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 // Deterministic test seams that widen a race window are gated on a millisecond
@@ -160,6 +161,26 @@ inline bool testConsumeAbortMarkFailure() {
 	return false;
 }
 
+// Turns off the RocksDB conflict check before the transaction-log write, so a test can make a
+// logged batch conflict at commit from a stale snapshot. Set from JS via
+// `disablePrelogConflictCheckForTesting(disabled)`; process-global like forceTryAgainCounter().
+inline std::atomic<bool>& prelogConflictCheckDisabled() {
+	static std::atomic<bool> disabled{false};
+	return disabled;
+}
+
+// Benchmark arms only: run that check on retries alone, and turn off refusal on an older
+// transaction's write intent. Set from JS like prelogConflictCheckDisabled().
+inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
+	static std::atomic<bool> retriesOnly{false};
+	return retriesOnly;
+}
+
+inline std::atomic<bool>& intentRefusalDisabled() {
+	static std::atomic<bool> disabled{false};
+	return disabled;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -169,6 +190,15 @@ inline void initializeTestSeams() {
 		destroyFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
 		closeFlushFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
+		// Benchmark arms: ROCKSDB_JS_PRELOG_CHECK=off|retries, ROCKSDB_JS_INTENT_REFUSAL=0.
+		value = ::getenv("ROCKSDB_JS_PRELOG_CHECK");
+		if (value && ::strcmp(value, "off") == 0) {
+			prelogConflictCheckDisabled().store(true, std::memory_order_relaxed);
+		} else if (value && ::strcmp(value, "retries") == 0) {
+			prelogConflictCheckRetriesOnly().store(true, std::memory_order_relaxed);
+		}
+		value = ::getenv("ROCKSDB_JS_INTENT_REFUSAL");
+		intentRefusalDisabled().store(value && ::strcmp(value, "0") == 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_ABORT_MARK_FAILURE");
 		abortMarkFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		iteratorNextDelayMsFlag().store(
@@ -252,25 +282,6 @@ inline bool testForceTryAgain() {
 	return false;
 }
 
-// Turns off the RocksDB conflict check before the transaction-log write, so a test can make a
-// logged batch conflict at commit from a stale snapshot. Set from JS via
-// `disablePrelogConflictCheckForTesting(disabled)`; process-global like forceTryAgainCounter().
-inline std::atomic<bool>& prelogConflictCheckDisabled() {
-	static std::atomic<bool> disabled{false};
-	return disabled;
-}
-
-// Benchmark arms only: run that check on retries alone, and turn off refusal on an older
-// transaction's write intent. Set from JS like prelogConflictCheckDisabled().
-inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
-	static std::atomic<bool> retriesOnly{false};
-	return retriesOnly;
-}
-
-inline std::atomic<bool>& intentRefusalDisabled() {
-	static std::atomic<bool> disabled{false};
-	return disabled;
-}
 
 // Forces DBDescriptor::reclaimColumnFamily to report failure. 0 = inert; 1 = fail without
 // calling DropColumnFamily (the family stays live for the retry); 2 = perform the real drop and
