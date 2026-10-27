@@ -131,6 +131,7 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	if (this->txn) {
 		this->txn->ClearSnapshot();
 		delete this->txn;
+		this->retries++;
 	}
 
 	this->logEntryBatch.reset();
@@ -251,7 +252,7 @@ void TransactionHandle::lockVTSlot(
 	if (this->agedIntents) {
 		bool olderHolder;
 		t = vt->lockSlotForWrite(slot, dbId, IntentAge{ this->age, reinterpret_cast<uintptr_t>(this) }, olderHolder);
-		if (olderHolder && !this->intentConflictSlot) {
+		if (olderHolder && !this->intentConflictSlot && !intentRefusalDisabled().load(std::memory_order_relaxed)) {
 			this->intentConflictSlot = slot;
 		}
 	} else {

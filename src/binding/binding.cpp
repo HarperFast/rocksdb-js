@@ -97,6 +97,22 @@ napi_value DisablePrelogConflictCheckForTesting(napi_env env, napi_callback_info
 	NAPI_RETURN_UNDEFINED();
 }
 
+napi_value SetPrelogConflictCheckRetriesOnlyForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	bool retriesOnly = false;
+	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &retriesOnly));
+	prelogConflictCheckRetriesOnly().store(retriesOnly, std::memory_order_relaxed);
+	NAPI_RETURN_UNDEFINED();
+}
+
+napi_value DisableIntentRefusalForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	bool disabled = false;
+	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &disabled));
+	intentRefusalDisabled().store(disabled, std::memory_order_relaxed);
+	NAPI_RETURN_UNDEFINED();
+}
+
 napi_value ForceDropFailureForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	int32_t mode = 0;
@@ -435,6 +451,12 @@ NAPI_MODULE_INIT() {
 	napi_value disablePrelogCheckFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "disablePrelogConflictCheckForTesting", NAPI_AUTO_LENGTH, DisablePrelogConflictCheckForTesting, nullptr, &disablePrelogCheckFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "disablePrelogConflictCheckForTesting", disablePrelogCheckFn));
+	napi_value retriesOnlyFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "setPrelogConflictCheckRetriesOnlyForTesting", NAPI_AUTO_LENGTH, SetPrelogConflictCheckRetriesOnlyForTesting, nullptr, &retriesOnlyFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setPrelogConflictCheckRetriesOnlyForTesting", retriesOnlyFn));
+	napi_value disableIntentRefusalFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "disableIntentRefusalForTesting", NAPI_AUTO_LENGTH, DisableIntentRefusalForTesting, nullptr, &disableIntentRefusalFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "disableIntentRefusalForTesting", disableIntentRefusalFn));
 
 	napi_value forceDropFailureFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceDropFailureForTesting", NAPI_AUTO_LENGTH, ForceDropFailureForTesting, nullptr, &forceDropFailureFn));

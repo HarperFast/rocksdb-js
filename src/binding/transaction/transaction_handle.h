@@ -405,6 +405,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/** Why the most recent attempt was refused or retried. */
 	ConflictKind lastConflictKind = ConflictNone;
 
+	/** How many times this transaction has been reset for a retry. */
+	uint32_t retries = 0;
+
 	/** Epoch milliseconds past which a park resolves; 0 for the default bound only. */
 	double parkDeadline = 0;
 

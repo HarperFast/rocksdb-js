@@ -260,6 +260,18 @@ inline std::atomic<bool>& prelogConflictCheckDisabled() {
 	return disabled;
 }
 
+// Benchmark arms only: run that check on retries alone, and turn off refusal on an older
+// transaction's write intent. Set from JS like prelogConflictCheckDisabled().
+inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
+	static std::atomic<bool> retriesOnly{false};
+	return retriesOnly;
+}
+
+inline std::atomic<bool>& intentRefusalDisabled() {
+	static std::atomic<bool> disabled{false};
+	return disabled;
+}
+
 // Forces DBDescriptor::reclaimColumnFamily to report failure. 0 = inert; 1 = fail without
 // calling DropColumnFamily (the family stays live for the retry); 2 = perform the real drop and
 // then report failure (the retry must resolve as "already dropped"). Set from JS via

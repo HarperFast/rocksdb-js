@@ -1,5 +1,9 @@
 import { backups, RocksDatabase } from '../src/index.ts';
-import { constants, disablePrelogConflictCheckForTesting } from '../src/load-binding.ts';
+import {
+	constants,
+	disableIntentRefusalForTesting,
+	disablePrelogConflictCheckForTesting,
+} from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
 import { ConflictKind, RETRY_NOW, Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
@@ -555,6 +559,51 @@ describe('transaction-log abort markers', () => {
 				stale.abort();
 			})
 	);
+
+	for (const intents of [true, false]) {
+		it(`converges crossing 1,000-key logged transactions with intent refusal ${intents ? 'on' : 'off'}`, () =>
+			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db }) => {
+				RocksDatabase.config({ transactionLogAbortMarkers: true });
+				disablePrelogConflictCheckForTesting(false);
+				disableIntentRefusalForTesting(!intents);
+				try {
+					const keys = Array.from({ length: 1000 }, (_, i) => `k${i}`);
+					for (const key of keys) {
+						await db.put(key, 0);
+						db.populateVersion(key, 1.5e12);
+					}
+					const log = db.useLog('foo');
+					let attempts = 0;
+					const writer = (order: string[], value: number) =>
+						db.transaction(
+							async (txn) => {
+								attempts++;
+								log.addEntry(Buffer.from(`w${value}`), txn.id);
+								for (const key of order) {
+									txn.putSync(key, value);
+								}
+								await delay(1);
+							},
+							{ coordinatedRetry: true, maxRetries: 200 }
+						);
+					const started = performance.now();
+					for (let round = 0; round < 5; round++) {
+						await Promise.all([
+							writer(keys, round * 2 + 1),
+							writer([...keys].reverse(), round * 2 + 2),
+						]);
+					}
+					const elapsed = performance.now() - started;
+					expect(elapsed).toBeLessThan(30000);
+					expect(readEntries(db).length).toBe(10);
+					console.log(
+						`crossing 1,000-key x10, intents ${intents ? 'on' : 'off'}: ${elapsed.toFixed(0)} ms, ${attempts} attempts`
+					);
+				} finally {
+					disableIntentRefusalForTesting(false);
+				}
+			}));
+	}
 
 	it('fails closed when a marker cannot be written, and resolves on a later retry', async () => {
 		const result = await runFixture('fork-abort-mark-failure.mts', {
