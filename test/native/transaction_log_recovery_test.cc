@@ -1985,7 +1985,6 @@ TEST(TransactionLogExactStartSpan, ATailStopsAtAnOlderSegmentsUnindexedSuffix) {
 	std::filesystem::remove_all(storePath);
 }
 
-// A tail is always a batch boundary: a break inside a batch moves it back to the batch's start.
 TEST(TransactionLogExactStartSpan, ATailBeforeABreakIsTheBatchStart) {
 	auto storePath = uniqueFloorScanStorePath();
 	std::filesystem::create_directories(storePath);
