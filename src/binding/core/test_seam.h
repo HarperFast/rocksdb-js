@@ -252,6 +252,14 @@ inline bool testForceTryAgain() {
 	return false;
 }
 
+// Turns off the RocksDB conflict check before the transaction-log write, so a test can make a
+// logged batch conflict at commit from a stale snapshot. Set from JS via
+// `disablePrelogConflictCheckForTesting(disabled)`; process-global like forceTryAgainCounter().
+inline std::atomic<bool>& prelogConflictCheckDisabled() {
+	static std::atomic<bool> disabled{false};
+	return disabled;
+}
+
 // Forces DBDescriptor::reclaimColumnFamily to report failure. 0 = inert; 1 = fail without
 // calling DropColumnFamily (the family stays live for the retry); 2 = perform the real drop and
 // then report failure (the retry must resolve as "already dropped"). Set from JS via

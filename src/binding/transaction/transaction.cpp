@@ -576,7 +576,8 @@ static const rocksdb::Status& intentRefusal() {
  */
 static rocksdb::Status checkBeforeLog(TransactionHandle& txnHandle) {
 #ifdef ROCKSDB_HAS_CHECK_OPTIMISTIC_TRANSACTION_FOR_CONFLICTS
-	if (txnHandle.agedIntents && txnHandle.dbHandle && txnHandle.dbHandle->descriptor &&
+	if (txnHandle.agedIntents && !prelogConflictCheckDisabled().load(std::memory_order_relaxed) &&
+		txnHandle.dbHandle && txnHandle.dbHandle->descriptor &&
 		txnHandle.dbHandle->descriptor->mode == DBMode::Optimistic) {
 		rocksdb::Status status = rocksdb::CheckOptimisticTransactionForConflicts(txnHandle.txn);
 		if (status.IsBusy() || status.IsTryAgain()) {

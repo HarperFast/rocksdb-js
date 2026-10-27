@@ -1033,6 +1033,13 @@ export const iteratorPoolEnabled: boolean = binding.iteratorPoolEnabled;
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
 
 /**
+ * Test-only: turn the RocksDB conflict check before the transaction-log write off (`true`) or back
+ * on, so a test can make a logged batch conflict at commit from a stale snapshot.
+ */
+export const disablePrelogConflictCheckForTesting: (disabled: boolean) => void =
+	binding.disablePrelogConflictCheckForTesting;
+
+/**
  * Test-only seam: makes the physical column-family drop report failure.
  * `0` = inert, `1` = fail without dropping (the retry performs the drop),
  * `2` = drop for real and then report failure (the retry resolves as

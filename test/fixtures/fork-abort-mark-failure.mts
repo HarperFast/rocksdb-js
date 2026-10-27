@@ -1,4 +1,5 @@
 import { RocksDatabase, Transaction } from '../../src/index.ts';
+import { disablePrelogConflictCheckForTesting } from '../../src/load-binding.ts';
 
 // Run with ROCKSDB_JS_ABORT_MARK_FAILURE=2: the abort's marker sync fails, and so does the retry
 // the next append makes first, so that append is refused; the append after it retries successfully.
@@ -8,6 +9,8 @@ const fail = (message: string): never => {
 };
 
 RocksDatabase.config({ transactionLogAbortMarkers: true });
+// a logged batch must conflict at commit; the check before the log write would refuse it first
+disablePrelogConflictCheckForTesting(true);
 const db = RocksDatabase.open(dbPath);
 try {
 	const log = db.useLog('foo');

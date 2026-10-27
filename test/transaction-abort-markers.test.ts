@@ -1,5 +1,5 @@
 import { backups, RocksDatabase } from '../src/index.ts';
-import { constants } from '../src/load-binding.ts';
+import { constants, disablePrelogConflictCheckForTesting } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
 import { ConflictKind, RETRY_NOW, Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const { TRANSACTION_LOG_ENTRY_ABORTED_FLAG, TRANSACTION_LOG_ENTRY_LAST_FLAG } = constants;
 
@@ -29,8 +29,15 @@ const readEntries = (db: RocksDatabase, name = 'foo') =>
 	Array.from(db.useLog(name).query({ start: 0 }), (entry) => entry.data.toString());
 
 describe('transaction-log abort markers', () => {
+	beforeEach(() => {
+		// These tests make a logged batch conflict at commit from a stale snapshot, which the
+		// RocksDB check before the log write would refuse first; its own test turns it back on.
+		disablePrelogConflictCheckForTesting(true);
+	});
+
 	afterEach(() => {
 		RocksDatabase.config({ transactionLogAbortMarkers: false, transactionLogWriteIntents: false });
+		disablePrelogConflictCheckForTesting(false);
 	});
 
 	it.each([
@@ -530,6 +537,7 @@ describe('transaction-log abort markers', () => {
 		() =>
 			dbRunner(async ({ db, dbPath }) => {
 				RocksDatabase.config({ transactionLogAbortMarkers: true });
+				disablePrelogConflictCheckForTesting(false);
 				await db.put('k', 'v0');
 				const log = db.useLog('foo');
 				const stale = new Transaction(db.store);

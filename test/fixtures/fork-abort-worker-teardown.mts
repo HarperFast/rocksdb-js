@@ -1,5 +1,8 @@
 import { RocksDatabase, Transaction } from '../../src/index.ts';
-import { lockWakeCallbackCount } from '../../src/load-binding.ts';
+import {
+	disablePrelogConflictCheckForTesting,
+	lockWakeCallbackCount,
+} from '../../src/load-binding.ts';
 import { parseTransactionLog } from '../../src/parse-transaction-log.ts';
 import { RETRY_NOW } from '../../src/transaction.ts';
 import { join } from 'node:path';
@@ -14,6 +17,8 @@ const message = (port: { once: (event: 'message', cb: (value: string) => void) =
 	new Promise<string>((resolve) => port.once('message', resolve));
 
 RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
+// a logged batch must conflict at commit; the check before the log write would refuse it first
+disablePrelogConflictCheckForTesting(true);
 
 if (!isMainThread) {
 	const db = RocksDatabase.open(workerData.dbPath, { verificationTable: true });

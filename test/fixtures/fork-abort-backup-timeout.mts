@@ -1,10 +1,13 @@
 import { RocksDatabase, Transaction } from '../../src/index.ts';
+import { disablePrelogConflictCheckForTesting } from '../../src/load-binding.ts';
 import { join } from 'node:path';
 
 // Run with ROCKSDB_JS_BACKUP_UNRESOLVED_WAIT_MS set low: a backup that captures a logged batch which
 // neither commits nor aborts within the bound is refused rather than published.
 const dbPath = process.argv[2];
 RocksDatabase.config({ transactionLogAbortMarkers: true });
+// a logged batch must conflict at commit; the check before the log write would refuse it first
+disablePrelogConflictCheckForTesting(true);
 const db = RocksDatabase.open(dbPath);
 try {
 	const log = db.useLog('foo');

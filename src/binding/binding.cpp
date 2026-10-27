@@ -89,6 +89,14 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value DisablePrelogConflictCheckForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	bool disabled = false;
+	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &disabled));
+	prelogConflictCheckDisabled().store(disabled, std::memory_order_relaxed);
+	NAPI_RETURN_UNDEFINED();
+}
+
 napi_value ForceDropFailureForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	int32_t mode = 0;
@@ -424,6 +432,9 @@ NAPI_MODULE_INIT() {
 	napi_value forceTryAgainFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
+	napi_value disablePrelogCheckFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "disablePrelogConflictCheckForTesting", NAPI_AUTO_LENGTH, DisablePrelogConflictCheckForTesting, nullptr, &disablePrelogCheckFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "disablePrelogConflictCheckForTesting", disablePrelogCheckFn));
 
 	napi_value forceDropFailureFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceDropFailureForTesting", NAPI_AUTO_LENGTH, ForceDropFailureForTesting, nullptr, &forceDropFailureFn));
