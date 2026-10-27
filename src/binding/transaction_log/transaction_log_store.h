@@ -685,7 +685,11 @@ struct TransactionLogStore final {
 private:
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 	friend struct TransactionLogStoreTestPeer;
+
 #endif
+	/** See DESIGN.md, "A failed sync freezes the flushed state". */
+	std::atomic<bool> logSyncFailed = false;
+
 	/**
 	 * Opens a log file for the given sequence number. If the log file does not
 	 * exist, it will be created.
@@ -737,6 +741,8 @@ private:
 	void recordFlushedPosition(rocksdb::SequenceNumber rocksSequenceNumber);
 	void writeFlushedPosition(LogPosition latestSequencePosition, uint64_t observedGeneration);
 	void warnFlushedStateFailure(const char* what, const char* detail) noexcept;
+
+	void noteLogSyncFailure(uint32_t sequenceNumber, const char* detail) noexcept;
 
 	void doPurge(
 		std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor = nullptr,

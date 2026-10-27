@@ -696,6 +696,11 @@ struct TransactionLogFile final {
 	 */
 	std::function<void()> afterLazyOpenForTests;
 
+	/**
+	 * Runs in flush() just before the sync call; throwing from it simulates a failed sync.
+	 */
+	std::function<void()> beforeSyncForTests;
+
 	static std::atomic<bool> forceMapFailureForTests;
 #endif
 

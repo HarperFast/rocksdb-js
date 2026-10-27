@@ -158,23 +158,46 @@ void TransactionLogFile::flush() {
 	if (this->fileHandle == INVALID_HANDLE_VALUE || currentSize <= this->lastFlushedSize) {
 		return; // return early
 	}
-	// Perform the flush without holding the lock (since fdatasync/fsync can be slow)
-	HANDLE handleToFlush = this->fileHandle;
-	lock.unlock();
+	// Flush a duplicate taken under the lock, then flush without it: a concurrent close of
+	// this->fileHandle (ensureExtent's borrow) must not invalidate the handle being flushed. If the
+	// handle cannot be duplicated, flush the original under the lock.
+	HANDLE duplicate = INVALID_HANDLE_VALUE;
+	if (!::DuplicateHandle(::GetCurrentProcess(), this->fileHandle, ::GetCurrentProcess(), &duplicate,
+			0, FALSE, DUPLICATE_SAME_ACCESS)) {
+		duplicate = INVALID_HANDLE_VALUE;
+	}
+	struct CloseOnExit {
+		HANDLE handle;
+		~CloseOnExit() {
+			if (this->handle != INVALID_HANDLE_VALUE) {
+				::CloseHandle(this->handle);
+			}
+		}
+	} closeDuplicate{duplicate};
+	HANDLE handleToFlush = duplicate != INVALID_HANDLE_VALUE ? duplicate : this->fileHandle;
+	if (duplicate != INVALID_HANDLE_VALUE) {
+		lock.unlock();
+	}
 
-	// Perform the flush without holding the lock (since FlushFileBuffers can be slow)
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (handle=%p, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), handleToFlush, currentSize, this->lastFlushedSize);
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (this->beforeSyncForTests) {
+		this->beforeSyncForTests();
+	}
+#endif
 	if (!::FlushFileBuffers(handleToFlush)) {
 		DWORD error = ::GetLastError();
 		std::string errorMessage = getWindowsErrorMessage(error);
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: FlushFileBuffers failed: %s (error=%lu: %s)\n",
 			this, this->path.string().c_str(), error, errorMessage.c_str());
-		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string());
+		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string() + ": " + errorMessage);
 	}
 
 	// Update the last flushed size after successful sync
-	lock.lock();
+	if (!lock.owns_lock()) {
+		lock.lock();
+	}
 	this->lastFlushedSize = currentSize;
 }
 

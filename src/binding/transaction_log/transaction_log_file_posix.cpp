@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <fcntl.h>
 #include <limits.h>
 #include <sys/mman.h>
 #include <sys/uio.h>
@@ -234,30 +235,52 @@ void TransactionLogFile::flush() {
 	if (this->fd == -1 || currentSize <= this->lastFlushedSize) {
 		return; // return early
 	}
-	int fdToFlush = this->fd;
-	// Perform the flush without holding the lock (since fdatasync/fsync can be slow)
-	lock.unlock();
+	// Sync a duplicate taken under the lock, then sync without it (fdatasync/fsync can be slow): a
+	// concurrent close of this->fd (ensureExtent's borrow) must not turn into EBADF, or a sync of
+	// whatever file reuses the descriptor number. Out of descriptors, sync the original under the lock.
+	int duplicate = ::fcntl(this->fd, F_DUPFD_CLOEXEC, 0);
+	struct CloseOnExit {
+		int fd;
+		~CloseOnExit() {
+			if (this->fd >= 0) {
+				::close(this->fd);
+			}
+		}
+	} closeDuplicate{duplicate};
+	int fdToFlush = duplicate >= 0 ? duplicate : this->fd;
+	if (duplicate >= 0) {
+		lock.unlock();
+	}
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (fd=%d, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), fdToFlush, currentSize, this->lastFlushedSize);
-
-	// macOS doesn't have fdatasync, use fsync instead
-	// fdatasync is faster on Linux as it doesn't sync metadata
-#ifdef __APPLE__
-	if (::fsync(fdToFlush) < 0) {
-		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fsync failed: %s (errno=%d)\n",
-			this, ::strerror(errno), errno);
-		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string());
-	}
-#else
-	if (::fdatasync(fdToFlush) < 0) {
-		DEBUG_LOG("%p TransactionLogFile::flush ERROR: fdatasync failed: %s (errno=%d)\n",
-			this, ::strerror(errno), errno);
-		throw rocksdb_js::DBException("Failed to flush file: " + this->path.string());
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (this->beforeSyncForTests) {
+		this->beforeSyncForTests();
 	}
 #endif
 
+	// macOS doesn't have fdatasync, use fsync instead
+	// fdatasync is faster on Linux as it doesn't sync metadata
+	int syncResult;
+	do {
+#ifdef __APPLE__
+		syncResult = ::fsync(fdToFlush);
+#else
+		syncResult = ::fdatasync(fdToFlush);
+#endif
+	} while (syncResult < 0 && errno == EINTR);
+	if (syncResult < 0) {
+		int error = errno;
+		DEBUG_LOG("%p TransactionLogFile::flush ERROR: sync failed: %s (errno=%d)\n",
+			this, ::strerror(error), error);
+		throw rocksdb_js::DBException(
+			"Failed to flush file: " + this->path.string() + ": " + std::string(::strerror(error)));
+	}
+
 	// Update the last flushed size after successful sync
-	lock.lock();
+	if (!lock.owns_lock()) {
+		lock.lock();
+	}
 	this->lastFlushedSize = currentSize;
 }
 

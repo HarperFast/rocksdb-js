@@ -1355,8 +1355,26 @@ void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequen
 		} catch (const std::exception& e) {
 			DEBUG_LOG("%p TransactionLogStore::databaseFlushBegin ERROR: Failed to flush log file %u: %s\n",
 				this, logFile->sequenceNumber, e.what());
-			// Continue flushing other files even if one fails
+			this->noteLogSyncFailure(logFile->sequenceNumber, e.what());
+		} catch (...) {
+			this->noteLogSyncFailure(logFile->sequenceNumber, "unknown error");
 		}
+	}
+}
+
+void TransactionLogStore::noteLogSyncFailure(uint32_t sequenceNumber, const char* detail) noexcept {
+	if (this->logSyncFailed.exchange(true, std::memory_order_acq_rel) || !GlobalEvents::hasListeners()) {
+		return;
+	}
+	try {
+		std::ostringstream msg;
+		msg << "Transaction log segment " << (this->displayPath / (std::to_string(sequenceNumber) + ".txnlog")).string()
+			<< " could not be synced before a database flush (" << detail << "). Its flushed state ("
+			<< (this->displayPath / "txn.state").string() << ") stops advancing while this log store stays open,"
+			<< " so a restart replays from the last position known to be durable and retention cannot purge"
+			<< " past it meanwhile.";
+		emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+	} catch (...) {
 	}
 }
 
@@ -1377,7 +1395,7 @@ void TransactionLogStore::databaseFlushed(rocksdb::SequenceNumber rocksSequenceN
 }
 
 void TransactionLogStore::recordFlushedPosition(rocksdb::SequenceNumber rocksSequenceNumber) {
-	if (this->isClosing.load(std::memory_order_relaxed)) {
+	if (this->isClosing.load(std::memory_order_relaxed) || this->logSyncFailed.load(std::memory_order_acquire)) {
 		return;
 	}
 
