@@ -1723,7 +1723,6 @@ rocksdb_js::TimestampSpan spanFor(TransactionLogFile& file, double timestamp, ui
 	return span;
 }
 
-// Writes each image as `<sequence>.txnlog` and registers it, as discovery would.
 void registerSegments(
 	rocksdb_js::TransactionLogStore& store,
 	const std::filesystem::path& storePath,
@@ -1846,7 +1845,6 @@ TEST(TransactionLogExactStartSpan, NoMatchSkipsFromTheStartToTheNewestIndexedByt
 		EXPECT_TRUE(samePosition(span.stop, 1, startOffset));
 		EXPECT_TRUE(samePosition(span.tail, 2, second.size()));
 		EXPECT_EQ(span.segmentRemovals, rocksdb_js::TransactionLogStore::segmentRemovals.load());
-		// past every entry: nothing to skip, the reader waits at the end
 		rocksdb_js::ExactStartSpan pastEnd;
 		auto end = store.findPositionByTimestamp(45.0, &pastEnd);
 		EXPECT_TRUE(samePosition(end, 2, second.size()));

@@ -329,10 +329,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				let timestamp: number;
 				if (stopLogId !== 0 && pastStop(logBuffer!.logId, position, stopLogId, stopPosition)) {
 					// The one-shot jump to `tail`, taken on a frame boundary so a mapping error leaves a
-					// resumable cursor. It is declined, and the ordinary scan continues, when the tail is not
-					// ahead, cannot be mapped, or a segment was removed since the span was computed (the scan
-					// then reports that gap). The removal check follows the mapping and holds the store's
-					// lock, so a purge either cancels the jump or follows it like a purge of read segments.
+					// resumable cursor. The removal check follows the mapping and holds the store's lock, so
+					// a purge either cancels the jump (the scan then reports the gap) or follows it.
 					stopLogId = 0;
 					const fromLogId = logBuffer!.logId;
 					if (tailLogId > fromLogId) {
@@ -470,6 +468,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							stopLogId = 0;
 						} else {
 							matchesRange = false;
+							if (
+								stopLogId !== 0 &&
+								pastStop(logBuffer!.logId, position + length, stopLogId, stopPosition)
+							) {
+								// next() takes the jump from this frame's end
+								position += length;
+								return iterator.next();
+							}
 						}
 					} else {
 						// no exact start, so just match on conditions
@@ -488,9 +494,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								data: logBuffer!.subarray(entryStart, position),
 							},
 						};
-					}
-					if (stopLogId !== 0 && pastStop(logBuffer!.logId, position, stopLogId, stopPosition)) {
-						return iterator.next();
 					}
 					if (position >= size) {
 						// move to the next log file
