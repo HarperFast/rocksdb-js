@@ -572,15 +572,21 @@ static const rocksdb::Status& intentRefusal() {
 /**
  * With abort markers on, an optimistic attempt about to write its batch first runs RocksDB's own
  * conflict check, so one that would fail at commit is refused before it logs. Advisory: Commit()
- * validates again. Needs a RocksDB build exporting the check (HarperFast/rocksdb-js#934).
+ * validates again. Called after admission, whose claims keep the batch's column families from
+ * being dropped while it runs, as RocksDB requires (transaction/DESIGN.md, "Conflict check before
+ * the log write").
  */
-static rocksdb::Status checkBeforeLog(TransactionHandle& txnHandle) {
+static rocksdb::Status checkBeforeLog(TransactionHandle& txnHandle, const DBDescriptor& descriptor) {
 #ifdef ROCKSDB_HAS_CHECK_OPTIMISTIC_TRANSACTION_FOR_CONFLICTS
-	if (txnHandle.agedIntents && !prelogConflictCheckDisabled().load(std::memory_order_relaxed) &&
-		(txnHandle.retries > 0 || !prelogConflictCheckRetriesOnly().load(std::memory_order_relaxed)) &&
-		txnHandle.dbHandle && txnHandle.dbHandle->descriptor &&
-		txnHandle.dbHandle->descriptor->mode == DBMode::Optimistic) {
-		rocksdb::Status status = rocksdb::CheckOptimisticTransactionForConflicts(txnHandle.txn);
+	if (txnHandle.agedIntents && descriptor.mode == DBMode::Optimistic &&
+		!prelogConflictCheckDisabled().load(std::memory_order_relaxed) &&
+		(txnHandle.retries > 0 || !prelogConflictCheckRetriesOnly().load(std::memory_order_relaxed))) {
+		rocksdb::Status status;
+		try {
+			status = rocksdb::CheckOptimisticTransactionForConflicts(txnHandle.txn);
+		} catch (...) {
+			return rocksdb::Status::OK(); // advisory: Commit() still validates
+		}
 		if (status.IsBusy() || status.IsTryAgain()) {
 			txnHandle.lastConflictKind = TransactionHandle::ConflictCheckBeforeLog;
 			return status;
@@ -588,6 +594,7 @@ static rocksdb::Status checkBeforeLog(TransactionHandle& txnHandle) {
 	}
 #else
 	(void)txnHandle;
+	(void)descriptor;
 #endif
 	return rocksdb::Status::OK();
 }
@@ -628,7 +635,7 @@ static void executeLogWork(TransactionCommitState* state) {
 			txnHandle->lastConflictKind = TransactionHandle::ConflictIntentBeforeLog;
 			state->refusedBeforeLog = true;
 			state->status = intentRefusal();
-		} else if (rocksdb::Status check = checkBeforeLog(*txnHandle); !check.ok()) {
+		} else if (rocksdb::Status check = checkBeforeLog(*txnHandle, *state->operationDescriptor); !check.ok()) {
 			state->refusedBeforeLog = true;
 			state->status = check;
 		} else if (store) {
@@ -1366,7 +1373,8 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->lastConflictKind = TransactionHandle::ConflictIntentBeforeLog;
 		refusedBeforeLog = true;
 		status = intentRefusal();
-	} else if (rocksdb::Status check = (*txnHandle)->logEntryBatch ? checkBeforeLog(**txnHandle) : rocksdb::Status::OK();
+	} else if (rocksdb::Status check =
+			(*txnHandle)->logEntryBatch ? checkBeforeLog(**txnHandle, *descriptor) : rocksdb::Status::OK();
 		!check.ok()) {
 		refusedBeforeLog = true;
 		status = check;

@@ -536,6 +536,13 @@ describe('transaction-log abort markers', () => {
 			holder.abort();
 		}));
 
+	it.skipIf(!!process.env.ROCKSDB_PATH || !!process.env.ROCKSDB_VERSION)(
+		'links the pinned RocksDB, which exports the conflict check',
+		() => {
+			expect(constants.PRELOG_CONFLICT_CHECK).toBe(1);
+		}
+	);
+
 	it.skipIf(!constants.PRELOG_CONFLICT_CHECK)(
 		"refuses a stale attempt before it logs with RocksDB's conflict check",
 		() =>
