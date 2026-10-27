@@ -341,7 +341,7 @@ void TransactionHandle::closeIterators() {
 			break;
 		}
 	}
-	std::array<std::shared_ptr<DBIteratorHandle>, 4> idle;
+	std::array<std::shared_ptr<DBIteratorHandle>, kIdleIteratorCapacity> idle;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
 		idle.swap(this->idleIterators);
@@ -436,7 +436,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 }
 
 void TransactionHandle::closeIdleIterators() noexcept {
-	std::array<std::shared_ptr<DBIteratorHandle>, 4> idle;
+	std::array<std::shared_ptr<DBIteratorHandle>, kIdleIteratorCapacity> idle;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
 		idle.swap(this->idleIterators);

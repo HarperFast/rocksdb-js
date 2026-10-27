@@ -47,7 +47,7 @@ Why each rule holds, and where it is enforced:
   rows. That is a RocksDB behavior, pinned by the `iterator-pool` test "returns what a fresh
   iterator does after its column family is dropped"; if it changes, `readsColumnOf` must also
   refuse a retired family.
-- **Ownership**: idle handles sit in 4 inline slots on the `TransactionHandle` (no allocation when
+- **Ownership**: idle handles sit in `kIdleIteratorCapacity` (4) inline slots on the `TransactionHandle` (no allocation when
   returning one) and stay registered in `activeIterators`, so every `closeIterators()` site closes
   them; `closeIterators()` then empties the slots, which breaks the handle-to-transaction reference
   cycle. `activeIteratorCount` counts busy handles only, so an idle one never blocks orphan close.

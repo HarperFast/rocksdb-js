@@ -297,7 +297,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * `activeIterators`, so `closeIterators()` closes it, then empties the slots,
 	 * which breaks the handle -> transaction reference cycle.
 	 */
-	std::array<std::shared_ptr<DBIteratorHandle>, 4> idleIterators;
+	static constexpr std::size_t kIdleIteratorCapacity = 4;
+	std::array<std::shared_ptr<DBIteratorHandle>, kIdleIteratorCapacity> idleIterators;
 
 	/**
 	 * Bumped by `closeIdleIterators()`. A handle busy across a trim is closed on
