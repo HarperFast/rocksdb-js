@@ -342,6 +342,10 @@ export type StatsAllExtras = {
 	'rocksdb.checkpoint.read.bytes': number;
 	'rocksdb.checkpoint.write.bytes': number;
 	'rocksdb.file.submit.async.read.fallback': number;
+	'rocksdb.blobdb.lazy.read.count': number;
+	'rocksdb.blobdb.lazy.read.bytes': number;
+	'rocksdb.blobdb.lazy.partial.read.count': number;
+	'rocksdb.blobdb.lazy.partial.bytes.saved': number;
 	'rocksdb.compaction.times.cpu_micros': StatsHistogramData;
 	'rocksdb.subcompaction.setup.times.micros': StatsHistogramData;
 	'rocksdb.table.sync.micros': StatsHistogramData;
