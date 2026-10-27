@@ -262,6 +262,15 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 			}
 		}
+		if (stopLogId !== 0 && pastStop(logId, position, stopLogId, stopPosition)) {
+			stopLogId = 0;
+			if (skipToTail(this, logId, position, tailLogId, tailPosition, segmentRemovals)) {
+				logId = tailLogId;
+				position = tailPosition;
+				logBuffer = tailLogBuffer ?? logBuffer;
+			}
+			tailLogBuffer = undefined;
+		}
 		// Segments at or below this were never part of this iterator's history, so crossing them is
 		// not a gap. Captured before the fallback below substitutes a placeholder with `logId` 0.
 		let gapFloor = logId;
@@ -327,25 +336,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			},
 			next() {
 				let timestamp: number;
-				if (stopLogId !== 0 && pastStop(logBuffer!.logId, position, stopLogId, stopPosition)) {
-					// The one-shot jump to `tail`, taken on a frame boundary so a mapping error leaves a
-					// resumable cursor. The removal check follows the mapping and holds the store's lock, so
-					// a purge either cancels the jump (the scan then reports the gap) or follows it.
-					stopLogId = 0;
-					const fromLogId = logBuffer!.logId;
-					if (tailLogId > fromLogId) {
-						const tailLogBuffer = getLogMemoryMap(transactionLog, tailLogId);
-						if (tailLogBuffer && transactionLog._segmentRemovals() === segmentRemovals) {
-							logBuffer = tailLogBuffer;
-							dataView = tailLogBuffer.dataView;
-							position = tailPosition;
-							size = 0;
-						}
-					} else if (tailLogId === fromLogId && tailPosition > position) {
-						position = tailPosition;
-						size = 0;
-					}
-				}
 				if (position >= size) {
 					// our position is beyond the size limit, get the updated
 					// size in case we can keep reading further from the same block
@@ -472,8 +462,27 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								stopLogId !== 0 &&
 								pastStop(logBuffer!.logId, position + length, stopLogId, stopPosition)
 							) {
-								// next() takes the jump from this frame's end
+								stopLogId = 0;
 								position += length;
+								if (
+									skipToTail(
+										transactionLog,
+										logBuffer!.logId,
+										position,
+										tailLogId,
+										tailPosition,
+										segmentRemovals
+									)
+								) {
+									if (tailLogBuffer) {
+										logBuffer = tailLogBuffer;
+										dataView = tailLogBuffer.dataView;
+									}
+									position = tailPosition;
+									// re-derived by next() for the segment we landed in
+									size = 0;
+								}
+								tailLogBuffer = undefined;
 								return iterator.next();
 							}
 						}
@@ -560,6 +569,35 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 
 function pastStop(logId: number, position: number, stopLogId: number, stopPosition: number) {
 	return logId > stopLogId || (logId === stopLogId && position >= stopPosition);
+}
+
+// Out-parameter of `skipToTail()`: the tail's mapping when it is in another segment. Callers clear
+// it once used, so it never pins a mapping (invariant 30).
+let tailLogBuffer: LogBuffer | undefined;
+
+/**
+ * Whether an exact-start lookup at `position` of `fromLogId` may take its one-shot jump to the tail.
+ * Called on a frame boundary, so a mapping error leaves a resumable cursor. The removal check
+ * follows the mapping and holds the store's lock, so a purge either declines the jump (the scan
+ * then reports the gap) or follows it like a purge of segments already read.
+ */
+function skipToTail(
+	transactionLog: TransactionLog,
+	fromLogId: number,
+	position: number,
+	tailLogId: number,
+	tailPosition: number,
+	segmentRemovals: number
+): boolean {
+	tailLogBuffer = undefined;
+	if (tailLogId === fromLogId) {
+		return tailPosition > position;
+	}
+	if (tailLogId < fromLogId) {
+		return false;
+	}
+	tailLogBuffer = getLogMemoryMap(transactionLog, tailLogId);
+	return tailLogBuffer !== undefined && transactionLog._segmentRemovals() === segmentRemovals;
 }
 
 // Out-parameter of `nextReadableLogBuffer()`: how many skipped sequence numbers above `gapFloor`
