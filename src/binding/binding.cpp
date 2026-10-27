@@ -259,6 +259,21 @@ napi_value LockWakeCallbackCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value IteratorPoolStatsFn(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	const std::pair<const char*, uint64_t> counters[] = {
+		{ "created", iteratorPoolStats.created },
+		{ "reused", iteratorPoolStats.reused },
+	};
+	for (const auto& [name, value] : counters) {
+		napi_value jsValue;
+		NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(value), &jsValue));
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, result, name, jsValue));
+	}
+	return result;
+}
+
 /**
  * The number of active `rocksdb-js` modules.
  *
@@ -517,6 +532,13 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "lockWakeCallbackCount", NAPI_AUTO_LENGTH, LockWakeCallbackCount, nullptr, &lockWakeCallbackCountFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "lockWakeCallbackCount", lockWakeCallbackCountFn));
 
+	napi_value iteratorPoolStatsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "iteratorPoolStats", NAPI_AUTO_LENGTH, IteratorPoolStatsFn, nullptr, &iteratorPoolStatsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "iteratorPoolStats", iteratorPoolStatsFn));
+	napi_value iteratorPoolEnabledValue;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, iteratorPoolEnabled(), &iteratorPoolEnabledValue));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "iteratorPoolEnabled", iteratorPoolEnabledValue));
+
 	// constants
 	napi_value constants;
 	napi_create_object(env, &constants);
@@ -540,6 +562,7 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, ITERATOR_HAS_TRANSACTION_ID_FLAG)
 	EXPORT_CONSTANT(constants, ITERATOR_RESULT_DONE)
 	EXPORT_CONSTANT(constants, ITERATOR_RESULT_FAST)
+	EXPORT_CONSTANT(constants, ITERATOR_RESULT_RELEASED)
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "constants", constants));
 
 	// stats

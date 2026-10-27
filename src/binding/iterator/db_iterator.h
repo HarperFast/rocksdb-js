@@ -24,6 +24,8 @@ namespace rocksdb_js {
 // Iterator Next() return signals
 #define ITERATOR_RESULT_DONE 0
 #define ITERATOR_RESULT_FAST 1
+// Done, and the native iterator went back to its transaction's pool.
+#define ITERATOR_RESULT_RELEASED 2
 
 // forward declare DBHandle because of circular dependency
 struct DBHandle;

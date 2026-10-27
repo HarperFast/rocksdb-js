@@ -1,6 +1,7 @@
 #ifndef __TRANSACTION_HANDLE_H__
 #define __TRANSACTION_HANDLE_H__
 
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <memory>
@@ -290,6 +291,30 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::unordered_map<DBIteratorHandle*, std::weak_ptr<DBIteratorHandle>> activeIterators;
 
 	/**
+	 * Idle pooled iterators, reused by the next matching `getRange` instead of
+	 * building a RocksDB iterator per call. Inline so returning one to the pool
+	 * cannot allocate. Guarded by `iteratorsMutex`; each entry is also in
+	 * `activeIterators`, so `closeIterators()` closes it, then empties the slots,
+	 * which breaks the handle -> transaction reference cycle.
+	 */
+	static constexpr std::size_t kIdleIteratorCapacity = 4;
+	std::array<std::shared_ptr<DBIteratorHandle>, kIdleIteratorCapacity> idleIterators;
+
+	/**
+	 * Bumped by `closeIdleIterators()`. A handle busy across a trim is closed on
+	 * release instead of pooled, or it would stay idle until the transaction
+	 * ends. Guarded by `iteratorsMutex`.
+	 */
+	uint64_t trimGeneration = 0;
+
+	/**
+	 * Bumped by every `closeIterators()`. A JS iterator that finished and gave
+	 * its handle back to the pool keeps reporting done while this is unchanged,
+	 * and "not initialized" afterwards, as a closed iterator always has.
+	 */
+	std::atomic<uint64_t> iteratorEpoch{0};
+
+	/**
 	 * A batch of log entries to write to the transaction log. It can only be
 	 * set once via `addLogEntry()`.
 	 */
@@ -384,6 +409,30 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	);
 	void unregisterIterator(DBIteratorHandle* iterator);
 	void closeIterators();
+
+	/**
+	 * Like `createIterator`, but when the transaction reads a fixed snapshot it
+	 * reuses an idle pooled iterator over the same caller handle and column
+	 * family, or creates a pooled one (`created` is set). Without a snapshot it
+	 * creates an unpooled iterator: latest-committed reads must not be frozen.
+	 * Caller holds an `OperationGuard` (reuse reads the target's column family).
+	 */
+	std::shared_ptr<DBIteratorHandle> acquireIterator(
+		DBIteratorOptions& options,
+		std::shared_ptr<DBHandle> dbHandleOverride,
+		bool& created
+	);
+
+	/**
+	 * Returns a busy pooled iterator to the idle slots. Caller holds the
+	 * iterator's `iteratorMutex` and has ended its range. Returns false when it
+	 * was not pooled (transaction no longer pending, or slots full); the caller
+	 * then closes it. `checkOrphan` is set when the caller must call
+	 * `closeOrphanIfUnused()` after dropping `iteratorMutex`.
+	 */
+	bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept;
+
+	void closeIdleIterators() noexcept;
 
 	/**
 	 * Closes a collected wrapper once no async work or iterator still depends

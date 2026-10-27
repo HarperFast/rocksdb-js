@@ -1,7 +1,9 @@
 #ifndef __DB_ITERATOR_HANDLE_H__
 #define __DB_ITERATOR_HANDLE_H__
 
+#include <atomic>
 #include <mutex>
+#include <string>
 #include "database/db_handle.h"
 #include "iterator/db_iterator.h"
 #include "transaction/transaction_handle.h"
@@ -34,7 +36,8 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	DBIteratorHandle(
 		std::shared_ptr<TransactionHandle> txnHandle,
 		DBIteratorOptions& options,
-		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr,
+		bool pooled = false
 	);
 
 	/**
@@ -77,6 +80,25 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 		}
 	}
 
+	// Caller holds `iteratorMutex` and has checked the handle is still open
+	// and `boundsMatch(options)`.
+	void reuse(DBIteratorOptions& options);
+
+	/**
+	 * Whether `options` sets the same read bounds (lower, upper) as this
+	 * handle's iterator was created with: a bound's presence is fixed for the
+	 * life of a RocksDB iterator, only its value can change.
+	 */
+	bool boundsMatch(const DBIteratorOptions& options) const;
+
+	/**
+	 * Whether this pooled handle reads the same `ColumnFamilyDescriptor` as
+	 * `target` (a dropped family still matches; see the iterator DESIGN.md),
+	 * with no clear running when the handle was built or begun since. Only
+	 * meaningful while the caller holds an `OperationGuard`.
+	 */
+	bool readsColumnOf(const std::shared_ptr<DBHandle>& target) const;
+
 	std::shared_ptr<DBHandle> dbHandle;
 	std::shared_ptr<TransactionHandle> txnHandle;
 	bool exclusiveStart;
@@ -93,13 +115,56 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	std::mutex iteratorMutex;
 	bool transactionRegistered = false;
 
+	const bool pooled;
+	const bool hasLowerBound;
+	const bool hasUpperBound;
+
+	/**
+	 * Its database draws on the process WriteBufferManager, so the handle may
+	 * not idle in the pool while that manager can stall writers.
+	 */
+	bool writeBufferManagerAttached = false;
+
+	// Guarded by the transaction's `iteratorsMutex`. An idle handle is not
+	// counted in `activeIteratorCount`.
+	bool idle = false;
+	uint64_t poolGeneration = 0;
+
+	// Raw, and only dereferenced by `closeIfOpen` while the RocksDB iterator is
+	// still open: the descriptor's close sweep must close this attached handle,
+	// under `iteratorMutex`, before the descriptor can be destroyed.
+	std::atomic<DBDescriptor*> attachedDescriptor{nullptr};
+
+	// The transaction's `iteratorEpoch` when this handle was last lent out.
+	uint64_t lentEpoch = 0;
+
 private:
 	/**
 	 * Seeks the iterator to the first or last key, or the start key if
 	 * `exclusiveStart` is true.
 	 */
-	void seek(DBIteratorOptions& options);
+	void seek();
+
+	std::weak_ptr<ColumnFamilyDescriptor> column;
+	uint64_t clearEpoch = 0;
 };
+
+/**
+ * Pool counters for the calling thread, for tests. Thread-local so workers
+ * never contend on a shared cache line.
+ */
+struct IteratorPoolStats {
+	uint64_t created = 0;
+	uint64_t reused = 0;
+};
+extern thread_local IteratorPoolStats iteratorPoolStats;
+
+/**
+ * Whether transaction iterators may be pooled: RocksDB 11+ (the version
+ * `test/native/transaction_iterator_reuse_test.cc` pins the reseek
+ * semantics for) and not disabled with `ROCKSDB_JS_ITERATOR_POOL=0`.
+ */
+bool iteratorPoolEnabled();
 
 } // namespace rocksdb_js
 

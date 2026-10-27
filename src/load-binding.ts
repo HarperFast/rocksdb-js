@@ -128,6 +128,7 @@ export type NativeTransaction = {
 	putSync(key: Key, value: Buffer | Uint8Array, txnId?: number): void;
 	removeSync(key: Key): void;
 	setTimestamp(timestamp?: number): void;
+	trimIterators(): void;
 	// The transaction holds no napi_ref to its database (#741), so the owning
 	// NativeDatabase must be supplied per-call; native rejects a foreign one.
 	useLog(name: string | number, jsDatabase: NativeDatabase): TransactionLog;
@@ -267,8 +268,9 @@ export declare class NativeIteratorCls {
 		transactionId?: number
 	);
 	next(): NativeIteratorResult;
-	return(): void;
-	throw(err?: unknown): void;
+	/** Returns whether the native iterator went back to its transaction's pool. */
+	return(): boolean;
+	throw(err?: unknown): boolean;
 }
 
 export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
@@ -870,6 +872,7 @@ export const constants: {
 	ITERATOR_HAS_TRANSACTION_ID_FLAG: number;
 	ITERATOR_RESULT_DONE: number;
 	ITERATOR_RESULT_FAST: number;
+	ITERATOR_RESULT_RELEASED: number;
 } = binding.constants;
 /**
  * The friendly names of every compression algorithm compiled into the loaded
@@ -970,6 +973,20 @@ export const transactionLogMapCount: () => number = binding.transactionLogMapCou
  * ending by timeout, env teardown, or close leaves no registration behind.
  */
 export const lockWakeCallbackCount: () => number = binding.lockWakeCallbackCount;
+
+/**
+ * The calling thread's counters for the per-transaction iterator pool: pooled
+ * iterators created, and idle ones reused by a later range. Internal — used by
+ * tests to prove a range was served by a reused iterator.
+ */
+export const iteratorPoolStats: () => { created: number; reused: number } =
+	binding.iteratorPoolStats;
+
+/**
+ * Whether transaction `getRange()` reuses pooled native iterators (off with
+ * `ROCKSDB_JS_ITERATOR_POOL=0`). Internal.
+ */
+export const iteratorPoolEnabled: boolean = binding.iteratorPoolEnabled;
 
 /**
  * Test-only: force the next `count` transaction commits to fail with TryAgain (rolled back, so

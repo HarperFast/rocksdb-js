@@ -1824,6 +1824,21 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Called by the JS layer once the synchronous run of ranges that filled the
+ * pool has ended: an idle iterator pins the memtables and SST files current at
+ * its creation.
+ */
+napi_value Transaction::TrimIterators(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	std::shared_ptr<TransactionHandle>* txnHandle = nullptr;
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&txnHandle)));
+	if (txnHandle && *txnHandle) {
+		(*txnHandle)->closeIdleIterators();
+	}
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * Initializes the `NativeTransaction` JavaScript class.
  */
 void Transaction::Init(napi_env env, napi_value exports) {
@@ -1840,6 +1855,7 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "putSync", nullptr, PutSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "removeSync", nullptr, RemoveSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setTimestamp", nullptr, SetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "trimIterators", nullptr, TrimIterators, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "useLog", nullptr, UseLog, nullptr, nullptr, nullptr, napi_default, nullptr }
 	};
 

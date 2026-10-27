@@ -13,6 +13,44 @@
 
 namespace rocksdb_js {
 
+namespace {
+
+/**
+ * The native data behind a `NativeIterator` JS object. A pooled handle leaves
+ * it when the JS iterator finishes or returns, so a retained JS iterator can
+ * never drive a handle the pool has since lent to another range.
+ */
+struct IteratorWrap final {
+	std::shared_ptr<DBIteratorHandle> handle;
+	// Set when a pooled handle left on exhaustion: next() keeps reporting done
+	// until the transaction closes its iterators, when a closed iterator would
+	// start throwing. The JS iterator holds the transaction's wrapper, so it
+	// cannot be closed as an orphan while this is reachable.
+	std::weak_ptr<TransactionHandle> exhaustedIn;
+	uint64_t exhaustedEpoch = 0;
+};
+
+// Returns whether the handle went back to the pool (and so needs a trim).
+bool releasePooled(IteratorWrap* wrap, std::unique_lock<std::mutex>& iteratorLock, bool pool) {
+	std::shared_ptr<DBIteratorHandle> handle = std::move(wrap->handle);
+	std::shared_ptr<TransactionHandle> txnHandle = handle->txnHandle;
+	bool released = false;
+	bool checkOrphan = false;
+	if (pool && txnHandle && handle->iterator) {
+		released = txnHandle->releaseIterator(handle.get(), checkOrphan);
+	}
+	iteratorLock.unlock();
+	if (!released) {
+		handle->close();
+	}
+	if (checkOrphan) {
+		txnHandle->closeOrphanIfUnused();
+	}
+	return released;
+}
+
+}
+
 DBIteratorOptions::DBIteratorOptions() :
 	startKeyStr(nullptr),
 	startKeyStart(0),
@@ -106,10 +144,12 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	itOptions.setReadOptionDefaults();
 
 	// Optional advanced ReadOptions (rare path)
+	bool hasAdvancedOptions = false;
 	if (argc > 5) {
 		napi_valuetype optionsType = napi_undefined;
 		NAPI_STATUS_THROWS(::napi_typeof(env, argv[5], &optionsType));
 		if (optionsType == napi_object) {
+			hasAdvancedOptions = true;
 			NAPI_STATUS_THROWS(itOptions.initReadOptionsFromObject(env, argv[5]));
 		}
 	}
@@ -123,7 +163,7 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	const bool isTransaction = (flags & ITERATOR_CONTEXT_IS_TRANSACTION_FLAG) != 0;
 	const bool hasTransactionId = (flags & ITERATOR_HAS_TRANSACTION_ID_FLAG) != 0;
 
-	std::shared_ptr<DBIteratorHandle>* itHandle = nullptr;
+	IteratorWrap* wrap = nullptr;
 	std::shared_ptr<DBHandle>* dbHandle = nullptr;
 	std::shared_ptr<TransactionHandle> txnHandle;
 
@@ -206,48 +246,52 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 		itOptions.endKeyEnd = endKeyEnd;
 	}
 
+	bool attach = true;
 	try {
 		std::shared_ptr<DBIteratorHandle> iteratorHandle;
 		if (txnHandle) {
-			iteratorHandle = txnHandle->createIterator(itOptions, isTransaction ? nullptr : *dbHandle);
+			std::shared_ptr<DBHandle> dbHandleOverride = isTransaction ? nullptr : *dbHandle;
+			if (!hasAdvancedOptions && iteratorPoolEnabled()) {
+				bool created = false;
+				iteratorHandle = txnHandle->acquireIterator(itOptions, std::move(dbHandleOverride), created);
+				// A reused pooled handle is still attached from when the pool created it.
+				attach = !iteratorHandle->pooled || created;
+			} else {
+				iteratorHandle = txnHandle->createIterator(itOptions, std::move(dbHandleOverride));
+			}
 		} else {
 			iteratorHandle = std::make_shared<DBIteratorHandle>(*dbHandle, itOptions);
 		}
-		itHandle = new std::shared_ptr<DBIteratorHandle>(std::move(iteratorHandle));
+		wrap = new IteratorWrap{ std::move(iteratorHandle), {}, 0 };
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
 
 	// attach this iterator to the descriptor so it gets cleaned up when the descriptor is closed
-	if ((*itHandle)->dbHandle && (*itHandle)->dbHandle->descriptor) {
-		(*itHandle)->dbHandle->descriptor->attach(*itHandle);
+	if (attach && wrap->handle->dbHandle && wrap->handle->dbHandle->descriptor) {
+		wrap->handle->dbHandle->descriptor->attach(wrap->handle);
+		wrap->handle->attachedDescriptor.store(wrap->handle->dbHandle->descriptor.get());
 	}
 
-	DEBUG_LOG("DBIterator::Constructor itHandle=%p\n", itHandle);
+	DEBUG_LOG("DBIterator::Constructor wrap=%p\n", wrap);
 
 	try {
 		NAPI_STATUS_THROWS(::napi_wrap(
 			env,
 			jsThis,
-			reinterpret_cast<void*>(itHandle),
+			reinterpret_cast<void*>(wrap),
 			[](napi_env env, void* data, void* hint) {
-				DEBUG_LOG("DBIterator::Constructor NativeIterator GC'd itHandle=%p\n", data);
-				auto* itHandle = static_cast<std::shared_ptr<DBIteratorHandle>*>(data);
-				if (*itHandle) {
-					// Close before detaching: while attached, a concurrent
-					// destroy()/shutdown() sweep sees this iterator in
-					// `closables` and calls its close() too, serialized
-					// against this one by `iteratorMutex` (closeIfOpen()
-					// is idempotent). Detaching first would let that sweep
-					// skip this iterator and reset the DB out from under a
-					// still-running native `Reset()` here.
-					(*itHandle)->close();
-					if ((*itHandle)->dbHandle && (*itHandle)->dbHandle->descriptor) {
-						(*itHandle)->dbHandle->descriptor->detach(*itHandle);
-					}
+				DEBUG_LOG("DBIterator::Constructor NativeIterator GC'd wrap=%p\n", data);
+				auto* wrap = static_cast<IteratorWrap*>(data);
+				if (wrap->handle) {
+					// close() detaches only after resetting the RocksDB
+					// iterator: while attached, a concurrent destroy()/shutdown()
+					// sweep sees this iterator in `closables` and calls its
+					// close() too, serialized against this one by `iteratorMutex`.
+					wrap->handle->close();
 				}
-				delete itHandle;
+				delete wrap;
 			},
 			nullptr, // finalize_hint
 			nullptr  // result
@@ -255,31 +299,39 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 
 		return jsThis;
 	} catch (const std::exception& e) {
-		delete itHandle;
+		if (wrap->handle) {
+			wrap->handle->close();
+		}
+		delete wrap;
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
 }
 
-#define UNWRAP_ITERATOR_HANDLE(fnName) \
-	std::shared_ptr<DBIteratorHandle>* itHandle = nullptr; \
-	do { \
-		NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&itHandle))); \
-		if (!itHandle || !*itHandle) { \
-			::napi_throw_error(env, nullptr, fnName " failed: Iterator not initialized"); \
-			return nullptr; \
-		} \
-	} while (0)
+#define UNWRAP_ITERATOR_WRAP() \
+	IteratorWrap* wrap = nullptr; \
+	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&wrap))); \
+	if (!wrap) { \
+		::napi_throw_error(env, nullptr, "Iterator not initialized"); \
+		return nullptr; \
+	}
 
-#define CLOSE_ITERATOR_HANDLE(fnName) \
-	do { \
-		std::shared_ptr<DBIteratorHandle>* itHandle = nullptr; \
-		NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&itHandle))); \
-		if (itHandle && *itHandle) { \
-			DEBUG_LOG("%p DBIterator::" fnName " Closing iterator handle\n", (*itHandle).get()); \
-			(*itHandle)->close(); \
-		} \
-	} while (0)
+// A later `next()` throws "not initialized" either way.
+static bool closeOrRelease(IteratorWrap* wrap) {
+	wrap->exhaustedIn.reset();
+	if (!wrap->handle) {
+		return false;
+	}
+	if (!wrap->handle->pooled) {
+		wrap->handle->close();
+		return false;
+	}
+	std::unique_lock<std::mutex> iteratorLock(wrap->handle->iteratorMutex);
+	const bool healthy = wrap->handle->iterator && wrap->handle->iterator->status().ok();
+	return releasePooled(wrap, iteratorLock, healthy);
+}
+
+static napi_value nextImpl(napi_env env, IteratorWrap* wrap);
 
 /**
  * Builds a slow-path object `{ key: Buffer, value?: Buffer }` for the rare case
@@ -324,10 +376,30 @@ static napi_value buildSlowResult(
  */
 napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
-	UNWRAP_ITERATOR_HANDLE("Next");
+	UNWRAP_ITERATOR_WRAP();
+	try {
+		return nextImpl(env, wrap);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+}
 
-	auto& it = *itHandle;
-	std::lock_guard<std::mutex> iteratorLock(it->iteratorMutex);
+static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
+	if (!wrap->handle) {
+		auto txnHandle = wrap->exhaustedIn.lock();
+		if (txnHandle && !txnHandle->closed.load()
+			&& txnHandle->iteratorEpoch.load(std::memory_order_relaxed) == wrap->exhaustedEpoch
+		) {
+			napi_value result;
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_DONE, &result));
+			return result;
+		}
+		::napi_throw_error(env, nullptr, "Next failed: Iterator not initialized");
+		return nullptr;
+	}
+	auto& it = wrap->handle;
+	std::unique_lock<std::mutex> iteratorLock(it->iteratorMutex);
 	// Test-only: widen the window where a foreign finishClose()'s closables
 	// sweep is blocked on iteratorMutex behind this call, so a fixture can
 	// reliably position a forced close mid-Next() rather than only ever
@@ -349,11 +421,24 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 		// way `get()` reports the same corruption; returning DONE would make a
 		// damaged file read as the end of the data.
 		if (it->iterator && !it->iterator->status().ok()) {
-			DEBUG_LOG("%p DBIterator::Next iterator failed: %s\n", itHandle, it->iterator->status().ToString().c_str());
+			DEBUG_LOG("%p DBIterator::Next iterator failed: %s\n", it.get(), it->iterator->status().ToString().c_str());
 			ROCKSDB_STATUS_THROWS_ERROR_LIKE(it->iterator->status(), "Iterator failed");
 			return nullptr;
 		}
 		DEBUG_LOG("%p DBIterator::Next iterator no keys found in range\n", it.get());
+		if (it->pooled) {
+			std::shared_ptr<TransactionHandle> txnHandle = it->txnHandle;
+			if (txnHandle) {
+				wrap->exhaustedIn = txnHandle;
+				// The epoch it was lent in, not the current one: a close that has
+				// already bumped it is waiting on this iterator's mutex.
+				wrap->exhaustedEpoch = it->lentEpoch;
+			}
+			if (releasePooled(wrap, iteratorLock, true)) {
+				NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_RELEASED, &result));
+				return result;
+			}
+		}
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_DONE, &result));
 		return result;
 	}
@@ -401,23 +486,41 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 
 /**
  * Called when the consuming code returns before the iterator is done. The JS
- * wrapper constructs the `{ done: true, value }` result, so this method just
- * closes the iterator and returns undefined.
+ * wrapper constructs the `{ done: true, value }` result; this returns whether
+ * the iterator went back to its transaction's pool rather than closing.
  */
 napi_value DBIterator::Return(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
-	CLOSE_ITERATOR_HANDLE("Return");
-	NAPI_RETURN_UNDEFINED();
+	UNWRAP_ITERATOR_WRAP();
+	bool released = false;
+	try {
+		released = closeOrRelease(wrap);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, released, &result));
+	return result;
 }
 
 /**
  * Called when the consuming code throws before the iterator is done. The JS
- * wrapper rethrows after this returns.
+ * wrapper rethrows after this returns; returns as `Return` does.
  */
 napi_value DBIterator::Throw(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
-	CLOSE_ITERATOR_HANDLE("Throw");
-	NAPI_RETURN_UNDEFINED();
+	UNWRAP_ITERATOR_WRAP();
+	bool released = false;
+	try {
+		released = closeOrRelease(wrap);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, released, &result));
+	return result;
 }
 
 /**

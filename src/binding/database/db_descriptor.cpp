@@ -131,8 +131,9 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 	// The budget comes from the manager this database holds, not `DBSettings`: a runtime
 	// `writeBufferManagerSize: 0` does not resize the live manager, so the global would read 0 while
 	// this database is still charged against the real budget. `allowStall` does come from the
-	// settings, which mirror the single manager's live value — `DBSettings::Config` pushes every
-	// change through `SetAllowStall`, and RocksDB exposes no getter for it.
+	// settings, because RocksDB exposes no getter for it. They match the manager except while
+	// `DBSettings::Config` drains idle pooled iterators before `SetAllowStall(true)`, or after that
+	// drain throws, when the setting stays enabled and the manager does not stall.
 	const uint64_t budget = static_cast<uint64_t>(writeBufferManager->buffer_size());
 	if (budget == 0) {
 		return;
@@ -494,6 +495,33 @@ void DBDescriptor::close() {
 	this->finishClose();
 }
 
+void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
+	// Close all handles that still exist and reset their descriptor references
+	for (auto it = this->closables.begin(); it != this->closables.end(); ) {
+		if (auto closable = it->second.lock()) {
+			// Remove from map before closing to avoid re-entrant detach() calls
+			it = this->closables.erase(it);
+
+			// Release mutex during close to avoid deadlocks
+			txnsLock.unlock();
+			closable->close();
+			txnsLock.lock();
+			// close() can detach other closables (a transaction detaches its
+			// pooled iterators), invalidating `it`. Every entry before it was
+			// erased, so the first one is the next to process.
+			it = this->closables.begin();
+		} else {
+			// Handle was already GC'd, just remove the expired weak_ptr
+			it = this->closables.erase(it);
+		}
+	}
+}
+
+void DBDescriptor::closeRemainingClosables() {
+	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
+	this->closeClosables(txnsLock);
+}
+
 void DBDescriptor::finishClose(bool destroying) {
 	DEBUG_LOG("%p DBDescriptor::close Closing \"%s\" (mode=%s read-only=%s closables=%zu columns=%zu transactions=%zu)\n",
 		this, this->path.c_str(), this->mode == DBMode::Optimistic ? "optimistic" : "pessimistic", this->readOnly ? "true" : "false", this->closables.size(), this->columns.size(), this->transactions.size());
@@ -630,22 +658,7 @@ void DBDescriptor::finishClose(bool destroying) {
 	}
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
-
-	// Close all handles that still exist and reset their descriptor references
-	for (auto it = this->closables.begin(); it != this->closables.end(); ) {
-		if (auto closable = it->second.lock()) {
-			// Remove from map before closing to avoid re-entrant detach() calls
-			it = this->closables.erase(it);
-
-			// Release mutex during close to avoid deadlocks
-			txnsLock.unlock();
-			closable->close();
-			txnsLock.lock();
-		} else {
-			// Handle was already GC'd, just remove the expired weak_ptr
-			it = this->closables.erase(it);
-		}
-	}
+	this->closeClosables(txnsLock);
 
 	// Safety-net: cancel any VT locks still held by this DB after all
 	// TransactionHandles have been closed. Under normal operation the
@@ -1012,8 +1025,12 @@ void DBDescriptor::attach(std::shared_ptr<Closable> closable) {
  * closed.
  */
 void DBDescriptor::detach(std::shared_ptr<Closable> closable) {
+	this->detach(closable.get());
+}
+
+void DBDescriptor::detach(Closable* closable) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
-	this->closables.erase(closable.get());
+	this->closables.erase(closable);
 }
 
 #define SET_DOUBLE_PROP(obj, name, value) \
@@ -1803,6 +1820,15 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %llu mismatch! expected %p, got %p\n", this, (unsigned long long)txnHandle->id, it->second.get(), txnHandle.get());
 		}
 		this->transactions.erase(it);
+	}
+}
+
+void DBDescriptor::collectTransactions(std::vector<std::shared_ptr<TransactionHandle>>& transactions) {
+	std::lock_guard<std::mutex> lock(this->txnsMutex);
+	for (auto& [_id, txnHandle] : this->transactions) {
+		if (txnHandle) {
+			transactions.push_back(txnHandle);
+		}
 	}
 }
 

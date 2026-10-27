@@ -136,6 +136,13 @@ inline std::atomic<int>& registryStatusColumnsDelayMsFlag() {
 	return delayMs;
 }
 
+// Delays DBHandle::clear() after it deletes the family's files and before it
+// returns. clear() runs on a libuv worker for the async API.
+inline std::atomic<int>& clearDeleteDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -169,6 +176,8 @@ inline void initializeTestSeams() {
 			testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS"), std::memory_order_relaxed);
 		registryStatusColumnsDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS"), std::memory_order_relaxed);
+		clearDeleteDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_CLEAR_DELAY_MS"), std::memory_order_relaxed);
 	});
 }
 

@@ -71,6 +71,7 @@ const SAVE_BUFFER_SIZE = 8192;
 // const WRITE_BUFFER_SIZE = 65536;
 
 export type StoreContext = NativeDatabase | NativeTransaction;
+
 export type StoreGetOptions = GetOptions & DBITransactional;
 export type StoreIteratorOptions = IteratorOptions & DBITransactional;
 export type StorePutOptions = PutOptions & DBITransactional;
@@ -1156,22 +1157,23 @@ export class Store {
 				? options
 				: undefined;
 
+		const nativeIterator = new NativeIterator(
+			context,
+			flags,
+			startKeyEnd,
+			endKeyStart,
+			endKeyEnd,
+			advancedOptions,
+			txnId
+		);
+		const transaction =
+			context !== this.db
+				? (context as NativeTransaction)
+				: (options?.transaction?._context as NativeTransaction | undefined);
+
 		return new ExtendedIterable(
 			// @ts-expect-error ExtendedIterable v1 constructor type definition is incorrect
-			new DBIterator(
-				new NativeIterator(
-					context,
-					flags,
-					startKeyEnd,
-					endKeyStart,
-					endKeyEnd,
-					advancedOptions,
-					txnId
-				),
-				this,
-				includeValues,
-				options?.limit
-			)
+			new DBIterator(nativeIterator, this, includeValues, options?.limit, transaction)
 		);
 	}
 

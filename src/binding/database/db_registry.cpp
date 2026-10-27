@@ -1,5 +1,6 @@
 #include <chrono>
 #include <optional>
+#include <cstdio>
 #include <cstdlib>
 #include <sstream>
 #include <vector>
@@ -1357,6 +1358,26 @@ void DBRegistry::CloseTransactionsByEnv(napi_env env) {
 	}
 }
 
+void DBRegistry::CloseIdlePooledIterators() {
+	if (!instance) {
+		return;
+	}
+	// Transactions only: carrying a descriptor past databasesMutex can make a
+	// racing last-handle close skip its purge.
+	std::vector<std::shared_ptr<TransactionHandle>> transactions;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		for (auto& [_key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				entry.descriptor->collectTransactions(transactions);
+			}
+		}
+	}
+	for (auto& transaction : transactions) {
+		transaction->closeIdleIterators();
+	}
+}
+
 /**
  * Scrub per-descriptor event listeners owned by the given env. Called from the
  * env-cleanup hook so a worker thread exiting does not leave threadsafe-fn
@@ -1610,6 +1631,16 @@ void DBRegistry::Teardown() {
 	// short-circuits its own close() and is simply released here.
 	DEBUG_LOG("%p DBRegistry::Teardown Releasing %zu remaining descriptor(s)\n",
 		instance.get(), entries.size());
+	for (auto& [_key, entry] : entries) {
+		if (entry.descriptor) {
+			// One failed sweep must not release the rest unswept.
+			try {
+				entry.descriptor->closeRemainingClosables();
+			} catch (const std::exception& e) {
+				::fprintf(stderr, "rocksdb-js teardown of \"%s\" failed: %s\n", entry.descriptor->path.c_str(), e.what());
+			}
+		}
+	}
 	entries.clear();
 }
 

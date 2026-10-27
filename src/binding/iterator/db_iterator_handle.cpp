@@ -3,6 +3,8 @@
 #include <rocksdb/version.h>
 #include "core/test_seam.h"
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <thread>
 
 namespace rocksdb_js {
@@ -21,6 +23,21 @@ bool needsBoundCheck(const DBIteratorOptions& options, bool writeBatch) {
 
 }
 
+thread_local IteratorPoolStats iteratorPoolStats;
+
+bool iteratorPoolEnabled() {
+	if constexpr (ROCKSDB_MAJOR < 11) {
+		return false;
+	} else {
+		// Read once: getenv races a process.env write from another thread.
+		static const bool enabled = [] {
+			const char* value = ::getenv("ROCKSDB_JS_ITERATOR_POOL");
+			return value == nullptr || (::strcmp(value, "0") != 0 && ::strcmp(value, "false") != 0);
+		}();
+		return enabled;
+	}
+}
+
 DBIteratorHandle::DBIteratorHandle(
 	std::shared_ptr<DBHandle> dbHandle,
 	DBIteratorOptions& options
@@ -31,7 +48,10 @@ DBIteratorHandle::DBIteratorHandle(
 	reverse(options.reverse),
 	values(options.values),
 	needsStableValueBuffer(options.needsStableValueBuffer),
-	enforceBounds(needsBoundCheck(options, false))
+	enforceBounds(needsBoundCheck(options, false)),
+	pooled(false),
+	hasLowerBound(options.startKeyStr != nullptr),
+	hasUpperBound(options.endKeyStr != nullptr)
 {
 	DEBUG_LOG("%p DBIteratorHandle::Constructor dbHandle=%p\n", this, dbHandle.get());
 	this->init(options);
@@ -43,13 +63,14 @@ DBIteratorHandle::DBIteratorHandle(
 		)
 	);
 
-	this->seek(options);
+	this->seek();
 }
 
 DBIteratorHandle::DBIteratorHandle(
 	std::shared_ptr<TransactionHandle> txnHandle,
 	DBIteratorOptions& options,
-	std::shared_ptr<DBHandle> dbHandleOverride
+	std::shared_ptr<DBHandle> dbHandleOverride,
+	bool pooled
 ) :
 	dbHandle(dbHandleOverride ? dbHandleOverride : txnHandle->dbHandle),
 	txnHandle(std::move(txnHandle)),
@@ -58,12 +79,19 @@ DBIteratorHandle::DBIteratorHandle(
 	reverse(options.reverse),
 	values(options.values),
 	needsStableValueBuffer(options.needsStableValueBuffer),
-	enforceBounds(needsBoundCheck(options, true))
+	enforceBounds(needsBoundCheck(options, true)),
+	pooled(pooled),
+	hasLowerBound(options.startKeyStr != nullptr),
+	hasUpperBound(options.endKeyStr != nullptr)
 {
-	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p\n", this->txnHandle.get(), dbHandle->descriptor.get());
+	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p pooled=%d\n", this->txnHandle.get(), dbHandle->descriptor.get(), pooled);
 	this->txnHandle->ensureSnapshot();
 	if (this->txnHandle->snapshotSet) {
 		options.readOptions.snapshot = this->txnHandle->txn->GetSnapshot();
+	}
+	if (pooled) {
+		this->column = this->dbHandle->columnDescriptor;
+		this->clearEpoch = this->dbHandle->columnDescriptor->clearEpoch.load(std::memory_order_acquire);
 	}
 	this->init(options);
 
@@ -74,7 +102,7 @@ DBIteratorHandle::DBIteratorHandle(
 		)
 	);
 
-	this->seek(options);
+	this->seek();
 }
 
 DBIteratorHandle::~DBIteratorHandle() {
@@ -91,12 +119,56 @@ bool DBIteratorHandle::closeIfOpen() {
 	if (!this->iterator) return false;
 	this->iterator->Reset();
 	this->iterator.reset();
+	// Detach only after the reset: until then a foreign close sweep must still
+	// find this handle and wait on `iteratorMutex`. The descriptor is alive: its
+	// close cannot finish before that sweep has closed this attached handle.
+	if (DBDescriptor* descriptor = this->attachedDescriptor.exchange(nullptr)) {
+		descriptor->detach(static_cast<Closable*>(this));
+	}
 	if (this->txnHandle && this->transactionRegistered) {
 		this->transactionRegistered = false;
 		auto txnHandle = std::move(this->txnHandle);
 		txnHandle->unregisterIterator(this);
 	}
 	return true;
+}
+
+bool DBIteratorHandle::boundsMatch(const DBIteratorOptions& options) const {
+	return this->hasLowerBound == (options.startKeyStr != nullptr)
+		&& this->hasUpperBound == (options.endKeyStr != nullptr);
+}
+
+void DBIteratorHandle::reuse(DBIteratorOptions& options) {
+	this->exclusiveStart = options.exclusiveStart;
+	this->inclusiveEnd = options.inclusiveEnd;
+	this->reverse = options.reverse;
+	this->values = options.values;
+	this->needsStableValueBuffer = options.needsStableValueBuffer;
+	this->enforceBounds = needsBoundCheck(options, true);
+	// The RocksDB iterator holds pointers to `startKey`/`endKey` as its read
+	// bounds and re-reads them on every seek, so retargeting it is rewriting
+	// those Slices in place.
+	if (this->hasLowerBound) {
+		this->startKeyStr.assign(options.startKeyStr + options.startKeyStart, options.startKeyEnd - options.startKeyStart);
+		this->startKey = rocksdb::Slice(this->startKeyStr);
+	}
+	if (this->hasUpperBound) {
+		this->endKeyStr.assign(options.endKeyStr + options.endKeyStart, options.endKeyEnd - options.endKeyStart);
+		if (options.inclusiveEnd) {
+			this->endKeyStr.push_back('\0');
+		}
+		this->endKey = rocksdb::Slice(this->endKeyStr);
+	}
+	this->seek();
+}
+
+bool DBIteratorHandle::readsColumnOf(const std::shared_ptr<DBHandle>& target) const {
+	// Control-block identity, without the atomic increment of lock(): a
+	// recreated family is a new descriptor and never shares it.
+	return !this->column.owner_before(target->columnDescriptor)
+		&& !target->columnDescriptor.owner_before(this->column)
+		&& (this->clearEpoch & ColumnFamilyDescriptor::CLEAR_EPOCH_RUNNING) == 0
+		&& target->columnDescriptor->clearEpoch.load(std::memory_order_acquire) == this->clearEpoch;
 }
 
 void DBIteratorHandle::init(DBIteratorOptions& options) {
@@ -146,8 +218,8 @@ bool DBIteratorHandle::countRemaining(uint64_t& count) {
 	return true;
 }
 
-void DBIteratorHandle::seek(DBIteratorOptions& options) {
-	if (options.reverse) {
+void DBIteratorHandle::seek() {
+	if (this->reverse) {
 		if (this->endKey.size() > 0) {
 			this->iterator->SeekForPrev(this->endKey);
 			if (this->iterator->Valid() && this->iterator->key().compare(this->endKey) == 0) {
@@ -164,10 +236,10 @@ void DBIteratorHandle::seek(DBIteratorOptions& options) {
 		}
 	}
 
-	if (options.exclusiveStart && options.startKeyStr != nullptr && this->iterator->Valid()) {
+	if (this->exclusiveStart && this->startKey.size() > 0 && this->iterator->Valid()) {
 		rocksdb::Slice currentKey = this->iterator->key();
 		if (currentKey.compare(this->startKey) == 0) {
-			if (options.reverse) {
+			if (this->reverse) {
 				this->iterator->Prev();
 			} else {
 				this->iterator->Next();

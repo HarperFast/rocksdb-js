@@ -53,6 +53,11 @@ private:
 	std::shared_ptr<rocksdb::WriteBufferManager> writeBufferManager;
 	std::mutex writeBufferManagerMutex;
 
+	// Bumped under `writeBufferManagerMutex` by every `allowStall` change. An
+	// enable drains idle pooled iterators outside that mutex and then lets the
+	// manager stall only if no later change superseded it.
+	uint64_t allowStallGeneration = 0;
+
 	bool compactOnClose;
 	std::atomic<uint32_t> lifecycleWaitSeconds;
 

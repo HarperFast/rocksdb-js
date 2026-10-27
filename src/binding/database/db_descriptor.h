@@ -693,8 +693,18 @@ public:
 	 */
 	void finishClose(bool destroying = false);
 
+	/**
+	 * Closes every attached handle, transaction and iterator. For a descriptor
+	 * released without `finishClose()` reaching its sweep (a quarantined close
+	 * at process exit): an iterator left attached would otherwise reset its
+	 * RocksDB iterator, and detach, against the destroyed database later.
+	 */
+	void closeRemainingClosables();
+
+	void closeClosables(std::unique_lock<std::mutex>& txnsLock);
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
+	void detach(Closable* closable);
 
 	/**
 	 * Gets a single statistic value.
@@ -768,6 +778,8 @@ public:
 	 * can exist.
 	 */
 	void closeTransactionsByEnv(napi_env env);
+
+	void collectTransactions(std::vector<std::shared_ptr<TransactionHandle>>& transactions);
 
 	/**
 	 * Releases the `logRefs` napi_refs of every attached DBHandle created by
@@ -1138,6 +1150,21 @@ struct ColumnFamilyDescriptor final {
 	 * retire it through `DBDescriptor::retireColumnFamily`.
 	 */
 	ColumnFamilyLifetime lifetime;
+
+	/**
+	 * `clear()`s deleting this family's files: the low bits count the ones
+	 * running (`CLEAR_EPOCH_RUNNING`), the high bits the ones finished. A
+	 * deletion of files is invisible to an iterator that already pinned them,
+	 * so a pooled transaction iterator is reused only while this still equals
+	 * the value read before it was built, with no clear running then. The
+	 * running count is published before the delete installs its version: a
+	 * reader that has seen the deletion must not then reuse an older iterator.
+	 * A count rather than a parity bit, so two overlapping clears never read
+	 * as none.
+	 */
+	std::atomic<uint64_t> clearEpoch{0};
+	static constexpr uint64_t CLEAR_EPOCH_FINISHED = uint64_t{1} << 32;
+	static constexpr uint64_t CLEAR_EPOCH_RUNNING = CLEAR_EPOCH_FINISHED - 1;
 
 	/**
 	 * Map of user shared buffers by key.

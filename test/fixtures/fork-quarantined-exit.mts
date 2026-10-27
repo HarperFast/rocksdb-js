@@ -20,9 +20,26 @@ import { RocksDatabase, registryStatus } from '../../src/index.ts';
 //
 // ROCKSDB_JS_CLOSE_FLUSH_FAILURE is set to 2: one failure for the explicit
 // close below, one for the exit-time shutdown retry.
+//
+// With `iterators`, open iterators (a database range, and a pending
+// transaction holding busy and idle pooled ones) survive to exit too: the
+// failed close never reaches its closables sweep, so Teardown must close them
+// before releasing the descriptor, or their finalizers reset and detach
+// against a destroyed database during env teardown.
 const path = process.argv[2];
 const db = RocksDatabase.open(path, { disableWAL: true });
 db.putSync('key', 'unflushed');
+const retained: unknown[] = [];
+if (process.argv[3] === 'iterators') {
+	const { Transaction } = await import('../../src/transaction.ts');
+	const range = db.getRange()[Symbol.iterator]();
+	range.next();
+	const txn = new Transaction(db.store);
+	retained.push(range, txn, txn.getRange().asArray);
+	const busy = txn.getRange()[Symbol.iterator]();
+	busy.next();
+	retained.push(busy);
+}
 
 try {
 	db.close();

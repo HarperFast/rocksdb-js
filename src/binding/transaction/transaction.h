@@ -31,6 +31,7 @@ struct Transaction final {
 	static napi_value PutSync(napi_env env, napi_callback_info info);
 	static napi_value RemoveSync(napi_env env, napi_callback_info info);
 	static napi_value SetTimestamp(napi_env env, napi_callback_info info);
+	static napi_value TrimIterators(napi_env env, napi_callback_info info);
 	static napi_value UseLog(napi_env env, napi_callback_info info);
 
 	static void Init(napi_env env, napi_value exports);
