@@ -1128,7 +1128,10 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	return true;
 }
 
-void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition) {
+void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry) {
+	if (firstEntry) {
+		*firstEntry = LogPosition(0, 0);
+	}
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 
 	if (this->isClosing.load(std::memory_order_relaxed)) {
@@ -1150,6 +1153,7 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 	}
 
 	bool rotatedAfterOpenFailure = false;
+	bool firstEntryRecorded = false;
 	// write entries across multiple log files until all are written
 	while (!batch.isComplete()) {
 		std::shared_ptr<TransactionLogFile> logFile = nullptr;
@@ -1201,7 +1205,11 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 		// write as much as possible to this file
 		try {
-			logFile->writeEntries(batch, this->maxFileSize, this->latestTimestamp);
+			uint32_t appendedAt = logFile->writeEntries(batch, this->maxFileSize, this->latestTimestamp);
+			if (firstEntry && appendedAt > 0 && !firstEntryRecorded) {
+				*firstEntry = LogPosition(appendedAt, logFile->sequenceNumber);
+				firstEntryRecorded = true;
+			}
 		} catch (const TransactionLogOpenException& e) {
 			DEBUG_LOG("%p TransactionLogStore::writeBatch Failed to open transaction log file: %s\n", this, e.what());
 			this->writeFailures.fetch_add(1, std::memory_order_relaxed);

@@ -743,7 +743,7 @@ uint32_t TransactionLogFile::countEntries() const {
 	}
 }
 
-void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize,
+uint32_t TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize,
 	double latestTimestamp) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	if (!this->isOpen()) {
@@ -775,14 +775,14 @@ void TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uin
 
 	// branch based on file format version
 	if (this->version == 1) {
-		this->writeEntriesV1(batch, maxFileSize);
+		return this->writeEntriesV1(batch, maxFileSize);
 	} else {
 		DEBUG_LOG("%p TransactionLogFile::writeEntries Unsupported transaction log file version: %s\n", this, this->path.string().c_str());
 		throw rocksdb_js::DBException("Unsupported transaction log file version: " + std::to_string(this->version));
 	}
 }
 
-void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
+uint32_t TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const uint32_t maxFileSize) {
 	if (this->appendBoundaryLost.load(std::memory_order_relaxed)) {
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Append boundary lost, refusing write: %s\n",
 			this, this->path.string().c_str());
@@ -808,7 +808,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Batch is empty or exceeds segment capacity (entries=%u, bytes=%llu, size=%u, readerCapacity=%u, maxFileSize=%u)\n",
 			this, numEntriesToWrite, static_cast<unsigned long long>(totalSizeToWrite),
 			currentSize, this->readerCapacity, maxFileSize);
-		return;
+		return 0;
 	}
 
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Writing %u entries to file (%llu bytes)\n",
@@ -894,6 +894,7 @@ void TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, const u
 	this->publishReadableExtentLocked();
 	DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Wrote %lld bytes to log file (size=%u, batch state: entryIndex=%zu)\n",
 		this, bytesWritten, this->size.load(std::memory_order_relaxed), batch.currentEntryIndex);
+	return currentSize;
 }
 
 // Public entry point: acquire fileMutex (the guard for memoryMap) and delegate to

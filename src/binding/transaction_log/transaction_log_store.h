@@ -645,8 +645,13 @@ struct TransactionLogStore final {
 
 	/**
 	 * Writes a batch of transaction log entries to the store.
+	 *
+	 * `logPosition` receives the batch's committed-watermark key, taken before the target segment is
+	 * chosen: it orders the batch among uncommitted ones but can be offset 0 of a new segment or the
+	 * previous segment's end. `firstEntry`, when given, receives the address where the batch's first
+	 * entry was actually written, or {0, 0} if nothing was written.
 	 */
-	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition);
+	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry = nullptr);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log
