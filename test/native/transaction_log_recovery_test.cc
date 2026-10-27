@@ -1756,7 +1756,6 @@ TEST(TransactionLogTimestampSpan, InOrderEntriesEndAtTheNextLargerMaximum) {
 	EXPECT_EQ(spanFor(file, 20.0, img.size()).lastAtOrBelow, offsets[3]);
 	EXPECT_EQ(spanFor(file, 15.0, img.size()).lastAtOrBelow, offsets[2]);
 	EXPECT_EQ(spanFor(file, 30.0, img.size()).lastAtOrBelow, img.size());
-	// below every entry, and below the header timestamp
 	EXPECT_EQ(spanFor(file, 5.0, img.size()).lastAtOrBelow, 0u);
 	EXPECT_EQ(spanFor(file, 0.5, img.size()).lastAtOrBelow, 0u);
 	auto span = spanFor(file, 20.0, img.size());
@@ -1779,7 +1778,6 @@ TEST(TransactionLogTimestampSpan, OutOfOrderEntriesExtendTheSpanOnlyWhenOneCanMa
 	EXPECT_EQ(spanFor(file, 13.0, img.size()).lastAtOrBelow, lastOutOfOrderEnd);
 	EXPECT_EQ(spanFor(file, 35.0, img.size()).lastAtOrBelow, lastOutOfOrderEnd);
 	EXPECT_EQ(spanFor(file, 45.0, img.size()).lastAtOrBelow, offsets[5]);
-	// the start position is still the lower bound
 	EXPECT_EQ(file.findPositionByTimestamp(15.0, img.size(), /*isCurrent=*/true), offsets[1]);
 }
 
@@ -1911,6 +1909,34 @@ TEST(TransactionLogExactStartSpan, AnOutOfOrderCandidateInALaterSegmentMovesTheS
 		store.findPositionByTimestamp(15.0, &span);
 		EXPECT_TRUE(samePosition(span.stop, 2, candidateEnd));
 		EXPECT_TRUE(samePosition(span.tail, 3, third.size()));
+	}
+	std::filesystem::remove_all(storePath);
+}
+
+// Indexing stopped short of a rotated segment's end (here, a map shorter than the written extent),
+// so a match there is unexamined and nothing may be skipped past it.
+TEST(TransactionLogExactStartSpan, ATailStopsAtAnOlderSegmentsUnindexedSuffix) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	LogImage first;
+	first.entry(16, 1, 10.0).entry(16, 1, 20.0);
+	uint32_t cut = first.size();
+	first.entry(16, 1, 30.0).entry(16, 1, 40.0);
+	LogImage second(40.0);
+	second.entry(16, 1, 50.0).entry(16, 1, 60.0);
+	{
+		rocksdb_js::TransactionLogStore store("store", storePath, 0, std::chrono::milliseconds(0), 0);
+		registerSegments(store, storePath, { { 1, &first }, { 2, &second } });
+		TransactionLogFile& older = *store.sequenceFiles[1];
+		ASSERT_TRUE(older.openExisting(1.0));
+		uint32_t fullSize = first.size();
+		older.afterIndexMapAcquiredForTests = [&] { older.size.store(fullSize, std::memory_order_relaxed); };
+		older.size.store(cut + 5, std::memory_order_relaxed);
+		rocksdb_js::ExactStartSpan span;
+		auto start = store.findPositionByTimestamp(30.0, &span);
+		older.afterIndexMapAcquiredForTests = nullptr;
+		EXPECT_TRUE(samePosition(start, 1, cut));
+		EXPECT_EQ(span.tail.fullPosition, 0.0);
 	}
 	std::filesystem::remove_all(storePath);
 }

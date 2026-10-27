@@ -866,10 +866,11 @@ describe('Transaction Log', () => {
 						write(db, log, written, base + i * 10);
 					}
 					const mapFile = log._getMemoryMapOfFile.bind(log);
-					let failures = 0;
+					const mapped: number[] = [];
 					Object.defineProperty(log, '_getMemoryMapOfFile', {
 						value(logId: number) {
-							if (logId === 5 && failures++ === 0) {
+							mapped.push(logId);
+							if (logId === 5 && mapped.length === 2) {
 								throw new Error('injected mapping failure');
 							}
 							return mapFile(logId);
@@ -882,6 +883,8 @@ describe('Transaction Log', () => {
 					expect(errors.map((error) => error.message)).toEqual([
 						'injected mapping failure (log file ID: 5)',
 					]);
+					// the failed jump went straight for the tail; the scan then resumed in segment 3
+					expect(mapped).toEqual([2, 5, 3, 4, 5]);
 				}));
 
 			it('still reports a framing break the skipped span would have crossed', () =>
