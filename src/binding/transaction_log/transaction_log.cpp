@@ -384,6 +384,51 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * `_findPosition` for an exact-start lookup: returns `[start, stop, tail, segmentRemovals]`, where
+ * the reader may jump from `stop` to `tail` because no entry between them has a timestamp at or
+ * below the target (both 0 when nothing can be skipped).
+ */
+napi_value TransactionLog::FindExactStart(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_LOG_HANDLE("FindExactStart");
+	double timestamp = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
+	LogPosition position = { 0, 0 };
+	ExactStartSpan span;
+	try {
+		position = (*txnLogHandle)->findPosition(timestamp, &span);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+	double values[] = {
+		position.fullPosition,
+		span.stop.fullPosition,
+		span.tail.fullPosition,
+		static_cast<double>(span.segmentRemovals),
+	};
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, 4, &result));
+	for (uint32_t i = 0; i < 4; i++) {
+		napi_value value;
+		NAPI_STATUS_THROWS(::napi_create_double(env, values[i], &value));
+		NAPI_STATUS_THROWS(::napi_set_element(env, result, i, value));
+	}
+	return result;
+}
+
+/**
+ * The process-wide count of segments removed from any store, to compare against the count
+ * `_findExactStart` returned.
+ */
+napi_value TransactionLog::SegmentRemovals(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(
+		env, static_cast<double>(TransactionLogStore::segmentRemovals.load(std::memory_order_relaxed)), &result));
+	return result;
+}
+
+/**
  * Get the last flushed position from the txn.state file.
  */
 napi_value TransactionLog::GetLastFlushed(napi_env env, napi_callback_info info) {
@@ -540,6 +585,8 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },
 		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_findExactStart", nullptr, FindExactStart, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_segmentRemovals", nullptr, SegmentRemovals, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_nextLogId", nullptr, NextLogId, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },

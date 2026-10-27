@@ -61,6 +61,8 @@ TransactionLogStore::TransactionLogStore(
 	}
 }
 
+std::atomic<uint64_t> TransactionLogStore::segmentRemovals = 0;
+
 TransactionLogStore::~TransactionLogStore() {
 	DEBUG_LOG("%p TransactionLogStore::~TransactionLogStore Closing transaction log store \"%s\"\n", this, this->name.c_str());
 	this->close();
@@ -76,6 +78,7 @@ void TransactionLogStore::doClose() {
 		auto logFile = it->second;
 		logFilesToClose.push_back(logFile);
 		it = this->sequenceFiles.erase(it);
+		segmentRemovals.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	// Close the state file if it's open. flushedStateMutex must be held for
@@ -340,9 +343,50 @@ std::weak_ptr<LogPosition> TransactionLogStore::getLastCommittedPosition() {
 	return this->lastCommittedPosition;
 }
 
-LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
+LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp, ExactStartSpan* span) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	uint32_t currentSeq = this->currentSequenceNumber.load(std::memory_order_relaxed);
+
+	// The span is built newest segment first, alongside the descent. `tail` is where skipping must
+	// end: it starts at the newest indexed byte (nothing appended later is examined) and only ever
+	// moves down, to the first byte above which something unexamined remains — an unindexed
+	// suffix, a framing break the scan would report, or a missing sequence it would report as a
+	// gap. `stop` is the end of the newest entry that may be at or below the timestamp.
+	LogPosition stop = { 0, 0 };
+	LogPosition tail = { 0, 0 };
+	bool stopFound = false;
+	auto addToSpan = [&](uint32_t sequenceNumber, uint32_t newerPresent, const TimestampSpan& segment) {
+		if (stopFound) {
+			return;
+		}
+		if (newerPresent == 0 || newerPresent != sequenceNumber + 1 || !segment.complete) {
+			tail = { segment.indexedEnd, sequenceNumber };
+		}
+		uint32_t lastAtOrBelow = segment.lastAtOrBelow;
+		if (segment.firstBreak != 0 && lastAtOrBelow <= segment.lastBreak) {
+			tail = { segment.firstBreak, sequenceNumber };
+			if (lastAtOrBelow != 0) {
+				lastAtOrBelow = std::min(lastAtOrBelow, segment.firstBreak);
+			}
+		}
+		if (lastAtOrBelow != 0) {
+			stop = { lastAtOrBelow, sequenceNumber };
+			stopFound = true;
+		}
+	};
+	auto finish = [&](LogPosition start) {
+		if (span) {
+			if (!stopFound) {
+				stop = start;
+			}
+			if (stop < tail) {
+				span->stop = stop;
+				span->tail = tail;
+			}
+			span->segmentRemovals = segmentRemovals.load(std::memory_order_relaxed);
+		}
+		return start;
+	};
 
 	// Descend through the *registered* segments from the current sequence, stepping by map
 	// order rather than by `--sequenceNumber`. That distinction is the whole point: a missing
@@ -366,19 +410,26 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 		// gone from disk rather than opening it: open() creates, so the walk would leave a
 		// header-only ghost behind (openIfPresent).
 		if (this->openIfPresent(*logFile)) {
+			TimestampSpan segment;
 			uint32_t positionInLogFile = logFile->findPositionByTimestamp(
 				timestamp,
 				isCurrent ? this->maxFileSize : logFile->size.load(std::memory_order_relaxed),
-				isCurrent
+				isCurrent,
+				false,
+				span ? &segment : nullptr
 			);
 			if (positionInLogFile == 0xFFFFFFFF) {
+				// Every entry here is below the timestamp, so a match can only be appended later.
 				if (above != 0) {
-					return { TRANSACTION_LOG_FILE_HEADER_SIZE, above };
+					return finish({ TRANSACTION_LOG_FILE_HEADER_SIZE, above });
 				}
-				return { logFile->size.load(std::memory_order_relaxed), sequenceNumber };
+				return finish({ logFile->size.load(std::memory_order_relaxed), sequenceNumber });
+			}
+			if (span) {
+				addToSpan(sequenceNumber, above, segment);
 			}
 			if (positionInLogFile > 0) {
-				return { positionInLogFile, sequenceNumber };
+				return finish({ positionInLogFile, sequenceNumber });
 			}
 			// Only a segment we could actually open becomes `above`: both exits below hand
 			// this back as a position to read from, and naming a registered-but-absent
@@ -388,7 +439,7 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp) {
 	}
 	// Older than every registered segment: start at the beginning of the oldest one that exists,
 	// falling back to the current sequence when the store holds no segments at all.
-	return { TRANSACTION_LOG_FILE_HEADER_SIZE, above != 0 ? above : currentSeq };
+	return finish({ TRANSACTION_LOG_FILE_HEADER_SIZE, above != 0 ? above : currentSeq });
 }
 
 TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
@@ -1007,6 +1058,7 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			this->retireCurrentSequenceLocked();
 		}
 		this->sequenceFiles.erase(sequenceNumber);
+		segmentRemovals.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	// A watermark seeded from txn.state at load can sit in a segment just purged.

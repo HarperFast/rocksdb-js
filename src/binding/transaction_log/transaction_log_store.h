@@ -85,6 +85,17 @@ union LogPosition {
 };
 
 /**
+ * A span of the log that holds no entry with a timestamp at or below an exact-start target, so the
+ * lookup can jump from `stop` to `tail`. Both are zero when nothing can be skipped.
+ */
+struct ExactStartSpan final {
+	LogPosition stop = { 0, 0 };
+	LogPosition tail = { 0, 0 };
+	/** TransactionLogStore::segmentRemovals when the span was computed. */
+	uint64_t segmentRemovals = 0;
+};
+
+/**
 * Holds a RocksDB sequence number (which Rocks uses to track the version of the database and is returned by flush events)
 * and the corresponding position in the transaction log.
 */
@@ -433,6 +444,14 @@ struct TransactionLogStore final {
 	std::atomic<uint64_t> bytesWritten = 0;
 	std::atomic<uint64_t> rotations = 0;
 	std::atomic<uint64_t> filesPurged = 0;
+
+	/**
+	 * Counts segments leaving any store's `sequenceFiles`, bumped under that store's
+	 * dataSetsMutex. An exact-start span crosses segments only while this is unchanged: a segment
+	 * removed after the span was computed is a gap the reader must still report. Process-wide so a
+	 * store replaced after destroy cannot present a matching count.
+	 */
+	static std::atomic<uint64_t> segmentRemovals;
 	std::atomic<uint64_t> bytesPurged = 0;
 	std::atomic<uint64_t> purgeRuns = 0;
 	std::atomic<uint64_t> databaseFlushes = 0;
@@ -554,9 +573,10 @@ struct TransactionLogStore final {
 
 	/**
 	 * Finds the transaction log file position with the oldest transaction that is equal to, or
-	 * newer than, the provided timestamp.
+	 * newer than, the provided timestamp. When `span` is non-null, also fills in the part of the
+	 * log from that position onward that can hold no entry at or below the timestamp.
 	 */
-	LogPosition findPositionByTimestamp(double timestamp);
+	LogPosition findPositionByTimestamp(double timestamp, ExactStartSpan* span = nullptr);
 
 	/**
 	 * Reads and returns the last flushed position from the txn.state file.

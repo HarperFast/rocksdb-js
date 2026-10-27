@@ -212,6 +212,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		// life of the process (HarperFast/harper#2337)
 		let logBuffer: LogBuffer | undefined = this._currentLogBuffer?.deref(); // try the current one first
 		let foundExactStart = false;
+		// An exact-start lookup may jump from `stop` to `tail`: the native index proved no entry
+		// between them has a timestamp at or below `start`. `stopLogId` 0 means no jump is pending.
+		let stopLogId = 0;
+		let stopPosition = 0;
+		let tailLogId = 0;
+		let tailPosition = 0;
+		let segmentRemovals = 0;
 
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
@@ -230,6 +237,16 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					FLOAT_TO_UINT32[0] = this._findPosition(0);
 				}
 				start ??= 0; // if no start timestamp is specified, include all
+			} else if (exactStart) {
+				const [startPosition, stop, tail, removals] = this._findExactStart(start!);
+				FLOAT_TO_UINT32[0] = stop;
+				stopLogId = UINT32_FROM_FLOAT[1];
+				stopPosition = UINT32_FROM_FLOAT[0];
+				FLOAT_TO_UINT32[0] = tail;
+				tailLogId = UINT32_FROM_FLOAT[1];
+				tailPosition = UINT32_FROM_FLOAT[0];
+				segmentRemovals = removals;
+				FLOAT_TO_UINT32[0] = startPosition;
 			} else {
 				// otherwise, find the log file that contains the start timestamp, and find the position within that file
 				FLOAT_TO_UINT32[0] = this._findPosition(start!);
@@ -302,7 +319,45 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 
-		return {
+		function reachedStop(nextPosition: number): boolean {
+			const logId = logBuffer!.logId;
+			return logId > stopLogId || (logId === stopLogId && nextPosition >= stopPosition);
+		}
+
+		/**
+		 * Takes the one-shot jump to `tail`. Returns false, leaving the ordinary scan to continue, when
+		 * the jump would cross a segment removed since the span was computed (the scan reports that
+		 * gap) or the tail segment cannot be mapped.
+		 */
+		function skipToTail(): boolean {
+			stopLogId = 0;
+			const fromLogId = logBuffer!.logId;
+			if (tailLogId < fromLogId || (tailLogId === fromLogId && tailPosition <= position)) {
+				return false;
+			}
+			if (tailLogId !== fromLogId) {
+				if (transactionLog._segmentRemovals() !== segmentRemovals) {
+					return false;
+				}
+				const tailLogBuffer = getLogMemoryMap(transactionLog, tailLogId);
+				if (!tailLogBuffer) {
+					return false;
+				}
+				logBuffer = tailLogBuffer;
+				dataView = tailLogBuffer.dataView;
+			}
+			position = tailPosition;
+			// re-derived by next() for the segment we landed in
+			size = 0;
+			return true;
+		}
+
+		if (stopLogId !== 0 && reachedStop(position)) {
+			// nothing from the start position onward can match
+			skipToTail();
+		}
+
+		const iterator: IterableIterator<TransactionEntry> = {
 			[Symbol.iterator](): IterableIterator<TransactionEntry> {
 				return this;
 			},
@@ -427,8 +482,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							matchesRange = !exclusiveStart;
 							// after finding this transaction, match all remaining (but still respecting end and exclusiveStart
 							foundExactStart = true;
+							stopLogId = 0;
 						} else {
 							matchesRange = false;
+							if (stopLogId !== 0 && reachedStop(position + length) && skipToTail()) {
+								return iterator.next();
+							}
 						}
 					} else {
 						// no exact start, so just match on conditions
@@ -507,6 +566,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				return { done: true, value: undefined };
 			},
 		};
+		return iterator;
 	},
 });
 

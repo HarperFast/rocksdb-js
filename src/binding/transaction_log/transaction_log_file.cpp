@@ -713,6 +713,10 @@ void TransactionLogFile::resetTimestampIndex() {
 	this->positionByTimestampIndex.clear();
 	this->lastIndexedPosition = TRANSACTION_LOG_FILE_TIMESTAMP_POSITION;
 	this->resyncSearchedExtent = 0;
+	this->minOutOfOrderTimestamp = std::numeric_limits<double>::infinity();
+	this->lastOutOfOrderEnd = 0;
+	this->firstIndexedBreak = 0;
+	this->lastIndexedBreak = 0;
 }
 
 uint32_t TransactionLogFile::countEntries() const {
@@ -970,7 +974,8 @@ void TransactionLogFile::publishReadableExtentLocked() {
  * @return the position of the first entry >= timestamp, or zero if it precedes this log file's
  *         header timestamp, or 0xFFFFFFFF if it follows every entry in this log file
  */
-uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld) {
+uint32_t TransactionLogFile::findPositionByTimestamp(
+	double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld, TimestampSpan* span) {
 	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize);
 
 	// getMemoryMapLocked() (re)assigns this->memoryMap and so must run under
@@ -1064,6 +1069,10 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			static_cast<uint64_t>(this->lastIndexedPosition) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength > writtenExtent) {
 			// A framing break, not an in-flight append: size is bumped only after the bytes
 			// land, so a nonzero header below the written extent is a complete entry.
+			if (this->firstIndexedBreak == 0) {
+				this->firstIndexedBreak = this->lastIndexedPosition;
+			}
+			this->lastIndexedBreak = this->lastIndexedPosition;
 			uint32_t searchable = std::min(writtenExtent, static_cast<uint32_t>(memoryMap->mapSize));
 			bool searchedWholeExtent = searchable == writtenExtent;
 			if (searchable <= this->resyncSearchedExtent) {
@@ -1105,11 +1114,18 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 		// check that the timestamp is greater than any previously indexed timestamp,
 		// otherwise we don't record it, because we want to start at the first position with a timestamp that
 		// is greater than the requested timestamp:
-		if (entryTimestamp > positionByTimestampIndex.rbegin()->first) {
+		double runningMaximum = positionByTimestampIndex.rbegin()->first;
+		uint32_t entryEnd = this->lastIndexedPosition + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength;
+		if (entryTimestamp > runningMaximum) {
 			// insert with a hint to go at the end (constant time?)
 			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, this->lastIndexedPosition});
+		} else if (entryTimestamp < runningMaximum) {
+			// Entries equal to the maximum (the rest of a batch) need no record: the next maximum
+			// key's position already bounds them.
+			this->minOutOfOrderTimestamp = std::min(this->minOutOfOrderTimestamp, entryTimestamp);
+			this->lastOutOfOrderEnd = entryEnd;
 		}
-		this->lastIndexedPosition += TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength;
+		this->lastIndexedPosition = entryEnd;
 	}
 	if (correctStartupExtent) {
 		// Re-check under fileMutex so the first append cannot publish a larger
@@ -1124,6 +1140,23 @@ uint32_t TransactionLogFile::findPositionByTimestamp(double timestamp, uint32_t 
 			this->size = this->lastIndexedPosition;
 			this->publishReadableExtentLocked();
 		}
+	}
+	if (span) {
+		// Every entry before the first maximum above the timestamp has a running maximum at or
+		// below it; past that point only an out-of-order entry can.
+		auto above = this->positionByTimestampIndex.upper_bound(timestamp);
+		uint32_t lastAtOrBelow = above == this->positionByTimestampIndex.end() ? this->lastIndexedPosition : above->second;
+		if (lastAtOrBelow <= TRANSACTION_LOG_FILE_HEADER_SIZE) {
+			lastAtOrBelow = 0;
+		}
+		if (this->minOutOfOrderTimestamp <= timestamp) {
+			lastAtOrBelow = std::max(lastAtOrBelow, this->lastOutOfOrderEnd);
+		}
+		span->lastAtOrBelow = lastAtOrBelow;
+		span->indexedEnd = this->lastIndexedPosition;
+		span->firstBreak = this->firstIndexedBreak;
+		span->lastBreak = this->lastIndexedBreak;
+		span->complete = !stoppedAtUnindexedTail && this->lastIndexedPosition >= this->size.load(std::memory_order_relaxed);
 	}
 	// now do the actual search: just a search for the lower bound
 	auto it = this->positionByTimestampIndex.lower_bound(timestamp);

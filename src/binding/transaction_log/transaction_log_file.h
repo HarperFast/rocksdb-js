@@ -161,6 +161,25 @@ namespace rocksdb_js {
 struct MemoryMap;
 struct TransactionLogEntryBatch;
 
+/**
+ * What one segment's timestamp index proves about a target timestamp, for an exact-start lookup
+ * deciding which part of the log it can skip.
+ */
+struct TimestampSpan final {
+	/**
+	 * Offset past which no indexed entry has a timestamp at or below the target; 0 when no indexed
+	 * entry can.
+	 */
+	uint32_t lastAtOrBelow = 0;
+	/** End of the indexed region; nothing at or past it has been examined. */
+	uint32_t indexedEnd = 0;
+	/** Framing breaks inside the indexed region (0 when none); a skip must not cross one. */
+	uint32_t firstBreak = 0;
+	uint32_t lastBreak = 0;
+	/** Indexing reached the segment's written extent. */
+	bool complete = false;
+};
+
 struct TransactionLogFile final {
 	/**
 	 * The path to the transaction log file.
@@ -293,6 +312,16 @@ struct TransactionLogFile final {
 	 * while parked (the walk re-detects the break before reaching them).
 	 */
 	uint32_t resyncSearchedExtent = 0;
+	/**
+	 * Bounds on the indexed entries positionByTimestampIndex omits because their timestamp is below
+	 * the running maximum. Constant-size on purpose: they only have to say whether a segment can
+	 * hold a target timestamp and where its last such candidate ends (see TimestampSpan).
+	 */
+	double minOutOfOrderTimestamp = std::numeric_limits<double>::infinity();
+	uint32_t lastOutOfOrderEnd = 0;
+	/** Offsets of the first and last framing breaks the index walk reached; 0 when none. */
+	uint32_t firstIndexedBreak = 0;
+	uint32_t lastIndexedBreak = 0;
 	std::mutex indexMutex;
 
 	/**
@@ -650,8 +679,10 @@ struct TransactionLogFile final {
 	 *   fileMutex only for the getMemoryMapLocked() call and releases it before
 	 *   scanning. Passing true while NOT holding fileMutex, or false while
 	 *   holding it, is a bug (the latter self-deadlocks).
+	 * @param span When non-null, filled from the same indexed extent the position came from.
 	 */
-	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld = false);
+	uint32_t findPositionByTimestamp(
+		double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld = false, TimestampSpan* span = nullptr);
 
 	/**
 	 * Platform specific function that writes data to the log file.

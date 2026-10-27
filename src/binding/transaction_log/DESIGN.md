@@ -29,3 +29,17 @@ Two tighter alternatives are deliberately not used. Holding `transactionBindMute
 # A failed sync freezes the flushed state
 
 `databaseFlushBegin()` syncs every segment before RocksDB flushes, and `txn.state` then records how far the log is covered by flushed data. If any segment sync fails, the store latches `logSyncFailed` and `txn.state` stops advancing for the life of that store instance, reported once through `log.warn`. A later successful sync does not clear it: after a failed `fsync` the kernel may mark the dirty pages clean, so a later success proves nothing about the bytes it lost. The latch is per instance, not persisted: an in-process close and reopen builds a fresh store whose new file descriptors no longer report the earlier error, so the first sync after a reopen can advance `txn.state` again. Holding `txn.state` back has three costs: a longer replay on restart, retention that cannot purge past it, and a lower position for `recoverTail()` to protect (invariant 14), so a crash after the failed sync can discard an unclosed batch's surviving prefix that a later completed flush already put in SST. Advancing it instead could let a restart skip log entries that were never durable.
+
+# Exact-start lookups
+
+`query({ start, exactStart: true })` returns everything from the first entry whose timestamp equals `start`. Timestamps are not ordered (`setTimestamp()` adopts origin and replay timestamps), so a larger timestamp ends nothing. The running-maximum index gives only a lower bound, and a miss used to scan to end-of-log.
+
+`TransactionLogStore::findPositionByTimestamp(timestamp, &span)` also returns a span `[stop, tail)` that holds no entry with a timestamp at or below `start`; the reader jumps over it once. Per segment, the index walk keeps two scalars for entries below the running maximum: their minimum timestamp and the end of the last one. The last possible candidate in a segment is then the later of the next maximum key above `start` and, when that minimum is at or below `start`, the last such entry. That gives the same yes/no answer per segment as a full suffix-minimum index. Precision is lost only inside the one segment holding the newest candidate. Memory stays constant per segment, where a suffix-minimum stack grows with every entry below a high outlier.
+
+`tail` is the newest examined byte and moves down to anything the scan must still see. Keep these, each covered by a test:
+
+- **Live tail.** `tail` names the newest _visited_ segment's indexed extent, never `currentSequenceNumber`, which can name a segment not yet created. A match appended later lands past it.
+- **Unindexed suffix, framing break, missing sequence.** `tail` stops below each, so the reader still raises `CorruptFrameError` and `TransactionLogGapError` as before.
+- **Purge after positioning.** A jump into another segment re-checks `TransactionLogStore::segmentRemovals` (process-wide, bumped under `dataSetsMutex`). If it moved, the reader scans and reports the gap.
+
+The first lookup in a process still indexes every segment from the newest down to the start. The index then persists per segment, so later lookups pay only the walk.
