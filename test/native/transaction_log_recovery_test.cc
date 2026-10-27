@@ -1760,8 +1760,8 @@ TEST(TransactionLogTimestampSpan, InOrderEntriesEndAtTheNextLargerMaximum) {
 	EXPECT_EQ(spanFor(file, 0.5, img.size()).lastAtOrBelow, 0u);
 	auto span = spanFor(file, 20.0, img.size());
 	EXPECT_TRUE(span.complete);
-	EXPECT_EQ(span.indexedEnd, img.size());
-	EXPECT_EQ(span.firstBreak, 0u);
+	EXPECT_EQ(span.indexedBatchEnd, img.size());
+	EXPECT_EQ(span.lastBreak, 0u);
 }
 
 TEST(TransactionLogTimestampSpan, OutOfOrderEntriesExtendTheSpanOnlyWhenOneCanMatch) {
@@ -1794,7 +1794,7 @@ TEST(TransactionLogTimestampSpan, ReportsTheBreaksTheIndexWalkedPast) {
 	OpenedLogFile opened(img);
 	TransactionLogFile& file = opened.get();
 	auto span = spanFor(file, 25.0, img.size());
-	EXPECT_EQ(span.firstBreak, breakOffset);
+	EXPECT_EQ(span.batchEndBeforeBreak, breakOffset);
 	EXPECT_EQ(span.lastBreak, breakOffset);
 	EXPECT_TRUE(span.complete);
 	EXPECT_EQ(span.lastAtOrBelow, offsets[6]);
@@ -1822,7 +1822,48 @@ TEST(TransactionLogTimestampSpan, AShortMapLeavesTheSegmentIncomplete) {
 	auto span = spanFor(file, 25.0, shortMap);
 	file.afterIndexMapAcquiredForTests = nullptr;
 	EXPECT_FALSE(span.complete);
-	EXPECT_EQ(span.indexedEnd, breakOffset);
+	EXPECT_EQ(span.indexedBatchEnd, breakOffset);
+}
+
+// A walk can stop between two entries of one batch (a live tail not yet visible in the map). The
+// reported end must be the batch's start, so a reader that skips there reads the batch's first
+// entry and its flags.
+TEST(TransactionLogTimestampSpan, AnIncompleteWalkEndsOnABatchBoundary) {
+	LogImage img;
+	img.entry(16, 1, 10.0);
+	uint32_t batchStart = img.size();
+	img.entry(16, 0, 20.0);
+	uint32_t midBatch = img.size();
+	img.entry(16, 1, 20.0).entry(16, 1, 30.0);
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	file.downgradeMapToFrozen();
+	file.resetTimestampIndex();
+	uint32_t shortMap = midBatch + 5;
+	uint32_t fullSize = img.size();
+	file.afterIndexMapAcquiredForTests = [&] { file.size.store(fullSize, std::memory_order_relaxed); };
+	file.size.store(shortMap, std::memory_order_relaxed);
+	auto span = spanFor(file, 5.0, shortMap);
+	file.afterIndexMapAcquiredForTests = nullptr;
+	EXPECT_FALSE(span.complete);
+	EXPECT_EQ(span.indexedBatchEnd, batchStart);
+}
+
+TEST(TransactionLogTimestampSpan, ABreakInsideABatchReportsTheBatchStart) {
+	LogImage img;
+	img.entry(16, 1, 10.0);
+	uint32_t batchStart = img.size();
+	img.entry(16, 0, 20.0);
+	uint32_t breakOffset = img.size();
+	img.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 0, 20.0);
+	for (int i = 0; i < 12; ++i) {
+		img.entry(16, 1, 30.0 + i);
+	}
+	OpenedLogFile opened(img);
+	TransactionLogFile& file = opened.get();
+	auto span = spanFor(file, 5.0, img.size());
+	EXPECT_EQ(span.lastBreak, breakOffset);
+	EXPECT_EQ(span.batchEndBeforeBreak, batchStart);
 }
 
 TEST(TransactionLogExactStartSpan, NoMatchSkipsFromTheStartToTheNewestIndexedByte) {
@@ -1940,6 +1981,33 @@ TEST(TransactionLogExactStartSpan, ATailStopsAtAnOlderSegmentsUnindexedSuffix) {
 		older.afterIndexMapAcquiredForTests = nullptr;
 		EXPECT_TRUE(samePosition(start, 1, cut));
 		EXPECT_EQ(span.tail.fullPosition, 0.0);
+	}
+	std::filesystem::remove_all(storePath);
+}
+
+// A tail is always a batch boundary: a break inside a batch moves it back to the batch's start.
+TEST(TransactionLogExactStartSpan, ATailBeforeABreakIsTheBatchStart) {
+	auto storePath = uniqueFloorScanStorePath();
+	std::filesystem::create_directories(storePath);
+	LogImage first;
+	first.entry(16, 1, 10.0);
+	uint32_t startOffset = first.size();
+	first.entry(16, 1, 20.0);
+	LogImage second(20.0);
+	second.entry(16, 1, 30.0);
+	uint32_t batchStart = second.size();
+	second.entry(16, 0, 35.0);
+	second.entryRaw(/*declaredLength=*/100000, /*actualDataLen=*/8, 0, 35.0);
+	for (int i = 0; i < 12; ++i) {
+		second.entry(16, 1, 40.0 + i);
+	}
+	{
+		rocksdb_js::TransactionLogStore store("store", storePath, 0, std::chrono::milliseconds(0), 0);
+		registerSegments(store, storePath, { { 1, &first }, { 2, &second } });
+		rocksdb_js::ExactStartSpan span;
+		store.findPositionByTimestamp(15.0, &span);
+		EXPECT_TRUE(samePosition(span.stop, 1, startOffset));
+		EXPECT_TRUE(samePosition(span.tail, 2, batchStart));
 	}
 	std::filesystem::remove_all(storePath);
 }

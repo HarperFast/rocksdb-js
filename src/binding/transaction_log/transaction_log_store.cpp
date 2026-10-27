@@ -356,13 +356,13 @@ LogPosition TransactionLogStore::findPositionByTimestamp(double timestamp, Exact
 			return;
 		}
 		if (newerPresent == 0 || newerPresent != sequenceNumber + 1 || !segment.complete) {
-			tail = { segment.indexedEnd, sequenceNumber };
+			tail = { segment.indexedBatchEnd, sequenceNumber };
 		}
 		uint32_t lastAtOrBelow = segment.lastAtOrBelow;
-		if (segment.firstBreak != 0 && lastAtOrBelow <= segment.lastBreak) {
-			tail = { segment.firstBreak, sequenceNumber };
+		if (segment.lastBreak != 0 && lastAtOrBelow <= segment.lastBreak) {
+			tail = { segment.batchEndBeforeBreak, sequenceNumber };
 			if (lastAtOrBelow != 0) {
-				lastAtOrBelow = std::min(lastAtOrBelow, segment.firstBreak);
+				lastAtOrBelow = std::min(lastAtOrBelow, segment.batchEndBeforeBreak);
 			}
 		}
 		if (lastAtOrBelow != 0) {

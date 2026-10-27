@@ -715,7 +715,8 @@ void TransactionLogFile::resetTimestampIndex() {
 	this->resyncSearchedExtent = 0;
 	this->minOutOfOrderTimestamp = std::numeric_limits<double>::infinity();
 	this->lastOutOfOrderEnd = 0;
-	this->firstIndexedBreak = 0;
+	this->lastIndexedBatchEnd = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	this->batchEndBeforeIndexedBreak = 0;
 	this->lastIndexedBreak = 0;
 }
 
@@ -1069,8 +1070,8 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 			static_cast<uint64_t>(this->lastIndexedPosition) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength > writtenExtent) {
 			// A framing break, not an in-flight append: size is bumped only after the bytes
 			// land, so a nonzero header below the written extent is a complete entry.
-			if (this->firstIndexedBreak == 0) {
-				this->firstIndexedBreak = this->lastIndexedPosition;
+			if (this->lastIndexedBreak == 0) {
+				this->batchEndBeforeIndexedBreak = this->lastIndexedBatchEnd;
 			}
 			this->lastIndexedBreak = this->lastIndexedPosition;
 			uint32_t searchable = std::min(writtenExtent, static_cast<uint32_t>(memoryMap->mapSize));
@@ -1125,6 +1126,9 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 			this->minOutOfOrderTimestamp = std::min(this->minOutOfOrderTimestamp, entryTimestamp);
 			this->lastOutOfOrderEnd = entryEnd;
 		}
+		if (readUint8(mappedFile + this->lastIndexedPosition + 12) & TRANSACTION_LOG_ENTRY_LAST_FLAG) {
+			this->lastIndexedBatchEnd = entryEnd;
+		}
 		this->lastIndexedPosition = entryEnd;
 	}
 	if (correctStartupExtent) {
@@ -1158,10 +1162,12 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 			lastAtOrBelow = std::max(lastAtOrBelow, this->lastOutOfOrderEnd);
 		}
 		span->lastAtOrBelow = lastAtOrBelow;
-		span->indexedEnd = this->lastIndexedPosition;
-		span->firstBreak = this->firstIndexedBreak;
-		span->lastBreak = this->lastIndexedBreak;
+		// A complete walk ended on the written extent, which only ever advances by whole batches
+		// (writeEntriesV1 appends a batch in one write before bumping size).
 		span->complete = !stoppedAtUnindexedTail && this->lastIndexedPosition >= this->size.load(std::memory_order_relaxed);
+		span->indexedBatchEnd = span->complete ? this->lastIndexedPosition : this->lastIndexedBatchEnd;
+		span->lastBreak = this->lastIndexedBreak;
+		span->batchEndBeforeBreak = this->batchEndBeforeIndexedBreak;
 	}
 	if (it != this->positionByTimestampIndex.end()) {
 		return it->second;

@@ -883,7 +883,6 @@ describe('Transaction Log', () => {
 					expect(errors.map((error) => error.message)).toEqual([
 						'injected mapping failure (log file ID: 5)',
 					]);
-					// the failed jump went straight for the tail; the scan then resumed in segment 3
 					expect(mapped).toEqual([2, 5, 3, 4, 5]);
 				}));
 

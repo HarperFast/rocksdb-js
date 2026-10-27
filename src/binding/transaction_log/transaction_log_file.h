@@ -171,11 +171,16 @@ struct TimestampSpan final {
 	 * entry can.
 	 */
 	uint32_t lastAtOrBelow = 0;
-	/** End of the indexed region; nothing at or past it has been examined. */
-	uint32_t indexedEnd = 0;
-	/** Framing breaks inside the indexed region (0 when none); a skip must not cross one. */
-	uint32_t firstBreak = 0;
+	/**
+	 * The last batch boundary at or before the end of the indexed region; nothing past the indexed
+	 * region has been examined. A skip lands here, so a reader never resumes inside a batch whose
+	 * first entry (and its flags) it has not read.
+	 */
+	uint32_t indexedBatchEnd = 0;
+	/** The last framing break in the indexed region (0 when none); a skip must not cross one. */
 	uint32_t lastBreak = 0;
+	/** The last batch boundary before the first framing break. */
+	uint32_t batchEndBeforeBreak = 0;
 	/** Indexing reached the segment's written extent. */
 	bool complete = false;
 };
@@ -319,8 +324,11 @@ struct TransactionLogFile final {
 	 */
 	double minOutOfOrderTimestamp = std::numeric_limits<double>::infinity();
 	uint32_t lastOutOfOrderEnd = 0;
-	/** Offsets of the first and last framing breaks the index walk reached; 0 when none. */
-	uint32_t firstIndexedBreak = 0;
+	/** End of the last indexed entry that closed a batch (TRANSACTION_LOG_ENTRY_LAST_FLAG). */
+	uint32_t lastIndexedBatchEnd = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	/** lastIndexedBatchEnd when the index walk reached its first framing break; 0 when none. */
+	uint32_t batchEndBeforeIndexedBreak = 0;
+	/** Offset of the last framing break the index walk reached; 0 when none. */
 	uint32_t lastIndexedBreak = 0;
 	std::mutex indexMutex;
 
