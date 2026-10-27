@@ -40,6 +40,6 @@ Two tighter alternatives are deliberately not used. Holding `transactionBindMute
 
 - **Live tail.** `tail` names the newest _visited_ segment's indexed extent, never `currentSequenceNumber`, which can name a segment not yet created. A match appended later lands past it.
 - **Unindexed suffix, framing break, missing sequence.** `tail` stops below each, so the reader still raises `CorruptFrameError` and `TransactionLogGapError` as before.
-- **Purge after positioning.** A jump into another segment re-checks `TransactionLogStore::segmentRemovals` (process-wide, bumped under `dataSetsMutex`). If it moved, the reader scans and reports the gap.
+- **Purge after positioning.** A jump into another segment maps the tail, then re-checks `TransactionLogStore::segmentRemovals` (process-wide, bumped and read under `dataSetsMutex`). If it moved, the reader scans and reports the gap. A start that is already past the stop jumps inside `query()`, so a purge after `query()` returns is ordered after that jump.
 
 The first lookup in a process still indexes every segment from the newest down to the start. The index then persists per segment, so later lookups pay only the walk.

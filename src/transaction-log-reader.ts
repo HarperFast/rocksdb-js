@@ -262,6 +262,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 			}
 		}
+		const positionedAt = position;
 		if (stopLogId !== 0 && pastStop(logId, position, stopLogId, stopPosition)) {
 			stopLogId = 0;
 			if (skipToTail(this, logId, position, tailLogId, tailPosition, segmentRemovals)) {
@@ -307,7 +308,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// path, which correctly returns done when no log file can be mapped.
 				size = 0;
 				if (
-					position <= TRANSACTION_LOG_FILE_HEADER_SIZE ||
+					positionedAt <= TRANSACTION_LOG_FILE_HEADER_SIZE ||
 					(logId > 0 && this.getLogFileSize(logId) > 0)
 				) {
 					// the starting segment is not written yet, or is live but could not be mapped: what
@@ -571,15 +572,15 @@ function pastStop(logId: number, position: number, stopLogId: number, stopPositi
 	return logId > stopLogId || (logId === stopLogId && position >= stopPosition);
 }
 
-// Out-parameter of `skipToTail()`: the tail's mapping when it is in another segment. Callers clear
-// it once used, so it never pins a mapping (invariant 30).
+// Out-parameter of `skipToTail()`: the tail's mapping when it is in another segment. Set only on
+// success and cleared by callers once used, so it never pins a mapping (invariant 30).
 let tailLogBuffer: LogBuffer | undefined;
 
 /**
  * Whether an exact-start lookup at `position` of `fromLogId` may take its one-shot jump to the tail.
- * Called on a frame boundary, so a mapping error leaves a resumable cursor. The removal check
- * follows the mapping and holds the store's lock, so a purge either declines the jump (the scan
- * then reports the gap) or follows it like a purge of segments already read.
+ * next() calls it on a frame boundary, so a mapping error leaves a resumable cursor. The removal
+ * check follows the mapping and holds the store's lock, so a purge either declines the jump (the
+ * scan then reports the gap) or follows it like a purge of segments already read.
  */
 function skipToTail(
 	transactionLog: TransactionLog,
@@ -596,8 +597,12 @@ function skipToTail(
 	if (tailLogId < fromLogId) {
 		return false;
 	}
-	tailLogBuffer = getLogMemoryMap(transactionLog, tailLogId);
-	return tailLogBuffer !== undefined && transactionLog._segmentRemovals() === segmentRemovals;
+	const mapped = getLogMemoryMap(transactionLog, tailLogId);
+	if (mapped === undefined || transactionLog._segmentRemovals() !== segmentRemovals) {
+		return false;
+	}
+	tailLogBuffer = mapped;
+	return true;
 }
 
 // Out-parameter of `nextReadableLogBuffer()`: how many skipped sequence numbers above `gapFloor`
