@@ -89,10 +89,17 @@ std::shared_ptr<MemoryMap> TransactionLogHandle::getMemoryMap(uint32_t sequenceN
 	return nullptr;
 }
 
-LogPosition TransactionLogHandle::findPosition(double timestamp) {
+LogPosition TransactionLogHandle::findPosition(double timestamp, ExactStartSpan* span) {
 	auto store = this->store.lock();
-	if (store) return store->findPositionByTimestamp(timestamp);
+	if (store) return store->findPositionByTimestamp(timestamp, span);
 	return { 0, 0 };
+}
+
+double TransactionLogHandle::segmentRemovals() {
+	auto store = this->store.lock();
+	if (!store) return -1;
+	std::lock_guard<std::mutex> lock(store->dataSetsMutex);
+	return static_cast<double>(TransactionLogStore::segmentRemovals.load(std::memory_order_relaxed));
 }
 
 LogPosition TransactionLogHandle::getLastFlushed() {

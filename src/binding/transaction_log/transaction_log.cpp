@@ -384,6 +384,54 @@ napi_value TransactionLog::FindPosition(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * `_findPosition` for an exact-start lookup. Also writes `[stop, tail, segmentRemovals]` into the
+ * Float64Array passed second: the reader may jump from `stop` to `tail` because no entry between
+ * them has a timestamp at or below the target (both 0 when nothing can be skipped).
+ */
+napi_value TransactionLog::FindExactStart(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	UNWRAP_TRANSACTION_LOG_HANDLE("FindExactStart");
+	double timestamp = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &timestamp));
+	napi_typedarray_type type = napi_int8_array;
+	size_t length = 0;
+	void* data = nullptr;
+	if (::napi_get_typedarray_info(env, argv[1], &type, &length, &data, nullptr, nullptr) != napi_ok ||
+		type != napi_float64_array || length < 3 || data == nullptr) {
+		::napi_throw_type_error(env, nullptr, "Expected a Float64Array of at least 3 elements");
+		return nullptr;
+	}
+	LogPosition position = { 0, 0 };
+	ExactStartSpan span;
+	try {
+		position = (*txnLogHandle)->findPosition(timestamp, &span);
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+	double* out = static_cast<double*>(data);
+	out[0] = span.stop.fullPosition;
+	out[1] = span.tail.fullPosition;
+	out[2] = static_cast<double>(span.segmentRemovals);
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, position.fullPosition, &result));
+	return result;
+}
+
+/**
+ * The count of removed segments to compare against the one `_findExactStart` reported, read under
+ * this log's store lock so a purge in progress is wholly before or after it; -1 when the store is
+ * gone, which never matches.
+ */
+napi_value TransactionLog::SegmentRemovals(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("SegmentRemovals");
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_double(env, (*txnLogHandle)->segmentRemovals(), &result));
+	return result;
+}
+
+/**
  * Get the last flushed position from the txn.state file.
  */
 napi_value TransactionLog::GetLastFlushed(napi_env env, napi_callback_info info) {
@@ -540,6 +588,8 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },
 		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_findExactStart", nullptr, FindExactStart, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "_segmentRemovals", nullptr, SegmentRemovals, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_nextLogId", nullptr, NextLogId, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getLastCommittedPosition", nullptr, GetLastCommittedPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_getMemoryMapOfFile", nullptr, GetMemoryMapOfFile, nullptr, nullptr, nullptr, napi_default, nullptr },

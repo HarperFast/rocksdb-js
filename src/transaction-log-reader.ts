@@ -8,6 +8,8 @@ import {
 
 const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
+// `_findExactStart()` out-parameter: [stop, tail, segment removals]
+const EXACT_START_SPAN = new Float64Array(3);
 
 const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
@@ -212,6 +214,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		// life of the process (HarperFast/harper#2337)
 		let logBuffer: LogBuffer | undefined = this._currentLogBuffer?.deref(); // try the current one first
 		let foundExactStart = false;
+		// An exact-start lookup may jump from `stop` to `tail`: the native index proved no entry
+		// between them has a timestamp at or below `start`. `stopLogId` 0 means no jump is pending.
+		let stopLogId = 0;
+		let stopPosition = 0;
+		let tailLogId = 0;
+		let tailPosition = 0;
+		let segmentRemovals = 0;
 
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
@@ -230,6 +239,16 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					FLOAT_TO_UINT32[0] = this._findPosition(0);
 				}
 				start ??= 0; // if no start timestamp is specified, include all
+			} else if (exactStart) {
+				const startPosition = this._findExactStart(start!, EXACT_START_SPAN);
+				FLOAT_TO_UINT32[0] = EXACT_START_SPAN[0];
+				stopLogId = UINT32_FROM_FLOAT[1];
+				stopPosition = UINT32_FROM_FLOAT[0];
+				FLOAT_TO_UINT32[0] = EXACT_START_SPAN[1];
+				tailLogId = UINT32_FROM_FLOAT[1];
+				tailPosition = UINT32_FROM_FLOAT[0];
+				segmentRemovals = EXACT_START_SPAN[2];
+				FLOAT_TO_UINT32[0] = startPosition;
 			} else {
 				// otherwise, find the log file that contains the start timestamp, and find the position within that file
 				FLOAT_TO_UINT32[0] = this._findPosition(start!);
@@ -242,6 +261,16 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// if the file is empty, start after the header
 				position = TRANSACTION_LOG_FILE_HEADER_SIZE;
 			}
+		}
+		const positionedAt = position;
+		if (stopLogId !== 0 && pastStop(logId, position, stopLogId, stopPosition)) {
+			stopLogId = 0;
+			if (skipToTail(this, logId, position, tailLogId, tailPosition, segmentRemovals)) {
+				logId = tailLogId;
+				position = tailPosition;
+				logBuffer = tailLogBuffer ?? logBuffer;
+			}
+			tailLogBuffer = undefined;
 		}
 		// Segments at or below this were never part of this iterator's history, so crossing them is
 		// not a gap. Captured before the fallback below substitutes a placeholder with `logId` 0.
@@ -279,7 +308,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// path, which correctly returns done when no log file can be mapped.
 				size = 0;
 				if (
-					position <= TRANSACTION_LOG_FILE_HEADER_SIZE ||
+					positionedAt <= TRANSACTION_LOG_FILE_HEADER_SIZE ||
 					(logId > 0 && this.getLogFileSize(logId) > 0)
 				) {
 					// the starting segment is not written yet, or is live but could not be mapped: what
@@ -302,7 +331,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 
-		return {
+		const iterator: IterableIterator<TransactionEntry> = {
 			[Symbol.iterator](): IterableIterator<TransactionEntry> {
 				return this;
 			},
@@ -427,8 +456,35 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							matchesRange = !exclusiveStart;
 							// after finding this transaction, match all remaining (but still respecting end and exclusiveStart
 							foundExactStart = true;
+							stopLogId = 0;
 						} else {
 							matchesRange = false;
+							if (
+								stopLogId !== 0 &&
+								pastStop(logBuffer!.logId, position + length, stopLogId, stopPosition)
+							) {
+								stopLogId = 0;
+								position += length;
+								if (
+									skipToTail(
+										transactionLog,
+										logBuffer!.logId,
+										position,
+										tailLogId,
+										tailPosition,
+										segmentRemovals
+									)
+								) {
+									if (tailLogBuffer) {
+										logBuffer = tailLogBuffer;
+										dataView = tailLogBuffer.dataView;
+									}
+									position = tailPosition;
+									size = 0;
+								}
+								tailLogBuffer = undefined;
+								return iterator.next();
+							}
 						}
 					} else {
 						// no exact start, so just match on conditions
@@ -507,8 +563,47 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				return { done: true, value: undefined };
 			},
 		};
+		return iterator;
 	},
 });
+
+function pastStop(logId: number, position: number, stopLogId: number, stopPosition: number) {
+	return logId > stopLogId || (logId === stopLogId && position >= stopPosition);
+}
+
+// Out-parameter of `skipToTail()`: the tail's mapping when it is in another segment. Set only on
+// success and cleared by callers once used, so it never pins a mapping (invariant 30).
+let tailLogBuffer: LogBuffer | undefined;
+
+/**
+ * Whether an exact-start lookup at `position` of `fromLogId` may take its one-shot jump to the tail.
+ * next() calls it on a frame boundary, so a mapping error leaves a resumable cursor; from query()
+ * the error escapes before any iterator exists. The removal
+ * check follows the mapping and holds the store's lock, so a purge either declines the jump (the
+ * scan then reports the gap) or follows it like a purge of segments already read.
+ */
+function skipToTail(
+	transactionLog: TransactionLog,
+	fromLogId: number,
+	position: number,
+	tailLogId: number,
+	tailPosition: number,
+	segmentRemovals: number
+): boolean {
+	tailLogBuffer = undefined;
+	if (tailLogId === fromLogId) {
+		return tailPosition > position;
+	}
+	if (tailLogId < fromLogId) {
+		return false;
+	}
+	const mapped = getLogMemoryMap(transactionLog, tailLogId);
+	if (mapped === undefined || transactionLog._segmentRemovals() !== segmentRemovals) {
+		return false;
+	}
+	tailLogBuffer = mapped;
+	return true;
+}
 
 // Out-parameter of `nextReadableLogBuffer()`: how many skipped sequence numbers above `gapFloor`
 // could not be read. A module slot, so an ordinary advance allocates nothing.

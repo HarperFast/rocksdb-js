@@ -611,6 +611,312 @@ describe('Transaction Log', () => {
 				});
 				expect(Array.from(queryIterator).length).toBe(1); // latest should show up now
 			}));
+
+		describe('exactStart lookups (#676)', () => {
+			// 100-byte entries under a 1000-byte cap: eight entries per segment
+			const segmentOptions = { dbOptions: [{ transactionLogMaxSize: 1000 }] };
+			const base = 1_800_000_000_000;
+			type Written = { timestamp: number; id: number };
+
+			const write = (
+				db: RocksDatabase,
+				log: TransactionLog,
+				written: Written[],
+				timestamp: number,
+				count = 1
+			) => {
+				const ids: number[] = [];
+				db.transactionSync((txn) => {
+					txn.setTimestamp(timestamp);
+					ids.length = 0;
+					for (let i = 0; i < count; i++) {
+						const id = written.length + i;
+						const value = Buffer.alloc(100);
+						value.writeUInt32BE(id);
+						log.addEntry(value, txn.id);
+						ids.push(id);
+					}
+					db.putSync(`entry-${ids[0]}`, ids[0], { transaction: txn });
+				});
+				for (const id of ids) {
+					written.push({ timestamp, id });
+				}
+			};
+			const idOf = (entry: { data: Buffer }) => entry.data.readUInt32BE(0);
+			const query = (log: TransactionLog, start: number, options = {}) =>
+				Array.from(log.query({ start, exactStart: true, ...options }), idOf);
+			const lookup = (log: TransactionLog, start: number) => {
+				const reads = vi.spyOn(DataView.prototype, 'getFloat64');
+				try {
+					return { ids: query(log, start), reads: reads.mock.calls.length };
+				} finally {
+					reads.mockRestore();
+				}
+			};
+			// What an unbounded scan returns: everything from the first entry with the start timestamp.
+			const expected = (
+				written: Written[],
+				start: number,
+				{ exclusiveStart = false, end = Number.MAX_VALUE } = {}
+			) => {
+				const first = written.findIndex((entry) => entry.timestamp === start);
+				if (first < 0) {
+					return [];
+				}
+				return written
+					.slice(first)
+					.filter((entry, i) =>
+						i === 0
+							? !exclusiveStart
+							: (!exclusiveStart || entry.timestamp !== start) && entry.timestamp < end
+					)
+					.map((entry) => entry.id);
+			};
+
+			it('ends an absent or out-of-range lookup without reading the segments after it', () =>
+				dbRunner(segmentOptions, async ({ db }) => {
+					const log = db.useLog('foo');
+					const written: Written[] = [];
+					for (let i = 0; i < 480; i++) {
+						write(db, log, written, base + i * 10);
+					}
+					expect(log.getLogFileSize(60)).toBeGreaterThan(0);
+					expect(log.getLogFileSize(61)).toBe(0);
+					for (const start of [base - 5, base + 1005, base + 4705, base + 4795]) {
+						expect(lookup(log, start), `start ${start}`).toEqual({ ids: [], reads: 0 });
+					}
+					const present = lookup(log, base + 1000);
+					expect(present.ids).toEqual(expected(written, base + 1000));
+					expect(present.reads).toBe(present.ids.length);
+				}));
+
+			it.skipIf(process.platform === 'win32')(
+				'ends a lookup for a purged start without reading the retained segments',
+				() =>
+					dbRunner(segmentOptions, async ({ db }) => {
+						const log = db.useLog('foo');
+						const written: Written[] = [];
+						for (let i = 0; i < 240; i++) {
+							write(db, log, written, base + i * 10);
+						}
+						db.flushSync();
+						for (let i = 240; i < 256; i++) {
+							write(db, log, written, base + i * 10);
+						}
+						expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 }).length).toBeGreaterThan(
+							20
+						);
+						expect(lookup(log, base + 50)).toEqual({ ids: [], reads: 0 });
+						expect(lookup(log, base + 2550).ids).toEqual([255]);
+					})
+			);
+
+			it('finds out-of-order entries past the lower bound and at the tail', () =>
+				dbRunner(segmentOptions, async ({ db }) => {
+					const log = db.useLog('foo');
+					const written: Written[] = [];
+					for (let i = 0; i < 200; i++) {
+						write(db, log, written, base + i * 10);
+					}
+					write(db, log, written, base + 155);
+					for (let i = 200; i < 400; i++) {
+						write(db, log, written, base + i * 10);
+					}
+					write(db, log, written, base + 1005);
+					for (const start of [base + 155, base + 1005, base + 160, base + 1010]) {
+						expect(query(log, start), `start ${start}`).toEqual(expected(written, start));
+					}
+					expect(lookup(log, base + 105)).toEqual({ ids: [], reads: 0 });
+				}));
+
+			it('returns what an unbounded scan returns on a log with out-of-order batches', () =>
+				dbRunner(segmentOptions, async ({ db }) => {
+					const log = db.useLog('foo');
+					const written: Written[] = [];
+					let seed = 676;
+					const random = () => {
+						seed = (seed * 1103515245 + 12345) % 2147483648;
+						return seed / 2147483648;
+					};
+					for (let i = 0; i < 300; i++) {
+						const roll = random();
+						let timestamp = base + i * 10;
+						if (roll < 0.15) {
+							timestamp = base + Math.floor(random() * i) * 10 + (roll < 0.07 ? 5 : 0);
+						} else if (roll < 0.2 && written.length > 0) {
+							timestamp = written[written.length - 1].timestamp;
+						}
+						write(db, log, written, timestamp, 1 + Math.floor(random() * 3));
+					}
+					const probes = new Set(written.map((entry) => entry.timestamp));
+					for (let i = -1; i <= 300; i += 7) {
+						probes.add(base + i * 10 + 3);
+					}
+					for (const start of probes) {
+						for (const options of [{}, { exclusiveStart: true }, { end: start + 40 }]) {
+							expect(
+								query(log, start, options),
+								`start ${start} ${JSON.stringify(options)}`
+							).toEqual(expected(written, start, options));
+						}
+					}
+				}));
+
+			it('finds an entry appended after the lookup was positioned', () =>
+				dbRunner(segmentOptions, async ({ db }) => {
+					const log = db.useLog('foo');
+					const written: Written[] = [];
+					for (let i = 0; i < 40; i++) {
+						write(db, log, written, base + i * 10);
+					}
+					const polled = log.query({ start: base + 105, exactStart: true });
+					expect(polled.next().done).toBe(true);
+					const unpolled = log.query({ start: base + 115, exactStart: true });
+					write(db, log, written, base + 105);
+					write(db, log, written, base + 115);
+					expect(Array.from(polled, idOf)).toEqual([40, 41]);
+					expect(Array.from(unpolled, idOf)).toEqual([41]);
+
+					const rotated = log.query({ start: base + 125, exactStart: true });
+					expect(rotated.next().done).toBe(true);
+					for (let i = 0; i < 10; i++) {
+						write(db, log, written, base + 1000 + i);
+					}
+					write(db, log, written, base + 125);
+					expect(log.getLogFileSize(7)).toBeGreaterThan(0);
+					expect(Array.from(rotated, idOf)).toEqual([52]);
+				}));
+
+			it('still reports a missing segment the skipped span would have crossed', () =>
+				dbRunner(segmentOptions, async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						let log = database.useLog('foo');
+						const written: Written[] = [];
+						for (let i = 0; i < 40; i++) {
+							write(database, log, written, base + i * 10);
+						}
+						database.close();
+						unlinkSync(join(dbPath, 'transaction_logs', 'foo', '3.txnlog'));
+						database = RocksDatabase.open(dbPath);
+						log = database.useLog('foo');
+						const { entries, errors } = drainPastCorruption(
+							log.query({ start: base + 105, exactStart: true })
+						);
+						expect(entries).toEqual([]);
+						expect(errors).toEqual([
+							expect.objectContaining({ name: 'TransactionLogGapError', logId: 2, resumeLogId: 4 }),
+						]);
+					} finally {
+						database.close();
+					}
+				}));
+
+			// A purge after positioning can remove segments inside the span; the scan must still cross
+			// them and report the gap rather than jumping over it.
+			it.skipIf(process.platform === 'win32')(
+				'still reports segments purged between positioning and the skip',
+				() =>
+					dbRunner(segmentOptions, async ({ db, dbPath }) => {
+						const log = db.useLog('foo');
+						const written: Written[] = [];
+						for (let i = 0; i < 15; i++) {
+							write(db, log, written, base + i * 10);
+						}
+						// the last entry of segment 2 is a candidate, so the skip waits for the scan to reach it
+						write(db, log, written, base + 1);
+						for (let i = 16; i < 48; i++) {
+							write(db, log, written, base + i * 10);
+						}
+						db.flushSync();
+						for (let i = 48; i < 56; i++) {
+							write(db, log, written, base + i * 10);
+						}
+						const iterator = log.query({ start: base + 105, exactStart: true });
+						const logDirectory = join(dbPath, 'transaction_logs', 'foo');
+						const purged = db.purgeLogs({ name: 'foo', before: Date.now() + 1000 });
+						expect(purged).toContain(join(logDirectory, '3.txnlog'));
+						const remaining = readdirSync(logDirectory)
+							.filter((file) => file.endsWith('.txnlog'))
+							.map((file) => Number.parseInt(file))
+							.sort((a, b) => a - b);
+						const { entries, errors } = drainPastCorruption(iterator);
+						expect(entries).toEqual([]);
+						expect(errors).toEqual([
+							expect.objectContaining({
+								name: 'TransactionLogGapError',
+								logId: 2,
+								resumeLogId: remaining[0],
+								unavailableLogCount: remaining[0] - 3,
+							}),
+						]);
+					})
+			);
+
+			it('leaves a resumable cursor when mapping the skip target fails', () =>
+				dbRunner(segmentOptions, async ({ db }) => {
+					const log = db.useLog('foo');
+					const written: Written[] = [];
+					for (let i = 0; i < 15; i++) {
+						write(db, log, written, base + i * 10);
+					}
+					// the last entry of segment 2 is a candidate, so the skip waits for the scan to reach it
+					write(db, log, written, base + 1);
+					for (let i = 16; i < 40; i++) {
+						write(db, log, written, base + i * 10);
+					}
+					const mapFile = log._getMemoryMapOfFile.bind(log);
+					const mapped: number[] = [];
+					Object.defineProperty(log, '_getMemoryMapOfFile', {
+						value(logId: number) {
+							mapped.push(logId);
+							if (logId === 5 && mapped.length === 2) {
+								throw new Error('injected mapping failure');
+							}
+							return mapFile(logId);
+						},
+					});
+					const { entries, errors } = drainPastCorruption(
+						log.query({ start: base + 105, exactStart: true })
+					);
+					expect(entries).toEqual([]);
+					expect(errors.map((error) => error.message)).toEqual([
+						'injected mapping failure (log file ID: 5)',
+					]);
+					expect(mapped).toEqual([2, 5, 3, 4, 5]);
+				}));
+
+			it('still reports a framing break the skipped span would have crossed', () =>
+				dbRunner(segmentOptions, async ({ db, dbPath }) => {
+					let database = db;
+					try {
+						let log = database.useLog('foo');
+						const written: Written[] = [];
+						for (let i = 0; i < 40; i++) {
+							write(database, log, written, base + i * 10);
+						}
+						database.close();
+						const segment = join(dbPath, 'transaction_logs', 'foo', '3.txnlog');
+						const bytes = readFileSync(segment);
+						bytes.writeUInt32BE(
+							0,
+							TRANSACTION_LOG_FILE_HEADER_SIZE + 2 * (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 100) + 8
+						);
+						await writeFile(segment, bytes);
+						database = RocksDatabase.open(dbPath);
+						log = database.useLog('foo');
+						const { entries, errors } = drainPastCorruption(
+							log.query({ start: base + 105, exactStart: true })
+						);
+						expect(entries).toEqual([]);
+						expect(errors).toHaveLength(1);
+						expect(errors[0]).toBeInstanceOf(CorruptFrameError);
+						expect(errors[0].logId).toBe(3);
+					} finally {
+						database.close();
+					}
+				}));
+		});
 	});
 
 	describe('addEntry()', () => {

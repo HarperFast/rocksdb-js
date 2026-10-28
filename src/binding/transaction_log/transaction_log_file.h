@@ -161,6 +161,30 @@ namespace rocksdb_js {
 struct MemoryMap;
 struct TransactionLogEntryBatch;
 
+/**
+ * What one segment's timestamp index proves about a target timestamp, for an exact-start lookup
+ * deciding which part of the log it can skip.
+ */
+struct TimestampSpan final {
+	/**
+	 * Offset past which no indexed entry has a timestamp at or below the target; 0 when no indexed
+	 * entry can.
+	 */
+	uint32_t lastAtOrBelow = 0;
+	/**
+	 * The last batch boundary at or before the end of the indexed region; nothing past the indexed
+	 * region has been examined. A skip lands here, so a reader never resumes inside a batch whose
+	 * first entry (and its flags) it has not read.
+	 */
+	uint32_t indexedBatchEnd = 0;
+	/** The last framing break in the indexed region (0 when none); a skip must not cross one. */
+	uint32_t lastBreak = 0;
+	/** The last batch boundary before the first framing break. */
+	uint32_t batchEndBeforeBreak = 0;
+	/** Indexing reached the segment's written extent. */
+	bool complete = false;
+};
+
 struct TransactionLogFile final {
 	/**
 	 * The path to the transaction log file.
@@ -293,6 +317,19 @@ struct TransactionLogFile final {
 	 * while parked (the walk re-detects the break before reaching them).
 	 */
 	uint32_t resyncSearchedExtent = 0;
+	/**
+	 * Bounds on the indexed entries positionByTimestampIndex omits because their timestamp is below
+	 * the running maximum. Constant-size on purpose: they only have to say whether a segment can
+	 * hold a target timestamp and where its last such candidate ends (see TimestampSpan).
+	 */
+	double minOutOfOrderTimestamp = std::numeric_limits<double>::infinity();
+	uint32_t lastOutOfOrderEnd = 0;
+	/** End of the last indexed entry that closed a batch (TRANSACTION_LOG_ENTRY_LAST_FLAG). */
+	uint32_t lastIndexedBatchEnd = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	/** lastIndexedBatchEnd when the index walk reached its first framing break; 0 when none. */
+	uint32_t batchEndBeforeIndexedBreak = 0;
+	/** Offset of the last framing break the index walk reached; 0 when none. */
+	uint32_t lastIndexedBreak = 0;
 	std::mutex indexMutex;
 
 	/**
@@ -650,8 +687,10 @@ struct TransactionLogFile final {
 	 *   fileMutex only for the getMemoryMapLocked() call and releases it before
 	 *   scanning. Passing true while NOT holding fileMutex, or false while
 	 *   holding it, is a bug (the latter self-deadlocks).
+	 * @param span When non-null, filled from the same indexed extent the position came from.
 	 */
-	uint32_t findPositionByTimestamp(double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld = false);
+	uint32_t findPositionByTimestamp(
+		double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld = false, TimestampSpan* span = nullptr);
 
 	/**
 	 * Platform specific function that writes data to the log file.
