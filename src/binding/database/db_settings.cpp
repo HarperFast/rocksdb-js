@@ -4,6 +4,7 @@
 #include <cstring>
 #include <limits>
 #include <random>
+#include <string_view>
 #include <thread>
 #include "database/db_registry.h"
 #include "database/db_stats.h"
@@ -42,6 +43,7 @@ DBSettings::DBSettings():
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
+	writeBufferManagerFlushPolicy(-1),
 	writeBufferManager(nullptr),
 	compactOnClose(false),
 	lifecycleWaitSeconds(30),
@@ -105,7 +107,8 @@ std::shared_ptr<rocksdb::WriteBufferManager> DBSettings::getWriteBufferManager()
 		writeBufferManager = std::make_shared<rocksdb::WriteBufferManager>(
 			writeBufferManagerSize.load(std::memory_order_relaxed),
 			cache,
-			writeBufferManagerAllowStall.load(std::memory_order_relaxed)
+			writeBufferManagerAllowStall.load(std::memory_order_relaxed),
+			getWriteBufferManagerFlushPolicy()
 		);
 		DBStats::getInstance().publishWriteBufferManager(writeBufferManager.get());
 	}
@@ -194,6 +197,34 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
+	napi_value flushPolicyValue;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "writeBufferManagerFlushPolicy", &flushPolicyValue));
+	napi_valuetype flushPolicyType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, flushPolicyValue, &flushPolicyType));
+	rocksdb::WriteBufferFlushPolicy newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushOldest;
+	const bool flushPolicyProvided = flushPolicyType != napi_undefined && flushPolicyType != napi_null;
+	if (flushPolicyProvided) {
+		if (flushPolicyType != napi_string) {
+			::napi_throw_type_error(env, nullptr, "writeBufferManagerFlushPolicy must be a string");
+			return nullptr;
+		}
+		char policy[32];
+		size_t length = 0;
+		NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, flushPolicyValue, policy, sizeof(policy), &length));
+		const std::string_view name(policy, length);
+		if (name == "oldest") {
+			newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushOldest;
+		} else if (name == "largest") {
+			newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushLargest;
+		} else if (name == "largestAcrossDBs") {
+			newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushLargestAcrossDBs;
+		} else {
+			::napi_throw_range_error(env, nullptr,
+				"writeBufferManagerFlushPolicy must be 'oldest', 'largest' or 'largestAcrossDBs'");
+			return nullptr;
+		}
+	}
+
 	napi_value commitThreadsValue;
 	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "commitThreads", &commitThreadsValue));
 	napi_valuetype commitThreadsType;
@@ -262,6 +293,28 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 				"writeBufferManagerCostToCache cannot be changed after the WriteBufferManager has been created; set it on the first config() call before any database is opened");
 			return nullptr;
 		}
+
+		const int explicitFlushPolicy = flushPolicyProvided
+			? static_cast<int>(newFlushPolicy)
+			: settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed);
+		if (wbmAlreadyCreated && (flushPolicyProvided || allowStallProvided)) {
+			// Before any other mutation, so a failure leaves config unchanged. RocksDB
+			// publishes the new policy before starting the cross-DB sorter thread, so
+			// a failed start must restore the previous policy (leaving it would also
+			// make a retry of the same value a no-op that never starts the sorter).
+			const rocksdb::WriteBufferFlushPolicy previous = settings.writeBufferManager->flush_policy();
+			try {
+				settings.writeBufferManager->SetFlushPolicy(DBSettings::resolveWriteBufferManagerFlushPolicy(
+					explicitFlushPolicy,
+					allowStallProvided ? newAllowStall : settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed)
+				));
+			} catch (const std::exception& e) {
+				settings.writeBufferManager->SetFlushPolicy(previous);
+				::napi_throw_error(env, nullptr, e.what());
+				return nullptr;
+			}
+		}
+		settings.writeBufferManagerFlushPolicy.store(explicitFlushPolicy, std::memory_order_relaxed);
 
 		if (wbmSizeProvided) {
 			const size_t newSize = static_cast<size_t>(writeBufferManagerSize);

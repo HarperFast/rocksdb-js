@@ -169,9 +169,43 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 	}
 }
 
+constexpr uint64_t kArenaBudgetDivisor = 2048;
+constexpr uint64_t kMinArenaBlockSize = 64 * 1024;
+constexpr uint64_t kMaxArenaBlockSize = 1024 * 1024;
+constexpr uint64_t kArenaBlockAlignment = 4 * 1024;
+
+/**
+ * Resolves `arena_block_size` for a column family; 0 leaves RocksDB's own derivation
+ * (`min(1 MiB, write_buffer_size / 8)`) in place.
+ *
+ * Every column family that has received a write holds at least one arena block charged to the
+ * WriteBufferManager, so `touchedFamilies * arenaBlockSize` is a floor the manager can never reclaim.
+ * RocksDB's 1 MiB derivation lets a few dozen families take most of a small budget, and the manager
+ * then flushes constantly. Scaling the block with the budget keeps that floor near
+ * `touchedFamilies / kArenaBudgetDivisor` of it; `kMinArenaBlockSize` bounds how small blocks get on
+ * small budgets, where concurrent memtable inserts refill their per-core arena shards
+ * (`block / 8`) more often. The budget is the attached manager's, read when the family is opened;
+ * a later resize does not retune it.
+ */
+static size_t resolveArenaBlockSize(
+	const DBOptions& options,
+	const rocksdb::WriteBufferManager* attachedWriteBufferManager
+) {
+	if (options.arenaBlockSize > 0) {
+		return static_cast<size_t>(options.arenaBlockSize);
+	}
+	if (!attachedWriteBufferManager) {
+		return 0;
+	}
+	const uint64_t cap = std::min(kMaxArenaBlockSize, options.writeBufferSize / 8);
+	const uint64_t scaled = attachedWriteBufferManager->buffer_size() / kArenaBudgetDivisor;
+	const uint64_t size = std::min(std::max(scaled, kMinArenaBlockSize), cap);
+	return static_cast<size_t>((size + kArenaBlockAlignment - 1) / kArenaBlockAlignment * kArenaBlockAlignment);
+}
+
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
-	bool writeBufferManagerAttached,
+	const rocksdb::WriteBufferManager* attachedWriteBufferManager,
 	rocksdb::ColumnFamilyOptions cfOptions
 ) {
 	rocksdb::BlockBasedTableOptions tableOptions;
@@ -185,9 +219,10 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.min_blob_size = 2048;
 	cfOptions.enable_blob_garbage_collection = true;
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
+	cfOptions.arena_block_size = resolveArenaBlockSize(options, attachedWriteBufferManager);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
 	cfOptions.max_write_buffer_size_to_maintain =
-		resolveMaxWriteBufferSizeToMaintain(options, writeBufferManagerAttached);
+		resolveMaxWriteBufferSizeToMaintain(options, attachedWriteBufferManager != nullptr);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
 	return cfOptions;
 }
@@ -1497,7 +1532,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 
 	// Base options shared by every column family. Compression is applied per CF
 	// below so opening one family cannot restamp another's algorithm.
-	auto cfOptions = buildColumnFamilyOptions(options, dbOptions.write_buffer_manager != nullptr);
+	auto cfOptions = buildColumnFamilyOptions(options, attachedWriteBufferManager);
 
 	// Shared listener state, created BEFORE DB::Open so a background error fired
 	// during open has a valid, race-free target (the descriptor does not exist

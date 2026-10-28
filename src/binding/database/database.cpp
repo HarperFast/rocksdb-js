@@ -2697,17 +2697,26 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferNumber", dbHandleOptions.maxWriteBufferNumber));
 	double dbWriteBufferSizeValue = static_cast<double>(dbHandleOptions.dbWriteBufferSize);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "dbWriteBufferSize", dbWriteBufferSizeValue));
-	const double maxDbWriteBufferSize = std::min(
+	const double maxSafeSizeValue = std::min(
 		9007199254740991.0,
 		static_cast<double>(std::numeric_limits<size_t>::max())
 	);
 	if (!std::isfinite(dbWriteBufferSizeValue) || dbWriteBufferSizeValue != std::trunc(dbWriteBufferSizeValue) ||
-		dbWriteBufferSizeValue < 0.0 || dbWriteBufferSizeValue > maxDbWriteBufferSize
+		dbWriteBufferSizeValue < 0.0 || dbWriteBufferSizeValue > maxSafeSizeValue
 	) {
 		::napi_throw_error(env, nullptr, "dbWriteBufferSize must be a non-negative safe integer");
 		return nullptr;
 	}
 	dbHandleOptions.dbWriteBufferSize = static_cast<uint64_t>(dbWriteBufferSizeValue);
+	double arenaBlockSizeValue = static_cast<double>(dbHandleOptions.arenaBlockSize);
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "arenaBlockSize", arenaBlockSizeValue));
+	if (!std::isfinite(arenaBlockSizeValue) || arenaBlockSizeValue != std::trunc(arenaBlockSizeValue) ||
+		arenaBlockSizeValue < 0.0 || arenaBlockSizeValue > maxSafeSizeValue
+	) {
+		::napi_throw_error(env, nullptr, "arenaBlockSize must be a non-negative safe integer");
+		return nullptr;
+	}
+	dbHandleOptions.arenaBlockSize = static_cast<uint64_t>(arenaBlockSizeValue);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferSizeToMaintain", dbHandleOptions.maxWriteBufferSizeToMaintain));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxAgeThreshold", dbHandleOptions.transactionLogMaxAgeThreshold));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", dbHandleOptions.transactionLogMaxSize));

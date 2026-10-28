@@ -50,6 +50,12 @@ private:
 	// favor write throughput over hard memory bounding.
 	std::atomic<bool> writeBufferManagerAllowStall;
 
+	// The caller's explicit `writeBufferManagerFlushPolicy` as a
+	// `rocksdb::WriteBufferFlushPolicy` value, or -1 when unset (the policy then
+	// follows `writeBufferManagerAllowStall`; see `getWriteBufferManagerFlushPolicy`).
+	// Written under `writeBufferManagerMutex`; atomic so stats can read it lock-free.
+	std::atomic<int> writeBufferManagerFlushPolicy;
+
 	std::shared_ptr<rocksdb::WriteBufferManager> writeBufferManager;
 	std::mutex writeBufferManagerMutex;
 
@@ -113,6 +119,29 @@ public:
 
 	bool getWriteBufferManagerAllowStall() const {
 		return writeBufferManagerAllowStall.load(std::memory_order_relaxed);
+	}
+
+	/**
+	 * The flush policy a manager should run: the explicit choice, else
+	 * `kFlushLargestAcrossDBs` while stalls are allowed and `kFlushOldest`
+	 * otherwise. Under a stalling manager `kFlushOldest` only flushes the database
+	 * being written, so a writer can stall forever while the charged memory sits
+	 * in other databases' memtables that nothing writes to.
+	 */
+	rocksdb::WriteBufferFlushPolicy getWriteBufferManagerFlushPolicy() const {
+		return resolveWriteBufferManagerFlushPolicy(
+			writeBufferManagerFlushPolicy.load(std::memory_order_relaxed),
+			writeBufferManagerAllowStall.load(std::memory_order_relaxed)
+		);
+	}
+
+	static rocksdb::WriteBufferFlushPolicy resolveWriteBufferManagerFlushPolicy(int explicitPolicy, bool allowStall) {
+		if (explicitPolicy >= 0) {
+			return static_cast<rocksdb::WriteBufferFlushPolicy>(explicitPolicy);
+		}
+		return allowStall
+			? rocksdb::WriteBufferFlushPolicy::kFlushLargestAcrossDBs
+			: rocksdb::WriteBufferFlushPolicy::kFlushOldest;
 	}
 
 	std::shared_ptr<rocksdb::WriteBufferManager> getWriteBufferManager();
