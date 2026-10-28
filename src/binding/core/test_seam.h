@@ -161,17 +161,12 @@ inline bool testConsumeAbortMarkFailure() {
 	return false;
 }
 
-// Turns off the RocksDB conflict check before the transaction-log write, so a test can make a
-// logged batch conflict at commit from a stale snapshot. Set from JS via
-// `disablePrelogConflictCheckForTesting(disabled)`; process-global like forceTryAgainCounter().
+// Set from JS via the matching `*ForTesting` functions; process-global like forceTryAgainCounter().
 inline std::atomic<bool>& prelogConflictCheckDisabled() {
 	static std::atomic<bool> disabled{false};
 	return disabled;
 }
 
-// The check runs on retries alone by default (transaction/DESIGN.md, "Conflict check before the
-// log write"); tests and benchmark arms can run it on every attempt, or turn off refusal on an
-// older transaction's write intent. Set from JS like prelogConflictCheckDisabled().
 inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
 	static std::atomic<bool> retriesOnly{true};
 	return retriesOnly;
