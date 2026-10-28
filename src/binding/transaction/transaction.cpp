@@ -570,11 +570,8 @@ static const rocksdb::Status& intentRefusal() {
 }
 
 /**
- * With abort markers on, an optimistic attempt about to write its batch first runs RocksDB's own
- * conflict check, so one that would fail at commit is refused before it logs. Advisory: Commit()
- * validates again. Called after admission, whose claims keep the batch's column families from
- * being dropped while it runs, as RocksDB requires (transaction/DESIGN.md, "Conflict check before
- * the log write").
+ * Must run after admission: its claims keep the batch's column families from being dropped, as
+ * RocksDB requires (transaction/DESIGN.md, "Conflict check before the log write").
  */
 static rocksdb::Status checkBeforeLog(TransactionHandle& txnHandle, const DBDescriptor& descriptor) {
 #ifdef ROCKSDB_HAS_CHECK_OPTIMISTIC_TRANSACTION_FOR_CONFLICTS

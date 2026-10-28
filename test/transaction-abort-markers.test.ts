@@ -548,6 +548,7 @@ describe('transaction-log abort markers', () => {
 				RocksDatabase.config({ transactionLogAbortMarkers: true });
 				disablePrelogConflictCheckForTesting(false);
 				await db.put('k', 'v0');
+				db.populateVersion('k', 1.5e12);
 				const log = db.useLog('foo');
 
 				const stale = new Transaction(db.store);
@@ -595,6 +596,7 @@ describe('transaction-log abort markers', () => {
 				disablePrelogConflictCheckForTesting(false);
 				setPrelogConflictCheckRetriesOnlyForTesting(false);
 				await db.put('k', 'v0');
+				db.populateVersion('k', 1.5e12);
 				const log = db.useLog('foo');
 				const stale = new Transaction(db.store);
 				expect(await stale.get('k')).toBe('v0');
@@ -615,11 +617,15 @@ describe('transaction-log abort markers', () => {
 				expect(await coordinated.get('k')).toBe('v1');
 				await db.put('k', 'v2');
 				log.addEntry(Buffer.from('coordinated'), coordinated.id);
+				// a younger live holder on the slot: a refusal that parked would wait on it
+				const younger = new Transaction(db.store);
+				await younger.put('k', 'younger');
 				await coordinated.put('k', 'coordinated');
 				const started = performance.now();
 				expect(await coordinated.commit()).toBe(RETRY_NOW);
 				expect(performance.now() - started).toBeLessThan(1000); // a park would wait for the park timeout
 				expect(lockWakeCallbackCount()).toBe(0);
+				younger.abort();
 				expect(coordinated.lastConflictKind()).toBe(ConflictKind.checkBeforeLog);
 				expect(coordinated.logWritten()).toBe(false);
 				coordinated.abort();
