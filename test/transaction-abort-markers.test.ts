@@ -3,6 +3,7 @@ import {
 	constants,
 	disableIntentRefusalForTesting,
 	disablePrelogConflictCheckForTesting,
+	lockWakeCallbackCount,
 	setPrelogConflictCheckRetriesOnlyForTesting,
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
@@ -589,7 +590,7 @@ describe('transaction-log abort markers', () => {
 	it.skipIf(!constants.PRELOG_CONFLICT_CHECK)(
 		'refuses a stale first attempt before it logs when the check runs on every attempt',
 		() =>
-			dbRunner(async ({ db, dbPath }) => {
+			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
 				RocksDatabase.config({ transactionLogAbortMarkers: true });
 				disablePrelogConflictCheckForTesting(false);
 				setPrelogConflictCheckRetriesOnlyForTesting(false);
@@ -615,7 +616,10 @@ describe('transaction-log abort markers', () => {
 				await db.put('k', 'v2');
 				log.addEntry(Buffer.from('coordinated'), coordinated.id);
 				await coordinated.put('k', 'coordinated');
+				const started = performance.now();
 				expect(await coordinated.commit()).toBe(RETRY_NOW);
+				expect(performance.now() - started).toBeLessThan(1000); // a park would wait for the park timeout
+				expect(lockWakeCallbackCount()).toBe(0);
 				expect(coordinated.lastConflictKind()).toBe(ConflictKind.checkBeforeLog);
 				expect(coordinated.logWritten()).toBe(false);
 				coordinated.abort();

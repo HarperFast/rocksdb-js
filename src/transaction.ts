@@ -28,9 +28,10 @@ export class TransactionAlreadyAbortedError extends Error {
 export class TransactionRetryableError extends Error {
 	readonly hasLog: boolean;
 	/**
-	 * The attempt was refused before writing its transaction-log batch, because an older
-	 * transaction held a write intent on one of its keys (`transactionLogWriteIntents`). Nothing of
-	 * it is in the log, so a retry may stage its batch afresh.
+	 * The attempt was refused before writing its transaction-log batch (`transactionLogAbortMarkers`):
+	 * an older transaction held a write intent on one of its keys (`transactionLogWriteIntents`), or, on a retry, RocksDB's conflict
+	 * check found a write that already committed (see `lastConflictKind()`). Nothing of it is in the
+	 * log, so a retry may stage its batch afresh.
 	 */
 	readonly refusedBeforeLog: boolean;
 	readonly txn: Transaction;

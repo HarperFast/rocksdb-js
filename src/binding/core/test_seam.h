@@ -161,7 +161,6 @@ inline bool testConsumeAbortMarkFailure() {
 	return false;
 }
 
-// Set from JS via the matching `*ForTesting` functions; process-global like forceTryAgainCounter().
 inline std::atomic<bool>& prelogConflictCheckDisabled() {
 	static std::atomic<bool> disabled{false};
 	return disabled;
