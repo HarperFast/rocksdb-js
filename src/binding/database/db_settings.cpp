@@ -44,7 +44,11 @@ bool setLiveFlushPolicy(
 		manager.SetFlushPolicy(policy);
 		return true;
 	} catch (const std::exception& e) {
-		manager.SetFlushPolicy(previous);
+		try {
+			manager.SetFlushPolicy(previous);
+		} catch (...) {
+			// Config() has no outer handler; the original failure is the one to report.
+		}
 		::napi_throw_error(env, nullptr, e.what());
 		return false;
 	}

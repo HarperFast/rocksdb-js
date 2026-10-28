@@ -211,7 +211,7 @@ if (process.env.ARM) {
 						} else if ((child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
 							// a stalled WBM blocks the JS thread, so only an outside kill ends the arm
 							row = { policy, workload, timedOut: true };
-							rmSync(armRoot, { recursive: true, force: true });
+							if (!process.env.BENCH_KEEP) rmSync(armRoot, { recursive: true, force: true });
 						} else {
 							console.error(child.stdout, child.stderr);
 							throw new Error(`arm ${policy}:${workload} failed (status ${child.status})`);
