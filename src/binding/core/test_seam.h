@@ -191,7 +191,6 @@ inline void initializeTestSeams() {
 		destroyFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
 		closeFlushFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
-		// Benchmark arms: ROCKSDB_JS_PRELOG_CHECK=off|always, ROCKSDB_JS_INTENT_REFUSAL=0.
 		value = ::getenv("ROCKSDB_JS_PRELOG_CHECK");
 		if (value && ::strcmp(value, "off") == 0) {
 			prelogConflictCheckDisabled().store(true, std::memory_order_relaxed);
@@ -282,7 +281,6 @@ inline bool testForceTryAgain() {
 	}
 	return false;
 }
-
 
 // Forces DBDescriptor::reclaimColumnFamily to report failure. 0 = inert; 1 = fail without
 // calling DropColumnFamily (the family stays live for the retry); 2 = perform the real drop and

@@ -585,8 +585,8 @@ static rocksdb::Status checkBeforeLog(TransactionHandle& txnHandle, const DBDesc
 		rocksdb::Status status = rocksdb::CheckOptimisticTransactionForConflicts(txnHandle.txn);
 		if (status.IsBusy() || status.IsTryAgain()) {
 			txnHandle.lastConflictKind = TransactionHandle::ConflictCheckBeforeLog;
-			return status;
 		}
+		return status;
 	}
 #else
 	(void)txnHandle;

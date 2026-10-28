@@ -613,6 +613,18 @@ describe('transaction-log abort markers', () => {
 				expect(stale.lastConflictKind()).toBe(ConflictKind.checkBeforeLog);
 				expect(logFlags(dbPath)).toEqual([]);
 				stale.abort();
+
+				// with coordinatedRetry there is no holder left to park on, so it retries at once
+				const coordinated = new Transaction(db.store, { coordinatedRetry: true });
+				expect(await coordinated.get('k')).toBe('v1');
+				await db.put('k', 'v2');
+				log.addEntry(Buffer.from('coordinated'), coordinated.id);
+				await coordinated.put('k', 'coordinated');
+				expect(await coordinated.commit()).toBe(RETRY_NOW);
+				expect(coordinated.lastConflictKind()).toBe(ConflictKind.checkBeforeLog);
+				expect(coordinated.logWritten()).toBe(false);
+				coordinated.abort();
+				expect(logFlags(dbPath)).toEqual([]);
 			})
 	);
 
