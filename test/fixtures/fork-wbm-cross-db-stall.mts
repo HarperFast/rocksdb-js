@@ -50,15 +50,16 @@ for (const peer of peers) {
 	peer.putSync('tail', 'x');
 }
 
-RocksDatabase.config({ writeBufferManagerSize: SHRUNK_BUDGET });
+// Sampled before the shrink: once the budget drops, the cross-DB policy may start reclaiming at once.
 const setup = getWriteBufferManagerStats();
 console.log(
-	`SETUP ${JSON.stringify({ memoryUsage: setup.memoryUsage, bufferSize: setup.bufferSize, flushPolicy: setup.flushPolicy })}`
+	`SETUP ${JSON.stringify({ memoryUsage: setup.memoryUsage, bufferSize: SHRUNK_BUDGET, flushPolicy: setup.flushPolicy })}`
 );
-if (setup.memoryUsage < setup.bufferSize) {
-	console.error('setup did not put the manager over budget');
+if (setup.memoryUsage < SHRUNK_BUDGET) {
+	console.error('setup did not charge enough memory to exceed the shrunk budget');
 	process.exit(3);
 }
+RocksDatabase.config({ writeBufferManagerSize: SHRUNK_BUDGET });
 
 for (let i = 0; i < 64; i++) {
 	writer.putSync(`w${i}`, value);

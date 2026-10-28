@@ -59,6 +59,16 @@ steps.rejected = rejected;
 record('afterRejected');
 steps.allowStallAfterRejected = String(getWriteBufferManagerStats().allowStall);
 
+// A valid policy in a call another field rejects must not be latched either.
+let rejectedByOtherField = '';
+try {
+	RocksDatabase.config({ writeBufferManagerFlushPolicy: 'oldest', lifecycleWaitSeconds: -1 });
+} catch (error) {
+	rejectedByOtherField = (error as Error).name;
+}
+steps.rejectedByOtherField = rejectedByOtherField;
+record('afterRejectedByOtherField');
+
 RocksDatabase.config({ writeBufferManagerAllowStall: false });
 record('stallOff');
 

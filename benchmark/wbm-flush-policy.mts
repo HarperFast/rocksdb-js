@@ -11,9 +11,10 @@
 // i.e. the behavior before the automatic size existed.
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 
 const MIB = 1024 * 1024;
 const DBS = Number(process.env.BENCH_DBS ?? 4);
@@ -78,7 +79,9 @@ async function runArm(policy: string, workload: string) {
 		writeBufferManagerAllowStall: !!process.env.BENCH_ALLOW_STALL,
 		writeBufferManagerFlushPolicy: policy as 'oldest' | 'largest' | 'largestAcrossDBs',
 	});
-	const root = join(DATA_DIR, `wbm-policy-${policy}-${workload}-${randomBytes(4).toString('hex')}`);
+	const root =
+		process.env.BENCH_ARM_ROOT ??
+		join(DATA_DIR, `wbm-policy-${policy}-${workload}-${randomBytes(4).toString('hex')}`);
 	mkdirSync(root, { recursive: true });
 	const arena = process.env.BENCH_ARENA_KIB;
 	const opts = {
@@ -153,7 +156,7 @@ async function runArm(policy: string, workload: string) {
 		policy,
 		workload,
 		mibPerSec: +(written / MIB / (elapsed / 1000)).toFixed(1),
-		p99BatchMs: +batchMs[Math.floor(batchMs.length * 0.99)].toFixed(1),
+		p99BatchMs: batchMs.length ? +batchMs[Math.floor(batchMs.length * 0.99)].toFixed(1) : 0,
 		maxBatchMs: +maxBatchMs.toFixed(1),
 		flushes: flushCount,
 		wbmFlushes,
@@ -184,13 +187,18 @@ if (process.env.ARM) {
 			for (const workload of WORKLOADS) {
 				for (let rep = 0; rep < REPS; rep++) {
 					for (const policy of POLICIES) {
+						const armRoot = join(
+							DATA_DIR,
+							`wbm-policy-${policy}-${workload}-${randomBytes(4).toString('hex')}`
+						);
 						const env: Record<string, string | undefined> = {
 							...process.env,
 							ARM: `${policy}:${workload}`,
+							BENCH_ARM_ROOT: armRoot,
 							BENCH_WBM_MIB: budget,
 							BENCH_ARENA_KIB: arena,
 						};
-						const child = spawnSync(process.execPath, [new URL(import.meta.url).pathname], {
+						const child = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
 							env,
 							encoding: 'utf8',
 							timeout: timeoutMs,
@@ -198,15 +206,12 @@ if (process.env.ARM) {
 						});
 						const line = child.stdout?.split('\n').find((l) => l.startsWith('RESULT '));
 						let row: any;
-						if (line) {
+						if (line && child.status === 0) {
 							row = JSON.parse(line.slice(7));
-						} else if (child.signal === 'SIGKILL') {
+						} else if ((child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
 							// a stalled WBM blocks the JS thread, so only an outside kill ends the arm
 							row = { policy, workload, timedOut: true };
-							for (const dir of readdirSync(DATA_DIR)) {
-								if (dir.startsWith('wbm-policy-'))
-									rmSync(join(DATA_DIR, dir), { recursive: true, force: true });
-							}
+							rmSync(armRoot, { recursive: true, force: true });
 						} else {
 							console.error(child.stdout, child.stderr);
 							throw new Error(`arm ${policy}:${workload} failed (status ${child.status})`);

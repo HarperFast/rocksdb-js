@@ -53,6 +53,7 @@ openCase('noManagerSmallWriteBuffer', { writeBufferSize: 256 * KiB }).close();
 RocksDatabase.config({ writeBufferManagerSize: 64 * MiB });
 openCase('budget64MiB').close();
 openCase('budget64MiBSmallWriteBuffer', { writeBufferSize: 256 * KiB }).close();
+openCase('budget64MiBUnalignedWriteBuffer', { writeBufferSize: 100_000 }).close();
 openCase('budget64MiBExplicit', { arenaBlockSize: 200_000 }).close();
 
 RocksDatabase.config({ writeBufferManagerSize: 512 * MiB });

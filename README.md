@@ -55,7 +55,8 @@ Creates a new database instance.
     `writeBufferSize / 8` or 1 MiB, whichever is smaller (a 64 MiB budget gives 64 KiB, 512 MiB
     gives 256 KiB, 2 GiB or more gives 1 MiB); without one, RocksDB's own default of
     `writeBufferSize / 8` capped at 1 MiB (1 MiB at the default `writeBufferSize`). The automatic
-    size uses the manager's budget at the time the column family is opened. Like `writeBufferSize`,
+    size uses the manager's budget at the time the column family is opened. An explicit value is
+    used as given, except that RocksDB raises one below 4 KiB to 4 KiB. Like `writeBufferSize`,
     this applies to every column family when a database is first opened in the process and to
     column families created later; a column family that is already open keeps its size.
   - `compression: string | { algorithm: string, level?: number }` The block/blob compression

@@ -176,16 +176,10 @@ constexpr uint64_t kArenaBlockAlignment = 4 * 1024;
 
 /**
  * Resolves `arena_block_size` for a column family; 0 leaves RocksDB's own derivation
- * (`min(1 MiB, write_buffer_size / 8)`) in place.
- *
- * Every column family that has received a write holds at least one arena block charged to the
- * WriteBufferManager, so `touchedFamilies * arenaBlockSize` is a floor the manager can never reclaim.
- * RocksDB's 1 MiB derivation lets a few dozen families take most of a small budget, and the manager
- * then flushes constantly. Scaling the block with the budget keeps that floor near
- * `touchedFamilies / kArenaBudgetDivisor` of it; `kMinArenaBlockSize` bounds how small blocks get on
- * small budgets, where concurrent memtable inserts refill their per-core arena shards
- * (`block / 8`) more often. The budget is the attached manager's, read when the family is opened;
- * a later resize does not retune it.
+ * (`min(1 MiB, write_buffer_size / 8)`) in place. Every written column family holds one block
+ * charged to the WriteBufferManager, so the automatic size scales with the budget of the manager
+ * this database holds, read when the family opens (src/binding/database/DESIGN.md, "WriteBufferManager
+ * flush policy and arena size").
  */
 static size_t resolveArenaBlockSize(
 	const DBOptions& options,
@@ -197,10 +191,10 @@ static size_t resolveArenaBlockSize(
 	if (!attachedWriteBufferManager) {
 		return 0;
 	}
-	const uint64_t cap = std::min(kMaxArenaBlockSize, options.writeBufferSize / 8);
 	const uint64_t scaled = attachedWriteBufferManager->buffer_size() / kArenaBudgetDivisor;
-	const uint64_t size = std::min(std::max(scaled, kMinArenaBlockSize), cap);
-	return static_cast<size_t>((size + kArenaBlockAlignment - 1) / kArenaBlockAlignment * kArenaBlockAlignment);
+	const uint64_t aligned =
+		(std::max(scaled, kMinArenaBlockSize) + kArenaBlockAlignment - 1) / kArenaBlockAlignment * kArenaBlockAlignment;
+	return static_cast<size_t>(std::min({ aligned, kMaxArenaBlockSize, options.writeBufferSize / 8 }));
 }
 
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(

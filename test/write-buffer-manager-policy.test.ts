@@ -89,6 +89,7 @@ describe('arenaBlockSize', () => {
 		expect(arena.budget64MiB).toEqual({ default: 64 * KiB });
 		// The writeBufferSize / 8 cap wins over the floor.
 		expect(arena.budget64MiBSmallWriteBuffer).toEqual({ default: 32 * KiB });
+		expect(arena.budget64MiBUnalignedWriteBuffer).toEqual({ default: 12_500 });
 		expect(arena.budget64MiBExplicit).toEqual({ default: 200_000 });
 		expect(arena.budget512MiB).toEqual({ default: 256 * KiB });
 		expect(arena.budget4GiB).toEqual({ default: 1 * MiB });
@@ -135,6 +136,8 @@ describe('writeBufferManagerFlushPolicy', () => {
 			rejected: 'RangeError',
 			afterRejected: 'largestAcrossDBs',
 			allowStallAfterRejected: 'true',
+			rejectedByOtherField: 'RangeError',
+			afterRejectedByOtherField: 'largestAcrossDBs',
 			stallOff: 'oldest',
 			explicitLargest: 'largest',
 			explicitLargestStallOn: 'largest',
@@ -169,15 +172,19 @@ describe('writeBufferManagerFlushPolicy', () => {
 		expect(parseLine(result.stdout, 'FINAL').memoryUsage).toBeLessThan(16 * MiB);
 	}, 90_000);
 
-	it('should stall forever under an explicit oldest policy (control)', async () => {
-		// Past the stall watchdog's 5 s report, which is the positive evidence of a stall (as opposed
-		// to the child dying some other way before it wrote).
-		const result = await runFixture(crossDbStallFixturePath, [freshPath(), 'oldest'], 12_000);
-		const setup = parseLine(result.stdout, 'SETUP');
-		expect(setup.flushPolicy).toBe('oldest');
-		expect(setup.memoryUsage).toBeGreaterThanOrEqual(setup.bufferSize);
-		expect(result.stdout).not.toContain('WROTE');
-		expect(result.stderr).toContain('WriteBufferManager write stall active');
-		expect(result.code).not.toBe(0);
-	}, 30_000);
+	it.skipIf(process.env.ROCKSDB_JS_WBM_STALL_WARN_MS === '0')(
+		'should stall forever under an explicit oldest policy (control)',
+		async () => {
+			// Past the stall watchdog's 5 s report, which is the positive evidence of a stall (as opposed
+			// to the child dying some other way before it wrote).
+			const result = await runFixture(crossDbStallFixturePath, [freshPath(), 'oldest'], 12_000);
+			const setup = parseLine(result.stdout, 'SETUP');
+			expect(setup.flushPolicy).toBe('oldest');
+			expect(setup.memoryUsage).toBeGreaterThanOrEqual(setup.bufferSize);
+			expect(result.stdout).not.toContain('WROTE');
+			expect(result.stderr).toContain('WriteBufferManager write stall active');
+			expect(result.code).not.toBe(0);
+		},
+		30_000
+	);
 });

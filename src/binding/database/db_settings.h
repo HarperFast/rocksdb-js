@@ -122,11 +122,9 @@ public:
 	}
 
 	/**
-	 * The flush policy a manager should run: the explicit choice, else
-	 * `kFlushLargestAcrossDBs` while stalls are allowed and `kFlushOldest`
-	 * otherwise. Under a stalling manager `kFlushOldest` only flushes the database
-	 * being written, so a writer can stall forever while the charged memory sits
-	 * in other databases' memtables that nothing writes to.
+	 * The flush policy a manager should run: the explicit choice, else one that
+	 * follows `allowStall` (src/binding/database/DESIGN.md, "WriteBufferManager
+	 * flush policy and arena size").
 	 */
 	rocksdb::WriteBufferFlushPolicy getWriteBufferManagerFlushPolicy() const {
 		return resolveWriteBufferManagerFlushPolicy(
