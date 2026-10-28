@@ -1039,7 +1039,7 @@ export const forceTryAgainForTesting: (count: number) => void = binding.forceTry
 export const disablePrelogConflictCheckForTesting: (disabled: boolean) => void =
 	binding.disablePrelogConflictCheckForTesting;
 
-/** Benchmark-only: run the pre-log conflict check on retries alone (`true`) or on every attempt. */
+/** Test-only: run the pre-log conflict check on retries alone (`true`, the default) or on every attempt. */
 export const setPrelogConflictCheckRetriesOnlyForTesting: (retriesOnly: boolean) => void =
 	binding.setPrelogConflictCheckRetriesOnlyForTesting;
 

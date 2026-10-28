@@ -3,6 +3,7 @@ import {
 	constants,
 	disableIntentRefusalForTesting,
 	disablePrelogConflictCheckForTesting,
+	setPrelogConflictCheckRetriesOnlyForTesting,
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
 import { ConflictKind, RETRY_NOW, Transaction } from '../src/transaction.ts';
@@ -42,6 +43,7 @@ describe('transaction-log abort markers', () => {
 	afterEach(() => {
 		RocksDatabase.config({ transactionLogAbortMarkers: false, transactionLogWriteIntents: false });
 		disablePrelogConflictCheckForTesting(false);
+		setPrelogConflictCheckRetriesOnlyForTesting(true);
 	});
 
 	it.each([
@@ -544,11 +546,58 @@ describe('transaction-log abort markers', () => {
 	);
 
 	it.skipIf(!constants.PRELOG_CONFLICT_CHECK)(
-		"refuses a stale attempt before it logs with RocksDB's conflict check",
+		'checks a retry but not a first attempt by default',
+		() =>
+			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
+				RocksDatabase.config({ transactionLogAbortMarkers: true });
+				disablePrelogConflictCheckForTesting(false);
+				await db.put('k', 'v0');
+				const log = db.useLog('foo');
+
+				const stale = new Transaction(db.store);
+				expect(await stale.get('k')).toBe('v0');
+				await db.put('k', 'v1');
+				log.addEntry(Buffer.from('stale'), stale.id);
+				await stale.put('k', 'stale');
+				await expect(stale.commit()).rejects.toMatchObject({ code: 'ERR_BUSY', hasLog: true });
+				expect(stale.lastConflictKind()).toBe(ConflictKind.atCommit);
+				stale.abort();
+
+				const holder = new Transaction(db.store);
+				await holder.put('k', 'held');
+				const kinds: number[] = [];
+				await db.transaction(async (txn) => {
+					kinds.push(txn.lastConflictKind());
+					if (kinds.length === 2) {
+						// attempt 2 reads, then a write commits before it does: only the check refuses it
+						holder.abort();
+						await txn.get('k');
+						await db.put('k', 'v2');
+					}
+					log.addEntry(Buffer.from(`attempt${kinds.length}`), txn.id);
+					await txn.put('k', 'retried');
+				});
+				// attempt 1 was refused on the holder's intent, attempt 2 by the check, attempt 3 committed
+				expect(kinds).toEqual([
+					ConflictKind.none,
+					ConflictKind.intentBeforeLog,
+					ConflictKind.checkBeforeLog,
+				]);
+				expect(await db.get('k')).toBe('retried');
+				expect(readEntries(db)).toEqual(['attempt3']);
+				expect(
+					logFlags(dbPath).filter((flags) => flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG)
+				).toHaveLength(1);
+			})
+	);
+
+	it.skipIf(!constants.PRELOG_CONFLICT_CHECK)(
+		'refuses a stale first attempt before it logs when the check runs on every attempt',
 		() =>
 			dbRunner(async ({ db, dbPath }) => {
 				RocksDatabase.config({ transactionLogAbortMarkers: true });
 				disablePrelogConflictCheckForTesting(false);
+				setPrelogConflictCheckRetriesOnlyForTesting(false);
 				await db.put('k', 'v0');
 				const log = db.useLog('foo');
 				const stale = new Transaction(db.store);

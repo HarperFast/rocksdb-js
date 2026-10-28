@@ -169,10 +169,11 @@ inline std::atomic<bool>& prelogConflictCheckDisabled() {
 	return disabled;
 }
 
-// Benchmark arms only: run that check on retries alone, and turn off refusal on an older
-// transaction's write intent. Set from JS like prelogConflictCheckDisabled().
+// The check runs on retries alone by default (transaction/DESIGN.md, "Conflict check before the
+// log write"); tests and benchmark arms can run it on every attempt, or turn off refusal on an
+// older transaction's write intent. Set from JS like prelogConflictCheckDisabled().
 inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
-	static std::atomic<bool> retriesOnly{false};
+	static std::atomic<bool> retriesOnly{true};
 	return retriesOnly;
 }
 
@@ -190,12 +191,12 @@ inline void initializeTestSeams() {
 		destroyFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
 		closeFlushFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
-		// Benchmark arms: ROCKSDB_JS_PRELOG_CHECK=off|retries, ROCKSDB_JS_INTENT_REFUSAL=0.
+		// Benchmark arms: ROCKSDB_JS_PRELOG_CHECK=off|always, ROCKSDB_JS_INTENT_REFUSAL=0.
 		value = ::getenv("ROCKSDB_JS_PRELOG_CHECK");
 		if (value && ::strcmp(value, "off") == 0) {
 			prelogConflictCheckDisabled().store(true, std::memory_order_relaxed);
-		} else if (value && ::strcmp(value, "retries") == 0) {
-			prelogConflictCheckRetriesOnly().store(true, std::memory_order_relaxed);
+		} else if (value && ::strcmp(value, "always") == 0) {
+			prelogConflictCheckRetriesOnly().store(false, std::memory_order_relaxed);
 		}
 		value = ::getenv("ROCKSDB_JS_INTENT_REFUSAL");
 		intentRefusalDisabled().store(value && ::strcmp(value, "0") == 0, std::memory_order_relaxed);

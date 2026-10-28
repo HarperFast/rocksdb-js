@@ -253,7 +253,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   marked aborted before the backup is refused. Read once per process, so it must be set in the
   environment a process is started with
 - `ROCKSDB_JS_PRELOG_CHECK` / `ROCKSDB_JS_INTENT_REFUSAL` - Benchmark-only arms: `ROCKSDB_JS_PRELOG_CHECK=off`
-  skips the conflict check before the log write, `=retries` runs it on retries alone, and
+  skips the conflict check before the log write, `=always` runs it on every attempt instead of retries alone, and
   `ROCKSDB_JS_INTENT_REFUSAL=0` stops refusing attempts behind an older write intent. Snapshotted in
   `initializeTestSeams()`; tests use the equivalent `*ForTesting` binding functions
 - `ROCKSDB_JS_ABORT_MARK_FAILURE` - Test-only: number of abort-marker writes to fail with an
