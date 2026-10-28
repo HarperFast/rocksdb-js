@@ -1,6 +1,7 @@
-import { backups, RocksDatabase, validateTransactionLogStore } from '../src/index.ts';
+import { backups, constants, RocksDatabase, validateTransactionLogStore } from '../src/index.ts';
+import { writeCraftedSegment } from './lib/transaction-log-fixtures.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
-import { readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -22,6 +23,12 @@ async function writeLog(db: RocksDatabase, name: string, count = 5): Promise<voi
 		});
 	}
 }
+
+const {
+	TRANSACTION_LOG_FILE_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+	TRANSACTION_LOG_TOKEN,
+} = constants;
 
 describe('validateTransactionLogStore', () => {
 	afterEach(() => {
@@ -72,6 +79,57 @@ describe('validateTransactionLogStore', () => {
 			expect(result.files[0].valid).toBe(false);
 			expect(result.files[0].errors[0]).toMatch(/token/);
 		}));
+
+	it('accepts an abort flag on a batch first entry and warns on a misplaced one', async () => {
+		const storePath = join(tempPath(), 'aborted');
+		mkdirSync(storePath, { recursive: true });
+		const T1 = Date.UTC(2026, 9, 1);
+		writeCraftedSegment(
+			join(storePath, '1.txnlog'),
+			[
+				{ timestamp: T1, flags: 0x02, data: 'aborted-1' },
+				{ timestamp: T1, flags: 0x01, data: 'aborted-2' },
+				{ timestamp: T1, flags: 0x01, data: 'retry' },
+			],
+			TRANSACTION_LOG_FILE_HEADER_SIZE,
+			TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+			TRANSACTION_LOG_TOKEN
+		);
+		const valid = await validateTransactionLogStore(storePath);
+		expect(valid.valid).toBe(true);
+		expect(valid.files[0].warnings).toEqual([]);
+		expect(valid.files[0].entries).toBe(3);
+
+		const T2 = T1 + 1;
+		writeCraftedSegment(
+			join(storePath, '1.txnlog'),
+			[
+				{ timestamp: T1, flags: 0, data: 'legacy-unclosed' },
+				{ timestamp: T2, flags: 0x02, data: 'aborted-1' },
+				{ timestamp: T2, flags: 0x01, data: 'aborted-2' },
+			],
+			TRANSACTION_LOG_FILE_HEADER_SIZE,
+			TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+			TRANSACTION_LOG_TOKEN
+		);
+		const afterUnclosed = await validateTransactionLogStore(storePath);
+		expect(afterUnclosed.files[0].warnings).toEqual([]);
+
+		writeCraftedSegment(
+			join(storePath, '1.txnlog'),
+			[
+				{ timestamp: T1, flags: 0, data: 'first' },
+				{ timestamp: T1, flags: 0x03, data: 'second' },
+			],
+			TRANSACTION_LOG_FILE_HEADER_SIZE,
+			TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+			TRANSACTION_LOG_TOKEN
+		);
+		const misplaced = await validateTransactionLogStore(storePath);
+		expect(misplaced.files[0].warnings).toEqual([
+			expect.stringMatching(/abort flag on an entry that does not start a transaction/),
+		]);
+	});
 
 	it('reports a torn tail as a warning, or an error in strict mode', () =>
 		dbRunner(async ({ db }) => {

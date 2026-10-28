@@ -84,9 +84,10 @@ The size of the data entry directly following the transaction header.
 
 Transaction entry related flags.
 
-| Flag                              | Value  | Description                                |
-| --------------------------------- | ------ | ------------------------------------------ |
-| `TRANSACTION_LOG_ENTRY_LAST_FLAG` | `0x01` | Indicates the last entry for a transaction |
+| Flag                                 | Value  | Description                                                                                         |
+| ------------------------------------ | ------ | --------------------------------------------------------------------------------------------------- |
+| `TRANSACTION_LOG_ENTRY_LAST_FLAG`    | `0x01` | Indicates the last entry for a transaction                                                          |
+| `TRANSACTION_LOG_ENTRY_ABORTED_FLAG` | `0x02` | On a transaction's first entry: the transaction did not commit, and readers skip all of its entries |
 
 ## Encoding Details
 

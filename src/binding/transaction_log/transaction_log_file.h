@@ -145,6 +145,8 @@ inline int64_t landedBytesFromFilePointer(int64_t pointerAfterWrite, int64_t wri
 #define TRANSACTION_LOG_ENTRY_HEADER_SIZE 13
 #define TRANSACTION_LOG_ENTRY_LAST_FLAG 0x01
 #define TRANSACTION_LOG_FORMAT_VERSION 1
+// Set on the first entry of a batch whose commit failed terminally; readers skip the whole batch.
+#define TRANSACTION_LOG_ENTRY_ABORTED_FLAG 0x02
 #define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN 0x52455449
 #define TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE 12
 

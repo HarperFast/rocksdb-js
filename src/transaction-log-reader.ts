@@ -11,7 +11,12 @@ const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
 // `_findExactStart()` out-parameter: [stop, tail, segment removals]
 const EXACT_START_SPAN = new Float64Array(3);
 
-const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
+const {
+	TRANSACTION_LOG_FILE_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_LAST_FLAG,
+	TRANSACTION_LOG_ENTRY_ABORTED_FLAG,
+} = constants;
 
 /**
  * Number of consecutive well-formed frames that, on their own, signal that real log data has
@@ -221,6 +226,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let tailLogId = 0;
 		let tailPosition = 0;
 		let segmentRemovals = 0;
+		// Abort decisions are made where a transaction starts; see "Aborted batches" in
+		// src/binding/transaction_log/DESIGN.md.
+		let previousEndedTransaction = true;
+		let previousTimestamp = Number.NaN;
+		let skippingAborted = false;
 
 		if (start === undefined && !startFromLastFlushed) {
 			// if no start timestamp is specified, start from the last committed position
@@ -368,6 +378,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 									size = latestSize; // use the latest position from loadLastPosition
 								}
 								position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+								previousEndedTransaction = true;
 								if (unavailable > 0) {
 									throw new TransactionLogGapError(
 										Math.max(fromLogId, gapFloor),
@@ -422,6 +433,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							!!readUncommitted
 						);
 						position = broken.nextPosition;
+						previousEndedTransaction = true;
 						throw broken.error;
 					}
 					const length = dataView.getUint32(position + 8);
@@ -443,11 +455,21 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							!!readUncommitted
 						);
 						position = broken.nextPosition;
+						previousEndedTransaction = true;
 						throw broken.error;
 					}
 					position += TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+					const flags = logBuffer![position - 1];
+					const aborted = (flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) !== 0;
+					if (previousEndedTransaction || timestamp !== previousTimestamp || aborted) {
+						skippingAborted = aborted;
+					}
+					previousEndedTransaction = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) !== 0;
+					previousTimestamp = timestamp;
 					let matchesRange: boolean;
-					if (foundExactStart) {
+					if (skippingAborted) {
+						matchesRange = false;
+					} else if (foundExactStart) {
 						// already found the exact start, only need to match on remaining conditions
 						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end;
 					} else if (exactStart) {
@@ -499,7 +521,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							done: false,
 							value: {
 								timestamp,
-								endTxn: Boolean(logBuffer![entryStart - 1] & 1),
+								endTxn: previousEndedTransaction,
 								data: logBuffer!.subarray(entryStart, position),
 							},
 						};
@@ -550,6 +572,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								}
 							}
 							position = TRANSACTION_LOG_FILE_HEADER_SIZE;
+							previousEndedTransaction = true;
 							if (unavailable > 0) {
 								throw new TransactionLogGapError(
 									Math.max(fromLogId, gapFloor),

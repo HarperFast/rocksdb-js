@@ -19,8 +19,7 @@ namespace {
 // src/parse-transaction-log.ts — keep the two in sync.
 constexpr double MIN_VALID_TIMESTAMP = 1769472000000.0;
 
-// Only bit 0 (TRANSACTION_LOG_ENTRY_LAST_FLAG) is defined.
-constexpr uint8_t VALID_FLAGS_MASK = TRANSACTION_LOG_ENTRY_LAST_FLAG;
+constexpr uint8_t VALID_FLAGS_MASK = TRANSACTION_LOG_ENTRY_LAST_FLAG | TRANSACTION_LOG_ENTRY_ABORTED_FLAG;
 
 // Per-entry anomalies are reported individually up to this cap, then
 // summarized — a large corrupt file could otherwise produce millions of
@@ -148,6 +147,9 @@ TransactionLogFileValidation validateTransactionLogImage(
 	// in the recovery scan's own widened arithmetic.
 	size_t anomalyCount = 0;
 	uint64_t pos = TRANSACTION_LOG_FILE_HEADER_SIZE;
+	// The reader's batch-start rule, minus "an aborted entry starts one" (DESIGN.md, "Aborted batches").
+	bool previousEndedTransaction = true;
+	double previousTimestamp = std::numeric_limits<double>::quiet_NaN();
 	while (pos + TRANSACTION_LOG_ENTRY_HEADER_SIZE <= scan.validEnd) {
 		double timestamp = readDoubleBE(data + pos);
 		if (timestamp == 0) {
@@ -168,6 +170,14 @@ TransactionLogFileValidation validateTransactionLogImage(
 				"Entry " + std::to_string(result.entryCount + 1) + " at offset " + offsetHex(pos) +
 				": flags " + offsetHex(flags) + " contains undefined bits");
 		}
+		bool startsTransaction = previousEndedTransaction || timestamp != previousTimestamp;
+		if ((flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) != 0 && !startsTransaction) {
+			addEntryAnomaly(result, anomalyCount,
+				"Entry " + std::to_string(result.entryCount + 1) + " at offset " + offsetHex(pos) +
+				": abort flag on an entry that does not start a transaction");
+		}
+		previousEndedTransaction = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
+		previousTimestamp = timestamp;
 
 		result.entryCount++;
 		pos += TRANSACTION_LOG_ENTRY_HEADER_SIZE + length;

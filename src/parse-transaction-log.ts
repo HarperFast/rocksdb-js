@@ -1,14 +1,18 @@
 import { constants } from './load-binding.ts';
 import { closeSync, openSync, readSync, type Stats, statSync } from 'node:fs';
 
-const { TRANSACTION_LOG_TOKEN, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
+const {
+	TRANSACTION_LOG_TOKEN,
+	TRANSACTION_LOG_ENTRY_HEADER_SIZE,
+	TRANSACTION_LOG_ENTRY_LAST_FLAG,
+	TRANSACTION_LOG_ENTRY_ABORTED_FLAG,
+} = constants;
 
 // Transaction log files did not exist before this date, so any timestamp that
 // predates it indicates corruption.
 const MIN_VALID_TIMESTAMP = Date.UTC(2026, 0, 27); // 2026-01-27
 
-// Currently only bit 0 (TRANSACTION_LOG_ENTRY_LAST_FLAG) is defined.
-const VALID_FLAGS_MASK = 0x01;
+const VALID_FLAGS_MASK = TRANSACTION_LOG_ENTRY_LAST_FLAG | TRANSACTION_LOG_ENTRY_ABORTED_FLAG;
 
 interface LogEntry {
 	anomalies?: string[];
@@ -93,6 +97,9 @@ export function parseTransactionLog(
 		const entries: LogEntry[] = [];
 		let entryAnomalyCount = 0;
 
+		// the reader's batch-start rule, minus "an aborted entry starts one"
+		let previousEndedTransaction = true;
+		let previousTimestamp = Number.NaN;
 		while (fileOffset < size) {
 			const timestamp = read(8).readDoubleBE(0);
 			if (timestamp === 0) {
@@ -122,9 +129,15 @@ export function parseTransactionLog(
 			}
 			if ((flags & ~VALID_FLAGS_MASK) !== 0) {
 				entryAnomalies.push(
-					`flags 0x${flags.toString(16).padStart(2, '0')} contains undefined bits (expected 0x00 or 0x01)`
+					`flags 0x${flags.toString(16).padStart(2, '0')} contains undefined bits (expected 0x00-0x03)`
 				);
 			}
+			const startsTransaction = previousEndedTransaction || timestamp !== previousTimestamp;
+			if ((flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) !== 0 && !startsTransaction) {
+				entryAnomalies.push('abort flag on an entry that does not start a transaction');
+			}
+			previousEndedTransaction = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) !== 0;
+			previousTimestamp = timestamp;
 			const entry: LogEntry = {
 				timestamp,
 				length,
