@@ -152,3 +152,36 @@ Deno does not report an exception left pending when a TSFN callback returns, so 
 `napi_call_function` would fail on it and pass the lock on early. Completion releases the lock
 before settling the caller's promise because Deno runs the caller's continuation inside the settle
 call. Regressions: `test/pending-wake-liveness.test.ts` and `test/lock.test.ts`.
+
+# WriteBufferManager flush policy and arena size
+
+The process-wide `WriteBufferManager` is shared by every database, so two of its defaults are
+chosen for many databases and column families, not for one.
+
+- **A stalling manager runs `kFlushLargestAcrossDBs` unless the caller chose a policy.**
+  `kFlushOldest` only flushes the database being written (`HandleWriteBufferManagerFlush`). When
+  the charged memory sits in other databases' memtables that receive no writes, the writer stalls
+  and nothing flushes them; the stall never clears (rocksdb-js#822 class).
+  `kFlushLargestAcrossDBs` runs a background sorter that flushes the database holding the most
+  flushable memory whoever is writing. Without stalls it measured slower, so the default follows
+  `allowStall` (`DBSettings::getWriteBufferManagerFlushPolicy`), and `DBSettings::Config` re-applies
+  it to the live manager whenever `allowStall` or the policy changes. `SetFlushPolicy` is safe on a
+  live, shared manager in RocksDB 11.12, but it publishes the policy before starting the sorter
+  thread, so a failed start restores the previous policy. Because databases here use
+  `atomic_flush`, RocksDB picks the flushed column families before it looks at oldest-versus-largest,
+  so `'largest'` currently behaves like `'oldest'`. `test/fixtures/fork-wbm-cross-db-stall.mts`
+  builds the wedge on purpose. Each idle peer must hold a flushed generation in retained history
+  plus a small mutable memtable. With a retention target of 1, flushing a peer's only memtable
+  frees nothing, so a fixture without the extra generation stalls under every policy.
+- **The arena block is a per-column-family floor on the budget.** Each written column family holds
+  one memtable arena block charged to the manager, idle or not. `resolveArenaBlockSize`
+  (`db_descriptor.cpp`) scales the automatic size with the attached manager's budget
+  (`budget / kArenaBudgetDivisor`, at least `kMinArenaBlockSize`, at most RocksDB's own
+  `min(1 MiB, writeBufferSize / 8)`). Above a 128 MiB budget that keeps the floor near
+  `touchedFamilies / 2048` of it; below 128 MiB the 64 KiB minimum dominates. It reads the budget
+  of the manager the database holds, when the family opens, the same way and for the same reason
+  as `resolveMaxWriteBufferSizeToMaintain`. Without a manager the size stays RocksDB's.
+  The minimum exists because concurrent memtable inserts take per-core arena shards of
+  `block / 8`. Smaller blocks refill shards more often and send more allocations to the shared
+  arena mutex. Both constants are named so a benchmark can move them
+  (`benchmark/wbm-flush-policy.mts`).

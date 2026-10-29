@@ -299,6 +299,7 @@ WriteBufferManagerStats DBStats::getWriteBufferManagerStats(bool includeColumnFa
 	WriteBufferManagerStats stats;
 	stats.allowStall = settings.getWriteBufferManagerAllowStall();
 	stats.costToCache = settings.getWriteBufferManagerCostToCache();
+	stats.flushPolicy = settings.getWriteBufferManagerFlushPolicy();
 	stats.watchdogRunning = this->writeBufferManagerWatchdogRunning.load(std::memory_order_relaxed);
 
 	rocksdb::WriteBufferManager* writeBufferManager =
@@ -307,6 +308,7 @@ WriteBufferManagerStats DBStats::getWriteBufferManagerStats(bool includeColumnFa
 		return stats;
 	}
 	stats.enabled = true;
+	stats.flushPolicy = writeBufferManager->flush_policy();
 	stats.bufferSize = writeBufferManager->buffer_size();
 	stats.memoryUsage = writeBufferManager->memory_usage();
 	stats.mutableMemoryUsage = writeBufferManager->mutable_memtable_memory_usage();
@@ -351,6 +353,13 @@ napi_value DBStats::GetWriteBufferManagerStats(napi_env env, napi_callback_info 
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "enabled", stats.enabled));
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "allowStall", stats.allowStall));
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "costToCache", stats.costToCache));
+	const char* flushPolicy =
+		stats.flushPolicy == rocksdb::WriteBufferFlushPolicy::kFlushLargestAcrossDBs ? "largestAcrossDBs"
+		: stats.flushPolicy == rocksdb::WriteBufferFlushPolicy::kFlushLargest ? "largest"
+		: "oldest";
+	napi_value flushPolicyValue;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, flushPolicy, NAPI_AUTO_LENGTH, &flushPolicyValue));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "flushPolicy", flushPolicyValue));
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "stallActive", stats.stallActive));
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "watchdogRunning", stats.watchdogRunning));
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "inventoryAvailable", stats.inventoryAvailable));

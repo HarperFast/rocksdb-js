@@ -4,6 +4,7 @@
 #include <cstring>
 #include <limits>
 #include <random>
+#include <string_view>
 #include <thread>
 #include "database/db_registry.h"
 #include "database/db_stats.h"
@@ -28,6 +29,31 @@ uint64_t generateSeed() {
 	return (hi << 32) | lo;
 }
 
+/**
+ * RocksDB publishes the new policy before starting the cross-DB sorter thread, so a failed start
+ * restores the previous one; leaving it would also make a retry of the same value a no-op that
+ * never starts the sorter. Caller holds `writeBufferManagerMutex`.
+ */
+bool setLiveFlushPolicy(
+	napi_env env,
+	rocksdb::WriteBufferManager& manager,
+	rocksdb::WriteBufferFlushPolicy policy
+) {
+	const rocksdb::WriteBufferFlushPolicy previous = manager.flush_policy();
+	try {
+		manager.SetFlushPolicy(policy);
+		return true;
+	} catch (const std::exception& e) {
+		try {
+			manager.SetFlushPolicy(previous);
+		} catch (...) {
+			// Config() has no outer handler; the original failure is the one to report.
+		}
+		::napi_throw_error(env, nullptr, e.what());
+		return false;
+	}
+}
+
 } // namespace
 
 /**
@@ -42,6 +68,7 @@ DBSettings::DBSettings():
 	writeBufferManagerSize(0), // disabled by default
 	writeBufferManagerCostToCache(false),
 	writeBufferManagerAllowStall(false),
+	writeBufferManagerFlushPolicy(-1),
 	writeBufferManager(nullptr),
 	compactOnClose(false),
 	lifecycleWaitSeconds(30),
@@ -105,7 +132,8 @@ std::shared_ptr<rocksdb::WriteBufferManager> DBSettings::getWriteBufferManager()
 		writeBufferManager = std::make_shared<rocksdb::WriteBufferManager>(
 			writeBufferManagerSize.load(std::memory_order_relaxed),
 			cache,
-			writeBufferManagerAllowStall.load(std::memory_order_relaxed)
+			writeBufferManagerAllowStall.load(std::memory_order_relaxed),
+			getWriteBufferManagerFlushPolicy()
 		);
 		DBStats::getInstance().publishWriteBufferManager(writeBufferManager.get());
 	}
@@ -194,6 +222,34 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
+	napi_value flushPolicyValue;
+	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "writeBufferManagerFlushPolicy", &flushPolicyValue));
+	napi_valuetype flushPolicyType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, flushPolicyValue, &flushPolicyType));
+	rocksdb::WriteBufferFlushPolicy newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushOldest;
+	const bool flushPolicyProvided = flushPolicyType != napi_undefined && flushPolicyType != napi_null;
+	if (flushPolicyProvided) {
+		if (flushPolicyType != napi_string) {
+			::napi_throw_type_error(env, nullptr, "writeBufferManagerFlushPolicy must be a string");
+			return nullptr;
+		}
+		char policy[32];
+		size_t length = 0;
+		NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, flushPolicyValue, policy, sizeof(policy), &length));
+		const std::string_view name(policy, length);
+		if (name == "oldest") {
+			newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushOldest;
+		} else if (name == "largest") {
+			newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushLargest;
+		} else if (name == "largestAcrossDBs") {
+			newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushLargestAcrossDBs;
+		} else {
+			::napi_throw_range_error(env, nullptr,
+				"writeBufferManagerFlushPolicy must be 'oldest', 'largest' or 'largestAcrossDBs'");
+			return nullptr;
+		}
+	}
+
 	napi_value commitThreadsValue;
 	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "commitThreads", &commitThreadsValue));
 	napi_valuetype commitThreadsType;
@@ -260,6 +316,18 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		if (wbmAlreadyCreated && costToCacheProvided && newCostToCache != oldCostToCache) {
 			::napi_throw_error(env, nullptr,
 				"writeBufferManagerCostToCache cannot be changed after the WriteBufferManager has been created; set it on the first config() call before any database is opened");
+			return nullptr;
+		}
+
+		// The derived policy follows allowStall; applied before anything else in this
+		// section is mutated so a failure leaves the manager's settings unchanged.
+		if (wbmAlreadyCreated && allowStallProvided && !setLiveFlushPolicy(
+			env,
+			*settings.writeBufferManager,
+			DBSettings::resolveWriteBufferManagerFlushPolicy(
+				settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed), newAllowStall
+			)
+		)) {
 			return nullptr;
 		}
 
@@ -367,7 +435,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
 	}
 
-	// Stored last: all three fields are validated up front, but a later field's
+	// Stored last: these fields are validated up front, but a later field's
 	// throw must still leave them untouched. A getter that throws (rather than just
 	// supplying the wrong type) leaves a pending exception none of the reads above
 	// check for; catch it here, right before the stores, so it stays correct
@@ -376,6 +444,15 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	::napi_is_exception_pending(env, &exceptionPending);
 	if (exceptionPending) {
 		return nullptr;
+	}
+	// Also last: an explicit policy is permanent, so a rejected call must not leave it behind.
+	if (flushPolicyProvided) {
+		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
+		if (settings.writeBufferManager &&
+			!setLiveFlushPolicy(env, *settings.writeBufferManager, newFlushPolicy)) {
+			return nullptr;
+		}
+		settings.writeBufferManagerFlushPolicy.store(static_cast<int>(newFlushPolicy), std::memory_order_relaxed);
 	}
 	if (occLockBucketsProvided) {
 		settings.occLockBucketCount.store(static_cast<uint32_t>(count), std::memory_order_relaxed);

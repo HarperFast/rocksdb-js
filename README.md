@@ -46,6 +46,19 @@ Creates a new database instance.
 - `path: string` The path to write the database files to. This path does not need to exist, but the
   parent directories do.
 - `options: object` [optional]
+  - `arenaBlockSize: number` The size in bytes of the blocks a column family's memtable allocates
+    from. Every column family that has been written to holds at least one block, and with a
+    `writeBufferManagerSize` set, those blocks count against that shared budget even when the
+    column family is idle — so with many column families, large blocks can use up most of a small
+    budget and cause constant tiny flushes. Defaults to `0`, which picks a size automatically: with
+    a write buffer manager, `writeBufferManagerSize / 2048`, but at least 64 KiB and at most
+    `writeBufferSize / 8` or 1 MiB, whichever is smaller (a 64 MiB budget gives 64 KiB, 512 MiB
+    gives 256 KiB, 2 GiB or more gives 1 MiB); without one, RocksDB's own default of
+    `writeBufferSize / 8` capped at 1 MiB (1 MiB at the default `writeBufferSize`). The automatic
+    size uses the manager's budget at the time the column family is opened. An explicit value is
+    used as given, except that RocksDB raises one below 4 KiB to 4 KiB. Like `writeBufferSize`,
+    this applies to every column family when a database is first opened in the process and to
+    column families created later; a column family that is already open keeps its size.
   - `compression: string | { algorithm: string, level?: number }` The block/blob compression
     algorithm for this column family. Pass an algorithm name — one of `'none'`, `'snappy'`,
     `'zlib'`, `'bzip2'`, `'lz4'`, `'lz4hc'`, or `'zstd'` — or an object with an
@@ -329,6 +342,19 @@ Sets global database settings.
     [`db.isWriteStalled()`](#dbiswritestalled-boolean) — see
     [`getWriteBufferManagerStats()`](#getwritebuffermanagerstats-writebuffermanagerstats),
     which also describes the watchdog that logs a sustained stall.
+  - `writeBufferManagerFlushPolicy: 'oldest' | 'largest' | 'largestAcrossDBs'` What the write
+    buffer manager flushes when it is over budget. `'oldest'` flushes the oldest memtable of the
+    database that is being written; `'largest'` its largest memtable (databases here are opened with
+    atomic flush, so this currently behaves like `'oldest'`); `'largestAcrossDBs'` has a background
+    thread flush whichever database holds the most memtable memory, whether or not it is being
+    written. When not set, the policy is `'largestAcrossDBs'` while
+    `writeBufferManagerAllowStall` is `true` and `'oldest'` otherwise, and it follows later changes
+    to `writeBufferManagerAllowStall`. With stalls allowed, `'oldest'` can stop writes permanently:
+    a write to one database waits for memory held by other databases that nothing is writing to,
+    so nothing flushes them. Without stalls, `'largestAcrossDBs'` has measured slower. Can be
+    changed while databases are open. Once set, the value stays in effect for the life of the
+    process; it is reported as `flushPolicy` by
+    [`getWriteBufferManagerStats()`](#getwritebuffermanagerstats-writebuffermanagerstats).
   - `writeBufferManagerCostToCache: boolean` When `true`, memtable memory is "charged" against the
     shared block cache so the block cache and write buffers draw from a single pool. During write
     bursts the cache shrinks to make room for memtables; once memtables flush, the cache can grow
@@ -371,6 +397,8 @@ where the call was made.
 - `mutableMemoryUsage: number` The share of `memoryUsage` held by active (mutable) memtables; the
   rest is memtables awaiting flush plus retained write history.
 - `allowStall: boolean`, `costToCache: boolean` The manager's configuration.
+- `flushPolicy: 'oldest' | 'largest' | 'largestAcrossDBs'` The flush policy in effect (see
+  `writeBufferManagerFlushPolicy`); before a manager exists, the policy one would be created with.
 - `stallActive: boolean` Whether the manager is currently stalling writes.
 - `stallActiveMs: number` How long the current stall has been active; `0` when not stalled.
   Sampled once a second by the watchdog, so `0` for a stall's first second and whenever
@@ -389,7 +417,7 @@ where the call was made.
 
 `bufferSize`, `memoryUsage`, `mutableMemoryUsage`, `stallActive` and `stallActiveMs` are also in
 [`db.getStats()`](#dbgetstatsall-boolean-rocksdbstats) and `db.getStat()` under the same
-`writeBufferManager.` prefix, for scraping; `enabled`, `allowStall`, `costToCache`,
+`writeBufferManager.` prefix, for scraping; `enabled`, `allowStall`, `costToCache`, `flushPolicy`,
 `watchdogRunning`, and the column-family inventory are only here, because collecting them either
 walks the database registry or isn't scrape-shaped.
 

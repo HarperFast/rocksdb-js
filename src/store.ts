@@ -666,6 +666,11 @@ export class Store {
 	writeBufferSize?: number;
 
 	/**
+	 * The memtable arena block size in bytes; `0` or unset is automatic.
+	 */
+	arenaBlockSize?: number;
+
+	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
 	 */
 	writeKey: WriteKeyFunction;
@@ -737,6 +742,7 @@ export class Store {
 		this.timestampFloorLog = options?.timestampFloorLog;
 		this.verificationTable = options?.verificationTable;
 		this.writeBufferSize = options?.writeBufferSize;
+		this.arenaBlockSize = options?.arenaBlockSize;
 		this.writeKey = writeKey;
 		this.#columnFamilyOptions = options ? { ...options } : undefined;
 	}
@@ -1344,6 +1350,7 @@ export class Store {
 			timestampFloorLog: this.timestampFloorLog,
 			verificationTable: this.verificationTable,
 			writeBufferSize: this.writeBufferSize,
+			arenaBlockSize: this.arenaBlockSize,
 		});
 
 		this.identityPath = this.db.identityPath;

@@ -20,6 +20,7 @@ struct WriteBufferManagerStats final {
 	uint64_t mutableMemoryUsage = 0;
 	bool allowStall = false;
 	bool costToCache = false;
+	rocksdb::WriteBufferFlushPolicy flushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushOldest;
 	bool stallActive = false;
 	uint64_t stallActiveMs = 0;
 	bool watchdogRunning = false;
