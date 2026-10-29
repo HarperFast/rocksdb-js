@@ -1,7 +1,6 @@
 import { backups, RocksDatabase } from '../src/index.ts';
 import {
 	constants,
-	disableIntentRefusalForTesting,
 	disablePrelogConflictCheckForTesting,
 	lockWakeCallbackCount,
 	setPrelogConflictCheckRetriesOnlyForTesting,
@@ -39,7 +38,6 @@ describe('transaction-log abort markers', () => {
 		RocksDatabase.config({ transactionLogAbortMarkers: false, transactionLogWriteIntents: false });
 		disablePrelogConflictCheckForTesting(false);
 		setPrelogConflictCheckRetriesOnlyForTesting(true);
-		disableIntentRefusalForTesting(false);
 	});
 
 	it.each([
@@ -545,7 +543,10 @@ describe('transaction-log abort markers', () => {
 		'checks a retry but not a first attempt by default',
 		() =>
 			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
-				RocksDatabase.config({ transactionLogAbortMarkers: true });
+				RocksDatabase.config({
+					transactionLogAbortMarkers: true,
+					transactionLogWriteIntents: true,
+				});
 				disablePrelogConflictCheckForTesting(false);
 				await db.put('k', 'v0');
 				db.populateVersion('k', 1.5e12);
@@ -585,6 +586,42 @@ describe('transaction-log abort markers', () => {
 				expect(
 					logFlags(dbPath).filter((flags) => flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG)
 				).toHaveLength(1);
+			})
+	);
+
+	it.skipIf(!constants.PRELOG_CONFLICT_CHECK)(
+		'checks a retry that stages its first batch with write intents at their default',
+		() =>
+			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
+				RocksDatabase.config({ transactionLogAbortMarkers: true });
+				disablePrelogConflictCheckForTesting(false);
+				await db.put('k', 'v0');
+				const log = db.useLog('foo');
+
+				// A retry whose earlier attempt logged has no batch to stage, so it is never checked:
+				// only an attempt that conflicted before logging anything reaches the check on its retry.
+				const kinds: number[] = [];
+				await db.transaction(
+					async (txn) => {
+						kinds.push(txn.lastConflictKind());
+						await txn.get('k');
+						await db.put('k', `v${kinds.length}`);
+						if (kinds.length > 1) {
+							log.addEntry(Buffer.from(`attempt${kinds.length}`), txn.id);
+						}
+						if (kinds.length < 3) {
+							await txn.put('k', 'retried');
+						}
+					},
+					{ retryOnBusy: true }
+				);
+				expect(kinds).toEqual([
+					ConflictKind.none,
+					ConflictKind.atCommit,
+					ConflictKind.checkBeforeLog,
+				]);
+				expect(readEntries(db)).toEqual(['attempt3']);
+				expect(logFlags(dbPath)).toEqual([TRANSACTION_LOG_ENTRY_LAST_FLAG]);
 			})
 	);
 
@@ -636,45 +673,43 @@ describe('transaction-log abort markers', () => {
 	for (const intents of [true, false]) {
 		it(`converges crossing 1,000-key logged transactions with intent refusal ${intents ? 'on' : 'off'}`, () =>
 			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db }) => {
-				RocksDatabase.config({ transactionLogAbortMarkers: true });
+				RocksDatabase.config({
+					transactionLogAbortMarkers: true,
+					transactionLogWriteIntents: intents,
+				});
 				disablePrelogConflictCheckForTesting(false);
-				disableIntentRefusalForTesting(!intents);
-				try {
-					const keys = Array.from({ length: 1000 }, (_, i) => `k${i}`);
-					for (const key of keys) {
-						await db.put(key, 0);
-						db.populateVersion(key, 1.5e12);
-					}
-					const log = db.useLog('foo');
-					let attempts = 0;
-					const writer = (order: string[], value: number) =>
-						db.transaction(
-							async (txn) => {
-								attempts++;
-								log.addEntry(Buffer.from(`w${value}`), txn.id);
-								for (const key of order) {
-									txn.putSync(key, value);
-								}
-								await delay(1);
-							},
-							{ coordinatedRetry: true, maxRetries: 200 }
-						);
-					const started = performance.now();
-					for (let round = 0; round < 5; round++) {
-						await Promise.all([
-							writer(keys, round * 2 + 1),
-							writer([...keys].reverse(), round * 2 + 2),
-						]);
-					}
-					const elapsed = performance.now() - started;
-					expect(elapsed).toBeLessThan(30000);
-					expect(readEntries(db).length).toBe(10);
-					console.log(
-						`crossing 1,000-key x10, intents ${intents ? 'on' : 'off'}: ${elapsed.toFixed(0)} ms, ${attempts} attempts`
-					);
-				} finally {
-					disableIntentRefusalForTesting(false);
+				const keys = Array.from({ length: 1000 }, (_, i) => `k${i}`);
+				for (const key of keys) {
+					await db.put(key, 0);
+					db.populateVersion(key, 1.5e12);
 				}
+				const log = db.useLog('foo');
+				let attempts = 0;
+				const writer = (order: string[], value: number) =>
+					db.transaction(
+						async (txn) => {
+							attempts++;
+							log.addEntry(Buffer.from(`w${value}`), txn.id);
+							for (const key of order) {
+								txn.putSync(key, value);
+							}
+							await delay(1);
+						},
+						{ coordinatedRetry: true, maxRetries: 200 }
+					);
+				const started = performance.now();
+				for (let round = 0; round < 5; round++) {
+					await Promise.all([
+						writer(keys, round * 2 + 1),
+						writer([...keys].reverse(), round * 2 + 2),
+					]);
+				}
+				const elapsed = performance.now() - started;
+				expect(elapsed).toBeLessThan(30000);
+				expect(readEntries(db).length).toBe(10);
+				console.log(
+					`crossing 1,000-key x10, intents ${intents ? 'on' : 'off'}: ${elapsed.toFixed(0)} ms, ${attempts} attempts`
+				);
 			}));
 	}
 

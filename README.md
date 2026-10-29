@@ -1312,7 +1312,8 @@ never left live when the transaction does not commit:
 - Under `occValidation: 'parallel'` (the default), a retried optimistic commit that RocksDB's own
   conflict check shows would fail is refused before it writes its batch too, with
   `refusedBeforeLog` set (needs the RocksDB build this package pins). A first attempt skips the
-  check, so commits that do not conflict pay nothing for it.
+  check, so commits that do not conflict pay nothing for it, and so does a retry whose batch an
+  earlier attempt already wrote.
 - With `transactionLogWriteIntents: true` as well, a commit that finds an older transaction holding
   a write intent on one of its keys (with `verificationTable: true`) is refused before writing its
   batch, with `refusedBeforeLog` set on the

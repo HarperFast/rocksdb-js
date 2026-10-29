@@ -252,7 +252,7 @@ void TransactionHandle::lockVTSlot(
 	if (this->agedIntents) {
 		bool olderHolder;
 		t = vt->lockSlotForWrite(slot, dbId, IntentAge{ this->age, reinterpret_cast<uintptr_t>(this) }, olderHolder);
-		if (olderHolder && !this->intentConflictSlot && !intentRefusalDisabled().load(std::memory_order_relaxed)) {
+		if (olderHolder && !this->intentConflictSlot) {
 			this->intentConflictSlot = slot;
 		}
 	} else {

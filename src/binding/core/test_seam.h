@@ -171,11 +171,6 @@ inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
 	return retriesOnly;
 }
 
-inline std::atomic<bool>& intentRefusalDisabled() {
-	static std::atomic<bool> disabled{false};
-	return disabled;
-}
-
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -191,8 +186,6 @@ inline void initializeTestSeams() {
 		} else if (value && ::strcmp(value, "always") == 0) {
 			prelogConflictCheckRetriesOnly().store(false, std::memory_order_relaxed);
 		}
-		value = ::getenv("ROCKSDB_JS_INTENT_REFUSAL");
-		intentRefusalDisabled().store(value && ::strcmp(value, "0") == 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_ABORT_MARK_FAILURE");
 		abortMarkFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		iteratorNextDelayMsFlag().store(

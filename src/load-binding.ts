@@ -1043,10 +1043,6 @@ export const disablePrelogConflictCheckForTesting: (disabled: boolean) => void =
 export const setPrelogConflictCheckRetriesOnlyForTesting: (retriesOnly: boolean) => void =
 	binding.setPrelogConflictCheckRetriesOnlyForTesting;
 
-/** Test and benchmark seam: stop refusing attempts that joined an older transaction's write intent. */
-export const disableIntentRefusalForTesting: (disabled: boolean) => void =
-	binding.disableIntentRefusalForTesting;
-
 /**
  * Test-only seam: makes the physical column-family drop report failure.
  * `0` = inert, `1` = fail without dropping (the retry performs the drop),
