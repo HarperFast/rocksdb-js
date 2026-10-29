@@ -571,7 +571,7 @@ static const rocksdb::Status& intentRefusal() {
 /** Writes the handle's batch, recording what an abort marker would name. */
 static void writeLogBatch(TransactionHandle& txnHandle, TransactionLogStore& store) {
 	txnHandle.batchTimestamp = txnHandle.logEntryBatch->timestamp;
-	txnHandle.cancelOnAbort = txnHandle.agedIntents;
+	txnHandle.cancelOnAbort = txnHandle.abortMarkers;
 	if (txnHandle.cancelOnAbort) {
 		store.abortMarkersInUse.store(true, std::memory_order_relaxed);
 	}

@@ -379,7 +379,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	double age;
 
-	/** Whether this attempt's write intents carry `age` (the flag, read when the attempt began). */
+	/** `transactionLogAbortMarkers`, read when the attempt began. */
+	bool abortMarkers = false;
+
+	/**
+	 * Whether this attempt's write intents carry `age`, and so can be refused behind an older one:
+	 * `transactionLogWriteIntents` with abort markers on, read when the attempt began.
+	 */
 	bool agedIntents = false;
 
 	/**

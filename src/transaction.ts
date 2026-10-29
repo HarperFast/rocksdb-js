@@ -29,7 +29,7 @@ export class TransactionRetryableError extends Error {
 	readonly hasLog: boolean;
 	/**
 	 * The attempt was refused before writing its transaction-log batch, because an older
-	 * transaction held a write intent on one of its keys (`transactionLogAbortMarkers`). Nothing of
+	 * transaction held a write intent on one of its keys (`transactionLogWriteIntents`). Nothing of
 	 * it is in the log, so a retry may stage its batch afresh.
 	 */
 	readonly refusedBeforeLog: boolean;

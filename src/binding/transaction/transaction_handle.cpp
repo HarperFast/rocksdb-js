@@ -138,7 +138,9 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 	if (this->lockedVTSlots.empty()) {
 		// held intents are released with the setting they were taken under
-		this->agedIntents = DBSettings::getInstance().getTransactionLogAbortMarkers();
+		const DBSettings& settings = DBSettings::getInstance();
+		this->abortMarkers = settings.getTransactionLogAbortMarkers();
+		this->agedIntents = this->abortMarkers && settings.getTransactionLogWriteIntents();
 	}
 
 	auto dbHandle = this->dbHandle;

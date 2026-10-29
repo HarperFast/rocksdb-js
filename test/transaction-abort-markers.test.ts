@@ -30,11 +30,15 @@ const readEntries = (db: RocksDatabase, name = 'foo') =>
 
 describe('transaction-log abort markers', () => {
 	afterEach(() => {
-		RocksDatabase.config({ transactionLogAbortMarkers: false });
+		RocksDatabase.config({ transactionLogAbortMarkers: false, transactionLogWriteIntents: false });
 	});
 
-	it('leaves contention unchanged with the flag off: no refusals, intent parks or abort bits', () =>
+	it.each([
+		['the flag off', false],
+		['write intents at their default', true],
+	])('leaves contention unchanged with %s: no refusals, intent parks or abort bits', (_, markers) =>
 		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
+			RocksDatabase.config({ transactionLogAbortMarkers: markers });
 			await db.put('hot', 'v0');
 			db.populateVersion('hot', 1.5e12);
 			const log = db.useLog('foo');
@@ -59,13 +63,15 @@ describe('transaction-log abort markers', () => {
 				)
 			);
 
+			expect(kinds.length).toBeGreaterThan(0);
 			expect(kinds.every((kind) => kind === ConflictKind.atCommit)).toBe(true);
 			expect(refused).toEqual([]);
 			expect(logFlags(dbPath).some((flags) => flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG)).toBe(
 				false
 			);
 			expect(log.getStats().totals.abortsMarked).toBe(0);
-		}));
+		})
+	);
 
 	it('marks a batch aborted when its transaction ends without committing, and readers skip it', () =>
 		dbRunner(async ({ db, dbPath }) => {
@@ -141,7 +147,7 @@ describe('transaction-log abort markers', () => {
 
 	it('refuses a younger attempt before it logs when an older transaction holds its key', () =>
 		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
-			RocksDatabase.config({ transactionLogAbortMarkers: true });
+			RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
 			await db.put('hot', 'v0');
 			db.populateVersion('hot', 1.5e12);
 			const log = db.useLog('foo');
@@ -165,7 +171,7 @@ describe('transaction-log abort markers', () => {
 
 	it('reports refusedBeforeLog on a refused attempt and retries it by default', () =>
 		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
-			RocksDatabase.config({ transactionLogAbortMarkers: true });
+			RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
 			await db.put('hot', 'v0');
 			db.populateVersion('hot', 1.5e12);
 			const log = db.useLog('foo');
@@ -214,9 +220,99 @@ describe('transaction-log abort markers', () => {
 			expect(logFlags(dbPath)).toEqual([TRANSACTION_LOG_ENTRY_LAST_FLAG]);
 		}));
 
+	it('does not refuse an attempt behind an older write intent unless write intents are on', () =>
+		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
+			RocksDatabase.config({ transactionLogAbortMarkers: true });
+			await db.put('hot', 'v0');
+			db.populateVersion('hot', 1.5e12);
+			const log = db.useLog('foo');
+
+			const older = new Transaction(db.store, { coordinatedRetry: true });
+			await older.put('hot', 'older');
+			const younger = new Transaction(db.store, { coordinatedRetry: true });
+			log.addEntry(Buffer.from('younger'), younger.id);
+			await younger.put('hot', 'younger');
+			await younger.commit();
+			expect(younger.lastConflictKind()).toBe(ConflictKind.none);
+
+			expect(await older.commit()).toBe(RETRY_NOW);
+			expect(older.lastConflictKind()).toBe(ConflictKind.atCommit);
+			older.abort();
+
+			const syncHolder = new Transaction(db.store);
+			await syncHolder.put('hot', 'held');
+			let attempts = 0;
+			db.transactionSync((txn) => {
+				attempts++;
+				log.addEntry(Buffer.from('sync'), txn.id);
+				txn.putSync('hot', 'sync');
+			});
+			expect(attempts).toBe(1);
+			syncHolder.abort();
+			expect(readEntries(db)).toEqual(['younger', 'sync']);
+			expect(logFlags(dbPath).some((flags) => flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG)).toBe(
+				false
+			);
+		}));
+
+	it('reads write intents when an attempt begins and again at each retry', () =>
+		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
+			RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
+			await db.put('hot', 'v0');
+			db.populateVersion('hot', 1.5e12);
+			const log = db.useLog('foo');
+
+			// On to off: attempt 1 began with intents on and is refused; the retry began with them off.
+			const holder = new Transaction(db.store);
+			await holder.put('hot', 'held');
+			const onThenOff = new Transaction(db.store, { coordinatedRetry: true });
+			log.addEntry(Buffer.from('on-then-off'), onThenOff.id);
+			await onThenOff.put('hot', 'on-then-off');
+			RocksDatabase.config({ transactionLogWriteIntents: false });
+			const parked = onThenOff.commit();
+			expect(await settled(parked)).toBe(false);
+			holder.abort();
+			expect(await parked).toBe(RETRY_NOW);
+			expect(onThenOff.lastConflictKind()).toBe(ConflictKind.intentBeforeLog);
+			// Taken with intents off, holder2's intent carries no age, so an aged retry would treat it as
+			// possibly older and be refused.
+			const holder2 = new Transaction(db.store);
+			await holder2.put('hot', 'held');
+			log.addEntry(Buffer.from('on-then-off'), onThenOff.id);
+			await onThenOff.put('hot', 'on-then-off');
+			expect(await onThenOff.commit()).not.toBe(RETRY_NOW);
+			holder2.abort();
+
+			// Off to on: attempt 1 began with intents off and logs; its retry began with them on and is
+			// refused behind an older holder after the log write.
+			const older = new Transaction(db.store);
+			const offThenOn = new Transaction(db.store, { coordinatedRetry: true });
+			log.addEntry(Buffer.from('off-then-on'), offThenOn.id);
+			await offThenOn.put('hot', 'off-then-on');
+			await db.put('hot', 'conflict');
+			RocksDatabase.config({ transactionLogWriteIntents: true });
+			expect(await offThenOn.commit()).toBe(RETRY_NOW);
+			expect(offThenOn.logWritten()).toBe(true);
+			expect(offThenOn.lastConflictKind()).toBe(ConflictKind.atCommit);
+			await older.put('hot', 'older');
+			await offThenOn.put('hot', 'off-then-on');
+			const parkedAfterLog = offThenOn.commit();
+			expect(await settled(parkedAfterLog)).toBe(false);
+			older.abort();
+			expect(await parkedAfterLog).toBe(RETRY_NOW);
+			expect(offThenOn.lastConflictKind()).toBe(ConflictKind.intentAfterLog);
+			await offThenOn.put('hot', 'off-then-on');
+			await offThenOn.commit();
+
+			expect(readEntries(db)).toEqual(['on-then-off', 'off-then-on']);
+			expect(logFlags(dbPath).some((flags) => flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG)).toBe(
+				false
+			);
+		}));
+
 	it('lets the older of two crossing transactions proceed', () =>
 		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db }) => {
-			RocksDatabase.config({ transactionLogAbortMarkers: true });
+			RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
 			await db.put('hot', 'v0');
 			db.populateVersion('hot', 1.5e12);
 			const log = db.useLog('foo');
@@ -237,7 +333,7 @@ describe('transaction-log abort markers', () => {
 
 	it('parks a logged retry on an older intent without writing its batch again', () =>
 		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
-			RocksDatabase.config({ transactionLogAbortMarkers: true });
+			RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
 			await db.put('hot', 'v0');
 			db.populateVersion('hot', 1.5e12);
 			const log = db.useLog('foo');
@@ -343,7 +439,7 @@ describe('transaction-log abort markers', () => {
 
 	it('retries a refused transactionSync() attempt and gives up after maxRetries', () =>
 		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db }) => {
-			RocksDatabase.config({ transactionLogAbortMarkers: true });
+			RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
 			await db.put('hot', 'v0');
 			db.populateVersion('hot', 1.5e12);
 			const log = db.useLog('foo');
@@ -381,7 +477,7 @@ describe('transaction-log abort markers', () => {
 
 	it('abandons a coordinated retry with retryOnBusy: false instead of retrying', () =>
 		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db }) => {
-			RocksDatabase.config({ transactionLogAbortMarkers: true });
+			RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
 			await db.put('hot', 'v0');
 			db.populateVersion('hot', 1.5e12);
 			const log = db.useLog('foo');
@@ -404,7 +500,7 @@ describe('transaction-log abort markers', () => {
 
 	it('resolves a park at the transaction park deadline', () =>
 		dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db }) => {
-			RocksDatabase.config({ transactionLogAbortMarkers: true });
+			RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
 			await db.put('hot', 'v0');
 			db.populateVersion('hot', 1.5e12);
 			const log = db.useLog('foo');

@@ -594,13 +594,21 @@ export type RocksDatabaseConfig = {
 	/**
 	 * Marks a transaction-log batch aborted in place (`TRANSACTION_LOG_ENTRY_ABORTED_FLAG` on its
 	 * first entry) when its transaction ends without committing after the batch was written, so
-	 * readers skip it, and refuses a conflicting attempt before it writes its batch when an older
-	 * transaction holds a write intent on one of its keys. Off by default: with it off, behavior is
-	 * unchanged. Turn it on only once every reader of these logs (replicas, restores, repair tools)
-	 * skips aborted batches; an older reader shows an aborted batch as live. Read when a transaction
-	 * starts and when it is reset for a retry, so it can change at runtime.
+	 * readers skip it. Off by default: with it off, behavior is unchanged. Turn it on only once every
+	 * reader of these logs (replicas, restores, repair tools) skips aborted batches; an older reader
+	 * shows an aborted batch as live. Read when a transaction starts and when it is reset for a
+	 * retry, so it can change at runtime.
 	 */
 	transactionLogAbortMarkers?: boolean;
+	/**
+	 * With `transactionLogAbortMarkers` on, refuses a conflicting attempt before it writes its
+	 * transaction-log batch when an older transaction holds a write intent on one of its keys, and
+	 * (with `coordinatedRetry`) parks it until that holder ends. This bounds how long the losers of
+	 * heavily overlapping transactions wait, at the cost of more retries and less throughput when
+	 * transactions are large or contention is low. Off by default; no effect with abort markers off
+	 * or the verification table disabled. Read with `transactionLogAbortMarkers`.
+	 */
+	transactionLogWriteIntents?: boolean;
 	/**
 	 * Number of slots in the process-global verification table. Each slot is
 	 * 8 bytes; the default of 128K slots is 1 MB. Set to 0 to disable.

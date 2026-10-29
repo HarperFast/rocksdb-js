@@ -280,10 +280,14 @@ Sets global database settings.
   - `transactionLogAbortMarkers: boolean` When `true`, a transaction that wrote its
     transaction-log batch and then ends without committing (an `abort()`, a commit error it gives
     up on, or a worker torn down with it pending) gets that batch marked aborted in place, and every
-    reader skips it; see [Abort markers](#abort-markers). A conflicting attempt is also refused
-    before it writes its batch when an older transaction holds a write intent on one of its keys.
-    Defaults to `false`, which behaves as before. Read when a transaction starts and when it is
-    reset for a retry.
+    reader skips it; see [Abort markers](#abort-markers). Defaults to `false`, which behaves as
+    before. Read when a transaction starts and when it is reset for a retry.
+  - `transactionLogWriteIntents: boolean` When `true` with `transactionLogAbortMarkers` on, a
+    conflicting attempt is refused before it writes its batch when an older transaction holds a
+    write intent on one of its keys; see [Abort markers](#abort-markers). This shortens the worst
+    waits of transactions that overlap heavily, but adds retries and costs throughput when
+    transactions are large or contention is low. Defaults to `false`. Needs `verificationTable`.
+    Read with `transactionLogAbortMarkers`.
   - `occValidation: 'parallel' | 'serial'` How writable optimistic databases opened after the call
     validate commits for conflicts. Defaults to `'parallel'` (RocksDB's default). Databases already
     open keep their policy. Pessimistic, read-only and secondary opens are unaffected.
@@ -1305,8 +1309,9 @@ never left live when the transaction does not commit:
 - If the marker cannot be written or synced, `abort()` throws `ERR_TRANSACTION_ABORT_UNRESOLVED`
   (again on a second call), committed readers stay behind the batch, and the log refuses new batches
   until a retry on the next batch, database flush or close marks it.
-- A commit that finds an older transaction holding a write intent on one of its keys (with
-  `verificationTable: true`) is refused before writing its batch, with `refusedBeforeLog` set on the
+- With `transactionLogWriteIntents: true` as well, a commit that finds an older transaction holding
+  a write intent on one of its keys (with `verificationTable: true`) is refused before writing its
+  batch, with `refusedBeforeLog` set on the
   error, or, if its batch is already written from an earlier attempt, before committing. With
   `coordinatedRetry` it waits for that transaction first. `commitSync()` never waits: it throws, and
   `transactionSync()` retries after a short backoff.

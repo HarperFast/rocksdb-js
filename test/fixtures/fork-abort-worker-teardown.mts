@@ -13,7 +13,7 @@ const fail = (message: string): never => {
 const message = (port: { once: (event: 'message', cb: (value: string) => void) => void }) =>
 	new Promise<string>((resolve) => port.once('message', resolve));
 
-RocksDatabase.config({ transactionLogAbortMarkers: true });
+RocksDatabase.config({ transactionLogAbortMarkers: true, transactionLogWriteIntents: true });
 
 if (!isMainThread) {
 	const db = RocksDatabase.open(workerData.dbPath, { verificationTable: true });

@@ -200,10 +200,10 @@ struct LockTracker {
 
 	/**
 	 * Live holders' ages, for write-intent refusal (writerMutex_). Allocated by the first aged
-	 * registration, so a tracker whose holders carry no age (abort markers off) pays one pointer.
+	 * registration, so a tracker whose holders carry no age (write intents off) pays one pointer.
 	 * Repeat registrations by one holder share an entry; holders past the inline four go to
-	 * `overflow`. A holder with no age (a non-transactional write, or one registered with abort
-	 * markers off), or one whose entry could not be allocated, is only counted, and a joiner treats
+	 * `overflow`. A holder with no age (a non-transactional write, or one registered with write
+	 * intents off), or one whose entry could not be allocated, is only counted, and a joiner treats
 	 * it as possibly older.
 	 */
 	struct HolderAges {

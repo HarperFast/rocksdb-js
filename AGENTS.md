@@ -1586,8 +1586,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `transactionLogAbortMarkers`, `TransactionHandle::close()` of a handle that logged and did not
     commit sets `0x02` on the batch's first entry, syncs it, and only then releases the watermark
     position; a failed marker pins the position and refuses appends until a retry succeeds. Every
-    way a transaction ends must keep reaching `close()`, including the env-cleanup hook. An attempt
-    behind an older write intent is refused before it logs. See
+    way a transaction ends must keep reaching `close()`, including the env-cleanup hook. With
+    `transactionLogWriteIntents` as well, an attempt behind an older write intent is refused before
+    it logs. See
     [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
     [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
 
