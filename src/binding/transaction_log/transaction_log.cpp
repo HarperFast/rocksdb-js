@@ -58,13 +58,20 @@ napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-using CreateExternalSharedArrayBuffer = napi_status (*)(
+/** `node_api_noenv_finalize`: unlike `napi_finalize` it takes no env, since it can run on any thread. */
+using NoEnvFinalize = void(NAPI_CDECL*)(void* data, void* hint);
+using CreateExternalSharedArrayBuffer = napi_status(NAPI_CDECL*)(
 	napi_env env,
 	void* external_data,
 	size_t byte_length,
-	void (*finalize_cb)(void* data, void* hint),
+	NoEnvFinalize finalize_cb,
 	void* finalize_hint,
 	napi_value* result);
+
+void NAPI_CDECL releaseSharedMemoryMap(void* data, void* hint) {
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile SharedArrayBuffer released memoryMapHandle=%p\n", hint);
+	delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
+}
 
 /**
  * Pins this addon in memory. A shared backing store can outlive the env that created it (another
@@ -125,10 +132,7 @@ napi_status createMemoryMapBuffer(
 			env,
 			memoryMap->map,
 			memoryMap->fileSize,
-			[](void* data, void* hint) {
-				DEBUG_LOG("TransactionLog::GetMemoryMapOfFile SharedArrayBuffer released memoryMapHandle=%p\n", hint);
-				delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
-			},
+			releaseSharedMemoryMap,
 			memoryMapHandle,
 			&sharedArrayBuffer) == napi_ok) {
 		napi_value global, bufferClass, from;
