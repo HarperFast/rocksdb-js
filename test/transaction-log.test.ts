@@ -4868,7 +4868,8 @@ describe('Transaction Log', () => {
 				expect(buffer.readableExtent).toBe(
 					TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + value.length
 				);
-				if (shared) {
+				// V8 leaves shared backing stores out of external memory; Bun's JavaScriptCore counts them.
+				if (shared && !('bun' in process.versions)) {
 					expect(process.memoryUsage().external - externalBefore).toBeLessThan(buffer.length);
 				}
 			}));
