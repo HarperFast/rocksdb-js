@@ -95,8 +95,13 @@ CreateExternalSharedArrayBuffer resolveCreateExternalSharedArrayBuffer() {
 	static const CreateExternalSharedArrayBuffer fn = []() -> CreateExternalSharedArrayBuffer {
 		constexpr const char* name = "node_api_create_external_sharedarraybuffer";
 #ifdef _WIN32
-		auto found = reinterpret_cast<CreateExternalSharedArrayBuffer>(
-			::GetProcAddress(::GetModuleHandleW(nullptr), name));
+		CreateExternalSharedArrayBuffer found = nullptr;
+		for (const wchar_t* host : { static_cast<const wchar_t*>(nullptr), L"libnode.dll", L"node.dll" }) {
+			HMODULE module = ::GetModuleHandleW(host);
+			if (module && (found = reinterpret_cast<CreateExternalSharedArrayBuffer>(::GetProcAddress(module, name)))) {
+				break;
+			}
+		}
 #else
 		auto found = reinterpret_cast<CreateExternalSharedArrayBuffer>(::dlsym(RTLD_DEFAULT, name));
 #endif

@@ -248,9 +248,6 @@ napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-/**
- * Whether transaction-log memory maps reach JS as SharedArrayBuffers on this runtime (test/diagnostics).
- */
 napi_value TransactionLogMapsShared(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, TransactionLog::UsesSharedMemoryMaps(), &result));
