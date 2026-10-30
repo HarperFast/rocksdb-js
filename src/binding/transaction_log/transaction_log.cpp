@@ -67,31 +67,46 @@ using CreateExternalSharedArrayBuffer = napi_status (*)(
 	napi_value* result);
 
 /**
- * `node_api_create_external_sharedarraybuffer` is experimental N-API (Node 24+). It is resolved at
- * runtime so one binary still loads where it is absent (Node 22, Bun, Deno); a link-time reference
- * would fail to load on Windows and abort on first call elsewhere.
+ * Pins this addon in memory. A shared backing store can outlive the env that created it (another
+ * thread can hold it), and Node unloads a worker's addons when the worker exits, which would leave
+ * the backing store's deleter pointing at unmapped code.
+ */
+bool pinAddon() {
+#ifdef _WIN32
+	HMODULE module = nullptr;
+	return ::GetModuleHandleExW(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<LPCWSTR>(&pinAddon),
+		&module) != 0;
+#else
+	Dl_info info;
+	if (::dladdr(reinterpret_cast<void*>(&pinAddon), &info) == 0 || info.dli_fname == nullptr) {
+		return false;
+	}
+	return ::dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD | RTLD_NODELETE) != nullptr;
+#endif
+}
+
+/**
+ * `node_api_create_external_sharedarraybuffer` is experimental N-API, so it is looked up at runtime
+ * rather than linked: a missing import fails the Windows DLL load, and aborts on first call elsewhere.
  */
 CreateExternalSharedArrayBuffer resolveCreateExternalSharedArrayBuffer() {
-	static const CreateExternalSharedArrayBuffer fn = []() {
+	static const CreateExternalSharedArrayBuffer fn = []() -> CreateExternalSharedArrayBuffer {
 		constexpr const char* name = "node_api_create_external_sharedarraybuffer";
 #ifdef _WIN32
-		return reinterpret_cast<CreateExternalSharedArrayBuffer>(
+		auto found = reinterpret_cast<CreateExternalSharedArrayBuffer>(
 			::GetProcAddress(::GetModuleHandleW(nullptr), name));
 #else
-		return reinterpret_cast<CreateExternalSharedArrayBuffer>(::dlsym(RTLD_DEFAULT, name));
+		auto found = reinterpret_cast<CreateExternalSharedArrayBuffer>(::dlsym(RTLD_DEFAULT, name));
 #endif
+		return found && pinAddon() ? found : nullptr;
 	}();
 	return fn;
 }
 
 /**
- * Hands a memory map to JS as a Buffer. V8 counts an external ArrayBuffer's bytes toward its
- * external-memory limit but not a SharedArrayBuffer's. Since V8 15 (Node 27), once those retained
- * bytes pass about twice the heap limit, every further external allocation forces a full
- * mark-compact that cannot free them. A mapping costs address space, not heap, so it is exposed
- * through a SharedArrayBuffer where the runtime supports one. The finalizer then runs when the
- * last backing-store reference drops, on whichever thread drops it; deleting the `MemoryMap`
- * handle is safe there because its destructor only unmaps and decrements an atomic.
+ * See "Reader mappings are SharedArrayBuffers" in DESIGN.md. Takes ownership of `memoryMapHandle`.
  */
 napi_status createMemoryMapBuffer(
 	napi_env env,
@@ -111,16 +126,13 @@ napi_status createMemoryMapBuffer(
 			},
 			memoryMapHandle,
 			&sharedArrayBuffer) == napi_ok) {
-		napi_value global, bufferClass, from, offset, length;
+		napi_value global, bufferClass, from;
 		NAPI_STATUS_RETURN(::napi_get_global(env, &global));
 		NAPI_STATUS_RETURN(::napi_get_named_property(env, global, "Buffer", &bufferClass));
 		NAPI_STATUS_RETURN(::napi_get_named_property(env, bufferClass, "from", &from));
-		NAPI_STATUS_RETURN(::napi_create_uint32(env, 0, &offset));
-		NAPI_STATUS_RETURN(::napi_create_uint32(env, memoryMap->fileSize, &length));
-		napi_value args[] = { sharedArrayBuffer, offset, length };
-		return ::napi_call_function(env, bufferClass, from, 3, args, result);
+		return ::napi_call_function(env, bufferClass, from, 1, &sharedArrayBuffer, result);
 	}
-	return ::napi_create_external_buffer(
+	napi_status status = ::napi_create_external_buffer(
 		env,
 		memoryMap->fileSize,
 		memoryMap->map,
@@ -130,9 +142,17 @@ napi_status createMemoryMapBuffer(
 		},
 		memoryMapHandle,
 		result);
+	if (status != napi_ok) {
+		delete memoryMapHandle;
+	}
+	return status;
 }
 
 } // namespace
+
+bool TransactionLog::UsesSharedMemoryMaps() {
+	return resolveCreateExternalSharedArrayBuffer() != nullptr;
+}
 
 /**
  * Constructor for the `NativeTransactionLog` class.
