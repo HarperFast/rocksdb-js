@@ -292,6 +292,16 @@ export type NativeDatabaseMode = 'optimistic' | 'pessimistic';
 
 export type NativeDatabaseOptions = {
 	/**
+	 * Memtable arena block size in bytes. Every column family that has been
+	 * written holds at least one block charged to the WriteBufferManager, so
+	 * with many column families this sets a floor on the manager's usage.
+	 * `0` (the default) is automatic: with a WriteBufferManager attached,
+	 * `writeBufferManagerSize / 2048` clamped to between 64 KiB and
+	 * `min(1 MiB, writeBufferSize / 8)`; without one, RocksDB's own
+	 * `min(1 MiB, writeBufferSize / 8)`.
+	 */
+	arenaBlockSize?: number;
+	/**
 	 * The friendly name of a compression algorithm compiled into this RocksDB
 	 * build (see `supportedCompression`), e.g. `'lz4'`, `'zstd'`, `'none'`. The
 	 * higher-level `StoreOptions.compression` (which also accepts an object with
@@ -657,7 +667,28 @@ export type RocksDatabaseConfig = {
 	 * @default false
 	 */
 	writeBufferManagerAllowStall?: boolean;
+	/**
+	 * Which memtable the WriteBufferManager flushes when it is over budget:
+	 *
+	 * - `'oldest'`: the oldest memtable of the database being written.
+	 * - `'largest'`: the largest memtable of the database being written. Because
+	 *   this library opens databases with atomic flush, this currently behaves
+	 *   like `'oldest'`.
+	 * - `'largestAcrossDBs'`: a background thread flushes whichever database
+	 *   holds the most memtable memory, whether or not it is being written.
+	 *
+	 * When unset, `'largestAcrossDBs'` while `writeBufferManagerAllowStall` is
+	 * on (and following later changes to it), otherwise `'oldest'`. With stalls
+	 * allowed, `'oldest'` can stall writes permanently: a writer to one database
+	 * waits for memory held by other databases that nothing is writing to, so
+	 * nothing flushes them. Without stalls, `'largestAcrossDBs'` has measured
+	 * slower. Can be changed while databases are open; an explicit value stays
+	 * in effect for the life of the process.
+	 */
+	writeBufferManagerFlushPolicy?: WriteBufferManagerFlushPolicy;
 };
+
+export type WriteBufferManagerFlushPolicy = 'oldest' | 'largest' | 'largestAcrossDBs';
 
 const nativeExtRE = /\.node$/;
 const req = createRequire(import.meta.url);
@@ -803,6 +834,11 @@ export type WriteBufferManagerStats = {
 	mutableMemoryUsage: number;
 	allowStall: boolean;
 	costToCache: boolean;
+	/**
+	 * The flush policy in effect: the live manager's, or the one a manager would
+	 * be created with (see `writeBufferManagerFlushPolicy`).
+	 */
+	flushPolicy: WriteBufferManagerFlushPolicy;
 	stallActive: boolean;
 	/**
 	 * How long the current stall has been active, in milliseconds; 0 when not

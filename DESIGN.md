@@ -11,8 +11,9 @@
 - [Conflict check before the log write](src/binding/transaction/DESIGN.md#conflict-check-before-the-log-write) — with abort markers on, RocksDB's own conflict check refuses a stale optimistic attempt before it logs.
 - [Verification table](src/binding/core/DESIGN.md): slots store versions encoded with a per-key tag; a park cancels its lock wake registration when it ends.
 - [Database resources](src/binding/database/DESIGN.md): optimistic commit validation policy,
-  per-database lock buckets, concurrent commit threads, backup table verification, and why
-  pending lock/park wake TSFNs stay ref'd.
+  per-database lock buckets, concurrent commit threads, backup table verification, why
+  pending lock/park wake TSFNs stay ref'd, and the WriteBufferManager flush-policy and arena-size
+  defaults.
 - [Transaction abort](src/binding/transaction/DESIGN.md): abort drains in-flight async gets before `Rollback()` and holds an `OperationGuard` so teardown cannot close the transaction under it.
 - [Pooled transaction iterators](src/binding/iterator/DESIGN.md): transaction `getRange()` re-seeks an idle native iterator after rewriting the read-bound Slices it points to.
 - [N-API error builders](src/binding/napi/DESIGN.md): `createRocksDBError`/`createJSError` always write their out-param, even when their own N-API calls fail.

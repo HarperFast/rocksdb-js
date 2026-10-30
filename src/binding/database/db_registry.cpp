@@ -954,7 +954,7 @@ void DBRegistry::OpenDB(
 				// ever configured (#823).
 				auto cfOptions = buildColumnFamilyOptions(
 					options,
-					entry.descriptor->attachedWriteBufferManager != nullptr,
+					entry.descriptor->attachedWriteBufferManager,
 					entry.descriptor->cfOptions
 				);
 				if (options.compression) {

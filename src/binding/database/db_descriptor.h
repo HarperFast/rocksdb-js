@@ -43,12 +43,13 @@ struct UserSharedBufferData;
 struct UserSharedBufferFinalizeData;
 
 /**
- * `writeBufferManagerAttached` must describe the database this column family belongs to, never the
- * current `DBSettings` value — see `resolveMaxWriteBufferSizeToMaintain` for why they diverge.
+ * `attachedWriteBufferManager` must be the manager the database this column family belongs to
+ * holds (null when none), never the current `DBSettings` value — see
+ * `resolveMaxWriteBufferSizeToMaintain` for why they diverge.
  */
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
-	bool writeBufferManagerAttached,
+	const rocksdb::WriteBufferManager* attachedWriteBufferManager,
 	rocksdb::ColumnFamilyOptions cfOptions = {}
 );
 
