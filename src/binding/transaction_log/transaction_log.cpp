@@ -8,6 +8,11 @@
 #include "napi/async.h"
 #include <stdlib.h>
 #include <fcntl.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = nullptr; \
@@ -51,6 +56,80 @@ napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
 		(*memoryMapHandle)->readableExtent.load(std::memory_order_acquire),
 		&result));
 	return result;
+}
+
+using CreateExternalSharedArrayBuffer = napi_status (*)(
+	napi_env env,
+	void* external_data,
+	size_t byte_length,
+	void (*finalize_cb)(void* data, void* hint),
+	void* finalize_hint,
+	napi_value* result);
+
+/**
+ * `node_api_create_external_sharedarraybuffer` is experimental N-API (Node 24+). It is resolved at
+ * runtime so one binary still loads where it is absent (Node 22, Bun, Deno); a link-time reference
+ * would fail to load on Windows and abort on first call elsewhere.
+ */
+CreateExternalSharedArrayBuffer resolveCreateExternalSharedArrayBuffer() {
+	static const CreateExternalSharedArrayBuffer fn = []() {
+		constexpr const char* name = "node_api_create_external_sharedarraybuffer";
+#ifdef _WIN32
+		return reinterpret_cast<CreateExternalSharedArrayBuffer>(
+			::GetProcAddress(::GetModuleHandleW(nullptr), name));
+#else
+		return reinterpret_cast<CreateExternalSharedArrayBuffer>(::dlsym(RTLD_DEFAULT, name));
+#endif
+	}();
+	return fn;
+}
+
+/**
+ * Hands a memory map to JS as a Buffer. V8 counts an external ArrayBuffer's bytes toward its
+ * external-memory limit but not a SharedArrayBuffer's. Since V8 15 (Node 27), once those retained
+ * bytes pass about twice the heap limit, every further external allocation forces a full
+ * mark-compact that cannot free them. A mapping costs address space, not heap, so it is exposed
+ * through a SharedArrayBuffer where the runtime supports one. The finalizer then runs when the
+ * last backing-store reference drops, on whichever thread drops it; deleting the `MemoryMap`
+ * handle is safe there because its destructor only unmaps and decrements an atomic.
+ */
+napi_status createMemoryMapBuffer(
+	napi_env env,
+	std::shared_ptr<MemoryMap>* memoryMapHandle,
+	napi_value* result
+) {
+	MemoryMap* memoryMap = memoryMapHandle->get();
+	auto createShared = resolveCreateExternalSharedArrayBuffer();
+	napi_value sharedArrayBuffer;
+	if (createShared && createShared(
+			env,
+			memoryMap->map,
+			memoryMap->fileSize,
+			[](void* data, void* hint) {
+				DEBUG_LOG("TransactionLog::GetMemoryMapOfFile SharedArrayBuffer released memoryMapHandle=%p\n", hint);
+				delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
+			},
+			memoryMapHandle,
+			&sharedArrayBuffer) == napi_ok) {
+		napi_value global, bufferClass, from, offset, length;
+		NAPI_STATUS_RETURN(::napi_get_global(env, &global));
+		NAPI_STATUS_RETURN(::napi_get_named_property(env, global, "Buffer", &bufferClass));
+		NAPI_STATUS_RETURN(::napi_get_named_property(env, bufferClass, "from", &from));
+		NAPI_STATUS_RETURN(::napi_create_uint32(env, 0, &offset));
+		NAPI_STATUS_RETURN(::napi_create_uint32(env, memoryMap->fileSize, &length));
+		napi_value args[] = { sharedArrayBuffer, offset, length };
+		return ::napi_call_function(env, bufferClass, from, 3, args, result);
+	}
+	return ::napi_create_external_buffer(
+		env,
+		memoryMap->fileSize,
+		memoryMap->map,
+		[](napi_env env, void* data, void* hint) {
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint);
+			delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
+		},
+		memoryMapHandle,
+		result);
 }
 
 } // namespace
@@ -318,18 +397,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	auto* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_external_buffer(
-		env,  // env
-		memoryMap->fileSize, // length
-		memoryMap->map, // data
-		[](napi_env env, void* data, void* hint) { // finalize_cb
-			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint);
-			auto* memoryMap = static_cast<std::shared_ptr<MemoryMap>*>(hint);
-			delete memoryMap;
-		},
-		memoryMapHandle, // finalize_hint
-		&result // [out] result
-	));
+	NAPI_STATUS_THROWS(createMemoryMapBuffer(env, memoryMapHandle, &result));
 	NAPI_STATUS_THROWS(::napi_type_tag_object(env, result, &READABLE_EXTENT_BUFFER_TAG));
 
 	// A separate shared handle keeps an extracted getter safe after the buffer's

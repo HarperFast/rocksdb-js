@@ -4844,6 +4844,26 @@ describe('Transaction Log', () => {
 			}
 		};
 
+		// V8 counts an external ArrayBuffer toward the heap's external-memory limit and, since
+		// V8 15 (Node 27), forces a full GC per allocation once retained mappings pass about
+		// twice the heap limit; a SharedArrayBuffer is not counted.
+		it.skipIf(
+			Number(process.versions.node.split('.')[0]) < 24 ||
+				'bun' in process.versions ||
+				'Deno' in globalThis
+		)('exposes a mapping through a SharedArrayBuffer-backed Buffer', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				await db.transaction(async (txn) => {
+					log.addEntry(Buffer.alloc(10, 'a'), txn.id);
+				});
+				const buffer = log._getMemoryMapOfFile(1)!;
+				expect(Buffer.isBuffer(buffer)).toBe(true);
+				expect(buffer.buffer).toBeInstanceOf(SharedArrayBuffer);
+				expect(buffer.subarray(0, 4).toString()).toBe('WOOF');
+			})
+		);
+
 		// POSIX-only: the weak-for-frozen optimization applies when a frozen file
 		// is mapped. On Windows getMemoryMap retains the map strongly regardless
 		// (by design — see transaction_log_file_windows.cpp), so a directly-mapped
