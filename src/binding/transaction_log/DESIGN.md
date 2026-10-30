@@ -68,6 +68,6 @@ Three consequences of the shared backing store:
 - The finalizer runs when the last backing-store reference drops, on whichever thread drops it, not on the JS thread. It may only delete the `MemoryMap` handle, whose destructor unmaps and decrements an atomic.
 - The finalizer can run after the addon is unloaded. Node closes a worker's addons in its environment teardown, before the isolate's remaining backing stores are released, and a store shared to another thread can outlive the worker entirely. `pinAddon()` therefore pins the module (`GET_MODULE_HANDLE_EX_FLAG_PIN`, `RTLD_NODELETE`) before the shared path is first used, and the fallback is taken if pinning fails.
 - Nothing pressures GC to release a dropped mapping; it is unmapped when ordinary JS allocation triggers a collection. A worker that drops mappings and then goes idle keeps them mapped.
-- `buffer.buffer` is a `SharedArrayBuffer`: `instanceof ArrayBuffer` is false, `new Blob([buffer])` throws, and `structuredClone`/`postMessage` share the mapping instead of copying it.
+- `buffer.buffer` is a `SharedArrayBuffer`: `instanceof ArrayBuffer` is false, `new Blob([buffer])` throws from Node 27, and `structuredClone`/`postMessage` share the mapping instead of copying it.
 
 The function is looked up at runtime (`dlsym`/`GetProcAddress`), not linked, so one binary still loads on Node 22, Bun and Deno: a link-time import of a missing export fails the Windows DLL load, and elsewhere aborts on first call.

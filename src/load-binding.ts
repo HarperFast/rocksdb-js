@@ -139,7 +139,7 @@ export type NativeTransaction = {
 
 /**
  * A transaction-log memory map. Where `transactionLogMapsShared()` is true its `buffer` is a
- * SharedArrayBuffer: `new Blob()` rejects it and cloning it shares the live mapping.
+ * SharedArrayBuffer: cloning it shares the read-only mapping, and Node 27+ `Blob` rejects it.
  */
 export type LogBuffer = Buffer & {
 	dataView: DataView;

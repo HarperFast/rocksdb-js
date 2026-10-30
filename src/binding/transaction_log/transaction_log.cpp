@@ -106,7 +106,7 @@ CreateExternalSharedArrayBuffer resolveCreateExternalSharedArrayBuffer() {
 }
 
 /**
- * See "Reader mappings are SharedArrayBuffers" in DESIGN.md. Takes ownership of `memoryMapHandle`.
+ * See "Reader mappings are SharedArrayBuffers" in DESIGN.md.
  */
 napi_status createMemoryMapBuffer(
 	napi_env env,
@@ -132,7 +132,7 @@ napi_status createMemoryMapBuffer(
 		NAPI_STATUS_RETURN(::napi_get_named_property(env, bufferClass, "from", &from));
 		return ::napi_call_function(env, bufferClass, from, 1, &sharedArrayBuffer, result);
 	}
-	napi_status status = ::napi_create_external_buffer(
+	return ::napi_create_external_buffer(
 		env,
 		memoryMap->fileSize,
 		memoryMap->map,
@@ -142,10 +142,6 @@ napi_status createMemoryMapBuffer(
 		},
 		memoryMapHandle,
 		result);
-	if (status != napi_ok) {
-		delete memoryMapHandle;
-	}
-	return status;
 }
 
 } // namespace
