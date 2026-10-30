@@ -1337,6 +1337,11 @@ never left live when the transaction does not commit:
 - If the marker cannot be written or synced, `abort()` throws `ERR_TRANSACTION_ABORT_UNRESOLVED`
   (again on a second call), committed readers stay behind the batch, and the log refuses new batches
   until a retry on the next batch, database flush or close marks it.
+- Under `occValidation: 'parallel'` (the default), a retried optimistic commit that RocksDB's own
+  conflict check shows would fail is refused before it writes its batch too, with
+  `refusedBeforeLog` set (needs the RocksDB build this package pins). A first attempt skips the
+  check, so commits that do not conflict pay nothing for it, and so does a retry whose batch an
+  earlier attempt already wrote.
 - With `transactionLogWriteIntents: true` as well, a commit that finds an older transaction holding
   a write intent on one of its keys (with `verificationTable: true`) is refused before writing its
   batch, with `refusedBeforeLog` set on the
@@ -1389,7 +1394,8 @@ operations methods as the `RocksDatabase` instance plus:
 - `txn.getTimestamp(): number` Retrieves the transaction timestamp in milliseconds as a decimal. It
   defaults to a process-wide monotonic value assigned when the transaction was created.
 - `txn.lastConflictKind(): number` Why the most recent attempt was refused or retried, one of
-  `ConflictKind`: `none` (0), `intentBeforeLog` (1), `intentAfterLog` (2), `atCommit` (3).
+  `ConflictKind`: `none` (0), `intentBeforeLog` (1), `intentAfterLog` (2), `atCommit` (3),
+  `checkBeforeLog` (4).
 - `txn.logWritten(): boolean` Whether the transaction's batch is in the transaction log.
 - `txn.setParkDeadline(epochMs: number): void` Past this time a coordinated-retry wait resolves at
   once. `0` clears it.

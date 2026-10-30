@@ -933,6 +933,8 @@ export const constants: {
 	TRANSACTION_LOG_ENTRY_HEADER_SIZE: number;
 	TRANSACTION_LOG_ENTRY_LAST_FLAG: number;
 	TRANSACTION_LOG_ENTRY_ABORTED_FLAG: number;
+	/** 1 when the linked RocksDB exports the conflict check run before the log write. */
+	PRELOG_CONFLICT_CHECK: number;
 	TRANSACTION_LOG_FILE_HEADER_SIZE: number;
 	ITERATOR_REVERSE_FLAG: number;
 	ITERATOR_INCLUSIVE_END_FLAG: number;
@@ -1065,6 +1067,17 @@ export const iteratorPoolEnabled: boolean = binding.iteratorPoolEnabled;
  * disarm. Used by the ERR_TRY_AGAIN retry regression test.
  */
 export const forceTryAgainForTesting: (count: number) => void = binding.forceTryAgainForTesting;
+
+/**
+ * Test-only: turn the RocksDB conflict check before the transaction-log write off (`true`) or back
+ * on, so a test can make a logged batch conflict at commit from a stale snapshot.
+ */
+export const disablePrelogConflictCheckForTesting: (disabled: boolean) => void =
+	binding.disablePrelogConflictCheckForTesting;
+
+/** Test-only: run the pre-log conflict check on retries alone (`true`, the default) or on every attempt. */
+export const setPrelogConflictCheckRetriesOnlyForTesting: (retriesOnly: boolean) => void =
+	binding.setPrelogConflictCheckRetriesOnlyForTesting;
 
 /**
  * Test-only seam: makes the physical column-family drop report failure.

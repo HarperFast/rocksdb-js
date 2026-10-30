@@ -1,5 +1,10 @@
 import { backups, RocksDatabase } from '../src/index.ts';
-import { constants } from '../src/load-binding.ts';
+import {
+	constants,
+	disablePrelogConflictCheckForTesting,
+	lockWakeCallbackCount,
+	setPrelogConflictCheckRetriesOnlyForTesting,
+} from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
 import { ConflictKind, RETRY_NOW, Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
@@ -31,6 +36,8 @@ const readEntries = (db: RocksDatabase, name = 'foo') =>
 describe('transaction-log abort markers', () => {
 	afterEach(() => {
 		RocksDatabase.config({ transactionLogAbortMarkers: false, transactionLogWriteIntents: false });
+		disablePrelogConflictCheckForTesting(false);
+		setPrelogConflictCheckRetriesOnlyForTesting(true);
 	});
 
 	it.each([
@@ -524,6 +531,187 @@ describe('transaction-log abort markers', () => {
 			parked.abort();
 			holder.abort();
 		}));
+
+	it.skipIf(!!process.env.ROCKSDB_PATH || !!process.env.ROCKSDB_VERSION)(
+		'links the pinned RocksDB, which exports the conflict check',
+		() => {
+			expect(constants.PRELOG_CONFLICT_CHECK).toBe(1);
+		}
+	);
+
+	it.skipIf(!constants.PRELOG_CONFLICT_CHECK)(
+		'checks a retry but not a first attempt by default',
+		() =>
+			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
+				RocksDatabase.config({
+					transactionLogAbortMarkers: true,
+					transactionLogWriteIntents: true,
+				});
+				disablePrelogConflictCheckForTesting(false);
+				await db.put('k', 'v0');
+				db.populateVersion('k', 1.5e12);
+				const log = db.useLog('foo');
+
+				const stale = new Transaction(db.store);
+				expect(await stale.get('k')).toBe('v0');
+				await db.put('k', 'v1');
+				log.addEntry(Buffer.from('stale'), stale.id);
+				await stale.put('k', 'stale');
+				await expect(stale.commit()).rejects.toMatchObject({ code: 'ERR_BUSY', hasLog: true });
+				expect(stale.lastConflictKind()).toBe(ConflictKind.atCommit);
+				stale.abort();
+
+				const holder = new Transaction(db.store);
+				await holder.put('k', 'held');
+				const kinds: number[] = [];
+				await db.transaction(async (txn) => {
+					kinds.push(txn.lastConflictKind());
+					if (kinds.length === 2) {
+						// attempt 2 reads, then a write commits before it does: only the check refuses it
+						holder.abort();
+						await txn.get('k');
+						await db.put('k', 'v2');
+					}
+					log.addEntry(Buffer.from(`attempt${kinds.length}`), txn.id);
+					await txn.put('k', 'retried');
+				});
+				// attempt 1 was refused on the holder's intent, attempt 2 by the check, attempt 3 committed
+				expect(kinds).toEqual([
+					ConflictKind.none,
+					ConflictKind.intentBeforeLog,
+					ConflictKind.checkBeforeLog,
+				]);
+				expect(await db.get('k')).toBe('retried');
+				expect(readEntries(db)).toEqual(['attempt3']);
+				expect(
+					logFlags(dbPath).filter((flags) => flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG)
+				).toHaveLength(1);
+			})
+	);
+
+	it.skipIf(!constants.PRELOG_CONFLICT_CHECK)(
+		'checks a retry that stages its first batch with write intents at their default',
+		() =>
+			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
+				RocksDatabase.config({ transactionLogAbortMarkers: true });
+				disablePrelogConflictCheckForTesting(false);
+				await db.put('k', 'v0');
+				const log = db.useLog('foo');
+
+				// A retry whose earlier attempt logged has no batch to stage, so it is never checked:
+				// only an attempt that conflicted before logging anything reaches the check on its retry.
+				const kinds: number[] = [];
+				await db.transaction(
+					async (txn) => {
+						kinds.push(txn.lastConflictKind());
+						await txn.get('k');
+						await db.put('k', `v${kinds.length}`);
+						if (kinds.length > 1) {
+							log.addEntry(Buffer.from(`attempt${kinds.length}`), txn.id);
+						}
+						if (kinds.length < 3) {
+							await txn.put('k', 'retried');
+						}
+					},
+					{ retryOnBusy: true }
+				);
+				expect(kinds).toEqual([
+					ConflictKind.none,
+					ConflictKind.atCommit,
+					ConflictKind.checkBeforeLog,
+				]);
+				expect(readEntries(db)).toEqual(['attempt3']);
+				expect(logFlags(dbPath)).toEqual([TRANSACTION_LOG_ENTRY_LAST_FLAG]);
+			})
+	);
+
+	it.skipIf(!constants.PRELOG_CONFLICT_CHECK)(
+		'refuses a stale first attempt before it logs when the check runs on every attempt',
+		() =>
+			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db, dbPath }) => {
+				RocksDatabase.config({ transactionLogAbortMarkers: true });
+				disablePrelogConflictCheckForTesting(false);
+				setPrelogConflictCheckRetriesOnlyForTesting(false);
+				await db.put('k', 'v0');
+				db.populateVersion('k', 1.5e12);
+				const log = db.useLog('foo');
+				const stale = new Transaction(db.store);
+				expect(await stale.get('k')).toBe('v0');
+				await db.put('k', 'v1'); // committed after `stale` read the key; no intent is left behind
+				log.addEntry(Buffer.from('stale'), stale.id);
+				await stale.put('k', 'stale');
+				await expect(stale.commit()).rejects.toMatchObject({
+					code: 'ERR_BUSY',
+					refusedBeforeLog: true,
+					hasLog: false,
+				});
+				expect(stale.lastConflictKind()).toBe(ConflictKind.checkBeforeLog);
+				expect(logFlags(dbPath)).toEqual([]);
+				stale.abort();
+
+				// with coordinatedRetry there is no holder left to park on, so it retries at once
+				const coordinated = new Transaction(db.store, { coordinatedRetry: true });
+				expect(await coordinated.get('k')).toBe('v1');
+				await db.put('k', 'v2');
+				log.addEntry(Buffer.from('coordinated'), coordinated.id);
+				// a younger live holder on the slot: a refusal that parked would wait on it
+				const younger = new Transaction(db.store);
+				await younger.put('k', 'younger');
+				await coordinated.put('k', 'coordinated');
+				const started = performance.now();
+				expect(await coordinated.commit()).toBe(RETRY_NOW);
+				expect(performance.now() - started).toBeLessThan(1000); // a park would wait for the park timeout
+				expect(lockWakeCallbackCount()).toBe(0);
+				younger.abort();
+				expect(coordinated.lastConflictKind()).toBe(ConflictKind.checkBeforeLog);
+				expect(coordinated.logWritten()).toBe(false);
+				coordinated.abort();
+				expect(logFlags(dbPath)).toEqual([]);
+			})
+	);
+
+	for (const intents of [true, false]) {
+		it(`converges crossing 1,000-key logged transactions with intent refusal ${intents ? 'on' : 'off'}`, () =>
+			dbRunner({ dbOptions: [{ verificationTable: true }] }, async ({ db }) => {
+				RocksDatabase.config({
+					transactionLogAbortMarkers: true,
+					transactionLogWriteIntents: intents,
+				});
+				disablePrelogConflictCheckForTesting(false);
+				const keys = Array.from({ length: 1000 }, (_, i) => `k${i}`);
+				for (const key of keys) {
+					await db.put(key, 0);
+					db.populateVersion(key, 1.5e12);
+				}
+				const log = db.useLog('foo');
+				let attempts = 0;
+				const writer = (order: string[], value: number) =>
+					db.transaction(
+						async (txn) => {
+							attempts++;
+							log.addEntry(Buffer.from(`w${value}`), txn.id);
+							for (const key of order) {
+								txn.putSync(key, value);
+							}
+							await delay(1);
+						},
+						{ coordinatedRetry: true, maxRetries: 200 }
+					);
+				const started = performance.now();
+				for (let round = 0; round < 5; round++) {
+					await Promise.all([
+						writer(keys, round * 2 + 1),
+						writer([...keys].reverse(), round * 2 + 2),
+					]);
+				}
+				const elapsed = performance.now() - started;
+				expect(elapsed).toBeLessThan(30000);
+				expect(readEntries(db).length).toBe(10);
+				console.log(
+					`crossing 1,000-key x10, intents ${intents ? 'on' : 'off'}: ${elapsed.toFixed(0)} ms, ${attempts} attempts`
+				);
+			}));
+	}
 
 	it('fails closed when a marker cannot be written, and resolves on a later retry', async () => {
 		const result = await runFixture('fork-abort-mark-failure.mts', {

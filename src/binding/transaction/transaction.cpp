@@ -23,6 +23,7 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include "core/verification_table.h"
+#include "rocksdb/utilities/optimistic_transaction_db.h"
 
 #define UNWRAP_TRANSACTION_HANDLE(fnName) \
 	std::shared_ptr<TransactionHandle>* txnHandle = nullptr; \
@@ -568,6 +569,29 @@ static const rocksdb::Status& intentRefusal() {
 	return status;
 }
 
+/**
+ * Must run after admission: its claims keep the batch's column families from being dropped, as
+ * RocksDB requires (transaction/DESIGN.md, "Conflict check before the log write").
+ */
+static rocksdb::Status checkBeforeLog(TransactionHandle& txnHandle, const DBDescriptor& descriptor) {
+#ifdef ROCKSDB_HAS_CHECK_OPTIMISTIC_TRANSACTION_FOR_CONFLICTS
+	// Only where RocksDB itself already runs this check off the write thread, without the DB mutex.
+	if (txnHandle.abortMarkers && descriptor.parallelValidation &&
+		!prelogConflictCheckDisabled().load(std::memory_order_relaxed) &&
+		(txnHandle.retries > 0 || !prelogConflictCheckRetriesOnly().load(std::memory_order_relaxed))) {
+		rocksdb::Status status = rocksdb::CheckOptimisticTransactionForConflicts(txnHandle.txn);
+		if (status.IsBusy() || status.IsTryAgain()) {
+			txnHandle.lastConflictKind = TransactionHandle::ConflictCheckBeforeLog;
+		}
+		return status;
+	}
+#else
+	(void)txnHandle;
+	(void)descriptor;
+#endif
+	return rocksdb::Status::OK();
+}
+
 /** Writes the handle's batch, recording what an abort marker would name. */
 static void writeLogBatch(TransactionHandle& txnHandle, TransactionLogStore& store) {
 	txnHandle.batchTimestamp = txnHandle.logEntryBatch->timestamp;
@@ -604,6 +628,9 @@ static void executeLogWork(TransactionCommitState* state) {
 			txnHandle->lastConflictKind = TransactionHandle::ConflictIntentBeforeLog;
 			state->refusedBeforeLog = true;
 			state->status = intentRefusal();
+		} else if (rocksdb::Status check = checkBeforeLog(*txnHandle, *state->operationDescriptor); !check.ok()) {
+			state->refusedBeforeLog = true;
+			state->status = check;
 		} else if (store) {
 			try {
 				// write the batch to the store
@@ -649,7 +676,8 @@ static void executeCommitWork(TransactionCommitState* state) {
 		if (!state->status.ok()) {
 			state->claim.release(descriptor);
 			if (state->refusedBeforeLog) {
-				if (txnHandle->coordinatedRetry) {
+				// A failed conflict check has no holder to wait for: the conflicting writer committed.
+				if (txnHandle->coordinatedRetry && txnHandle->intentConflictSlot) {
 					state->savedSlots = { txnHandle->intentConflictSlot };
 				}
 				txnHandle->releaseIntent();
@@ -1338,6 +1366,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->lastConflictKind = TransactionHandle::ConflictIntentBeforeLog;
 		refusedBeforeLog = true;
 		status = intentRefusal();
+	} else if (rocksdb::Status check =
+			(*txnHandle)->logEntryBatch ? checkBeforeLog(**txnHandle, *descriptor) : rocksdb::Status::OK();
+		!check.ok()) {
+		refusedBeforeLog = true;
+		status = check;
 	} else if ((*txnHandle)->logEntryBatch) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %llu\n",
 			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id);

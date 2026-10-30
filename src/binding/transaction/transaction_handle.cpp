@@ -131,6 +131,7 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 	if (this->txn) {
 		this->txn->ClearSnapshot();
 		delete this->txn;
+		this->retries++;
 	}
 
 	this->logEntryBatch.reset();

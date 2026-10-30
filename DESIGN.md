@@ -8,6 +8,7 @@
 - [Transaction-log aborted batches](src/binding/transaction_log/DESIGN.md#aborted-batches) — readers skip a batch whose first entry carries the abort flag (0x02).
 - [Transaction-log abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) — a logged transaction that ends without committing gets its batch marked, synced, before its position is released; failures fail closed.
 - [Write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal) — with abort markers and `transactionLogWriteIntents` on, an attempt behind an older write intent is refused before it logs.
+- [Conflict check before the log write](src/binding/transaction/DESIGN.md#conflict-check-before-the-log-write) — with abort markers on, RocksDB's own conflict check refuses a stale optimistic attempt before it logs.
 - [Verification table](src/binding/core/DESIGN.md): slots store versions encoded with a per-key tag; a park cancels its lock wake registration when it ends.
 - [Database resources](src/binding/database/DESIGN.md): optimistic commit validation policy,
   per-database lock buckets, concurrent commit threads, backup table verification, why

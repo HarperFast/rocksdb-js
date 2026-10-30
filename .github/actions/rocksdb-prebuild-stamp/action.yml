@@ -1,0 +1,46 @@
+name: 'RocksDB prebuild stamp'
+description: >-
+  Identify the pinned RocksDB prebuild by its version and latest asset upload time, for use in
+  cache keys. init-rocksdb treats an installed prebuild whose version matches the pin as current,
+  so a prebuild re-published under the same version is only fetched when the cache misses.
+
+inputs:
+  gh-token:
+    description: 'GitHub token for the release lookup'
+    required: false
+    default: ''
+
+outputs:
+  stamp:
+    description: '<version>-<latest asset upload time>, or <version>-unstamped if the lookup failed'
+    value: ${{ steps.stamp.outputs.stamp }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: stamp
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token || github.token }}
+      run: |
+        node --input-type=module -e '
+        import { appendFileSync, readFileSync } from "node:fs";
+        const version = JSON.parse(readFileSync("package.json", "utf8")).rocksdb.version;
+        let uploaded = "unstamped";
+        try {
+          const response = await fetch(
+            `https://api.github.com/repos/harperfast/rocksdb-prebuilds/releases/tags/v${version}`,
+            {
+              headers: { Authorization: `Bearer ${process.env.GH_TOKEN}` },
+              signal: AbortSignal.timeout(10_000),
+            }
+          );
+          if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+          const { assets } = await response.json();
+          uploaded = assets.map((asset) => asset.updated_at).sort().at(-1).replace(/[^0-9]/g, "");
+        } catch (error) {
+          console.log(`::warning::RocksDB prebuild v${version} lookup failed: ${error.message}`);
+        }
+        appendFileSync(process.env.GITHUB_OUTPUT, `stamp=${version}-${uploaded}\n`);
+        console.log(`stamp=${version}-${uploaded}`);
+        '

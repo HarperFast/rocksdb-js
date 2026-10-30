@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 // Deterministic test seams that widen a race window are gated on a millisecond
@@ -160,6 +161,16 @@ inline bool testConsumeAbortMarkFailure() {
 	return false;
 }
 
+inline std::atomic<bool>& prelogConflictCheckDisabled() {
+	static std::atomic<bool> disabled{false};
+	return disabled;
+}
+
+inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
+	static std::atomic<bool> retriesOnly{true};
+	return retriesOnly;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -169,6 +180,12 @@ inline void initializeTestSeams() {
 		destroyFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
 		closeFlushFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
+		value = ::getenv("ROCKSDB_JS_PRELOG_CHECK");
+		if (value && ::strcmp(value, "off") == 0) {
+			prelogConflictCheckDisabled().store(true, std::memory_order_relaxed);
+		} else if (value && ::strcmp(value, "always") == 0) {
+			prelogConflictCheckRetriesOnly().store(false, std::memory_order_relaxed);
+		}
 		value = ::getenv("ROCKSDB_JS_ABORT_MARK_FAILURE");
 		abortMarkFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		iteratorNextDelayMsFlag().store(

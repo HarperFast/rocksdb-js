@@ -1,4 +1,5 @@
 #include "napi/binding.h"
+#include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "database/backup.h"
 #include "database/database.h"
 #include "database/db_stats.h"
@@ -86,6 +87,22 @@ napi_value ForceTryAgainForTesting(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_undefined(env, &result));
 	return result;
+}
+
+napi_value DisablePrelogConflictCheckForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	bool disabled = false;
+	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &disabled));
+	prelogConflictCheckDisabled().store(disabled, std::memory_order_relaxed);
+	NAPI_RETURN_UNDEFINED();
+}
+
+napi_value SetPrelogConflictCheckRetriesOnlyForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	bool retriesOnly = false;
+	NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[0], &retriesOnly));
+	prelogConflictCheckRetriesOnly().store(retriesOnly, std::memory_order_relaxed);
+	NAPI_RETURN_UNDEFINED();
 }
 
 napi_value ForceDropFailureForTesting(napi_env env, napi_callback_info info) {
@@ -423,6 +440,12 @@ NAPI_MODULE_INIT() {
 	napi_value forceTryAgainFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
+	napi_value disablePrelogCheckFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "disablePrelogConflictCheckForTesting", NAPI_AUTO_LENGTH, DisablePrelogConflictCheckForTesting, nullptr, &disablePrelogCheckFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "disablePrelogConflictCheckForTesting", disablePrelogCheckFn));
+	napi_value retriesOnlyFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "setPrelogConflictCheckRetriesOnlyForTesting", NAPI_AUTO_LENGTH, SetPrelogConflictCheckRetriesOnlyForTesting, nullptr, &retriesOnlyFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setPrelogConflictCheckRetriesOnlyForTesting", retriesOnlyFn));
 
 	napi_value forceDropFailureFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "forceDropFailureForTesting", NAPI_AUTO_LENGTH, ForceDropFailureForTesting, nullptr, &forceDropFailureFn));
@@ -547,6 +570,12 @@ NAPI_MODULE_INIT() {
 	EXPORT_CONSTANT(constants, TRANSACTION_LOG_ENTRY_HEADER_SIZE)
 	EXPORT_CONSTANT(constants, TRANSACTION_LOG_ENTRY_LAST_FLAG)
 	EXPORT_CONSTANT(constants, TRANSACTION_LOG_ENTRY_ABORTED_FLAG)
+#ifdef ROCKSDB_HAS_CHECK_OPTIMISTIC_TRANSACTION_FOR_CONFLICTS
+	const uint32_t PRELOG_CONFLICT_CHECK = 1;
+#else
+	const uint32_t PRELOG_CONFLICT_CHECK = 0;
+#endif
+	EXPORT_CONSTANT(constants, PRELOG_CONFLICT_CHECK)
 	EXPORT_CONSTANT(constants, ONLY_IF_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, NOT_IN_MEMORY_CACHE_FLAG)
 	EXPORT_CONSTANT(constants, ALWAYS_CREATE_NEW_BUFFER_FLAG)

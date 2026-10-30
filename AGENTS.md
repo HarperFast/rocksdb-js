@@ -252,6 +252,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   transaction-log batch it captured, written with `transactionLogAbortMarkers` on, to commit or be
   marked aborted before the backup is refused. Read once per process, so it must be set in the
   environment a process is started with
+- `ROCKSDB_JS_PRELOG_CHECK` - Benchmark-only arms: `off` skips the conflict check before the log
+  write, `always` runs it on every attempt instead of retries alone. Write-intent refusal has no such
+  switch; it is the `transactionLogWriteIntents` option. Snapshotted in `initializeTestSeams()`; tests
+  use the equivalent `*ForTesting` binding functions
 - `ROCKSDB_JS_ABORT_MARK_FAILURE` - Test-only: number of abort-marker writes to fail with an
   injected error (a **count**). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
