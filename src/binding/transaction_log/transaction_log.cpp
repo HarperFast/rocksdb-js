@@ -8,6 +8,11 @@
 #include "napi/async.h"
 #include <stdlib.h>
 #include <fcntl.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = nullptr; \
@@ -53,7 +58,106 @@ napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/** `node_api_noenv_finalize`: unlike `napi_finalize` it takes no env, since it can run on any thread. */
+using NoEnvFinalize = void(NAPI_CDECL*)(void* data, void* hint);
+using CreateExternalSharedArrayBuffer = napi_status(NAPI_CDECL*)(
+	napi_env env,
+	void* external_data,
+	size_t byte_length,
+	NoEnvFinalize finalize_cb,
+	void* finalize_hint,
+	napi_value* result);
+
+void NAPI_CDECL releaseSharedMemoryMap(void* data, void* hint) {
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile SharedArrayBuffer released memoryMapHandle=%p\n", hint);
+	delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
+}
+
+/**
+ * Pins this addon in memory. A shared backing store can outlive the env that created it (another
+ * thread can hold it), and Node unloads a worker's addons when the worker exits, which would leave
+ * the backing store's deleter pointing at unmapped code.
+ */
+bool pinAddon() {
+#ifdef _WIN32
+	HMODULE module = nullptr;
+	return ::GetModuleHandleExW(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<LPCWSTR>(&pinAddon),
+		&module) != 0;
+#else
+	Dl_info info;
+	if (::dladdr(reinterpret_cast<void*>(&pinAddon), &info) == 0 || info.dli_fname == nullptr) {
+		return false;
+	}
+	return ::dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD | RTLD_NODELETE) != nullptr;
+#endif
+}
+
+/**
+ * `node_api_create_external_sharedarraybuffer` is experimental N-API, so it is looked up at runtime
+ * rather than linked: a missing import fails the Windows DLL load, and aborts on first call elsewhere.
+ */
+CreateExternalSharedArrayBuffer resolveCreateExternalSharedArrayBuffer() {
+	static const CreateExternalSharedArrayBuffer fn = []() -> CreateExternalSharedArrayBuffer {
+		constexpr const char* name = "node_api_create_external_sharedarraybuffer";
+#ifdef _WIN32
+		CreateExternalSharedArrayBuffer found = nullptr;
+		for (const wchar_t* host : { static_cast<const wchar_t*>(nullptr), L"libnode.dll", L"node.dll" }) {
+			HMODULE module = ::GetModuleHandleW(host);
+			if (module && (found = reinterpret_cast<CreateExternalSharedArrayBuffer>(::GetProcAddress(module, name)))) {
+				break;
+			}
+		}
+#else
+		auto found = reinterpret_cast<CreateExternalSharedArrayBuffer>(::dlsym(RTLD_DEFAULT, name));
+#endif
+		return found && pinAddon() ? found : nullptr;
+	}();
+	return fn;
+}
+
+/**
+ * See "Reader mappings are SharedArrayBuffers" in DESIGN.md.
+ */
+napi_status createMemoryMapBuffer(
+	napi_env env,
+	std::shared_ptr<MemoryMap>* memoryMapHandle,
+	napi_value* result
+) {
+	MemoryMap* memoryMap = memoryMapHandle->get();
+	auto createShared = resolveCreateExternalSharedArrayBuffer();
+	napi_value sharedArrayBuffer;
+	if (createShared && createShared(
+			env,
+			memoryMap->map,
+			memoryMap->fileSize,
+			releaseSharedMemoryMap,
+			memoryMapHandle,
+			&sharedArrayBuffer) == napi_ok) {
+		napi_value global, bufferClass, from;
+		NAPI_STATUS_RETURN(::napi_get_global(env, &global));
+		NAPI_STATUS_RETURN(::napi_get_named_property(env, global, "Buffer", &bufferClass));
+		NAPI_STATUS_RETURN(::napi_get_named_property(env, bufferClass, "from", &from));
+		return ::napi_call_function(env, bufferClass, from, 1, &sharedArrayBuffer, result);
+	}
+	return ::napi_create_external_buffer(
+		env,
+		memoryMap->fileSize,
+		memoryMap->map,
+		[](napi_env env, void* data, void* hint) {
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint);
+			delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
+		},
+		memoryMapHandle,
+		result);
+}
+
 } // namespace
+
+bool TransactionLog::UsesSharedMemoryMaps() {
+	return resolveCreateExternalSharedArrayBuffer() != nullptr;
+}
 
 /**
  * Constructor for the `NativeTransactionLog` class.
@@ -318,18 +422,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	auto* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_external_buffer(
-		env,  // env
-		memoryMap->fileSize, // length
-		memoryMap->map, // data
-		[](napi_env env, void* data, void* hint) { // finalize_cb
-			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint);
-			auto* memoryMap = static_cast<std::shared_ptr<MemoryMap>*>(hint);
-			delete memoryMap;
-		},
-		memoryMapHandle, // finalize_hint
-		&result // [out] result
-	));
+	NAPI_STATUS_THROWS(createMemoryMapBuffer(env, memoryMapHandle, &result));
 	NAPI_STATUS_THROWS(::napi_type_tag_object(env, result, &READABLE_EXTENT_BUFFER_TAG));
 
 	// A separate shared handle keeps an extracted getter safe after the buffer's
