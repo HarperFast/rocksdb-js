@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <functional>
 #include <vector>
 
 namespace rocksdb_js {
@@ -36,7 +37,9 @@ struct NamedTransactionLogBackupEntry final {
  */
 rocksdb::Status collectTransactionLogBackupEntries(
 	DBDescriptor* descriptor,
-	std::vector<NamedTransactionLogBackupEntry>& entries
+	std::vector<NamedTransactionLogBackupEntry>& entries,
+	const std::function<bool()>& abandon = nullptr,
+	bool waitForUnresolved = true
 );
 
 /**
@@ -83,7 +86,8 @@ void removeStaleTransactionLogStaging(const std::filesystem::path& logsRoot);
 rocksdb::Status backupTransactionLogsToDir(
 	DBDescriptor* descriptor,
 	const std::filesystem::path& destBaseDir,
-	bool sync
+	bool sync,
+	const std::function<bool()>& abandon = nullptr
 );
 
 } // namespace rocksdb_js

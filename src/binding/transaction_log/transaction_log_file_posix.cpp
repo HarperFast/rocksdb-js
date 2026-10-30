@@ -228,49 +228,89 @@ void TransactionLogFile::closeLocked() {
 	}
 }
 
-void TransactionLogFile::flush() {
+namespace {
+
+struct CloseOnExit {
+	int fd;
+	~CloseOnExit() {
+		if (this->fd >= 0) {
+			::close(this->fd);
+		}
+	}
+};
+
+int syncDescriptor(int fd) {
+	int result;
+	do {
+		// macOS doesn't have fdatasync, use fsync instead
+		// fdatasync is faster on Linux as it doesn't sync metadata
+#ifdef __APPLE__
+		result = ::fsync(fd);
+#else
+		result = ::fdatasync(fd);
+#endif
+	} while (result < 0 && errno == EINTR);
+	return result;
+}
+
+} // namespace
+
+void TransactionLogFile::flushSyncHeld() {
 	std::unique_lock<std::mutex> lock(this->fileMutex);
 	uint32_t currentSize = this->size.load(std::memory_order_relaxed);
-	// Only flush if there's new data since the last flush
-	if (this->fd == -1 || currentSize <= this->lastFlushedSize) {
+	uint64_t generation = this->mutationGeneration;
+	bool marked = generation != this->lastFlushedGeneration;
+	// Only flush if there's new data, or an abort marker, since the last flush
+	if (currentSize <= this->lastFlushedSize && !marked) {
 		return; // return early
 	}
 	// Sync a duplicate taken under the lock, then sync without it (fdatasync/fsync can be slow): a
 	// concurrent close of this->fd (ensureExtent's borrow) must not turn into EBADF, or a sync of
 	// whatever file reuses the descriptor number. Out of descriptors, sync the original under the lock.
-	int duplicate = ::fcntl(this->fd, F_DUPFD_CLOEXEC, 0);
-	struct CloseOnExit {
-		int fd;
-		~CloseOnExit() {
-			if (this->fd >= 0) {
-				::close(this->fd);
-			}
+	// A closed segment with an unsynced marker is reopened for the sync: any descriptor syncs the file.
+	int duplicate = -1;
+	if (this->fd >= 0) {
+		duplicate = ::fcntl(this->fd, F_DUPFD_CLOEXEC, 0);
+	} else if (marked) {
+		duplicate = ::open(this->path.c_str(), O_RDWR | O_CLOEXEC);
+		if (duplicate < 0) {
+			int error = errno;
+			throw rocksdb_js::DBException(
+				"Failed to open file for sync: " + this->path.string() + ": " + std::string(::strerror(error)));
 		}
-	} closeDuplicate{duplicate};
+	} else {
+		return;
+	}
+	CloseOnExit closeDuplicate{duplicate};
 	int fdToFlush = duplicate >= 0 ? duplicate : this->fd;
 	if (duplicate >= 0) {
 		lock.unlock();
 	}
 	DEBUG_LOG("%p TransactionLogFile::flush Flushing file: %s (fd=%d, size=%u, lastFlushedSize=%u)\n",
 		this, this->path.string().c_str(), fdToFlush, currentSize, this->lastFlushedSize);
+	// A failed sync poisons every marker written so far, including one written while it ran: see
+	// failedGeneration.
+	auto recordFailure = [&]() {
+		std::unique_lock<std::mutex> failedLock(this->fileMutex, std::defer_lock);
+		if (!lock.owns_lock()) {
+			failedLock.lock();
+		}
+		this->failedGeneration = this->mutationGeneration;
+	};
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 	if (this->beforeSyncForTests) {
-		this->beforeSyncForTests();
+		try {
+			this->beforeSyncForTests();
+		} catch (...) {
+			recordFailure();
+			throw;
+		}
 	}
 #endif
 
-	// macOS doesn't have fdatasync, use fsync instead
-	// fdatasync is faster on Linux as it doesn't sync metadata
-	int syncResult;
-	do {
-#ifdef __APPLE__
-		syncResult = ::fsync(fdToFlush);
-#else
-		syncResult = ::fdatasync(fdToFlush);
-#endif
-	} while (syncResult < 0 && errno == EINTR);
-	if (syncResult < 0) {
+	if (syncDescriptor(fdToFlush) < 0) {
 		int error = errno;
+		recordFailure();
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: sync failed: %s (errno=%d)\n",
 			this, ::strerror(error), error);
 		throw rocksdb_js::DBException(
@@ -281,7 +321,41 @@ void TransactionLogFile::flush() {
 	if (!lock.owns_lock()) {
 		lock.lock();
 	}
-	this->lastFlushedSize = currentSize;
+	if (currentSize > this->lastFlushedSize) {
+		this->lastFlushedSize = currentSize;
+	}
+	this->lastFlushedGeneration = generation;
+}
+
+void TransactionLogFile::writeAbortMarkerLocked(uint32_t offset, uint32_t extent, double expectedTimestamp) {
+	// Not this->fd: it is O_APPEND, and Linux pwrite() on an O_APPEND descriptor ignores the offset.
+	int markFd = ::open(this->path.c_str(), O_RDWR | O_CLOEXEC);
+	if (markFd < 0) {
+		int error = errno;
+		throw rocksdb_js::DBException(
+			"Failed to open " + this->path.string() + " for an abort marker: " + std::string(::strerror(error)));
+	}
+	CloseOnExit closeMarkFd{markFd};
+	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
+	ssize_t bytesRead;
+	do {
+		bytesRead = ::pread(markFd, header, sizeof(header), offset);
+	} while (bytesRead < 0 && errno == EINTR);
+	if (bytesRead != static_cast<ssize_t>(sizeof(header))) {
+		throw rocksdb_js::DBException("Failed to read the entry an abort marker names in " + this->path.string());
+	}
+	this->checkAbortMarkerHeader(header, offset, extent, expectedTimestamp);
+	uint8_t flags = static_cast<uint8_t>(header[TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1]);
+	char marked = static_cast<char>(flags | TRANSACTION_LOG_ENTRY_ABORTED_FLAG);
+	ssize_t written;
+	do {
+		written = ::pwrite(markFd, &marked, 1, offset + TRANSACTION_LOG_ENTRY_HEADER_SIZE - 1);
+	} while (written < 0 && errno == EINTR);
+	if (written != 1) {
+		int error = written < 0 ? errno : EIO;
+		throw rocksdb_js::DBException(
+			"Failed to write an abort marker to " + this->path.string() + ": " + std::string(::strerror(error)));
+	}
 }
 
 bool TransactionLogFile::openFile(bool createIfMissing) {

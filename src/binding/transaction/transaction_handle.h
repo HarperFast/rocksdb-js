@@ -356,6 +356,68 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	LogPosition committedPosition;
 
+	/** Where the logged batch's first entry landed, and the batch's timestamp: what an abort marker names. */
+	LogPosition batchAddress;
+	double batchTimestamp = 0;
+
+	/**
+	 * Whether `transactionLogAbortMarkers` was on for the attempt that logged the batch: if so, ending
+	 * this handle without a commit marks the batch aborted (DESIGN.md, "Abort markers").
+	 */
+	bool cancelOnAbort = false;
+
+	// Released: the position was released without a marker (markers off, or the batch has no
+	// recorded first entry). Resolved: marked and synced.
+	enum class Cancellation : uint8_t { None, Released, Resolved, Failed };
+	/** Outcome of marking the logged batch aborted. Set by close(), which may run on another thread. */
+	std::atomic<Cancellation> cancellation = Cancellation::None;
+
+	/**
+	 * Logical age for write-intent precedence: the constructor's startTimestamp, kept when JS changes
+	 * startTimestamp and across retries. getMonotonicTimestamp() never returns a value twice in a
+	 * process; precedence still breaks a tie on the handle address.
+	 */
+	double age;
+
+	/** `transactionLogAbortMarkers`, read when the attempt began. */
+	bool abortMarkers = false;
+
+	/**
+	 * Whether this attempt's write intents carry `age`, and so can be refused behind an older one:
+	 * `transactionLogWriteIntents` with abort markers on, read when the attempt began.
+	 */
+	bool agedIntents = false;
+
+	/**
+	 * A slot whose write intent an older live transaction held when this attempt joined it. Such an
+	 * attempt is refused before it writes its batch, or before Commit() once logged, and parks on the
+	 * slot. Null when none; cleared with the intents.
+	 */
+	std::atomic<uint64_t>* intentConflictSlot = nullptr;
+
+	enum ConflictKind : uint8_t { ConflictNone = 0, ConflictIntentBeforeLog = 1, ConflictIntentAfterLog = 2, ConflictAtCommit = 3 };
+	/** Why the most recent attempt was refused or retried. */
+	ConflictKind lastConflictKind = ConflictNone;
+
+	/** Epoch milliseconds past which a park resolves; 0 for the default bound only. */
+	double parkDeadline = 0;
+
+	/**
+	 * When the logged batch first met a conflict, so the time it then holds the committed-read
+	 * watermark back is added to the store's `watermarkPinnedUs` once it commits or ends.
+	 */
+	std::chrono::steady_clock::time_point pinnedSince{};
+
+	/** Starts the pinned-time clock for a logged batch's first conflict. */
+	void notePinnedConflict() {
+		if (this->committedPosition.logSequenceNumber > 0 && this->pinnedSince.time_since_epoch().count() == 0) {
+			this->pinnedSince = std::chrono::steady_clock::now();
+		}
+	}
+
+	/** Adds the pinned time, if any, to `store`. */
+	void recordPinnedTime(TransactionLogStore& store);
+
 	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 

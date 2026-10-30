@@ -248,6 +248,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   cold-cache async get reads (exercising orphan cleanup past the async-work wait timeout). Both
   are snapshotted in `initializeTestSeams()` before native worker execution, so they must be set
   in the environment that starts the process (not through an in-process `process.env` write).
+- `ROCKSDB_JS_BACKUP_UNRESOLVED_WAIT_MS` - How long a backup waits (default `30000`) for a
+  transaction-log batch it captured, written with `transactionLogAbortMarkers` on, to commit or be
+  marked aborted before the backup is refused. Read once per process, so it must be set in the
+  environment a process is started with
+- `ROCKSDB_JS_ABORT_MARK_FAILURE` - Test-only: number of abort-marker writes to fail with an
+  injected error (a **count**). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
   coordinated-retry commit parked on a conflicting holder's VT lock resolves
   RETRY_NOW unconditionally, in case the holder never releases (see
@@ -1575,6 +1581,16 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 33. **Transaction-log reader mappings cannot be outgrown**: the native writer checks every
     append against the smallest exposed capacity under `fileMutex`; creation and the first append
     share that lock. See [transaction-log design](src/binding/transaction_log/DESIGN.md).
+
+34. **A logged batch that will not commit is marked before its position is released**: with
+    `transactionLogAbortMarkers`, `TransactionHandle::close()` of a handle that logged and did not
+    commit sets `0x02` on the batch's first entry, syncs it, and only then releases the watermark
+    position; a failed marker pins the position and refuses appends until a retry succeeds. Every
+    way a transaction ends must keep reaching `close()`, including the env-cleanup hook. With
+    `transactionLogWriteIntents` as well, an attempt behind an older write intent is refused before
+    it logs. See
+    [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
+    [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
 
 ## Debugging native heap corruption
 

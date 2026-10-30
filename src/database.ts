@@ -38,9 +38,11 @@ import {
 	VALUE_BUFFER,
 } from './store.ts';
 import {
+	ConflictKind,
 	RETRY_NOW,
 	Transaction,
 	TransactionAbandonedError,
+	TransactionAbortUnresolvedError,
 	TransactionAlreadyAbortedError,
 	TransactionRetryableError,
 } from './transaction.ts';
@@ -48,6 +50,8 @@ import { Encoder as MsgpackEncoder } from 'msgpackr';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import * as orderedBinary from 'ordered-binary';
+
+const backoffCell = new Int32Array(new SharedArrayBuffer(4));
 
 export type TransactionCallback<T> = (txn: Transaction, attempt: number) => T | PromiseLike<T>;
 
@@ -71,7 +75,8 @@ export interface TransactionOptions extends NativeTransactionOptions {
 	/**
 	 * Whether to retry the transaction if it fails with `IsBusy`.
 	 *
-	 * @default `true` when the transaction is bound to a transaction log, otherwise `false`
+	 * @default `true` when the transaction wrote a transaction-log batch or was refused before
+	 * writing one (`refusedBeforeLog`), otherwise `false`
 	 */
 	retryOnBusy?: boolean;
 }
@@ -1187,7 +1192,13 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		}
 
 		const maxRetries = options?.maxRetries ?? 3;
-		const txn = new Transaction(this.store, options);
+		// A coordinated retry waits for the conflict to clear only to retry; with retries off, fail now.
+		const txn = new Transaction(
+			this.store,
+			options?.retryOnBusy === false && options.coordinatedRetry
+				? { ...options, coordinatedRetry: false }
+				: options
+		);
 		let result: T | PromiseLike<T>;
 
 		this.notify('begin-transaction');
@@ -1208,7 +1219,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				}
 				if (
 					commitErr instanceof TransactionRetryableError &&
-					(options?.retryOnBusy ?? commitErr.hasLog) &&
+					(options?.retryOnBusy ?? (commitErr.hasLog || commitErr.refusedBeforeLog)) &&
 					attempt < maxRetries
 				) {
 					// retry the transaction (native reset gave it a fresh snapshot; re-run the body)
@@ -1264,11 +1275,22 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		const maxRetries = options?.maxRetries ?? 3;
 
 		const isRetryable = (err: Error | unknown, attempt: number) => {
-			return (
-				err instanceof TransactionRetryableError &&
-				(options?.retryOnBusy ?? err.hasLog) &&
-				attempt <= maxRetries
-			);
+			if (
+				!(
+					err instanceof TransactionRetryableError &&
+					(options?.retryOnBusy ?? (err.hasLog || err.refusedBeforeLog)) &&
+					attempt <= maxRetries
+				)
+			) {
+				return false;
+			}
+			const kind = txn.lastConflictKind();
+			if (kind === ConflictKind.intentBeforeLog || kind === ConflictKind.intentAfterLog) {
+				// commitSync() refuses rather than parks on an older holder's write intent. Back off so a
+				// holder on another thread can finish; one on this event loop cannot until this returns.
+				Atomics.wait(backoffCell, 0, 0, Math.min(2 ** attempt, 50));
+			}
+			return true;
 		};
 
 		// One transaction across attempts, as transaction() does: the native reset after a retryable
@@ -1340,7 +1362,10 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		try {
 			txn.abort();
 		} catch (abortErr) {
-			if (abortErr instanceof TransactionAbandonedError) {
+			if (
+				abortErr instanceof TransactionAbandonedError ||
+				abortErr instanceof TransactionAbortUnresolvedError
+			) {
 				throw abortErr;
 			}
 		}

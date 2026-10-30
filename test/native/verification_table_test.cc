@@ -416,3 +416,91 @@ TEST(LockTrackerWake, CancelRacingWakeSettlesEachRegistrationOnce) {
 		EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
 	}
 }
+
+// Write-intent precedence (transaction/DESIGN.md, "Write-intent refusal").
+TEST(VerificationTableIntentAge, ARepeatedIntentNeverRefusesItsOwnHolder) {
+	VerificationTable vt(8, 0xABCD);
+	auto* slot = vt.slotFor(0x1, 0, rocksdb::Slice("k"));
+	const IntentAge self{ 2.0, 1 };
+	std::vector<LockTracker*> held;
+	for (int i = 0; i < 6; i++) {
+		bool older = true;
+		held.push_back(vt.lockSlotForWrite(slot, 0x1, self, older));
+		EXPECT_FALSE(older) << "write " << i;
+	}
+	// A younger transaction joining a slot the older one holds six times is refused, and an older
+	// one is not.
+	bool older = false;
+	held.push_back(vt.lockSlotForWrite(slot, 0x1, IntentAge{ 3.0, 2 }, older));
+	EXPECT_TRUE(older);
+	older = true;
+	held.push_back(vt.lockSlotForWrite(slot, 0x1, IntentAge{ 1.0, 3 }, older));
+	EXPECT_FALSE(older);
+	const IntentAge oldest{ 1.0, 3 };
+	vt.releaseWriteIntent(slot, held[7], &oldest);
+	const IntentAge younger{ 3.0, 2 };
+	vt.releaseWriteIntent(slot, held[6], &younger);
+	for (int i = 0; i < 6; i++) {
+		vt.releaseWriteIntent(slot, held[i], &self);
+	}
+	EXPECT_TRUE(vtIsSettled(slot->load()));
+}
+
+TEST(VerificationTableIntentAge, AReleasedHolderStopsRefusing) {
+	VerificationTable vt(8, 0xABCD);
+	auto* slot = vt.slotFor(0x1, 0, rocksdb::Slice("k"));
+	const IntentAge oldest{ 1.0, 1 };
+	const IntentAge middle{ 2.0, 2 };
+	bool older = false;
+	LockTracker* a = vt.lockSlotForWrite(slot, 0x1, oldest, older);
+	LockTracker* b = vt.lockSlotForWrite(slot, 0x1, middle, older);
+	EXPECT_TRUE(older);
+	vt.releaseWriteIntent(slot, a, &oldest);
+	// Only the middle holder is left; a newcomer between the two ages is not behind anyone older.
+	LockTracker* c = vt.lockSlotForWrite(slot, 0x1, IntentAge{ 1.5, 3 }, older);
+	EXPECT_FALSE(older);
+	const IntentAge between{ 1.5, 3 };
+	vt.releaseWriteIntent(slot, c, &between);
+	vt.releaseWriteIntent(slot, b, &middle);
+}
+
+TEST(VerificationTableIntentAge, AnUnagedHolderMayBeOlderAndHoldersPastTheInlineSlotsCountExactly) {
+	VerificationTable vt(8, 0xABCD);
+	auto* slot = vt.slotFor(0x1, 0, rocksdb::Slice("k"));
+	LockTracker* unaged = vt.lockSlotForWrite(slot, 0x1);
+	bool older = false;
+	const IntentAge oldest{ 0.5, 1 };
+	LockTracker* t = vt.lockSlotForWrite(slot, 0x1, oldest, older);
+	EXPECT_TRUE(older);
+	vt.releaseWriteIntent(slot, unaged);
+	vt.releaseWriteIntent(slot, t, &oldest);
+
+	// Holders T2..T6 fill the inline slots and spill one; T0 spills too, then leaves.
+	std::vector<IntentAge> ages;
+	for (int i = 2; i <= 6; i++) {
+		ages.push_back(IntentAge{ static_cast<double>(i), static_cast<uintptr_t>(i) });
+	}
+	std::vector<LockTracker*> trackers;
+	for (auto& age : ages) {
+		trackers.push_back(vt.lockSlotForWrite(slot, 0x1, age, older));
+	}
+	const IntentAge t0{ 0.0, 100 };
+	LockTracker* departing = vt.lockSlotForWrite(slot, 0x1, t0, older);
+	EXPECT_FALSE(older);
+	const IntentAge t1{ 1.0, 101 };
+	LockTracker* joiner = vt.lockSlotForWrite(slot, 0x1, t1, older);
+	EXPECT_TRUE(older); // behind T0
+	vt.releaseWriteIntent(slot, joiner, &t1);
+	vt.releaseWriteIntent(slot, departing, &t0);
+	joiner = vt.lockSlotForWrite(slot, 0x1, t1, older);
+	EXPECT_FALSE(older); // T0 is gone, and every holder left is younger
+	vt.releaseWriteIntent(slot, joiner, &t1);
+	const IntentAge between{ 3.5, 102 };
+	joiner = vt.lockSlotForWrite(slot, 0x1, between, older);
+	EXPECT_TRUE(older);
+	vt.releaseWriteIntent(slot, joiner, &between);
+	for (size_t i = 0; i < trackers.size(); i++) {
+		vt.releaseWriteIntent(slot, trackers[i], &ages[i]);
+	}
+	EXPECT_TRUE(vtIsSettled(slot->load()));
+}

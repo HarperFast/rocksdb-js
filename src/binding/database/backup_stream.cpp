@@ -498,7 +498,8 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 	// extract) so the restored store's age-based rotation/retention stays correct.
 	if (state->backupTransactionLogs) {
 		std::vector<NamedTransactionLogBackupEntry> entries;
-		s = collectTransactionLogBackupEntries(state->descriptor.get(), entries);
+		s = collectTransactionLogBackupEntries(
+					state->descriptor.get(), entries, [state]() { return state->handle && state->handle->isCancelled(); });
 		if (!s.ok()) {
 			return s;
 		}

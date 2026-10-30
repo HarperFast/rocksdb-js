@@ -143,6 +143,23 @@ inline std::atomic<int>& clearDeleteDelayMsFlag() {
 	return delayMs;
 }
 
+// Number of transaction-log abort-marker syncs to fail after the marker is written (a count). Read
+// on the commit and teardown threads that write markers, so snapshotted like the fault flags above.
+inline std::atomic<int>& abortMarkFailureFlag() {
+	static std::atomic<int> pending{0};
+	return pending;
+}
+
+inline bool testConsumeAbortMarkFailure() {
+	int cur = abortMarkFailureFlag().load(std::memory_order_relaxed);
+	while (cur > 0) {
+		if (abortMarkFailureFlag().compare_exchange_weak(cur, cur - 1, std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -152,6 +169,8 @@ inline void initializeTestSeams() {
 		destroyFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
 		closeFlushFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
+		value = ::getenv("ROCKSDB_JS_ABORT_MARK_FAILURE");
+		abortMarkFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		iteratorNextDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS"), std::memory_order_relaxed);
 		countScanDelayMsFlag().store(

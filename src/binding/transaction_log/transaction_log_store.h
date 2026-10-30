@@ -9,6 +9,7 @@
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <functional>
 #include "rocksdb/db.h"
@@ -156,6 +157,10 @@ struct TransactionLogStoreStats {
 	uint64_t purgeRuns = 0;
 	uint64_t databaseFlushes = 0;
 	uint64_t writeFailures = 0;
+	uint64_t abortsMarked = 0;
+	uint64_t abortMarkFailures = 0;
+	uint64_t watermarkPinnedUs = 0;
+	uint64_t pinnedTransactions = 0;
 	double lastPurgeMs = 0;
 
 	// config
@@ -517,6 +522,39 @@ struct TransactionLogStore final {
 	void commitAborted(LogPosition position);
 
 	/**
+	 * Terminal failure of a logged batch: marks it aborted in place (TRANSACTION_LOG_ENTRY_ABORTED_FLAG
+	 * on the entry at `firstEntry`), syncs the marker, then releases `position` as commitAborted()
+	 * does. If marking or syncing fails, the batch becomes a failed cancellation: `position` stays
+	 * pinned, appends are refused, and retryFailedCancellations() tries again. Returns whether the batch
+	 * is resolved. See DESIGN.md, "Abort markers".
+	 */
+	bool cancelBatch(LogPosition firstEntry, double timestamp, LogPosition position) noexcept;
+
+	/** Retries every failed cancellation; returns whether none remain. */
+	bool retryFailedCancellations() noexcept;
+
+	/** Whether the batch logged at `position` is a failed cancellation still awaiting a retry. */
+	bool isFailedCancellation(LogPosition position);
+
+	/**
+	 * Set once a batch is logged with abort markers on: from then on a backup waits for the batches
+	 * it captures unresolved (see snapshotForBackup()).
+	 */
+	std::atomic<bool> abortMarkersInUse = false;
+
+	/** Lifetime counts for stats: batches marked aborted, and marker writes or syncs that failed. */
+	std::atomic<uint64_t> abortsMarked = 0;
+	std::atomic<uint64_t> abortMarkFailures = 0;
+
+	/**
+	 * Time logged batches spent holding the committed-read watermark back after their first
+	 * conflict, until they committed or ended, and how many such batches. Readers behind the
+	 * watermark wait that long.
+	 */
+	std::atomic<uint64_t> watermarkPinnedUs = 0;
+	std::atomic<uint64_t> pinnedTransactions = 0;
+
+	/**
 	 * Called when a database flush job is finished, so that we can record how much of the transaction log has been flushed to db.
 	 */
 	void databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber);
@@ -623,7 +661,8 @@ struct TransactionLogStore final {
 	 * a silently incomplete backup; `collectTransactionLogBackupEntries()` converts
 	 * them to a `rocksdb::Status` before control returns to a backup worker.
 	 */
-	std::vector<TransactionLogBackupEntry> snapshotForBackup();
+	std::vector<TransactionLogBackupEntry> snapshotForBackup(
+		const std::function<bool()>& abandon = nullptr, bool waitForUnresolved = true);
 
 	/**
 	 * Holds off ordinary (non-destroy) retention purges of `store` until the
@@ -670,7 +709,8 @@ struct TransactionLogStore final {
 	 * previous segment's end. `firstEntry`, when given, receives the address where the batch's first
 	 * entry was actually written, or {0, 0} if nothing was written.
 	 */
-	void writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry = nullptr);
+	void writeBatch(
+		TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry = nullptr, bool cancellable = false);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log
@@ -708,6 +748,46 @@ private:
 #endif
 	/** See DESIGN.md, "A failed sync freezes the flushed state". */
 	std::atomic<bool> logSyncFailed = false;
+
+	struct FailedCancellation {
+		LogPosition firstEntry;
+		double timestamp;
+		LogPosition position;
+	};
+
+	/** Guarded by dataSetsMutex. */
+	std::vector<FailedCancellation> failedCancellations;
+
+	/**
+	 * Positions of unresolved batches logged with abort markers on: the ones that may yet be marked,
+	 * so the ones a backup waits for. Guarded by dataSetsMutex.
+	 */
+	std::vector<LogPosition> cancellablePositions;
+
+	/** Drops `position` from cancellablePositions. Caller holds dataSetsMutex. */
+	void eraseCancellable(LogPosition position);
+
+	/** Signalled, while a backup waits, whenever an uncommitted position is released. */
+	std::condition_variable positionReleased;
+	std::atomic<uint32_t> positionReleaseWaiters = 0;
+
+	/**
+	 * Waits until no position in `unresolved` is still uncommitted, or throws once the backup wait
+	 * bound passes: a backup must not capture a batch that might yet be aborted. Caller holds
+	 * `lock` on dataSetsMutex.
+	 */
+	void waitForResolution(
+		std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved, const std::function<bool()>& abandon);
+
+	/**
+	 * Set while `failedCancellations` is non-empty, or for good once a failed cancellation could not
+	 * be recorded at all: the append path tests it without taking dataSetsMutex.
+	 */
+	std::atomic<bool> cancellationUnresolved = false;
+	bool cancellationRecordLost = false;
+
+	/** Marks and syncs one batch; throws on failure. */
+	void markAndSync(LogPosition firstEntry, double timestamp);
 
 	/**
 	 * Opens a log file for the given sequence number. If the log file does not

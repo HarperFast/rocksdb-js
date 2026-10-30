@@ -1267,6 +1267,25 @@ describe('Transaction Log', () => {
 					expect(fromAbortedOnly).toEqual([]);
 				}));
 
+			it('jumps past an aborted suffix when only aborted copies match an exact start', () =>
+				dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+					const aborted = Array.from({ length: 200 }, (_, i) => ({
+						timestamp: T1 + i,
+						flags: ABORTED | LAST,
+						data: `aborted-${i}`,
+					}));
+					await craft(dbPath, 'aborted', aborted);
+					db.open();
+					const log = db.useLog('aborted');
+					const reads = vi.spyOn(DataView.prototype, 'getFloat64');
+					try {
+						expect([...log.query({ start: T1, exactStart: true })]).toEqual([]);
+						expect(reads.mock.calls.length).toBeLessThan(10);
+					} finally {
+						reads.mockRestore();
+					}
+				}));
+
 			it('parses an abort flag as valid on a first entry and flags it elsewhere', () =>
 				dbRunner({ skipOpen: true }, async ({ dbPath }) => {
 					const validPath = await craft(dbPath, 'aborted', retried);

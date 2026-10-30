@@ -8,6 +8,7 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
+#include "core/test_seam.h"
 #include "core/encoding.h"
 #include "core/platform.h"
 #include "napi/global_events.h"
@@ -1178,6 +1179,62 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 	// timestamp as past EOF and missing them (HarperFast/harper#1148). Otherwise the timestamp genuinely
 	// comes after this log file.
 	return stoppedAtUnindexedTail ? this->lastIndexedPosition : 0xFFFFFFFF;
+}
+
+void TransactionLogFile::flush() {
+	std::lock_guard<std::mutex> syncLock(this->syncMutex);
+	this->flushSyncHeld();
+}
+
+void TransactionLogFile::syncThrough(uint64_t generation) {
+	if (testConsumeAbortMarkFailure()) {
+		throw DBException("Injected abort marker sync failure (test seam): " + this->path.string());
+	}
+	std::lock_guard<std::mutex> syncLock(this->syncMutex);
+	{
+		std::lock_guard<std::mutex> lock(this->fileMutex);
+		if (this->failedGeneration >= generation) {
+			throw DBException("An earlier sync of " + this->path.string() + " failed after this abort marker was written");
+		}
+		if (this->lastFlushedGeneration >= generation) {
+			return;
+		}
+	}
+	this->flushSyncHeld();
+}
+
+uint64_t TransactionLogFile::markEntryAborted(uint32_t offset, double expectedTimestamp) {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	if (this->readOnly) {
+		throw DBException("Cannot mark an aborted batch in a read-only transaction log: " + this->path.string());
+	}
+	if (this->version != TRANSACTION_LOG_FORMAT_VERSION) {
+		throw DBException(unsupportedVersionMessage(this->path, this->version));
+	}
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (this->beforeMarkForTests) {
+		this->beforeMarkForTests();
+	}
+#endif
+	uint32_t extent = this->size.load(std::memory_order_relaxed);
+	if (offset < TRANSACTION_LOG_FILE_HEADER_SIZE || extent < TRANSACTION_LOG_ENTRY_HEADER_SIZE ||
+		offset > extent - TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
+		throw DBException("Abort marker offset " + std::to_string(offset) + " is outside the written extent of " +
+			this->path.string());
+	}
+	this->writeAbortMarkerLocked(offset, extent, expectedTimestamp);
+	return ++this->mutationGeneration;
+}
+
+void TransactionLogFile::checkAbortMarkerHeader(
+	const char* header, uint32_t offset, uint32_t extent, double expectedTimestamp) {
+	double timestamp = readDoubleBE(header);
+	uint32_t length = readUint32BE(header + 8);
+	if (timestamp != expectedTimestamp ||
+		static_cast<uint64_t>(offset) + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > extent) {
+		throw DBException("Abort marker at offset " + std::to_string(offset) + " of " + this->path.string() +
+			" does not name the first entry of its batch");
+	}
 }
 
 } // namespace rocksdb_js

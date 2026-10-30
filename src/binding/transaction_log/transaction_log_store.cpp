@@ -20,6 +20,21 @@ static std::string lastSystemError() {
 	return error ? std::error_code(error, std::system_category()).message() : std::string("stream error");
 }
 
+// How long a backup waits for a captured, logged batch to commit or be aborted. Read once per process
+// (::getenv races a process.env write from another thread); malformed or non-positive uses the default.
+static unsigned backupUnresolvedWaitMs() {
+	static const unsigned ms = []() -> unsigned {
+		const char* value = ::getenv("ROCKSDB_JS_BACKUP_UNRESOLVED_WAIT_MS");
+		if (value == nullptr) {
+			return 30000;
+		}
+		char* end = nullptr;
+		unsigned long parsed = ::strtoul(value, &end, 10);
+		return end != value && *end == '\0' && parsed > 0 && parsed <= 86400000 ? static_cast<unsigned>(parsed) : 30000;
+	}();
+	return ms;
+}
+
 // Helper function to extract exception message from exception_ptr
 static std::string getExceptionMessage(std::exception_ptr eptr) {
 	if (!eptr) {
@@ -106,6 +121,10 @@ void TransactionLogStore::close() {
 		// already closing, return early
 		DEBUG_LOG("%p TransactionLogStore::close Already closing, skipping \"%s\"\n", this, this->name.c_str());
 		return;
+	}
+
+	if (this->cancellationUnresolved.load(std::memory_order_acquire)) {
+		this->retryFailedCancellations();
 	}
 
 	std::lock_guard<std::mutex> lock(this->writeMutex);
@@ -583,7 +602,8 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 	file->close();
 }
 
-std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() {
+std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
+	const std::function<bool()>& abandon, bool waitForUnresolved) {
 	// Capture txn.state (the flushed-position side file) FIRST, and inline its
 	// bytes. Reading it before the log-file sizes guarantees its recorded flushed
 	// position is <= the sizes we capture next (sizes only grow), so a restored
@@ -633,9 +653,21 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 	// files outlive the lock (the CoolTransactionLogs pattern). Also capture the
 	// current sequence so we can mark rotated (immutable) files.
 	std::vector<std::pair<uint32_t, std::shared_ptr<TransactionLogFile>>> files;
+	std::vector<uint64_t> byteLimits;
 	uint32_t current;
-	{
-		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	// With abort markers in use, no append may be mid-flight while the sizes and the unresolved set
+	// are captured: an appending batch's bytes count in `size` before its position stops equalling
+	// nextLogPosition, the sentinel skipped below. A batch sets abortMarkersInUse before its
+	// position is inserted under dataSetsMutex, so a capture that finds it set only at the end
+	// is redone under writeMutex.
+	for (bool markersInUse = waitForUnresolved && this->abortMarkersInUse.load(std::memory_order_acquire);;) {
+		files.clear();
+		byteLimits.clear();
+		std::unique_lock<std::mutex> writeLock(this->writeMutex, std::defer_lock);
+		if (markersInUse) {
+			writeLock.lock();
+		}
+		std::unique_lock<std::mutex> lock(this->dataSetsMutex);
 		current = this->currentSequenceNumber.load(std::memory_order_relaxed);
 		files.reserve(this->sequenceFiles.size());
 		for (const auto& [seq, file] : this->sequenceFiles) {
@@ -663,16 +695,30 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup() 
 				continue;
 			}
 			files.emplace_back(seq, file);
+			// `size` is atomic and append-owned, so [0, byteLimit) is a stable,
+			// complete prefix even if a concurrent append is in flight (we simply
+			// capture the pre-append extent). Captured with the unresolved set below.
+			byteLimits.push_back(file->size.load(std::memory_order_relaxed));
 		}
+		if (!markersInUse && waitForUnresolved && this->abortMarkersInUse.load(std::memory_order_acquire)) {
+			markersInUse = true;
+			continue;
+		}
+		if (markersInUse) {
+			// A batch still unresolved here may yet be marked aborted, which a copy taken now would
+			// not show, and a restore would replay it. Wait until every one commits or is marked.
+			std::vector<LogPosition> unresolved = this->cancellablePositions;
+			writeLock.unlock();
+			this->waitForResolution(lock, unresolved, abandon);
+		}
+		break;
 	}
 
 	std::vector<TransactionLogBackupEntry> entries;
 	entries.reserve(files.size() + 1);
-	for (const auto& [seq, file] : files) {
-		// `size` is atomic and append-owned, so [0, byteLimit) is a stable,
-		// complete prefix even if a concurrent append is in flight (we simply
-		// capture the pre-append extent).
-		uint64_t byteLimit = file->size.load(std::memory_order_relaxed);
+	for (size_t i = 0; i < files.size(); i++) {
+		const auto& [seq, file] = files[i];
+		uint64_t byteLimit = byteLimits[i];
 		if (byteLimit == 0) {
 			// A just-created current file whose header has not landed yet — nothing
 			// to back up, and a header-less file would confuse recovery on restore.
@@ -722,6 +768,10 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 	out.purgeRuns = this->purgeRuns.load(std::memory_order_relaxed);
 	out.databaseFlushes = this->databaseFlushes.load(std::memory_order_relaxed);
 	out.writeFailures = this->writeFailures.load(std::memory_order_relaxed);
+	out.abortsMarked = this->abortsMarked.load(std::memory_order_relaxed);
+	out.abortMarkFailures = this->abortMarkFailures.load(std::memory_order_relaxed);
+	out.watermarkPinnedUs = this->watermarkPinnedUs.load(std::memory_order_relaxed);
+	out.pinnedTransactions = this->pinnedTransactions.load(std::memory_order_relaxed);
 	out.lastPurgeMs = this->lastPurgeMs.load(std::memory_order_relaxed);
 	out.maxFileSize = this->maxFileSize;
 	out.retentionMs = static_cast<uint64_t>(this->retentionMs.count());
@@ -1175,7 +1225,8 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	return true;
 }
 
-void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry) {
+void TransactionLogStore::writeBatch(
+	TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry, bool cancellable) {
 	if (firstEntry) {
 		*firstEntry = LogPosition(0, 0);
 	}
@@ -1185,11 +1236,20 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 		throw rocksdb_js::DBException("Transaction log store is closed");
 	}
 
+	if (this->cancellationUnresolved.load(std::memory_order_acquire) && !this->retryFailedCancellations()) {
+		throw rocksdb_js::DBException("Transaction log store \"" + this->name +
+			"\" refuses appends until an aborted batch it could not mark is resolved");
+	}
+
 	DEBUG_LOG("%p TransactionLogStore::writeBatch Adding batch with %zu entries to store \"%s\" (current=%u, next=%u, timestamp=%llu)\n",
 		this, batch.entries.size(), this->name.c_str(), this->currentSequenceNumber.load(std::memory_order_relaxed), this->nextSequenceNumber, batch.timestamp);
 
 	{
 		std::lock_guard<std::mutex> logPositionLock(this->dataSetsMutex);
+		if (cancellable && this->cancellablePositions.size() == this->cancellablePositions.capacity()) {
+			// reserved before anything is written, so recording the position below cannot fail
+			this->cancellablePositions.reserve(std::max<size_t>(8, this->cancellablePositions.capacity() * 2));
+		}
 		logPosition = this->nextLogPosition;
 		this->positionInsert(logPosition);
 	}
@@ -1308,6 +1368,9 @@ void TransactionLogStore::writeBatch(TransactionLogEntryBatch& batch, LogPositio
 
 	{
 		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		if (cancellable) {
+			this->cancellablePositions.push_back(logPosition);
+		}
 		this->positionInsert(this->nextLogPosition);
 	}
 
@@ -1332,6 +1395,12 @@ void TransactionLogStore::commitFinished(const LogPosition position, const std::
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	// This written transaction entry is no longer uncommitted, so we can remove it
 	this->positionErase(position);
+	if (!this->cancellablePositions.empty()) {
+		this->eraseCancellable(position);
+	}
+	if (this->positionReleaseWaiters.load(std::memory_order_relaxed) > 0) {
+		this->positionReleased.notify_all();
+	}
 	// we now find the beginning of the earliest uncommitted transaction to mark the end of continuously fully committed transactions
 	// If there are no uncommitted transactions, everything up to nextLogPosition is fully committed
 	LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
@@ -1359,12 +1428,182 @@ void TransactionLogStore::commitFinished(const LogPosition position, const std::
 void TransactionLogStore::commitAborted(const LogPosition position) {
 	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
 	this->positionErase(position);
+	if (!this->cancellablePositions.empty()) {
+		this->eraseCancellable(position);
+	}
+	if (this->positionReleaseWaiters.load(std::memory_order_relaxed) > 0) {
+		this->positionReleased.notify_all();
+	}
 	LogPosition fullyCommittedPosition = this->uncommittedTransactionPositions.empty()
 		? this->nextLogPosition
 		: this->uncommittedTransactionPositions.front();
 	*this->lastCommittedPosition = fullyCommittedPosition;
 }
 
+
+void TransactionLogStore::markAndSync(LogPosition firstEntry, double timestamp) {
+	std::shared_ptr<TransactionLogFile> logFile;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		auto it = this->sequenceFiles.find(firstEntry.logSequenceNumber);
+		if (it != this->sequenceFiles.end()) {
+			logFile = it->second;
+		}
+	}
+	if (!logFile) {
+		throw DBException("Transaction log segment " + std::to_string(firstEntry.logSequenceNumber) +
+			" of an aborted batch is no longer registered");
+	}
+	uint64_t generation = logFile->markEntryAborted(firstEntry.positionInLogFile, timestamp);
+	try {
+		logFile->syncThrough(generation);
+	} catch (const std::exception& e) {
+		// The kernel reports a writeback error once: this sync may have taken the report for appended
+		// pages too, so the flushed state must stop advancing as if databaseFlushBegin() had seen it.
+		this->noteLogSyncFailure(logFile->sequenceNumber, e.what());
+		throw;
+	}
+}
+
+bool TransactionLogStore::cancelBatch(LogPosition firstEntry, double timestamp, LogPosition position) noexcept {
+	std::string failure;
+	try {
+		this->markAndSync(firstEntry, timestamp);
+		this->abortsMarked.fetch_add(1, std::memory_order_relaxed);
+		this->commitAborted(position);
+		return true;
+	} catch (const std::exception& e) {
+		try {
+			failure = e.what();
+		} catch (...) {
+		}
+	} catch (...) {
+	}
+	this->abortMarkFailures.fetch_add(1, std::memory_order_relaxed);
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		try {
+			this->failedCancellations.push_back({ firstEntry, timestamp, position });
+		} catch (...) {
+			// Without a record nothing can retry it, so the store refuses appends for good.
+			this->cancellationRecordLost = true;
+		}
+		this->cancellationUnresolved.store(true, std::memory_order_release);
+	}
+	if (GlobalEvents::hasListeners()) {
+		try {
+			std::ostringstream msg;
+			msg << "Transaction log store " << this->displayPath.string() << " could not mark an aborted batch at "
+				<< firstEntry.logSequenceNumber << ":" << firstEntry.positionInLogFile << " ("
+				<< (failure.empty() ? "unknown error" : failure) << "). It stays unresolved, and the store refuses"
+				<< " appends, until a retry on the next append, database flush or close succeeds.";
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		} catch (...) {
+		}
+	}
+	return false;
+}
+
+bool TransactionLogStore::retryFailedCancellations() noexcept {
+	std::vector<FailedCancellation> pending;
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		try {
+			pending = this->failedCancellations;
+		} catch (...) {
+			return false;
+		}
+	}
+	for (const auto& cancellation : pending) {
+		try {
+			this->markAndSync(cancellation.firstEntry, cancellation.timestamp);
+		} catch (...) {
+			this->abortMarkFailures.fetch_add(1, std::memory_order_relaxed);
+			continue;
+		}
+		bool claimed = false;
+		{
+			std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+			for (auto it = this->failedCancellations.begin(); it != this->failedCancellations.end(); ++it) {
+				if (it->position.logSequenceNumber == cancellation.position.logSequenceNumber &&
+					it->position.positionInLogFile == cancellation.position.positionInLogFile) {
+					this->failedCancellations.erase(it);
+					claimed = true;
+					break;
+				}
+			}
+		}
+		if (claimed) {
+			this->abortsMarked.fetch_add(1, std::memory_order_relaxed);
+			this->commitAborted(cancellation.position);
+		}
+	}
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	bool resolved = this->failedCancellations.empty() && !this->cancellationRecordLost;
+	this->cancellationUnresolved.store(!resolved, std::memory_order_release);
+	return resolved;
+}
+
+bool TransactionLogStore::isFailedCancellation(LogPosition position) {
+	std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+	if (this->cancellationRecordLost) {
+		return true;
+	}
+	for (const auto& cancellation : this->failedCancellations) {
+		if (cancellation.position.logSequenceNumber == position.logSequenceNumber &&
+			cancellation.position.positionInLogFile == position.positionInLogFile) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void TransactionLogStore::eraseCancellable(LogPosition position) {
+	for (auto it = this->cancellablePositions.begin(); it != this->cancellablePositions.end(); ++it) {
+		if (it->positionInLogFile == position.positionInLogFile && it->logSequenceNumber == position.logSequenceNumber) {
+			*it = this->cancellablePositions.back();
+			this->cancellablePositions.pop_back();
+			return;
+		}
+	}
+}
+
+void TransactionLogStore::waitForResolution(
+	std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved, const std::function<bool()>& abandon) {
+	if (unresolved.empty()) {
+		return;
+	}
+	auto stillUnresolved = [&]() {
+		for (const auto& position : unresolved) {
+			for (const auto& pending : this->cancellablePositions) {
+				if (pending.positionInLogFile == position.positionInLogFile &&
+					pending.logSequenceNumber == position.logSequenceNumber) {
+					return true;
+				}
+			}
+		}
+		return false;
+	};
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(backupUnresolvedWaitMs());
+	this->positionReleaseWaiters.fetch_add(1, std::memory_order_relaxed);
+	struct WaiterRelease {
+		std::atomic<uint32_t>& waiters;
+		~WaiterRelease() { this->waiters.fetch_sub(1, std::memory_order_relaxed); }
+	} release{ this->positionReleaseWaiters };
+	// Polled: a database closing under this backup must not wait out the bound, since closing the
+	// transactions that would resolve these batches comes after the backup's operation drains.
+	while (stillUnresolved()) {
+		if (abandon && abandon()) {
+			throw DBException("The database closed while a transaction-log backup waited for unresolved batches");
+		}
+		if (std::chrono::steady_clock::now() >= deadline) {
+			throw DBException("Transaction log store \"" + this->name + "\" still has a batch that has neither committed nor "
+				"been aborted after " + std::to_string(backupUnresolvedWaitMs()) + " ms; the backup is refused rather than "
+				"capture a batch a restore could replay");
+		}
+		this->positionReleased.wait_for(lock, std::chrono::milliseconds(50));
+	}
+}
 
 bool operator>(const LogPosition a, const LogPosition b) {
 	// as noted in the header, 64-bit comparison on little-endian machines seems like it would be an optimization
@@ -1382,6 +1621,10 @@ bool operator>(const LogPosition a, const LogPosition b) {
 void TransactionLogStore::databaseFlushBegin(rocksdb::SequenceNumber rocksSequenceNumber) {
 	if (this->isClosing.load(std::memory_order_relaxed)) {
 		return;
+	}
+
+	if (this->cancellationUnresolved.load(std::memory_order_acquire)) {
+		this->retryFailedCancellations();
 	}
 
 	std::vector<std::shared_ptr<TransactionLogFile>> logFilesToFlush;

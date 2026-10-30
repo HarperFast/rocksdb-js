@@ -11,7 +11,9 @@ namespace rocksdb_js {
 
 rocksdb::Status collectTransactionLogBackupEntries(
 	DBDescriptor* descriptor,
-	std::vector<NamedTransactionLogBackupEntry>& entries
+	std::vector<NamedTransactionLogBackupEntry>& entries,
+	const std::function<bool()>& abandon,
+	bool waitForUnresolved
 ) {
 	if (descriptor == nullptr) {
 		return rocksdb::Status::OK();
@@ -25,7 +27,8 @@ rocksdb::Status collectTransactionLogBackupEntries(
 			}
 			const std::string& storeName = store->name;
 			auto retentionPin = TransactionLogStore::pinRetention(store);
-			for (auto& file : store->snapshotForBackup()) {
+			auto closing = [descriptor, &abandon]() { return descriptor->isClosing() || (abandon && abandon()); };
+			for (auto& file : store->snapshotForBackup(closing, waitForUnresolved)) {
 				entries.push_back({ storeName, std::move(file), retentionPin });
 			}
 		}
@@ -267,10 +270,11 @@ void removeStaleTransactionLogStaging(const std::filesystem::path& logsRoot) {
 rocksdb::Status backupTransactionLogsToDir(
 	DBDescriptor* descriptor,
 	const std::filesystem::path& destBaseDir,
-	bool sync
+	bool sync,
+	const std::function<bool()>& abandon
 ) {
 	std::vector<NamedTransactionLogBackupEntry> entries;
-	rocksdb::Status status = collectTransactionLogBackupEntries(descriptor, entries);
+	rocksdb::Status status = collectTransactionLogBackupEntries(descriptor, entries, abandon);
 	if (!status.ok()) {
 		return status;
 	}

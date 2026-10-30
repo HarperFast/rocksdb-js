@@ -474,44 +474,47 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						matchesRange = (!exclusiveStart || timestamp !== start) && timestamp < end;
 					} else if (exactStart) {
 						// in exact start mode, we are look for the exact identifying timestamp of the first transaction
+						matchesRange = false;
 						if (timestamp === start) {
 							matchesRange = !exclusiveStart;
 							// after finding this transaction, match all remaining (but still respecting end and exclusiveStart
 							foundExactStart = true;
 							stopLogId = 0;
-						} else {
-							matchesRange = false;
-							if (
-								stopLogId !== 0 &&
-								pastStop(logBuffer!.logId, position + length, stopLogId, stopPosition)
-							) {
-								stopLogId = 0;
-								position += length;
-								if (
-									skipToTail(
-										transactionLog,
-										logBuffer!.logId,
-										position,
-										tailLogId,
-										tailPosition,
-										segmentRemovals
-									)
-								) {
-									if (tailLogBuffer) {
-										logBuffer = tailLogBuffer;
-										dataView = tailLogBuffer.dataView;
-									}
-									position = tailPosition;
-									size = 0;
-								}
-								tailLogBuffer = undefined;
-								return iterator.next();
-							}
 						}
 					} else {
 						// no exact start, so just match on conditions
 						matchesRange =
 							(exclusiveStart ? timestamp > start! : timestamp >= start!) && timestamp < end;
+					}
+					// The native span was built over every indexed entry, aborted ones included, so a jump
+					// is as valid past an aborted frame as past a live one.
+					if (
+						!matchesRange &&
+						stopLogId !== 0 &&
+						pastStop(logBuffer!.logId, position + length, stopLogId, stopPosition)
+					) {
+						stopLogId = 0;
+						position += length;
+						if (
+							skipToTail(
+								transactionLog,
+								logBuffer!.logId,
+								position,
+								tailLogId,
+								tailPosition,
+								segmentRemovals
+							)
+						) {
+							if (tailLogBuffer) {
+								logBuffer = tailLogBuffer;
+								dataView = tailLogBuffer.dataView;
+							}
+							position = tailPosition;
+							previousEndedTransaction = true;
+							size = 0;
+						}
+						tailLogBuffer = undefined;
+						return iterator.next();
 					}
 					const entryStart = position;
 					position += length;
