@@ -19,7 +19,10 @@
  * its `perf stat` counts from a full run leaves the per-get cost. Prints one JSON line.
  *
  * Filter policies and cache placements other than this build's are not options; compare them by
- * building the binding with that table configuration and naming the run with `--label`.
+ * changing `buildColumnFamilyOptions` (`src/binding/database/db_descriptor.cpp`), rebuilding, and
+ * naming the run with `--label`. The arms recorded in `src/binding/database/DESIGN.md` were
+ * `filter_policy.reset(NewRibbonFilterPolicy(bits, 1))` (Ribbon below L0, Bloom for flushes), and
+ * `cache_index_and_filter_blocks = true` with and without `pin_l0_filter_and_index_blocks_in_cache`.
  */
 import { RocksDatabase } from '../src/index.ts';
 import { randomBytes } from 'node:crypto';

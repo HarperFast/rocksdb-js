@@ -66,7 +66,8 @@ Creates a new database instance.
     keys only, so range reads are unaffected. Defaults to `10` (about 1% false positives); otherwise
     a number from 1 to 100, fractions allowed, or `0` for no filters. Each open SST file holds its
     filter in memory beside its index, outside the block cache (about 1.25 bytes per key at `10`;
-    a `secondaryPath` open holds every file open, so the whole database's filters). An existing
+    a `secondaryPath` open holds every file open, so the whole database's filters). `0` also stops
+    an open from loading the filters files already have, so a reader can trade them for memory. An existing
     database opens with the new setting, but its files gain or lose filters only as compaction
     rewrites them (`compact({ bottommost: true })` rewrites them all). Like `writeBufferSize`, this
     applies to every column family when a database is first opened in the process and to column
