@@ -211,9 +211,6 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	}
 	if (options.bloomFilterBitsPerKey > 0) {
 		tableOptions.filter_policy.reset(rocksdb::NewBloomFilterPolicy(options.bloomFilterBitsPerKey));
-		// Without the shared cache RocksDB rejects these (no_block_cache) or fills a private default cache.
-		tableOptions.cache_index_and_filter_blocks = tableOptions.block_cache != nullptr;
-		tableOptions.pin_l0_filter_and_index_blocks_in_cache = tableOptions.cache_index_and_filter_blocks;
 	}
 
 	cfOptions.enable_blob_files = true;

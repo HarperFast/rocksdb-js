@@ -193,18 +193,25 @@ chosen for many databases and column families, not for one.
 which keys `Seek` and range reads visit, so none is set. The options are rebuilt from code on every
 open (only compression is restored from OPTIONS), so a database written without filters opens with
 them and its files gain filters as compaction rewrites them; every built-in filter policy reads
-every built-in filter, so mixed files are fine. Choices, measured with `benchmark/sst-filter-get.mts`
-(8M keys, 3 L0 files over one last level, October 2026):
+every built-in filter, so mixed files are fine.
 
+A filter only saves work for a file whose key range contains the key but whose data does not:
+RocksDB already skips files by their key bounds. A sequentially loaded database (Harper's YCSB
+load) has disjoint ranges across levels, so a present-key get reads exactly one data block with or
+without filters; the gain is on absent keys (one data-block read saved per probed file) and on
+overlapping files (random-order writes, updates sitting in L0). Measured October 2026 with
+`benchmark/sst-filter-get.mts` (random-order 8M keys, 3 L0 files over the last level) and Harper's
+YCSB at 2x its 8 GiB budget (17.2M records, 111 MB of index and 21.5 MB of filter):
+
+- **Filter blocks stay with the table reader, beside the index, not in the block cache.** Moving
+  index and filter blocks into the cache (`cache_index_and_filter_blocks`, with or without L0
+  pinning) added a cache lookup per probed file and took the index's 111 MB out of the data cache:
+  YCSB C +1.6% instructions per op and B -3.4%, against +0.3% and -7.5% here. The cost of this
+  placement is memory outside `blockCacheSize`: 1.25 bytes per key, beside the index that already
+  lives there (6.5 bytes per key in that database). Pinned L0 metadata also has no bound against
+  the cache capacity across many column families.
 - **Bloom, not Ribbon.** Equal get cost (within 1% instructions); Ribbon's filter is 29% smaller
   (0.36 B/key) but its construction takes ~3x the temporary memory, which no budget accounts for.
-- **Index and filter blocks in the shared block cache, L0 pinned.** Table-reader placement (the
-  previous index placement) was ~10% cheaper per get but its memory is outside `blockCacheSize`,
-  grows with key count, and is dropped and re-read when the bounded table cache
-  (`max_open_files`) evicts a reader. Pinning L0 saved 11-22% per get over unpinned; pinned bytes
-  are bounded by the L0 files RocksDB allows before stalling writes. Only with a real shared cache:
-  RocksDB rejects these flags with `no_block_cache`, and with a null cache it would build a private
-  one, so those opens keep table-reader placement.
 - **`optimize_filters_for_hits` stays off.** It drops last-level filters, and absent-key gets
   (Harper's insert existence checks) then cost 73% more instructions.
 - Scope follows `writeBufferSize`: the first opener in the process sets every existing family; a

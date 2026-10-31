@@ -63,7 +63,6 @@ describe('bloomFilterBitsPerKey', () => {
 
 			db.compactSync({ bottommost: true });
 			expect(filterBlockSize(db)).toBeGreaterThan(0);
-			// About 1% false positives at 10 bits per key.
 			expect(await usefulFilterProbes(db, absentKeys)).toBeGreaterThan(KEY_COUNT * 0.9);
 
 			for (let i = 0; i < KEY_COUNT; i++) {
@@ -92,10 +91,10 @@ describe('bloomFilterBitsPerKey', () => {
 		}));
 
 	it.each([
-		['the shared block cache', {}, true],
-		['no block cache', { noBlockCache: true }, false],
-		['a fractional bits per key', { bloomFilterBitsPerKey: 6.5 }, true],
-	])('should filter absent keys with %s', (_, options, filterInCache) =>
+		['the shared block cache', {}],
+		['no block cache', { noBlockCache: true }],
+		['a fractional bits per key', { bloomFilterBitsPerKey: 6.5 }],
+	])('should filter absent keys with %s', (_, options) =>
 		dbRunner({ dbOptions: [{ ...options, enableStats: true }] }, async ({ db }) => {
 			for (let i = 0; i < KEY_COUNT; i++) {
 				db.putSync(presentKey(i), i);
@@ -103,8 +102,8 @@ describe('bloomFilterBitsPerKey', () => {
 			db.flushSync();
 			expect(filterBlockSize(db)).toBeGreaterThan(0);
 			expect(await usefulFilterProbes(db, absentKeys)).toBeGreaterThan(KEY_COUNT * 0.8);
-			const filterAdds = db.getStat('rocksdb.block.cache.filter.add') as number;
-			expect(filterAdds > 0).toBe(filterInCache);
+			// Filters live with the table reader, beside the index, not in the block cache.
+			expect(db.getStat('rocksdb.block.cache.filter.add')).toBe(0);
 			for (let i = 0; i < KEY_COUNT; i += 97) {
 				expect(await db.get(presentKey(i))).toBe(i);
 			}
