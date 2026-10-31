@@ -2717,6 +2717,13 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 	dbHandleOptions.arenaBlockSize = static_cast<uint64_t>(arenaBlockSizeValue);
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "bloomFilterBitsPerKey", dbHandleOptions.bloomFilterBitsPerKey));
+	if (dbHandleOptions.bloomFilterBitsPerKey != 0.0 &&
+		!(dbHandleOptions.bloomFilterBitsPerKey >= 1.0 && dbHandleOptions.bloomFilterBitsPerKey <= 100.0)
+	) {
+		::napi_throw_error(env, nullptr, "bloomFilterBitsPerKey must be 0 (no filter) or a number from 1 to 100");
+		return nullptr;
+	}
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxWriteBufferSizeToMaintain", dbHandleOptions.maxWriteBufferSizeToMaintain));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxAgeThreshold", dbHandleOptions.transactionLogMaxAgeThreshold));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "transactionLogMaxSize", dbHandleOptions.transactionLogMaxSize));

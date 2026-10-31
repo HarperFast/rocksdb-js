@@ -59,6 +59,19 @@ Creates a new database instance.
     used as given, except that RocksDB raises one below 4 KiB to 4 KiB. Like `writeBufferSize`,
     this applies to every column family when a database is first opened in the process and to
     column families created later; a column family that is already open keeps its size.
+  - `bloomFilterBitsPerKey: number` The size of the filter written into each SST file, in bits per
+    key. A `get()` of a key that is not in a file checks that file's filter and skips its index and
+    data blocks, so reads of absent keys, and of keys in a database spread over several levels,
+    touch fewer blocks. Filters cover whole keys only, so range reads are unaffected. Defaults to
+    `10` (about 1% false positives, 1.25 bytes per key). `0` writes no filters; otherwise a number
+    from 1 to 100, fractions allowed. When the shared block cache is enabled, filter and index
+    blocks are kept in it (at high priority) rather than in memory outside it, so they count against
+    `blockCacheSize`; with `noBlockCache` or a `blockCacheSize` of 0 they stay outside it. An
+    existing database opens with the new setting, but its files gain or lose filters only as
+    compaction rewrites them (`compact({ bottommost: true })` rewrites them all). Like
+    `writeBufferSize`, this applies to every column family when a database is first opened in the
+    process and to column families created later; a column family that is already open keeps its
+    setting.
   - `compression: string | { algorithm: string, level?: number }` The block/blob compression
     algorithm for this column family. Pass an algorithm name — one of `'none'`, `'snappy'`,
     `'zlib'`, `'bzip2'`, `'lz4'`, `'lz4hc'`, or `'zstd'` — or an object with an

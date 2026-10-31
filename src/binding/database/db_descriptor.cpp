@@ -11,6 +11,7 @@
 #include "transaction_log/transaction_log_store_registry.h"
 #include "rocksdb/convenience.h"
 #include "rocksdb/env.h"
+#include "rocksdb/filter_policy.h"
 #include "rocksdb/listener.h"
 #include "rocksdb/write_buffer_manager.h"
 #include "rocksdb/utilities/options_util.h"
@@ -207,6 +208,11 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 		tableOptions.no_block_cache = true;
 	} else {
 		tableOptions.block_cache = DBSettings::getInstance().getBlockCache();
+	}
+	if (options.bloomFilterBitsPerKey > 0) {
+		tableOptions.filter_policy.reset(rocksdb::NewBloomFilterPolicy(options.bloomFilterBitsPerKey));
+		// Without the shared cache RocksDB would charge them to a private default cache instead.
+		tableOptions.cache_index_and_filter_blocks = tableOptions.block_cache != nullptr;
 	}
 
 	cfOptions.enable_blob_files = true;
