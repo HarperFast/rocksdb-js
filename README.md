@@ -65,8 +65,9 @@ Creates a new database instance.
     touch fewer blocks. Filters cover whole keys only, so range reads are unaffected. Defaults to
     `10` (about 1% false positives, 1.25 bytes per key). `0` writes no filters; otherwise a number
     from 1 to 100, fractions allowed. When the shared block cache is enabled, filter and index
-    blocks are kept in it (at high priority) rather than in memory outside it, so they count against
-    `blockCacheSize`; with `noBlockCache` or a `blockCacheSize` of 0 they stay outside it. An
+    blocks are kept in it at high priority (those of level-0 files are pinned there) rather than in
+    memory outside it, so they count against `blockCacheSize`; with `noBlockCache` or a
+    `blockCacheSize` of 0 they stay outside it. An
     existing database opens with the new setting, but its files gain or lose filters only as
     compaction rewrites them (`compact({ bottommost: true })` rewrites them all). Like
     `writeBufferSize`, this applies to every column family when a database is first opened in the

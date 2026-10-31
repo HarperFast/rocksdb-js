@@ -92,10 +92,10 @@ describe('bloomFilterBitsPerKey', () => {
 		}));
 
 	it.each([
-		['the shared block cache', {}],
-		['no block cache', { noBlockCache: true }],
-		['a fractional bits per key', { bloomFilterBitsPerKey: 6.5 }],
-	])('should filter absent keys with %s', (_, options) =>
+		['the shared block cache', {}, true],
+		['no block cache', { noBlockCache: true }, false],
+		['a fractional bits per key', { bloomFilterBitsPerKey: 6.5 }, true],
+	])('should filter absent keys with %s', (_, options, filterInCache) =>
 		dbRunner({ dbOptions: [{ ...options, enableStats: true }] }, async ({ db }) => {
 			for (let i = 0; i < KEY_COUNT; i++) {
 				db.putSync(presentKey(i), i);
@@ -103,6 +103,8 @@ describe('bloomFilterBitsPerKey', () => {
 			db.flushSync();
 			expect(filterBlockSize(db)).toBeGreaterThan(0);
 			expect(await usefulFilterProbes(db, absentKeys)).toBeGreaterThan(KEY_COUNT * 0.8);
+			const filterAdds = db.getStat('rocksdb.block.cache.filter.add') as number;
+			expect(filterAdds > 0).toBe(filterInCache);
 			for (let i = 0; i < KEY_COUNT; i += 97) {
 				expect(await db.get(presentKey(i))).toBe(i);
 			}

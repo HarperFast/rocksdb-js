@@ -185,3 +185,27 @@ chosen for many databases and column families, not for one.
   `block / 8`. Smaller blocks refill shards more often and send more allocations to the shared
   arena mutex. Both constants are named so a benchmark can move them
   (`benchmark/wbm-flush-policy.mts`).
+
+# SST filters and where their blocks live
+
+`buildColumnFamilyOptions` (`db_descriptor.cpp`) writes a whole-key Bloom filter into every SST
+(`bloomFilterBitsPerKey`, default 10, `0` = none). Whole-key only: a `prefix_extractor` would change
+which keys `Seek` and range reads visit, so none is set. The options are rebuilt from code on every
+open (only compression is restored from OPTIONS), so a database written without filters opens with
+them and its files gain filters as compaction rewrites them; every built-in filter policy reads
+every built-in filter, so mixed files are fine. Choices, measured with `benchmark/sst-filter-get.mts`
+(8M keys, 3 L0 files over one last level, October 2026):
+
+- **Bloom, not Ribbon.** Equal get cost (within 1% instructions); Ribbon's filter is 29% smaller
+  (0.36 B/key) but its construction takes ~3x the temporary memory, which no budget accounts for.
+- **Index and filter blocks in the shared block cache, L0 pinned.** Table-reader placement (the
+  previous index placement) was ~10% cheaper per get but its memory is outside `blockCacheSize`,
+  grows with key count, and is dropped and re-read when the bounded table cache
+  (`max_open_files`) evicts a reader. Pinning L0 saved 11-22% per get over unpinned; pinned bytes
+  are bounded by the L0 files RocksDB allows before stalling writes. Only with a real shared cache:
+  RocksDB rejects these flags with `no_block_cache`, and with a null cache it would build a private
+  one, so those opens keep table-reader placement.
+- **`optimize_filters_for_hits` stays off.** It drops last-level filters, and absent-key gets
+  (Harper's insert existence checks) then cost 73% more instructions.
+- Scope follows `writeBufferSize`: the first opener in the process sets every existing family; a
+  later open of a live family keeps its table factory. Filter bits do not change read results.

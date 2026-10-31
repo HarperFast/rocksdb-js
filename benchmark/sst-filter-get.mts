@@ -6,9 +6,9 @@
  *   node benchmark/sst-filter-get.mts read <dir> [--mode present|absent|maybe] [--ops 1000000] [--warmup n]
  *     [--cache-mib 64] [--bits 10]
  *
- * `build` writes `--keys` even-numbered keys in random order with ~100-byte values, waits for
- * compaction to settle, then leaves three overlapping L0 files on top, so a get probes several L0
- * files and every level below. Odd-numbered keys are absent but inside every file's key range.
+ * `build` writes `--keys` even-numbered keys in random order with ~100-byte values, compacts them
+ * into the last level, then adds three overlapping L0 files (below the L0 compaction trigger), so
+ * a get probes every L0 file and then the last level. Odd-numbered keys are absent but inside every file's key range.
  * Filters are written into SSTs at build time, so build one database per filter setting.
  *
  * `read` reopens the database and times `--ops` random gets after `--warmup` (default `--ops`) gets:
@@ -88,6 +88,9 @@ if (command === 'build') {
 	) {
 		await sleep(200);
 	}
+	// Rewrites every file under this run's filter setting and leaves one level, so each build ends
+	// with the same shape however compaction happened to interleave with the load.
+	db.compactSync({ bottommost: true });
 	const loadSeconds = (performance.now() - start) / 1000;
 	for (let file = 0; file < 3; file++) {
 		for (let i = 0; i < 20000; i++) {
