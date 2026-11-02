@@ -2,11 +2,9 @@ import { RocksDatabase, getRegistryStatus, shutdown } from '../../src/index.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 
-// Close must cancel background compaction rather than wait for it (rocksdb-js
-// #1001). Run with ROCKSDB_JS_COMPACTION_KEY_DELAY_MS so every compaction
-// sleeps per key: one compaction of FILES * KEYS_PER_FILE keys outlasts the
-// parent's deadline many times over, while RocksDB can still abort it between
-// keys. argv[3] selects the scenario; test/close-compaction.test.ts runs each.
+// Under ROCKSDB_JS_COMPACTION_KEY_DELAY_MS one compaction of FILES * KEYS_PER_FILE
+// keys outlasts the parent's deadline many times over, yet RocksDB can still
+// abort it between keys.
 
 const FILES = 4;
 const KEYS_PER_FILE = 10_000;
