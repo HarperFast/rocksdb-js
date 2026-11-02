@@ -216,3 +216,38 @@ YCSB at 2x its 8 GiB budget (17.2M records, 111 MB of index and 21.5 MB of filte
   (Harper's insert existence checks) then cost 73% more instructions.
 - Scope follows `writeBufferSize`: the first opener in the process sets every existing family; a
   later open of a live family keeps its table factory. Filter bits do not change read results.
+
+# Close does not wait for compaction
+
+After `DBDescriptor::finishClose()`'s close-time flush succeeds, no close step waits on compaction
+progress: compaction is not needed for durability, and waiting for the backlog made a large,
+write-heavy database take minutes to close (rocksdb-js#1001). Four things hold it:
+
+- **Cancel, never `WaitForCompact`.** After the flush (and the opt-in `compactOnClose` pass, whose
+  `CompactRange()` returns only when its compaction is done), `finishClose()` calls
+  `rocksdb::CancelAllBackgroundWork(db, false)`: running compactions see `shutting_down_` between keys
+  and abort, and `DB::Close()` unschedules queued ones and waits only for running jobs. `DBDeleter`
+  calls `Close()` too. `WaitForCompact` waited for every queued compaction, and for one that RocksDB
+  will not schedule it waits forever. `CancelAllBackgroundWork(true)` is also wrong: it waits for jobs
+  queued in the process-wide thread pool behind other databases' compactions.
+- **Our flush is the only close-time flush.** RocksDB's own shutdown flush (in
+  `CancelAllBackgroundWork` and `Close()`, run whenever a `disableWAL` write ever happened) uses
+  `allow_write_stall=false`, and with `atomic_flush` it checks every column family for a stall before
+  it looks at whether any memtable has data, so even after our flush it can wait for compaction to
+  clear a stall. `DBDescriptor::open` sets `avoid_flush_during_shutdown`; in exchange,
+  `~DBDescriptor` flushes a descriptor that is released without a successful close-time flush (a
+  quarantined close at process exit), which RocksDB's implicit flush used to cover.
+- **The flushed log position is written explicitly.** `TransactionLogEventListener::OnFlushCompleted`
+  can still be running when `Flush()` returns, is skipped once `shutting_down_` is set, and finds no
+  stores after `TransactionLogStoreRegistry::Unregister`; a close flush with nothing to write does not
+  wait for an earlier flush's listener either. So `finishClose()` calls
+  `databaseFlushed(latest sequence)` on every store itself (writable descriptors only).
+  `writeFlushedPosition` never moves `txn.state` backward, so a late listener cannot undo it.
+- **`closeFlushed` makes a retry skip the flush.** Once background work is cancelled, a flush or
+  manual compaction fails with `ShutdownInProgress`, so a quarantined close that failed after the
+  cancel would wedge its `shutdown()` retry. No write can be admitted after `closing`, so nothing is
+  left to flush.
+
+Nothing is logged through the RocksDB info log after `Close()`, which closes that logger.
+`test/close-compaction.test.ts` covers close, process exit and worker teardown during a compaction,
+`compactOnClose`, the explicit position write, and the retry.

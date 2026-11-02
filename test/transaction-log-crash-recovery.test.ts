@@ -167,6 +167,8 @@ describe('Transaction log crash recovery', () => {
 				});
 				const entrySize = (statSync(logPath).size - afterComplete) / 3;
 				database.close();
+				// A clean close records the flushed log position; a crash would not have.
+				rmSync(join(dirname(logPath), 'txn.state'));
 
 				// simulate a crash after two of the three entries reached disk
 				const image = readFileSync(logPath);
@@ -211,6 +213,8 @@ describe('Transaction log crash recovery', () => {
 				}
 				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 				database.close();
+				// A clean close records the flushed log position; a crash would not have.
+				rmSync(join(dirname(logPath), 'txn.state'));
 
 				// rewrite the last two entries as a pre-flag writer would have left them
 				const image = readFileSync(logPath);

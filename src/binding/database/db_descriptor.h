@@ -54,19 +54,18 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 );
 
 /**
- * Custom deleter for RocksDB that waits for any background compaction to
- * complete before destroying the database instance. Compaction is triggered
- * by DBDescriptor::close() before this deleter runs.
+ * Closes and deletes a RocksDB instance without waiting for compaction:
+ * `Close()` cancels background work and waits only for jobs already running,
+ * which abort promptly. `DBDescriptor::finishClose()` normally closes the
+ * database first and reports the status; `Close()` is idempotent, so this is
+ * the close for every other release (a failed open, a quarantined descriptor).
  */
 struct DBDeleter {
 	void operator()(rocksdb::DB* db) const {
 		if (db) {
-			DEBUG_LOG("DBDeleter::operator() Waiting for compaction and closing database\n");
-			// Wait for any background compaction to complete and close the database
-			rocksdb::WaitForCompactOptions options;
-			options.close_db = true;
-			db->WaitForCompact(options);
-			DEBUG_LOG("DBDeleter::operator() Closed database, deleting\n");
+			DEBUG_LOG("DBDeleter::operator() Closing database\n");
+			rocksdb::Status status = db->Close();
+			DEBUG_LOG("DBDeleter::operator() Closed database (%s), deleting\n", status.ToString().c_str());
 			delete db;
 			DEBUG_LOG("DBDeleter::operator() Deleted database\n");
 		}
@@ -413,6 +412,10 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	// cleanup resumes from the failed point.
 	bool closeWorkersStopped = false;
 	bool transactionLogsUnregistered = false;
+	// Set once the close-time flush has succeeded or a destroy has skipped it.
+	// finishClose() then cancels background work, after which a flush or manual
+	// compaction fails with ShutdownInProgress, so a retry skips both.
+	bool closeFlushed = false;
 
 	/**
 	 * Cancellation token handed to `rocksdb::CompactRangeOptions::canceled` by

@@ -49,7 +49,8 @@ function runDestroyFixture(
 	fixture: string,
 	dbPath: string,
 	env?: NodeJS.ProcessEnv,
-	args: string[] = []
+	args: string[] = [],
+	afterExit?: () => void
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
 		// These fixtures depend on Node's type stripping, GC flag, and worker semantics.
@@ -70,7 +71,16 @@ function runDestroyFixture(
 		});
 		child.on('close', (code, signal) => {
 			clearTimeout(timeout);
-			const passed = code === 0 && signal === null;
+			let passed = code === 0 && signal === null;
+			let afterExitError: unknown;
+			if (passed && afterExit) {
+				try {
+					afterExit();
+				} catch (error) {
+					passed = false;
+					afterExitError = error;
+				}
+			}
 			// The child owns dbPath, and several fixtures deliberately end with a
 			// live or quarantined database, so nothing else removes it. Keep it
 			// on failure (and under KEEP_FILES) so the state is inspectable.
@@ -86,6 +96,8 @@ function runDestroyFixture(
 			}
 			if (passed) {
 				resolve();
+			} else if (afterExitError) {
+				reject(afterExitError);
 			} else {
 				reject(new Error(`Destroy fixture failed (code=${code}, signal=${signal})\n${stderr}`));
 			}
@@ -524,18 +536,36 @@ describe('Destroy', () => {
 		});
 	}, 20_000);
 
+	// RocksDB does not flush on close (avoid_flush_during_shutdown), so the
+	// unflushed write survives only through the descriptor's own final flush.
+	const expectUnflushedWrite = (dbPath: string) => () => {
+		const db = RocksDatabase.open(dbPath);
+		try {
+			expect(db.getSync('key')).toBe('unflushed');
+		} finally {
+			db.close();
+		}
+	};
+
 	it('exits cleanly with a descriptor still quarantined at process exit', async () => {
-		await runDestroyFixture(quarantinedExitFixture, generateDBPath(), {
-			ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2',
-		});
+		const dbPath = generateDBPath();
+		await runDestroyFixture(
+			quarantinedExitFixture,
+			dbPath,
+			{ ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2' },
+			[],
+			expectUnflushedWrite(dbPath)
+		);
 	}, 15_000);
 
 	it('exits cleanly with iterators still open on a descriptor quarantined at process exit', async () => {
+		const dbPath = generateDBPath();
 		await runDestroyFixture(
 			quarantinedExitFixture,
-			generateDBPath(),
+			dbPath,
 			{ ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2', MALLOC_PERTURB_: '165' },
-			['iterators']
+			['iterators'],
+			expectUnflushedWrite(dbPath)
 		);
 	}, 15_000);
 });

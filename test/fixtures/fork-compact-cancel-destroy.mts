@@ -9,8 +9,7 @@ import { Worker } from 'node:worker_threads';
 //
 // finishClose() runs: in-flight wait (an async compact holds no OperationGuard,
 // so this returns immediately) -> flush -> the optional compactOnClose pass,
-// which takes DBDescriptor::compactMutex -> WaitForCompact(), which does not
-// return while a manual compaction is running -> only then the closables sweep.
+// which takes DBDescriptor::compactMutex -> only then the closables sweep.
 // The running compaction holds compactMutex, so with cancellation deferred to
 // the sweep the closer parks for the compaction's full remaining duration.
 //

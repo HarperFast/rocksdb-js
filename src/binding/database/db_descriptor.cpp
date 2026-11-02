@@ -9,6 +9,7 @@
 #include "napi/helpers.h"
 #include "transaction/transaction_handle.h"
 #include "transaction_log/transaction_log_store_registry.h"
+#include "rocksdb/compaction_filter.h"
 #include "rocksdb/convenience.h"
 #include "rocksdb/env.h"
 #include "rocksdb/filter_policy.h"
@@ -198,6 +199,21 @@ static size_t resolveArenaBlockSize(
 	return static_cast<size_t>(std::min({ aligned, kMaxArenaBlockSize, options.writeBufferSize / 8 }));
 }
 
+namespace {
+
+// Test seam (ROCKSDB_JS_COMPACTION_KEY_DELAY_MS): makes every compaction slow
+// while leaving it abortable, since RocksDB checks for shutdown between keys.
+class KeyDelayCompactionFilter final : public rocksdb::CompactionFilter {
+public:
+	bool Filter(int, const rocksdb::Slice&, const rocksdb::Slice&, std::string*, bool*) const override {
+		std::this_thread::sleep_for(std::chrono::milliseconds(compactionKeyDelayMsFlag().load(std::memory_order_relaxed)));
+		return false;
+	}
+	const char* Name() const override { return "rocksdb-js.KeyDelayCompactionFilter"; }
+};
+
+} // namespace
+
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
 	const rocksdb::WriteBufferManager* attachedWriteBufferManager,
@@ -222,6 +238,10 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.max_write_buffer_size_to_maintain =
 		resolveMaxWriteBufferSizeToMaintain(options, attachedWriteBufferManager != nullptr);
 	cfOptions.table_factory.reset(rocksdb::NewBlockBasedTableFactory(tableOptions));
+	if (compactionKeyDelayMsFlag().load(std::memory_order_relaxed) > 0) {
+		static const KeyDelayCompactionFilter keyDelayFilter;
+		cfOptions.compaction_filter = &keyDelayFilter;
+	}
 	return cfOptions;
 }
 
@@ -369,6 +389,9 @@ public:
 	}
 
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
+		if (const int delayMs = flushCompletedDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+		}
 		auto desc = this->state->lockDescriptor();
 		if (!desc) {
 			return;
@@ -511,6 +534,15 @@ DBDescriptor::~DBDescriptor() {
 	} catch (...) {
 		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Close failed for \"%s\"\n", this, this->path.c_str());
 	}
+	// A quarantined descriptor (its close-time flush failed, and so did every
+	// retry) arrives here with its memtables unflushed. RocksDB will not flush
+	// them on close (avoid_flush_during_shutdown), so this is their last chance.
+	if (this->db && !this->closeFlushed) {
+		rocksdb::Status status = this->flush();
+		if (!status.ok()) {
+			::fprintf(stderr, "rocksdb-js final flush of \"%s\" failed: %s\n", this->path.c_str(), status.ToString().c_str());
+		}
+	}
 	this->parkTimeouts->shutdown();
 }
 
@@ -634,6 +666,15 @@ void DBDescriptor::finishClose(bool destroying) {
 		return;
 	}
 
+	// Phases also go to the database's own RocksDB LOG, so a release build still
+	// names the step a slow close is in. Nothing is written there after Close(),
+	// which closes this logger.
+	const std::shared_ptr<rocksdb::Logger> infoLog = this->db->GetDBOptions().info_log;
+	const auto logPhase = [&](const std::string& phase) {
+		DEBUG_LOG("%p DBDescriptor::close %s \"%s\"\n", this, phase.c_str(), this->path.c_str());
+		rocksdb::Log(rocksdb::InfoLogLevel::INFO_LEVEL, infoLog, "rocksdb-js close: %s", phase.c_str());
+	};
+
 	// We want to ensure that all in-memory data is written to disk -- but only
 	// when the files are staying. A destroy() deletes them immediately after
 	// this returns, so flushing (and, below, compacting) them first is pure
@@ -644,7 +685,10 @@ void DBDescriptor::finishClose(bool destroying) {
 	// a real close: an immediate flush races transaction-log-store teardown.
 	std::string closeError;
 	rocksdb::Status status;
-	if (!destroying) {
+	if (!destroying && !this->closeFlushed) {
+		// Writes are drained, so every committed transaction is at or below this.
+		const rocksdb::SequenceNumber flushedSequence = this->db->GetLatestSequenceNumber();
+		logPhase("flushing");
 		status = testConsumeCloseFlushFailure()
 			? rocksdb::Status::IOError("Injected database close flush failure")
 			: this->flush();
@@ -652,45 +696,60 @@ void DBDescriptor::finishClose(bool destroying) {
 			closeError = "Failed to flush database during close: " + status.ToString();
 			throw rocksdb_js::DBException(closeError);
 		}
-	}
+		logPhase("flushed");
 
-	// Trigger manual compaction on all column families to reclaim space from
-	// tombstones before closing -- skipped when destroying for the same
-	// reason as the flush above.
-	if (!destroying && !this->readOnly && DBSettings::getInstance().getCompactOnClose()) {
-		// Snapshot under the columns mutex; a concurrent drop can erase from
-		// the map while we compact.
-		std::vector<std::shared_ptr<ColumnFamilyDescriptor>> pinnedColumns;
-		{
-			std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
-			pinnedColumns.reserve(this->columns.size());
-			for (const auto& [name, columnDesc] : this->columns) {
-				pinnedColumns.push_back(columnDesc);
+		if (!this->readOnly) {
+			// Record the flushed log position here instead of relying on the flush
+			// listeners: Flush() can return before OnFlushCompleted runs, the
+			// cancellation below suppresses it, and a flush that found nothing to
+			// write does not wait for an earlier flush's pending notification.
+			// txn.state never moves backward, so a late listener cannot undo this.
+			for (auto& store : TransactionLogStoreRegistry::GetStores(this->identityPath)) {
+				store->databaseFlushed(flushedSequence);
 			}
 		}
-		for (const auto& columnDesc : pinnedColumns) {
-			if (columnDesc && columnDesc->column) {
-				// Best-effort: a skipped compaction loses no data, so its status
-				// deliberately does not become a close failure (which would
-				// quarantine the path). Only the WaitForCompact below is
-				// reported -- see README "db.close()".
-				this->compactRange(columnDesc->column.get(), nullptr, nullptr, false, nullptr);
+
+		// Trigger manual compaction on all column families to reclaim space from
+		// tombstones before closing. CompactRange() returns only once its manual
+		// compaction is done, so the cancellation below cannot cut it short.
+		if (!this->readOnly && DBSettings::getInstance().getCompactOnClose()) {
+			// Snapshot under the columns mutex; a concurrent drop can erase from
+			// the map while we compact.
+			std::vector<std::shared_ptr<ColumnFamilyDescriptor>> pinnedColumns;
+			{
+				std::lock_guard<std::mutex> columnsLock(this->columnsMutex);
+				pinnedColumns.reserve(this->columns.size());
+				for (const auto& [name, columnDesc] : this->columns) {
+					pinnedColumns.push_back(columnDesc);
+				}
+			}
+			logPhase("compacting (compactOnClose)");
+			for (const auto& columnDesc : pinnedColumns) {
+				if (columnDesc && columnDesc->column) {
+					// Best-effort: a skipped compaction loses no data, so its status
+					// deliberately does not become a close failure (which would
+					// quarantine the path) -- see README "db.close()".
+					this->compactRange(columnDesc->column.get(), nullptr, nullptr, false, nullptr);
+				}
 			}
 		}
 	}
+	this->closeFlushed = true;
 
-	// Wait for any outstanding (background threads) operations to complete.
-	// Note that this is not setting the RocksDB `close_db` flag since active
-	// references to the databases may still exist. Also, contrary to the
-	// suggestions of the documentation, this method alone does not seem to
-	// trigger a flush
-	rocksdb::WaitForCompactOptions options;
-	status = this->db->WaitForCompact(options);
-	if (!status.ok() && closeError.empty()) {
-		closeError = "Failed waiting for database compaction during close: " + status.ToString();
+	// Compaction is not needed for durability, so abort it rather than wait for
+	// the backlog: running compactions observe this per key, queued ones are
+	// dropped by Close(), and a foreign handle's async flush or compaction
+	// still in flight returns ShutdownInProgress instead of holding the sweep
+	// below. avoid_flush_during_shutdown (set at open) keeps this from running
+	// RocksDB's own shutdown flush, which waits out any write stall.
+	logPhase("cancelling background work");
+	rocksdb::CancelAllBackgroundWork(this->db.get(), false);
+	if (testConsumeCloseFailureAfterCancel()) {
+		throw rocksdb_js::DBException("Injected database close failure after cancel");
 	}
 
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
+	logPhase("closing " + std::to_string(this->closables.size()) + " handles");
 	this->closeClosables(txnsLock);
 
 	// Safety-net: cancel any VT locks still held by this DB after all
@@ -713,6 +772,7 @@ void DBDescriptor::finishClose(bool destroying) {
 	// Unregister from transaction log store registry - this will clean up stores
 	// when the last descriptor for this path is closed
 	if (!this->transactionLogsUnregistered) {
+		logPhase("unregistering transaction logs");
 		TransactionLogStoreRegistry::Unregister(this->identityPath);
 		this->transactionLogsUnregistered = true;
 	}
@@ -741,6 +801,12 @@ void DBDescriptor::finishClose(bool destroying) {
 
 	this->events.releaseAll();
 
+	logPhase("closing RocksDB");
+	status = this->db->Close();
+	DEBUG_LOG("%p DBDescriptor::close RocksDB closed (%s) \"%s\"\n", this, status.ToString().c_str(), this->path.c_str());
+	if (!status.ok() && closeError.empty()) {
+		closeError = "Failed to close database: " + status.ToString();
+	}
 	this->db.reset();
 
 	// The workspace lock outlives the RocksDB instance (released just above) so
@@ -1492,6 +1558,11 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	rocksdb::Options dbOptions;
 	// we could also consider some testing around using atomic_flush
 	dbOptions.atomic_flush = true; // this is necessary in order to ensure that we can track full flush jobs back to the corresponding sequence numbers
+	// finishClose() owns the close-time flush, and ~DBDescriptor() flushes a
+	// descriptor released without one. RocksDB's own shutdown flush would be a
+	// second one that, even with empty memtables, waits out any write stall,
+	// i.e. on compaction progress.
+	dbOptions.avoid_flush_during_shutdown = true;
 	dbOptions.comparator = rocksdb::BytewiseComparator();
 	dbOptions.create_if_missing = !options.readOnly;
 	dbOptions.create_missing_column_families = !options.readOnly;
