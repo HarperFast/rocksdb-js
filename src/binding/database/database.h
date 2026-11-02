@@ -32,7 +32,6 @@ inline bool parseExpectedVersion(napi_env env, napi_value arg, uint64_t& out) {
 	return true;
 }
 
-// The optional trailing `flags` argument of the async get entry points; a non-number is no flags.
 inline int32_t parseOptionalFlags(napi_env env, napi_value arg) {
 	napi_valuetype t;
 	int32_t flags = 0;
@@ -173,7 +172,8 @@ inline void vtPopulateIfSettled(
 	const rocksdb::Snapshot* readSnapshot,
 	uint64_t observedSlot
 ) {
-	if (!slot) return;
+	// Writes to a column family that did not opt in never invalidate its slots.
+	if (!slot || !dbHandle->enableVerificationTable) return;
 	// No usable version in the value the caller read (too short, or lock-tagged
 	// garbage) — nothing to publish, and re-reading the latest wouldn't help.
 	if (readVersion == 0 || vtIsLock(readVersion)) return;
@@ -412,11 +412,18 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	// The pin must be released before async completion is signaled because that
 	// signal can unblock database teardown.
 	std::shared_ptr<ColumnFamilyDescriptor> readColumnDescriptor;
+	// Captured at setup because the owning handle's close resets its descriptor without waiting for
+	// a transaction's reads. The transaction's async-work registration keeps the database itself
+	// alive: teardown's closables sweep drains it before destroying the database.
+	rocksdb::DB* readDb = nullptr;
 
 	// Verification table state for post-read check and populate.
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	bool wantsPopulate = false;
+	// Whether the reading handle opted in (verificationTable: true): only then do writes invalidate
+	// its slots, so only then may a read publish to one.
+	bool vtPublish = false;
 	VtSlotRef vtSlot;
 	// Slot value observed before the async read was queued; the post-read CAS
 	// publishes only if the slot is still this (no write cycle intervened).
@@ -441,7 +448,7 @@ void vtCheckAsyncGet(
 
 	const uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 	const uint64_t populateVersion = state->vtLatest.read ? state->vtLatest.latestVersion : extracted;
-	state->vtVersionSettled = vtVersionIsSettled(db, cf, populateVersion);
+	state->vtVersionSettled = state->vtPublish && vtVersionIsSettled(db, cf, populateVersion);
 }
 
 template<typename T>

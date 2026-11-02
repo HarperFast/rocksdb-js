@@ -2190,6 +2190,9 @@ The freshness check works as follows:
 2. On a cold read, pass `{ populateVersion: true }` (or call `db.populateVersion()` afterward) to
    seed the slot with the version extracted from the value, so subsequent freshness checks hit.
 
+A read seeds a slot only through a column family opened with `verificationTable: true`, because only
+that column family's writes invalidate it.
+
 Transaction writes to a column family opened with `verificationTable: true` invalidate the slot for
 each written key at write time, so a stale version can never survive a write. This is also what
 enables [`coordinatedRetry`](#transactionoptions): a conflicting transaction parks on the slot and
@@ -3025,7 +3028,8 @@ Options for `get()`, `getSync()`, and the `getBinary*` methods.
     `verificationTable: true`.
   - `populateVersion: boolean` When `true`, after a database read the verification-table slot is
     seeded with the version extracted from the value, eliminating the need for a separate
-    `db.populateVersion()` call on cold reads. Defaults to `false`.
+    `db.populateVersion()` call on cold reads. Requires the column family to be opened with
+    `verificationTable: true`; otherwise the read seeds nothing. Defaults to `false`.
   - `skipDecode: boolean` When `true`, the value is returned without being decoded. Defaults to
     `false`.
 

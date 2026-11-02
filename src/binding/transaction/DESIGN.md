@@ -33,9 +33,10 @@ Other owning-thread mutations still run while an admitted get may be inside `txn
 (`Clear()` after the write), `putSync`/`removeSync` (batch append), and `resetTransaction()`
 (deletes and recreates `txn` on a coordinated retry). Draining in each would block `putSync` on
 unrelated disk reads; the candidate fix is for the worker to read through the database with a
-pinned transaction snapshot. The async get never consults the batch itself: its only caller,
-`Store.get()`, reaches it after a cache-tier `getSync()` in the same synchronous turn missed, and
-that read consulted the batch first, so a key the batch resolves never reaches the worker.
+pinned transaction snapshot. That the key is absent from the batch when the worker is queued is
+established by the caller: the async get's only caller, `Store.get()`, reaches it after a
+cache-tier `getSync()` in the same synchronous turn, which consulted the batch and did not resolve
+the key. The async get does not probe the batch again.
 
 # Write-intent refusal
 

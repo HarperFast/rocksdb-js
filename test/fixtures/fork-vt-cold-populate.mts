@@ -63,6 +63,26 @@ if (scenario === 'txn-first') {
 	const result = await db.getBinary(key, { expectedVersion: v1 } as any);
 	assert.notEqual(result, FRESH_VERSION_FLAG);
 	assert.equal(versionOf(result), v2);
+} else if (scenario === 'owner-close') {
+	// The transaction's own handle closes while its read on another column family is in flight.
+	const other = RocksDatabase.open(path, {
+		name: 'other',
+		encoding: false,
+		verificationTable: true,
+		noBlockCache: true,
+	});
+	other.putSync(key, valueAt(v1));
+	other.flushSync();
+	const txn = new Transaction(db.store);
+	const pending = other.getBinary(key, { transaction: txn, populateVersion: true } as any);
+	assert.ok(pending instanceof Promise, 'expected a thread-pool read');
+	db.close();
+	assert.equal(versionOf(await pending), v1);
+	txn.abort();
+	other.close();
+	shutdown();
+	console.log('ok');
+	process.exit(0);
 } else {
 	throw new Error(`unknown scenario ${scenario}`);
 }

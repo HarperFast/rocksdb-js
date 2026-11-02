@@ -1237,6 +1237,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	state->hasExpectedVersion = hasExpectedVersion;
 	state->expectedVersion = expectedVersion;
 	state->wantsPopulate = wantsPopulate;
+	state->vtPublish = (*dbHandle)->enableVerificationTable;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 

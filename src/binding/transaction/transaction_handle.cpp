@@ -653,9 +653,7 @@ void TransactionHandle::close() {
 }
 
 /**
- * Reads a value on the thread pool through the caller's column family. The caller has already
- * tried the block-cache tier with getSync in the same synchronous turn, which also consulted this
- * transaction's write batch, so this does not probe again.
+ * Reads a value on the thread pool through the caller's column family.
  */
 napi_value TransactionHandle::get(
 	napi_env env,
@@ -700,6 +698,11 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 	auto readColumnDescriptor = dbHandle->columnDescriptor;
+	rocksdb::DB* readDb = dbHandle->descriptor ? dbHandle->descriptor->db.get() : nullptr;
+	if (!readDb) {
+		::napi_throw_error(env, nullptr, "Database closed during transaction get operation");
+		return nullptr;
+	}
 
 	rocksdb::ReadOptions readOptions;
 	if (this->snapshotSet) {
@@ -728,11 +731,13 @@ napi_value TransactionHandle::get(
 	// releases this descriptor before signaling completion so the native column
 	// family handle cannot outlive its RocksDB database during teardown.
 	state->readColumnDescriptor = std::move(readColumnDescriptor);
+	state->readDb = readDb;
 	state->vtSlot = vtSlot;
 	state->vtObserved = observedSlot;
 	state->hasExpectedVersion = hasExpectedVersion;
 	state->expectedVersion = expectedVersion;
 	state->wantsPopulate = wantsPopulate;
+	state->vtPublish = dbHandle->enableVerificationTable;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -758,11 +763,7 @@ napi_value TransactionHandle::get(
 				// While the database and the caller's column family are still pinned — the completion
 				// runs after teardown may have released both.
 				if (state->status.ok() && state->vtSlot) {
-					vtCheckAsyncGet(
-						state,
-						state->handle->dbHandle->descriptor->db.get(),
-						state->readColumnDescriptor->column.get()
-					);
+					vtCheckAsyncGet(state, state->readDb, state->readColumnDescriptor->column.get());
 				}
 			}
 			state->readColumnDescriptor.reset();

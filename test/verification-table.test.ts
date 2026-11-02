@@ -135,7 +135,7 @@ describe('Verification Table', () => {
 			}));
 
 		it('seeds the slot when POPULATE_VERSION_FLAG is set on a successful read', () =>
-			dbRunner({ dbOptions: [{ encoding: false }] }, async ({ db }) => {
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = 'populate-key';
 				const valueVersion = 1.7e12;
 				const value = Buffer.alloc(16);
@@ -926,6 +926,31 @@ describe('Verification Table', () => {
 				await readCold(() => db.getBinary(key, { populateVersion: true } as any));
 				expect(db.verifyVersion(key, version)).toBe(false);
 			}));
+
+		// Its writes never invalidate a slot, so a version published through it would outlive the next
+		// write.
+		it('does not publish through a column family that did not opt in', () =>
+			dbRunner({ dbOptions: [{ ...coldOptions, verificationTable: false }] }, async ({ db }) => {
+				const key = Buffer.from('async-populate-not-opted-in');
+				await db.put(key, valueWithHeader(version));
+				await db.flush();
+
+				const transaction = new Transaction(db.store);
+				try {
+					await readCold(() => db.getBinary(key, { populateVersion: true } as any));
+					await readCold(() =>
+						db.getBinary(key, { transaction, expectedVersion: version - 1 } as any)
+					);
+				} finally {
+					transaction.abort();
+				}
+				// The memtable serves the sync path.
+				await db.put(key, valueWithHeader(version + 1));
+				const native = (db as any).store.db;
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, version)).toBe(false);
+				expect(db.verifyVersion(key, version + 1)).toBe(false);
+			}));
 	});
 
 	// The table is process-global and every in-process test above shares one already created, so
@@ -958,6 +983,9 @@ describe('Verification Table', () => {
 
 		it('a write landing during a populateVersion read leaves its old version unpublished', () =>
 			runScenario('delayed-read', { ROCKSDB_JS_TXN_GET_DELAY_MS: '200' }));
+
+		it("a transactional read on another column family survives its transaction's handle closing", () =>
+			runScenario('owner-close', { ROCKSDB_JS_TXN_GET_DELAY_MS: '200' }));
 	});
 
 	// Store.get() tries the block cache with getSync() before it falls back to the thread pool, so
