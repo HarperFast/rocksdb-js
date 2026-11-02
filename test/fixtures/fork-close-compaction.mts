@@ -41,17 +41,17 @@ function verify(
 }
 
 async function waitForCompaction(db: RocksDatabase): Promise<void> {
-	const deadline = Date.now() + 10_000;
+	const deadline = performance.now() + 10_000;
 	while ((db.getDBIntProperty('rocksdb.num-running-compactions') ?? 0) < 1) {
-		if (Date.now() > deadline) throw new Error('No background compaction started');
+		if (performance.now() > deadline) throw new Error('No background compaction started');
 		await delay(20);
 	}
 }
 
 function timedClose(db: RocksDatabase, label: string): number {
-	const started = Date.now();
+	const started = performance.now();
 	db.close();
-	const elapsed = Date.now() - started;
+	const elapsed = performance.now() - started;
 	if (elapsed > CLOSE_BOUND_MS)
 		throw new Error(`${label} took ${elapsed}ms: close waited for background compaction`);
 	return elapsed;
@@ -102,10 +102,10 @@ if (!isMainThread) {
 			worker.once('message', () => resolve());
 			worker.once('error', reject);
 		});
-		const started = Date.now();
+		const started = performance.now();
 		await worker.terminate();
 		const db = RocksDatabase.open(path);
-		const elapsed = Date.now() - started;
+		const elapsed = performance.now() - started;
 		if (elapsed > CLOSE_BOUND_MS)
 			throw new Error(`Worker teardown took ${elapsed}ms: close waited for background compaction`);
 		verify(db);
@@ -118,9 +118,9 @@ if (!isMainThread) {
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		writeOverlappingFiles(db, files, keysPerFile);
 		writeUnflushed(db);
-		const started = Date.now();
+		const started = performance.now();
 		db.close();
-		const elapsed = Date.now() - started;
+		const elapsed = performance.now() - started;
 		const floor = files * keysPerFile * Number(process.env.ROCKSDB_JS_COMPACTION_KEY_DELAY_MS);
 		if (elapsed < floor)
 			throw new Error(`compactOnClose close took ${elapsed}ms, under its ${floor}ms compaction`);

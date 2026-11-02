@@ -80,10 +80,10 @@ describe('Close during background compaction', () => {
 		'process exit aborts a running compaction and still flushes',
 		() =>
 			withPath(async (dbPath) => {
-				const started = Date.now();
+				const started = performance.now();
 				const stdout = await runFixture(dbPath, 'exit', SLOW_COMPACTION);
 				expect(stdout).toContain('"compacting":true');
-				expect(Date.now() - started).toBeLessThan(10_000);
+				expect(performance.now() - started).toBeLessThan(10_000);
 				await runFixture(dbPath, 'verify');
 			}),
 		40_000
