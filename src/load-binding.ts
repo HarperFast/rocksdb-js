@@ -980,7 +980,7 @@ export const getRegistryStatus: () => RegistryStatus = binding.registryStatus;
  */
 export const registryStatus: () => RegistryStatus = getRegistryStatus;
 /**
- * Flushes every open database and waits for outstanding compactions, then
+ * Flushes every open database and cancels its outstanding compactions, then
  * releases the registry.
  *
  * **Throws** the first failure it encounters: a close whose native teardown

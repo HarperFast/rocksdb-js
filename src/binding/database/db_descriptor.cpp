@@ -1558,10 +1558,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	rocksdb::Options dbOptions;
 	// we could also consider some testing around using atomic_flush
 	dbOptions.atomic_flush = true; // this is necessary in order to ensure that we can track full flush jobs back to the corresponding sequence numbers
-	// finishClose() owns the close-time flush, and ~DBDescriptor() flushes a
-	// descriptor released without one. RocksDB's own shutdown flush would be a
-	// second one that, even with empty memtables, waits out any write stall,
-	// i.e. on compaction progress.
+	// finishClose() and ~DBDescriptor() own the close-time flush; RocksDB's would
+	// wait out a write stall even with empty memtables (see DESIGN.md).
 	dbOptions.avoid_flush_during_shutdown = true;
 	dbOptions.comparator = rocksdb::BytewiseComparator();
 	dbOptions.create_if_missing = !options.readOnly;
@@ -2809,11 +2807,7 @@ rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
 }
 
 void DBDescriptor::recordFlushedLogPosition(rocksdb::SequenceNumber sequence) {
-	// The listeners are not enough at close: Flush() can return before
-	// OnFlushCompleted runs, CancelAllBackgroundWork() suppresses it, and a flush
-	// that found nothing to write does not wait for an earlier flush's listener.
-	// The sync comes first because a flush with nothing to write never reached
-	// OnFlushBegin. txn.state never moves backward, so a late listener is harmless.
+	// The sync comes first: a flush with nothing to write never reached OnFlushBegin.
 	for (auto& store : TransactionLogStoreRegistry::GetStores(this->identityPath)) {
 		store->databaseFlushBegin(sequence);
 		store->databaseFlushed(sequence);

@@ -83,7 +83,6 @@ describe('Close during background compaction', () => {
 				const started = Date.now();
 				const stdout = await runFixture(dbPath, 'exit', SLOW_COMPACTION);
 				expect(stdout).toContain('"compacting":true');
-				// The child spends about a second writing before the compaction starts.
 				expect(Date.now() - started).toBeLessThan(10_000);
 				await runFixture(dbPath, 'verify');
 			}),
