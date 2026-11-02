@@ -113,7 +113,7 @@ if (!isMainThread) {
 		report({ mode, elapsed });
 	} else if (mode === 'compactOnClose') {
 		const files = 3; // below level0_file_num_compaction_trigger: no automatic compaction
-		const keysPerFile = 700;
+		const keysPerFile = 100;
 		RocksDatabase.config({ compactOnClose: true });
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		writeOverlappingFiles(db, files, keysPerFile);
