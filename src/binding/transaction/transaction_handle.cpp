@@ -653,7 +653,9 @@ void TransactionHandle::close() {
 }
 
 /**
- * Get a value using the specified database handle.
+ * Reads a value on the thread pool through the caller's column family. The caller has already
+ * tried the block-cache tier with getSync in the same synchronous turn, which also consulted this
+ * transaction's write batch, so this does not probe again.
  */
 napi_value TransactionHandle::get(
 	napi_env env,
@@ -662,15 +664,14 @@ napi_value TransactionHandle::get(
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride,
 	VtSlotRef vtSlot,
-	uint64_t observedSlot,
 	bool hasExpectedVersion,
 	uint64_t expectedVersion,
 	bool wantsPopulate
 ) {
 	// Register before inspecting txn/state. Descriptor-wide close can select the
 	// transaction before the target DBHandle, and close() must not reset txn in
-	// the middle of this setup. Async fallback transfers this registration to its
-	// state; synchronous and failed setup paths release it on return.
+	// the middle of this setup. The registration is transferred to the async
+	// state; failed setup paths release it on return.
 	ScopedAsyncWorkRegistration transactionRegistration(this);
 	if (!transactionRegistration.ok() || this->isCancelled() || !this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
@@ -683,13 +684,12 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 
-	if (!this->disableSnapshot && !this->snapshotSet) {
-		this->snapshotSet = true;
-		this->txn->SetSnapshot();
-	}
+	this->ensureSnapshot();
+	// Observed after the snapshot is established, as in getSync; the post-read CAS publishes only if
+	// no write cycle changed the slot since.
+	const uint64_t observedSlot = vtSlot ? vtSlot.load() : 0;
 
 	napi_value returnStatus;
-	std::string value;
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	// Cross-column-family reads enter through another DBHandle. Register against
 	// that handle while copying its descriptor so a concurrent close cannot reset
@@ -705,52 +705,6 @@ napi_value TransactionHandle::get(
 	if (this->snapshotSet) {
 		readOptions.snapshot = this->txn->GetSnapshot();
 	}
-	readOptions.read_tier = rocksdb::kBlockCacheTier;
-
-	rocksdb::Status status = this->txn->Get(
-		readOptions,
-		readColumnDescriptor->column.get(),
-		key,
-		&value
-	);
-
-	if (!status.IsIncomplete()) {
-		// Block-cache hit. Apply the VT freshness check and seed before resolving.
-		// vtPopulateIfSettled reads the key's LATEST committed version (not this
-		// transaction's snapshot value) and gates on the single-version invariant,
-		// so a transactional read seeds the cache only when settled and can never
-		// publish a stale snapshot value.
-		rocksdb::Slice valueSlice(value.data(), value.size());
-		if (vtSlot && status.ok() && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
-			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
-			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();
-			const rocksdb::Slice keySlice(key.data(), key.size());
-			// The caller's column family, not the handle's: this read may be routed to another one.
-			const VtLatestCheck latest = vtCheckLatest(
-				dbHandle->descriptor->db.get(),
-				readColumnDescriptor->column.get(),
-				keySlice,
-				readSnapshot
-			);
-			if (!latest.notUnique) {
-				const uint64_t populateVersion = latest.read ? latest.latestVersion : extracted;
-				const rocksdb::Snapshot* populateSnapshot = latest.read ? nullptr : readSnapshot;
-				if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
-					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
-					napi_value global, freshResult;
-					::napi_get_global(env, &global);
-					::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
-					::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
-					NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
-					return returnStatus;
-				}
-				if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
-					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
-				}
-			}
-		}
-		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
-	}
 
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(
@@ -760,7 +714,6 @@ napi_value TransactionHandle::get(
 		&name
 	));
 
-	readOptions.read_tier = rocksdb::kReadAllTier;
 	auto state = new AsyncGetState<std::shared_ptr<TransactionHandle>>(
 		env,
 		this->shared_from_this(),

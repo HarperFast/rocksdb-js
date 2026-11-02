@@ -1172,7 +1172,7 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(5);
+	NAPI_METHOD_ARGV(6);
 
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
@@ -1194,15 +1194,12 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
+	// argv[5]: the flags the caller passed to getSync (POPULATE_VERSION_FLAG).
+	const bool wantsPopulate = (parseOptionalFlags(env, argv[5]) & POPULATE_VERSION_FLAG) != 0;
 
-	// Pre-compute vtSlot so both the txn and DB async paths can use it, and
-	// observe its value before the async read so the post-read CAS only publishes
-	// when no write cycle intervened.
 	VtSlotRef vtSlot;
-	uint64_t vtObserved = 0;
-	if (hasExpectedVersion) {
+	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
-		if (vtSlot) vtObserved = vtSlot.load();
 	}
 
 	if (txnIdType == napi_number) {
@@ -1218,8 +1215,12 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			NAPI_RETURN_UNDEFINED();
 		}
 		return txnHandle->get(env, key, resolve, reject, *dbHandle,
-		                      vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
+		                      vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
 	}
+
+	// No snapshot to order against: observe the slot before the read so the post-read CAS only
+	// publishes when no write cycle intervened.
+	const uint64_t vtObserved = vtSlot ? vtSlot.load() : 0;
 
 	rocksdb::ReadOptions readOptions;
 	napi_value name;
@@ -1235,6 +1236,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	state->vtObserved = vtObserved;
 	state->hasExpectedVersion = hasExpectedVersion;
 	state->expectedVersion = expectedVersion;
+	state->wantsPopulate = wantsPopulate;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -2764,6 +2766,11 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	}
 
 	try {
+		if (dbHandleOptions.verificationTable) {
+			// Writers record a write intent only in a table that already exists; one created later by a
+			// read would let that read publish a version a write staged before it never invalidates.
+			DBSettings::getInstance().getVerificationTable();
+		}
 		(*dbHandle)->open(path, dbHandleOptions);
 	} catch (const rocksdb_js::DBException& e) {
 		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what());
@@ -3160,45 +3167,6 @@ void Database::Init(napi_env env, napi_value exports) {
 	));
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor));
-}
-
-/**
- * Resolves the result of a `Get` operation.
- */
-napi_value resolveGetSyncResult(
-	napi_env env,
-	const char* errorMsg,
-	rocksdb::Status& status,
-	std::string& value,
-	napi_value resolve,
-	napi_value reject
-) {
-	napi_value global;
-	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
-
-	napi_value result;
-
-	if (status.IsNotFound()) {
-		napi_get_undefined(env, &result);
-		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr));
-	} else if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, errorMsg);
-		NAPI_STATUS_THROWS(::napi_call_function(env, global, reject, 1, &error, nullptr));
-	} else {
-		// TODO: when in "fast" mode, use the shared buffer
-		NAPI_STATUS_THROWS(::napi_create_buffer_copy(
-			env,
-			value.size(),
-			value.data(),
-			nullptr,
-			&result
-		));
-		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr));
-	}
-
-	napi_value returnStatus;
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
-	return returnStatus;
 }
 
 } // namespace rocksdb_js

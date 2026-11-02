@@ -20,6 +20,14 @@ encoding of 0 is unpublishable and never matches.
 `test/verification-table-collision.test.ts` reproduces the stale read with a 16-slot table, and
 `test/native/verification_table_test.cc` covers the encoding directly.
 
+## Creation
+
+Writers never create the table: `TransactionHandle::lockVTSlot()` and `Database::PutSync` take it
+from `getVerificationTableRaw()` and record no write intent when it is absent. A read that later
+created it could publish the committed version that an earlier staged write's commit then never
+invalidates. `Database::Open` therefore creates it before a `verificationTable: true` handle can
+write (`test/fixtures/fork-vt-cold-populate.mts`, `staged-write`).
+
 ## Wake registrations
 
 A coordinated-retry park registers a callback on the conflicting holder's `LockTracker`, and the

@@ -1487,7 +1487,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(5);
+	NAPI_METHOD_ARGV(6);
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get");
@@ -1513,20 +1513,20 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 
 	// argv[3]: txnId (ignored — the transaction is self)
 	// argv[4]: optional expectedVersion for VT check and populate
+	// argv[5]: the flags the caller passed to getSync (POPULATE_VERSION_FLAG)
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
+	const bool wantsPopulate = (parseOptionalFlags(env, argv[5]) & POPULATE_VERSION_FLAG) != 0;
 
 	VtSlotRef vtSlot;
-	uint64_t vtObserved = 0;
-	if (hasExpectedVersion) {
+	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
-		if (vtSlot) vtObserved = vtSlot.load();
 	}
 
-	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
+	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
 }
 
 /**

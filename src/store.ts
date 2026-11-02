@@ -1002,7 +1002,7 @@ export class Store {
 				// is not in memory cache, use async get since this will involve disk access
 				return new Promise((resolve, reject) => {
 					// We still use the same shared buffer for the key, the native side will make a copy for the async task
-					context.get(keyParam, resolve, reject, txnId, expectedVersion);
+					context.get(keyParam, resolve, reject, txnId, expectedVersion, flags);
 				});
 			}
 			if (result === FRESH_VERSION_FLAG) {

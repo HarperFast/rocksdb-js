@@ -32,6 +32,16 @@ inline bool parseExpectedVersion(napi_env env, napi_value arg, uint64_t& out) {
 	return true;
 }
 
+// The optional trailing `flags` argument of the async get entry points; a non-number is no flags.
+inline int32_t parseOptionalFlags(napi_env env, napi_value arg) {
+	napi_valuetype t;
+	int32_t flags = 0;
+	if (::napi_typeof(env, arg, &t) == napi_ok && t == napi_number) {
+		::napi_get_value_int32(env, arg, &flags);
+	}
+	return flags;
+}
+
 /**
  * Returns the verification-table slot and tag for (dbHandle, key), or an empty
  * ref when the table is absent or disabled.
@@ -204,11 +214,12 @@ inline void vtPopulateIfSettled(
 #define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
 #define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
 #define ALWAYS_CREATE_NEW_BUFFER_FLAG 0x20000000
-// Set on getSync to opt in to populating the verification table after a
-// successful read. Extracts the first 8 bytes of the value as a big-endian
-// float64 version (Harper's record-encoder format) and CASes it into the
-// slot. Has no effect when no version is found (e.g., not-found, value < 8
-// bytes) or when the slot is currently lock-tagged.
+// Set on getSync, and passed on to the async get it falls back to, to opt in
+// to populating the verification table after a successful read. Extracts the
+// first 8 bytes of the value as a big-endian float64 version (Harper's
+// record-encoder format) and CASes it into the slot. Has no effect when no
+// version is found (e.g., not-found, value < 8 bytes) or when the slot is
+// currently lock-tagged.
 #define POPULATE_VERSION_FLAG 0x10000000
 // Returned by getSync when the caller-supplied expectedVersion matches the
 // verification-table slot for the key. Distinct from NOT_IN_MEMORY_CACHE_FLAG
@@ -432,15 +443,6 @@ void vtCheckAsyncGet(
 	const uint64_t populateVersion = state->vtLatest.read ? state->vtLatest.latestVersion : extracted;
 	state->vtVersionSettled = vtVersionIsSettled(db, cf, populateVersion);
 }
-
-napi_value resolveGetSyncResult(
-	napi_env env,
-	const char* errorMsg,
-	rocksdb::Status& status,
-	std::string& value,
-	napi_value resolve,
-	napi_value reject
-);
 
 template<typename T>
 void resolveGetResult(
