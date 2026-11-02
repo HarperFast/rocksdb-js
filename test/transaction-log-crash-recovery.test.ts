@@ -10,6 +10,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** A clean close records the flushed log position, which a crash would not have. */
+const removeCloseCheckpoint = (logDir: string) => rmSync(join(logDir, 'txn.state'));
 const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = constants;
 
 function runCrashFixture(
@@ -67,8 +70,7 @@ describe('Transaction log crash recovery', () => {
 				}
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
 				database.close();
-				// A clean close records the flushed log position; a crash would not have.
-				rmSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
+				removeCloseCheckpoint(join(dbPath, 'transaction_logs', 'foo'));
 
 				// No RocksDB flush recorded these entries, so txn.state is absent —
 				// the state a crash leaves behind. A committed read must still see them.
@@ -169,8 +171,7 @@ describe('Transaction log crash recovery', () => {
 				});
 				const entrySize = (statSync(logPath).size - afterComplete) / 3;
 				database.close();
-				// A clean close records the flushed log position; a crash would not have.
-				rmSync(join(dirname(logPath), 'txn.state'));
+				removeCloseCheckpoint(dirname(logPath));
 
 				// simulate a crash after two of the three entries reached disk
 				const image = readFileSync(logPath);
@@ -215,8 +216,7 @@ describe('Transaction log crash recovery', () => {
 				}
 				const logPath = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
 				database.close();
-				// A clean close records the flushed log position; a crash would not have.
-				rmSync(join(dirname(logPath), 'txn.state'));
+				removeCloseCheckpoint(dirname(logPath));
 
 				// rewrite the last two entries as a pre-flag writer would have left them
 				const image = readFileSync(logPath);
@@ -299,8 +299,7 @@ describe('Transaction log crash recovery', () => {
 				const logDir = join(dbPath, 'transaction_logs', 'foo');
 				const secondLog = join(logDir, '2.txnlog');
 				database.close();
-				// A clean close records the flushed log position; a crash would not have.
-				rmSync(join(logDir, 'txn.state'));
+				removeCloseCheckpoint(logDir);
 				await writeFile(
 					join(logDir, '3.txnlog'),
 					readFileSync(secondLog).subarray(0, TRANSACTION_LOG_FILE_HEADER_SIZE)
@@ -373,8 +372,7 @@ describe('Transaction log crash recovery', () => {
 					TRANSACTION_LOG_FILE_HEADER_SIZE
 				);
 				database.close();
-				// A clean close records the flushed log position; a crash would not have.
-				rmSync(join(logDir, 'txn.state'));
+				removeCloseCheckpoint(logDir);
 				await writeFile(join(logDir, '2.txnlog'), header.subarray(0, 6));
 				await writeFile(join(logDir, '3.txnlog'), header);
 

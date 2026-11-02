@@ -739,11 +739,9 @@ void DBDescriptor::finishClose(bool destroying) {
 	}
 
 	// Compaction is not needed for durability, so abort it rather than wait for
-	// the backlog: running compactions observe this per key, queued ones are
-	// dropped by Close(), and a foreign handle's async flush or compaction
-	// still in flight returns ShutdownInProgress instead of holding the sweep
-	// below. avoid_flush_during_shutdown (set at open) keeps this from running
-	// RocksDB's own shutdown flush, which waits out any write stall.
+	// the backlog: running compactions observe this per key and Close() drops
+	// queued ones. avoid_flush_during_shutdown (set at open) keeps this from
+	// running RocksDB's own shutdown flush, which waits out any write stall.
 	logPhase("cancelling background work");
 	rocksdb::CancelAllBackgroundWork(this->db.get(), false);
 	if (testConsumeCloseFailureAfterCancel()) {

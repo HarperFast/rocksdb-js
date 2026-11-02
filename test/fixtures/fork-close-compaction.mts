@@ -4,20 +4,9 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 
 // Close must cancel background compaction rather than wait for it (rocksdb-js
 // #1001). Run with ROCKSDB_JS_COMPACTION_KEY_DELAY_MS so every compaction
-// sleeps per key: with KEY_COUNT keys, one compaction outlasts the parent's
-// deadline many times over, while RocksDB can still abort it between keys.
-//
-// Modes (argv[3]):
-// - close: close mid-compaction, reopen and verify, close mid-compaction again.
-// - exit: the process ends mid-compaction with the database open; the env
-//   cleanup hook's DBRegistry::Shutdown() closes it. A `verify` run checks it.
-// - worker: a worker thread owns the database and is terminated mid-compaction.
-// - compactOnClose: compactOnClose still runs its compaction to completion.
-// - checkpoint: with ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS, close records the
-//   flushed transaction-log position although the last flush's listener, which
-//   normally records it, has not finished.
-// - retryAfterCancel: with ROCKSDB_JS_CLOSE_FAILURE_AFTER_CANCEL, a shutdown()
-//   retry of the quarantined close succeeds without flushing again.
+// sleeps per key: one compaction of FILES * KEYS_PER_FILE keys outlasts the
+// parent's deadline many times over, while RocksDB can still abort it between
+// keys. argv[3] selects the scenario; test/close-compaction.test.ts runs each.
 
 const FILES = 4;
 const KEYS_PER_FILE = 10_000;
