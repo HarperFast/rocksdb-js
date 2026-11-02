@@ -412,9 +412,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	// cleanup resumes from the failed point.
 	bool closeWorkersStopped = false;
 	bool transactionLogsUnregistered = false;
-	// Set once the close-time flush has succeeded or a destroy has skipped it.
-	// finishClose() then cancels background work, after which a flush or manual
-	// compaction fails with ShutdownInProgress, so a retry skips both.
+	// Set once the close-time flush has succeeded. finishClose() then cancels
+	// background work, after which a flush or manual compaction fails with
+	// ShutdownInProgress, so a retry skips both.
 	bool closeFlushed = false;
 
 	/**
@@ -904,6 +904,13 @@ public:
 	 * `src/load-binding.ts` and AGENTS invariant 16.
 	 */
 	rocksdb::Status flush(bool allowWriteStall = false);
+
+	/**
+	 * After a close-time flush covering every write up to `sequence`, syncs each transaction-log
+	 * store's segments and records its flushed position, as the flush listeners would. Close
+	 * cannot rely on them: see "Close does not wait for compaction" in this directory's DESIGN.md.
+	 */
+	void recordFlushedLogPosition(rocksdb::SequenceNumber sequence);
 
 	/** `DB::SyncWAL` on the calling thread: WAL-backed writes only, no memtable flush. */
 	rocksdb::Status syncWal();

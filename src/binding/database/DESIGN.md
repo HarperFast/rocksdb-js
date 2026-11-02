@@ -240,13 +240,17 @@ write-heavy database take minutes to close (rocksdb-js#1001). Four things hold i
 - **The flushed log position is written explicitly.** `TransactionLogEventListener::OnFlushCompleted`
   can still be running when `Flush()` returns, is skipped once `shutting_down_` is set, and finds no
   stores after `TransactionLogStoreRegistry::Unregister`; a close flush with nothing to write does not
-  wait for an earlier flush's listener either. So `finishClose()` calls
-  `databaseFlushed(latest sequence)` on every store itself (writable descriptors only).
-  `writeFlushedPosition` never moves `txn.state` backward, so a late listener cannot undo it.
+  wait for an earlier flush's listener either. So `DBDescriptor::recordFlushedLogPosition` (writable
+  descriptors only, also after the destructor's flush) syncs each store's segments
+  (`databaseFlushBegin`, which a flush with nothing to write never triggered) and then records
+  `databaseFlushed(latest sequence)`. A clean close therefore records `txn.state` even for log-only
+  transactions; a test that simulates a crash after a clean close must remove it. `writeFlushedPosition`
+  never moves `txn.state` backward, so a late listener cannot undo it.
 - **`closeFlushed` makes a retry skip the flush.** Once background work is cancelled, a flush or
   manual compaction fails with `ShutdownInProgress`, so a quarantined close that failed after the
   cancel would wedge its `shutdown()` retry. No write can be admitted after `closing`, so nothing is
-  left to flush.
+  left to flush. It is set only by a successful flush, never by a `destroy()` that skipped one, so a
+  non-destructive retry of a failed destroy fails instead of reporting a clean close.
 
 Nothing is logged through the RocksDB info log after `Close()`, which closes that logger.
 `test/close-compaction.test.ts` covers close, process exit and worker teardown during a compaction,

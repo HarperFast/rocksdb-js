@@ -537,11 +537,14 @@ describe('Destroy', () => {
 	}, 20_000);
 
 	// RocksDB does not flush on close (avoid_flush_during_shutdown), so the
-	// unflushed write survives only through the descriptor's own final flush.
+	// unflushed writes survive only through the descriptor's own final flush,
+	// which must also record the flushed log position.
 	const expectUnflushedWrite = (dbPath: string) => () => {
 		const db = RocksDatabase.open(dbPath);
 		try {
 			expect(db.getSync('key')).toBe('unflushed');
+			expect(db.getSync('logged')).toBe('unflushed');
+			expect(Array.from(db.useLog('exit').query({ startFromLastFlushed: true }))).toEqual([]);
 		} finally {
 			db.close();
 		}

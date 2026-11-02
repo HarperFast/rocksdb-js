@@ -538,9 +538,18 @@ DBDescriptor::~DBDescriptor() {
 	// retry) arrives here with its memtables unflushed. RocksDB will not flush
 	// them on close (avoid_flush_during_shutdown), so this is their last chance.
 	if (this->db && !this->closeFlushed) {
-		rocksdb::Status status = this->flush();
-		if (!status.ok()) {
-			::fprintf(stderr, "rocksdb-js final flush of \"%s\" failed: %s\n", this->path.c_str(), status.ToString().c_str());
+		try {
+			const rocksdb::SequenceNumber flushedSequence = this->db->GetLatestSequenceNumber();
+			rocksdb::Status status = this->flush();
+			if (status.ok()) {
+				if (!this->readOnly) {
+					this->recordFlushedLogPosition(flushedSequence);
+				}
+			} else {
+				::fprintf(stderr, "rocksdb-js final flush of \"%s\" failed: %s\n", this->path.c_str(), status.ToString().c_str());
+			}
+		} catch (...) {
+			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Final flush threw for \"%s\"\n", this, this->path.c_str());
 		}
 	}
 	this->parkTimeouts->shutdown();
@@ -594,10 +603,10 @@ void DBDescriptor::finishClose(bool destroying) {
 	// Publish cancellation for work that later steps here will block on but
 	// that cannot poll `closing` from where it runs. A manual compaction
 	// admitted through one of these handles blocks the optional close-time
-	// compaction (compactMutex), then WaitForCompact(), then the closables
-	// sweep's own async drain -- and RocksDB abandons it only through the token
-	// that handle gave it. Arming at the sweep would be three blocking steps too
-	// late, which is why this runs first. Safe to do to handles this thread does
+	// compaction (compactMutex), then the closables sweep's own async drain --
+	// and RocksDB abandons it only through the token that handle gave it.
+	// Arming at the sweep would be two blocking steps too late, which is why
+	// this runs first. Safe to do to handles this thread does
 	// not own: the per-handle token is cleared by DBHandle::open(), unlike the
 	// descriptor-wide one.
 	{
@@ -699,14 +708,7 @@ void DBDescriptor::finishClose(bool destroying) {
 		logPhase("flushed");
 
 		if (!this->readOnly) {
-			// Record the flushed log position here instead of relying on the flush
-			// listeners: Flush() can return before OnFlushCompleted runs, the
-			// cancellation below suppresses it, and a flush that found nothing to
-			// write does not wait for an earlier flush's pending notification.
-			// txn.state never moves backward, so a late listener cannot undo this.
-			for (auto& store : TransactionLogStoreRegistry::GetStores(this->identityPath)) {
-				store->databaseFlushed(flushedSequence);
-			}
+			this->recordFlushedLogPosition(flushedSequence);
 		}
 
 		// Trigger manual compaction on all column families to reclaim space from
@@ -733,8 +735,8 @@ void DBDescriptor::finishClose(bool destroying) {
 				}
 			}
 		}
+		this->closeFlushed = true;
 	}
-	this->closeFlushed = true;
 
 	// Compaction is not needed for durability, so abort it rather than wait for
 	// the backlog: running compactions observe this per key, queued ones are
@@ -2806,6 +2808,18 @@ rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
 		flushOptions,
 		columnHandles
 	);
+}
+
+void DBDescriptor::recordFlushedLogPosition(rocksdb::SequenceNumber sequence) {
+	// The listeners are not enough at close: Flush() can return before
+	// OnFlushCompleted runs, CancelAllBackgroundWork() suppresses it, and a flush
+	// that found nothing to write does not wait for an earlier flush's listener.
+	// The sync comes first because a flush with nothing to write never reached
+	// OnFlushBegin. txn.state never moves backward, so a late listener is harmless.
+	for (auto& store : TransactionLogStoreRegistry::GetStores(this->identityPath)) {
+		store->databaseFlushBegin(sequence);
+		store->databaseFlushed(sequence);
+	}
 }
 
 rocksdb::Status DBDescriptor::syncWal() {

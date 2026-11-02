@@ -29,6 +29,11 @@ import { RocksDatabase, registryStatus } from '../../src/index.ts';
 const path = process.argv[2];
 const db = RocksDatabase.open(path, { disableWAL: true });
 db.putSync('key', 'unflushed');
+const log = db.useLog('exit');
+await db.transaction(async (txn) => {
+	log.addEntry(Buffer.from('logged'), txn.id);
+	db.putSync('logged', 'unflushed', { transaction: txn });
+});
 const retained: unknown[] = [];
 if (process.argv[3] === 'iterators') {
 	const { Transaction } = await import('../../src/transaction.ts');

@@ -229,8 +229,8 @@ Creates a new database instance.
 Closes a database. This function can be called multiple times and will only close an opened
 database. A database instance can be reopened once it is closed. Closing the last handle flushes the
 memtables and waits for that flush, then cancels background compaction instead of waiting for it:
-a running compaction is abandoned and redone later, so close time does not depend on the compaction
-backlog. A flush failure leaves the native database quarantined so `shutdown()`
+a running compaction is abandoned and redone later, so close does not wait for the compaction
+backlog (the flush itself still waits out a write stall). A flush failure leaves the native database quarantined so `shutdown()`
 can retry without losing unflushed data; an explicit `destroy()` can instead delete it. A failure
 from RocksDB's own final close is reported after native teardown completes; the optional
 `compactOnClose` pass still runs to completion before background work is cancelled, but it is
@@ -2692,8 +2692,8 @@ console.log(getRegistryStatus());
 
 ### `shutdown(): void`
 
-The `shutdown()` will flush all in-memory data to disk and wait for any outstanding compactions to
-finish, for all open databases. It is highly recommended to call this in a `process` `exit` event
+The `shutdown()` will flush all in-memory data to disk and cancel outstanding background
+compactions, for all open databases. It is highly recommended to call this in a `process` `exit` event
 listener (on the main thread), to ensure that all data is flushed to disk before the process exits.
 It throws the first close failure after attempting every claimed database; call it again to retry
 any descriptor whose native teardown did not complete. It reports pending destroy-cleanup

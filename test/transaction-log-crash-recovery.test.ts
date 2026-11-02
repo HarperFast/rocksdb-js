@@ -67,9 +67,11 @@ describe('Transaction log crash recovery', () => {
 				}
 				expect(Array.from(log.query({ start: 0 })).length).toBe(3);
 				database.close();
+				// A clean close records the flushed log position; a crash would not have.
+				rmSync(join(dbPath, 'transaction_logs', 'foo', 'txn.state'));
 
-				// No RocksDB flush ever recorded these entries, so txn.state is absent/behind —
-				// the same state a crash leaves behind. A committed read must still see them.
+				// No RocksDB flush recorded these entries, so txn.state is absent —
+				// the state a crash leaves behind. A committed read must still see them.
 				database = RocksDatabase.open(dbPath);
 				const reopened = database.useLog('foo');
 				expect(Array.from(reopened.query({ start: 0 })).length).toBe(3);
@@ -297,6 +299,8 @@ describe('Transaction log crash recovery', () => {
 				const logDir = join(dbPath, 'transaction_logs', 'foo');
 				const secondLog = join(logDir, '2.txnlog');
 				database.close();
+				// A clean close records the flushed log position; a crash would not have.
+				rmSync(join(logDir, 'txn.state'));
 				await writeFile(
 					join(logDir, '3.txnlog'),
 					readFileSync(secondLog).subarray(0, TRANSACTION_LOG_FILE_HEADER_SIZE)
@@ -369,6 +373,8 @@ describe('Transaction log crash recovery', () => {
 					TRANSACTION_LOG_FILE_HEADER_SIZE
 				);
 				database.close();
+				// A clean close records the flushed log position; a crash would not have.
+				rmSync(join(logDir, 'txn.state'));
 				await writeFile(join(logDir, '2.txnlog'), header.subarray(0, 6));
 				await writeFile(join(logDir, '3.txnlog'), header);
 
