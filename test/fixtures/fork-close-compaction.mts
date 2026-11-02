@@ -2,10 +2,6 @@ import { RocksDatabase, getRegistryStatus, shutdown } from '../../src/index.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 
-// Under ROCKSDB_JS_COMPACTION_KEY_DELAY_MS one compaction of FILES * KEYS_PER_FILE
-// keys outlasts the parent's deadline many times over, yet RocksDB can still
-// abort it between keys.
-
 const FILES = 4;
 const KEYS_PER_FILE = 10_000;
 const AFTER_KEYS = 100;
@@ -125,7 +121,6 @@ if (!isMainThread) {
 		const started = Date.now();
 		db.close();
 		const elapsed = Date.now() - started;
-		// Every key sleeps at least ROCKSDB_JS_COMPACTION_KEY_DELAY_MS in the filter.
 		const floor = files * keysPerFile * Number(process.env.ROCKSDB_JS_COMPACTION_KEY_DELAY_MS);
 		if (elapsed < floor)
 			throw new Error(`compactOnClose close took ${elapsed}ms, under its ${floor}ms compaction`);
