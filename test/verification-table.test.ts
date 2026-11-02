@@ -916,6 +916,29 @@ describe('Verification Table', () => {
 				}
 			}));
 
+		// No snapshot is open, so only the completion's compare-and-swap against the slot value
+		// observed before the read can refuse the version the read returned.
+		it('does not publish a version superseded between the read and its completion', () =>
+			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+				const key = Buffer.from('async-populate-superseded');
+				await db.put(key, valueWithHeader(version));
+				await db.flush();
+
+				const pending = db.getBinary(key, { populateVersion: true } as any);
+				expect(pending).toBeInstanceOf(Promise);
+				// The completion runs on this thread, so it cannot run before the write below, and the
+				// worker's read has long finished by then.
+				const busyUntil = Date.now() + 300;
+				while (Date.now() < busyUntil) {}
+				db.putSync(key, valueWithHeader(version + 1));
+				expect(((await pending) as Buffer).readDoubleBE(0)).toBe(version);
+
+				expect(db.verifyVersion(key, version)).toBe(false);
+				const current = await db.getBinary(key, { expectedVersion: version } as any);
+				expect(current).not.toBe(FRESH_VERSION_FLAG);
+				expect((current as Buffer).readDoubleBE(0)).toBe(version + 1);
+			}));
+
 		it('does not publish a version marked not unique', () =>
 			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
 				const key = Buffer.from('async-populate-not-unique');

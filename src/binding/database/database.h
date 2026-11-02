@@ -172,7 +172,6 @@ inline void vtPopulateIfSettled(
 	const rocksdb::Snapshot* readSnapshot,
 	uint64_t observedSlot
 ) {
-	// Writes to a column family that did not opt in never invalidate its slots.
 	if (!slot || !dbHandle->enableVerificationTable) return;
 	// No usable version in the value the caller read (too short, or lock-tagged
 	// garbage) — nothing to publish, and re-reading the latest wouldn't help.
@@ -426,8 +425,7 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	bool wantsPopulate = false;
-	// Whether the reading handle opted in (verificationTable: true): only then do writes invalidate
-	// its slots, so only then may a read publish to one.
+	// The reading handle's enableVerificationTable (see readWantsPopulate).
 	bool vtPublish = false;
 	VtSlotRef vtSlot;
 	// Slot value observed before the async read was queued; the post-read CAS

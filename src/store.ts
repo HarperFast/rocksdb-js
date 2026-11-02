@@ -1515,7 +1515,7 @@ export interface GetOptions {
 	 * When `true`, after a DB read the native layer automatically seeds the
 	 * verification-table slot with the version extracted from the value.
 	 * Eliminates the need for a separate `populateVersion` call on cold reads.
-	 * Seeds nothing unless the column family was opened with
+	 * Seeds nothing unless this handle was opened with
 	 * `verificationTable: true`.
 	 *
 	 * @default false
