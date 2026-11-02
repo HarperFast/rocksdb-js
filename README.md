@@ -2190,8 +2190,9 @@ The freshness check works as follows:
 2. On a cold read, pass `{ populateVersion: true }` (or call `db.populateVersion()` afterward) to
    seed the slot with the version extracted from the value, so subsequent freshness checks hit.
 
-A read seeds a slot only through a column family opened with `verificationTable: true`, because only
-that column family's writes invalidate it.
+A read seeds a slot only through a handle opened with `verificationTable: true`, because only writes
+through such a handle invalidate it. Open every handle on a cached column family with the option: a
+write through a handle without it leaves the slot holding the previous version.
 
 Transaction writes to a column family opened with `verificationTable: true` invalidate the slot for
 each written key at write time, so a stale version can never survive a write. This is also what

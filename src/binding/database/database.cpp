@@ -1195,7 +1195,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
 	// argv[5]: the flags the caller passed to getSync (POPULATE_VERSION_FLAG).
-	const bool wantsPopulate = (parseOptionalFlags(env, argv[5]) & POPULATE_VERSION_FLAG) != 0;
+	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), *dbHandle);
 
 	VtSlotRef vtSlot;
 	if (hasExpectedVersion || wantsPopulate) {
@@ -2073,7 +2073,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
-	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
+	bool wantsPopulate = readWantsPopulate(flags, *dbHandle);
 
 	// For transactional reads, establish the snapshot BEFORE loading
 	// the VT slot. If we loaded the slot first, a complete write cycle

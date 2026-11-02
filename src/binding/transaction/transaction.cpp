@@ -1519,7 +1519,7 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
-	const bool wantsPopulate = (parseOptionalFlags(env, argv[5]) & POPULATE_VERSION_FLAG) != 0;
+	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), (*txnHandle)->dbHandle);
 
 	VtSlotRef vtSlot;
 	if (hasExpectedVersion || wantsPopulate) {
@@ -1621,7 +1621,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
-	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
+	bool wantsPopulate = readWantsPopulate(flags, (*txnHandle)->dbHandle);
 
 	// Establish the transaction snapshot BEFORE loading the VT slot.
 	// If we loaded the slot first, a complete write cycle (lock → commit →

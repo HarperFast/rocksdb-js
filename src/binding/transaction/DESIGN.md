@@ -36,7 +36,8 @@ unrelated disk reads; the candidate fix is for the worker to read through the da
 pinned transaction snapshot. That the key is absent from the batch when the worker is queued is
 established by the caller: the async get's only caller, `Store.get()`, reaches it after a
 cache-tier `getSync()` in the same synchronous turn, which consulted the batch and did not resolve
-the key. The async get does not probe the batch again.
+the key. The async get's setup does not consult the batch; its worker's `txn->Get()` still does,
+which is the race above.
 
 # Write-intent refusal
 

@@ -800,7 +800,6 @@ describe('Verification Table', () => {
 			return result;
 		}
 
-		// FRESH from the slot alone: synchronous, and no RocksDB read.
 		function expectFreshWithoutRead(db: RocksDatabase, key: Buffer): void {
 			const before = keysRead(db);
 			expect(db.getBinary(key, { expectedVersion: version } as any)).toBe(FRESH_VERSION_FLAG);
@@ -944,7 +943,7 @@ describe('Verification Table', () => {
 				} finally {
 					transaction.abort();
 				}
-				// The memtable serves the sync path.
+				// A memtable value, so the sync read finds it instead of falling back to the thread pool.
 				await db.put(key, valueWithHeader(version + 1));
 				const native = (db as any).store.db;
 				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);

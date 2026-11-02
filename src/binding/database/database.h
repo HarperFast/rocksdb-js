@@ -230,6 +230,11 @@ inline void vtPopulateIfSettled(
 // transaction body immediately without any backoff delay.
 #define RETRY_NOW_VALUE 0x04000000
 
+// Only a handle whose writes invalidate slots (verificationTable: true) publishes from a read.
+inline bool readWantsPopulate(int32_t flags, const std::shared_ptr<DBHandle>& dbHandle) {
+	return (flags & POPULATE_VERSION_FLAG) != 0 && dbHandle->enableVerificationTable;
+}
+
 #define UNWRAP_DB_HANDLE() \
 	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
 	NAPI_STATUS_THROWS(::napi_unwrap(env, jsThis, reinterpret_cast<void**>(&dbHandle)))
