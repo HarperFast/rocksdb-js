@@ -185,3 +185,34 @@ chosen for many databases and column families, not for one.
   `block / 8`. Smaller blocks refill shards more often and send more allocations to the shared
   arena mutex. Both constants are named so a benchmark can move them
   (`benchmark/wbm-flush-policy.mts`).
+
+# SST filters and where their blocks live
+
+`buildColumnFamilyOptions` (`db_descriptor.cpp`) writes a whole-key Bloom filter into every SST
+(`bloomFilterBitsPerKey`, default 10, `0` = none). Whole-key only: a `prefix_extractor` would change
+which keys `Seek` and range reads visit, so none is set. The options are rebuilt from code on every
+open (only compression is restored from OPTIONS), so a database written without filters opens with
+them and its files gain filters as compaction rewrites them; every built-in filter policy reads
+every built-in filter, so mixed files are fine.
+
+A filter only saves work for a file whose key range contains the key but whose data does not:
+RocksDB already skips files by their key bounds. A sequentially loaded database (Harper's YCSB
+load) has disjoint ranges across levels, so a present-key get reads exactly one data block with or
+without filters; the gain is on absent keys (one data-block read saved per probed file) and on
+overlapping files (random-order writes, updates sitting in L0). Measured October 2026 with
+`benchmark/sst-filter-get.mts` (random-order 8M keys, 3 L0 files over the last level) and Harper's
+YCSB at 2x its 8 GiB budget (17.2M records, 111 MB of index and 21.5 MB of filter):
+
+- **Filter blocks stay with the table reader, beside the index, not in the block cache.** Moving
+  index and filter blocks into the cache (`cache_index_and_filter_blocks`, with or without L0
+  pinning) added a cache lookup per probed file and took the index's 111 MB out of the data cache:
+  YCSB C +1.6% instructions per op and B -3.4%, against +0.3% and -7.5% here. The cost of this
+  placement is memory outside `blockCacheSize`: 1.25 bytes per key, beside the index that already
+  lives there (6.5 bytes per key in that database). Pinned L0 metadata also has no bound against
+  the cache capacity across many column families.
+- **Bloom, not Ribbon.** Equal get cost (within 1% instructions); Ribbon's filter is 29% smaller
+  (0.36 B/key) but its construction takes ~3x the temporary memory, which no budget accounts for.
+- **`optimize_filters_for_hits` stays off.** It drops last-level filters, and absent-key gets
+  (Harper's insert existence checks) then cost 73% more instructions.
+- Scope follows `writeBufferSize`: the first opener in the process sets every existing family; a
+  later open of a live family keeps its table factory. Filter bits do not change read results.

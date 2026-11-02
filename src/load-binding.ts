@@ -302,6 +302,12 @@ export type NativeDatabaseOptions = {
 	 */
 	arenaBlockSize?: number;
 	/**
+	 * Bits per key of the whole-key filter written into each SST file (default
+	 * `10`, about a 1% false-positive rate); `0` writes no filter. Otherwise
+	 * 1 to 100, fractions allowed.
+	 */
+	bloomFilterBitsPerKey?: number;
+	/**
 	 * The friendly name of a compression algorithm compiled into this RocksDB
 	 * build (see `supportedCompression`), e.g. `'lz4'`, `'zstd'`, `'none'`. The
 	 * higher-level `StoreOptions.compression` (which also accepts an object with

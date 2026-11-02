@@ -671,6 +671,11 @@ export class Store {
 	arenaBlockSize?: number;
 
 	/**
+	 * Bits per key of the whole-key filter in each SST; `0` disables filters.
+	 */
+	bloomFilterBitsPerKey?: number;
+
+	/**
 	 * The function used to encode keys using the shared `keyBuffer`.
 	 */
 	writeKey: WriteKeyFunction;
@@ -743,6 +748,7 @@ export class Store {
 		this.verificationTable = options?.verificationTable;
 		this.writeBufferSize = options?.writeBufferSize;
 		this.arenaBlockSize = options?.arenaBlockSize;
+		this.bloomFilterBitsPerKey = options?.bloomFilterBitsPerKey;
 		this.writeKey = writeKey;
 		this.#columnFamilyOptions = options ? { ...options } : undefined;
 	}
@@ -1351,6 +1357,7 @@ export class Store {
 			verificationTable: this.verificationTable,
 			writeBufferSize: this.writeBufferSize,
 			arenaBlockSize: this.arenaBlockSize,
+			bloomFilterBitsPerKey: this.bloomFilterBitsPerKey,
 		});
 
 		this.identityPath = this.db.identityPath;
