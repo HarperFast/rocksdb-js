@@ -1194,7 +1194,6 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
-	// argv[5]: the flags the caller passed to getSync (POPULATE_VERSION_FLAG).
 	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), *dbHandle);
 
 	VtSlotRef vtSlot;

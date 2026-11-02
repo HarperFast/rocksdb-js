@@ -966,7 +966,6 @@ describe('Verification Table', () => {
 				} finally {
 					transaction.abort();
 				}
-				// A memtable value, so the sync read finds it instead of falling back to the thread pool.
 				await db.put(key, valueWithHeader(version + 1));
 				const native = (db as any).store.db;
 				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);

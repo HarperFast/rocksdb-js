@@ -425,7 +425,6 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	bool wantsPopulate = false;
-	// The reading handle's enableVerificationTable (see readWantsPopulate).
 	bool vtPublish = false;
 	VtSlotRef vtSlot;
 	// Slot value observed before the async read was queued; the post-read CAS

@@ -1513,7 +1513,6 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 
 	// argv[3]: txnId (ignored — the transaction is self)
 	// argv[4]: optional expectedVersion for VT check and populate
-	// argv[5]: the flags the caller passed to getSync (POPULATE_VERSION_FLAG)
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	if (argc >= 5) {
