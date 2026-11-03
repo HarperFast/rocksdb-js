@@ -112,7 +112,7 @@ TEST_F(PurgeWatermarkTest, NewStoreIsKnownWithNothingPurged) {
 	EXPECT_TRUE(reloaded->getPurgeWatermark().known);
 }
 
-// (a) Keys are out of order within and across segments; the watermark is the purged segment's own
+// Keys are out of order within and across segments; the watermark is the purged segment's own
 // largest key, not a later segment's.
 TEST_F(PurgeWatermarkTest, WatermarkIsThePurgedSegmentsTrueMaximum) {
 	auto store = createStore();
@@ -134,7 +134,7 @@ TEST_F(PurgeWatermarkTest, WatermarkIsThePurgedSegmentsTrueMaximum) {
 	store->close();
 }
 
-// (a) A segment written by an earlier process is read once, with the strict scanner, before it goes.
+// A segment written by an earlier process is read once, with the strict scanner, before it goes.
 TEST_F(PurgeWatermarkTest, InheritedSegmentIsScannedForItsTrueMaximum) {
 	{
 		auto writer = createStore();
@@ -152,7 +152,7 @@ TEST_F(PurgeWatermarkTest, InheritedSegmentIsScannedForItsTrueMaximum) {
 	store->close();
 }
 
-// (b) A key minted ahead of the local clock, in a segment old enough to purge by mtime.
+// A key minted ahead of the local clock, in a segment old enough to purge by mtime.
 TEST_F(PurgeWatermarkTest, CoversAKeyAheadOfTheClock) {
 	double nowMs = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::system_clock::now().time_since_epoch()).count());
@@ -173,7 +173,6 @@ TEST_F(PurgeWatermarkTest, CoversAKeyAheadOfTheClock) {
 	store->close();
 }
 
-// (c) The native retention on open raises and persists it before the unlink.
 TEST_F(PurgeWatermarkTest, RetentionOnOpenRaisesAndPersistsIt) {
 	{
 		auto writer = createStore();
@@ -194,7 +193,7 @@ TEST_F(PurgeWatermarkTest, RetentionOnOpenRaisesAndPersistsIt) {
 	EXPECT_EQ(reloaded->getPurgeWatermark().purgedThrough, 5000);
 }
 
-// (c) Close and rotation delete nothing (doClose() empties the registry before its purge call), so
+// Close and rotation delete nothing (doClose() empties the registry before its purge call), so
 // they have nothing to record.
 TEST_F(PurgeWatermarkTest, CloseAndRotationDeleteNothing) {
 	auto store = createStore(std::chrono::milliseconds(1));
@@ -211,7 +210,7 @@ TEST_F(PurgeWatermarkTest, CloseAndRotationDeleteNothing) {
 	EXPECT_EQ(record.watermark, 0);
 }
 
-// (d) A crash after the record is durable and before any unlink leaves it at or above every key
+// A crash after the record is durable and before any unlink leaves it at or above every key
 // the purge was about to delete, and still known: the surviving files are already covered.
 TEST_F(PurgeWatermarkTest, CrashBetweenRecordAndUnlinkLeavesItCovering) {
 	auto store = createStore();
@@ -246,7 +245,35 @@ TEST_F(PurgeWatermarkTest, CrashBetweenRecordAndUnlinkLeavesItCovering) {
 	recovered->close();
 }
 
-// (d) A record that cannot be made durable stops the purge before anything is deleted.
+// A purge that chose the current segment recorded it, then stopped before the unlink: the reopened
+// writer starts past it, so the record stays known and no key lands in a sequence it covers.
+TEST_F(PurgeWatermarkTest, CrashBeforeUnlinkingTheCurrentSegmentStaysKnown) {
+	auto store = createStore();
+	write(*store, 1000);
+	write(*store, 5000);
+	ageSegment(1);
+	auto crashImage = root / "crash";
+	store->afterPurgeRecordPersistedForTests = [&]() {
+		std::filesystem::copy(storePath, crashImage, std::filesystem::copy_options::recursive);
+	};
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	store->afterPurgeRecordPersistedForTests = nullptr;
+	EXPECT_FALSE(std::filesystem::exists(segment(1)));
+	store->close();
+
+	ASSERT_TRUE(std::filesystem::exists(crashImage / "1.txnlog"));
+	auto recovered = TransactionLogStore::load(crashImage, MAX_FILE_SIZE, std::chrono::milliseconds(0), 0, false);
+	EXPECT_EQ(recovered->currentSequenceNumber.load(), 2u);
+	auto watermark = recovered->getPurgeWatermark();
+	ASSERT_TRUE(watermark.known);
+	EXPECT_EQ(watermark.purgedThrough, 5000);
+	write(*recovered, 9000);
+	EXPECT_TRUE(std::filesystem::exists(crashImage / "2.txnlog"));
+	recovered->close();
+	EXPECT_TRUE(TransactionLogStore::load(crashImage, MAX_FILE_SIZE, std::chrono::milliseconds(0), 0, false)
+		->getPurgeWatermark().known);
+}
+
 TEST_F(PurgeWatermarkTest, FailedRecordWriteDeletesNothing) {
 	auto store = createStore();
 	writeOutOfOrderSegments(*store);
@@ -263,7 +290,7 @@ TEST_F(PurgeWatermarkTest, FailedRecordWriteDeletesNothing) {
 	store->close();
 }
 
-// (d) A torn write damages only the slot being written; the other slot is the previous record,
+// A torn write damages only the slot being written; the other slot is the previous record,
 // which is still correct because nothing is unlinked until the write is durable.
 TEST_F(PurgeWatermarkTest, TornWriteFallsBackToThePreviousRecord) {
 	std::filesystem::create_directories(storePath);
@@ -301,7 +328,7 @@ TEST_F(PurgeWatermarkTest, TornWriteFallsBackToThePreviousRecord) {
 	store->close();
 }
 
-// (e) A store an older release created has no record: unknown, and purging by this release does not
+// A store an older release created has no record: unknown, and purging by this release does not
 // make it trustworthy, since keys the older release deleted were never recorded.
 TEST_F(PurgeWatermarkTest, PreviousReleaseStoreStaysUnknown) {
 	{
@@ -325,14 +352,14 @@ TEST_F(PurgeWatermarkTest, PreviousReleaseStoreStaysUnknown) {
 	EXPECT_FALSE(loadStore()->getPurgeWatermark().known);
 }
 
-// (e) An existing directory without a record is not proof of a new store: an older release can empty
+// An existing directory without a record is not proof of a new store: an older release can empty
 // a store, and its downgrade procedure removes txn.state.
 TEST_F(PurgeWatermarkTest, EmptyDirectoryWithoutARecordIsUnknown) {
 	std::filesystem::create_directories(storePath);
 	EXPECT_FALSE(loadStore()->getPurgeWatermark().known);
 }
 
-// (e) After a record was written, files deleted by something that did not update it (an older
+// After a record was written, files deleted by something that did not update it (an older
 // release's retention) are detected.
 TEST_F(PurgeWatermarkTest, UnrecordedDeletionAfterTheRecordIsDetected) {
 	{
@@ -354,7 +381,7 @@ TEST_F(PurgeWatermarkTest, UnrecordedInteriorDeletionIsDetected) {
 	EXPECT_FALSE(loadStore()->getPurgeWatermark().known);
 }
 
-// (e) A writer that would append at or below the record's sequence has reused the sequence space.
+// A writer that would append at or below the record's sequence has reused the sequence space.
 TEST_F(PurgeWatermarkTest, ReusedSequenceSpaceIsUnknown) {
 	{
 		auto writer = createStore();

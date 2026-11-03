@@ -706,6 +706,8 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 				// A malformed header has no readable entries, so there is nothing to
 				// back up. Other open failures propagate: the segment may be healthy,
 				// and reporting success would publish an incomplete backup.
+				// The restored store lacks it, and its keys cannot be proven.
+				purgeRecordCapture.known = false;
 				if (!file->malformedBackupWarningEmitted.exchange(true, std::memory_order_relaxed)) {
 					const auto displayFilePath = this->displayPath / file->path.filename();
 					std::ostringstream msg;
@@ -1071,11 +1073,21 @@ void TransactionLogStore::loadPurgeRecord() {
 	TransactionLogPurgeRecord record;
 	auto state = readTransactionLogPurgeRecord(this->path, record);
 	uint32_t currentSequence = this->currentSequenceNumber.load(std::memory_order_relaxed);
+	bool recordKnown = state == TransactionLogPurgeRecordState::Valid && record.known && !this->discoveryIncomplete;
+	// A purge that chose the current segment recorded it at T and may have stopped before the unlink.
+	// Move the writer past it, as for a segment txn.state names, so no key lands in a sequence the
+	// record already covers.
+	if (recordKnown && currentSequence == record.throughSequence &&
+		this->sequenceFiles.contains(currentSequence) && this->nextSequenceNumber == currentSequence + 1) {
+		if (!this->readOnly) {
+			this->retireCurrentSequenceLocked();
+		}
+		currentSequence++;
+	}
 	// Every sequence after the record's and before the writer's next one must still be on disk;
 	// one that is missing was deleted without being recorded (an older release's retention). A
 	// writer sequence at or below the record's means the sequence space was reused.
-	bool accounted = state == TransactionLogPurgeRecordState::Valid && record.known &&
-		record.throughSequence < currentSequence && !this->discoveryIncomplete;
+	bool accounted = recordKnown && record.throughSequence < currentSequence;
 	if (accounted) {
 		uint64_t expected = static_cast<uint64_t>(record.throughSequence) + 1;
 		for (auto it = this->sequenceFiles.upper_bound(record.throughSequence);
@@ -1121,6 +1133,9 @@ void TransactionLogStore::initializeNewPurgeRecord() {
 }
 
 bool TransactionLogStore::invalidatePurgeRecord() {
+	// A purge reads the disk generation, writes and publishes under these, so the two cannot interleave.
+	std::lock_guard<std::mutex> lock(this->writeMutex);
+	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
 	std::error_code existsError;
 	if (!std::filesystem::exists(this->path, existsError) && !existsError) {
 		return true;
@@ -1139,7 +1154,7 @@ bool TransactionLogStore::invalidatePurgeRecord() {
 			return false;
 		}
 	}
-	std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
+	std::lock_guard<std::mutex> recordLock(this->purgeRecordMutex);
 	this->purgeRecord = record;
 	return true;
 }
@@ -1253,7 +1268,6 @@ void TransactionLogStore::doPurge(
 	// Per run, not per process: a directory that stays unwritable stalls retention,
 	// and one line ever would leave every later purge silent about it.
 	bool removeWarned = false;
-	bool deferred = false;
 	auto lastFlushedPosition = this->getLastFlushedPosition();
 	uint32_t planCurrentSequence = this->currentSequenceNumber.load(std::memory_order_relaxed);
 	TransactionLogPurgeRecord nextRecord;
@@ -1360,18 +1374,16 @@ void TransactionLogStore::doPurge(
 		if (resolution == MaxKeyResolution::Resolved) {
 			raiseWatermark(maxKey);
 		} else if (resolution == MaxKeyResolution::Deferred && !all) {
-			deferred = true;
-			if (!this->purgeScanWarningEmitted.exchange(true, std::memory_order_relaxed)) {
-				try {
-					std::ostringstream msg;
-					msg << "Transaction log segment " << (this->displayPath / logFile->path.filename()).string()
-						<< " could not be read to record its largest key before purging it; retention keeps it"
-						<< " and the segments after it until a later purge can.";
-					DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
-					emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
-				} catch (...) {
-					// reporting is best-effort
-				}
+			// Per run, like the unlink warning: a segment that keeps outlasting the budget stalls retention.
+			try {
+				std::ostringstream msg;
+				msg << "Transaction log segment " << (this->displayPath / logFile->path.filename()).string()
+					<< " could not be read within ROCKSDB_JS_PURGE_SCAN_MS to record its largest key before"
+					<< " purging it; retention keeps it and the segments after it until a later purge can.";
+				DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+			} catch (...) {
+				// reporting is best-effort
 			}
 			break;
 		} else {
@@ -1380,9 +1392,6 @@ void TransactionLogStore::doPurge(
 			nextRecord.known = false;
 		}
 		candidates.emplace_back(sequenceNumber, logFile);
-	}
-	if (!deferred) {
-		this->purgeScanWarningEmitted.store(false, std::memory_order_relaxed);
 	}
 	if (candidates.empty() && sequenceNumbersToRemove.empty()) {
 		return;

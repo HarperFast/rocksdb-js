@@ -434,7 +434,6 @@ struct TransactionLogStore final {
 	TransactionLogPurgeRecord purgeRecord;
 	std::mutex purgeRecordMutex;
 	std::atomic<bool> purgeRecordWarningEmitted = false;
-	std::atomic<bool> purgeScanWarningEmitted = false;
 
 	/**
 	 * For a read-only store, whether load() found every deletion accounted for. It re-reads the
