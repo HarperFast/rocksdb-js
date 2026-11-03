@@ -1,11 +1,9 @@
 import { raiseTimestampFloor } from '../src/index.ts';
-import { dbRunner, generateDBPath, terminateWorker } from './lib/util.ts';
-import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
+import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 
 // The floor is process-wide and shared with every test file running in this
@@ -86,25 +84,21 @@ describe('raiseTimestampFloor', () => {
 		}
 	});
 
-	it('raises the clock for every worker in the process', () =>
-		dbRunner(async ({ db }) => {
-			const floor = db.getMonotonicTimestamp() + NEAR_FUTURE_MS;
-			const worker = new Worker(
-				createWorkerBootstrapScript('./test/workers/raise-timestamp-floor-worker.mts'),
-				{ eval: true, workerData: { floor } }
-			);
-			try {
-				const { raised } = await new Promise<{ raised: boolean }>((resolve, reject) => {
-					worker.once('message', resolve);
-					worker.once('error', reject);
-					worker.once('exit', (code) => reject(new Error(`worker exited early (${code})`)));
-				});
-				expect(raised).toBe(true);
-			} finally {
-				await terminateWorker(worker);
+	it('raises the clock for every worker in the process', async () => {
+		const dbPath = generateDBPath();
+		const floor = Date.now() + 60 * 60 * 1000;
+		try {
+			// Raised from a worker; only a clock shared with the main thread can
+			// put the main thread's next timestamp an hour ahead of wall time.
+			const result = await runFixture('worker', dbPath, floor);
+			expect(result.raised).toBe(true);
+			expect(result.clock).toBeGreaterThan(floor);
+		} finally {
+			if (!process.env.KEEP_FILES) {
+				rmSync(dbPath, { recursive: true, force: true });
 			}
-			expect(db.getMonotonicTimestamp()).toBeGreaterThan(floor);
-		}));
+		}
+	}, 60_000);
 
 	it('keys transaction-log batches above a floor ahead of the wall clock, after a restart', async () => {
 		const dbPath = generateDBPath();
@@ -127,7 +121,7 @@ describe('raiseTimestampFloor', () => {
 				rmSync(dbPath, { recursive: true, force: true });
 			}
 		}
-	});
+	}, 60_000);
 });
 
 type FixtureResult = {
@@ -146,12 +140,19 @@ async function runFixture(mode: string, dbPath: string, floor: number): Promise<
 		const child = spawn(process.execPath, [fixture, mode, dbPath, String(floor)], {
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
+		const deadline = setTimeout(() => child.kill('SIGKILL'), 30_000);
 		let stdout = '';
 		let stderr = '';
 		child.stdout.on('data', (chunk) => (stdout += chunk));
 		child.stderr.on('data', (chunk) => (stderr += chunk));
-		child.once('error', reject);
-		child.once('close', (code) => resolve({ code, stdout, stderr }));
+		child.once('error', (error) => {
+			clearTimeout(deadline);
+			reject(error);
+		});
+		child.once('close', (code) => {
+			clearTimeout(deadline);
+			resolve({ code, stdout, stderr });
+		});
 	});
 	expect(code, stderr).toBe(0);
 	return JSON.parse(stdout.trim().split('\n').at(-1)!);

@@ -26,8 +26,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <iomanip>
-#include <sstream>
+#include <cstdio>
 #include <thread>
 
 namespace rocksdb_js {
@@ -194,11 +193,6 @@ napi_value SteadyClockNow(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-/**
- * Raises the process-wide monotonic timestamp clock to at least the given
- * epoch-millisecond floor. Returns whether the clock moved; throws on a value
- * the clock must never adopt, so a corrupt persisted floor fails closed.
- */
 napi_value RaiseTimestampFloor(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	napi_valuetype type;
@@ -212,14 +206,15 @@ napi_value RaiseTimestampFloor(napi_env env, napi_callback_info info) {
 	const double wallClock = getWallClockTimestamp();
 	const double plausibleBound = wallClock + MAX_CLOCK_FLOOR_SKEW_MS;
 	if (const char* rejection = timestampFloorRejection(floor, plausibleBound)) {
-		std::ostringstream message;
-		message << std::fixed << std::setprecision(3) << "Timestamp floor " << floor << " " << rejection;
+		char message[192];
 		// A host clock that booted unsynchronized also lands here; naming it keeps
 		// a valid persisted floor from being mistaken for a corrupt one.
 		if (floor > plausibleBound) {
-			message << " (wall clock " << wallClock << ")";
+			std::snprintf(message, sizeof(message), "Timestamp floor %.17g %s (wall clock %.3f)", floor, rejection, wallClock);
+		} else {
+			std::snprintf(message, sizeof(message), "Timestamp floor %.17g %s", floor, rejection);
 		}
-		::napi_throw_range_error(env, nullptr, message.str().c_str());
+		::napi_throw_range_error(env, nullptr, message);
 		return nullptr;
 	}
 	napi_value result;
