@@ -2540,8 +2540,7 @@ describe('Transaction Log', () => {
 				}
 			}));
 
-		// A torn length that overruns the written extent but stays inside the pre-extended map is
-		// still a break. The committed arm is a parity check: its bound was already the watermark.
+		// The committed arm is a parity check: its bound was already the watermark.
 		it.each([false, true])(
 			'detects a torn frame whose length lands inside the map (readUncommitted: %s)',
 			(readUncommitted) =>
@@ -2569,8 +2568,6 @@ describe('Transaction Log', () => {
 				})
 		);
 
-		// The tight bound must not misreport entries appended after an uncommitted iterator
-		// captured its extent: it refreshes `size` before reading past it.
 		it('reads entries appended after a readUncommitted iterator captured its extent', () =>
 			dbRunner(async ({ db }) => {
 				const log = db.useLog('foo');
@@ -2795,7 +2792,7 @@ describe('Transaction Log', () => {
 			}
 
 			// Overruns the declared length of frame `index` past both the file and the pre-extended
-			// map an uncommitted read is bounded by; its bytes stay, so framing resumes at the next frame.
+			// map; its bytes stay, so framing resumes at the next frame.
 			function tearFrames(logPath: string, ...indexes: number[]) {
 				const image = readFileSync(logPath);
 				for (const index of indexes) {

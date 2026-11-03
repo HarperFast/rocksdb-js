@@ -770,10 +770,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     extent it captured when it last refreshed `size` (an entry boundary, refreshed before the loop
     reads at or past it), and resolves the live extent for the resync only on a break: even the
     mapping-carried getter crosses into native, so a per-frame call would tax every healthy read.
-    The native walks run before `size` has been corrected on a pre-extended (Windows) segment, so `findFramingResumeOffset()` also accepts a
-    chain landing exactly on the **end of the nonzero bytes** — a single offset, as conclusive as
-    EOF — otherwise a run shorter than `RESYNC_MIN_FRAMES` in front of the padding classifies as a
-    torn tail and recovery truncates its committed entries.
+    The native walks run before `size` has been corrected on a pre-extended (Windows) segment, so
+    `findFramingResumeOffset()` also accepts a chain landing exactly on the **end of the nonzero
+    bytes** — a single offset, as conclusive as EOF — otherwise a run shorter than
+    `RESYNC_MIN_FRAMES` in front of the padding classifies as a torn tail and recovery truncates its
+    committed entries.
 
     A resync that finds nothing is only conclusive over the bytes it could actually read. The index
     walk searches the mapped region (`min(size, mapSize)`), which is short of the written extent
