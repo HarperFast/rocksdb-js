@@ -1484,9 +1484,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
       at or below the segment the iterator was _positioned_ at (`gapFloor`), unless that segment
       did not map at query time while still the reader's to read — not written yet (positioned at
       its header) or live but unmappable (the store still has it) — so the floor is one lower. A
-      `startFromLastFlushed` query whose starting segment was already purged gets a
-      placeholder buffer with `logId` 0, and counting from that would report a prefix the reader
-      never owned. Initial positioning before the oldest retained entry is therefore not signalled:
+      starting segment that did not map is held by an empty placeholder that keeps its `logId`, and
+      the iterator keeps its position: `next()` retries the mapping while the segment is still the
+      reader's (live, or not written past yet) and advances past it only once it is gone, counting
+      it against the floor. A placeholder with `logId` 0 walked up from the lowest retained segment
+      and redelivered everything before the reader's position (#956); counting from it would also
+      report a prefix the reader never owned. Initial positioning before the oldest retained entry is therefore not signalled:
       the purged segments' timestamps no longer exist to compare against, and Harper guards that
       case at reconnect (`shouldForceBaseCopyForRetention`). A missing sequence number means
       continuity is unknown, not that it held entries (a rotation can skip a sequence whose

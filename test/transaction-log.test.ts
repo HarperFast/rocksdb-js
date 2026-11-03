@@ -3911,6 +3911,43 @@ describe('Transaction Log', () => {
 					});
 				}));
 
+			// Advancing from a placeholder with `logId` 0 walked up from segment 1 and redelivered
+			// everything before the reader's position (#956).
+			it.each([{}, { readUncommitted: true }, { startFromLastFlushed: true }])(
+				'should resume a live starting segment it could not map at its position (%o)',
+				(options) =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+						const log = db.useLog('foo');
+						// entry 1 fills segment 1, so entries 2 and 3 rotate to segment 2
+						await writeEntry(db, log, 1, 300);
+						await writeEntry(db, log, 2, 150);
+						db.flushSync();
+						await writeEntry(db, log, 3, 50);
+						const realGetMmapDescriptor = Object.getOwnPropertyDescriptor(
+							Object.getPrototypeOf(log),
+							'_getMemoryMapOfFile'
+						)!;
+						Object.defineProperty(log, '_getMemoryMapOfFile', {
+							value: () => undefined,
+							configurable: true,
+							writable: true,
+						});
+						let iterator: IterableIterator<{ data: Buffer }>;
+						try {
+							iterator = log.query(options);
+							expect(drain(iterator)).toEqual({ entries: [], gaps: [] });
+						} finally {
+							Object.defineProperty(log, '_getMemoryMapOfFile', realGetMmapDescriptor);
+						}
+
+						await writeEntry(db, log, 4, 50);
+						expect(drain(iterator)).toEqual({
+							entries: 'startFromLastFlushed' in options ? [3, 4] : [4],
+							gaps: [],
+						});
+					})
+			);
+
 			it('should not count an empty segment as unavailable', () =>
 				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
 					let database = db;
