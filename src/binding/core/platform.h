@@ -87,6 +87,15 @@ std::filesystem::path resolveIdentityPath(const std::string& path);
  */
 bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child);
 
+/**
+ * Why `floor` cannot raise the monotonic timestamp clock, or nullptr when it
+ * can: it must be a finite epoch-millisecond value in (0, MAX_TIMESTAMP_MS)
+ * and not above `plausibleBound`.
+ */
+const char* timestampFloorRejection(double floor, double plausibleBound);
+
+// Both return true only when the clock moved; a rejected or already-covered
+// floor returns false.
 bool raiseMonotonicTimestampFloor(double floor);
 
 bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);

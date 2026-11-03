@@ -26,6 +26,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <iomanip>
+#include <sstream>
 #include <thread>
 
 namespace rocksdb_js {
@@ -189,6 +191,39 @@ napi_value CurrentThreadId(napi_env env, napi_callback_info info) {
 napi_value SteadyClockNow(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_double(env, getSteadyClockNow(), &result));
+	return result;
+}
+
+/**
+ * Raises the process-wide monotonic timestamp clock to at least the given
+ * epoch-millisecond floor. Returns whether the clock moved; throws on a value
+ * the clock must never adopt, so a corrupt persisted floor fails closed.
+ */
+napi_value RaiseTimestampFloor(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
+	if (type != napi_number) {
+		::napi_throw_type_error(env, nullptr, "Timestamp floor must be a number");
+		return nullptr;
+	}
+	double floor = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &floor));
+	const double wallClock = getWallClockTimestamp();
+	const double plausibleBound = wallClock + MAX_CLOCK_FLOOR_SKEW_MS;
+	if (const char* rejection = timestampFloorRejection(floor, plausibleBound)) {
+		std::ostringstream message;
+		message << std::fixed << std::setprecision(3) << "Timestamp floor " << floor << " " << rejection;
+		// A host clock that booted unsynchronized also lands here; naming it keeps
+		// a valid persisted floor from being mistaken for a corrupt one.
+		if (floor > plausibleBound) {
+			message << " (wall clock " << wallClock << ")";
+		}
+		::napi_throw_range_error(env, nullptr, message.str().c_str());
+		return nullptr;
+	}
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, raiseMonotonicTimestampFloor(floor, plausibleBound), &result));
 	return result;
 }
 
@@ -530,6 +565,10 @@ NAPI_MODULE_INIT() {
 	napi_value steadyClockNowFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "steadyClockNow", NAPI_AUTO_LENGTH, SteadyClockNow, nullptr, &steadyClockNowFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "steadyClockNow", steadyClockNowFn));
+
+	napi_value raiseTimestampFloorFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "raiseTimestampFloor", NAPI_AUTO_LENGTH, RaiseTimestampFloor, nullptr, &raiseTimestampFloorFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "raiseTimestampFloor", raiseTimestampFloorFn));
 
 	// file lock functions (see src/backup.ts)
 	napi_value tryFileLockFn;

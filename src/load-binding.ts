@@ -1024,6 +1024,30 @@ export const currentThreadId: () => number = binding.currentThreadId;
 export const steadyClockNow: () => number = binding.steadyClockNow;
 
 /**
+ * Raises the process-wide monotonic timestamp clock — the one behind
+ * `db.getMonotonicTimestamp()`, every transaction's initial timestamp and so
+ * every transaction-log batch key — to at least `timestamp` (Unix epoch
+ * milliseconds). Every timestamp the process issues after the call is strictly
+ * greater than `timestamp`, across every database and `worker_threads` worker.
+ * Timestamps already issued and timestamps adopted with `txn.setTimestamp()`
+ * are unaffected. No open database is needed.
+ *
+ * Use it to carry a floor the caller persisted across a restart, which a
+ * backward wall-clock step would otherwise let the new process reissue. The
+ * floor is in memory only and is not a fence: restore it before the process
+ * starts any transaction it originates, and pass only floors this node
+ * persisted itself, since the clock stays that far ahead until wall time
+ * catches up.
+ *
+ * @returns `true` if the clock was raised, `false` if it was already at or
+ * above `timestamp`.
+ * @throws {TypeError} If `timestamp` is not a number.
+ * @throws {RangeError} If `timestamp` is not finite, is not greater than 0, is
+ * not less than 8.64e15, or is more than ten years ahead of the wall clock.
+ */
+export const raiseTimestampFloor: (timestamp: number) => boolean = binding.raiseTimestampFloor;
+
+/**
  * Advises the kernel that the file-backed pages of every mapped transaction log
  * are cold (Linux MADV_COLD), so they are reclaimed first under memory pressure
  * without being freed — useful during replication catch-up, where a full read of
