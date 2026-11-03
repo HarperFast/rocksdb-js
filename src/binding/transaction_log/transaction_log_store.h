@@ -904,7 +904,7 @@ private:
 		std::optional<std::chrono::steady_clock::time_point> scanDeadline = std::nullopt
 	);
 
-	/** Whether retention or `before` makes `file` old enough to purge. Throws filesystem_error. */
+	/** Throws filesystem_error. */
 	bool isPastRetention(TransactionLogFile& file, uint64_t before);
 
 	enum class MaxKeyResolution {
