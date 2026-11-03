@@ -1205,24 +1205,16 @@ struct ColumnFamilyDescriptor final {
 	std::atomic<bool> compressionPersistDirty{false};
 
 	/**
-	 * Verification-table participation of this generation, decided by
-	 * `DBRegistry::OpenDB` (AGENTS invariant 35). Once set, every handle that
-	 * attaches participates, because table slots outlive the handles that
-	 * seeded them. Accessed only under `databasesMutex`.
+	 * Verification-table participation (AGENTS invariant 35). Sticky: slots
+	 * outlive the handles that seeded them. Guarded by `databasesMutex`.
 	 */
 	bool verificationTable = false;
 
-	/**
-	 * Attached handles that do not participate. Incremented by `OpenDB`,
-	 * decremented by `DBHandle::close()` (any thread) as it detaches, after
-	 * raising `nonVerifyingTransactionWatermark`.
-	 */
 	std::atomic<uint32_t> nonVerifyingHandles{0};
 
 	/**
-	 * The database's transaction id counter when a non-participating handle
-	 * last detached: only a transaction with an id at or below it can hold a
-	 * write staged through one. 0 if none ever attached.
+	 * Highest transaction id that may hold a write staged through a detached
+	 * non-participating handle; 0 until one detaches.
 	 */
 	std::atomic<uint64_t> nonVerifyingTransactionWatermark{0};
 

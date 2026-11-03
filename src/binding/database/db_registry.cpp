@@ -1043,14 +1043,11 @@ void DBRegistry::OpenDB(
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	// Verification-table participation belongs to the column family, not the
-	// handle (AGENTS invariant 35): a write through a non-participating handle
-	// leaves a version seeded through another handle answering FRESH.
+	// AGENTS invariant 35. A write staged through a non-participating handle
+	// holds no write intent, so switching on while one may exist would let a
+	// seed taken now survive its commit. Read the count before the watermark;
+	// DBHandle::close() writes them in the other order.
 	if (options.verificationTable && !columnDescriptor->verificationTable) {
-		// Writes already staged through a non-participating handle hold no
-		// write intent, so switching on while one may exist would let a seed
-		// taken now survive their commit. Read the count before the watermark;
-		// DBHandle::close() writes them in the other order.
 		const uint32_t nonVerifying = columnDescriptor->nonVerifyingHandles.load();
 		if (nonVerifying > 0) {
 			throw rocksdb_js::DBException(
@@ -1072,8 +1069,9 @@ void DBRegistry::OpenDB(
 					}
 				}
 			}
-			// A transaction closed by its env's teardown leaves the map before
-			// its in-flight commit finishes; that commit still holds an operation.
+			// Env teardown removes a transaction from the map before cancelling
+			// its queued commit, which can still admit and write; only the
+			// descriptor-wide operation count covers it before its family claim.
 			if (mayHoldUnguardedWrite || entry.descriptor->operationsInFlight.load() > 0) {
 				throw rocksdb_js::DBException(
 					"ERR_VERIFICATION_TABLE_CONFLICT",
@@ -1088,7 +1086,6 @@ void DBRegistry::OpenDB(
 				vt->settleAllSlots();
 			}
 		}
-		columnDescriptor->verificationTable = true;
 	}
 	const bool participates = options.verificationTable || columnDescriptor->verificationTable;
 
@@ -1102,16 +1099,20 @@ void DBRegistry::OpenDB(
 	handle->compactCancelRequested.store(false);
 	entry.descriptor->attach(handle);
 
-	if (!participates) {
+	// No throw from here until columnDescriptor is set: close() decrements the
+	// count only for a handle holding both.
+	if (participates) {
+		columnDescriptor->verificationTable = true;
+	} else {
 		columnDescriptor->nonVerifyingHandles.fetch_add(1);
 	}
+	handle->enableVerificationTable = participates;
 	handle->columnDescriptor = std::move(columnDescriptor);
 	handle->descriptor = entry.descriptor;
 	handle->identityPath = entry.descriptor->identityPath;
 	handle->verificationTableDbId = verificationTableDbId;
 	handle->verificationTableColumnFamilyId = verificationTableColumnFamilyId;
 	handle->disableWAL = options.disableWAL;
-	handle->enableVerificationTable = participates;
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Attached DBHandle %p for \"%s\" (ref count = %ld)\n",
 		instance.get(), handle.get(), path.c_str(), entry.descriptor.use_count());

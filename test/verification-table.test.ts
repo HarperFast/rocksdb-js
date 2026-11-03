@@ -779,7 +779,6 @@ describe('Verification Table', () => {
 			));
 	});
 
-	// #998: slots outlive handles, so participation belongs to the column family.
 	describe('participation is per column family (#998)', () => {
 		const cachedOptions = { name: 'cached', encoding: false, verificationTable: true } as const;
 		const plainOptions = { name: 'cached', encoding: false } as const;
@@ -834,7 +833,6 @@ describe('Verification Table', () => {
 					expectStale(cached, key, 1.5e12, 1.6e12);
 
 					seed(cached, key, 1.6e12);
-					// a transaction created on the cached handle, writing through the plain one
 					await cached.transaction(async (txn: Transaction) => {
 						plain.putSync(key, makeValue(1.7e12), { transaction: txn });
 					});
@@ -883,7 +881,6 @@ describe('Verification Table', () => {
 				expect(() => cached.open()).toThrow(
 					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
 				);
-				// another column family of the same database is unaffected
 				other.open();
 				plain.close();
 				cached.open();
@@ -916,6 +913,26 @@ describe('Verification Table', () => {
 			} finally {
 				cached.close();
 				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it('opting in after a handle without the option closes discards the slots it seeded', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			try {
+				const key = Buffer.from('seeded-by-plain');
+				plain.putSync(key, makeValue(1.5e12));
+				plain.populateVersion(key, 1.5e12);
+				plain.putSync(key, makeValue(1.6e12));
+				expect(plain.verifyVersion(key, 1.5e12)).toBe(true);
+				plain.close();
+				cached.open();
+				expectStale(cached, key, 1.5e12, 1.6e12);
+			} finally {
+				cached.close();
 				keepAlive.close();
 			}
 		});
