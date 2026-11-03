@@ -1089,9 +1089,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[1];
 	UNWRAP_TRANSACTION_HANDLE("Commit");
 
-	// Every terminal case is decided before the state/reference allocations below, so none of them
-	// can leak an allocation, and the rejection order matches CommitSync's (aborted before
-	// abandoned — a handle that is both reports the abort, which is the more specific state).
+	// The rejection order matches CommitSync's (aborted before abandoned — a handle that is both
+	// reports the abort, which is the more specific state). Only a concurrent close() is decided
+	// after the allocations below, and stateOwner releases them.
 	TransactionState txnState = (*txnHandle)->state.load();
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
