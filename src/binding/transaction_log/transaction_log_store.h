@@ -930,7 +930,8 @@ private:
 
 	/**
 	 * Writes `record` with a generation above the newest on disk, folding in the disk's watermark when
-	 * it is ahead. Updates `record` to what was written.
+	 * it is ahead; a retry of this store's own failed write reuses that write's generation and slot.
+	 * Updates `record` to what was written.
 	 */
 	bool writePurgeRecord(TransactionLogPurgeRecord& record);
 

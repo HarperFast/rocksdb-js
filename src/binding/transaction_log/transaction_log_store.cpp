@@ -756,10 +756,11 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 			// to back up, and a header-less file would confuse recovery on restore.
 			// The extent is seeded above, so this no longer also means "registered
 			// but never opened".
-			// Any other file with no extent is gone from disk; only a known maximum keeps the record known.
+			// Any other file with no extent is gone from disk. Only one the record already covers, at or
+			// below its sequence with a known maximum, keeps the record known.
 			double maxKey;
 			if (seq != current) {
-				if (!file->knownMaxEntryKey(maxKey)) {
+				if (seq > purgeRecordCapture.throughSequence || !file->knownMaxEntryKey(maxKey)) {
 					purgeRecordCapture.known = false;
 				} else if (maxKey > purgeRecordCapture.watermark) {
 					purgeRecordCapture.watermark = maxKey;
@@ -793,8 +794,8 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 		entries.push_back(std::move(stateEntry));
 	}
 
-	// A store with nothing to copy and nothing purged stays out of the backup, as it did before the
-	// record existed: a restore recreates it as new, which is what it was.
+	// A store with nothing to copy and nothing purged stays out of the backup: a restore recreates it
+	// as new, which is what it was.
 	if (!entries.empty() || !purgeRecordCapture.known || purgeRecordCapture.watermark > 0) {
 		purgeRecordCapture.generation = std::max<uint64_t>(purgeRecordCapture.generation, 1);
 		std::string purgeRecordImage = encodeTransactionLogPurgeRecordImage(purgeRecordCapture);
@@ -1056,15 +1057,14 @@ bool TransactionLogStore::writePurgeRecord(TransactionLogPurgeRecord& record) {
 	}
 	// A record behind the disk (an unreadable load, or a store built over a directory it did not load)
 	// must not land in the slot holding the newer one, nor lower the watermark the disk already holds.
-	// The exception is this store's own write whose sync failed: the page cache shows it, but it may
-	// never reach the disk, so the retry rewrites its slot and leaves the last durable one alone.
+	// This store's own write whose sync failed shows in the page cache but may never reach the disk:
+	// its retry rewrites that slot, leaving the last durable one alone, and does not inherit its verdict.
 	if (state == TransactionLogPurgeRecordState::Valid && onDisk.generation >= record.generation) {
-		if (onDisk.generation == this->failedPurgeRecordGeneration) {
-			record.generation = onDisk.generation;
-		} else {
-			record.generation = onDisk.generation + 1;
-			record.watermark = std::max(record.watermark, onDisk.watermark);
-			record.throughSequence = std::max(record.throughSequence, onDisk.throughSequence);
+		bool retry = onDisk.generation == this->failedPurgeRecordGeneration;
+		record.generation = retry ? onDisk.generation : onDisk.generation + 1;
+		record.watermark = std::max(record.watermark, onDisk.watermark);
+		record.throughSequence = std::max(record.throughSequence, onDisk.throughSequence);
+		if (!retry) {
 			record.known = record.known && onDisk.known;
 		}
 	}

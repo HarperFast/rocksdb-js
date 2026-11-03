@@ -570,11 +570,24 @@ TEST_F(PurgeWatermarkTest, WritesNeverFallBehindTheDisk) {
 	ASSERT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, onDisk));
 
 	auto store = std::make_shared<TransactionLogStore>("foo", storePath, MAX_FILE_SIZE, std::chrono::milliseconds(0), 0);
+	// The first attempt's slot reaches the page cache, then its sync fails; the retry keeps the
+	// disk's watermark too.
+	store->failPurgeRecordWriteForTests = [&]() {
+		TransactionLogPurgeRecord attempted;
+		attempted.watermark = 5000;
+		attempted.throughSequence = 3;
+		attempted.generation = 6;
+		EXPECT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, attempted));
+		return true;
+	};
+	EXPECT_FALSE(store->invalidatePurgeRecord());
+	store->failPurgeRecordWriteForTests = nullptr;
 	ASSERT_TRUE(store->invalidatePurgeRecord());
 	auto record = recordOnDisk(storePath);
 	EXPECT_FALSE(record.known);
 	EXPECT_EQ(record.generation, 6u);
 	EXPECT_EQ(record.watermark, 5000);
+	EXPECT_EQ(record.throughSequence, 3u);
 	store->close();
 }
 
