@@ -1012,7 +1012,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     lingers (bounded, cleaned at env exit).
 
     Relatedly, `TransactionHandle::close()` is deliberately **napi-free** — the transaction holds
-    no `napi_env`/`napi_ref` fields (the JS database is passed to `UseLog` per-call; its former
+    no `napi_ref` fields, and its one `napi_env` (`ownerEnv`, invariant 35) is only ever compared
+    as an identity, never passed to an N-API call (the JS database is passed to `UseLog` per-call; its former
     weak `jsDatabaseRef` plus a recycled-pthread `std::thread::id` collision in close()'s
     thread-identity guard was the Linux corrupting write:
     `napi_delete_reference(dead env, dead ref)` from Shutdown). Close is therefore safe from any
