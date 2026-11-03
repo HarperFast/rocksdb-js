@@ -120,10 +120,14 @@ TransactionLogPurgeRecordState decodeTransactionLogPurgeRecordImage(
 	bool zero[2] = { true, true };
 	const uint32_t offsets[2] = { 0, TRANSACTION_LOG_PURGE_RECORD_SLOT_STRIDE };
 	for (size_t i = 0; i < 2; ++i) {
-		size_t available = size > offsets[i] ? std::min<size_t>(size - offsets[i], TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE) : 0;
-		zero[i] = std::all_of(data + offsets[i], data + offsets[i] + available, [](char byte) { return byte == 0; });
+		if (size <= offsets[i]) {
+			continue;
+		}
+		const char* slot = data + offsets[i];
+		size_t available = std::min<size_t>(size - offsets[i], TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE);
+		zero[i] = std::all_of(slot, slot + available, [](char byte) { return byte == 0; });
 		if (available == TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE) {
-			valid[i] = decodeTransactionLogPurgeRecordSlot(data + offsets[i], slots[i]);
+			valid[i] = decodeTransactionLogPurgeRecordSlot(slot, slots[i]);
 		}
 	}
 	if (!valid[0] && !valid[1]) {
@@ -147,9 +151,14 @@ TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
 	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged) noexcept {
 	try {
 		auto file = storePath / TRANSACTION_LOG_PURGE_RECORD_NAME;
-		std::error_code existsError;
-		if (!std::filesystem::exists(file, existsError) && !existsError) {
+		std::error_code statusError;
+		auto status = std::filesystem::status(file, statusError);
+		if (status.type() == std::filesystem::file_type::not_found) {
 			return TransactionLogPurgeRecordState::Absent;
+		}
+		// A read of a directory returns no bytes on some platforms, which would decode as Corrupt.
+		if (statusError || status.type() != std::filesystem::file_type::regular) {
+			return TransactionLogPurgeRecordState::Unreadable;
 		}
 		std::ifstream in(file, std::ios::binary | std::ios::in);
 		if (!in.is_open()) {
