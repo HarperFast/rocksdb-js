@@ -2441,11 +2441,15 @@ some position can be served from the log only when that position is at or above 
   store no longer exists, such as after `purgeLogs({ destroy: true })` until the next write.
 
 The call is synchronous. A read-only or secondary database reads the record from disk on each call.
-See [the purge watermark](docs/transaction-log.md#purge-watermark) for the rules.
+The result is a snapshot: a purge can run right after it. To trust what a read returned, read the log
+first and check the watermark afterwards. See
+[the purge watermark](docs/transaction-log.md#purge-watermark) for the rules.
 
 ```typescript
-const watermark = db.useLog('foo').getPurgeWatermark();
-const canResume = watermark.known && resumeKey >= watermark.purgedThrough;
+const log = db.useLog('foo');
+const entries = Array.from(log.query({ start: resumeKey }));
+const watermark = log.getPurgeWatermark();
+const complete = watermark.known && resumeKey >= watermark.purgedThrough;
 ```
 
 #### `log.path: string`

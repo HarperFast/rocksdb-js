@@ -384,12 +384,18 @@ TransactionLogStoreValidation validateTransactionLogStore(
 			store.warnings.push_back(std::string(TRANSACTION_LOG_PURGE_RECORD_NAME) +
 				" holds no valid record; the log's purge watermark reads as unknown");
 		} else if (record.known) {
-			auto above = std::find_if(store.files.begin(), store.files.end(),
-				[&record](const TransactionLogStoreFileValidation& f) { return f.sequenceNumber > record.throughSequence; });
-			if (above != store.files.end() && above->sequenceNumber != record.throughSequence + 1) {
-				store.warnings.push_back("Log files " + std::to_string(record.throughSequence + 1) + ".." +
-					std::to_string(above->sequenceNumber - 1) + " were deleted without updating " +
-					TRANSACTION_LOG_PURGE_RECORD_NAME + "; the log's purge watermark reads as unknown");
+			uint64_t expected = static_cast<uint64_t>(record.throughSequence) + 1;
+			for (const auto& file : store.files) {
+				if (file.sequenceNumber <= record.throughSequence) {
+					continue;
+				}
+				if (file.sequenceNumber != expected) {
+					store.warnings.push_back("Log files " + std::to_string(expected) + ".." +
+						std::to_string(file.sequenceNumber - 1) + " were deleted without updating " +
+						TRANSACTION_LOG_PURGE_RECORD_NAME + "; the log's purge watermark reads as unknown");
+					break;
+				}
+				++expected;
 			}
 		}
 	}

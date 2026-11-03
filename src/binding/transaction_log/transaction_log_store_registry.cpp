@@ -713,12 +713,20 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 
 	// Phase 4: Delete directories outside the lock
 	for (auto& store : storesActuallyRemoved) {
+		// remove_all deletes in no fixed order and can stop part-way, and the record does not cover
+		// unflushed segments destroy skipped, so it must read unknown before any of them can go.
+		if (!store->invalidatePurgeRecord()) {
+			try {
+				std::string msg = "Transaction log store " + store->displayPath.string() +
+					" was not deleted: its purge watermark could not be marked unknown first.";
+				DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores WARNING: %s\n", instance.get(), msg.c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg }));
+			} catch (...) {
+				// reporting is best-effort
+			}
+			continue;
+		}
 		try {
-			// Removal order is unspecified; without the record first, a crash part-way could leave a
-			// valid record beside a store missing its newest segments.
-			std::error_code recordError;
-			std::filesystem::remove(store->path / TRANSACTION_LOG_PURGE_RECORD_NAME, recordError);
-			rocksdb_js::syncDirectory(store->path, /*allowUnsupported=*/true);
 			std::filesystem::remove_all(store->path);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to remove log directory %s: %s\n",

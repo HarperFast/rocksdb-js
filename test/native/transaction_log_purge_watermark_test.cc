@@ -279,7 +279,6 @@ TEST_F(PurgeWatermarkTest, TornWriteFallsBackToThePreviousRecord) {
 	ASSERT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, second));
 	EXPECT_EQ(recordOnDisk(storePath).watermark, 9000);
 
-	// tear generation 3's slot
 	{
 		std::fstream file(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME, std::ios::binary | std::ios::in | std::ios::out);
 		file.seekp(rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_STRIDE + 24);
@@ -414,23 +413,25 @@ TEST_F(PurgeWatermarkTest, CorruptInheritedSegmentMakesItUnknown) {
 	store->close();
 }
 
-// The scan budget keeps a cold backlog from holding the purge; what it cannot read is kept.
-TEST_F(PurgeWatermarkTest, ExhaustedScanBudgetKeepsTheSegment) {
+// The scan budget keeps a cold backlog from holding the purge, and what it cannot read is kept; the
+// first file of each run is read regardless, so a file slower to read than the budget still goes.
+TEST_F(PurgeWatermarkTest, ExhaustedScanBudgetStillMakesProgress) {
 	{
 		auto writer = createStore();
 		writeOutOfOrderSegments(*writer);
 		writer->close();
 	}
 	ageSegment(1);
+	ageSegment(2);
 	auto store = loadStore();
 	TransactionLogStore::purgeScanBudgetMsForTests.store(0);
 	store->purge(nullptr, false, cutoffOneHourAgo());
-	EXPECT_TRUE(std::filesystem::exists(segment(1)));
-	EXPECT_EQ(store->getPurgeWatermark().purgedThrough, 0);
-
-	TransactionLogStore::purgeScanBudgetMsForTests.store(-1);
-	store->purge(nullptr, false, cutoffOneHourAgo());
 	EXPECT_FALSE(std::filesystem::exists(segment(1)));
+	EXPECT_TRUE(std::filesystem::exists(segment(2)));
+	EXPECT_EQ(store->getPurgeWatermark().purgedThrough, 5000);
+
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	EXPECT_FALSE(std::filesystem::exists(segment(2)));
 	EXPECT_EQ(store->getPurgeWatermark().purgedThrough, 5000);
 	store->close();
 }
@@ -446,8 +447,42 @@ TEST_F(PurgeWatermarkTest, ReadOnlyStoreRereadsTheRecord) {
 	ageSegment(1);
 	writer->purge(nullptr, false, cutoffOneHourAgo());
 	EXPECT_EQ(reader->getPurgeWatermark().purgedThrough, 5000);
+
+	// The newest slot lost after its purge ran: the older one does not cover that purge.
+	auto newest = recordOnDisk(storePath).generation;
+	{
+		std::fstream file(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME, std::ios::binary | std::ios::in | std::ios::out);
+		file.seekp((newest & 1) ? rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_STRIDE : 0);
+		file.write("\xff\xff\xff\xff", 4);
+	}
+	EXPECT_FALSE(reader->getPurgeWatermark().known);
 	reader->close();
 	writer->close();
+}
+
+// A partial directory listing proves nothing either way: unknown for this open, and not persisted.
+TEST_F(PurgeWatermarkTest, IncompleteDiscoveryIsUnknownWithoutPersistingIt) {
+	{
+		auto writer = createStore();
+		writeOutOfOrderSegments(*writer);
+		writer->close();
+	}
+	std::ofstream(storePath / "not-a-sequence.txnlog") << "x";
+	auto store = loadStore();
+	EXPECT_FALSE(store->getPurgeWatermark().known);
+	store->close();
+	EXPECT_TRUE(recordOnDisk(storePath).known);
+}
+
+// Destroy marks the record unknown before it removes anything, since it may stop part-way.
+TEST_F(PurgeWatermarkTest, InvalidationIsDurable) {
+	auto store = createStore();
+	writeOutOfOrderSegments(*store);
+	ASSERT_TRUE(store->invalidatePurgeRecord());
+	EXPECT_FALSE(store->getPurgeWatermark().known);
+	store->close();
+	EXPECT_FALSE(recordOnDisk(storePath).known);
+	EXPECT_FALSE(loadStore()->getPurgeWatermark().known);
 }
 
 TEST(TransactionLogPurgeRecord, SlotRoundTripsAndRejectsInvalidValues) {

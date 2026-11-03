@@ -443,6 +443,12 @@ struct TransactionLogStore final {
 	bool purgeHistoryAccountedAtLoad = false;
 
 	/**
+	 * Highest record generation a read-only store has read. A later read of a lower one is a newer
+	 * slot lost to corruption after its purge ran, so it no longer covers what was deleted.
+	 */
+	std::atomic<uint64_t> purgeRecordGenerationSeen = 0;
+
+	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
 	LogPosition nextLogPosition = { 0, 0 };
@@ -726,6 +732,12 @@ struct TransactionLogStore final {
 	 * persists that, so a later open can tell it apart from a store an older release created.
 	 */
 	void initializeNewPurgeRecord();
+
+	/**
+	 * Durably marks the record unknown before destroy removes the store's files, which it may do in
+	 * any order. Returns false when that cannot be made durable; destroy must then keep the files.
+	 */
+	bool invalidatePurgeRecord();
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 	/** Runs after the purge record is durable and before the first unlink. */

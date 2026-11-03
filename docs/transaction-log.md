@@ -232,15 +232,15 @@ themselves did, and they are gone.
 - The largest key of a file this process wrote is tracked as entries are appended. A file written
   by an earlier process is read once, before deletion, by the same scan that
   [the timestamp floor](#the-timestamp-floor-at-open) uses; one purge run spends at most 2 seconds
-  on these reads, and files it could not read wait for the next run. A file whose keys cannot be
+  on these reads beyond the first file, and files it could not read wait for the next run. A file whose keys cannot be
   proven because it is corrupt is still deleted, and the watermark becomes unknown.
 - The record is reported as known only when every file deletion in the store's history was recorded
   this way. A store created before this release has no record and reports unknown permanently, as
   does a store whose files an older release deleted after the record was written (detected when a
   sequence after the record's is missing), or whose record cannot be read. Files deleted outside
   rocksdb-js cannot be detected in general.
-- `purgeLogs({ destroy: true })` removes the record with the store; a log recreated under the same
-  name starts a new history.
+- `purgeLogs({ destroy: true })` marks the record unknown before it deletes anything, and keeps the
+  store's files if it cannot. A log recreated under the same name starts a new history.
 - Backups capture the record with the files they copy, so a restored store keeps its watermark.
 
 ### Error Handling

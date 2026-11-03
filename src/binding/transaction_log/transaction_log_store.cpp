@@ -750,6 +750,8 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 		if (ec) {
 			// The file was purged out from under us between the snapshot and now;
 			// skip it (a rotated file that's gone contributes nothing to restore).
+			// The record captured with it would vouch for a history this backup no longer holds.
+			purgeRecordCapture.known = false;
 			continue;
 		}
 		entries.push_back({
@@ -769,8 +771,9 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 		entries.push_back(std::move(stateEntry));
 	}
 
-	// A store with nothing to copy stays out of the backup, as it did before the record existed.
-	if (!entries.empty()) {
+	// A store with nothing to copy and nothing purged stays out of the backup, as it did before the
+	// record existed: a restore recreates it as new, which is what it was.
+	if (!entries.empty() || !purgeRecordCapture.known || purgeRecordCapture.watermark > 0) {
 		purgeRecordCapture.generation = std::max<uint64_t>(purgeRecordCapture.generation, 1);
 		std::string purgeRecordImage = encodeTransactionLogPurgeRecordImage(purgeRecordCapture);
 		entries.push_back({
@@ -1000,9 +1003,14 @@ void TransactionLogStore::scanPurgeCandidates(uint64_t before, std::chrono::stea
 			}
 		}
 	}
+	// The first scan is unbounded, outside every store lock, so a segment slower to read than the
+	// budget cannot hold retention back forever.
+	bool first = true;
 	for (const auto& logFile : unscanned) {
 		double maxKey;
-		if (this->resolveMaxKey(logFile, deadline, maxKey) == MaxKeyResolution::Deferred) {
+		auto resolution = this->resolveMaxKey(logFile, first ? std::nullopt : std::optional(deadline), maxKey);
+		first = false;
+		if (resolution == MaxKeyResolution::Deferred) {
 			break;
 		}
 	}
@@ -1040,7 +1048,7 @@ void TransactionLogStore::loadPurgeRecord() {
 	// one that is missing was deleted without being recorded (an older release's retention). A
 	// writer sequence at or below the record's means the sequence space was reused.
 	bool accounted = state == TransactionLogPurgeRecordState::Valid && record.known &&
-		record.throughSequence < currentSequence;
+		record.throughSequence < currentSequence && !this->discoveryIncomplete;
 	if (accounted) {
 		uint64_t expected = static_cast<uint64_t>(record.throughSequence) + 1;
 		for (auto it = this->sequenceFiles.upper_bound(record.throughSequence);
@@ -1058,9 +1066,12 @@ void TransactionLogStore::loadPurgeRecord() {
 	this->purgeRecord = loaded;
 	if (this->readOnly) {
 		this->purgeHistoryAccountedAtLoad = accounted;
+		this->purgeRecordGenerationSeen.store(loaded.generation, std::memory_order_relaxed);
 		return;
 	}
-	if (state != TransactionLogPurgeRecordState::Valid || record.known != accounted) {
+	// A partial listing proves nothing either way, so this open reports unknown without persisting it;
+	// a purge it runs still records unknown, since it cannot tell what the listing missed.
+	if (!this->discoveryIncomplete && (state != TransactionLogPurgeRecordState::Valid || record.known != accounted)) {
 		// Recording the verdict lets a read-only open, which cannot see what this open saw, report it.
 		loaded.generation++;
 		if (writeTransactionLogPurgeRecord(this->path, loaded)) {
@@ -1083,13 +1094,33 @@ void TransactionLogStore::initializeNewPurgeRecord() {
 	}
 }
 
+bool TransactionLogStore::invalidatePurgeRecord() {
+	std::error_code existsError;
+	if (!std::filesystem::exists(this->path, existsError) && !existsError) {
+		return true;
+	}
+	TransactionLogPurgeRecord record = this->purgeRecordSnapshot();
+	record.known = false;
+	record.generation++;
+	if (!writeTransactionLogPurgeRecord(this->path, record)) {
+		return false;
+	}
+	std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
+	this->purgeRecord = record;
+	return true;
+}
+
 TransactionLogPurgeRecord TransactionLogStore::purgeRecordSnapshot() {
 	if (this->readOnly) {
 		TransactionLogPurgeRecord record;
 		if (readTransactionLogPurgeRecord(this->path, record) != TransactionLogPurgeRecordState::Valid) {
 			return TransactionLogPurgeRecord{};
 		}
-		record.known = record.known && this->purgeHistoryAccountedAtLoad;
+		uint64_t seen = this->purgeRecordGenerationSeen.load(std::memory_order_relaxed);
+		while (record.generation > seen &&
+			!this->purgeRecordGenerationSeen.compare_exchange_weak(seen, record.generation, std::memory_order_relaxed)) {
+		}
+		record.known = record.known && this->purgeHistoryAccountedAtLoad && record.generation >= seen;
 		return record;
 	}
 	std::lock_guard<std::mutex> lock(this->purgeRecordMutex);

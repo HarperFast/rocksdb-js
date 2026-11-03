@@ -581,9 +581,6 @@ napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-/**
- * Returns `{ known: true, purgedThrough }` or `{ known: false }`; see DESIGN.md, "Purge watermark".
- */
 napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_TRANSACTION_LOG_HANDLE("GetPurgeWatermark");
