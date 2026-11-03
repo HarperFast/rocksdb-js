@@ -1905,18 +1905,13 @@ void DBDescriptor::transactionAdd(std::shared_ptr<TransactionHandle> txnHandle) 
 }
 
 /**
- * Retrieves a transaction from the registry.
+ * Retrieves a transaction from the registry. Reads none of the handle's fields:
+ * the caller may not own it (see `lookupOwnedTransaction`).
  */
 std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint64_t id) {
 	std::lock_guard<std::mutex> lock(this->txnsMutex);
 	auto it = this->transactions.find(id);
-	if (it != this->transactions.end()) {
-		auto txnHandle = it->second;
-		if (txnHandle && txnHandle->txn) {
-			return txnHandle;
-		}
-	}
-	return nullptr;
+	return it != this->transactions.end() ? it->second : nullptr;
 }
 
 /**
@@ -1945,7 +1940,7 @@ void DBDescriptor::collectTransactions(std::vector<std::shared_ptr<TransactionHa
 }
 
 /**
- * Closes every registered transaction owned by a handle created on `env`.
+ * Closes every registered transaction created on `env`.
  * See the header for why this is env-scoped rather than part of
  * DBHandle::close().
  */

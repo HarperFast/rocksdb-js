@@ -1614,9 +1614,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     transaction, and `Store.getTxnId()`'s identity check cannot tell them apart. A RocksDB
     `Transaction` and most `TransactionHandle` fields (`state`, `txn`, the touched-family set, the VT
     intents) are unsynchronized, so a foreign env staging into one races the owner and the commit
-    lane. Every N-API lookup by id therefore goes through `getOwnedTransaction()` (or, for
-    `TransactionLogHandle::addEntry`, the same `ownerEnv` comparison) and refuses another env with
-    `ERR_TRANSACTION_WRONG_ENV`. `ownerEnv` is captured at construction and immutable, unlike
+    lane. Every lookup by id therefore goes through `lookupOwnedTransaction()` (N-API callers through
+    its throwing wrapper `getOwnedTransaction()`), which refuses another env with
+    `ERR_TRANSACTION_WRONG_ENV` before reading any handle field — even the `txn` liveness check is a
+    data race from a foreign thread. `ownerEnv` is captured at construction and immutable, unlike
     `dbHandle`, which `close()` resets from whichever thread runs it; `closeTransactionsByEnv` reaps by
     the same field. Never add a by-id path that calls `transactionGet()` directly.
 

@@ -200,7 +200,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/**
 	 * The environment that created this transaction. A RocksDB transaction is
 	 * not thread-safe, so every by-id lookup rejects any other environment
-	 * (`getOwnedTransaction`). Immutable, unlike `dbHandle`, which close()
+	 * (`lookupOwnedTransaction`). Immutable, unlike `dbHandle`, which close()
 	 * resets from whichever thread runs it.
 	 */
 	const napi_env ownerEnv;
@@ -603,10 +603,25 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	);
 };
 
+enum class TransactionLookup { Found, NotFound, WrongEnv };
+
 /**
- * Resolves a transaction by id for a call made from `env`. Throws and returns
- * null when it is not registered in `descriptor`, or when `env` did not create
- * it (`ERR_TRANSACTION_WRONG_ENV`). Every N-API lookup by id goes through here.
+ * Resolves a transaction by id for a call made from `env`. Every lookup by id
+ * goes through here. Ownership is checked before any handle field is read,
+ * since a foreign env may not read them.
+ */
+TransactionLookup lookupOwnedTransaction(
+	DBDescriptor& descriptor,
+	uint64_t txnId,
+	napi_env env,
+	std::shared_ptr<TransactionHandle>& txnHandle
+);
+
+std::string foreignTransactionMessage(uint64_t txnId);
+
+/**
+ * `lookupOwnedTransaction` for N-API callers: throws and returns null unless
+ * the transaction was found, prefixing a not-found message with `context`.
  */
 std::shared_ptr<TransactionHandle> getOwnedTransaction(
 	napi_env env,
@@ -614,8 +629,6 @@ std::shared_ptr<TransactionHandle> getOwnedTransaction(
 	uint64_t txnId,
 	const char* context
 );
-
-std::string foreignTransactionMessage(uint64_t txnId);
 
 } // namespace rocksdb_js
 

@@ -24,7 +24,6 @@ async function attemptAsync(fn: (resolve: () => void, reject: (error: Error) => 
 async function attemptAll(
 	id: number
 ): Promise<Record<string, { code?: string; message?: string }>> {
-	// `store` is what Store.getTxnId() checks; this worker's store has the same identity
 	const transaction = { id, store: db.store } as any;
 	const native = db.store.db as any;
 	return {
@@ -41,7 +40,6 @@ async function attemptAll(
 parentPort?.on('message', async (event) => {
 	if (event.txnId !== undefined) {
 		const foreign = await attemptAll(event.txnId);
-		// control: a transaction this worker created is usable by id here
 		const own = new Transaction(db.store);
 		const local = await attemptAll(own.id);
 		own.abort();

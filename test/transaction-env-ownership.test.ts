@@ -48,7 +48,6 @@ describe('Transaction environment ownership', () => {
 					expect(results.local[entryPoint], entryPoint).toEqual({});
 				}
 
-				// the owner's transaction is untouched by the rejected foreign calls
 				expect(txn.getSync('k')).toBe('staged');
 				expect(txn.getSync('foreign')).toBeUndefined();
 				txn.commitSync();
