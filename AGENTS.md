@@ -762,11 +762,14 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `TransactionLogFile::size` — see invariant 5 — and
     retained after the store forgets a purged segment. It must use neither the physical nor raw
     mapped size.
-    An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
-    fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
-    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
-    Resolve it only on a break: even the mapping-carried getter crosses into native, so a per-frame
-    call would tax every healthy read. The native walks run before `size` has been
+    The pre-extended memory map is never a bound for either check: every offset in its zero fill
+    reads as an end-of-entries marker, so scanning against it both loses the exact-end signal and,
+    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding;
+    and a per-frame overrun check against it accepts any torn length short of the whole map, then
+    misframes every later read (#749). An uncommitted read therefore checks frames against the
+    extent it captured when it last refreshed `size` (an entry boundary, refreshed before the loop
+    reads at or past it), and resolves the live extent for the resync only on a break: even the
+    mapping-carried getter crosses into native, so a per-frame call would tax every healthy read. The native walks run before `size` has been
     corrected on a pre-extended (Windows) segment, so `findFramingResumeOffset()` also accepts a
     chain landing exactly on the **end of the nonzero bytes** — a single offset, as conclusive as
     EOF — otherwise a run shorter than `RESYNC_MIN_FRAMES` in front of the padding classifies as a
