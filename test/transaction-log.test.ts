@@ -1057,6 +1057,71 @@ describe('Transaction Log', () => {
 				}
 			}));
 
+		it('rejects entries for a transaction that is committing', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const txn = new Transaction(db.store);
+				const txnLog = txn.useLog('foo');
+				log.addEntry(Buffer.from('staged'), txn.id);
+				await txn.put('key', 'value');
+
+				const committing = txn.commit();
+				expect(() => log.addEntry(Buffer.from('late'), txn.id)).toThrow(
+					'Transaction is not in pending state'
+				);
+				expect(() => txnLog.addEntry(Buffer.from('late'))).toThrow(
+					'Transaction is not in pending state'
+				);
+				await committing;
+				expect(() => log.addEntry(Buffer.from('late'), txn.id)).toThrow(
+					`Transaction id ${txn.id} not found`
+				);
+
+				expect(Array.from(log.query({ start: 0 }), ({ data }) => data.toString())).toEqual([
+					'staged',
+				]);
+			}));
+
+		it.each([
+			['dedicated commit threads', undefined],
+			['the legacy libuv path', '0'],
+			['the two-lane pipeline', '2'],
+		])(
+			'rejects entries from every environment while the commit is held (%s)',
+			(_mode, commitThread) =>
+				dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+					const env: NodeJS.ProcessEnv = {
+						...process.env,
+						ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '1000',
+					};
+					if (commitThread === undefined) {
+						delete env.ROCKSDB_JS_COMMIT_THREAD;
+					} else {
+						env.ROCKSDB_JS_COMMIT_THREAD = commitThread;
+					}
+					const result = await new Promise<{
+						code: number | null;
+						signal: NodeJS.Signals | null;
+						stderr: string;
+					}>((resolve, reject) => {
+						const child = spawn(
+							process.execPath,
+							[join(__dirname, 'fixtures', 'fork-add-entry-during-commit.mts'), dbPath],
+							{ env, timeout: 20_000 }
+						);
+						let stderr = '';
+						child.stderr.on('data', (chunk) => (stderr += chunk));
+						child.once('error', reject);
+						child.once('close', (code, signal) => resolve({ code, signal, stderr }));
+					});
+					expect({ code: result.code, signal: result.signal }, result.stderr).toEqual({
+						code: 0,
+						signal: null,
+					});
+				}),
+			30_000
+		);
+
 		it('rejects the former unlimited transaction log size of 0', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }], skipOpen: true }, async ({ db }) => {
 				expect(() => db.open()).toThrow(

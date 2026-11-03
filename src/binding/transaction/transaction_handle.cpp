@@ -184,6 +184,10 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
 		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
+	if (this->state != TransactionState::Pending) {
+		throw rocksdb_js::DBException("Transaction is not in pending state");
+	}
+
 	// #668 (defense in depth): the write-ahead log is write-once per transaction. If
 	// committedPosition is already set, this transaction's batch was durably written by a
 	// prior commit attempt (committedPosition survives resetTransaction). A commit that

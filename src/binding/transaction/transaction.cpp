@@ -1388,6 +1388,9 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			(*txnHandle)->logEntryBatch.reset();
 		} else {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
+			if ((*txnHandle)->state == TransactionState::Committing) {
+				(*txnHandle)->state = TransactionState::Pending;
+			}
 			claim.release(descriptor.get());
 			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
 		}
