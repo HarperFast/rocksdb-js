@@ -540,7 +540,8 @@ DBDescriptor::~DBDescriptor() {
 	if (this->db && !this->closeFlushed) {
 		try {
 			const rocksdb::SequenceNumber flushedSequence = this->db->GetLatestSequenceNumber();
-			rocksdb::Status status = this->flush();
+			// Exit-time: nothing else can be admitted, so do not wait out a stall.
+			rocksdb::Status status = this->flush(true);
 			if (status.ok()) {
 				if (!this->readOnly) {
 					this->recordFlushedLogPosition(flushedSequence);
@@ -684,15 +685,11 @@ void DBDescriptor::finishClose(bool destroying) {
 		rocksdb::Log(rocksdb::InfoLogLevel::INFO_LEVEL, infoLog, "rocksdb-js close: %s", phase.c_str());
 	};
 
-	// Flush before teardown, destroy included: a destroy() whose files survive
-	// (deletion failed, or the process died first) must not lose unflushed
-	// disableWAL writes, and RocksDB will not flush on Close()
-	// (avoid_flush_during_shutdown). A destroy flushes with allow_write_stall,
-	// so it never waits out a stall while it holds the `destroyingPaths` gate;
-	// a close keeps the waiting default (AGENTS invariant 16). A destroy whose
-	// flush fails still tears down and deletes, since a database with a sticky
-	// background error must stay destroyable; its error is reported after
-	// teardown, which destroy() treats as non-fatal.
+	// RocksDB does not flush on Close() (avoid_flush_during_shutdown), so this is
+	// the only flush, destroy included: its files can outlive the call. A destroy
+	// holds the path gate, so it does not wait out a stall, and a failed destroy
+	// flush is reported after teardown rather than blocking deletion. See
+	// DESIGN.md "Close does not wait for compaction".
 	std::string closeError;
 	rocksdb::Status status;
 	bool flushedNow = false;
@@ -702,7 +699,7 @@ void DBDescriptor::finishClose(bool destroying) {
 		logPhase(destroying ? "flushing (destroying)" : "flushing");
 		status = testConsumeCloseFlushFailure()
 			? rocksdb::Status::IOError("Injected database close flush failure")
-			: this->flush(destroying);
+			: this->flush(/*allowWriteStall=*/destroying);
 		if (!status.ok()) {
 			closeError = std::string("Failed to flush database during ") + (destroying ? "destroy: " : "close: ") + status.ToString();
 			if (!destroying) {
@@ -2675,8 +2672,8 @@ napi_value DBDescriptor::listTransactionLogStores(napi_env env) {
 /**
  * Purges transaction logs.
  */
-napi_value DBDescriptor::purgeTransactionLogs(napi_env env, napi_value options) {
-	return TransactionLogStoreRegistry::PurgeStores(env, this->identityPath, options);
+std::vector<TransactionLogStoreRegistry::PurgedLogFile> DBDescriptor::purgeTransactionLogs(const TransactionLogStoreRegistry::PurgeOptions& options) {
+	return TransactionLogStoreRegistry::PurgeStores(this->identityPath, options);
 }
 
 /**

@@ -2791,12 +2791,20 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
-	// Counted so finishClose() waits for an admitted purge before its flush
-	// notifies the stores this purge may be destroying.
-	ACQUIRE_OPERATIONS_LOCK();
 	THROW_IF_READONLY((*dbHandle)->descriptor, "Purge logs failed: ");
 
-	return (*dbHandle)->descriptor->purgeTransactionLogs(env, argv[0]);
+	// Options and results are converted outside the guard: a getter or setter
+	// that closes this database would otherwise wait on its own guard.
+	TransactionLogStoreRegistry::PurgeOptions options;
+	NAPI_STATUS_THROWS(TransactionLogStoreRegistry::ReadPurgeOptions(env, argv[0], options));
+	std::vector<TransactionLogStoreRegistry::PurgedLogFile> removed;
+	{
+		// Counted so finishClose() waits for an admitted purge before its flush
+		// notifies the stores this purge may be destroying.
+		ACQUIRE_OPERATIONS_LOCK();
+		removed = (*dbHandle)->descriptor->purgeTransactionLogs(options);
+	}
+	return TransactionLogStoreRegistry::PurgedLogFilesToJS(env, removed, options.includeEntryCounts);
 }
 
 /**

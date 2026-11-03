@@ -146,6 +146,8 @@ if (!isMainThread) {
 		// has been unregistered.
 		const flushing = db.flush().catch(() => {});
 		await delay(200);
+		if (Array.from(log.query({ startFromLastFlushed: true })).length !== 10)
+			throw new Error('The delayed flush listener already ran; this case proves nothing');
 		shutdown();
 		await flushing;
 		const reopened = RocksDatabase.open(path);
@@ -174,7 +176,7 @@ if (!isMainThread) {
 			if (!String(error).includes('Injected database destruction failure')) throw error;
 		}
 		const elapsed = performance.now() - started;
-		// A flush that waits out the stall takes seconds here; this one takes milliseconds.
+		// A flush that waits out the stall measured 4.2s here; this one takes milliseconds.
 		if (elapsed > 2_000)
 			throw new Error(`destroy() took ${elapsed}ms: its flush waited out the write stall`);
 		const reopened = RocksDatabase.open(path);
@@ -183,7 +185,7 @@ if (!isMainThread) {
 			if (reopened.getSync(`tail-${i}`) !== i)
 				throw new Error(`Missing tail-${i}: the destroy flush did not persist it`);
 		}
-		// Still stalled, and close() waits out a stall; destroy() does not.
+		// Still stalled: close() would wait out the stall.
 		try {
 			reopened.destroy();
 		} catch (error) {

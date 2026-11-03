@@ -896,7 +896,7 @@ public:
 	void removeListenersByEnv(napi_env env);
 
 	napi_value listTransactionLogStores(napi_env env);
-	napi_value purgeTransactionLogs(napi_env env, napi_value options);
+	std::vector<TransactionLogStoreRegistry::PurgedLogFile> purgeTransactionLogs(const TransactionLogStoreRegistry::PurgeOptions& options);
 	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
 	/**
 	 * Flushes every column family's memtable. `allowWriteStall = false` (the RocksDB default)
