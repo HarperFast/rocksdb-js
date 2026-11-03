@@ -297,6 +297,37 @@ TEST_F(PurgeWatermarkTest, FailedUnlinkLeavesTheChosenCurrentSegmentRetired) {
 	store->close();
 }
 
+// A retry inherits the failed attempt's sequence, which can cover the current segment even when this
+// run did not choose it; the writer must still move past it.
+TEST_F(PurgeWatermarkTest, RetryRetiresACurrentSegmentTheRecordCovers) {
+	auto store = createStore();
+	write(*store, 1000);
+	write(*store, 5000);
+	write(*store, 3000); // segment 2, current
+	ageSegment(1);
+	ageSegment(2);
+	auto durable = recordOnDisk(storePath).generation;
+	store->failPurgeRecordWriteForTests = [&]() {
+		TransactionLogPurgeRecord attempted;
+		attempted.known = true;
+		attempted.watermark = 5000;
+		attempted.throughSequence = 2;
+		attempted.generation = durable + 1;
+		EXPECT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, attempted));
+		return true;
+	};
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	store->failPurgeRecordWriteForTests = nullptr;
+	ASSERT_EQ(store->currentSequenceNumber.load(), 2u);
+	write(*store, 9000); // segment 2 again, now too recent to purge
+	ageSegment(1);
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	EXPECT_FALSE(std::filesystem::exists(segment(1)));
+	EXPECT_EQ(recordOnDisk(storePath).throughSequence, 2u);
+	EXPECT_EQ(store->currentSequenceNumber.load(), 3u);
+	store->close();
+}
+
 TEST_F(PurgeWatermarkTest, FailedRecordWriteDeletesNothing) {
 	auto store = createStore();
 	writeOutOfOrderSegments(*store);

@@ -1458,9 +1458,10 @@ void TransactionLogStore::doPurge(
 		std::lock_guard<std::mutex> recordLock(this->purgeRecordMutex);
 		this->purgeRecord = nextRecord;
 	}
-	// Before any unlink can stop the loop: a chosen current segment left writable would take keys
-	// above a watermark that already claims its sequence.
-	if (chosen(planCurrentSequence) && this->currentSequenceNumber.load(std::memory_order_relaxed) == planCurrentSequence) {
+	// Before any unlink can stop the loop: a current segment the record covers, left writable, would
+	// take keys above a watermark that already claims its sequence. The record's sequence, not this
+	// run's plan, decides: a retry inherits a failed attempt's.
+	if (nextRecord.throughSequence >= this->currentSequenceNumber.load(std::memory_order_relaxed)) {
 		this->retireCurrentSequenceLocked();
 	}
 #ifdef ROCKSDB_JS_NATIVE_TESTS
