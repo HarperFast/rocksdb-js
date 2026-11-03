@@ -7,10 +7,10 @@
 namespace rocksdb_js {
 
 enum class TransactionState : uint8_t {
-	Pending,    // Transaction is active and can accept operations
-	Committing, // Transaction is in the process of committing
-	Committed,  // Transaction has been successfully committed
-	Aborted     // Transaction has been aborted/rolled back
+	Pending,
+	Committing,
+	Committed,
+	Aborted
 };
 
 /**
@@ -30,12 +30,11 @@ public:
 		return this->state.load(std::memory_order_relaxed);
 	}
 
-	/** Moves `from` -> `to`; false (and no change) when the state is not `from`. */
 	bool transition(TransactionState from, TransactionState to) noexcept {
 		return this->state.compare_exchange_strong(from, to, std::memory_order_acq_rel, std::memory_order_relaxed);
 	}
 
-	/** Moves `Pending` or `Committing` to `Aborted`; returns the state it found. */
+	/** Returns the state found, so `close()` can tell a commit that already landed. */
 	TransactionState abort() noexcept {
 		TransactionState current = this->load();
 		while ((current == TransactionState::Pending || current == TransactionState::Committing) &&

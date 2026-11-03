@@ -216,8 +216,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 *
 	 * Only this field is synchronized. A write through this transaction while a
 	 * commit is in flight — from the owning env, or from another env through
-	 * Database::PutSync/RemoveSync by txnId — still reads the plain `state`, and
-	 * from another env can stage into `txn` with no ordering against the lane.
+	 * Database::PutSync/RemoveSync by txnId — still passes the relaxed `state`
+	 * gate, and from another env can stage into `txn` with no ordering against
+	 * the lane.
 	 */
 	std::atomic<bool> writesAbandoned{false};
 	static_assert(std::atomic<bool>::is_always_lock_free);

@@ -977,9 +977,8 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			}
 		}
 	} else {
-		// Normal error path: reset to Pending so JS can retry. A compare-exchange, not a
-		// check-then-store: a foreign close() can settle Aborted and delete txn concurrently,
-		// and a Pending handle without a txn would be re-admitted by Commit.
+		// Normal error path: reset to Pending so JS can retry, unless a foreign close() already
+		// settled Aborted and deleted txn.
 		if (state->handle) {
 			state->handle->state.transition(TransactionState::Committing, TransactionState::Pending);
 		}
