@@ -724,7 +724,6 @@ struct TransactionLogStore final {
 
 	PurgeWatermark getPurgeWatermark();
 
-	/** The purge record a backup of this store captures. */
 	TransactionLogPurgeRecord purgeRecordSnapshot();
 
 	/**
@@ -926,8 +925,14 @@ private:
 	/** Scans rotated purge candidates before purge() takes writeMutex, so appends need not wait on the reads. */
 	void scanPurgeCandidates(uint64_t before, std::chrono::steady_clock::time_point deadline);
 
-	/** Durably writes `record`, warning once when it cannot. Caller holds writeMutex and dataSetsMutex. */
-	bool persistPurgeRecord(const TransactionLogPurgeRecord& record);
+	/**
+	 * Writes `record` with a generation above the newest on disk, folding in the disk's watermark when
+	 * it is ahead. Updates `record` to what was written.
+	 */
+	bool writePurgeRecord(TransactionLogPurgeRecord& record);
+
+	/** writePurgeRecord(), warning once when it fails. Caller holds writeMutex and dataSetsMutex. */
+	bool persistPurgeRecord(TransactionLogPurgeRecord& record);
 
 	/** Reads the purge record and applies the baseline rule; load() calls it before retention runs. */
 	void loadPurgeRecord();

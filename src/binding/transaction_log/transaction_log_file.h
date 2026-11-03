@@ -376,9 +376,13 @@ struct TransactionLogFile final {
 	double appendMaxKey = 0;
 	bool appendMaxExact = false;
 
-	/** Largest entry key a purge scan proved this rotated file holds. Guarded by fileMutex. */
+	/**
+	 * Largest entry key a purge scan proved this file holds. `scannedExtent` is 0 for a rotated file,
+	 * which never changes again, else the size the scan covered. Guarded by fileMutex.
+	 */
 	double scannedMaxKey = 0;
 	bool maxKeyScanned = false;
+	uint32_t scannedExtent = 0;
 
 	/**
 	 * True once a failed append may have left bytes past `size`. The file is refused for further
@@ -588,8 +592,8 @@ struct TransactionLogFile final {
 	/** This file's largest entry key, when it is known without reading the file. */
 	bool knownMaxEntryKey(double& maxKey);
 
-	/** Caches a scan's result; only for a rotated file, which is never appended again. */
-	void recordScannedMaxKey(double maxKey);
+	/** Caches a scan's result: `extent` 0 for a rotated file, else the size the scan covered. */
+	void recordScannedMaxKey(double maxKey, uint32_t extent);
 
 	/**
 	 * Closes the log file and removes it.

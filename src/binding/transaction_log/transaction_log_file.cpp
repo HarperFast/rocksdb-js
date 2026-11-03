@@ -467,16 +467,19 @@ bool TransactionLogFile::knownMaxEntryKey(double& maxKey) {
 		maxKey = this->appendMaxKey;
 		return true;
 	}
-	if (this->maxKeyScanned) {
+	// Appends only grow `size`, so an unchanged size means nothing was appended since the scan.
+	if (this->maxKeyScanned &&
+		(this->scannedExtent == 0 || this->scannedExtent == this->size.load(std::memory_order_relaxed))) {
 		maxKey = this->scannedMaxKey;
 		return true;
 	}
 	return false;
 }
 
-void TransactionLogFile::recordScannedMaxKey(double maxKey) {
+void TransactionLogFile::recordScannedMaxKey(double maxKey, uint32_t extent) {
 	std::lock_guard<std::mutex> lock(this->fileMutex);
 	this->scannedMaxKey = maxKey;
+	this->scannedExtent = extent;
 	this->maxKeyScanned = true;
 }
 

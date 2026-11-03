@@ -23,7 +23,14 @@ struct TransactionLogPurgeRecord final {
 	uint64_t generation = 0;
 };
 
-enum class TransactionLogPurgeRecordState { Absent, Corrupt, Valid };
+enum class TransactionLogPurgeRecordState {
+	Absent,
+	/** Read, and neither slot holds a valid record. */
+	Corrupt,
+	/** Could not be read (an I/O error); says nothing about what the file holds. */
+	Unreadable,
+	Valid,
+};
 
 /** Bytes in one record slot; the file holds two, a sector apart. */
 constexpr uint32_t TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE = 32;
@@ -36,16 +43,19 @@ void encodeTransactionLogPurgeRecordSlot(char* slot, const TransactionLogPurgeRe
 /** Returns false for a slot that is zero, torn, or semantically invalid. */
 bool decodeTransactionLogPurgeRecordSlot(const char* slot, TransactionLogPurgeRecord& record);
 
-/** The current record of a file image: the valid slot with the higher generation. */
+/**
+ * The current record of a file image: the valid slot with the higher generation. `otherSlotDamaged`
+ * reports that the other slot is neither valid nor zero, so a newer record may have been lost.
+ */
 TransactionLogPurgeRecordState decodeTransactionLogPurgeRecordImage(
-	const char* data, size_t size, TransactionLogPurgeRecord& record);
+	const char* data, size_t size, TransactionLogPurgeRecord& record, bool* otherSlotDamaged = nullptr);
 
 /** A whole file image holding `record` in its slot and a zeroed other slot. */
 std::string encodeTransactionLogPurgeRecordImage(const TransactionLogPurgeRecord& record);
 
-/** Reads `<storePath>/txn.purged`. Any read failure other than absence is Corrupt. */
+/** Reads `<storePath>/txn.purged`. */
 TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
-	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record) noexcept;
+	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged = nullptr) noexcept;
 
 /**
  * Durably writes `record` into the slot its generation selects, leaving the other slot (the previous

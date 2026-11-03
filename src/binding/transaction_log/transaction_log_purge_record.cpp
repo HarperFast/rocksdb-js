@@ -1,4 +1,5 @@
 #include "transaction_log_purge_record.h"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -73,9 +74,9 @@ bool createRecordFile(const std::filesystem::path& storePath, const std::filesys
 		std::filesystem::remove(temp, ignored);
 		return false;
 	}
-	// A creation that does not survive a crash reads as an absent record, which is unknown.
-	syncDirectory(storePath, /*allowUnsupported=*/true);
-	return true;
+	// A filesystem without directory sync forfeits only the record's name, which reads as absent
+	// (unknown) if lost.
+	return syncDirectory(storePath, /*allowUnsupported=*/true);
 }
 
 } // namespace
@@ -113,20 +114,26 @@ bool decodeTransactionLogPurgeRecordSlot(const char* slot, TransactionLogPurgeRe
 }
 
 TransactionLogPurgeRecordState decodeTransactionLogPurgeRecordImage(
-	const char* data, size_t size, TransactionLogPurgeRecord& record) {
+	const char* data, size_t size, TransactionLogPurgeRecord& record, bool* otherSlotDamaged) {
 	TransactionLogPurgeRecord slots[2];
 	bool valid[2] = { false, false };
-	if (size >= TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE) {
-		valid[0] = decodeTransactionLogPurgeRecordSlot(data, slots[0]);
-	}
-	if (size >= TRANSACTION_LOG_PURGE_RECORD_FILE_SIZE) {
-		valid[1] = decodeTransactionLogPurgeRecordSlot(data + TRANSACTION_LOG_PURGE_RECORD_SLOT_STRIDE, slots[1]);
+	bool zero[2] = { true, true };
+	const uint32_t offsets[2] = { 0, TRANSACTION_LOG_PURGE_RECORD_SLOT_STRIDE };
+	for (size_t i = 0; i < 2; ++i) {
+		size_t available = size > offsets[i] ? std::min<size_t>(size - offsets[i], TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE) : 0;
+		zero[i] = std::all_of(data + offsets[i], data + offsets[i] + available, [](char byte) { return byte == 0; });
+		if (available == TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE) {
+			valid[i] = decodeTransactionLogPurgeRecordSlot(data + offsets[i], slots[i]);
+		}
 	}
 	if (!valid[0] && !valid[1]) {
 		return TransactionLogPurgeRecordState::Corrupt;
 	}
 	size_t current = !valid[0] || (valid[1] && slots[1].generation > slots[0].generation) ? 1 : 0;
 	record = slots[current];
+	if (otherSlotDamaged) {
+		*otherSlotDamaged = !valid[1 - current] && !zero[1 - current];
+	}
 	return TransactionLogPurgeRecordState::Valid;
 }
 
@@ -137,7 +144,7 @@ std::string encodeTransactionLogPurgeRecordImage(const TransactionLogPurgeRecord
 }
 
 TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
-	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record) noexcept {
+	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged) noexcept {
 	try {
 		auto file = storePath / TRANSACTION_LOG_PURGE_RECORD_NAME;
 		std::error_code existsError;
@@ -146,16 +153,16 @@ TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
 		}
 		std::ifstream in(file, std::ios::binary | std::ios::in);
 		if (!in.is_open()) {
-			return TransactionLogPurgeRecordState::Corrupt;
+			return TransactionLogPurgeRecordState::Unreadable;
 		}
-		char image[TRANSACTION_LOG_PURGE_RECORD_FILE_SIZE];
+		char image[TRANSACTION_LOG_PURGE_RECORD_FILE_SIZE] = {};
 		in.read(image, sizeof(image));
 		if (in.bad()) {
-			return TransactionLogPurgeRecordState::Corrupt;
+			return TransactionLogPurgeRecordState::Unreadable;
 		}
-		return decodeTransactionLogPurgeRecordImage(image, static_cast<size_t>(in.gcount()), record);
+		return decodeTransactionLogPurgeRecordImage(image, static_cast<size_t>(in.gcount()), record, otherSlotDamaged);
 	} catch (...) {
-		return TransactionLogPurgeRecordState::Corrupt;
+		return TransactionLogPurgeRecordState::Unreadable;
 	}
 }
 

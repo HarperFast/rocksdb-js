@@ -37,7 +37,9 @@ static unsigned backupUnresolvedWaitMs() {
 
 // Bounds the reads one purge run spends resolving the largest key of files this process did not write,
 // so a cold backlog cannot hold an open (which runs retention under the registry lock) for long.
-// Files left unresolved are kept and purged by a later run.
+// Files left unresolved are kept and purged by a later run; a deployment whose files take longer to
+// read than the budget raises ROCKSDB_JS_PURGE_SCAN_MS, as for the timestamp-floor walk. Read once
+// per process (::getenv races a process.env write from another thread).
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 std::atomic<int64_t> TransactionLogStore::purgeScanBudgetMsForTests = -1;
 #endif
@@ -48,7 +50,11 @@ static std::chrono::milliseconds purgeScanBudget() {
 		return std::chrono::milliseconds(override);
 	}
 #endif
-	return std::chrono::milliseconds(2000);
+	static const std::chrono::milliseconds budget(parseDurationMs(
+		::getenv("ROCKSDB_JS_PURGE_SCAN_MS"),
+		/*defaultMs=*/2000,
+		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL));
+	return budget;
 }
 
 // Helper function to extract exception message from exception_ptr
@@ -743,6 +749,11 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 			// to back up, and a header-less file would confuse recovery on restore.
 			// The extent is seeded above, so this no longer also means "registered
 			// but never opened".
+			// Any other file with no extent is gone from disk, keys unknown.
+			double maxKey;
+			if (seq != current && !file->knownMaxEntryKey(maxKey)) {
+				purgeRecordCapture.known = false;
+			}
 			continue;
 		}
 		std::error_code ec;
@@ -950,6 +961,8 @@ TransactionLogStore::MaxKeyResolution TransactionLogStore::resolveMaxKey(
 		std::error_code existsError;
 		return !std::filesystem::exists(file->path, existsError) && !existsError;
 	};
+	bool isCurrent = file->sequenceNumber == this->currentSequenceNumber.load(std::memory_order_relaxed);
+	uint32_t extentBefore = file->size.load(std::memory_order_relaxed);
 	try {
 		// The floor scan proves it saw every durable key; the query index cannot (DESIGN.md, "Purge watermark").
 		auto scan = file->scanMaxEntryTimestamp(std::numeric_limits<double>::infinity(), deadline);
@@ -957,8 +970,10 @@ TransactionLogStore::MaxKeyResolution TransactionLogStore::resolveMaxKey(
 			case RecoveryScan::Kind::Clean:
 			case RecoveryScan::Kind::TruncateTail:
 				maxKey = scan.maxTimestamp;
-				if (file->sequenceNumber != this->currentSequenceNumber.load(std::memory_order_relaxed)) {
-					file->recordScannedMaxKey(maxKey);
+				if (!isCurrent) {
+					file->recordScannedMaxKey(maxKey, 0);
+				} else if (extentBefore > 0) {
+					file->recordScannedMaxKey(maxKey, extentBefore);
 				}
 				return MaxKeyResolution::Resolved;
 			case RecoveryScan::Kind::MidFileCorruption:
@@ -987,7 +1002,7 @@ void TransactionLogStore::scanPurgeCandidates(uint64_t before, std::chrono::stea
 		}
 		uint32_t currentSequence = this->currentSequenceNumber.load(std::memory_order_relaxed);
 		for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
-			if (sequenceNumber >= currentSequence || sequenceNumber > lastFlushedPosition.logSequenceNumber) {
+			if (sequenceNumber > currentSequence || sequenceNumber > lastFlushedPosition.logSequenceNumber) {
 				break;
 			}
 			try {
@@ -1003,25 +1018,37 @@ void TransactionLogStore::scanPurgeCandidates(uint64_t before, std::chrono::stea
 			}
 		}
 	}
-	// The first scan is unbounded, outside every store lock, so a segment slower to read than the
-	// budget cannot hold retention back forever.
-	bool first = true;
 	for (const auto& logFile : unscanned) {
 		double maxKey;
-		auto resolution = this->resolveMaxKey(logFile, first ? std::nullopt : std::optional(deadline), maxKey);
-		first = false;
-		if (resolution == MaxKeyResolution::Deferred) {
+		if (this->resolveMaxKey(logFile, deadline, maxKey) == MaxKeyResolution::Deferred) {
 			break;
 		}
 	}
 }
 
-bool TransactionLogStore::persistPurgeRecord(const TransactionLogPurgeRecord& record) {
+bool TransactionLogStore::writePurgeRecord(TransactionLogPurgeRecord& record) {
+	TransactionLogPurgeRecord onDisk;
+	auto state = readTransactionLogPurgeRecord(this->path, onDisk);
+	if (state == TransactionLogPurgeRecordState::Unreadable) {
+		return false;
+	}
+	// A record behind the disk (an unreadable load, or a store built over a directory it did not load)
+	// must not land in the slot holding the newer one, nor lower the watermark the disk already holds.
+	if (state == TransactionLogPurgeRecordState::Valid && onDisk.generation >= record.generation) {
+		record.generation = onDisk.generation + 1;
+		record.watermark = std::max(record.watermark, onDisk.watermark);
+		record.throughSequence = std::max(record.throughSequence, onDisk.throughSequence);
+		record.known = record.known && onDisk.known;
+	}
+	return writeTransactionLogPurgeRecord(this->path, record);
+}
+
+bool TransactionLogStore::persistPurgeRecord(TransactionLogPurgeRecord& record) {
 	bool written =
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 		!(this->failPurgeRecordWriteForTests && this->failPurgeRecordWriteForTests()) &&
 #endif
-		writeTransactionLogPurgeRecord(this->path, record);
+		this->writePurgeRecord(record);
 	if (written) {
 		this->purgeRecordWarningEmitted.store(false, std::memory_order_relaxed);
 		return true;
@@ -1069,13 +1096,14 @@ void TransactionLogStore::loadPurgeRecord() {
 		this->purgeRecordGenerationSeen.store(loaded.generation, std::memory_order_relaxed);
 		return;
 	}
-	// A partial listing proves nothing either way, so this open reports unknown without persisting it;
-	// a purge it runs still records unknown, since it cannot tell what the listing missed.
-	if (!this->discoveryIncomplete && (state != TransactionLogPurgeRecordState::Valid || record.known != accounted)) {
+	// Neither a partial listing nor an unreadable record proves anything, so this open reports unknown
+	// without persisting it; a purge it runs still records unknown, since it cannot tell what it missed.
+	bool conclusive = !this->discoveryIncomplete && state != TransactionLogPurgeRecordState::Unreadable;
+	if (conclusive && (state != TransactionLogPurgeRecordState::Valid || record.known != accounted)) {
 		// Recording the verdict lets a read-only open, which cannot see what this open saw, report it.
 		loaded.generation++;
-		if (writeTransactionLogPurgeRecord(this->path, loaded)) {
-			this->purgeRecord.generation = loaded.generation;
+		if (this->writePurgeRecord(loaded)) {
+			this->purgeRecord = loaded;
 		}
 	}
 }
@@ -1084,14 +1112,12 @@ void TransactionLogStore::initializeNewPurgeRecord() {
 	TransactionLogPurgeRecord record;
 	record.known = true;
 	record.generation = 1;
-	{
-		std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
-		this->purgeRecord = record;
-	}
 	// Best effort: a record that was never written makes a later open report unknown, never too low.
-	if (!writeTransactionLogPurgeRecord(this->path, record)) {
+	if (!this->writePurgeRecord(record)) {
 		DEBUG_LOG("%p TransactionLogStore::initializeNewPurgeRecord Failed to write %s\n", this, this->path.string().c_str());
 	}
+	std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
+	this->purgeRecord = record;
 }
 
 bool TransactionLogStore::invalidatePurgeRecord() {
@@ -1099,11 +1125,19 @@ bool TransactionLogStore::invalidatePurgeRecord() {
 	if (!std::filesystem::exists(this->path, existsError) && !existsError) {
 		return true;
 	}
+	TransactionLogPurgeRecord onDisk;
+	auto state = readTransactionLogPurgeRecord(this->path, onDisk);
+	if (state == TransactionLogPurgeRecordState::Unreadable) {
+		return false;
+	}
 	TransactionLogPurgeRecord record = this->purgeRecordSnapshot();
 	record.known = false;
-	record.generation++;
-	if (!writeTransactionLogPurgeRecord(this->path, record)) {
-		return false;
+	// An absent or corrupt record already reads as unknown.
+	if (state == TransactionLogPurgeRecordState::Valid && onDisk.known) {
+		record.generation++;
+		if (!this->writePurgeRecord(record)) {
+			return false;
+		}
 	}
 	std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
 	this->purgeRecord = record;
@@ -1113,14 +1147,17 @@ bool TransactionLogStore::invalidatePurgeRecord() {
 TransactionLogPurgeRecord TransactionLogStore::purgeRecordSnapshot() {
 	if (this->readOnly) {
 		TransactionLogPurgeRecord record;
-		if (readTransactionLogPurgeRecord(this->path, record) != TransactionLogPurgeRecordState::Valid) {
+		bool otherSlotDamaged = false;
+		if (readTransactionLogPurgeRecord(this->path, record, &otherSlotDamaged) != TransactionLogPurgeRecordState::Valid) {
 			return TransactionLogPurgeRecord{};
 		}
 		uint64_t seen = this->purgeRecordGenerationSeen.load(std::memory_order_relaxed);
 		while (record.generation > seen &&
 			!this->purgeRecordGenerationSeen.compare_exchange_weak(seen, record.generation, std::memory_order_relaxed)) {
 		}
-		record.known = record.known && this->purgeHistoryAccountedAtLoad && record.generation >= seen;
+		// A damaged other slot may have held a newer record whose purge already ran, and a writer
+		// mid-write looks the same, so both read as unknown.
+		record.known = record.known && this->purgeHistoryAccountedAtLoad && record.generation >= seen && !otherSlotDamaged;
 		return record;
 	}
 	std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
