@@ -1609,6 +1609,13 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
     [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
 
+35. **A transaction's `Committed` and `Aborted` states are terminal, and every state change is a
+    compare-exchange**: `close()` settles `Aborted` from whichever thread tears the transaction down,
+    concurrently with the owning thread's commit transitions, so a check-then-store
+    (`if (state == Committing) state = Pending`) can put a closed handle back to `Pending` with no
+    `txn` (#769). `TransactionStateCell` has no plain store; use `transition(from, to)` or `abort()`.
+    See [state transitions](src/binding/transaction/DESIGN.md#state-transitions).
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

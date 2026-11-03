@@ -15,6 +15,7 @@
   pending lock/park wake TSFNs stay ref'd, the WriteBufferManager flush-policy and arena-size
   defaults, SST filters with where their blocks live, and why close cancels compaction instead of
   waiting for it.
+- [Transaction state transitions](src/binding/transaction/DESIGN.md#state-transitions): `Committed` and `Aborted` are terminal; every change is a compare-exchange, because `close()` can settle `Aborted` from another thread.
 - [Transaction abort](src/binding/transaction/DESIGN.md): abort drains in-flight async gets before `Rollback()` and holds an `OperationGuard` so teardown cannot close the transaction under it.
 - [Pooled transaction iterators](src/binding/iterator/DESIGN.md): transaction `getRange()` re-seeks an idle native iterator after rewriting the read-bound Slices it points to.
 - [N-API error builders](src/binding/napi/DESIGN.md): `createRocksDBError`/`createJSError` always write their out-param, even when their own N-API calls fail.

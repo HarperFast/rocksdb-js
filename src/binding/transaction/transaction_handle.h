@@ -18,6 +18,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "core/transaction_state.h"
 #include "core/verification_table.h"
 
 namespace rocksdb_js {
@@ -26,16 +27,6 @@ struct DBHandle;
 struct DBIteratorHandle;
 struct DBIteratorOptions;
 struct TransactionLogStore;
-
-/**
- * Transaction state enumeration
- */
-enum class TransactionState {
-	Pending,    // Transaction is active and can accept operations
-	Committing, // Transaction is in the process of committing (async only)
-	Committed,  // Transaction has been successfully committed
-	Aborted     // Transaction has been aborted/rolled back
-};
 
 /**
  * A vector that holds its first `N` elements inline and spills the rest into
@@ -255,7 +246,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/**
 	 * The state of the transaction.
 	 */
-	TransactionState state;
+	TransactionStateCell state;
 
 	/**
 	 * The RocksDB transaction.
