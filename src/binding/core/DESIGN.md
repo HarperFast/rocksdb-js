@@ -65,7 +65,8 @@ agree across every handle on a column family once any of them participates.
   holds no write intent, so a slot seeded after the switch would survive its commit. The open is
   refused with `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle is attached
   (`nonVerifyingHandles`). After one has detached, it is also refused while a transaction that
-  existed when it detached is still registered (ids up to `nonVerifyingTransactionWatermark`),
+  existed when it detached is still open (ids up to `nonVerifyingTransactionWatermark`; a closed
+  one can stay registered after its own handle closes),
   since that transaction may hold a write staged through it, or while any descriptor operation is in
   flight: env teardown removes a transaction from the registry before its admitted commit finishes,
   and that commit still holds `operationsInFlight`. The switch then settles every slot, since that
