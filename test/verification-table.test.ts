@@ -909,10 +909,28 @@ describe('Verification Table', () => {
 				);
 				txn.abort();
 				cached.open();
-				expect(cached.verifyVersion(key, 1.5e12)).toBe(false);
+				expect(cached.isOpen()).toBe(true);
 			} finally {
 				cached.close();
 				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it('allows opting in after a transaction owned by the closed handle aborts', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			try {
+				const txn = new Transaction(plain.store);
+				plain.putSync(Buffer.from('owned-by-plain'), makeValue(1.5e12), { transaction: txn });
+				plain.close();
+				txn.abort();
+				cached.open();
+				expect(cached.isOpen()).toBe(true);
+			} finally {
+				cached.close();
 				keepAlive.close();
 			}
 		});

@@ -1062,8 +1062,10 @@ void DBRegistry::OpenDB(
 			bool mayHoldUnguardedWrite = false;
 			{
 				std::lock_guard<std::mutex> txnsLock(entry.descriptor->txnsMutex);
+				// A closed transaction can linger here once its owning handle has
+				// closed; its commit, if still running, holds an operation.
 				for (const auto& registered : entry.descriptor->transactions) {
-					if (registered.first <= watermark) {
+					if (registered.first <= watermark && registered.second && !registered.second->closed.load()) {
 						mayHoldUnguardedWrite = true;
 						break;
 					}
