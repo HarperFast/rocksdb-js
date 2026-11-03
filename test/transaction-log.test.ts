@@ -2541,8 +2541,7 @@ describe('Transaction Log', () => {
 			}));
 
 		// A torn length that overruns the written extent but stays inside the pre-extended map is
-		// still a break. Bounding the uncommitted path by the map accepted it, handed back one
-		// misframed entry spanning the rest of the log, and never resynced (#749).
+		// still a break. The committed arm is a parity check: its bound was already the watermark.
 		it.each([false, true])(
 			'detects a torn frame whose length lands inside the map (readUncommitted: %s)',
 			(readUncommitted) =>

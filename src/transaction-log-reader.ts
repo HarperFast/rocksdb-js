@@ -161,11 +161,10 @@ function corruptFrame(
 	// An uncommitted read's `limit` is the extent as of its last refresh, so resolve the live one
 	// and let the resync reach entries appended since; a committed read stays bounded at the
 	// watermark. Resolved here, on a break, because the getter crosses into native. Never the
-	// mapped capacity: every offset
-	// in the map's zero fill reads as an end-of-entries marker, so scanning against it both loses
-	// the exact-end signal and byte-scans megabytes of padding on the JS thread, reporting a
-	// recoverable mid-log break as a torn tail (invariant 11). The mapping carries
-	// the append-owned extent even after the store forgets a purged segment.
+	// mapped capacity: every offset in the map's zero fill reads as an end-of-entries marker, so
+	// scanning against it both loses the exact-end signal and byte-scans megabytes of padding on
+	// the JS thread, reporting a recoverable mid-log break as a torn tail (invariant 11). The
+	// mapping carries the append-owned extent even after the store forgets a purged segment.
 	let dataEnd = limit;
 	if (readUncommitted) {
 		dataEnd = Math.min(logBuffer.length, logBuffer.size ?? readableExtent(logBuffer));
@@ -407,13 +406,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						return { done: true, value: undefined };
 					}
 
-					// `size` is an entry boundary in both modes — the committed watermark, or the
-					// written extent, bumped only after whole entries land — so no frame starting
-					// below it ends past it, and `size` is refreshed before reading at or past it.
-					// Never bound by the pre-extended map: a torn frame with a plausible length would
-					// pass and misframe every later read. Clamped to the buffer for a `size` that
-					// over-reports it, so `subarray` cannot hand back a truncated frame. The throw
-					// leaves `position` at the resume point (HarperFast/harper#2016, #2063).
+					// `size` is an entry boundary in both modes (only whole entries advance it), so the
+					// pre-extended map must never be the bound: a torn length short of it would pass and
+					// misframe every later read. The clamp covers a `size` that over-reports the buffer,
+					// where `subarray` would silently truncate. The throw leaves `position` at the
+					// resume point (HarperFast/harper#2016, #2063).
 					const limit = Math.min(size, logBuffer!.length);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
 						const broken = corruptFrame(

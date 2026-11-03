@@ -769,8 +769,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     misframes every later read (#749). An uncommitted read therefore checks frames against the
     extent it captured when it last refreshed `size` (an entry boundary, refreshed before the loop
     reads at or past it), and resolves the live extent for the resync only on a break: even the
-    mapping-carried getter crosses into native, so a per-frame call would tax every healthy read. The native walks run before `size` has been
-    corrected on a pre-extended (Windows) segment, so `findFramingResumeOffset()` also accepts a
+    mapping-carried getter crosses into native, so a per-frame call would tax every healthy read.
+    The native walks run before `size` has been corrected on a pre-extended (Windows) segment, so `findFramingResumeOffset()` also accepts a
     chain landing exactly on the **end of the nonzero bytes** — a single offset, as conclusive as
     EOF — otherwise a run shorter than `RESYNC_MIN_FRAMES` in front of the padding classifies as a
     torn tail and recovery truncates its committed entries.
