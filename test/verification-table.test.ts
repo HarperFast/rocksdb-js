@@ -778,4 +778,166 @@ describe('Verification Table', () => {
 				}
 			));
 	});
+
+	// #998: slots outlive handles, so participation belongs to the column family.
+	describe('participation is per column family (#998)', () => {
+		const cachedOptions = { name: 'cached', encoding: false, verificationTable: true } as const;
+		const plainOptions = { name: 'cached', encoding: false } as const;
+
+		function seed(db: RocksDatabase, key: Buffer, version: number): void {
+			db.getSync(key, { populateVersion: true });
+			expect(db.getSync(key, { expectedVersion: version })).toBe(FRESH_VERSION_FLAG);
+		}
+
+		function expectStale(db: RocksDatabase, key: Buffer, version: number, current?: number): void {
+			expect(db.verifyVersion(key, version)).toBe(false);
+			const result = db.getSync(key, { expectedVersion: version });
+			if (current === undefined) {
+				expect(result).toBeUndefined();
+			} else {
+				expect(Buffer.from(result).readDoubleBE(0)).toBe(current);
+			}
+		}
+
+		it('a putSync through a handle opened without the option invalidates the slot', () =>
+			dbRunner(
+				{ dbOptions: [cachedOptions, plainOptions] },
+				async ({ db: cached }, { db: plain }) => {
+					const key = Buffer.from('plain-put-sync');
+					await cached.put(key, makeValue(1.5e12));
+					seed(cached, key, 1.5e12);
+					plain.putSync(key, makeValue(1.6e12));
+					expectStale(cached, key, 1.5e12, 1.6e12);
+				}
+			));
+
+		it('a removeSync through a handle opened without the option invalidates the slot', () =>
+			dbRunner(
+				{ dbOptions: [cachedOptions, plainOptions] },
+				async ({ db: cached }, { db: plain }) => {
+					const key = Buffer.from('plain-remove-sync');
+					await cached.put(key, makeValue(1.5e12));
+					seed(cached, key, 1.5e12);
+					plain.removeSync(key);
+					expectStale(cached, key, 1.5e12);
+				}
+			));
+
+		it('a transactional write through a handle opened without the option invalidates the slot', () =>
+			dbRunner(
+				{ dbOptions: [cachedOptions, plainOptions] },
+				async ({ db: cached }, { db: plain }) => {
+					const key = Buffer.from('plain-txn');
+					await cached.put(key, makeValue(1.5e12));
+					seed(cached, key, 1.5e12);
+					await plain.put(key, makeValue(1.6e12));
+					expectStale(cached, key, 1.5e12, 1.6e12);
+
+					seed(cached, key, 1.6e12);
+					// a transaction created on the cached handle, writing through the plain one
+					await cached.transaction(async (txn: Transaction) => {
+						plain.putSync(key, makeValue(1.7e12), { transaction: txn });
+					});
+					expectStale(cached, key, 1.6e12, 1.7e12);
+				}
+			));
+
+		it('an explicit verificationTable: false handle participates too', () =>
+			dbRunner(
+				{ dbOptions: [cachedOptions, { ...plainOptions, verificationTable: false }] },
+				async ({ db: cached }, { db: plain }) => {
+					const key = Buffer.from('explicit-false');
+					await cached.put(key, makeValue(1.5e12));
+					seed(cached, key, 1.5e12);
+					plain.putSync(key, makeValue(1.6e12));
+					expectStale(cached, key, 1.5e12, 1.6e12);
+				}
+			));
+
+		it('keeps participating after every opted-in handle closes', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const cached = new RocksDatabase(path, cachedOptions).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			try {
+				const key = Buffer.from('outlives-handle');
+				await cached.put(key, makeValue(1.5e12));
+				seed(cached, key, 1.5e12);
+				cached.close();
+				plain.putSync(key, makeValue(1.6e12));
+				cached.open();
+				expectStale(cached, key, 1.5e12, 1.6e12);
+			} finally {
+				cached.close();
+				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it('rejects opting in while a handle without the option is open on the column family', async () => {
+			const path = generateDBPath();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			const other = new RocksDatabase(path, { ...cachedOptions, name: 'other' });
+			try {
+				expect(() => cached.open()).toThrow(
+					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
+				);
+				// another column family of the same database is unaffected
+				other.open();
+				plain.close();
+				cached.open();
+				expect(cached.isOpen()).toBe(true);
+			} finally {
+				cached.close();
+				other.close();
+				plain.close();
+			}
+		});
+
+		it('rejects opting in while a transaction may hold a write staged through a closed handle', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			try {
+				const key = Buffer.from('staged-before-close');
+				await keepAlive.put(Buffer.from('anchor'), makeValue(1.4e12));
+				await plain.put(key, makeValue(1.5e12));
+				const txn = new Transaction(keepAlive.store);
+				plain.putSync(key, makeValue(1.6e12), { transaction: txn });
+				plain.close();
+				expect(() => cached.open()).toThrow(
+					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
+				);
+				txn.abort();
+				cached.open();
+				expect(cached.verifyVersion(key, 1.5e12)).toBe(false);
+			} finally {
+				cached.close();
+				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it('allows opting in while only transactions created after the handle closed are pending', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			let txn: Transaction | undefined;
+			try {
+				await plain.put(Buffer.from('k'), makeValue(1.5e12));
+				plain.close();
+				txn = new Transaction(keepAlive.store);
+				keepAlive.putSync(Buffer.from('unrelated'), makeValue(1.6e12), { transaction: txn });
+				cached.open();
+				expect(cached.isOpen()).toBe(true);
+			} finally {
+				txn?.abort();
+				cached.close();
+				keepAlive.close();
+			}
+		});
+	});
 });

@@ -2235,6 +2235,14 @@ const db = RocksDatabase.open('path/to/db', { verificationTable: true });
 Enable `verificationTable` only for column families whose records are cached (e.g. the primary
 column family of a table); enabling it adds per-write slot invalidation overhead.
 
+Participation applies to the whole column family within the process. Once a handle opens a column
+family with `verificationTable: true`, every later handle on it participates too, even one opened
+without the option, so a write through any handle invalidates its key's slot. Opening with
+`verificationTable: true` throws `ERR_VERIFICATION_TABLE_CONFLICT` while a handle without the option
+is open on that column family. After such a handle closes, the same error is thrown while a
+transaction that existed before it closed is still pending, or while another operation on the
+database is running; retry the open once they finish.
+
 ### `db.verifyVersion(key: Key, version: number): boolean`
 
 Returns `true` when the verification table currently records `version` for `key` (in this database
