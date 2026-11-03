@@ -299,7 +299,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   files written by an earlier process, to record each one's largest key in the purge watermark before
   deleting it (invariant 35). Files it cannot read in time are kept for a later run, so a deployment
   whose files take longer to read raises it. Open-time retention runs under the process-wide registry
-  lock, which is why it is bounded. Honored literally (`0` reads nothing, so such files are never
+  lock, which is why it is bounded. It is a budget per store per purge run, so an open that loads N
+  stores with inherited backlogs can spend up to N times it. Honored literally (`0` reads nothing, so such files are never
   purged), values above a day are clamped to a day, and malformed or negative values use the default.
   Read once per process, so it
   must be set in the environment a process is started with

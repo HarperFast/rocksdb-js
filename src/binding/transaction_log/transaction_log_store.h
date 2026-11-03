@@ -923,7 +923,7 @@ private:
 		std::optional<std::chrono::steady_clock::time_point> deadline,
 		double& maxKey);
 
-	/** Scans purge candidates, the idle current segment included, before purge() takes writeMutex. */
+	/** Runs before purge() takes writeMutex, so appends do not wait on these reads. */
 	void scanPurgeCandidates(uint64_t before, std::chrono::steady_clock::time_point deadline);
 
 	/**
@@ -935,7 +935,7 @@ private:
 	/** Warns once when the write fails. Caller holds writeMutex and dataSetsMutex. */
 	bool persistPurgeRecord(TransactionLogPurgeRecord& record);
 
-	/** Reads the purge record and applies the baseline rule; load() calls it before retention runs. */
+	/** load() calls it before retention runs. */
 	void loadPurgeRecord();
 
 	/**

@@ -1170,8 +1170,9 @@ bool TransactionLogStore::invalidatePurgeRecord() {
 	}
 	TransactionLogPurgeRecord record = this->purgeRecordSnapshot();
 	record.known = false;
-	// An absent or corrupt record already reads as unknown.
-	if (state == TransactionLogPurgeRecordState::Valid && onDisk.known) {
+	// An absent or corrupt record already reads as unknown. A valid one is rewritten even when it reads
+	// unknown: after a failed sync, a read proves nothing about what is durable.
+	if (state == TransactionLogPurgeRecordState::Valid) {
 		record.generation++;
 		if (!this->writePurgeRecord(record)) {
 			return false;

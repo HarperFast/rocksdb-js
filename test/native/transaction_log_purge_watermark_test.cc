@@ -685,6 +685,10 @@ TEST_F(PurgeWatermarkTest, InvalidationIsDurable) {
 	writeOutOfOrderSegments(*store);
 	ASSERT_TRUE(store->invalidatePurgeRecord());
 	EXPECT_FALSE(store->getPurgeWatermark().known);
+	// A retry writes a fresh slot: an earlier unknown write may not have reached the disk.
+	auto generation = recordOnDisk(storePath).generation;
+	ASSERT_TRUE(store->invalidatePurgeRecord());
+	EXPECT_EQ(recordOnDisk(storePath).generation, generation + 1);
 	store->close();
 	EXPECT_FALSE(recordOnDisk(storePath).known);
 	EXPECT_FALSE(loadStore()->getPurgeWatermark().known);
