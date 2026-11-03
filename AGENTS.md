@@ -1418,11 +1418,16 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     ever runs. It **tears down quarantined entries only** (`Teardown(true)`), because an entry
     still being closed by another env's thread (for example a `shutdown()` that timed out waiting
     for it) belongs to that closer, whose `finishClose()` may still be draining operations; sweeping
-    its closables would close handles under it. And it leaves `TransactionLogStoreRegistry::Shutdown()`
-    and the per-env releases to the hooks, since a worker may still hold a mapping of a log
-    segment. It never throws: an exception from an `exit` listener skips every later listener. The
-    `shutdownOnExit` config option turns it off for callers that simulate a crash with
-    `process.exit()`. Covered by `test/process-exit-shutdown.test.ts`.
+    its closables would close handles under it. Since the main env's hook never runs afterwards, the
+    count never reaches zero, so each worker hook that runs after the main thread's exit shutdown
+    (`mainThreadExited`) repeats `Teardown(true)` to release a quarantine that worker's own close
+    left. And it does not call `TransactionLogStoreRegistry::Shutdown()`, since a worker may still
+    hold a mapping of a log segment: a successful close unregisters its stores, so only a
+    quarantined descriptor's stores reach static destruction, as every store did before. It never
+    throws: an exception from an `exit` listener skips every later listener. The `shutdownOnExit`
+    config option skips the listener, restoring the old behaviour for callers that simulate a crash
+    with `process.exit()`; it does not stop a cleanup hook that does run (Node's natural exit, Bun's
+    `process.exit()`) from flushing. Covered by `test/process-exit-shutdown.test.ts`.
 
 27. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
     lifecycle waits**:

@@ -641,7 +641,8 @@ export type RocksDatabaseConfig = {
 	 * not skip the flush. Defaults to `true`. After it runs, databases are
 	 * closed and opening one throws, so an `exit` listener that still needs a
 	 * database must be added with `process.prependListener`. Set to `false` to
-	 * leave memtables unflushed at exit, e.g. to exercise crash recovery.
+	 * leave memtables unflushed at a Node `process.exit()`, e.g. to exercise
+	 * crash recovery; a natural exit still flushes from the native cleanup hook.
 	 */
 	shutdownOnExit?: boolean;
 	/**

@@ -75,8 +75,8 @@ napi_value Shutdown(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Runs one teardown step, reporting a failure to stderr instead of throwing:
- * its callers run where nothing can catch or deliver an error.
+ * Reports a failure to stderr instead of throwing: nothing can catch or deliver
+ * an error where teardown runs.
  */
 template <typename Step>
 static void runCleanupStep(const char* name, Step&& step) noexcept {
@@ -90,15 +90,23 @@ static void runCleanupStep(const char* name, Step&& step) noexcept {
 }
 
 /**
+ * Set once the main thread's exit shutdown has run. After that, Node never
+ * runs the main env's cleanup hook, so `moduleRefCount` cannot reach zero and
+ * each worker's hook releases the quarantines that worker's closes left.
+ */
+static std::atomic<bool> mainThreadExited{false};
+
+/**
  * The main thread's `exit` listener (`load-binding.ts`). Node skips the main
  * env's cleanup hook on `process.exit()`, so this is that path's terminal owner
  * (AGENTS.md invariant 26). Other envs can still be running, so it releases only
- * quarantined entries and leaves the per-env cleanup to their own hooks.
+ * quarantined entries: one another thread is still closing belongs to that closer.
  */
 napi_value ShutdownOnExit(napi_env env, napi_callback_info info) {
 	if (!DBSettings::getInstance().getShutdownOnExit()) {
 		return nullptr;
 	}
+	mainThreadExited.store(true, std::memory_order_release);
 	auto& stats = DBStats::getInstance();
 	const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
 	runCleanupStep("open fence", []() { DBRegistry::FenceOpensForExit(); });
@@ -425,6 +433,8 @@ NAPI_MODULE_INIT() {
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");
+		} else if (rocksdb_js::mainThreadExited.load(std::memory_order_acquire)) {
+			rocksdb_js::runCleanupStep("database registry teardown", []() { rocksdb_js::DBRegistry::Teardown(true); });
 		} else {
 			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount);
 		}

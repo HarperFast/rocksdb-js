@@ -151,10 +151,7 @@ private:
 	std::condition_variable lifecycleCondition;
 	std::unordered_set<std::string> destroyingPaths;
 
-	/**
-	 * Set by `FenceOpensForExit()` and never cleared. Guarded by
-	 * `databasesMutex`; `OpenDB` rejects once it is set.
-	 */
+	// One-way: see FenceOpensForExit().
 	bool exitFenced = false;
 
 	/**

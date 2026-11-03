@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 const fixture = join(__dirname, 'fixtures', 'fork-process-exit-shutdown.mts');
 // Exit semantics are the runtime's, so run the fixture under the runtime running the tests.
 const runtimeArgs = process.versions.deno ? ['run', '-A'] : [];
+const derivedPaths = ['-late', '-churn-0', '-churn-1', '-churn-2'];
 
 function run(mode: string, path: string, env?: NodeJS.ProcessEnv) {
 	return spawnSync(process.execPath, [...runtimeArgs, fixture, mode, path], {
@@ -16,28 +17,40 @@ function run(mode: string, path: string, env?: NodeJS.ProcessEnv) {
 	});
 }
 
-/** Runs `mode`, asserts how it exited, then reads back what reached disk. */
 function exitThenVerify(
 	mode: string,
 	{ env, status = 0 }: { env?: NodeJS.ProcessEnv; status?: number } = {}
 ) {
 	const path = generateDBPath();
 	try {
+		const started = performance.now();
 		const exited = run(mode, path, env);
+		const elapsed = performance.now() - started;
 		expect(exited.signal, exited.stderr).toBeNull();
 		expect(exited.status, exited.stderr).toBe(status);
 		const verified = run('verify', path);
 		expect(verified.status, verified.stderr).toBe(0);
-		return { exited, values: JSON.parse(verified.stdout.trim().split(/\r?\n/).at(-1)!) };
+		return {
+			elapsed,
+			exited,
+			values: JSON.parse(verified.stdout.trim().split(/\r?\n/).at(-1)!),
+		};
 	} finally {
 		if (!process.env.KEEP_FILES) {
-			rmSync(path, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
-			rmSync(`${path}-late`, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+			for (const suffix of ['', ...derivedPaths]) {
+				rmSync(`${path}${suffix}`, {
+					force: true,
+					recursive: true,
+					maxRetries: 3,
+					retryDelay: 500,
+				});
+			}
 		}
 	}
 }
 
-const mainOnly = { main: 'value', worker: null, late: null };
+const mainOnly = { main: 'value', worker: null, late: null, commit: null };
+const nothing = { main: null, worker: null, late: null, commit: null };
 
 describe('Main-thread exit shutdown (#1004)', () => {
 	it('flushes a disableWAL write on process.exit()', () => {
@@ -52,8 +65,9 @@ describe('Main-thread exit shutdown (#1004)', () => {
 		expect(exitThenVerify('uncaught', { status: 1 }).values).toEqual(mainOnly);
 	});
 
-	it('skips the flush when shutdownOnExit is false', () => {
-		expect(exitThenVerify('opt-out').values).toEqual({ main: null, worker: null, late: null });
+	it('skips the exit listener when shutdownOnExit is false', () => {
+		// Bun runs the main env's native cleanup hook on process.exit(), which flushes regardless.
+		expect(exitThenVerify('opt-out').values).toEqual(process.versions.bun ? mainOnly : nothing);
 	});
 
 	it('runs a prepended exit listener while the database is still open', () => {
@@ -89,16 +103,31 @@ describe('Main-thread exit shutdown (#1004)', () => {
 		}
 	});
 
-	it('exits without a signal when process.exit() lands during a compaction', () => {
-		expect(exitThenVerify('compact').values).toEqual(mainOnly);
+	it.skipIf(process.versions.deno)(
+		'releases a quarantine a worker close leaves after the main thread exits',
+		() => {
+			const { exited } = exitThenVerify('concurrent-close', {
+				env: { ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2', ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '3000' },
+			});
+			expect(exited.stderr).toContain('Timed out waiting for another database shutdown to finish');
+		}
+	);
+
+	it('cancels a manual compaction in flight at process.exit()', () => {
+		const { elapsed, values } = exitThenVerify('compact', {
+			env: { ROCKSDB_JS_COMPACT_DELAY_MS: '15000' },
+		});
+		expect(values).toEqual(mainOnly);
+		expect(elapsed).toBeLessThan(10_000);
 	});
 
 	it.each(['0', '1', '2'])(
-		'exits cleanly with an async commit in flight (ROCKSDB_JS_COMMIT_THREAD=%s)',
+		'applies an async commit in flight at process.exit() (ROCKSDB_JS_COMMIT_THREAD=%s)',
 		(mode) => {
-			expect(exitThenVerify('commit', { env: { ROCKSDB_JS_COMMIT_THREAD: mode } }).values).toEqual(
-				mainOnly
-			);
+			const { values } = exitThenVerify('commit', {
+				env: { ROCKSDB_JS_COMMIT_THREAD: mode, ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500' },
+			});
+			expect(values).toEqual({ ...mainOnly, commit: 'value' });
 		}
 	);
 
@@ -106,6 +135,15 @@ describe('Main-thread exit shutdown (#1004)', () => {
 		'flushes main-thread and worker databases on process.exit() with a worker running',
 		() => {
 			expect(exitThenVerify('worker').values).toEqual({ ...mainOnly, worker: 'value' });
+		}
+	);
+
+	it.skipIf(process.versions.deno)(
+		'exits cleanly while workers keep opening databases during the exit shutdown',
+		() => {
+			for (let i = 0; i < 5; i++) {
+				expect(exitThenVerify('worker-churn').values).toEqual(mainOnly);
+			}
 		}
 	);
 

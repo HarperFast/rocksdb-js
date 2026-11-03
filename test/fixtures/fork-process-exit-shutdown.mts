@@ -9,13 +9,14 @@ import { Worker } from 'node:worker_threads';
 const [mode, path] = process.argv.slice(2);
 const workerSource = new URL('../../src/index.ts', import.meta.url).href;
 
+const openAndWrite = `const db = RocksDatabase.open(workerData.path, { disableWAL: true });
+	db.putSync('worker', 'value');`;
+
 function startWorker(script: string): Worker {
 	return new Worker(
 		`
 		const { parentPort, workerData } = require('node:worker_threads');
-		import(workerData.src).then(({ RocksDatabase }) => {
-			const db = RocksDatabase.open(workerData.path, { disableWAL: true });
-			db.putSync('worker', 'value');
+		import(workerData.src).then(({ RocksDatabase, shutdown }) => {
 			${script}
 		});
 		`,
@@ -46,16 +47,12 @@ switch (mode) {
 		process.exit(0);
 	}
 	case 'prepend': {
-		// Listeners added after rocksdb-js loads run after its exit shutdown;
-		// prependListener runs first, while the database is still open.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');
 		process.prependListener('exit', () => db.putSync('late', 'value'));
 		process.exit(0);
 	}
 	case 'fenced': {
-		// A later exit listener finds the databases closed, and the open fence
-		// rejects a reopen rather than leaving it unflushed.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');
 		process.on('exit', () => {
@@ -70,7 +67,6 @@ switch (mode) {
 		process.exit(0);
 	}
 	case 'caller-shutdown': {
-		// The listener the README used to ask callers to add, on both sides of ours.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');
 		process.on('exit', () => shutdown());
@@ -78,10 +74,8 @@ switch (mode) {
 		process.exit(0);
 	}
 	case 'quarantined': {
-		// Run with ROCKSDB_JS_CLOSE_FLUSH_FAILURE=2: the explicit close and the
-		// exit-time retry both fail, so the descriptor is still quarantined when
-		// the process exits. The exit path must release it before static
-		// destruction, and leave later listeners and the exit code alone.
+		// Run with ROCKSDB_JS_CLOSE_FLUSH_FAILURE=2: the exit-time retry fails
+		// too, leaving the descriptor quarantined at exit.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');
 		try {
@@ -94,34 +88,77 @@ switch (mode) {
 		process.exit(0);
 	}
 	case 'compact': {
-		// Many small flushed files, then process.exit() while a manual compaction
-		// is running on a libuv thread.
+		// Run with ROCKSDB_JS_COMPACT_DELAY_MS, which parks the compaction until
+		// its cancel token is armed, so it is in flight at exit.
 		const db = RocksDatabase.open(path, { disableWAL: true });
-		const value = 'x'.repeat(1024);
-		for (let file = 0; file < 8; file++) {
-			for (let i = 0; i < 2000; i++) db.putSync(`${file}-${i}`, value);
-			db.flushSync();
-		}
-		void db.compact();
 		db.putSync('main', 'value');
+		void db.compact();
 		setImmediate(() => process.exit(0));
 		break;
 	}
 	case 'commit': {
-		// process.exit() with an async commit dispatched but not settled.
+		// Run with ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, which holds the admitted
+		// commit before RocksDB applies it, so it is in flight at exit.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');
 		void db.transaction((txn) => {
 			txn.putSync('commit', 'value');
 		});
-		queueMicrotask(() => process.exit(0));
+		setTimeout(() => process.exit(0), 50);
+		break;
+	}
+	case 'concurrent-close': {
+		// Run with ROCKSDB_JS_CLOSE_FLUSH_FAILURE=2 and
+		// ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: a worker's shutdown() is still retrying
+		// the failed close when the main thread exits, so the main thread's
+		// shutdown times out on it and the retry quarantines the descriptor after
+		// the main thread's sweep.
+		RocksDatabase.config({ lifecycleWaitSeconds: 1 });
+		const db = RocksDatabase.open(path, { disableWAL: true });
+		db.putSync('main', 'value');
+		try {
+			db.close();
+		} catch {}
+		startWorker(`try { shutdown(); } catch {}`);
+		const poll = setInterval(() => {
+			if (getRegistryStatus().some((entry) => entry.closeRetrying)) {
+				clearInterval(poll);
+				process.exit(0);
+			}
+		}, 5);
+		break;
+	}
+	case 'worker-churn': {
+		// Workers keep opening, writing and closing databases while the main
+		// thread exits, so some opens race the exit fence and the sweep.
+		const db = RocksDatabase.open(path, { disableWAL: true });
+		db.putSync('main', 'value');
+		let ready = 0;
+		for (let i = 0; i < 4; i++) {
+			const worker = startWorker(`
+				let n = 0;
+				parentPort.postMessage('ready');
+				for (;;) {
+					try {
+						const db = RocksDatabase.open(workerData.path + '-churn-' + (n++ % 3), { disableWAL: true });
+						db.putSync('k', n);
+						db.close();
+					} catch {}
+				}
+			`);
+			worker.once('message', () => {
+				if (++ready === 4) setTimeout(() => process.exit(0), 20);
+			});
+		}
 		break;
 	}
 	case 'worker': {
 		// A worker holding the same database is still running when the main
 		// thread calls process.exit(); Node stops it after the exit listeners.
 		const db = RocksDatabase.open(path, { disableWAL: true });
-		const worker = startWorker(`parentPort.postMessage('ready'); setInterval(() => {}, 1000);`);
+		const worker = startWorker(
+			`${openAndWrite} parentPort.postMessage('ready'); setInterval(() => {}, 1000);`
+		);
 		worker.once('message', () => {
 			db.putSync('main', 'value');
 			process.exit(0);
@@ -136,7 +173,7 @@ switch (mode) {
 		// A worker's own process.exit() ends only the worker; the main thread's
 		// database stays open.
 		const db = RocksDatabase.open(path, { disableWAL: true });
-		const worker = startWorker(`process.exit(0);`);
+		const worker = startWorker(`${openAndWrite} process.exit(0);`);
 		worker.once('exit', () => {
 			if (!db.isOpen()) throw new Error('Worker exit closed the main thread database');
 			db.putSync('main', 'value');
@@ -146,7 +183,14 @@ switch (mode) {
 	case 'verify': {
 		const db = RocksDatabase.open(path);
 		const read = (key: string) => db.getSync(key) ?? null;
-		console.log(JSON.stringify({ main: read('main'), worker: read('worker'), late: read('late') }));
+		console.log(
+			JSON.stringify({
+				main: read('main'),
+				worker: read('worker'),
+				late: read('late'),
+				commit: read('commit'),
+			})
+		);
 		db.close();
 		break;
 	}

@@ -392,9 +392,8 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
 
 	bool shutdownOnExit = settings.getShutdownOnExit();
-	if (rocksdb_js::getProperty(env, params, "shutdownOnExit", shutdownOnExit, true) == napi_ok) {
-		settings.shutdownOnExit.store(shutdownOnExit, std::memory_order_relaxed);
-	}
+	const bool shutdownOnExitProvided =
+		rocksdb_js::getProperty(env, params, "shutdownOnExit", shutdownOnExit, true) == napi_ok;
 
 	bool abortMarkers = settings.transactionLogAbortMarkers.load(std::memory_order_relaxed);
 	const bool abortMarkersProvided =
@@ -483,6 +482,9 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	}
 	if (writeIntentsProvided) {
 		settings.transactionLogWriteIntents.store(writeIntents, std::memory_order_relaxed);
+	}
+	if (shutdownOnExitProvided) {
+		settings.shutdownOnExit.store(shutdownOnExit, std::memory_order_relaxed);
 	}
 
 	NAPI_RETURN_UNDEFINED();

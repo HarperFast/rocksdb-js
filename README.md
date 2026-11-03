@@ -308,7 +308,8 @@ Sets global database settings.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
   - `shutdownOnExit: boolean` When `true`, the main thread runs [`shutdown()`](#shutdown-void)
     from a `process.on('exit')` listener, so `process.exit()` still flushes and closes every
-    database. Defaults to `true`. Set to `false` to leave memtables unflushed at exit.
+    database. Defaults to `true`. Set to `false` to leave memtables unflushed at a Node
+    `process.exit()`, e.g. to exercise crash recovery.
   - `transactionLogAbortMarkers: boolean` When `true`, a transaction that wrote its
     transaction-log batch and then ends without committing (an `abort()`, a commit error it gives
     up on, or a worker torn down with it pending) gets that batch marked aborted in place, and every
@@ -2722,8 +2723,9 @@ process.prependListener('exit', () => {
 ```
 
 Set `RocksDatabase.config({ shutdownOnExit: false })` to skip it, for example to leave memtables
-unflushed and exercise crash recovery in a test. Calling `shutdown()` from your own `exit` listener
-as well is safe.
+unflushed at `process.exit()` and exercise crash recovery in a test. This only removes the listener:
+on a natural exit, and on `process.exit()` under Bun, the runtime's native cleanup still flushes.
+Calling `shutdown()` from your own `exit` listener as well is safe.
 
 ### `versions: { 'rocksdb': string; 'rocksdb-js': string }`
 

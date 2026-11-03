@@ -700,7 +700,7 @@ void DBRegistry::OpenDB(
 		// an entry erased and re-created while we waited carries a new condition,
 		// and staying on the old one would miss its notify.
 		while (true) {
-			// Checked on every pass: each wait below releases databasesMutex.
+			// Every wait below releases databasesMutex and returns here.
 			if (instance->exitFenced) {
 				throw rocksdb_js::DBException("Cannot open database \"" + path + "\": the process is exiting and rocksdb-js has shut down");
 			}
@@ -714,7 +714,8 @@ void DBRegistry::OpenDB(
 			if (instance->destroyingPaths.find(identityPath) != instance->destroyingPaths.end()) {
 				DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is being destroyed, waiting\n", instance.get(), path.c_str());
 				if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
-					return instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
+					return instance->exitFenced ||
+						instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
 				})) {
 					throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": destruction is still in progress");
 				}
@@ -759,7 +760,7 @@ void DBRegistry::OpenDB(
 			if (pathClosingCondition) {
 				if (!pathClosingCondition->wait_until(lock, deadline, [&]() {
 					auto found = instance->databases.find(pathClosingKey);
-					return found == instance->databases.end() ||
+					return instance->exitFenced || found == instance->databases.end() ||
 						found->second.condition != pathClosingCondition ||
 						!found->second.descriptor || !found->second.descriptor->isClosing() ||
 						(!found->second.closeError.empty() && !found->second.closeRetrying);
@@ -808,7 +809,7 @@ void DBRegistry::OpenDB(
 			if (retryCondition) {
 				if (!retryCondition->wait_until(lock, deadline, [&]() {
 					auto found = instance->databases.find(retryKey);
-					return found == instance->databases.end() ||
+					return instance->exitFenced || found == instance->databases.end() ||
 						found->second.condition != retryCondition || !found->second.closeRetrying;
 				})) {
 					throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": close retry is still in progress");
@@ -839,7 +840,7 @@ void DBRegistry::OpenDB(
 			std::shared_ptr<std::condition_variable> condition = current.condition;
 			if (!condition->wait_until(lock, deadline, [&]() {
 				auto found = instance->databases.find(key);
-				return found == instance->databases.end() ||
+				return instance->exitFenced || found == instance->databases.end() ||
 					!found->second.descriptor || !found->second.descriptor->isClosing() ||
 					!found->second.closeError.empty();
 			})) {
@@ -1614,17 +1615,22 @@ void DBRegistry::Shutdown() {
 	}
 }
 
+void DBRegistry::FenceOpensForExit() {
+	if (!instance) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(instance->databasesMutex);
+	instance->exitFenced = true;
+	instance->lifecycleCondition.notify_all();
+	for (auto& [_key, entry] : instance->databases) {
+		entry.condition->notify_all();
+	}
+}
+
 /**
  * Release every remaining registry entry (see the header for why this cannot be
  * left to the singleton's static destructor).
  */
-void DBRegistry::FenceOpensForExit() {
-	if (instance) {
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		instance->exitFenced = true;
-	}
-}
-
 void DBRegistry::Teardown(bool quarantinedOnly) {
 	if (!instance) {
 		return;
