@@ -39,14 +39,14 @@ const itWithGC = it.skipIf(!forceGC);
 const itWithNodeGC = it.skipIf(Boolean(process.versions.bun || process.versions.deno));
 
 function runDependentFixture(
-	mode: 'async-get' | 'iterator' | 'routed-iterator',
+	mode: 'async-get' | 'async-get-many' | 'iterator' | 'routed-iterator',
 	dbPath: string
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(process.execPath, ['--expose-gc', dependentFixturePath, mode, dbPath], {
 			env: {
 				...process.env,
-				ROCKSDB_JS_TXN_GET_DELAY_MS: mode === 'async-get' ? '5250' : undefined,
+				ROCKSDB_JS_TXN_GET_DELAY_MS: mode.startsWith('async-get') ? '5250' : undefined,
 			},
 		});
 		let stderr = '';
@@ -59,7 +59,7 @@ function runDependentFixture(
 }
 
 async function expectDependentFixtureSurvives(
-	mode: 'async-get' | 'iterator' | 'routed-iterator'
+	mode: 'async-get' | 'async-get-many' | 'iterator' | 'routed-iterator'
 ): Promise<void> {
 	const dbPath = join(process.cwd(), `.transaction-orphan-${mode}-${process.pid}-${Date.now()}`);
 	try {
@@ -90,6 +90,12 @@ describe('orphaned transactions', () => {
 	itWithNodeGC(
 		'should defer orphan cleanup past the async-work wait timeout',
 		() => expectDependentFixtureSurvives('async-get'),
+		15_000
+	);
+
+	itWithNodeGC(
+		'should defer orphan cleanup past a pending batched read',
+		() => expectDependentFixtureSurvives('async-get-many'),
 		15_000
 	);
 

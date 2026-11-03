@@ -124,6 +124,21 @@ export type NativeTransaction = {
 	): number;
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
+	getMany(
+		keys: Buffer,
+		keyEnds: Int32Array,
+		count: number,
+		resolve: (result: Buffer) => void,
+		reject: (err: Error) => void,
+		txnIdIgnored?: number
+	): void;
+	getManySync(
+		keys: Buffer,
+		keyEnds: Int32Array,
+		count: number,
+		flags: number,
+		txnIdIgnored?: number
+	): Buffer | number;
 	getTimestamp(): number;
 	lastConflictKind(): number;
 	logWritten(): boolean;
@@ -532,6 +547,25 @@ export type NativeDatabase = {
 		txnId?: number,
 		expectedVersion?: number
 	): Buffer;
+	// Reads `count` keys, encoded back to back in `keys` and ending at `keyEnds[i]`. Resolves (or,
+	// for getManySync, returns) a buffer holding one int32 value length per key, -1 when missing,
+	// then the values back to back; getManySync returns NOT_IN_MEMORY_CACHE_FLAG instead when
+	// ONLY_IF_IN_MEMORY_CACHE_FLAG is set and a key is not in memory.
+	getMany(
+		keys: Buffer,
+		keyEnds: Int32Array,
+		count: number,
+		resolve: ResolveCallback<Buffer>,
+		reject: RejectCallback,
+		txnId?: number
+	): void;
+	getManySync(
+		keys: Buffer,
+		keyEnds: Int32Array,
+		count: number,
+		flags: number,
+		txnId?: number
+	): Buffer | number;
 	getUserSharedBuffer(
 		key: BufferWithDataView,
 		defaultBuffer: ArrayBuffer,

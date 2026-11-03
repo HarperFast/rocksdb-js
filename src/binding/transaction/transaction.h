@@ -25,6 +25,8 @@ struct Transaction final {
 	static napi_value CommitSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value GetCount(napi_env env, napi_callback_info info);
+	static napi_value GetMany(napi_env env, napi_callback_info info);
+	static napi_value GetManySync(napi_env env, napi_callback_info info);
 	static napi_value GetSync(napi_env env, napi_callback_info info);
 	static napi_value GetTimestamp(napi_env env, napi_callback_info info);
 	static napi_value LogWritten(napi_env env, napi_callback_info info);

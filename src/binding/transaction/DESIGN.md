@@ -29,12 +29,13 @@ Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASa
 `max_free_fill_size` faults on the unfixed code) and `test/fixtures/fork-abort-get-destroy.mts`
 (segfaults without the guard or the owning-descriptor pin, no sanitizer needed).
 
-Other owning-thread mutations still run while an admitted get may be inside `txn->Get()`: commit
-(`Clear()` after the write), `putSync`/`removeSync` (batch append), and `resetTransaction()`
-(deletes and recreates `txn` on a coordinated retry). Draining in each would block `putSync` on
-unrelated disk reads; the candidate fix is for the worker to read through the database with a
-pinned transaction snapshot, since the setup's batch-consulting attempt already proved the key
-absent from the batch.
+Other owning-thread mutations still run while an admitted get may be inside `txn->Get()` (or a
+batched `getMany()` inside `txn->MultiGet()`): commit (`Clear()` after the write),
+`putSync`/`removeSync` (batch append), and `resetTransaction()` (deletes and recreates `txn` on a
+coordinated retry). Draining in each would block `putSync` on unrelated disk reads; the candidate
+fix is for the worker to read through the database with a pinned transaction snapshot, since the
+setup's batch-consulting attempt already proved the key absent from the batch. For `getMany()` that
+holds only for the keys the attempt reported as not in memory, so it would re-read just those.
 
 # Write-intent refusal
 

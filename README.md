@@ -925,6 +925,36 @@ if (result === constants.FRESH_VERSION_FLAG) {
 Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
 the `expectedVersion` option is used.
 
+### `db.getMany(keys: Key[], options?: { transaction?: Transaction }): MaybePromise<any[]>`
+
+Retrieves the values for several keys with one RocksDB `MultiGet`, in key order, with `undefined`
+for a key that does not exist. Duplicate keys are allowed. Like `get()`, it returns synchronously
+when every key is in the memtable or block cache; otherwise it returns one promise for the whole
+batch, read on a single worker thread.
+
+```typescript
+const [product, variant, missing] = await db.getMany(['product:1', 'variant:7', 'nope']);
+```
+
+Passing a `transaction` (or calling `txn.getMany()`) reads through the transaction's snapshot and
+its own uncommitted writes, so the result is exactly what calling `get()` for each key would return.
+`getMany()` does not take `GetOptions`: it does not consult or populate the
+[Verification Table](#verification-table).
+
+Batching saves the per-key binding call (and, on a cache miss, the per-key async work) and lets
+RocksDB share work across the lookups, so it pays off from a handful of keys up; a batch of one
+takes the single-key path. `benchmark/multi-get.mts` compares the two on your own data.
+
+### `db.getManySync(keys: Key[], options?: { transaction?: Transaction }): any[]`
+
+Synchronous version of `getMany()`.
+
+### `db.getManyBinary(keys: Key[], options?): MaybePromise<(Buffer | undefined)[]>`
+
+Like `getMany()`, but returns the raw value buffers without decoding. The buffers of one batch share
+a single allocation and stay valid after later reads. `db.getManyBinarySync()` is the synchronous
+version.
+
 ### `db.getEstimatedKeyCount(): number`
 
 Retrieves the estimated number of keys in the database. This is an alias for
