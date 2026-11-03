@@ -22,7 +22,9 @@ const { TRANSACTION_LOG_FILE_HEADER_SIZE, TRANSACTION_LOG_ENTRY_HEADER_SIZE } = 
 
 async function transactionLogBytes(logDir: string): Promise<number> {
 	let size = 0;
-	for (const file of await readdir(logDir).catch(() => [])) {
+	for (const file of (await readdir(logDir).catch(() => [])).filter((name) =>
+		name.endsWith('.txnlog')
+	)) {
 		const info = await stat(join(logDir, file)).catch(() => undefined);
 		if (info?.isFile()) {
 			size += info.size;

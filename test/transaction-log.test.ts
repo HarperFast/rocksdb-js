@@ -243,7 +243,9 @@ describe('Transaction Log', () => {
 
 					const getSize = async (logPath: string) => {
 						let size = 0;
-						for (const file of await readdir(logPath)) {
+						for (const file of (await readdir(logPath)).filter((name) =>
+							name.endsWith('.txnlog')
+						)) {
 							const info = await stat(join(logPath, file)).catch(() => undefined);
 							if (info) {
 								size += info.size;
@@ -1004,7 +1006,7 @@ describe('Transaction Log', () => {
 				}
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog', '3.txnlog']);
 				const queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 				expect(queryResults.length).toBe(20);
@@ -1078,7 +1080,7 @@ describe('Transaction Log', () => {
 				const totalSize =
 					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10000) * 2000;
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 				expect(log.getStats().config.maxFileSize).toBe(16 * 1024 * 1024);
 				const firstSize = log.getLogFileSize(1);
@@ -1372,7 +1374,7 @@ describe('Transaction Log', () => {
 				}
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -1414,7 +1416,7 @@ describe('Transaction Log', () => {
 				});
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -1451,7 +1453,7 @@ describe('Transaction Log', () => {
 				});
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles).toEqual(['1.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -1485,7 +1487,7 @@ describe('Transaction Log', () => {
 				}
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -1581,7 +1583,7 @@ describe('Transaction Log', () => {
 					});
 
 					const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-					const logFiles = await readdir(logStorePath);
+					const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 					expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 					const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -4641,11 +4643,9 @@ describe('Transaction Log', () => {
 					await writeSmallTransaction(db, log, entryCount);
 					await writeSmallTransaction(db, log, entryCount + 1);
 					const logDirectory = join(dbPath, 'transaction_logs', 'foo');
-					expect((await readdir(logDirectory)).sort()).toEqual([
-						'1.txnlog',
-						'2.txnlog',
-						'3.txnlog',
-					]);
+					expect(
+						(await readdir(logDirectory)).filter((name) => name.endsWith('.txnlog')).sort()
+					).toEqual(['1.txnlog', '2.txnlog', '3.txnlog']);
 
 					expect(indices(log.query({ start: 0 }))).toEqual(range(entryCount + 2));
 					expect(indices(resumable)).toEqual([entryCount, entryCount + 1]);

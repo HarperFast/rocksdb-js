@@ -2328,7 +2328,11 @@ every file after it is retained regardless of age; `purge.retainedUnflushedFiles
 While a backup with `transactionLogs` is copying a store's files, purges of that store are skipped
 (`purge.retentionPins` reports it). On a filesystem that rejects a directory fsync, the store's last
 file is kept, since `txn.state` could not be made durable before deleting it.
-Use `destroy: true` only to remove the store itself.
+Before deleting any file, the purge records the largest key it held in the log's purge watermark
+([`log.getPurgeWatermark()`](#loggetpurgewatermark-transactionlogpurgewatermark)) and makes that
+durable.
+Use `destroy: true` only to remove the store itself; a log recreated after it starts a new
+watermark history.
 
 - `options: object`
   - `before?: number` Remove transaction log files older than the specified timestamp, subject to
@@ -2388,6 +2392,7 @@ to disk right before the transaction is committed. You may add multiple enties p
 underlying architecture is thread safe.
 
 - `log.addEntry()`
+- `log.getPurgeWatermark()`
 - `log.path`
 - `log.query()`
 
@@ -2419,6 +2424,29 @@ await db.transaction(async (txn) => {
 Note that the `TransactionLog` class also has internal methods `_getMemoryMapOfFile`,
 `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in
 any version.
+
+#### `log.getPurgeWatermark(): TransactionLogPurgeWatermark`
+
+Returns an upper bound on every entry key that retention or `db.purgeLogs()` has deleted from this
+log, or reports that no such bound can be given. A reader that needs every entry with a key above
+some position can be served from the log only when that position is at or above `purgedThrough`.
+
+- `{ known: true, purgedThrough: number }` `purgedThrough` is at or above every key of every file
+  deleted from the log, in whatever order the keys were written (0 when nothing was deleted). It is
+  made durable before each file is deleted, including by the retention that runs when a database
+  opens.
+- `{ known: false }` The log cannot vouch for what was deleted. This holds permanently for a log
+  created by a release without the watermark, one that file deletions bypassed (such as an older
+  release's retention), and one whose record cannot be read. It is also returned when the log's
+  store no longer exists, such as after `purgeLogs({ destroy: true })` until the next write.
+
+The call is synchronous. A read-only or secondary database reads the record from disk on each call.
+See [the purge watermark](docs/transaction-log.md#purge-watermark) for the rules.
+
+```typescript
+const watermark = db.useLog('foo').getPurgeWatermark();
+const canResume = watermark.known && resumeKey >= watermark.purgedThrough;
+```
 
 #### `log.path: string`
 

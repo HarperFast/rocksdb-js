@@ -2,6 +2,7 @@
 
 - [Transaction-log mapping capacity](src/binding/transaction_log/DESIGN.md) — fixed reader capacity, first-append publication, and rotation.
 - [Transaction-log retention](src/binding/transaction_log/DESIGN.md#retention-and-the-sequence-witness) — purging the current segment, and `txn.state` as the restart sequence witness.
+- [Transaction-log purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark) — `txn.purged` covers every segment before it is unlinked, and is reported as known only when every deletion was recorded.
 - [Transaction-log conditional close](src/binding/transaction_log/DESIGN.md#conditional-close) — why `tryClose()` refuses when any transaction bound during its check.
 - [Transaction-log sync failure](src/binding/transaction_log/DESIGN.md#a-failed-sync-freezes-the-flushed-state) — a failed segment sync stops `txn.state` from advancing for the life of the store instance.
 - [Transaction-log exact-start lookups](src/binding/transaction_log/DESIGN.md#exact-start-lookups) — the skip span an exact-start lookup jumps over, and what it must never cross.

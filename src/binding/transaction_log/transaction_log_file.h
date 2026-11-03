@@ -369,6 +369,18 @@ struct TransactionLogFile final {
 	std::atomic<bool> hasAppendedSinceOpen = false;
 
 	/**
+	 * Largest entry key appended in this process. It is the file's largest key only while
+	 * `appendMaxExact`: this process created the file, so every entry in it was appended here.
+	 * Guarded by fileMutex.
+	 */
+	double appendMaxKey = 0;
+	bool appendMaxExact = false;
+
+	/** Largest entry key a purge scan proved this rotated file holds. Guarded by fileMutex. */
+	double scannedMaxKey = 0;
+	bool maxKeyScanned = false;
+
+	/**
 	 * True once a failed append may have left bytes past `size`. The file is refused for further
 	 * appends; the store persists `size` to the preallocated boundary marker before rotating, so the
 	 * orphaned bytes remain outside the logical file both now and after restart instead of becoming a
@@ -572,6 +584,12 @@ struct TransactionLogFile final {
 	MaxEntryScan scanMaxEntryTimestamp(
 		double plausibleBound,
 		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+
+	/** This file's largest entry key, when it is known without reading the file. */
+	bool knownMaxEntryKey(double& maxKey);
+
+	/** Caches a scan's result; only for a rotated file, which is never appended again. */
+	void recordScannedMaxKey(double maxKey);
 
 	/**
 	 * Closes the log file and removes it.

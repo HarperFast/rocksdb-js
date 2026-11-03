@@ -1596,6 +1596,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
     [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
 
+35. **No transaction-log segment is unlinked before the purge watermark covers it**: `doPurge()`
+    persists `txn.purged`, raised to the largest key of every segment it is about to delete,
+    durably before its first unlink. A store reports the watermark as known only when every
+    deletion in its history was recorded that way, so a store an older release created stays
+    unknown. See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark).
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

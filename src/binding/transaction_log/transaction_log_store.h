@@ -15,6 +15,7 @@
 #include "rocksdb/db.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
+#include "transaction_log_purge_record.h"
 
 #define RECENTLY_COMMITTED_POSITIONS_SIZE 24
 
@@ -426,6 +427,22 @@ struct TransactionLogStore final {
 	std::atomic<bool> purgeSyncWarningEmitted = false;
 
 	/**
+	 * See DESIGN.md, "Purge watermark". Written under writeMutex, dataSetsMutex and
+	 * purgeRecordMutex (or before the store is published); read under purgeRecordMutex.
+	 * Defaults to unknown: only a store whose directory this process created starts known.
+	 */
+	TransactionLogPurgeRecord purgeRecord;
+	std::mutex purgeRecordMutex;
+	std::atomic<bool> purgeRecordWarningEmitted = false;
+	std::atomic<bool> purgeScanWarningEmitted = false;
+
+	/**
+	 * For a read-only store, whether load() found every deletion accounted for. It re-reads the
+	 * record on each request, since a writer in another process may have purged since.
+	 */
+	bool purgeHistoryAccountedAtLoad = false;
+
+	/**
 	 * The next sequence position to use for a new transaction log entry.
 	 */
 	LogPosition nextLogPosition = { 0, 0 };
@@ -693,6 +710,32 @@ struct TransactionLogStore final {
 		const bool countEntries = false
 	);
 
+	struct PurgeWatermark final {
+		bool known = false;
+		/** Upper bound on every entry key purged from this log; meaningful only when known. */
+		double purgedThrough = 0;
+	};
+
+	PurgeWatermark getPurgeWatermark();
+
+	/** The purge record a backup of this store captures. */
+	TransactionLogPurgeRecord purgeRecordSnapshot();
+
+	/**
+	 * Marks a store whose directory this process just created as known with nothing purged, and
+	 * persists that, so a later open can tell it apart from a store an older release created.
+	 */
+	void initializeNewPurgeRecord();
+
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	/** Runs after the purge record is durable and before the first unlink. */
+	std::function<void()> afterPurgeRecordPersistedForTests;
+	/** Returning true fails the purge record write. */
+	std::function<bool()> failPurgeRecordWriteForTests;
+	/** Overrides the per-purge-run scan budget when non-negative. */
+	static std::atomic<int64_t> purgeScanBudgetMsForTests;
+#endif
+
 	/**
 	 * Registers a discovered segment for `sequenceNumber`. Returns false — without
 	 * touching the registry, reading its marker or opening it — when that sequence
@@ -847,8 +890,35 @@ private:
 		std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor = nullptr,
 		const bool all = false,
 		const uint64_t before = 0,
-		const bool countEntries = false
+		const bool countEntries = false,
+		std::optional<std::chrono::steady_clock::time_point> scanDeadline = std::nullopt
 	);
+
+	/** Whether retention or `before` makes `file` old enough to purge. Throws filesystem_error. */
+	bool isPastRetention(TransactionLogFile& file, uint64_t before);
+
+	enum class MaxKeyResolution {
+		Resolved,
+		/** The file's keys cannot be proven (corruption, or the file is gone): purging it makes the watermark unknown. */
+		Unknowable,
+		/** Not now (I/O failure or the scan budget ran out): keep the file for a later run. */
+		Deferred,
+	};
+
+	/** Needs no store lock; a file that is still current is scanned without caching the result. */
+	MaxKeyResolution resolveMaxKey(
+		const std::shared_ptr<TransactionLogFile>& file,
+		std::optional<std::chrono::steady_clock::time_point> deadline,
+		double& maxKey);
+
+	/** Scans rotated purge candidates before purge() takes writeMutex, so appends need not wait on the reads. */
+	void scanPurgeCandidates(uint64_t before, std::chrono::steady_clock::time_point deadline);
+
+	/** Durably writes `record`, warning once when it cannot. Caller holds writeMutex and dataSetsMutex. */
+	bool persistPurgeRecord(const TransactionLogPurgeRecord& record);
+
+	/** Reads the purge record and applies the baseline rule; load() calls it before retention runs. */
+	void loadPurgeRecord();
 
 	/**
 	 * Moves the writer off the current segment before purge unlinks it; the

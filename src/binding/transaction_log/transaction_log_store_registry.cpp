@@ -550,7 +550,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		throw rocksdb_js::DBException(firstUseFloorLogMessage(name, dbPath));
 	}
 
-	// Ensure the directory exists
+	std::error_code existsError;
+	bool createdDirectory = !std::filesystem::exists(logDirectory, existsError) && !existsError;
 	rocksdb_js::tryCreateDirectory(logDirectory);
 
 	auto txnLogStore = std::make_shared<TransactionLogStore>(
@@ -561,6 +562,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		config.transactionLogMaxAgeThreshold
 	);
 	txnLogStore->displayPath = std::filesystem::path(config.transactionLogsDisplayPath) / name;
+	if (createdDirectory) {
+		txnLogStore->initializeNewPurgeRecord();
+	}
 
 	// Use insert_or_assign to replace any closing store with the same name
 	entry->stores.insert_or_assign(txnLogStore->name, txnLogStore);
@@ -710,6 +714,11 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 	// Phase 4: Delete directories outside the lock
 	for (auto& store : storesActuallyRemoved) {
 		try {
+			// Removal order is unspecified; without the record first, a crash part-way could leave a
+			// valid record beside a store missing its newest segments.
+			std::error_code recordError;
+			std::filesystem::remove(store->path / TRANSACTION_LOG_PURGE_RECORD_NAME, recordError);
+			rocksdb_js::syncDirectory(store->path, /*allowUnsupported=*/true);
 			std::filesystem::remove_all(store->path);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to remove log directory %s: %s\n",

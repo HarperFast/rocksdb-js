@@ -582,6 +582,25 @@ napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Returns `{ known: true, purgedThrough }` or `{ known: false }`; see DESIGN.md, "Purge watermark".
+ */
+napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetPurgeWatermark");
+
+	auto watermark = (*txnLogHandle)->getPurgeWatermark();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	napi_value known;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, watermark.known, &known));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "known", known));
+	if (watermark.known) {
+		SET_STAT(result, "purgedThrough", watermark.purgedThrough);
+	}
+	return result;
+}
+
+/**
  * Initializes the `NativeTransactionLog` JavaScript class.
  */
 void TransactionLog::Init(napi_env env, napi_value exports) {
@@ -591,6 +610,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "path", nullptr, nullptr, GetPath, nullptr, nullptr, napi_default, nullptr },
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },
 		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getPurgeWatermark", nullptr, GetPurgeWatermark, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findExactStart", nullptr, FindExactStart, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_segmentRemovals", nullptr, SegmentRemovals, nullptr, nullptr, nullptr, napi_default, nullptr },

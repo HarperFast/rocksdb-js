@@ -1,6 +1,7 @@
 #include "transaction_log/transaction_log_validation.h"
 #include "transaction_log/transaction_log_file.h"     // header/entry size constants
 #include "transaction_log/transaction_log_recovery.h" // scanTransactionLogForRecovery
+#include "transaction_log/transaction_log_purge_record.h"
 #include "core/encoding.h"                            // readDoubleBE / readUint32BE
 #include "core/exception.h"
 #include <algorithm>
@@ -208,6 +209,7 @@ TransactionLogStoreValidation validateTransactionLogStore(
 	store.path = path.string();
 
 	bool hasStateFile = false;
+	bool hasPurgeRecord = false;
 
 	for (const auto& dirEntry : std::filesystem::directory_iterator(path)) {
 		const std::string filename = dirEntry.path().filename().string();
@@ -219,6 +221,10 @@ TransactionLogStoreValidation validateTransactionLogStore(
 
 		if (filename == "txn.state") {
 			hasStateFile = true;
+			continue;
+		}
+		if (filename == TRANSACTION_LOG_PURGE_RECORD_NAME) {
+			hasPurgeRecord = true;
 			continue;
 		}
 
@@ -367,6 +373,23 @@ TransactionLogStoreValidation validateTransactionLogStore(
 						}
 					}
 				}
+			}
+		}
+	}
+
+	// Neither finding loses data: the log's purge watermark reads as unknown, so callers stop relying on it.
+	if (hasPurgeRecord) {
+		TransactionLogPurgeRecord record;
+		if (readTransactionLogPurgeRecord(path, record) != TransactionLogPurgeRecordState::Valid) {
+			store.warnings.push_back(std::string(TRANSACTION_LOG_PURGE_RECORD_NAME) +
+				" holds no valid record; the log's purge watermark reads as unknown");
+		} else if (record.known) {
+			auto above = std::find_if(store.files.begin(), store.files.end(),
+				[&record](const TransactionLogStoreFileValidation& f) { return f.sequenceNumber > record.throughSequence; });
+			if (above != store.files.end() && above->sequenceNumber != record.throughSequence + 1) {
+				store.warnings.push_back("Log files " + std::to_string(record.throughSequence + 1) + ".." +
+					std::to_string(above->sequenceNumber - 1) + " were deleted without updating " +
+					TRANSACTION_LOG_PURGE_RECORD_NAME + "; the log's purge watermark reads as unknown");
 			}
 		}
 	}

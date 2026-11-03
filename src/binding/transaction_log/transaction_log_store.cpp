@@ -35,6 +35,22 @@ static unsigned backupUnresolvedWaitMs() {
 	return ms;
 }
 
+// Bounds the reads one purge run spends resolving the largest key of files this process did not write,
+// so a cold backlog cannot hold an open (which runs retention under the registry lock) for long.
+// Files left unresolved are kept and purged by a later run.
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+std::atomic<int64_t> TransactionLogStore::purgeScanBudgetMsForTests = -1;
+#endif
+static std::chrono::milliseconds purgeScanBudget() {
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	int64_t override = TransactionLogStore::purgeScanBudgetMsForTests.load(std::memory_order_relaxed);
+	if (override >= 0) {
+		return std::chrono::milliseconds(override);
+	}
+#endif
+	return std::chrono::milliseconds(2000);
+}
+
 // Helper function to extract exception message from exception_ptr
 static std::string getExceptionMessage(std::exception_ptr eptr) {
 	if (!eptr) {
@@ -655,6 +671,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 	std::vector<std::pair<uint32_t, std::shared_ptr<TransactionLogFile>>> files;
 	std::vector<uint64_t> byteLimits;
 	uint32_t current;
+	TransactionLogPurgeRecord purgeRecordCapture;
 	// With abort markers in use, no append may be mid-flight while the sizes and the unresolved set
 	// are captured: an appending batch's bytes count in `size` before its position stops equalling
 	// nextLogPosition, the sentinel skipped below. A batch sets abortMarkersInUse before its
@@ -711,11 +728,13 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 			writeLock.unlock();
 			this->waitForResolution(lock, unresolved, abandon);
 		}
+		// With the segment list, under dataSetsMutex, which every purge holds.
+		purgeRecordCapture = this->purgeRecordSnapshot();
 		break;
 	}
 
 	std::vector<TransactionLogBackupEntry> entries;
-	entries.reserve(files.size() + 1);
+	entries.reserve(files.size() + 2);
 	for (size_t i = 0; i < files.size(); i++) {
 		const auto& [seq, file] = files[i];
 		uint64_t byteLimit = byteLimits[i];
@@ -748,6 +767,20 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 
 	if (hasStateEntry) {
 		entries.push_back(std::move(stateEntry));
+	}
+
+	// A store with nothing to copy stays out of the backup, as it did before the record existed.
+	if (!entries.empty()) {
+		purgeRecordCapture.generation = std::max<uint64_t>(purgeRecordCapture.generation, 1);
+		std::string purgeRecordImage = encodeTransactionLogPurgeRecordImage(purgeRecordCapture);
+		entries.push_back({
+			TRANSACTION_LOG_PURGE_RECORD_NAME,
+			this->path / TRANSACTION_LOG_PURGE_RECORD_NAME,
+			purgeRecordImage.size(),
+			std::filesystem::file_time_type::clock::now(),
+			false,
+			std::move(purgeRecordImage),
+		});
 	}
 
 	return entries;
@@ -878,9 +911,197 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 }
 
 void TransactionLogStore::purge(std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor, const bool all, const uint64_t before, const bool countEntries) {
+	auto scanDeadline = std::chrono::steady_clock::now() + purgeScanBudget();
+	if (!all) {
+		this->scanPurgeCandidates(before, scanDeadline);
+	}
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
-	this->doPurge(visitor, all, before, countEntries);
+	this->doPurge(visitor, all, before, countEntries, scanDeadline);
+}
+
+bool TransactionLogStore::isPastRetention(TransactionLogFile& file, uint64_t before) {
+	auto mtime = file.getLastWriteTime();
+	if (before > 0) {
+		auto mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(mtime.time_since_epoch()).count();
+		if (static_cast<uint64_t>(mtimeMs) < before) {
+			return true;
+		}
+	}
+	if (this->retentionMs.count() > 0) {
+		auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - mtime);
+		return fileAgeMs > this->retentionMs;
+	}
+	return false;
+}
+
+TransactionLogStore::MaxKeyResolution TransactionLogStore::resolveMaxKey(
+	const std::shared_ptr<TransactionLogFile>& file,
+	std::optional<std::chrono::steady_clock::time_point> deadline,
+	double& maxKey
+) {
+	if (file->knownMaxEntryKey(maxKey)) {
+		return MaxKeyResolution::Resolved;
+	}
+	auto isGone = [&file]() {
+		std::error_code existsError;
+		return !std::filesystem::exists(file->path, existsError) && !existsError;
+	};
+	try {
+		// The floor scan proves it saw every durable key; the query index cannot (DESIGN.md, "Purge watermark").
+		auto scan = file->scanMaxEntryTimestamp(std::numeric_limits<double>::infinity(), deadline);
+		switch (scan.kind) {
+			case RecoveryScan::Kind::Clean:
+			case RecoveryScan::Kind::TruncateTail:
+				maxKey = scan.maxTimestamp;
+				if (file->sequenceNumber != this->currentSequenceNumber.load(std::memory_order_relaxed)) {
+					file->recordScannedMaxKey(maxKey);
+				}
+				return MaxKeyResolution::Resolved;
+			case RecoveryScan::Kind::MidFileCorruption:
+				return MaxKeyResolution::Unknowable;
+			case RecoveryScan::Kind::Incomplete:
+				return MaxKeyResolution::Deferred;
+		}
+	} catch (const TransactionLogFormatException&) {
+		return MaxKeyResolution::Unknowable;
+	} catch (...) {
+		return isGone() ? MaxKeyResolution::Unknowable : MaxKeyResolution::Deferred;
+	}
+	return MaxKeyResolution::Deferred;
+}
+
+void TransactionLogStore::scanPurgeCandidates(uint64_t before, std::chrono::steady_clock::time_point deadline) {
+	if (before == 0 && this->retentionMs.count() == 0) {
+		return;
+	}
+	std::vector<std::shared_ptr<TransactionLogFile>> unscanned;
+	auto lastFlushedPosition = this->getLastFlushedPosition();
+	{
+		std::lock_guard<std::mutex> lock(this->dataSetsMutex);
+		if (this->retentionPins.load(std::memory_order_relaxed) > 0) {
+			return;
+		}
+		uint32_t currentSequence = this->currentSequenceNumber.load(std::memory_order_relaxed);
+		for (const auto& [sequenceNumber, logFile] : this->sequenceFiles) {
+			if (sequenceNumber >= currentSequence || sequenceNumber > lastFlushedPosition.logSequenceNumber) {
+				break;
+			}
+			try {
+				if (!this->isPastRetention(*logFile, before)) {
+					break;
+				}
+			} catch (...) {
+				break;
+			}
+			double maxKey;
+			if (!logFile->knownMaxEntryKey(maxKey)) {
+				unscanned.push_back(logFile);
+			}
+		}
+	}
+	for (const auto& logFile : unscanned) {
+		double maxKey;
+		if (this->resolveMaxKey(logFile, deadline, maxKey) == MaxKeyResolution::Deferred) {
+			break;
+		}
+	}
+}
+
+bool TransactionLogStore::persistPurgeRecord(const TransactionLogPurgeRecord& record) {
+	bool written =
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+		!(this->failPurgeRecordWriteForTests && this->failPurgeRecordWriteForTests()) &&
+#endif
+		writeTransactionLogPurgeRecord(this->path, record);
+	if (written) {
+		this->purgeRecordWarningEmitted.store(false, std::memory_order_relaxed);
+		return true;
+	}
+	if (!this->purgeRecordWarningEmitted.exchange(true, std::memory_order_relaxed)) {
+		try {
+			std::ostringstream msg;
+			msg << "Transaction log purge watermark " << (this->displayPath / TRANSACTION_LOG_PURGE_RECORD_NAME).string()
+				<< " could not be written; retention keeps the log's files until it can.";
+			DEBUG_LOG("%p TransactionLogStore::persistPurgeRecord WARNING: %s\n", this, msg.str().c_str());
+			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+		} catch (...) {
+			this->purgeRecordWarningEmitted.store(false, std::memory_order_relaxed);
+		}
+	}
+	return false;
+}
+
+void TransactionLogStore::loadPurgeRecord() {
+	TransactionLogPurgeRecord record;
+	auto state = readTransactionLogPurgeRecord(this->path, record);
+	uint32_t currentSequence = this->currentSequenceNumber.load(std::memory_order_relaxed);
+	// Every sequence after the record's and before the writer's next one must still be on disk;
+	// one that is missing was deleted without being recorded (an older release's retention). A
+	// writer sequence at or below the record's means the sequence space was reused.
+	bool accounted = state == TransactionLogPurgeRecordState::Valid && record.known &&
+		record.throughSequence < currentSequence;
+	if (accounted) {
+		uint64_t expected = static_cast<uint64_t>(record.throughSequence) + 1;
+		for (auto it = this->sequenceFiles.upper_bound(record.throughSequence);
+			it != this->sequenceFiles.end() && it->first < currentSequence; ++it) {
+			if (it->first != expected) {
+				break;
+			}
+			++expected;
+		}
+		accounted = expected == currentSequence;
+	}
+
+	TransactionLogPurgeRecord loaded = state == TransactionLogPurgeRecordState::Valid ? record : TransactionLogPurgeRecord{};
+	loaded.known = accounted;
+	this->purgeRecord = loaded;
+	if (this->readOnly) {
+		this->purgeHistoryAccountedAtLoad = accounted;
+		return;
+	}
+	if (state != TransactionLogPurgeRecordState::Valid || record.known != accounted) {
+		// Recording the verdict lets a read-only open, which cannot see what this open saw, report it.
+		loaded.generation++;
+		if (writeTransactionLogPurgeRecord(this->path, loaded)) {
+			this->purgeRecord.generation = loaded.generation;
+		}
+	}
+}
+
+void TransactionLogStore::initializeNewPurgeRecord() {
+	TransactionLogPurgeRecord record;
+	record.known = true;
+	record.generation = 1;
+	{
+		std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
+		this->purgeRecord = record;
+	}
+	// Best effort: a record that was never written makes a later open report unknown, never too low.
+	if (!writeTransactionLogPurgeRecord(this->path, record)) {
+		DEBUG_LOG("%p TransactionLogStore::initializeNewPurgeRecord Failed to write %s\n", this, this->path.string().c_str());
+	}
+}
+
+TransactionLogPurgeRecord TransactionLogStore::purgeRecordSnapshot() {
+	if (this->readOnly) {
+		TransactionLogPurgeRecord record;
+		if (readTransactionLogPurgeRecord(this->path, record) != TransactionLogPurgeRecordState::Valid) {
+			return TransactionLogPurgeRecord{};
+		}
+		record.known = record.known && this->purgeHistoryAccountedAtLoad;
+		return record;
+	}
+	std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
+	return this->purgeRecord;
+}
+
+TransactionLogStore::PurgeWatermark TransactionLogStore::getPurgeWatermark() {
+	auto record = this->purgeRecordSnapshot();
+	PurgeWatermark watermark;
+	watermark.known = record.known;
+	watermark.purgedThrough = record.known ? record.watermark : 0;
+	return watermark;
 }
 
 void TransactionLogStore::retireCurrentSequenceLocked() {
@@ -938,7 +1159,13 @@ std::shared_ptr<void> TransactionLogStore::pinRetention(const std::shared_ptr<Tr
 	});
 }
 
-void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor, const bool all, const uint64_t before, const bool countEntries) {
+void TransactionLogStore::doPurge(
+	std::function<void(const std::filesystem::path&, uint32_t entryCount)> visitor,
+	const bool all,
+	const uint64_t before,
+	const bool countEntries,
+	std::optional<std::chrono::steady_clock::time_point> scanDeadline
+) {
 	if (this->sequenceFiles.empty()) {
 		return;
 	}
@@ -954,11 +1181,26 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
 	std::vector<uint32_t> sequenceNumbersToRemove;
+	std::vector<std::pair<uint32_t, std::shared_ptr<TransactionLogFile>>> candidates;
 	// Per run, not per process: a directory that stays unwritable stalls retention,
 	// and one line ever would leave every later purge silent about it.
 	bool removeWarned = false;
+	bool deferred = false;
 	auto lastFlushedPosition = this->getLastFlushedPosition();
+	uint32_t planCurrentSequence = this->currentSequenceNumber.load(std::memory_order_relaxed);
+	TransactionLogPurgeRecord nextRecord;
+	{
+		std::lock_guard<std::mutex> recordLock(this->purgeRecordMutex);
+		nextRecord = this->purgeRecord;
+	}
+	auto raiseWatermark = [&nextRecord](double maxKey) {
+		if (maxKey > nextRecord.watermark) {
+			nextRecord.watermark = maxKey;
+		}
+	};
 
+	// Choose every file to delete and fold its largest key in before anything is unlinked: the
+	// record must cover a file before the file can disappear (DESIGN.md, "Purge watermark").
 	for (const auto& entry : this->sequenceFiles) {
 		auto& sequenceNumber = entry.first;
 		auto& logFile = entry.second;
@@ -966,20 +1208,16 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 
 		if (!shouldPurge && (before > 0 || this->retentionMs.count() > 0)) {
 			try {
-				auto mtime = logFile->getLastWriteTime();
-
-				if (before > 0) {
-					auto mtimeMs = std::chrono::duration_cast<std::chrono::milliseconds>(mtime.time_since_epoch()).count();
-					shouldPurge = static_cast<uint64_t>(mtimeMs) < before;
-				}
-				if (!shouldPurge && this->retentionMs.count() > 0) {
-					auto now = std::chrono::system_clock::now();
-					auto fileAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - mtime);
-					shouldPurge = fileAgeMs > this->retentionMs;
-				}
+				shouldPurge = this->isPastRetention(*logFile, before);
 			} catch (const std::filesystem::filesystem_error& e) {
 				if (e.code() == std::errc::no_such_file_or_directory) {
 					DEBUG_LOG("%p TransactionLogStore::purge Forgetting missing file: %s\n", this, logFile->path.string().c_str());
+					double maxKey;
+					if (logFile->knownMaxEntryKey(maxKey)) {
+						raiseWatermark(maxKey);
+					} else {
+						nextRecord.known = false;
+					}
 					sequenceNumbersToRemove.push_back(sequenceNumber);
 					continue;
 				}
@@ -1044,15 +1282,79 @@ void TransactionLogStore::doPurge(std::function<void(const std::filesystem::path
 			break;
 		}
 
+		if (!all && sequenceNumber == planCurrentSequence && this->nextSequenceNumber <= sequenceNumber) {
+			// the sequence space is exhausted; retiring would wrap below it
+			break;
+		}
+
+		double maxKey = 0;
+		auto resolution = this->resolveMaxKey(logFile, scanDeadline, maxKey);
+		if (resolution == MaxKeyResolution::Resolved) {
+			raiseWatermark(maxKey);
+		} else if (resolution == MaxKeyResolution::Deferred && !all) {
+			deferred = true;
+			if (!this->purgeScanWarningEmitted.exchange(true, std::memory_order_relaxed)) {
+				try {
+					std::ostringstream msg;
+					msg << "Transaction log segment " << (this->displayPath / logFile->path.filename()).string()
+						<< " could not be read to record its largest key before purging it; retention keeps it"
+						<< " and the segments after it until a later purge can.";
+					DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
+					emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
+				} catch (...) {
+					// reporting is best-effort
+				}
+			}
+			break;
+		} else {
+			// A segment whose keys cannot be proven still goes, so corruption does not stall
+			// retention, but nothing can bound what it held.
+			nextRecord.known = false;
+		}
+		candidates.emplace_back(sequenceNumber, logFile);
+	}
+	if (!deferred) {
+		this->purgeScanWarningEmitted.store(false, std::memory_order_relaxed);
+	}
+	if (candidates.empty() && sequenceNumbersToRemove.empty()) {
+		return;
+	}
+
+	// The lowest sequence left if every chosen file goes. Survivors at or below it (a failed unlink, or
+	// a crash before one) are already covered, so the record never has to be corrected afterwards.
+	auto chosen = [&](uint32_t sequenceNumber) {
+		return std::binary_search(sequenceNumbersToRemove.begin(), sequenceNumbersToRemove.end(), sequenceNumber) ||
+			std::binary_search(candidates.begin(), candidates.end(), std::make_pair(sequenceNumber, std::shared_ptr<TransactionLogFile>()),
+				[](const auto& a, const auto& b) { return a.first < b.first; });
+	};
+	uint32_t lowestRetained = chosen(planCurrentSequence) ? this->nextSequenceNumber : planCurrentSequence;
+	for (const auto& entry : this->sequenceFiles) {
+		if (!chosen(entry.first)) {
+			lowestRetained = std::min(lowestRetained, entry.first);
+			break;
+		}
+	}
+	nextRecord.throughSequence = std::max(nextRecord.throughSequence, lowestRetained - 1);
+	nextRecord.generation++;
+	if (!this->persistPurgeRecord(nextRecord)) {
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> recordLock(this->purgeRecordMutex);
+		this->purgeRecord = nextRecord;
+	}
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+	if (this->afterPurgeRecordPersistedForTests) {
+		this->afterPurgeRecordPersistedForTests();
+	}
+#endif
+
+	for (const auto& [sequenceNumber, logFile] : candidates) {
 		// count the entries before removing the file (counting is opt-in extra
 		// work; the file is gone by the time the visitor runs)
 		uint32_t entryCount = (visitor && countEntries) ? logFile->countEntries() : 0;
 
 		if (sequenceNumber == this->currentSequenceNumber.load(std::memory_order_relaxed)) {
-			if (!all && this->nextSequenceNumber <= sequenceNumber) {
-				// the sequence space is exhausted; retiring would wrap below it
-				break;
-			}
 			this->retireCurrentSequenceLocked();
 		}
 
@@ -2068,6 +2370,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		// the purged sequence.
 		*store->lastCommittedPosition = store->nextLogPosition;
 	}
+	// After the writer's next sequence is final: the baseline rule compares against it.
+	store->loadPurgeRecord();
 	if (retentionMs.count() > 0 && !readOnly) {
 		try {
 			store->purge(nullptr, false, 0, false);

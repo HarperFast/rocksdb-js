@@ -278,6 +278,8 @@ bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfM
 			throw rocksdb_js::DBException("Failed to write transaction log file header: " + this->path.string());
 		}
 		this->size = TRANSACTION_LOG_FILE_HEADER_SIZE;
+		this->appendMaxKey = 0;
+		this->appendMaxExact = true;
 	} else if (this->size < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		DEBUG_LOG("%p TransactionLogFile::open ERROR: File is too small to be a valid transaction log file: %s\n", this, this->path.string().c_str());
 		throw rocksdb_js::TransactionLogFormatException("File is too small to be a valid transaction log file: " + this->path.string());
@@ -457,6 +459,25 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
 	result.validEnd = scan.validEnd;
 	result.scannedBytes = scan.bytesRead;
 	return result;
+}
+
+bool TransactionLogFile::knownMaxEntryKey(double& maxKey) {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	if (this->appendMaxExact) {
+		maxKey = this->appendMaxKey;
+		return true;
+	}
+	if (this->maxKeyScanned) {
+		maxKey = this->scannedMaxKey;
+		return true;
+	}
+	return false;
+}
+
+void TransactionLogFile::recordScannedMaxKey(double maxKey) {
+	std::lock_guard<std::mutex> lock(this->fileMutex);
+	this->scannedMaxKey = maxKey;
+	this->maxKeyScanned = true;
 }
 
 void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
@@ -926,6 +947,9 @@ uint32_t TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, con
 	}
 
 	this->size += static_cast<uint32_t>(bytesWritten);
+	if (batch.timestamp > this->appendMaxKey) {
+		this->appendMaxKey = batch.timestamp;
+	}
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	this->updateMemoryMapOverlay();
 #endif
