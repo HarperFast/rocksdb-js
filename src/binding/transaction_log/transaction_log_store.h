@@ -433,6 +433,8 @@ struct TransactionLogStore final {
 	 */
 	TransactionLogPurgeRecord purgeRecord;
 	std::mutex purgeRecordMutex;
+	/** Generation of this store's last record write that failed, else 0. Guarded like the writes. */
+	uint64_t failedPurgeRecordGeneration = 0;
 	std::atomic<bool> purgeRecordWarningEmitted = false;
 
 	/**

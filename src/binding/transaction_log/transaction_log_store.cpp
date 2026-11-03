@@ -1056,21 +1056,29 @@ bool TransactionLogStore::writePurgeRecord(TransactionLogPurgeRecord& record) {
 	}
 	// A record behind the disk (an unreadable load, or a store built over a directory it did not load)
 	// must not land in the slot holding the newer one, nor lower the watermark the disk already holds.
+	// The exception is this store's own write whose sync failed: the page cache shows it, but it may
+	// never reach the disk, so the retry rewrites its slot and leaves the last durable one alone.
 	if (state == TransactionLogPurgeRecordState::Valid && onDisk.generation >= record.generation) {
-		record.generation = onDisk.generation + 1;
-		record.watermark = std::max(record.watermark, onDisk.watermark);
-		record.throughSequence = std::max(record.throughSequence, onDisk.throughSequence);
-		record.known = record.known && onDisk.known;
+		if (onDisk.generation == this->failedPurgeRecordGeneration) {
+			record.generation = onDisk.generation;
+		} else {
+			record.generation = onDisk.generation + 1;
+			record.watermark = std::max(record.watermark, onDisk.watermark);
+			record.throughSequence = std::max(record.throughSequence, onDisk.throughSequence);
+			record.known = record.known && onDisk.known;
+		}
 	}
-	return writeTransactionLogPurgeRecord(this->path, record);
-}
-
-bool TransactionLogStore::persistPurgeRecord(TransactionLogPurgeRecord& record) {
 	bool written =
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 		!(this->failPurgeRecordWriteForTests && this->failPurgeRecordWriteForTests()) &&
 #endif
-		this->writePurgeRecord(record);
+		writeTransactionLogPurgeRecord(this->path, record);
+	this->failedPurgeRecordGeneration = written ? 0 : record.generation;
+	return written;
+}
+
+bool TransactionLogStore::persistPurgeRecord(TransactionLogPurgeRecord& record) {
+	bool written = this->writePurgeRecord(record);
 	if (written) {
 		this->purgeRecordWarningEmitted.store(false, std::memory_order_relaxed);
 		return true;

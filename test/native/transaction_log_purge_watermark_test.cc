@@ -315,6 +315,43 @@ TEST_F(PurgeWatermarkTest, FailedRecordWriteDeletesNothing) {
 
 // A torn write damages only the slot being written; the other slot is the previous record,
 // which is still correct because nothing is unlinked until the write is durable.
+// A write whose sync failed may never reach the disk, so its retry must not overwrite the other,
+// durable slot.
+TEST_F(PurgeWatermarkTest, RetryAfterAFailedWriteKeepsTheDurableSlot) {
+	auto store = createStore();
+	writeOutOfOrderSegments(*store);
+	auto durable = recordOnDisk(storePath).generation;
+	auto durableSlot = (durable & 1) ? rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_STRIDE : 0;
+	auto readSlot = [&](uint32_t offset) {
+		std::string bytes(rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE, '\0');
+		std::ifstream file(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME, std::ios::binary);
+		file.seekg(offset);
+		file.read(bytes.data(), bytes.size());
+		return bytes;
+	};
+	auto before = readSlot(durableSlot);
+	ageSegment(1);
+	// The slot is written, then the sync fails: simulate it by writing the slot and failing.
+	store->failPurgeRecordWriteForTests = [&]() {
+		TransactionLogPurgeRecord attempted;
+		attempted.known = true;
+		attempted.watermark = 4000;
+		attempted.generation = durable + 1;
+		EXPECT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, attempted));
+		return true;
+	};
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	EXPECT_TRUE(std::filesystem::exists(segment(1)));
+	store->failPurgeRecordWriteForTests = nullptr;
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	EXPECT_FALSE(std::filesystem::exists(segment(1)));
+	EXPECT_EQ(readSlot(durableSlot), before);
+	auto record = recordOnDisk(storePath);
+	EXPECT_EQ(record.generation, durable + 1);
+	EXPECT_EQ(record.watermark, 5000);
+	store->close();
+}
+
 TEST_F(PurgeWatermarkTest, TornWriteFallsBackToThePreviousRecord) {
 	std::filesystem::create_directories(storePath);
 	TransactionLogPurgeRecord first;
