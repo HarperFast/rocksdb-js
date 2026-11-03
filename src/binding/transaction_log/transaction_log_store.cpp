@@ -756,8 +756,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 			// to back up, and a header-less file would confuse recovery on restore.
 			// The extent is seeded above, so this no longer also means "registered
 			// but never opened".
-			// Any other file with no extent is gone from disk. Only one the record already covers, at or
-			// below its sequence with a known maximum, keeps the record known.
+			// Any other file with no extent is gone from disk.
 			double maxKey;
 			if (seq != current) {
 				if (seq > purgeRecordCapture.throughSequence || !file->knownMaxEntryKey(maxKey)) {

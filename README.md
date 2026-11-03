@@ -2447,7 +2447,7 @@ first and check the watermark afterwards. See
 
 ```typescript
 const log = db.useLog('foo');
-const entries = Array.from(log.query({ start: resumeKey }));
+const entries = Array.from(log.query({ start: resumeKey, exclusiveStart: true }));
 const watermark = log.getPurgeWatermark();
 const complete = watermark.known && resumeKey >= watermark.purgedThrough;
 ```
