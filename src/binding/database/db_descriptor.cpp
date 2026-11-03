@@ -1958,7 +1958,7 @@ void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 	{
 		std::lock_guard<std::mutex> lock(this->txnsMutex);
 		for (auto& [id, txnHandle] : this->transactions) {
-			if (txnHandle && txnHandle->dbHandle && txnHandle->dbHandle->env == env) {
+			if (txnHandle && txnHandle->ownerEnv == env) {
 				toClose.push_back(txnHandle);
 			}
 		}

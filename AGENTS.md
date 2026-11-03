@@ -1609,6 +1609,17 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
     [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
 
+35. **A transaction is used only from the env that created it**: transaction ids resolve through
+    the process-global `DBDescriptor`, so any `worker_threads` env on the path can name another env's
+    transaction, and `Store.getTxnId()`'s identity check cannot tell them apart. A RocksDB
+    `Transaction` and most `TransactionHandle` fields (`state`, `txn`, the touched-family set, the VT
+    intents) are unsynchronized, so a foreign env staging into one races the owner and the commit
+    lane. Every N-API lookup by id therefore goes through `getOwnedTransaction()` (or, for
+    `TransactionLogHandle::addEntry`, the same `ownerEnv` comparison) and refuses another env with
+    `ERR_TRANSACTION_WRONG_ENV`. `ownerEnv` is captured at construction and immutable, unlike
+    `dbHandle`, which `close()` resets from whichever thread runs it; `closeTransactionsByEnv` reaps by
+    the same field. Never add a by-id path that calls `transactionGet()` directly.
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

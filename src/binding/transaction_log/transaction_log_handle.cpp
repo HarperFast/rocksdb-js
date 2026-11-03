@@ -23,6 +23,7 @@ TransactionLogHandle::~TransactionLogHandle() {
 }
 
 void TransactionLogHandle::addEntry(
+	napi_env env,
 	uint64_t transactionId,
 	char* data,
 	uint32_t size
@@ -36,6 +37,9 @@ void TransactionLogHandle::addEntry(
 	if (!txnHandle) {
 		DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %llu not found\n", this, (unsigned long long)transactionId);
 		throw rocksdb_js::DBException("Transaction id " + std::to_string(transactionId) + " not found");
+	}
+	if (txnHandle->ownerEnv != env) {
+		throw rocksdb_js::DBException("ERR_TRANSACTION_WRONG_ENV", foreignTransactionMessage(transactionId));
 	}
 
 	auto store = this->store.lock();
