@@ -678,6 +678,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 	std::vector<uint64_t> byteLimits;
 	uint32_t current;
 	TransactionLogPurgeRecord purgeRecordCapture;
+	bool omittedMalformed = false;
 	// With abort markers in use, no append may be mid-flight while the sizes and the unresolved set
 	// are captured: an appending batch's bytes count in `size` before its position stops equalling
 	// nextLogPosition, the sentinel skipped below. A batch sets abortMarkersInUse before its
@@ -686,6 +687,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 	for (bool markersInUse = waitForUnresolved && this->abortMarkersInUse.load(std::memory_order_acquire);;) {
 		files.clear();
 		byteLimits.clear();
+		omittedMalformed = false;
 		std::unique_lock<std::mutex> writeLock(this->writeMutex, std::defer_lock);
 		if (markersInUse) {
 			writeLock.lock();
@@ -706,8 +708,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 				// A malformed header has no readable entries, so there is nothing to
 				// back up. Other open failures propagate: the segment may be healthy,
 				// and reporting success would publish an incomplete backup.
-				// The restored store lacks it, and its keys cannot be proven.
-				purgeRecordCapture.known = false;
+				omittedMalformed = true;
 				if (!file->malformedBackupWarningEmitted.exchange(true, std::memory_order_relaxed)) {
 					const auto displayFilePath = this->displayPath / file->path.filename();
 					std::ostringstream msg;
@@ -736,8 +737,12 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 			writeLock.unlock();
 			this->waitForResolution(lock, unresolved, abandon);
 		}
-		// With the segment list, under dataSetsMutex, which every purge holds.
+		// With the segment list, under dataSetsMutex, which every purge holds. A restore lacks an omitted
+		// segment, and its keys cannot be proven.
 		purgeRecordCapture = this->purgeRecordSnapshot();
+		if (omittedMalformed) {
+			purgeRecordCapture.known = false;
+		}
 		break;
 	}
 
@@ -1071,7 +1076,8 @@ bool TransactionLogStore::persistPurgeRecord(TransactionLogPurgeRecord& record) 
 
 void TransactionLogStore::loadPurgeRecord() {
 	TransactionLogPurgeRecord record;
-	auto state = readTransactionLogPurgeRecord(this->path, record);
+	bool otherSlotDamaged = false;
+	auto state = readTransactionLogPurgeRecord(this->path, record, &otherSlotDamaged);
 	uint32_t currentSequence = this->currentSequenceNumber.load(std::memory_order_relaxed);
 	bool recordKnown = state == TransactionLogPurgeRecordState::Valid && record.known && !this->discoveryIncomplete;
 	// A purge that chose the current segment recorded it at T and may have stopped before the unlink.
@@ -1111,7 +1117,9 @@ void TransactionLogStore::loadPurgeRecord() {
 	// Neither a partial listing nor an unreadable record proves anything, so this open reports unknown
 	// without persisting it; a purge it runs still records unknown, since it cannot tell what it missed.
 	bool conclusive = !this->discoveryIncomplete && state != TransactionLogPurgeRecordState::Unreadable;
-	if (conclusive && (state != TransactionLogPurgeRecordState::Valid || record.known != accounted)) {
+	// A damaged slot is a write that stopped before its sync, so no purge followed it; rewriting it
+	// keeps read-only opens, which distrust a damaged slot, from reporting unknown until the next purge.
+	if (conclusive && (state != TransactionLogPurgeRecordState::Valid || record.known != accounted || otherSlotDamaged)) {
 		// Recording the verdict lets a read-only open, which cannot see what this open saw, report it.
 		loaded.generation++;
 		if (this->writePurgeRecord(loaded)) {

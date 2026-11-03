@@ -134,7 +134,6 @@ TEST_F(PurgeWatermarkTest, WatermarkIsThePurgedSegmentsTrueMaximum) {
 	store->close();
 }
 
-// A segment written by an earlier process is read once, with the strict scanner, before it goes.
 TEST_F(PurgeWatermarkTest, InheritedSegmentIsScannedForItsTrueMaximum) {
 	{
 		auto writer = createStore();
@@ -381,7 +380,6 @@ TEST_F(PurgeWatermarkTest, UnrecordedInteriorDeletionIsDetected) {
 	EXPECT_FALSE(loadStore()->getPurgeWatermark().known);
 }
 
-// A writer that would append at or below the record's sequence has reused the sequence space.
 TEST_F(PurgeWatermarkTest, ReusedSequenceSpaceIsUnknown) {
 	{
 		auto writer = createStore();
@@ -440,7 +438,6 @@ TEST_F(PurgeWatermarkTest, CorruptInheritedSegmentMakesItUnknown) {
 	store->close();
 }
 
-// The scan budget keeps a cold backlog from holding the purge; what it cannot read is kept.
 TEST_F(PurgeWatermarkTest, ExhaustedScanBudgetKeepsTheSegment) {
 	{
 		auto writer = createStore();
@@ -519,7 +516,6 @@ TEST_F(PurgeWatermarkTest, UnreadableRecordIsUnknownAndNotOverwritten) {
 	EXPECT_TRUE(std::filesystem::is_directory(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
 }
 
-// A segment that vanished before a backup copied it leaves the backed-up record unknown.
 TEST_F(PurgeWatermarkTest, BackupOfAStoreMissingASegmentIsUnknown) {
 	{
 		auto writer = createStore();
@@ -542,7 +538,52 @@ TEST_F(PurgeWatermarkTest, BackupOfAStoreMissingASegmentIsUnknown) {
 	store->close();
 }
 
-// A read-only open sees what the writer records after it opened.
+TEST_F(PurgeWatermarkTest, BackupThatOmitsAMalformedSegmentIsUnknown) {
+	{
+		auto writer = createStore();
+		writeOutOfOrderSegments(*writer);
+		writer->close();
+	}
+	{
+		std::fstream file(segment(1), std::ios::binary | std::ios::in | std::ios::out);
+		file.write("\0\0\0\0", 4);
+	}
+	auto store = loadStore();
+	TransactionLogPurgeRecord captured;
+	bool sawSegment1 = false;
+	for (const auto& entry : store->snapshotForBackup(nullptr, false)) {
+		sawSegment1 = sawSegment1 || entry.relativeName == "1.txnlog";
+		if (entry.relativeName == TRANSACTION_LOG_PURGE_RECORD_NAME) {
+			ASSERT_EQ(rocksdb_js::decodeTransactionLogPurgeRecordImage(
+				entry.inlineContents.data(), entry.inlineContents.size(), captured), TransactionLogPurgeRecordState::Valid);
+		}
+	}
+	EXPECT_FALSE(sawSegment1);
+	EXPECT_FALSE(captured.known);
+	store->close();
+}
+
+// A slot damaged by a write that stopped before its sync is rewritten by the next writable open.
+TEST_F(PurgeWatermarkTest, WritableOpenRepairsADamagedSlot) {
+	{
+		auto writer = createStore();
+		writeOutOfOrderSegments(*writer);
+		writer->close();
+	}
+	auto current = recordOnDisk(storePath).generation;
+	{
+		std::fstream file(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME, std::ios::binary | std::ios::in | std::ios::out);
+		file.seekp(((current + 1) & 1) ? rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_STRIDE : 0);
+		file.write("\xff\xff\xff\xff", 4);
+	}
+	auto store = loadStore();
+	EXPECT_TRUE(store->getPurgeWatermark().known);
+	store->close();
+	auto reader = loadStore(std::chrono::milliseconds(0), /*readOnly=*/true);
+	EXPECT_TRUE(reader->getPurgeWatermark().known);
+	reader->close();
+}
+
 TEST_F(PurgeWatermarkTest, ReadOnlyStoreRereadsTheRecord) {
 	auto writer = createStore();
 	writeOutOfOrderSegments(*writer);
@@ -566,7 +607,6 @@ TEST_F(PurgeWatermarkTest, ReadOnlyStoreRereadsTheRecord) {
 	writer->close();
 }
 
-// A reader that never read the newer record still sees its slot damaged, and reports unknown.
 TEST_F(PurgeWatermarkTest, ReadOnlyStoreDistrustsADamagedNewerSlot) {
 	auto writer = createStore();
 	writeOutOfOrderSegments(*writer);

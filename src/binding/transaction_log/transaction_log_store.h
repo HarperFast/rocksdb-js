@@ -930,7 +930,7 @@ private:
 	 */
 	bool writePurgeRecord(TransactionLogPurgeRecord& record);
 
-	/** writePurgeRecord(), warning once when it fails. Caller holds writeMutex and dataSetsMutex. */
+	/** Warns once when the write fails. Caller holds writeMutex and dataSetsMutex. */
 	bool persistPurgeRecord(TransactionLogPurgeRecord& record);
 
 	/** Reads the purge record and applies the baseline rule; load() calls it before retention runs. */

@@ -53,7 +53,6 @@ TransactionLogPurgeRecordState decodeTransactionLogPurgeRecordImage(
 /** A whole file image holding `record` in its slot and a zeroed other slot. */
 std::string encodeTransactionLogPurgeRecordImage(const TransactionLogPurgeRecord& record);
 
-/** Reads `<storePath>/txn.purged`. */
 TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
 	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged = nullptr) noexcept;
 
