@@ -58,36 +58,6 @@ struct ScopedAsyncWorkRegistration {
 	}
 };
 
-template<typename State>
-struct PendingAsyncState {
-	napi_env env;
-	State* state;
-
-	PendingAsyncState(napi_env env, State* state)
-		: env(env), state(state) {}
-
-	~PendingAsyncState() {
-		if (!this->state) return;
-		if (this->state->resolveRef) {
-			::napi_delete_reference(this->env, this->state->resolveRef);
-			this->state->resolveRef = nullptr;
-		}
-		if (this->state->rejectRef) {
-			::napi_delete_reference(this->env, this->state->rejectRef);
-			this->state->rejectRef = nullptr;
-		}
-		this->state->deleteAsyncWork();
-		delete this->state;
-	}
-
-	void release() {
-		this->state = nullptr;
-	}
-
-	PendingAsyncState(const PendingAsyncState&) = delete;
-	PendingAsyncState& operator=(const PendingAsyncState&) = delete;
-};
-
 inline void delayTransactionStagingForTesting() {
 	const int timeoutMs = consumeTransactionStagingDelayForTesting();
 	if (timeoutMs <= 0) {
@@ -915,15 +885,14 @@ rocksdb::Status TransactionHandle::multiGetSync(
 }
 
 /**
- * Follows `get()`'s async path: the same registration hand-off and column-family pin, without the
- * block-cache attempt, which `Store.getMany()` already made through `getManySync()`.
+ * Has no block-cache attempt of its own: `Store.getMany()` makes it first through `getManySync()`.
  */
 napi_value TransactionHandle::multiGet(
 	napi_env env,
 	const std::vector<rocksdb::Slice>& keys,
 	napi_value resolve,
 	napi_value reject,
-	std::shared_ptr<DBHandle> dbHandleOverride
+	std::shared_ptr<DBHandle> dbHandle
 ) {
 	ScopedAsyncWorkRegistration transactionRegistration(this);
 	if (!transactionRegistration.ok() || this->isCancelled() || !this->txn) {
@@ -937,9 +906,10 @@ napi_value TransactionHandle::multiGet(
 
 	this->ensureSnapshot();
 
-	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-	ScopedAsyncWorkRegistration targetHandleRegistration(dbHandleOverride.get());
-	if (dbHandleOverride && (!targetHandleRegistration.ok() || dbHandle->isCancelled())) {
+	// Registered while its column descriptor is copied, so a concurrent close cannot reset it between
+	// the caller's open check and the pin.
+	ScopedAsyncWorkRegistration targetHandleRegistration(dbHandle.get());
+	if (!targetHandleRegistration.ok() || dbHandle->isCancelled() || !dbHandle->columnDescriptor) {
 		::napi_throw_error(env, nullptr, "Database closed during transaction get many operation");
 		return nullptr;
 	}
@@ -958,8 +928,10 @@ napi_value TransactionHandle::multiGet(
 	// state without unregistering work it does not own.
 	state->completed.store(true);
 	PendingAsyncState pendingState(env, state);
-	state->batch.copyKeys(keys);
-	state->batch.allocateResults();
+	if (!state->batch.copyKeys(keys) || !state->batch.allocateResults()) {
+		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
+		return nullptr;
+	}
 	state->readColumnDescriptor = std::move(readColumnDescriptor);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));

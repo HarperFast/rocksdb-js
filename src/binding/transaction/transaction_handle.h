@@ -559,14 +559,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	);
 
 	/**
-	 * Queues an async `MultiGet` of `keys` through the transaction; see `Database::GetMany`.
+	 * Queues an async `MultiGet` of `keys` through the transaction, reading `dbHandle`'s column
+	 * family; see `Database::GetMany`.
 	 */
 	napi_value multiGet(
 		napi_env env,
 		const std::vector<rocksdb::Slice>& keys,
 		napi_value resolve,
 		napi_value reject,
-		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+		std::shared_ptr<DBHandle> dbHandle
 	);
 
 	/**

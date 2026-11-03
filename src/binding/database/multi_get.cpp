@@ -1,6 +1,7 @@
 #include <node_api.h>
 #include <climits>
 #include <cstring>
+#include <new>
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
@@ -11,27 +12,33 @@
 
 namespace rocksdb_js {
 
-void MultiGetBatch::copyKeys(const std::vector<rocksdb::Slice>& source) {
-	size_t total = 0;
-	for (const auto& key : source) {
-		total += key.size();
+bool MultiGetBatch::copyKeys(const std::vector<rocksdb::Slice>& source) noexcept {
+	if (source.empty()) {
+		return true;
 	}
-	this->keyData.reserve(total);
-	for (const auto& key : source) {
-		this->keyData.append(key.data(), key.size());
+	const char* base = source.front().data();
+	const char* end = source.back().data() + source.back().size();
+	try {
+		this->keyData.assign(base, static_cast<size_t>(end - base));
+		this->keys.reserve(source.size());
+	} catch (const std::bad_alloc&) {
+		return false;
 	}
-	this->keys.reserve(source.size());
-	size_t offset = 0;
 	for (const auto& key : source) {
-		this->keys.emplace_back(this->keyData.data() + offset, key.size());
-		offset += key.size();
+		this->keys.emplace_back(this->keyData.data() + (key.data() - base), key.size());
 	}
+	return true;
 }
 
-void MultiGetBatch::allocateResults() {
+bool MultiGetBatch::allocateResults() noexcept {
 	const size_t count = this->keys.size();
-	this->values.reset(new rocksdb::PinnableSlice[count]);
-	this->statuses.reset(new rocksdb::Status[count]);
+	try {
+		this->values.reset(new rocksdb::PinnableSlice[count]);
+		this->statuses.reset(new rocksdb::Status[count]);
+	} catch (const std::bad_alloc&) {
+		return false;
+	}
+	return true;
 }
 
 size_t MultiGetBatch::findFailure(size_t& resultSize) const {
@@ -101,7 +108,12 @@ bool readMultiGetKeys(
 	}
 
 	const int32_t* ends = static_cast<const int32_t*>(endsData);
-	keys.reserve(count);
+	try {
+		keys.reserve(count);
+	} catch (const std::bad_alloc&) {
+		::napi_throw_error(env, nullptr, "Get many failed: out of memory");
+		return false;
+	}
 	size_t start = 0;
 	for (uint32_t i = 0; i < count; i++) {
 		const int32_t end = ends[i];
@@ -141,7 +153,7 @@ napi_value multiGetSyncResult(napi_env env, const char* errorMsg, const MultiGet
 	return result;
 }
 
-void finishMultiGet(rocksdb::Status& status, MultiGetBatch& batch, std::string& result) {
+void finishMultiGet(rocksdb::Status& status, MultiGetBatch& batch, std::string& result) noexcept {
 	size_t resultSize = 0;
 	const size_t failed = batch.findFailure(resultSize);
 	if (failed < batch.size()) {
@@ -149,8 +161,12 @@ void finishMultiGet(rocksdb::Status& status, MultiGetBatch& batch, std::string& 
 	} else if (resultSize > MAX_RESULT_SIZE) {
 		status = rocksdb::Status::InvalidArgument("values exceed 2 GiB");
 	} else {
-		result.resize(resultSize);
-		batch.writeResult(result.data());
+		try {
+			result.resize(resultSize);
+			batch.writeResult(result.data());
+		} catch (const std::bad_alloc&) {
+			status = rocksdb::Status::MemoryLimit("could not allocate the result");
+		}
 	}
 	batch.values.reset();
 }
@@ -181,7 +197,10 @@ napi_value Database::GetManySync(napi_env env, napi_callback_info info) {
 	if (flags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
 		readOptions.read_tier = rocksdb::kBlockCacheTier;
 	}
-	batch.allocateResults();
+	if (!batch.allocateResults()) {
+		::napi_throw_error(env, nullptr, "Get many failed: out of memory");
+		return nullptr;
+	}
 
 	napi_valuetype txnIdType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[4], &txnIdType));
@@ -259,8 +278,13 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 
 	rocksdb::ReadOptions readOptions;
 	auto state = new AsyncMultiGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions);
-	state->batch.copyKeys(keys);
-	state->batch.allocateResults();
+	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
+	state->completed.store(true);
+	PendingAsyncState pendingState(env, state);
+	if (!state->batch.copyKeys(keys) || !state->batch.allocateResults()) {
+		::napi_throw_error(env, nullptr, "Get many failed: out of memory");
+		return nullptr;
+	}
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -298,6 +322,9 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
+	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
+	pendingState.release();
+	state->completed.store(false);
 	// Balances the unregisterAsyncWork() in signalExecuteCompleted(), so close() waits for this read.
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();

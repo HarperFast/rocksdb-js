@@ -25,8 +25,10 @@ struct MultiGetBatch {
 	std::unique_ptr<rocksdb::PinnableSlice[]> values;
 	std::unique_ptr<rocksdb::Status[]> statuses;
 
-	void copyKeys(const std::vector<rocksdb::Slice>& source);
-	void allocateResults();
+	// Both return false when an allocation fails. `source` must be contiguous, as `readMultiGetKeys()`
+	// produces it.
+	bool copyKeys(const std::vector<rocksdb::Slice>& source) noexcept;
+	bool allocateResults() noexcept;
 	size_t size() const { return this->keys.size(); }
 
 	/**
@@ -90,11 +92,8 @@ struct AsyncMultiGetState final : BaseAsyncState<T> {
  * completion runs after `signalExecuteCompleted()` may have let teardown destroy the database that
  * owns it.
  */
-void finishMultiGet(rocksdb::Status& status, MultiGetBatch& batch, std::string& result);
+void finishMultiGet(rocksdb::Status& status, MultiGetBatch& batch, std::string& result) noexcept;
 
-/**
- * Settles an async `getMany()`: resolves with a new buffer holding `result`, or rejects.
- */
 template<typename T>
 void resolveMultiGetResult(napi_env env, const char* errorMsg, AsyncMultiGetState<T>* state) {
 	if (!state->status.ok()) {
@@ -103,7 +102,19 @@ void resolveMultiGetResult(napi_env env, const char* errorMsg, AsyncMultiGetStat
 		return;
 	}
 	napi_value result;
-	NAPI_STATUS_THROWS_VOID(::napi_create_buffer_copy(env, state->result.size(), state->result.data(), nullptr, &result));
+	if (::napi_create_buffer_copy(env, state->result.size(), state->result.data(), nullptr, &result) != napi_ok) {
+		// The promise must still settle (invariant 15).
+		napi_value message;
+		napi_value error = nullptr;
+		if (::napi_create_string_utf8(env, "Get many failed: could not allocate the result", NAPI_AUTO_LENGTH, &message) == napi_ok) {
+			::napi_create_error(env, nullptr, message, &error);
+		}
+		if (error == nullptr) {
+			::napi_get_undefined(env, &error);
+		}
+		state->callReject(error);
+		return;
+	}
 	state->callResolve(result);
 }
 

@@ -53,7 +53,6 @@ describe('getMany()', () => {
 			const keys = ['a', 'missing', 'b', 5, 'a'];
 			const expected = [{ x: 1 }, undefined, 'hello', [1, 2, 3], { x: 1 }];
 			expect(db.getManySync(keys)).toEqual(expected);
-			// in the memtable, so the batch is answered synchronously
 			const result = db.getMany(keys);
 			expect(result).not.toBeInstanceOf(Promise);
 			expect(result).toEqual(expected);
@@ -78,7 +77,6 @@ describe('getMany()', () => {
 			const result = db.getMany([...keys, 'missing']);
 			expect(result).toBeInstanceOf(Promise);
 			expect(await result).toEqual([...expected, undefined]);
-			// the async read filled the block cache
 			const cached = db.getMany(keys);
 			expect(cached).not.toBeInstanceOf(Promise);
 			expect(cached).toEqual(expected);
@@ -142,6 +140,28 @@ describe('getMany()', () => {
 				await db.put(keys[0], 'one');
 				await db.put(keys[2], 'three');
 				expect(db.getManySync(keys)).toEqual(['one', undefined, 'three']);
+			});
+		}
+	});
+
+	it('supports every value encoding', async () => {
+		for (const encoding of ['msgpack', 'ordered-binary', 'binary'] as const) {
+			await dbRunner({ dbOptions: [{ encoding }] }, async ({ db }) => {
+				const values =
+					encoding === 'binary'
+						? [Buffer.from('one'), Buffer.from('three')]
+						: [
+								['a', 1.1],
+								['b', 2.5, 'c'],
+							];
+				await db.put('k1', values[0]);
+				await db.put('k3', values[1]);
+				const keys = ['k1', 'k2', 'k3'];
+				const expected = keys.map((key) => db.getSync(key));
+				expect(expected).toEqual([values[0], undefined, values[1]]);
+				expect(db.getManySync(keys)).toEqual(expected);
+				await db.flush();
+				expect(await db.getMany(keys)).toEqual(expected);
 			});
 		}
 	});
@@ -263,6 +283,11 @@ for (const { name, options } of [
 					txn.putSync('a', 1);
 				});
 				expect(() => committed!.getManySync(['a', 'b'])).toThrow();
+				await expect(committed!.getMany(['a', 'b'])).rejects.toThrow();
+				// one key takes the single-key path, which used to dereference the closed handle
+				expect(() => committed!.getManySync(['a'])).toThrow('Transaction is closed');
+				expect(() => committed!.getSync('a')).toThrow('Transaction is closed');
+				await expect(committed!.getMany(['a'])).rejects.toThrow('Transaction is closed');
 			}));
 	});
 }

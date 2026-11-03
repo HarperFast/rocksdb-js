@@ -386,6 +386,13 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * ```
 	 */
 	getMany(keys: Key[], options?: T): MaybePromise<any[]> {
+		if (keys.length === 1) {
+			// get() can decode from the shared value buffer instead of a fresh one.
+			return when(
+				() => this.get(keys[0], options as GetOptions & T),
+				(value) => [value]
+			);
+		}
 		if (!this.store.isOpen()) {
 			return Promise.reject(new Error('Database not open'));
 		}
@@ -421,6 +428,9 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	 * Synchronously retrieves the values for several keys; see `getMany()`.
 	 */
 	getManySync(keys: Key[], options?: T): any[] {
+		if (keys.length === 1) {
+			return [this.getSync(keys[0], options as GetOptions & T)];
+		}
 		return this.#decodeMany(this.getManyBinarySync(keys, options));
 	}
 

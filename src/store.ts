@@ -1291,9 +1291,6 @@ export class Store {
 		return unpackValues(result as Buffer, count);
 	}
 
-	/**
-	 * Encodes `keys` into the shared key batch and returns how many there are.
-	 */
 	encodeKeyBatch(keys: Key[]): number {
 		const count = keys.length;
 		if (MULTI_GET_KEY_ENDS.length < count) {
