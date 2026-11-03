@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // The floor is process-wide and shared with every test file running in this
-// process, so in-process floors stay a few milliseconds ahead of the clock.
+// process, so in-process floors stay a few milliseconds ahead of the clock, and
+// only child processes assert a `true` result, which depends on wall time.
 const NEAR_FUTURE_MS = 20;
 const TEN_YEARS_MS = 10 * 365.25 * 24 * 3600 * 1000;
 
@@ -21,7 +22,7 @@ describe('raiseTimestampFloor', () => {
 	it('issues every later timestamp strictly above the floor', () =>
 		dbRunner(async ({ db }) => {
 			const floor = db.getMonotonicTimestamp() + NEAR_FUTURE_MS;
-			expect(raiseTimestampFloor(floor)).toBe(true);
+			raiseTimestampFloor(floor);
 
 			const clock = db.getMonotonicTimestamp();
 			expect(clock).toBeGreaterThan(floor);
@@ -38,7 +39,7 @@ describe('raiseTimestampFloor', () => {
 			expect(db.getMonotonicTimestamp()).toBeGreaterThan(current);
 
 			const floor = db.getMonotonicTimestamp() + NEAR_FUTURE_MS;
-			expect(raiseTimestampFloor(floor)).toBe(true);
+			raiseTimestampFloor(floor);
 			expect(raiseTimestampFloor(floor)).toBe(false);
 		}));
 
@@ -46,14 +47,14 @@ describe('raiseTimestampFloor', () => {
 		dbRunner(async ({ db }) => {
 			await db.transaction(async (txn) => {
 				const before = txn.getTimestamp();
-				expect(raiseTimestampFloor(db.getMonotonicTimestamp() + NEAR_FUTURE_MS)).toBe(true);
+				raiseTimestampFloor(db.getMonotonicTimestamp() + NEAR_FUTURE_MS);
 				expect(txn.getTimestamp()).toBe(before);
 
 				txn.setTimestamp(before - 60_000);
 				expect(txn.getTimestamp()).toBe(before - 60_000);
 
 				const floor = db.getMonotonicTimestamp() + NEAR_FUTURE_MS;
-				expect(raiseTimestampFloor(floor)).toBe(true);
+				raiseTimestampFloor(floor);
 				txn.setTimestamp();
 				expect(txn.getTimestamp()).toBeGreaterThan(floor);
 				await txn.put('k', 'v');
