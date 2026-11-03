@@ -285,7 +285,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		// Segments at or below this were never part of this iterator's history, so crossing them is
 		// not a gap.
 		let gapFloor = logId;
-		// The starting segment did not map; next() retries it before reading anything.
 		let startUnmapped = false;
 
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
@@ -306,10 +305,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 
 			if (logBuffer === undefined) {
-				// Stand in for the starting segment until it maps. It keeps that segment's `logId`
-				// and the iterator keeps `position`: advancing from `logId` 0 would walk up from the
-				// lowest retained segment and replay everything before `position` (#956). `size` 0
-				// matches the empty buffer, so nothing is read from it.
+				// Stands in for the starting segment until next() maps it. It keeps that segment's
+				// `logId` so an advance never restarts below `position`.
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
 				logBuffer.logId = logId;
 				logBuffer.size = 0;
@@ -355,15 +352,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						transactionLog.getLogFileSize(logBuffer!.logId) > TRANSACTION_LOG_FILE_HEADER_SIZE ||
 						logBuffer!.logId >= loadLastPosition(transactionLog, !!readUncommitted).logId
 					) {
-						// still ours to read (live, or not written past yet): retry on the next poll
+						// still the reader's to read: skipping it would drop durable history
 						return { done: true, value: undefined };
 					} else {
-						// gone: advance as if from the segment below, so the advance counts the starting
-						// segment itself against `gapFloor`
+						// gone: advancing from the segment below counts it against `gapFloor`
 						logBuffer!.logId--;
 					}
 					startUnmapped = false;
-					// forces the refresh below to bound the read for the segment now held
 					size = 0;
 				}
 				if (position >= size) {
