@@ -1043,6 +1043,54 @@ void DBRegistry::OpenDB(
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
+	// AGENTS invariant 35. A write staged through a non-participating handle
+	// holds no write intent, so switching on while one may exist would let a
+	// seed taken now survive its commit. Read the count before the watermark;
+	// DBHandle::close() writes them in the other order.
+	if (options.verificationTable && !columnDescriptor->verificationTable) {
+		const uint32_t nonVerifying = columnDescriptor->nonVerifyingHandles.load();
+		if (nonVerifying > 0) {
+			throw rocksdb_js::DBException(
+				"ERR_VERIFICATION_TABLE_CONFLICT",
+				"Column family \"" + columnDescriptor->name + "\" is already open without verificationTable through " +
+				std::to_string(nonVerifying) + " handle(s) in this process; open every handle on a cached column " +
+				"family with verificationTable: true, or close those handles first"
+			);
+		}
+		const uint64_t watermark = columnDescriptor->nonVerifyingTransactionWatermark.load();
+		if (watermark > 0) {
+			bool mayHoldUnguardedWrite = false;
+			{
+				std::lock_guard<std::mutex> txnsLock(entry.descriptor->txnsMutex);
+				// A closed transaction can linger here once its owning handle has
+				// closed; its commit, if still running, holds an operation.
+				for (const auto& registered : entry.descriptor->transactions) {
+					if (registered.first <= watermark && registered.second && !registered.second->closed.load()) {
+						mayHoldUnguardedWrite = true;
+						break;
+					}
+				}
+			}
+			// Env teardown removes a transaction from the map before cancelling
+			// its queued commit, which can still admit and write; only the
+			// descriptor-wide operation count covers it before its family claim.
+			if (mayHoldUnguardedWrite || entry.descriptor->operationsInFlight.load() > 0) {
+				throw rocksdb_js::DBException(
+					"ERR_VERIFICATION_TABLE_CONFLICT",
+					"Column family \"" + columnDescriptor->name + "\" was open without verificationTable and a " +
+					"transaction or operation that may have written through it is still running; retry the open " +
+					"once it finishes"
+				);
+			}
+			// A non-participating handle can seed a slot (populateVersion) that
+			// its own later writes left stale.
+			if (VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw()) {
+				vt->settleAllSlots();
+			}
+		}
+	}
+	const bool participates = options.verificationTable || columnDescriptor->verificationTable;
+
 	const uint64_t verificationTableDbId = entry.descriptor->vtEpoch;
 	const uint32_t verificationTableColumnFamilyId = columnDescriptor->column->GetID();
 
@@ -1053,13 +1101,20 @@ void DBRegistry::OpenDB(
 	handle->compactCancelRequested.store(false);
 	entry.descriptor->attach(handle);
 
+	// No throw from here until columnDescriptor is set: close() decrements the
+	// count only for a handle holding both.
+	if (participates) {
+		columnDescriptor->verificationTable = true;
+	} else {
+		columnDescriptor->nonVerifyingHandles.fetch_add(1);
+	}
+	handle->enableVerificationTable = participates;
 	handle->columnDescriptor = std::move(columnDescriptor);
 	handle->descriptor = entry.descriptor;
 	handle->identityPath = entry.descriptor->identityPath;
 	handle->verificationTableDbId = verificationTableDbId;
 	handle->verificationTableColumnFamilyId = verificationTableColumnFamilyId;
 	handle->disableWAL = options.disableWAL;
-	handle->enableVerificationTable = options.verificationTable;
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Attached DBHandle %p for \"%s\" (ref count = %ld)\n",
 		instance.get(), handle.get(), path.c_str(), entry.descriptor.use_count());

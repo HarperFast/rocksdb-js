@@ -1609,6 +1609,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
     [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
 
+35. **Verification-table participation belongs to the column family, not the handle**: every
+    write path checks the writing handle's `enableVerificationTable`, but slots outlive handles, so
+    `DBRegistry::OpenDB` makes every handle on a participating column family participate and refuses
+    an opt-in while a non-participating writer may exist. See
+    [participation](src/binding/core/DESIGN.md#participation-is-per-column-family).
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
