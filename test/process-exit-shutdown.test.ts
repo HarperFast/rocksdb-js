@@ -1,3 +1,4 @@
+import { RocksDatabase } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
 import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
@@ -72,6 +73,12 @@ describe('Main-thread exit shutdown (#1004)', () => {
 	it('skips the exit listener when shutdownOnExit is false', () => {
 		// Bun runs the main env's native cleanup hook on process.exit(), which flushes regardless.
 		expect(exitThenVerify('opt-out').values).toEqual(process.versions.bun ? mainOnly : nothing);
+	});
+
+	it('rejects a non-boolean shutdownOnExit', () => {
+		expect(() => RocksDatabase.config({ shutdownOnExit: 'false' as unknown as boolean })).toThrow(
+			'shutdownOnExit must be a boolean'
+		);
 	});
 
 	it('runs a prepended exit listener while the database is still open', () => {

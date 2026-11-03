@@ -74,10 +74,7 @@ napi_value Shutdown(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-/**
- * Reports a failure to stderr instead of throwing: nothing can catch or deliver
- * an error where teardown runs.
- */
+// Nothing can catch an error where teardown runs.
 template <typename Step>
 static void runCleanupStep(const char* name, Step&& step) noexcept {
 	try {
@@ -90,9 +87,9 @@ static void runCleanupStep(const char* name, Step&& step) noexcept {
 }
 
 /**
- * Set when the main thread's exit shutdown starts. Node then never runs the
- * main env's cleanup hook, so `moduleRefCount` cannot reach zero, and each
- * worker hook repeats the shutdown for what that worker left open or quarantined.
+ * Set when the main thread's exit shutdown starts. On Node's `process.exit()`
+ * the main env's cleanup hook never runs, so `moduleRefCount` cannot reach zero,
+ * and each worker hook repeats the shutdown for what that worker left behind.
  */
 static std::atomic<bool> mainThreadExited{false};
 

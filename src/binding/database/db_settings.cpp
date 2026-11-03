@@ -391,9 +391,14 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
 
+	bool hasShutdownOnExit = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "shutdownOnExit", &hasShutdownOnExit));
 	bool shutdownOnExit = settings.getShutdownOnExit();
-	const bool shutdownOnExitProvided =
-		rocksdb_js::getProperty(env, params, "shutdownOnExit", shutdownOnExit, true) == napi_ok;
+	if (rocksdb_js::getProperty(env, params, "shutdownOnExit", shutdownOnExit) != napi_ok) {
+		::napi_throw_type_error(env, nullptr, "shutdownOnExit must be a boolean");
+		return nullptr;
+	}
+	const bool shutdownOnExitProvided = hasShutdownOnExit;
 
 	bool abortMarkers = settings.transactionLogAbortMarkers.load(std::memory_order_relaxed);
 	const bool abortMarkersProvided =

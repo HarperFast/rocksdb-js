@@ -814,9 +814,7 @@ const bindingPath = locateBinding();
 // console.log(`Loading binding from ${bindingPath}`);
 const binding = req(bindingPath);
 
-// Node runs no env cleanup hook for the main thread on process.exit(), so the
-// main thread flushes and closes every database from its own exit listener.
-// A worker's exit tears down its env, whose cleanup hook runs.
+// Node runs no env cleanup hook for the main thread on process.exit().
 if (isMainThread) {
 	process.on('exit', binding.shutdownOnExit);
 }
