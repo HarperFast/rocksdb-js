@@ -94,10 +94,11 @@ static void runCleanupStep(const char* name, Step&& step) noexcept {
 static std::atomic<bool> mainThreadExited{false};
 
 /**
- * The main thread's `exit` listener (`load-binding.ts`). Node skips the main
- * env's cleanup hook on `process.exit()`, so this is that path's terminal owner
- * (AGENTS.md invariant 26). Other envs can still be running, so it releases only
- * quarantined entries: one another thread is still closing belongs to that closer.
+ * The main thread's `exit` listener (`load-binding.ts`), on every exit that
+ * emits `exit`. Node skips the main env's cleanup hook on `process.exit()`, so
+ * this is that path's terminal owner (AGENTS.md invariant 26). Other envs can
+ * still be running, so it releases only quarantined entries: one another thread
+ * is still closing belongs to that closer.
  */
 napi_value ShutdownOnExit(napi_env env, napi_callback_info info) {
 	if (!DBSettings::getInstance().getShutdownOnExit()) {
