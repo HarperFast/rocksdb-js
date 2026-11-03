@@ -9,6 +9,7 @@
 #include "rocksdb/slice.h"
 #include "rocksdb/status.h"
 #include "napi/async.h"
+#include "napi/helpers.h"
 #include "napi/macros.h"
 
 namespace rocksdb_js {
@@ -103,15 +104,10 @@ void resolveMultiGetResult(napi_env env, const char* errorMsg, AsyncMultiGetStat
 	}
 	napi_value result;
 	if (::napi_create_buffer_copy(env, state->result.size(), state->result.data(), nullptr, &result) != napi_ok) {
-		// The promise must still settle (invariant 15).
-		napi_value message;
+		// The promise must still settle (invariant 15). A failed call can leave an exception pending,
+		// which createRocksDBError() takes as the error so that callReject() can run.
 		napi_value error = nullptr;
-		if (::napi_create_string_utf8(env, "Get many failed: could not allocate the result", NAPI_AUTO_LENGTH, &message) == napi_ok) {
-			::napi_create_error(env, nullptr, message, &error);
-		}
-		if (error == nullptr) {
-			::napi_get_undefined(env, &error);
-		}
+		createRocksDBError(env, rocksdb::Status::MemoryLimit("could not allocate the result"), errorMsg, error);
 		state->callReject(error);
 		return;
 	}

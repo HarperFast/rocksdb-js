@@ -1635,7 +1635,7 @@ napi_value Transaction::GetManySync(napi_env env, napi_callback_info info) {
 	// A copy, not a reference: a forced teardown can reset `dbHandle` from another thread.
 	std::shared_ptr<DBHandle> txnDbHandle = (*txnHandle)->dbHandle;
 	if (!txnDbHandle) {
-		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
+		::napi_throw_error(env, nullptr, "Transaction is closed");
 		return nullptr;
 	}
 	if (!txnDbHandle->descriptor) {
@@ -1665,7 +1665,8 @@ napi_value Transaction::GetManySync(napi_env env, napi_callback_info info) {
 	}
 	rocksdb::Status status = (*txnHandle)->multiGetSync(batch, readOptions, txnDbHandle);
 	if (!status.ok()) {
-		::napi_throw_error(env, nullptr, status.ToString().c_str());
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Get many failed");
+		::napi_throw(env, error);
 		return nullptr;
 	}
 

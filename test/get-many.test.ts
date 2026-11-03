@@ -282,8 +282,8 @@ for (const { name, options } of [
 					committed = txn;
 					txn.putSync('a', 1);
 				});
-				expect(() => committed!.getManySync(['a', 'b'])).toThrow();
-				await expect(committed!.getMany(['a', 'b'])).rejects.toThrow();
+				expect(() => committed!.getManySync(['a', 'b'])).toThrow('Transaction is closed');
+				await expect(committed!.getMany(['a', 'b'])).rejects.toThrow('Transaction is closed');
 				// one key takes the single-key path, which used to dereference the closed handle
 				expect(() => committed!.getManySync(['a'])).toThrow('Transaction is closed');
 				expect(() => committed!.getSync('a')).toThrow('Transaction is closed');

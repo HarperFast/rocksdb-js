@@ -410,7 +410,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (!this.store.isOpen()) {
 			return Promise.reject(new Error('Database not open'));
 		}
-		return this.store.getMany(this._context, keys, options as DBITransactional);
+		return when(() => this.store.getMany(this._context, keys, options as DBITransactional));
 	}
 
 	/**
