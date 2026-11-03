@@ -756,7 +756,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 			// to back up, and a header-less file would confuse recovery on restore.
 			// The extent is seeded above, so this no longer also means "registered
 			// but never opened".
-			// Any other file with no extent is gone from disk, keys unknown.
+			// Any other file with no extent is gone from disk; only a known maximum keeps the record known.
 			double maxKey;
 			if (seq != current) {
 				if (!file->knownMaxEntryKey(maxKey)) {
@@ -1448,6 +1448,11 @@ void TransactionLogStore::doPurge(
 	{
 		std::lock_guard<std::mutex> recordLock(this->purgeRecordMutex);
 		this->purgeRecord = nextRecord;
+	}
+	// Before any unlink can stop the loop: a chosen current segment left writable would take keys
+	// above a watermark that already claims its sequence.
+	if (chosen(planCurrentSequence) && this->currentSequenceNumber.load(std::memory_order_relaxed) == planCurrentSequence) {
+		this->retireCurrentSequenceLocked();
 	}
 #ifdef ROCKSDB_JS_NATIVE_TESTS
 	if (this->afterPurgeRecordPersistedForTests) {

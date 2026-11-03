@@ -377,7 +377,6 @@ TransactionLogStoreValidation validateTransactionLogStore(
 		}
 	}
 
-	// Neither finding loses data: the log's purge watermark reads as unknown, so callers stop relying on it.
 	if (hasPurgeRecord) {
 		TransactionLogPurgeRecord record;
 		if (readTransactionLogPurgeRecord(path, record) != TransactionLogPurgeRecordState::Valid) {

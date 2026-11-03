@@ -917,13 +917,13 @@ private:
 		ReadFailed,
 	};
 
-	/** Needs no store lock; a file that is still current is scanned without caching the result. */
+	/** Needs no store lock; a current file's result is kept only while its size is unchanged. */
 	MaxKeyResolution resolveMaxKey(
 		const std::shared_ptr<TransactionLogFile>& file,
 		std::optional<std::chrono::steady_clock::time_point> deadline,
 		double& maxKey);
 
-	/** Scans rotated purge candidates before purge() takes writeMutex, so appends need not wait on the reads. */
+	/** Scans purge candidates, the idle current segment included, before purge() takes writeMutex. */
 	void scanPurgeCandidates(uint64_t before, std::chrono::steady_clock::time_point deadline);
 
 	/**

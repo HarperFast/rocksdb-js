@@ -273,6 +273,30 @@ TEST_F(PurgeWatermarkTest, CrashBeforeUnlinkingTheCurrentSegmentStaysKnown) {
 		->getPurgeWatermark().known);
 }
 
+// An unlink that fails stops the run before the chosen current segment is deleted; the writer has
+// already moved past it, so no key lands in a sequence the record covers.
+TEST_F(PurgeWatermarkTest, FailedUnlinkLeavesTheChosenCurrentSegmentRetired) {
+	auto store = createStore();
+	write(*store, 1000);
+	write(*store, 5000);
+	write(*store, 3000); // segment 2, current
+	ageSegment(1);
+	ageSegment(2);
+	store->afterPurgeRecordPersistedForTests = [&]() {
+		std::filesystem::rename(segment(1), root / "moved.txnlog");
+		std::filesystem::create_directory(segment(1));
+		std::ofstream(segment(1) / "blocker") << "x";
+	};
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	store->afterPurgeRecordPersistedForTests = nullptr;
+	EXPECT_TRUE(std::filesystem::exists(segment(2)));
+	EXPECT_EQ(store->currentSequenceNumber.load(), 3u);
+	write(*store, 9000);
+	EXPECT_TRUE(std::filesystem::exists(segment(3)));
+	std::filesystem::remove_all(segment(1));
+	store->close();
+}
+
 TEST_F(PurgeWatermarkTest, FailedRecordWriteDeletesNothing) {
 	auto store = createStore();
 	writeOutOfOrderSegments(*store);
