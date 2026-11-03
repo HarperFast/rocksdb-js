@@ -282,18 +282,14 @@ TEST_F(PurgeWatermarkTest, FailedUnlinkLeavesTheChosenCurrentSegmentRetired) {
 	write(*store, 3000); // segment 2, current
 	ageSegment(1);
 	ageSegment(2);
-	store->afterPurgeRecordPersistedForTests = [&]() {
-		std::filesystem::rename(segment(1), root / "moved.txnlog");
-		std::filesystem::create_directory(segment(1));
-		std::ofstream(segment(1) / "blocker") << "x";
-	};
+	store->failUnlinkForTests = [](uint32_t sequence) { return sequence == 1; };
 	store->purge(nullptr, false, cutoffOneHourAgo());
-	store->afterPurgeRecordPersistedForTests = nullptr;
+	store->failUnlinkForTests = nullptr;
+	EXPECT_TRUE(std::filesystem::exists(segment(1)));
 	EXPECT_TRUE(std::filesystem::exists(segment(2)));
 	EXPECT_EQ(store->currentSequenceNumber.load(), 3u);
 	write(*store, 9000);
 	EXPECT_TRUE(std::filesystem::exists(segment(3)));
-	std::filesystem::remove_all(segment(1));
 	store->close();
 }
 
@@ -490,6 +486,9 @@ TEST_F(PurgeWatermarkTest, ReusedSequenceSpaceIsUnknown) {
 // A segment this process wrote that disappears out of band is still accounted for: every key in it
 // passed through the writer. One an earlier process wrote is not.
 TEST_F(PurgeWatermarkTest, MissingSegmentIsAccountedOnlyWhenItsKeysAreKnown) {
+#ifdef _WIN32
+	GTEST_SKIP() << "a segment the store holds open cannot be deleted out of band on Windows";
+#endif
 	auto store = createStore();
 	writeOutOfOrderSegments(*store);
 	std::filesystem::remove(segment(1));

@@ -744,6 +744,8 @@ struct TransactionLogStore final {
 	std::function<void()> afterPurgeRecordPersistedForTests;
 	/** Returning true fails the purge record write. */
 	std::function<bool()> failPurgeRecordWriteForTests;
+	/** Returning true fails the unlink of that sequence's segment. */
+	std::function<bool(uint32_t)> failUnlinkForTests;
 	/** Overrides the per-purge-run scan budget when non-negative. */
 	static std::atomic<int64_t> purgeScanBudgetMsForTests;
 #endif

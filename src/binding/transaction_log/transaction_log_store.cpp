@@ -1480,7 +1480,11 @@ void TransactionLogStore::doPurge(
 
 		// delete the log file
 		uint32_t removedSize = logFile->size.load(std::memory_order_relaxed);
-		auto removed = logFile->removeFile();
+		bool removed =
+#ifdef ROCKSDB_JS_NATIVE_TESTS
+			!(this->failUnlinkForTests && this->failUnlinkForTests(sequenceNumber)) &&
+#endif
+			logFile->removeFile();
 		if (!removed) {
 			// Gone underneath us (another process unlinked it after the scan above):
 			// forget it like the scan does, rather than leaving a segment registered
