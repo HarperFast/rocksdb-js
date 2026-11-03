@@ -7,12 +7,15 @@ const mode = process.argv[2];
 const dbPath = process.argv[3];
 
 if (
-	(mode !== 'async-get' && mode !== 'iterator' && mode !== 'routed-iterator') ||
+	(mode !== 'async-get' &&
+		mode !== 'async-get-many' &&
+		mode !== 'iterator' &&
+		mode !== 'routed-iterator') ||
 	!dbPath ||
 	!globalThis.gc
 ) {
 	console.error(
-		'Usage: node --expose-gc transaction-orphan-dependents.mts <async-get|iterator|routed-iterator> <dbPath>'
+		'Usage: node --expose-gc transaction-orphan-dependents.mts <async-get|async-get-many|iterator|routed-iterator> <dbPath>'
 	);
 	process.exit(1);
 }
@@ -41,21 +44,27 @@ async function waitForTransactionClose(): Promise<void> {
 	assert.equal(transactionCount(), 0);
 }
 
-async function testDelayedAsyncGet(db: RocksDatabase): Promise<void> {
+async function testDelayedAsyncGet(db: RocksDatabase, batched: boolean): Promise<void> {
 	await db.put('key', 'value');
+	await db.put('other', 'value');
 	await db.flush();
 	db.close();
 	db.open();
 
 	const pendingRead = (() => {
 		const txn = new Transaction(db.store);
-		return txn.getBinary('key');
+		return batched ? txn.getManyBinary(['key', 'other']) : txn.getBinary('key');
 	})();
 	assert.ok(pendingRead instanceof Promise, 'expected a cold-cache async read');
 
 	const longestGcMs = await forceCollection();
 	assert.ok(longestGcMs < 3000, `transaction finalizer blocked for ${longestGcMs}ms`);
-	await assert.rejects(pendingRead, /Database closed during transaction get operation/);
+	await assert.rejects(
+		pendingRead,
+		batched
+			? /Database closed during transaction get many operation/
+			: /Database closed during transaction get operation/
+	);
 	await waitForTransactionClose();
 }
 
@@ -82,8 +91,8 @@ async function testLiveIterator(db: RocksDatabase, routed: boolean): Promise<voi
 
 const db = RocksDatabase.open(dbPath);
 try {
-	if (mode === 'async-get') {
-		await testDelayedAsyncGet(db);
+	if (mode === 'async-get' || mode === 'async-get-many') {
+		await testDelayedAsyncGet(db, mode === 'async-get-many');
 	} else {
 		await testLiveIterator(db, mode === 'routed-iterator');
 	}

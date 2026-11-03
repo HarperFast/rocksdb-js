@@ -371,6 +371,73 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	}
 
 	/**
+	 * Retrieves the values for several keys with one RocksDB `MultiGet`, then
+	 * returns the decoded values in key order, with `undefined` for a missing
+	 * key. Returns synchronously when every key is in memory; otherwise returns
+	 * one promise for the whole batch.
+	 *
+	 * Inside a transaction, the batch reads the transaction's snapshot and its
+	 * own uncommitted writes, exactly as `get()` would for each key. The
+	 * verification table is not consulted.
+	 *
+	 * @example
+	 * ```typescript
+	 * const [product, variant] = await db.getMany(['product:1', 'variant:7']);
+	 * ```
+	 */
+	getMany(keys: Key[], options?: T): MaybePromise<any[]> {
+		if (!this.store.isOpen()) {
+			return Promise.reject(new Error('Database not open'));
+		}
+		return when(
+			() => this.store.getMany(this._context, keys, options as DBITransactional),
+			(values) => this.#decodeMany(values)
+		);
+	}
+
+	/**
+	 * Like `getMany()`, but returns the raw value buffers without decoding.
+	 * The buffers stay valid after later reads.
+	 */
+	getManyBinary(keys: Key[], options?: T): MaybePromise<(Buffer | undefined)[]> {
+		if (!this.store.isOpen()) {
+			return Promise.reject(new Error('Database not open'));
+		}
+		return this.store.getMany(this._context, keys, options as DBITransactional);
+	}
+
+	/**
+	 * Synchronously retrieves the binary data for several keys; see
+	 * `getManyBinary()`.
+	 */
+	getManyBinarySync(keys: Key[], options?: T): (Buffer | undefined)[] {
+		if (!this.store.isOpen()) {
+			throw new Error('Database not open');
+		}
+		return this.store.getManySync(this._context, keys, options as DBITransactional);
+	}
+
+	/**
+	 * Synchronously retrieves the values for several keys; see `getMany()`.
+	 */
+	getManySync(keys: Key[], options?: T): any[] {
+		return this.#decodeMany(this.getManyBinarySync(keys, options));
+	}
+
+	#decodeMany(values: (Buffer | undefined)[]): any[] {
+		if (this.store.encoding === 'binary' || !this.store.decoder) {
+			return values;
+		}
+		for (let i = 0; i < values.length; i++) {
+			const value = values[i];
+			if (value !== undefined) {
+				values[i] = this.store.decodeValue(value as BufferWithDataView);
+			}
+		}
+		return values;
+	}
+
+	/**
 	 * Gets the number of listeners for the given key.
 	 *
 	 * @param event - The event name to get the listeners for.
