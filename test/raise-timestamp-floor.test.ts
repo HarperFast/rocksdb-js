@@ -84,6 +84,20 @@ describe('raiseTimestampFloor', () => {
 		}
 	});
 
+	it('reports false in a fresh process for a floor the wall clock already passed', async () => {
+		const dbPath = generateDBPath();
+		const floor = Date.now() - 60_000;
+		try {
+			const result = await runFixture('plain', dbPath, floor);
+			expect(result.raised).toBe(false);
+			expect(result.clock).toBeGreaterThan(floor);
+		} finally {
+			if (!process.env.KEEP_FILES) {
+				rmSync(dbPath, { recursive: true, force: true });
+			}
+		}
+	}, 60_000);
+
 	it('raises the clock for every worker in the process', async () => {
 		const dbPath = generateDBPath();
 		const floor = Date.now() + 60 * 60 * 1000;

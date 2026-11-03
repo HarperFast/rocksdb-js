@@ -2689,8 +2689,10 @@ value because only the caller knows which bounds it has promised.
 
 Contract:
 
-- **Returns** `true` if the clock was raised, `false` if it was already at or above `timestamp`.
-  Raising is one-way; a lower value never moves the clock back.
+- **Returns** `true` if the clock was raised: `timestamp` was ahead of both the wall clock and every
+  timestamp already issued, as after a backward clock step. `false` if the clock was already at or
+  above it, which is the usual result at a restart. Raising is one-way; a lower value never moves
+  the clock back.
 - **Throws** a `TypeError` if `timestamp` is not a number, and a `RangeError` if it is not finite, is
   not greater than `0`, is not less than `8.64e15`, or is more than ten years ahead of the wall
   clock — the same bound `timestampFloorLog` applies to a durable key. An unusable persisted floor

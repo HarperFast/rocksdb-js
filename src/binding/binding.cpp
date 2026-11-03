@@ -217,8 +217,11 @@ napi_value RaiseTimestampFloor(napi_env env, napi_callback_info info) {
 		::napi_throw_range_error(env, nullptr, message);
 		return nullptr;
 	}
+	// The next timestamp is never below the wall clock either, so a floor behind
+	// it changes nothing a caller can observe even when it moves the ratchet.
+	const bool raised = raiseMonotonicTimestampFloor(floor, plausibleBound) && floor >= wallClock;
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, raiseMonotonicTimestampFloor(floor, plausibleBound), &result));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, raised, &result));
 	return result;
 }
 

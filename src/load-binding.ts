@@ -1039,8 +1039,9 @@ export const steadyClockNow: () => number = binding.steadyClockNow;
  * persisted itself, since the clock stays that far ahead until wall time
  * catches up.
  *
- * @returns `true` if the clock was raised, `false` if it was already at or
- * above `timestamp`.
+ * @returns `true` if the clock was raised: `timestamp` was ahead of both the
+ * wall clock and every timestamp already issued. `false` if the clock was
+ * already at or above it.
  * @throws {TypeError} If `timestamp` is not a number.
  * @throws {RangeError} If `timestamp` is not finite, is not greater than 0, is
  * not less than 8.64e15, or is more than ten years ahead of the wall clock.
