@@ -438,6 +438,26 @@ TEST_F(PurgeWatermarkTest, CorruptInheritedSegmentMakesItUnknown) {
 	store->close();
 }
 
+// A crash during the header write leaves a file with no entries; it must not stall retention.
+TEST_F(PurgeWatermarkTest, HeaderlessInheritedFileIsPurgedWithNoKeys) {
+	{
+		auto writer = createStore();
+		writeOutOfOrderSegments(*writer);
+		writer->close();
+	}
+	std::filesystem::resize_file(segment(1), 5);
+	ageSegment(1);
+	ageSegment(2);
+	auto store = loadStore();
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	EXPECT_FALSE(std::filesystem::exists(segment(1)));
+	EXPECT_FALSE(std::filesystem::exists(segment(2)));
+	auto watermark = store->getPurgeWatermark();
+	ASSERT_TRUE(watermark.known);
+	EXPECT_EQ(watermark.purgedThrough, 3000);
+	store->close();
+}
+
 TEST_F(PurgeWatermarkTest, ExhaustedScanBudgetKeepsTheSegment) {
 	{
 		auto writer = createStore();
@@ -458,8 +478,6 @@ TEST_F(PurgeWatermarkTest, ExhaustedScanBudgetKeepsTheSegment) {
 	store->close();
 }
 
-// An idle current segment from an earlier process is read before the purge takes writeMutex; the
-// result stands only while nothing is appended.
 TEST_F(PurgeWatermarkTest, CurrentSegmentScanIsKeptOnlyWhileUnchanged) {
 	{
 		auto writer = createStore();
@@ -563,7 +581,6 @@ TEST_F(PurgeWatermarkTest, BackupThatOmitsAMalformedSegmentIsUnknown) {
 	store->close();
 }
 
-// A slot damaged by a write that stopped before its sync is rewritten by the next writable open.
 TEST_F(PurgeWatermarkTest, WritableOpenRepairsADamagedSlot) {
 	{
 		auto writer = createStore();

@@ -911,8 +911,10 @@ private:
 		Resolved,
 		/** The file's keys cannot be proven (corruption, or the file is gone): purging it makes the watermark unknown. */
 		Unknowable,
-		/** Not now (I/O failure or the scan budget ran out): keep the file for a later run. */
-		Deferred,
+		/** The scan budget ran out: keep the file for a later run. */
+		OutOfTime,
+		/** An I/O error: keep the file for a later run. */
+		ReadFailed,
 	};
 
 	/** Needs no store lock; a file that is still current is scanned without caching the result. */

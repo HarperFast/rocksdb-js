@@ -758,8 +758,12 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 			// but never opened".
 			// Any other file with no extent is gone from disk, keys unknown.
 			double maxKey;
-			if (seq != current && !file->knownMaxEntryKey(maxKey)) {
-				purgeRecordCapture.known = false;
+			if (seq != current) {
+				if (!file->knownMaxEntryKey(maxKey)) {
+					purgeRecordCapture.known = false;
+				} else if (maxKey > purgeRecordCapture.watermark) {
+					purgeRecordCapture.watermark = maxKey;
+				}
 			}
 			continue;
 		}
@@ -986,14 +990,24 @@ TransactionLogStore::MaxKeyResolution TransactionLogStore::resolveMaxKey(
 			case RecoveryScan::Kind::MidFileCorruption:
 				return MaxKeyResolution::Unknowable;
 			case RecoveryScan::Kind::Incomplete:
-				return MaxKeyResolution::Deferred;
+				return MaxKeyResolution::OutOfTime;
 		}
 	} catch (const TransactionLogFormatException&) {
 		return MaxKeyResolution::Unknowable;
 	} catch (...) {
-		return isGone() ? MaxKeyResolution::Unknowable : MaxKeyResolution::Deferred;
+		if (isGone()) {
+			return MaxKeyResolution::Unknowable;
+		}
+		// Shorter than a header (a crash during the header write): it holds no entries.
+		std::error_code sizeError;
+		auto physicalSize = std::filesystem::file_size(file->path, sizeError);
+		if (!sizeError && physicalSize < TRANSACTION_LOG_FILE_HEADER_SIZE) {
+			maxKey = 0;
+			return MaxKeyResolution::Resolved;
+		}
+		return MaxKeyResolution::ReadFailed;
 	}
-	return MaxKeyResolution::Deferred;
+	return MaxKeyResolution::ReadFailed;
 }
 
 void TransactionLogStore::scanPurgeCandidates(uint64_t before, std::chrono::steady_clock::time_point deadline) {
@@ -1027,7 +1041,8 @@ void TransactionLogStore::scanPurgeCandidates(uint64_t before, std::chrono::stea
 	}
 	for (const auto& logFile : unscanned) {
 		double maxKey;
-		if (this->resolveMaxKey(logFile, deadline, maxKey) == MaxKeyResolution::Deferred) {
+		auto resolution = this->resolveMaxKey(logFile, deadline, maxKey);
+		if (resolution == MaxKeyResolution::OutOfTime || resolution == MaxKeyResolution::ReadFailed) {
 			break;
 		}
 	}
@@ -1378,16 +1393,22 @@ void TransactionLogStore::doPurge(
 		}
 
 		double maxKey = 0;
-		auto resolution = this->resolveMaxKey(logFile, scanDeadline, maxKey);
+		// Destroy ends the history, so once it is unknown there is nothing to read the files for.
+		auto resolution = all && !nextRecord.known ? MaxKeyResolution::Unknowable
+			: this->resolveMaxKey(logFile, scanDeadline, maxKey);
+		bool deferred = resolution == MaxKeyResolution::OutOfTime || resolution == MaxKeyResolution::ReadFailed;
 		if (resolution == MaxKeyResolution::Resolved) {
 			raiseWatermark(maxKey);
-		} else if (resolution == MaxKeyResolution::Deferred && !all) {
-			// Per run, like the unlink warning: a segment that keeps outlasting the budget stalls retention.
+		} else if (deferred && !all) {
+			// Per run, like the unlink warning: a segment that keeps failing stalls retention.
 			try {
 				std::ostringstream msg;
 				msg << "Transaction log segment " << (this->displayPath / logFile->path.filename()).string()
-					<< " could not be read within ROCKSDB_JS_PURGE_SCAN_MS to record its largest key before"
-					<< " purging it; retention keeps it and the segments after it until a later purge can.";
+					<< (resolution == MaxKeyResolution::OutOfTime
+						? " could not be read within ROCKSDB_JS_PURGE_SCAN_MS"
+						: " could not be read")
+					<< " to record its largest key before purging it; retention keeps it and the segments after it"
+					<< " until a later purge can.";
 				DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
 				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 			} catch (...) {

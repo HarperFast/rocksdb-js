@@ -672,6 +672,20 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 
 	// Phase 2: Process stores WITHOUT holding storesMutex
 	for (auto& store : storesToPurge) {
+		// The record must read unknown before a destroy deletes anything: remove_all deletes in no fixed
+		// order, can stop part-way, and takes unflushed segments the purge skips. When that write fails
+		// the store stays open and registered, with every file.
+		if (destroy && !store->invalidatePurgeRecord()) {
+			try {
+				std::string msg = "Transaction log store " + store->displayPath.string() +
+					" was not deleted: its purge watermark could not be marked unknown first.";
+				DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores WARNING: %s\n", instance.get(), msg.c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg }));
+			} catch (...) {
+				// reporting is best-effort
+			}
+			continue;
+		}
 		store->purge([&](const std::filesystem::path& filePath, uint32_t entryCount) -> void {
 			auto path = filePath.string();
 			napi_value pathValue;
@@ -690,21 +704,7 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 			NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, element));
 		}, destroy, before, includeEntryCounts);
 
-		// The record must read unknown before a destroy can delete anything it does not cover: remove_all
-		// deletes in no fixed order, can stop part-way, and takes unflushed segments the purge skipped.
-		// Invalidating before the store closes keeps it registered, and its files intact, when that fails.
 		if (destroy) {
-			if (!store->invalidatePurgeRecord()) {
-				try {
-					std::string msg = "Transaction log store " + store->displayPath.string() +
-						" was not deleted: its purge watermark could not be marked unknown first.";
-					DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores WARNING: %s\n", instance.get(), msg.c_str());
-					emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg }));
-				} catch (...) {
-					// reporting is best-effort
-				}
-				continue;
-			}
 			store->tryClose();
 		}
 	}
