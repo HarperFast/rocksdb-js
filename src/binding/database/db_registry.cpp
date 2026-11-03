@@ -700,6 +700,10 @@ void DBRegistry::OpenDB(
 		// an entry erased and re-created while we waited carries a new condition,
 		// and staying on the old one would miss its notify.
 		while (true) {
+			// Checked on every pass: each wait below releases databasesMutex.
+			if (instance->exitFenced) {
+				throw rocksdb_js::DBException("Cannot open database \"" + path + "\": the process is exiting and rocksdb-js has shut down");
+			}
 			// DestroyDB erases every entry for this path before its (potentially
 			// slow) physical deletion runs, to avoid holding databasesMutex across
 			// that I/O -- so once physical deletion starts, no registry entry is
@@ -1614,7 +1618,14 @@ void DBRegistry::Shutdown() {
  * Release every remaining registry entry (see the header for why this cannot be
  * left to the singleton's static destructor).
  */
-void DBRegistry::Teardown() {
+void DBRegistry::FenceOpensForExit() {
+	if (instance) {
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		instance->exitFenced = true;
+	}
+}
+
+void DBRegistry::Teardown(bool quarantinedOnly) {
 	if (!instance) {
 		return;
 	}
@@ -1622,7 +1633,23 @@ void DBRegistry::Teardown() {
 	std::unordered_map<DBKey, DBRegistryEntry, DBKeyHash> entries;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		entries.swap(instance->databases);
+		if (quarantinedOnly) {
+			for (auto it = instance->databases.begin(); it != instance->databases.end();) {
+				if (it->second.descriptor && !it->second.closeError.empty() && !it->second.closeRetrying) {
+					entries.emplace(it->first, std::move(it->second));
+					it = instance->databases.erase(it);
+				} else {
+					++it;
+				}
+			}
+		} else {
+			entries.swap(instance->databases);
+		}
+	}
+	// Erasing ends an OpenDB() wait on these keys; wake it rather than letting
+	// it run to its deadline.
+	for (auto& [_key, entry] : entries) {
+		entry.condition->notify_all();
 	}
 
 	// Destroy outside the lock: ~DBDescriptor closes the RocksDB database and

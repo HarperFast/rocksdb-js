@@ -152,6 +152,12 @@ private:
 	std::unordered_set<std::string> destroyingPaths;
 
 	/**
+	 * Set by `FenceOpensForExit()` and never cleared. Guarded by
+	 * `databasesMutex`; `OpenDB` rejects once it is set.
+	 */
+	bool exitFenced = false;
+
+	/**
 	 * The singleton instance of the registry.
 	 */
 	static std::unique_ptr<DBRegistry> instance;
@@ -212,6 +218,13 @@ public:
 	static void ReleaseLockCallbacksByEnv(napi_env env);
 	static void Shutdown();
 	/**
+	 * Rejects every later `OpenDB()` for the rest of the process. The
+	 * main-thread exit shutdown sets it before its sweep: workers keep running
+	 * JS until Node stops them after the `exit` listeners, and an open that
+	 * lands after the sweep has no later flush or close.
+	 */
+	static void FenceOpensForExit();
+	/**
 	 * Releases every remaining registry entry. Called from the module env
 	 * cleanup hook after `Shutdown()`, i.e. while the process is still running
 	 * normally. Nothing may keep a `rocksdb::DB` alive past that point: the
@@ -225,8 +238,12 @@ public:
 	 * `Shutdown()` normally empties the map on its own; a descriptor whose
 	 * close-time flush failed is deliberately quarantined instead, and at
 	 * process exit there is no later `shutdown()`/`destroy()` to retry it.
+	 *
+	 * `quarantinedOnly` limits the release to quarantined entries, for the
+	 * main-thread exit path: other envs may still be running there, so an entry
+	 * another thread is still closing belongs to that closer.
 	 */
-	static void Teardown();
+	static void Teardown(bool quarantinedOnly = false);
 	static size_t Size();
 };
 

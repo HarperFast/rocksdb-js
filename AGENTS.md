@@ -1406,6 +1406,24 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
     which is why its fixtures now tear down with `destroy()` rather than `close()`).
 
+    **Node does not run the main env's cleanup hook on `process.exit()`**: it runs the `exit`
+    listeners, stops the workers (their hooks run, but the main env still holds a module
+    reference, so the count never reaches zero), then calls `exit()`. Bun runs the main env's hook
+    but not the workers'. So the main thread's `process.on('exit')` listener, registered in
+    `load-binding.ts` and calling `ShutdownOnExit` (`binding.cpp`), is the terminal owner on
+    that path (rocksdb-js#1004). Workers are still running JS while it runs, which makes it
+    different from the last-env hook in three ways. It **fences opens first**
+    (`DBRegistry::FenceOpensForExit`, checked on every pass of `OpenDB`'s wait loop): an open that
+    lands after the sweep has no later flush or close, and in Bun with a worker alive nothing else
+    ever runs. It **tears down quarantined entries only** (`Teardown(true)`), because an entry
+    still being closed by another env's thread (for example a `shutdown()` that timed out waiting
+    for it) belongs to that closer, whose `finishClose()` may still be draining operations; sweeping
+    its closables would close handles under it. And it leaves `TransactionLogStoreRegistry::Shutdown()`
+    and the per-env releases to the hooks, since a worker may still hold a mapping of a log
+    segment. It never throws: an exception from an `exit` listener skips every later listener. The
+    `shutdownOnExit` config option turns it off for callers that simulate a crash with
+    `process.exit()`. Covered by `test/process-exit-shutdown.test.ts`.
+
 27. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
     lifecycle waits**:
     `DBHandle::close()` publishes `cancelled` (and, per invariant 6, the per-handle compaction

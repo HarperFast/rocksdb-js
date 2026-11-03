@@ -20,6 +20,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMainThread } from 'node:worker_threads';
 
 /**
  * The `Error` subclass passed to `'error'` event listeners and returned by
@@ -635,6 +636,15 @@ export type RocksDatabaseConfig = {
 	verificationTableEntries?: number;
 	compactOnClose?: boolean;
 	/**
+	 * Whether the main thread runs `shutdown()` from a `process.on('exit')`
+	 * listener it registers when rocksdb-js loads, so `process.exit()` does
+	 * not skip the flush. Defaults to `true`. After it runs, databases are
+	 * closed and opening one throws, so an `exit` listener that still needs a
+	 * database must be added with `process.prependListener`. Set to `false` to
+	 * leave memtables unflushed at exit, e.g. to exercise crash recovery.
+	 */
+	shutdownOnExit?: boolean;
+	/**
 	 * Maximum seconds an open, destroy, or shutdown call waits for another
 	 * lifecycle operation. Defaults to 30.
 	 */
@@ -802,6 +812,13 @@ export type RegistryStatus = RegistryStatusDB[];
 const bindingPath = locateBinding();
 // console.log(`Loading binding from ${bindingPath}`);
 const binding = req(bindingPath);
+
+// Node runs no env cleanup hook for the main thread on process.exit(), so the
+// main thread flushes and closes every database from its own exit listener.
+// A worker's exit tears down its env, whose cleanup hook runs.
+if (isMainThread) {
+	process.on('exit', binding.shutdownOnExit);
+}
 
 /**
  * The native `BackgroundError` constructor (a real `Error` subclass). Exported
@@ -990,19 +1007,10 @@ export const registryStatus: () => RegistryStatus = getRegistryStatus;
  * `database:closeFailed`; a timeout has no event, so the throw is its only
  * signal.
  *
- * A `process.on('exit')` listener must therefore wrap it: an exception thrown
- * from an `exit` listener skips every `exit` listener registered after it (and
- * sets exit code 1 unless an `uncaughtException` handler is installed).
- *
- * ```typescript
- * process.on('exit', () => {
- * 	try {
- * 		shutdown();
- * 	} catch (error) {
- * 		console.error('rocksdb-js shutdown failed', error);
- * 	}
- * });
- * ```
+ * You do not need to call it at exit: when rocksdb-js loads on the main
+ * thread it registers a `process.on('exit')` listener that does the same and
+ * reports failures to stderr instead of throwing (see the `shutdownOnExit`
+ * config option). Calling it yourself as well is safe.
  */
 export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;

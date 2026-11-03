@@ -75,6 +75,43 @@ napi_value Shutdown(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Runs one teardown step, reporting a failure to stderr instead of throwing:
+ * its callers run where nothing can catch or deliver an error.
+ */
+template <typename Step>
+static void runCleanupStep(const char* name, Step&& step) noexcept {
+	try {
+		step();
+	} catch (const std::exception& error) {
+		::fprintf(stderr, "rocksdb-js %s cleanup failed: %s\n", name, error.what());
+	} catch (...) {
+		::fprintf(stderr, "rocksdb-js %s cleanup failed: unknown native error\n", name);
+	}
+}
+
+/**
+ * The main thread's `exit` listener (`load-binding.ts`). Node skips the main
+ * env's cleanup hook on `process.exit()`, so this is that path's terminal owner
+ * (AGENTS.md invariant 26). Other envs can still be running, so it releases only
+ * quarantined entries and leaves the per-env cleanup to their own hooks.
+ */
+napi_value ShutdownOnExit(napi_env env, napi_callback_info info) {
+	if (!DBSettings::getInstance().getShutdownOnExit()) {
+		return nullptr;
+	}
+	auto& stats = DBStats::getInstance();
+	const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
+	runCleanupStep("open fence", []() { DBRegistry::FenceOpensForExit(); });
+	runCleanupStep("database registry", []() { DBRegistry::Shutdown(); });
+	runCleanupStep("database registry teardown", []() { DBRegistry::Teardown(true); });
+	runCleanupStep("global events", []() { GlobalEvents::Shutdown(); });
+	runCleanupStep("write buffer manager watchdog", [&]() {
+		stats.joinWriteBufferManagerWatchdog(false, watchdogShutdownGeneration);
+	});
+	return nullptr;
+}
+
+/**
  * Test-only: arm the stranded-snapshot seam so the next `n` transaction commits fail with
  * TryAgain (rolled back, so no data is committed). Used by the ERR_TRY_AGAIN retry test; inert
  * unless called. See core/test_seam.h.
@@ -373,16 +410,7 @@ NAPI_MODULE_INIT() {
 			DEBUG_LOG("Binding::Init Cleaning up last instance, shutting down all databases\n");
 			auto& stats = rocksdb_js::DBStats::getInstance();
 			const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
-			auto cleanup = [](const char* name, auto shutdown) {
-				try {
-					shutdown();
-				} catch (const std::exception& error) {
-					::fprintf(stderr, "rocksdb-js %s cleanup failed: %s\n", name, error.what());
-				} catch (...) {
-					::fprintf(stderr, "rocksdb-js %s cleanup failed: unknown native error\n", name);
-				}
-			};
-			cleanup("database registry", []() { rocksdb_js::DBRegistry::Shutdown(); });
+			rocksdb_js::runCleanupStep("database registry", []() { rocksdb_js::DBRegistry::Shutdown(); });
 			// Shutdown() leaves a descriptor whose close-time flush failed
 			// quarantined in the registry so shutdown()/destroy() can retry it.
 			// The process is exiting, so there is no later retry -- and a
@@ -390,9 +418,9 @@ NAPI_MODULE_INIT() {
 			// destructor closes its rocksdb::DB from an atexit handler, after
 			// RocksDB's own statics are gone, which aborts. Release whatever is
 			// left here, while that is still safe.
-			cleanup("database registry teardown", []() { rocksdb_js::DBRegistry::Teardown(); });
-			cleanup("transaction logs", []() { rocksdb_js::TransactionLogStoreRegistry::Shutdown(); });
-			cleanup("global events", []() { rocksdb_js::GlobalEvents::Shutdown(); });
+			rocksdb_js::runCleanupStep("database registry teardown", []() { rocksdb_js::DBRegistry::Teardown(); });
+			rocksdb_js::runCleanupStep("transaction logs", []() { rocksdb_js::TransactionLogStoreRegistry::Shutdown(); });
+			rocksdb_js::runCleanupStep("global events", []() { rocksdb_js::GlobalEvents::Shutdown(); });
 			stats.joinWriteBufferManagerWatchdog(false, watchdogShutdownGeneration);
 			DEBUG_LOG("Binding::Init env cleanup done\n");
 		} else if (newRefCount < 0) {
@@ -435,6 +463,10 @@ NAPI_MODULE_INIT() {
 	napi_value shutdownFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "shutdown", NAPI_AUTO_LENGTH, Shutdown, nullptr, &shutdownFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "shutdown", shutdownFn));
+
+	napi_value shutdownOnExitFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "shutdownOnExit", NAPI_AUTO_LENGTH, ShutdownOnExit, nullptr, &shutdownOnExitFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "shutdownOnExit", shutdownOnExitFn));
 
 	// test-only stranded-snapshot seam (see core/test_seam.h)
 	napi_value forceTryAgainFn;

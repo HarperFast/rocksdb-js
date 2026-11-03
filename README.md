@@ -306,6 +306,9 @@ Sets global database settings.
     callers could already produce it. With `1`, a database's async commits run one at a time in
     the order `commit()` was called. Databases already open keep their limit.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
+  - `shutdownOnExit: boolean` When `true`, the main thread runs [`shutdown()`](#shutdown-void)
+    from a `process.on('exit')` listener, so `process.exit()` still flushes and closes every
+    database. Defaults to `true`. Set to `false` to leave memtables unflushed at exit.
   - `transactionLogAbortMarkers: boolean` When `true`, a transaction that wrote its
     transaction-log batch and then ends without committing (an `abort()`, a commit error it gives
     up on, or a worker torn down with it pending) gets that batch marked aborted in place, and every
@@ -2697,25 +2700,30 @@ console.log(getRegistryStatus());
 ### `shutdown(): void`
 
 The `shutdown()` will flush all in-memory data to disk and cancel outstanding background
-compactions, for all open databases. It is highly recommended to call this in a `process` `exit` event
-listener (on the main thread), to ensure that all data is flushed to disk before the process exits.
-It throws the first close failure after attempting every claimed database; call it again to retry
-any descriptor whose native teardown did not complete. It reports pending destroy-cleanup
-tombstones without deleting their paths; retry those with an explicit `destroy()`.
+compactions, for all open databases. It throws the first close failure after attempting every
+claimed database; call it again to retry any descriptor whose native teardown did not complete. It
+reports pending destroy-cleanup tombstones without deleting their paths; retry those with an
+explicit `destroy()`.
 
-Wrap the call: an exception thrown from an `exit` listener skips every `exit` listener registered
-after it, and sets the exit code to 1 unless an `uncaughtException` handler is installed.
+You do not need to call it at exit. When rocksdb-js loads on the main thread, it registers a
+`process.on('exit')` listener that runs the same shutdown, so a `process.exit()` (which skips the
+native cleanup Node runs on a natural exit) still flushes and closes every database, including
+those opened by workers that are still running. That listener reports failures to stderr instead
+of throwing, and afterwards opening a database throws. It does not run when the process is killed
+by a signal it does not handle.
+
+Because it is registered when rocksdb-js loads, `exit` listeners added later run after databases
+are closed. An `exit` listener that still writes to a database must run first:
 
 ```typescript
-import { shutdown } from '@harperfast/rocksdb-js';
-process.on('exit', () => {
-	try {
-		shutdown();
-	} catch (error) {
-		console.error('rocksdb-js shutdown failed', error);
-	}
+process.prependListener('exit', () => {
+	db.putSync('lastSeen', Date.now());
 });
 ```
+
+Set `RocksDatabase.config({ shutdownOnExit: false })` to skip it, for example to leave memtables
+unflushed and exercise crash recovery in a test. Calling `shutdown()` from your own `exit` listener
+as well is safe.
 
 ### `versions: { 'rocksdb': string; 'rocksdb-js': string }`
 
