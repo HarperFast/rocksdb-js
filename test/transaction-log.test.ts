@@ -2978,6 +2978,17 @@ describe('Transaction Log', () => {
 				expect(db.purgeLogs({ destroy: true })).toEqual([logFile]);
 			}));
 
+		it('should not hang when an option getter closes the database', () =>
+			dbRunner(async ({ db }) => {
+				const options = {
+					get before() {
+						db.close();
+						return 0;
+					},
+				};
+				expect(() => db.purgeLogs(options)).toThrow(/Database not open/);
+			}));
+
 		it('should purge all transaction log files', () =>
 			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
 				const logDirectory = join(dbPath, 'transaction_logs', 'foo');

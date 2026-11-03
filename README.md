@@ -227,13 +227,16 @@ Creates a new database instance.
 ### `db.close()`
 
 Closes a database. This function can be called multiple times and will only close an opened
-database. A database instance can be reopened once it is closed. A flush failure leaves the native
-database quarantined so `shutdown()` can retry without losing unflushed data; an explicit
-`destroy()` can instead delete it. A failure while waiting for compaction to settle is reported
-after native teardown completes; the optional `compactOnClose` pass itself is best-effort and its
-errors do not fail the close, since a skipped compaction loses no data. All native close errors
-emit `database:closeFailed`. The quarantine applies to both writable and read-only opens because
-both modes share the physical path lifecycle.
+database. A database instance can be reopened once it is closed. Closing the last handle flushes the
+memtables and waits for that flush, then cancels background compaction instead of waiting for it:
+a running compaction is abandoned and redone later, so close does not wait for the compaction
+backlog (the flush itself still waits out a write stall). A flush failure leaves the native database quarantined so `shutdown()`
+can retry without losing unflushed data; an explicit `destroy()` can instead delete it. A failure
+from RocksDB's own final close is reported after native teardown completes; the optional
+`compactOnClose` pass still runs to completion before background work is cancelled, but it is
+best-effort and its errors do not fail the close, since a skipped compaction loses no data. All
+native close errors emit `database:closeFailed`. The quarantine applies to both writable and
+read-only opens because both modes share the physical path lifecycle.
 
 ```typescript
 const db = RocksDatabase.open('foo');
@@ -727,7 +730,11 @@ because releasing the native database beneath an active copy would be unsafe.
 A previously opened instance does not need to remain open, which allows an explicit `destroy()`
 retry after failed physical cleanup. A never-opened or read-only instance cannot destroy the
 database. `shutdown()` reports a pending cleanup tombstone but never retries deletion; only an
-explicit `destroy()` can remove the path.
+explicit `destroy()` can remove the path. Destruction flushes the memtables before it closes the
+native database, without waiting out a write stall, so a database whose files outlive the call (the
+deletion fails, or the process dies first) keeps writes made with `disableWAL`. If that flush fails,
+destruction still deletes the database and reports the flush error through `database:closeFailed`;
+only when the deletion then fails too are the unflushed `disableWAL` writes lost.
 
 ```typescript
 db.destroy();
@@ -2689,8 +2696,8 @@ console.log(getRegistryStatus());
 
 ### `shutdown(): void`
 
-The `shutdown()` will flush all in-memory data to disk and wait for any outstanding compactions to
-finish, for all open databases. It is highly recommended to call this in a `process` `exit` event
+The `shutdown()` will flush all in-memory data to disk and cancel outstanding background
+compactions, for all open databases. It is highly recommended to call this in a `process` `exit` event
 listener (on the main thread), to ensure that all data is flushed to disk before the process exits.
 It throws the first close failure after attempting every claimed database; call it again to retry
 any descriptor whose native teardown did not complete. It reports pending destroy-cleanup

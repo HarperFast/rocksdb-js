@@ -54,19 +54,18 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 );
 
 /**
- * Custom deleter for RocksDB that waits for any background compaction to
- * complete before destroying the database instance. Compaction is triggered
- * by DBDescriptor::close() before this deleter runs.
+ * Closes and deletes a RocksDB instance without waiting for compaction:
+ * `Close()` cancels background work and waits only for jobs already running,
+ * which abort promptly. `DBDescriptor::finishClose()` normally closes the
+ * database first and reports the status; `Close()` is idempotent, so this is
+ * the close for every other release (a failed open, a quarantined descriptor).
  */
 struct DBDeleter {
 	void operator()(rocksdb::DB* db) const {
 		if (db) {
-			DEBUG_LOG("DBDeleter::operator() Waiting for compaction and closing database\n");
-			// Wait for any background compaction to complete and close the database
-			rocksdb::WaitForCompactOptions options;
-			options.close_db = true;
-			db->WaitForCompact(options);
-			DEBUG_LOG("DBDeleter::operator() Closed database, deleting\n");
+			DEBUG_LOG("DBDeleter::operator() Closing database\n");
+			rocksdb::Status status = db->Close();
+			DEBUG_LOG("DBDeleter::operator() Closed database (%s), deleting\n", status.ToString().c_str());
 			delete db;
 			DEBUG_LOG("DBDeleter::operator() Deleted database\n");
 		}
@@ -413,6 +412,10 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	// cleanup resumes from the failed point.
 	bool closeWorkersStopped = false;
 	bool transactionLogsUnregistered = false;
+	// Set once the close-time flush has succeeded. finishClose() then cancels
+	// background work, after which a flush or manual compaction fails with
+	// ShutdownInProgress, so a retry skips both.
+	bool closeFlushed = false;
 
 	/**
 	 * Cancellation token handed to `rocksdb::CompactRangeOptions::canceled` by
@@ -893,7 +896,7 @@ public:
 	void removeListenersByEnv(napi_env env);
 
 	napi_value listTransactionLogStores(napi_env env);
-	napi_value purgeTransactionLogs(napi_env env, napi_value options);
+	std::vector<TransactionLogStoreRegistry::PurgedLogFile> purgeTransactionLogs(const TransactionLogStoreRegistry::PurgeOptions& options);
 	std::shared_ptr<TransactionLogStore> resolveTransactionLogStore(const std::string& name);
 	/**
 	 * Flushes every column family's memtable. `allowWriteStall = false` (the RocksDB default)
@@ -901,6 +904,13 @@ public:
 	 * `src/load-binding.ts` and AGENTS invariant 16.
 	 */
 	rocksdb::Status flush(bool allowWriteStall = false);
+
+	/**
+	 * After a close-time flush covering every write up to `sequence`, syncs each transaction-log
+	 * store's segments and records its flushed position, as the flush listeners would. Close
+	 * cannot rely on them: see "Close does not wait for compaction" in this directory's DESIGN.md.
+	 */
+	void recordFlushedLogPosition(rocksdb::SequenceNumber sequence);
 
 	/** `DB::SyncWAL` on the calling thread: WAL-backed writes only, no memtable flush. */
 	rocksdb::Status syncWal();

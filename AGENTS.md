@@ -329,6 +329,18 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   without depending on how long a real compaction runs; snapshotted in `initializeTestSeams()`
   like the per-row seams above, so the production path costs one relaxed load per manual
   compaction. Used by `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts`
+- `ROCKSDB_JS_COMPACTION_KEY_DELAY_MS` - Test-only: when non-zero, every column family gets a
+  compaction filter that sleeps this long per key, so a fixture can close while a long automatic
+  compaction runs (`test/fixtures/fork-close-compaction.mts`). RocksDB still checks for shutdown
+  between keys, so the compaction stays abortable. The filter is installed only while this is set.
+  Snapshotted in `initializeTestSeams()`
+- `ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS` - Test-only: delay at the top of
+  `TransactionLogEventListener::OnFlushCompleted`, on the RocksDB flush thread, so a close can start
+  while a flush's transaction-log position update is still pending. Snapshotted in
+  `initializeTestSeams()`
+- `ROCKSDB_JS_CLOSE_FAILURE_AFTER_CANCEL` - Test-only: a one-shot close failure (a **flag**) injected
+  right after `finishClose()` cancels background work, so the `shutdown()` retry must finish without
+  flushing again. Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_CLOSE_FLUSH_FAILURE` - Test-only: number of close-time flushes to fail with an
   injected `IOError` (a **count**, not a flag; `1` is one failure). More than one is what leaves a
   descriptor still quarantined at process exit, since the exit-time `DBRegistry::Shutdown()`
@@ -528,10 +540,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    `DBHandle::close()` arms its own immediately before that drain, and `finishClose()` arms every
    still-attached handle's through `Closable::cancelBlockingWork()` before its _first_ blocking
    step. The second is not belt-and-braces. A foreign `destroy()`/`shutdown()` reaches the handle
-   only through the closables sweep, which is the last step of teardown — and three earlier steps
+   only through the closables sweep, which is the last step of teardown — and two earlier steps
    can each block on that compaction: the optional `compactOnClose` pass takes `compactMutex`,
-   which the running compaction holds; `WaitForCompact()` does not return while a manual
-   compaction runs; then the sweep's own drain waits it out. The closer holds the path gate
+   which the running compaction holds; then the sweep's own drain waits it out. The closer holds the path gate
    throughout, so a late arm times out every concurrent `OpenDB()` for that path.
    The split between the two tokens is not redundancy either: a self-close (`db.close()` →
    `DBRegistry::CloseDB`) reaches `DBHandle::close()` **before** `PurgeIfUnreferenced`/`beginClose()`,
@@ -931,7 +942,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     that a concurrent `purgeLogs({destroy:true})` may be destroying, and that crashed a vitest
     worker on Bun/Windows (`transaction-log.test.ts`, "should write to same log from multiple
     workers"). So close can still wedge on a stall; fixing that has to happen without flushing into
-    the teardown race. Still
+    the teardown race. A `destroy()` does opt in, because it holds the path gate; `purgeLogs()`
+    holds an `OperationGuard` so that drain-then-flush cannot overlap a purge (see
+    `src/binding/database/DESIGN.md`, "Close does not wait for compaction"). Still
     uncovered: `flushBeforeBackup` (`src/binding/database/backup.cpp`) flushes inside RocksDB's
     `BackupEngine`, which builds its own default `FlushOptions` we cannot reach — and that wait is
     taken _after_ the exclusive `.backup.lock` is acquired, so a stalled database turns a backup
