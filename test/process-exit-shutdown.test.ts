@@ -19,7 +19,11 @@ function run(mode: string, path: string, env?: NodeJS.ProcessEnv) {
 
 function exitThenVerify(
 	mode: string,
-	{ env, status = 0 }: { env?: NodeJS.ProcessEnv; status?: number } = {}
+	{
+		env,
+		status = 0,
+		verifySuffix = '',
+	}: { env?: NodeJS.ProcessEnv; status?: number; verifySuffix?: string } = {}
 ) {
 	const path = generateDBPath();
 	try {
@@ -28,7 +32,7 @@ function exitThenVerify(
 		const elapsed = performance.now() - started;
 		expect(exited.signal, exited.stderr).toBeNull();
 		expect(exited.status, exited.stderr).toBe(status);
-		const verified = run('verify', path);
+		const verified = run('verify', `${path}${verifySuffix}`);
 		expect(verified.status, verified.stderr).toBe(0);
 		return {
 			elapsed,
@@ -103,13 +107,17 @@ describe('Main-thread exit shutdown (#1004)', () => {
 		}
 	});
 
-	it.skipIf(process.versions.deno)(
-		'releases a quarantine a worker close leaves after the main thread exits',
+	// Relies on Node stopping the worker after the exit listeners. Bun runs no worker cleanup on
+	// process.exit(), and a worker still inside a native close at that point crashed Bun 1.4.0.
+	it.skipIf(process.versions.deno || process.versions.bun)(
+		'closes what a worker close leaves open or quarantined after the main thread exits',
 		() => {
-			const { exited } = exitThenVerify('concurrent-close', {
+			const { exited, values } = exitThenVerify('concurrent-close', {
 				env: { ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2', ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '3000' },
+				verifySuffix: '-late',
 			});
 			expect(exited.stderr).toContain('Timed out waiting for another database shutdown to finish');
+			expect(values).toEqual({ ...nothing, late: 'value' });
 		}
 	);
 

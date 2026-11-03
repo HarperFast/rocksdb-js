@@ -92,8 +92,11 @@ switch (mode) {
 		// its cancel token is armed, so it is in flight at exit.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');
-		void db.compact();
-		setImmediate(() => process.exit(0));
+		db.compact().catch(() => {});
+		setTimeout(() => {
+			if (!db.isOpen()) throw new Error('Database closed before exit');
+			process.exit(0);
+		}, 100);
 		break;
 	}
 	case 'commit': {
@@ -104,15 +107,18 @@ switch (mode) {
 		void db.transaction((txn) => {
 			txn.putSync('commit', 'value');
 		});
-		setTimeout(() => process.exit(0), 50);
+		setTimeout(() => {
+			if (!db.isOpen()) throw new Error('Database closed before exit');
+			process.exit(0);
+		}, 50);
 		break;
 	}
 	case 'concurrent-close': {
 		// Run with ROCKSDB_JS_CLOSE_FLUSH_FAILURE=2 and
 		// ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: a worker's shutdown() is still retrying
 		// the failed close when the main thread exits, so the main thread's
-		// shutdown times out on it and the retry quarantines the descriptor after
-		// the main thread's sweep.
+		// shutdown times out on it: the retry quarantines the descriptor after the
+		// main thread's sweep, and a database opened meanwhile is never claimed.
 		RocksDatabase.config({ lifecycleWaitSeconds: 1 });
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');
@@ -123,14 +129,13 @@ switch (mode) {
 		const poll = setInterval(() => {
 			if (getRegistryStatus().some((entry) => entry.closeRetrying)) {
 				clearInterval(poll);
+				RocksDatabase.open(`${path}-late`, { disableWAL: true }).putSync('late', 'value');
 				process.exit(0);
 			}
 		}, 5);
 		break;
 	}
 	case 'worker-churn': {
-		// Workers keep opening, writing and closing databases while the main
-		// thread exits, so some opens race the exit fence and the sweep.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');
 		let ready = 0;
@@ -153,8 +158,6 @@ switch (mode) {
 		break;
 	}
 	case 'worker': {
-		// A worker holding the same database is still running when the main
-		// thread calls process.exit(); Node stops it after the exit listeners.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		const worker = startWorker(
 			`${openAndWrite} parentPort.postMessage('ready'); setInterval(() => {}, 1000);`
@@ -170,8 +173,6 @@ switch (mode) {
 		break;
 	}
 	case 'worker-exit': {
-		// A worker's own process.exit() ends only the worker; the main thread's
-		// database stays open.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		const worker = startWorker(`${openAndWrite} process.exit(0);`);
 		worker.once('exit', () => {

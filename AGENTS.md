@@ -1420,8 +1420,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     for it) belongs to that closer, whose `finishClose()` may still be draining operations; sweeping
     its closables would close handles under it. Since the main env's hook never runs afterwards, the
     count never reaches zero, so each worker hook that runs after the main thread's exit shutdown
-    (`mainThreadExited`) repeats `Teardown(true)` to release a quarantine that worker's own close
-    left. And it does not call `TransactionLogStoreRegistry::Shutdown()`, since a worker may still
+    (`mainThreadExited`) repeats `Shutdown()` and `Teardown(true)`: a worker's own close can finish
+    after the main thread's sweep and quarantine, and a main-thread shutdown that timed out behind
+    it never claimed the rest. Bun runs no worker hook on `process.exit()`, so there this is best
+    effort. And it does not call `TransactionLogStoreRegistry::Shutdown()`, since a worker may still
     hold a mapping of a log segment: a successful close unregisters its stores, so only a
     quarantined descriptor's stores reach static destruction, as every store did before. It never
     throws: an exception from an `exit` listener skips every later listener. The `shutdownOnExit`

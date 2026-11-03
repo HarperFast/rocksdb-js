@@ -90,9 +90,9 @@ static void runCleanupStep(const char* name, Step&& step) noexcept {
 }
 
 /**
- * Set once the main thread's exit shutdown has run. After that, Node never
- * runs the main env's cleanup hook, so `moduleRefCount` cannot reach zero and
- * each worker's hook releases the quarantines that worker's closes left.
+ * Set when the main thread's exit shutdown starts. Node then never runs the
+ * main env's cleanup hook, so `moduleRefCount` cannot reach zero, and each
+ * worker hook repeats the shutdown for what that worker left open or quarantined.
  */
 static std::atomic<bool> mainThreadExited{false};
 
@@ -434,6 +434,7 @@ NAPI_MODULE_INIT() {
 		} else if (newRefCount < 0) {
 			DEBUG_LOG("Binding::Init WARNING: Module ref count went negative!\n");
 		} else if (rocksdb_js::mainThreadExited.load(std::memory_order_acquire)) {
+			rocksdb_js::runCleanupStep("database registry", []() { rocksdb_js::DBRegistry::Shutdown(); });
 			rocksdb_js::runCleanupStep("database registry teardown", []() { rocksdb_js::DBRegistry::Teardown(true); });
 		} else {
 			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount);
