@@ -439,9 +439,15 @@ describe('Destroy', () => {
 		});
 	}, 15_000);
 
-	it('releases the path gate when physical destruction fails', async () => {
+	it('releases the path gate when physical destruction fails, keeping unflushed writes', async () => {
 		await runDestroyFixture(destroyFailureFixture, generateDBPath(), {
 			ROCKSDB_JS_DESTROY_FAILURE: '1',
+		});
+	}, 15_000);
+
+	it('deletes the database and reports a destroy flush failure', async () => {
+		await runDestroyFixture(destroyFailureFixture, generateDBPath(), {
+			ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '1',
 		});
 	}, 15_000);
 

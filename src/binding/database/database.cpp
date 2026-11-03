@@ -2791,6 +2791,9 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 napi_value Database::PurgeLogs(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_DB_HANDLE_AND_OPEN();
+	// Counted so finishClose() waits for an admitted purge before its flush
+	// notifies the stores this purge may be destroying.
+	ACQUIRE_OPERATIONS_LOCK();
 	THROW_IF_READONLY((*dbHandle)->descriptor, "Purge logs failed: ");
 
 	return (*dbHandle)->descriptor->purgeTransactionLogs(env, argv[0]);

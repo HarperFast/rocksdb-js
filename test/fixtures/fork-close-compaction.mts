@@ -154,6 +154,42 @@ if (!isMainThread) {
 			throw new Error(`Restart would replay ${replayed.length} flushed entries`);
 		reopened.close();
 		report({ mode });
+	} else if (mode === 'destroyStalled') {
+		// Hold the database in a write stall behind the slowed compaction, then
+		// destroy it with deletion failing (ROCKSDB_JS_DESTROY_FAILURE): the
+		// destroy flush must not wait out the stall, and must still persist.
+		const db = await compactingDatabase(path);
+		const stallDeadline = performance.now() + 10_000;
+		for (let file = 0; !db.isWriteStalled(); file++) {
+			if (performance.now() > stallDeadline) throw new Error('The database never stalled');
+			for (let i = 0; i < 1_000; i++) db.putSync(`stall-${file}-${i}`, i);
+			db.flushSync({ allowWriteStall: true });
+		}
+		for (let i = 0; i < AFTER_KEYS; i++) db.putSync(`tail-${i}`, i);
+		const started = performance.now();
+		try {
+			db.destroy();
+			throw new Error('Expected the injected destruction failure');
+		} catch (error) {
+			if (!String(error).includes('Injected database destruction failure')) throw error;
+		}
+		const elapsed = performance.now() - started;
+		// A flush that waits out the stall takes seconds here; this one takes milliseconds.
+		if (elapsed > 2_000)
+			throw new Error(`destroy() took ${elapsed}ms: its flush waited out the write stall`);
+		const reopened = RocksDatabase.open(path);
+		verify(reopened);
+		for (let i = 0; i < AFTER_KEYS; i++) {
+			if (reopened.getSync(`tail-${i}`) !== i)
+				throw new Error(`Missing tail-${i}: the destroy flush did not persist it`);
+		}
+		// Still stalled, and close() waits out a stall; destroy() does not.
+		try {
+			reopened.destroy();
+		} catch (error) {
+			if (!String(error).includes('Injected database destruction failure')) throw error;
+		}
+		report({ mode, elapsed });
 	} else if (mode === 'retryAfterCancel') {
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('key', 'value');

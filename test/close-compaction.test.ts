@@ -117,6 +117,18 @@ describe('Close during background compaction', () => {
 	);
 
 	it(
+		'destroy() flushes a stalled database without waiting out the stall',
+		() =>
+			withPath(async (dbPath) => {
+				await runFixture(dbPath, 'destroyStalled', {
+					...SLOW_COMPACTION,
+					ROCKSDB_JS_DESTROY_FAILURE: '1',
+				});
+			}),
+		30_000
+	);
+
+	it(
 		'a shutdown() retry after a post-cancellation failure does not flush again',
 		() =>
 			withPath(async (dbPath) => {

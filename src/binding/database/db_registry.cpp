@@ -442,9 +442,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	}
 	if (destroyFailureFlag().load(std::memory_order_relaxed)) {
 		// Neither rocksdb::DestroyDB nor remove_all ran, so this leaves no
-		// tombstone and a caller can retry destroy() or reopen the path. The
-		// database was closed without a flush, so unflushed disableWAL writes
-		// are gone.
+		// tombstone and a caller can retry destroy() or reopen the path.
 		throw rocksdb_js::DBException("Injected database destruction failure");
 	}
 

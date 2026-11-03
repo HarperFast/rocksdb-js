@@ -942,7 +942,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     that a concurrent `purgeLogs({destroy:true})` may be destroying, and that crashed a vitest
     worker on Bun/Windows (`transaction-log.test.ts`, "should write to same log from multiple
     workers"). So close can still wedge on a stall; fixing that has to happen without flushing into
-    the teardown race. Still
+    the teardown race. A `destroy()` does opt in, because it holds the path gate; `purgeLogs()`
+    holds an `OperationGuard` so that drain-then-flush cannot overlap a purge (see
+    `src/binding/database/DESIGN.md`, "Close does not wait for compaction"). Still
     uncovered: `flushBeforeBackup` (`src/binding/database/backup.cpp`) flushes inside RocksDB's
     `BackupEngine`, which builds its own default `FlushOptions` we cannot reach — and that wait is
     taken _after_ the exclusive `.backup.lock` is acquired, so a stalled database turns a backup

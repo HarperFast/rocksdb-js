@@ -684,36 +684,47 @@ void DBDescriptor::finishClose(bool destroying) {
 		rocksdb::Log(rocksdb::InfoLogLevel::INFO_LEVEL, infoLog, "rocksdb-js close: %s", phase.c_str());
 	};
 
-	// We want to ensure that all in-memory data is written to disk -- but only
-	// when the files are staying. A destroy() deletes them immediately after
-	// this returns, so flushing (and, below, compacting) them first is pure
-	// wasted I/O -- and with the `allow_write_stall=false` default (AGENTS
-	// invariant 16) an unbounded wait on a stalled database, which would park
-	// this thread while it still holds the `destroyingPaths` gate, stalling
-	// every concurrent OpenDB() on the path too. Keep the waiting default for
-	// a real close: an immediate flush races transaction-log-store teardown.
+	// Flush before teardown, destroy included: a destroy() whose files survive
+	// (deletion failed, or the process died first) must not lose unflushed
+	// disableWAL writes, and RocksDB will not flush on Close()
+	// (avoid_flush_during_shutdown). A destroy flushes with allow_write_stall,
+	// so it never waits out a stall while it holds the `destroyingPaths` gate;
+	// a close keeps the waiting default (AGENTS invariant 16). A destroy whose
+	// flush fails still tears down and deletes, since a database with a sticky
+	// background error must stay destroyable; its error is reported after
+	// teardown, which destroy() treats as non-fatal.
 	std::string closeError;
 	rocksdb::Status status;
-	if (!destroying && !this->closeFlushed) {
+	bool flushedNow = false;
+	if (!this->closeFlushed) {
 		// Writes are drained, so every committed transaction is at or below this.
 		const rocksdb::SequenceNumber flushedSequence = this->db->GetLatestSequenceNumber();
-		logPhase("flushing");
+		logPhase(destroying ? "flushing (destroying)" : "flushing");
 		status = testConsumeCloseFlushFailure()
 			? rocksdb::Status::IOError("Injected database close flush failure")
-			: this->flush();
+			: this->flush(destroying);
 		if (!status.ok()) {
-			closeError = "Failed to flush database during close: " + status.ToString();
-			throw rocksdb_js::DBException(closeError);
+			closeError = std::string("Failed to flush database during ") + (destroying ? "destroy: " : "close: ") + status.ToString();
+			if (!destroying) {
+				throw rocksdb_js::DBException(closeError);
+			}
+			logPhase(closeError);
+		} else {
+			logPhase("flushed");
+			if (!this->readOnly) {
+				this->recordFlushedLogPosition(flushedSequence);
+			}
+			this->closeFlushed = true;
+			flushedNow = true;
 		}
-		logPhase("flushed");
+	}
 
-		if (!this->readOnly) {
-			this->recordFlushedLogPosition(flushedSequence);
-		}
-
-		// Trigger manual compaction on all column families to reclaim space from
-		// tombstones before closing. CompactRange() returns only once its manual
-		// compaction is done, so the cancellation below cannot cut it short.
+	// Trigger manual compaction on all column families to reclaim space from
+	// tombstones before closing -- not when destroying, which deletes them.
+	// CompactRange() returns only once its manual compaction is done, so the
+	// cancellation below cannot cut it short. Only the attempt that flushed runs
+	// it: after the cancellation below it would fail, so a retry skips it.
+	if (flushedNow && !destroying) {
 		if (!this->readOnly && DBSettings::getInstance().getCompactOnClose()) {
 			// Snapshot under the columns mutex; a concurrent drop can erase from
 			// the map while we compact.
@@ -735,7 +746,6 @@ void DBDescriptor::finishClose(bool destroying) {
 				}
 			}
 		}
-		this->closeFlushed = true;
 	}
 
 	// Compaction is not needed for durability, so abort it rather than wait for

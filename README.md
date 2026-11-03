@@ -730,9 +730,11 @@ because releasing the native database beneath an active copy would be unsafe.
 A previously opened instance does not need to remain open, which allows an explicit `destroy()`
 retry after failed physical cleanup. A never-opened or read-only instance cannot destroy the
 database. `shutdown()` reports a pending cleanup tombstone but never retries deletion; only an
-explicit `destroy()` can remove the path. Destruction closes the native database without flushing,
-so if its files outlive the call (the process dies before they are removed), writes that were made
-with `disableWAL` and not yet flushed are gone when the path is reopened.
+explicit `destroy()` can remove the path. Destruction flushes the memtables before it closes the
+native database, without waiting out a write stall, so a database whose files outlive the call (the
+deletion fails, or the process dies first) keeps writes made with `disableWAL`. If that flush fails,
+destruction still deletes the database and reports the flush error through `database:closeFailed`;
+only when the deletion then fails too are the unflushed `disableWAL` writes lost.
 
 ```typescript
 db.destroy();

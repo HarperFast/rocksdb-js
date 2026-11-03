@@ -249,8 +249,19 @@ write-heavy database take minutes to close (rocksdb-js#1001). Four things hold i
 - **`closeFlushed` makes a retry skip the flush.** Once background work is cancelled, a flush or
   manual compaction fails with `ShutdownInProgress`, so a quarantined close that failed after the
   cancel would wedge its `shutdown()` retry. No write can be admitted after `closing`, so nothing is
-  left to flush. It is set only by a successful flush, never by a `destroy()` that skipped one, so a
-  non-destructive retry of a failed destroy fails instead of reporting a clean close.
+  left to flush. It is set only by a successful flush, never by a `destroy()` whose flush failed, so
+  a non-destructive retry of that destroy fails instead of reporting a clean close.
+
+`destroy()` flushes too (rocksdb-js#1002). Its files can outlive the call — the deletion fails, or the
+process dies first — and with RocksDB's shutdown flush disabled, nothing else persists `disableWAL`
+writes. It flushes with `allow_write_stall=true`, because it holds the `destroyingPaths` gate, and
+it skips `compactOnClose`. A failed destroy flush does not stop the deletion (a database with a
+sticky background error must stay destroyable): `finishClose()` keeps the error in `closeError`,
+finishes teardown, and throws it after `db.reset()`. Destroy treats a completed teardown's error as
+non-fatal and reports it through `database:closeFailed`. The immediate flush fires listeners into
+the transaction-log stores, so `Database::PurgeLogs` takes an `OperationGuard`: the drain at the top
+of `finishClose()` waits for an admitted `purgeLogs({ destroy: true })` instead of flushing into the
+stores it is removing (the crash invariant 16 records for close).
 
 Nothing is logged through the RocksDB info log after `Close()`, which closes that logger.
 `test/close-compaction.test.ts` covers close, process exit and worker teardown during a compaction,
