@@ -18,13 +18,20 @@ type IteratorControl = (
 	position?: number,
 	atSegmentEnd?: boolean
 ) => IteratorResult<TransactionEntry> | boolean | void;
+const ITERATOR_TOKEN = Symbol('transactionLogIterator');
 
 class LogIterator implements TransactionLogIterator {
 	#sourceLog: TransactionLog;
 	#control: IteratorControl;
 	next: () => IteratorResult<TransactionEntry>;
 
-	constructor(sourceLog: TransactionLog, next: LogIterator['next'], control: IteratorControl) {
+	constructor(
+		token: typeof ITERATOR_TOKEN,
+		sourceLog: TransactionLog,
+		next: LogIterator['next'],
+		control: IteratorControl
+	) {
+		if (token !== ITERATOR_TOKEN) throw new TypeError('Transaction log iterators require query()');
 		this.#sourceLog = sourceLog;
 		this.next = next;
 		this.#control = control;
@@ -418,6 +425,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let needsCursorCheck = untilCursor !== undefined || startUnmapped;
 
 		const iterator = new LogIterator(
+			ITERATOR_TOKEN,
 			transactionLog,
 			function next() {
 				if (needsCursorCheck) {
