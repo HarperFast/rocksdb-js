@@ -38,6 +38,10 @@ try {
 	const custom = new CustomLog(first.store.db, 'foo');
 	assert(custom instanceof CustomLog);
 	assert.equal(Array.from(custom.query({ start: 0, until: live })).length, 1);
+	class MisnamedLog extends TransactionLog {}
+	Object.defineProperty(MisnamedLog.prototype, 'name', { get: () => 'foo' });
+	const different = new MisnamedLog(first.store.db, 'bar');
+	assert.throws(() => firstLog.query({ until: different.query() }), TypeError);
 	const txn = new Transaction(first.store);
 	try {
 		assert.equal(Array.from(txn.useLog('foo').query({ start: 0, until: live })).length, 1);
