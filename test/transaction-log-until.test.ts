@@ -8,6 +8,8 @@ import {
 } from '../src/index.ts';
 import { constants, forceTryAgainForTesting } from '../src/load-binding.ts';
 import { dbRunner } from './lib/util.ts';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 const {
@@ -31,6 +33,20 @@ function texts(iterator: TransactionLogIterator) {
 }
 
 describe('Transaction log iterator handoff', () => {
+	it('compares immutable owner identity across cwd changes, aliases and closed stores', () =>
+		dbRunner({ skipOpen: true }, ({ dbPath }) => {
+			const fixture = fileURLToPath(
+				new URL('./fixtures/fork-transaction-log-until-identity.mts', import.meta.url)
+			);
+			const args = process.versions.deno ? ['run', '--allow-all'] : [];
+			const child = spawnSync(process.execPath, [...args, fixture, dbPath], {
+				encoding: 'utf8',
+				timeout: 20_000,
+			});
+			expect(child.error).toBeUndefined();
+			expect(child.status, child.stdout + child.stderr).toBe(0);
+		}));
+
 	it.each([
 		{ size: 500 - FILE_HEADER - ENTRY_HEADER, reopen: false },
 		{ size: 600, reopen: false },

@@ -1035,7 +1035,26 @@ export const supportedCompression: readonly string[] = Object.freeze(
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
-export const TransactionLog: TransactionLog = binding.TransactionLog;
+const transactionLogOwners = new WeakMap<TransactionLog, string>();
+// Native database and transaction useLog() calls also resolve this export at construction.
+export const TransactionLog: TransactionLog = (binding.TransactionLog = new Proxy(
+	binding.TransactionLog,
+	{
+		construct(target, args, newTarget) {
+			const log = Reflect.construct(target, args, newTarget) as TransactionLog;
+			const identity = (args[0] as NativeDatabase).identityPath;
+			if (identity !== undefined) transactionLogOwners.set(log, identity);
+			return log;
+		},
+	}
+));
+
+export function sameTransactionLog(left: TransactionLog, right: TransactionLog): boolean {
+	const owner = transactionLogOwners.get(left);
+	return (
+		owner !== undefined && owner === transactionLogOwners.get(right) && left.name === right.name
+	);
+}
 /**
  * Returns the status of every database currently held by the native registry.
  * Walks every registered descriptor, so it samples live state rather than
