@@ -2481,7 +2481,7 @@ const log = db.useLog('foo');
 console.log(log.path);
 ```
 
-#### `log.query(options?): IterableIterator<TransactionLogEntry>`
+#### `log.query(options?): TransactionLogIterator`
 
 Returns an iterable/iterator that streams all log entries for the given filter.
 
@@ -2490,6 +2490,11 @@ Returns an iterable/iterator that streams all log entries for the given filter.
   - `end?: string` The transction end timestamp.
   - `exclusiveStart?: boolean` When `true`, this will only match transactions with timestamps after
     the start timestamp.
+  - `until?: TransactionLogIterator` Stops before another same-log iterator's unread position,
+    including an entry it has peeked. The bound is exclusive, compares segment and offset before
+    filtering, and works across rotation, even when this query starts past it. It resumes when
+    `until` advances. A closed iterator no longer bounds the query. An invalid or foreign-log
+    iterator throws `TypeError` at query creation.
   - `exactStart?: boolean` When `true`, this will only match and iterate starting from a transaction
     with the given start timestamp. Once the specified transaction is found, all subsequent
     transactions will be returned (regardless of whether their timestamp comes before the `start`
@@ -2505,6 +2510,27 @@ Returns an iterable/iterator that streams all log entries for the given filter.
     if included). This is useful for replaying transaction logs on startup where many entries may
     have been written to the log but are no longer considered committed if they were not flushed to
     disk.
+
+`iterator.peek()` returns the next entry without consuming it. Repeated peeks return the same
+result until `next()` consumes it once. A `done` result is not cached, so later appends remain
+visible. Errors propagate as from `next()`.
+
+With `until`, `done: true` means the reader has caught up to the bound as of that pull. Running
+out of readable entries short of the bound throws instead, so an unavailable segment cannot
+silently trigger a handoff. Bounded exact-start queries scan without the index's stop-to-tail
+jump to avoid crossing the handoff position.
+
+`iterator.close()` permanently ends the iterator and releases its cached entry and mapping.
+It is idempotent; later `next()` and `peek()` calls report done. Breaking out of `for...of`
+keeps the iterator resumable and does not close it.
+
+```typescript
+const live = log.query();
+const replay = log.query({ start: startTime, until: live });
+for (const entry of replay) deliver(entry);
+replay.close();
+// A later commit belongs to live even if its timestamp is earlier than startTime.
+```
 
 The iterator produces an object with the log entry timestamp and data.
 

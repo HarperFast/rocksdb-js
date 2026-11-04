@@ -37,6 +37,7 @@ export {
 	TransactionLog,
 	type FlushOptions,
 	type TransactionEntry,
+	type TransactionLogIterator,
 	type TransactionLogPosition,
 	type TransactionLogPurgeWatermark,
 	type TransactionLogStats,
