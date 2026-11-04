@@ -436,7 +436,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						return result;
 					}
 					if (untilCursor) {
-						const reached = untilCursor.reached(logBuffer!.logId, position);
+						const reached = untilCursor.reached(
+							logBuffer!.logId,
+							position,
+							position >= size && logBuffer!.length > 0 && position >= readableExtent(logBuffer!)
+						);
 						if (reached) return { done: true, value: undefined };
 						if (reached === undefined) {
 							untilCursor = undefined;
@@ -480,6 +484,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						// if it is not the latest log, get the file size
 						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 						if (position >= size) {
+							if (untilCursor?.reached(logBuffer!.logId, position, logBuffer!.length > 0)) {
+								return { done: true, value: undefined };
+							}
 							// we can't read any further in this block, go to the next block
 							const fromLogId = logBuffer!.logId - (startMissing ? 1 : 0);
 							const nextLogBuffer = nextReadableLogBuffer(
@@ -664,6 +671,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 							if (position < size) {
 								continue;
+							}
+							if (untilCursor?.reached(logBuffer!.logId, position, true)) {
+								return { done: true, value: undefined };
 							}
 
 							const fromLogId = logBuffer!.logId;

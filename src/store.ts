@@ -25,6 +25,7 @@ import {
 	type NativeDatabaseOptions,
 	NativeIterator,
 	NativeTransaction,
+	registerTransactionLog,
 	stats,
 	supportedCompression,
 	type TransactionLog,
@@ -1433,7 +1434,9 @@ export class Store {
 		// Pass the JS database per-call: the native transaction deliberately
 		// holds no napi_ref to it (HarperFast/rocksdb-js#741); the database
 		// context ignores the extra argument.
-		return context.useLog(String(name), this.db);
+		const log = context.useLog(String(name), this.db);
+		registerTransactionLog(log, this.identityPath);
+		return log;
 	}
 
 	/**

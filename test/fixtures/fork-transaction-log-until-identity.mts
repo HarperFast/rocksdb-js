@@ -33,6 +33,8 @@ try {
 	);
 	const direct = new TransactionLog(first.store.db, 'foo');
 	assert(direct instanceof TransactionLog);
+	assert.equal(direct.constructor, TransactionLog);
+	assert.equal(firstLog.constructor, TransactionLog);
 	assert.equal(Array.from(direct.query({ start: 0, until: live })).length, 1);
 	class CustomLog extends TransactionLog {}
 	const custom = new CustomLog(first.store.db, 'foo');
