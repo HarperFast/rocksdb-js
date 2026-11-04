@@ -215,11 +215,12 @@ Creates a new database instance.
     nonempty directory that reappears before first use is refused until every handle closes and the
     path reopens with this option. The name must be a single path component that does not start with
     `.`: startup discovery skips such directories, so the log could never be scanned again.
-  - `verificationTable: boolean` When `true`, this column family participates in the process-global
-    [Verification Table](#verification-table): transaction writes to this column family invalidate
-    the verification slot for each written key. Enable this only for column families whose records
-    are cached (e.g. the primary column family of a table). Defaults to `false`. Requires
-    `verificationTableEntries` to be configured before the first database is opened.
+  - `verificationTable: boolean` When `true`, this handle participates in the process-global
+    [Verification Table](#verification-table): writes through it invalidate the verification slot
+    for each written key, and reads through it may seed slots. Enable this only for column families
+    whose records are cached (e.g. the primary column family of a table), on every handle that
+    opens them. Defaults to `false`. Requires `verificationTableEntries` to be configured before the
+    first database is opened.
   - `writeBufferSize: number` The per-column-family memtable size in bytes at which the memtable is
     sealed and flushed to an SST file. Smaller values produce more frequent, faster flushes; larger
     values batch more writes per SST file at the cost of memory. Defaults to `16777216` (16 MB).
@@ -2210,10 +2211,12 @@ The freshness check works as follows:
 2. On a cold read, pass `{ populateVersion: true }` (or call `db.populateVersion()` afterward) to
    seed the slot with the version extracted from the value, so subsequent freshness checks hit.
 
-Transaction writes to a column family opened with `verificationTable: true` invalidate the slot for
-each written key at write time, so a stale version can never survive a write. This is also what
-enables [`coordinatedRetry`](#transactionoptions): a conflicting transaction parks on the slot and
-retries once the write intent is released.
+Writes through a handle opened with `verificationTable: true` invalidate the slot for each written
+key at write time, so a stale version cannot survive them, and a read seeds a slot only through
+such a handle. Open every handle on a cached column family with the option: a write through a
+handle without it leaves the slot holding the previous version. Invalidation is also what enables
+[`coordinatedRetry`](#transactionoptions): a conflicting transaction parks on the slot and retries
+once the write intent is released.
 
 The table is **process-global** and backed by a single shared structure, so versions populated on
 the main thread are visible to `worker_threads` workers and vice versa.
@@ -2222,7 +2225,8 @@ the main thread are visible to `worker_threads` workers and vice versa.
 
 The table must be sized before the first database is opened, via the
 [`verificationTableEntries`](#dbconfigoptions) config option (default `131072` slots = 1 MB; set to
-`0` to disable). Then opt-in per column family with the `verificationTable: true` open option:
+`0` to disable). Then opt in each handle on a cached column family with the
+`verificationTable: true` open option:
 
 ```typescript
 import { RocksDatabase } from '@harperfast/rocksdb-js';
@@ -3041,11 +3045,12 @@ Options for `get()`, `getSync()`, and the `getBinary*` methods.
   - `expectedVersion: number` When set, the [Verification Table](#verification-table) is checked
     before reading. If the slot holds this version, the read is skipped and the
     `FRESH_VERSION_FLAG` sentinel is returned. After a database read, the slot is seeded with the
-    version extracted from the value. Requires the column family to be opened with
+    version extracted from the value. Requires the handle to be opened with
     `verificationTable: true`.
   - `populateVersion: boolean` When `true`, after a database read the verification-table slot is
     seeded with the version extracted from the value, eliminating the need for a separate
-    `db.populateVersion()` call on cold reads. Defaults to `false`.
+    `db.populateVersion()` call on cold reads. Requires the handle to be opened with
+    `verificationTable: true`; otherwise the read seeds nothing. Defaults to `false`.
   - `skipDecode: boolean` When `true`, the value is returned without being decoded. Defaults to
     `false`.
 

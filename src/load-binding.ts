@@ -120,7 +120,8 @@ export type NativeTransaction = {
 		resolve: (value: Buffer | number) => void,
 		reject: (err: Error) => void,
 		txnIdIgnored?: number,
-		expectedVersion?: number
+		expectedVersion?: number,
+		flags?: number
 	): number;
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
@@ -505,13 +506,21 @@ export type NativeDatabase = {
 	flushSync(options?: FlushOptions): void;
 	syncWal(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
-	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
+	/**
+	 * Reads on the thread pool, applying `expectedVersion` and `POPULATE_VERSION_FLAG` like
+	 * `getSync()`. It neither probes the block cache nor answers from the verification table first:
+	 * the caller has already done both with `getSync(..., ONLY_IF_IN_MEMORY_CACHE_FLAG)`.
+	 *
+	 * Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared
+	 * buffer, or a direct buffer.
+	 */
 	get(
 		keyLengthOrKeyBuffer: number | Buffer,
 		resolve: ResolveCallback<Buffer | number>,
 		reject: RejectCallback,
 		txnId?: number,
-		expectedVersion?: number
+		expectedVersion?: number,
+		flags?: number
 	): number;
 	estimateCount(startKey?: Buffer, endKey?: Buffer): { count: number; confidence: number };
 	getCompression(): { algorithm: string; level?: number };
