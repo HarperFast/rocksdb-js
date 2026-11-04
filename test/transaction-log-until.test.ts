@@ -261,12 +261,15 @@ describe('Transaction log iterator handoff', () => {
 	it('rejects every supplied invalid until and iterators from other logs', () =>
 		dbRunner(({ db }) => {
 			const log = db.useLog('foo');
+			const leader = log.query();
+			expect(() => Reflect.construct(leader.constructor, [])).toThrow(TypeError);
 			for (const until of [
 				null,
 				false,
 				0,
 				'',
 				{},
+				Object.create(Object.getPrototypeOf(leader)),
 				[][Symbol.iterator](),
 				db.useLog('bar').query(),
 			]) {
