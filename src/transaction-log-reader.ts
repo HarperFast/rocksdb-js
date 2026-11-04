@@ -1,6 +1,7 @@
 import {
 	constants,
 	type LogBuffer,
+	sameTransactionLog,
 	type TransactionEntry,
 	TransactionLog,
 	type TransactionLogIterator,
@@ -270,12 +271,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		}: TransactionLogQueryOptions = {}
 	): TransactionLogIterator {
 		let untilCursor = LogIterator.cursor(until);
-		if (
-			until !== undefined &&
-			(!untilCursor ||
-				untilCursor.sourceLog.name !== this.name ||
-				untilCursor.sourceLog.path !== this.path)
-		) {
+		if (until !== undefined && (!untilCursor || !sameTransactionLog(this, untilCursor.sourceLog))) {
 			throw new TypeError('until must be an iterator from query() on the same transaction log');
 		}
 		if (!this._lastCommittedPosition) {
