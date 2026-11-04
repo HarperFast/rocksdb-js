@@ -1032,15 +1032,25 @@ export const supportedCompression: readonly string[] = Object.freeze(
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
-const transactionLogOwners = new WeakMap<TransactionLog, string>();
+const transactionLogOwners = new WeakMap<TransactionLog, { database: string; name: string }>();
+const databaseIdentityGetter = Object.getOwnPropertyDescriptor(
+	NativeDatabase.prototype,
+	'identityPath'
+)!.get!;
+const logNameGetter = Object.getOwnPropertyDescriptor(
+	binding.TransactionLog.prototype,
+	'name'
+)!.get!;
 // Native database and transaction useLog() calls also resolve this export at construction.
 export const TransactionLog: TransactionLog = (binding.TransactionLog = new Proxy(
 	binding.TransactionLog,
 	{
 		construct(target, args, newTarget) {
 			const log = Reflect.construct(target, args, newTarget) as TransactionLog;
-			const identity = (args[0] as NativeDatabase).identityPath;
-			if (identity !== undefined) transactionLogOwners.set(log, identity);
+			const identity = databaseIdentityGetter.call(args[0]) as string | undefined;
+			if (identity !== undefined) {
+				transactionLogOwners.set(log, { database: identity, name: logNameGetter.call(log) });
+			}
 			return log;
 		},
 	}
@@ -1048,8 +1058,12 @@ export const TransactionLog: TransactionLog = (binding.TransactionLog = new Prox
 
 export function sameTransactionLog(left: TransactionLog, right: TransactionLog): boolean {
 	const owner = transactionLogOwners.get(left);
+	const other = transactionLogOwners.get(right);
 	return (
-		owner !== undefined && owner === transactionLogOwners.get(right) && left.name === right.name
+		owner !== undefined &&
+		other !== undefined &&
+		owner.database === other.database &&
+		owner.name === other.name
 	);
 }
 /**
