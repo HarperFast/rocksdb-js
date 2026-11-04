@@ -132,6 +132,14 @@ describe('Transaction log iterator handoff', () => {
 				forceTryAgainForTesting(1);
 				await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_TRY_AGAIN' });
 				expect(txn.logWritten()).toBe(true);
+				const committedLive = log.query({ start: 0 });
+				expect(texts(committedLive)).toEqual(['committed']);
+				const uncommittedReplay = log.query({
+					start: 0,
+					readUncommitted: true,
+					until: committedLive,
+				});
+				expect(texts(uncommittedReplay)).toEqual(['committed']);
 				const live = log.query({ start: 0, readUncommitted: true });
 				expect(texts(live)).toEqual(['committed', 'pending']);
 				const replay = log.query({ start: 0, until: live });
@@ -141,6 +149,8 @@ describe('Transaction log iterator handoff', () => {
 				await txn.commit();
 				committed = true;
 				expect(texts(replay)).toEqual(['pending']);
+				expect(texts(committedLive)).toEqual(['pending']);
+				expect(texts(uncommittedReplay)).toEqual(['pending']);
 			} finally {
 				forceTryAgainForTesting(0);
 				if (!committed) txn.abort();
@@ -188,6 +198,35 @@ describe('Transaction log iterator handoff', () => {
 			leader.next();
 			expect(texts(follower)).toEqual(['first']);
 		}));
+
+	it.each([false, true])(
+		'does not probe a missing segment beyond the bound (filtered: %s)',
+		(filtered) =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, ({ db }) => {
+				const log = db.useLog('foo');
+				add(db, log, 'before'.padEnd(600, 'x'));
+				const live = log.query();
+				add(db, log, 'excluded'.padEnd(600, 'x'));
+				add(db, log, 'survivor');
+				const originalMap = log._getMemoryMapOfFile.bind(log);
+				const originalSize = log.getLogFileSize.bind(log);
+				const map = vi
+					.spyOn(log, '_getMemoryMapOfFile')
+					.mockImplementation((id) => (id === 2 ? undefined : originalMap(id)));
+				const size = vi
+					.spyOn(log, 'getLogFileSize')
+					.mockImplementation((id) => (id === 2 ? 0 : originalSize(id)));
+				try {
+					const replay = log.query({ start: 0, until: live, end: filtered ? 1 : undefined });
+					expect(texts(replay)).toEqual(filtered ? [] : ['before'.padEnd(600, 'x')]);
+					expect(replay.peek().done).toBe(true);
+					expect(map.mock.calls.some(([id]) => id === 2)).toBe(false);
+				} finally {
+					map.mockRestore();
+					size.mockRestore();
+				}
+			})
+	);
 
 	it('stops before until and resumes as it advances', () =>
 		dbRunner(({ db }) => {

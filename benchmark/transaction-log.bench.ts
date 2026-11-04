@@ -7,6 +7,26 @@ describe('Transaction log', () => {
 	const ENTRY_COUNT = 1000;
 	const data = Buffer.alloc(100, 'a');
 
+	benchmark('rocksdb', {
+		name: 'create an unbounded transaction-log query',
+		mode: 'essential',
+		setup(ctx: BenchmarkContext<RocksDatabase>) {
+			ctx.log = ctx.db.useLog('0');
+			ctx.db.transactionSync((txn) => ctx.log.addEntry(data, txn.id));
+		},
+		bench({ log }) {
+			log.query({ start: 0 });
+		},
+	});
+
+	benchmark('rocksdb', {
+		name: 'write with a transaction-bound log',
+		mode: 'essential',
+		bench({ db }: BenchmarkContext<RocksDatabase>) {
+			db.transactionSync((txn) => txn.useLog('0').addEntry(data));
+		},
+	});
+
 	describe('write log with 100 byte records', () => {
 		benchmark(
 			'rocksdb',

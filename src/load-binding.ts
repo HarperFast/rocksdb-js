@@ -1041,20 +1041,20 @@ const logNameGetter = Object.getOwnPropertyDescriptor(
 	binding.TransactionLog.prototype,
 	'name'
 )!.get!;
-// Native database and transaction useLog() calls also resolve this export at construction.
-export const TransactionLog: TransactionLog = (binding.TransactionLog = new Proxy(
-	binding.TransactionLog,
-	{
-		construct(target, args, newTarget) {
-			const log = Reflect.construct(target, args, newTarget) as TransactionLog;
-			const identity = databaseIdentityGetter.call(args[0]) as string | undefined;
-			if (identity !== undefined) {
-				transactionLogOwners.set(log, { database: identity, name: logNameGetter.call(log) });
-			}
-			return log;
-		},
+export const TransactionLog: TransactionLog = new Proxy(binding.TransactionLog, {
+	construct(target, args, newTarget) {
+		const log = Reflect.construct(target, args, newTarget) as TransactionLog;
+		registerTransactionLog(log, databaseIdentityGetter.call(args[0]));
+		return log;
+	},
+});
+Object.defineProperty(TransactionLog.prototype, 'constructor', { value: TransactionLog });
+
+export function registerTransactionLog(log: TransactionLog, database: string | undefined): void {
+	if (database !== undefined && !transactionLogOwners.has(log)) {
+		transactionLogOwners.set(log, { database, name: logNameGetter.call(log) });
 	}
-));
+}
 
 export function sameTransactionLog(left: TransactionLog, right: TransactionLog): boolean {
 	const owner = transactionLogOwners.get(left);
