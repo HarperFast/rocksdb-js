@@ -2517,8 +2517,8 @@ visible. Errors propagate as from `next()`.
 
 With `until`, `done: true` means the reader has caught up to the bound as of that pull. Running
 out of readable entries short of the bound throws instead, so an unavailable segment cannot
-silently trigger a handoff. Bounded exact-start queries scan without the index's stop-to-tail
-jump to avoid crossing the handoff position.
+silently trigger a handoff. Exact-start queries take the index's stop-to-tail jump only when
+its target does not pass the handoff position.
 
 `iterator.close()` permanently ends the iterator and releases its cached entry and mapping.
 It is idempotent; later `next()` and `peek()` calls report done. Breaking out of `for...of`
@@ -2539,10 +2539,11 @@ The iterator produces an object with the log entry timestamp and data.
   - `timestamp: number` The entry timestamp used to collate entries by transaction.
   - `endTxn: boolean` This is `true` when the entry is the last entry in a transaction.
 
-`next()` can throw two errors that leave the iterator usable, so calling `next()` again continues
-past the problem. Other errors, such as a failure to open a segment, do not move the iterator, so
-retrying them without a fix fails the same way.
+These errors leave the iterator usable:
 
+- `TransactionLogUntilUnreachedError`: readable input ended before `until`. The cursor stays in
+  place; retry after the input becomes readable or the pending transaction commits. Properties:
+  `logId` and `position`, identifying where the read stopped.
 - `TransactionLogGapError`: the iterator reached segments it had not read yet and could not read
   them, usually because retention purged them while the reader lagged. Their entries are not in
   this log anymore, so a consumer that replicates the log should treat its copy as discontinuous
@@ -2553,7 +2554,9 @@ retrying them without a fix fails the same way.
 - `CorruptFrameError` (a `RangeError`): an entry's framing is broken. `resyncPosition` is where
   valid framing resumes, or `undefined` when nothing follows the break.
 
-Both classes are exported from the package.
+All three classes are exported from the package. After a gap or corrupt frame, calling `next()`
+again continues past the problem. Other errors, such as a failure to open a segment, do not move
+the iterator, so retrying them without a fix fails the same way.
 
 ```typescript
 const log = db.useLog('foo');

@@ -12,12 +12,49 @@ const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
 // `_findExactStart()` out-parameter: [stop, tail, segment removals]
 const EXACT_START_SPAN = new Float64Array(3);
 
-type IteratorCursor = {
-	sourceLog: TransactionLog;
+type IteratorControl = (
+	operation: 'peek' | 'close' | 'reached',
+	logId?: number,
+	position?: number,
+	atSegmentEnd?: boolean
+) => IteratorResult<TransactionEntry> | boolean | void;
+
+class LogIterator implements TransactionLogIterator {
+	#sourceLog: TransactionLog;
+	#control: IteratorControl;
+	next: () => IteratorResult<TransactionEntry>;
+
+	constructor(sourceLog: TransactionLog, next: LogIterator['next'], control: IteratorControl) {
+		this.#sourceLog = sourceLog;
+		this.next = next;
+		this.#control = control;
+	}
+
+	static cursor(value: unknown): LogIterator | undefined {
+		if (typeof value === 'object' && value !== null && #control in value) return value;
+	}
+
+	get sourceLog() {
+		return this.#sourceLog;
+	}
+
+	[Symbol.iterator](): TransactionLogIterator {
+		return this;
+	}
+
+	peek(): IteratorResult<TransactionEntry> {
+		return this.#control('peek') as IteratorResult<TransactionEntry>;
+	}
+
+	close(): void {
+		this.#control('close');
+	}
+
 	// undefined means closed: there is no bound, rather than a bound not yet reached.
-	reached(logId: number, position: number): boolean | undefined;
-};
-const iteratorCursors = new WeakMap<TransactionLogIterator, IteratorCursor>();
+	reached(logId: number, position: number, atSegmentEnd?: boolean): boolean | undefined {
+		return this.#control('reached', logId, position, atSegmentEnd) as boolean | undefined;
+	}
+}
 
 const {
 	TRANSACTION_LOG_FILE_HEADER_SIZE,
@@ -101,6 +138,21 @@ export class TransactionLogGapError extends Error {
 		this.logId = logId;
 		this.resumeLogId = resumeLogId;
 		this.unavailableLogCount = unavailableLogCount;
+	}
+}
+
+/** Readable input ended before the iterator's physical `until` bound. Retry after input is available. */
+export class TransactionLogUntilUnreachedError extends Error {
+	logId: number;
+	position: number;
+
+	constructor(logId: number, position: number) {
+		super(
+			`Transaction log reader stopped at position ${position.toString(16)} of log ${logId}, short of the iterator it reads until`
+		);
+		this.name = 'TransactionLogUntilUnreachedError';
+		this.logId = logId;
+		this.position = position;
 	}
 }
 
@@ -210,7 +262,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			until,
 		}: TransactionLogQueryOptions = {}
 	): TransactionLogIterator {
-		let untilCursor = until === undefined ? undefined : iteratorCursors.get(until);
+		let untilCursor = LogIterator.cursor(until);
 		if (
 			until !== undefined &&
 			(!untilCursor ||
@@ -291,11 +343,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 		const positionedAt = position;
-		if (untilCursor) {
-			// A timestamp-safe jump can cross the physical handoff boundary.
-			stopLogId = 0;
-		}
-		if (stopLogId !== 0 && pastStop(logId, position, stopLogId, stopPosition)) {
+		if (
+			stopLogId !== 0 &&
+			pastStop(logId, position, stopLogId, stopPosition) &&
+			mayJumpTo(untilCursor, tailLogId, tailPosition)
+		) {
 			stopLogId = 0;
 			if (skipToTail(this, logId, position, tailLogId, tailPosition, segmentRemovals)) {
 				logId = tailLogId;
@@ -350,7 +402,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 
 		if (latestLogId < logId) {
 			size = 0;
-		} else if (latestLogId > logId) {
+		} else if (latestLogId > logId && !startUnmapped) {
 			const cachedSize = logBuffer.size;
 			if (cachedSize === undefined) {
 				size = logBuffer.size = readableExtent(logBuffer);
@@ -363,21 +415,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let peekedLogId = 0;
 		let peekedPosition = 0;
 		let closed = false;
-		let needsCursorCheck = untilCursor !== undefined;
-		const endOfReadable = (): IteratorResult<TransactionEntry> => {
-			if (untilCursor?.reached(logBuffer!.logId || logId, position) === false) {
-				throw new Error(
-					`Transaction log reader stopped at position ${position.toString(16)} of log ${logBuffer!.logId || logId}, short of the iterator it reads until`
-				);
-			}
-			return { done: true, value: undefined };
-		};
+		let needsCursorCheck = untilCursor !== undefined || startUnmapped;
 
-		const iterator: TransactionLogIterator = {
-			[Symbol.iterator](): TransactionLogIterator {
-				return this;
-			},
-			next() {
+		const iterator = new LogIterator(
+			transactionLog,
+			function next() {
 				if (needsCursorCheck) {
 					if (peeked) {
 						const result = peeked;
@@ -387,31 +429,39 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						}
 						return result;
 					}
-					if (untilCursor?.reached(logBuffer!.logId || logId, position)) {
-						return { done: true, value: undefined };
+					if (untilCursor) {
+						const reached = untilCursor.reached(logBuffer!.logId, position);
+						if (reached) return { done: true, value: undefined };
+						if (reached === undefined) {
+							untilCursor = undefined;
+							needsCursorCheck = startUnmapped;
+						}
+					}
+					if (startUnmapped) {
+						const mapped = getLogMemoryMap(transactionLog, logBuffer!.logId);
+						if (mapped) {
+							logBuffer = mapped;
+							dataView = mapped.dataView;
+						} else {
+							// Observe rotation before the extent, so an append racing rotation cannot be missed.
+							const latestLogId = loadLastPosition(transactionLog, !!readUncommitted).logId;
+							const fileSize = transactionLog.getLogFileSize(logBuffer!.logId);
+							if (logBuffer!.logId >= latestLogId || fileSize > position) {
+								return endOfReadable(untilCursor, logBuffer!, position);
+							}
+							if (fileSize === 0) {
+								// Advancing from below the missing segment includes it in the gap report.
+								logBuffer!.logId--;
+							}
+						}
+						startUnmapped = false;
+						needsCursorCheck = untilCursor !== undefined;
+						size = 0;
 					}
 				}
 				let timestamp: number;
-				if (startUnmapped) {
-					const mapped = getLogMemoryMap(transactionLog, logBuffer!.logId);
-					if (mapped) {
-						logBuffer = mapped;
-						dataView = mapped.dataView;
-					} else {
-						// Observe rotation before the extent, so an append racing rotation cannot be missed.
-						const latestLogId = loadLastPosition(transactionLog, !!readUncommitted).logId;
-						const fileSize = transactionLog.getLogFileSize(logBuffer!.logId);
-						if (logBuffer!.logId >= latestLogId || fileSize > position) {
-							return { done: true, value: undefined };
-						}
-						if (fileSize === 0) {
-							// gone: advancing from the segment below counts it against `gapFloor`
-							logBuffer!.logId--;
-						}
-					}
-					startUnmapped = false;
-					size = 0;
-				}
+
+
 				if (position >= size) {
 					// our position is beyond the size limit, get the updated
 					// size in case we can keep reading further from the same block
@@ -454,7 +504,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
-					if (untilCursor?.reached(logBuffer!.logId || logId, position)) {
+					if (untilCursor?.reached(logBuffer!.logId, position)) {
 						return { done: true, value: undefined };
 					}
 				}
@@ -470,7 +520,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					}
 					if (!timestamp) {
 						// we have gone beyond the last transaction and reached the end
-						return endOfReadable();
+						return endOfReadable(untilCursor, logBuffer!, position);
 					}
 
 					// Corruption bound: a committed read can't legitimately extend past
@@ -559,7 +609,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					if (
 						!matchesRange &&
 						stopLogId !== 0 &&
-						pastStop(logBuffer!.logId, position + length, stopLogId, stopPosition)
+						pastStop(logBuffer!.logId, position + length, stopLogId, stopPosition) &&
+						mayJumpTo(untilCursor, tailLogId, tailPosition)
 					) {
 						stopLogId = 0;
 						position += length;
@@ -598,7 +649,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						};
 					}
 					if (position >= size) {
-						if (untilCursor?.reached(logBuffer!.logId || logId, position)) {
+						if (untilCursor?.reached(logBuffer!.logId, position)) {
 							return { done: true, value: undefined };
 						}
 						// move to the next log file
@@ -627,7 +678,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								// nothing past this segment is mappable yet (mid-rotation, 0-byte at
 								// mmap time, FS race); stop cleanly rather than dereferencing an
 								// undefined buffer, and pick it up on the next poll
-								return endOfReadable();
+								return endOfReadable(untilCursor, logBuffer!, position);
 							}
 							const unavailable = unavailableLogCount;
 							logBuffer = nextLogBuffer;
@@ -656,54 +707,77 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
-					if (untilCursor?.reached(logBuffer!.logId || logId, position)) {
+					if (untilCursor?.reached(logBuffer!.logId, position)) {
 						return { done: true, value: undefined };
 					}
 				}
-				return endOfReadable();
+				return endOfReadable(untilCursor, logBuffer!, position);
 			},
-			peek() {
-				if (peeked) {
-					return peeked;
+			function control(operation, fromLogId, fromPosition, atSegmentEnd) {
+				if (operation === 'peek') {
+					if (peeked) {
+						return peeked;
+					}
+					const result = iterator.next();
+					if (!result.done) {
+						peeked = result;
+						needsCursorCheck = true;
+						peekedLogId = logBuffer!.logId;
+						peekedPosition =
+							position - result.value.data.length - TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+					}
+					return result;
 				}
-				const result = iterator.next();
-				if (!result.done) {
-					peeked = result;
+				if (operation === 'close') {
+					closed = true;
 					needsCursorCheck = true;
-					peekedLogId = logBuffer!.logId;
-					peekedPosition = position - result.value.data.length - TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+					peeked = { done: true, value: undefined };
+					logBuffer = undefined;
+					dataView = undefined;
+					untilCursor = undefined;
+					return;
 				}
-				return result;
-			},
-			close() {
-				closed = true;
-				needsCursorCheck = true;
-				peeked = { done: true, value: undefined };
-				logBuffer = undefined;
-				dataView = undefined;
-				untilCursor = undefined;
-			},
-		};
-		iteratorCursors.set(iterator, {
-			sourceLog: transactionLog,
-			reached(fromLogId, fromPosition) {
 				if (closed) {
 					return;
 				}
-				return pastStop(
-					fromLogId,
-					fromPosition,
-					peeked ? peekedLogId : logBuffer!.logId || logId,
-					peeked ? peekedPosition : position
+				const boundLogId = peeked ? peekedLogId : logBuffer!.logId;
+				const boundPosition = peeked ? peekedPosition : position;
+				return (
+					pastStop(fromLogId!, fromPosition!, boundLogId, boundPosition) ||
+					(!!atSegmentEnd &&
+						boundLogId === fromLogId! + 1 &&
+						boundPosition === TRANSACTION_LOG_FILE_HEADER_SIZE)
 				);
-			},
-		});
+			}
+		);
 		return iterator;
 	},
 });
 
+function endOfReadable(
+	untilCursor: LogIterator | undefined,
+	logBuffer: LogBuffer,
+	position: number
+): IteratorResult<TransactionEntry> {
+	if (
+		untilCursor?.reached(
+			logBuffer.logId,
+			position,
+			logBuffer.length > 0 && position >= readableExtent(logBuffer)
+		) === false
+	) {
+		throw new TransactionLogUntilUnreachedError(logBuffer.logId, position);
+	}
+	return { done: true, value: undefined };
+}
+
 function pastStop(logId: number, position: number, stopLogId: number, stopPosition: number) {
 	return logId > stopLogId || (logId === stopLogId && position >= stopPosition);
+}
+
+function mayJumpTo(untilCursor: LogIterator | undefined, logId: number, position: number) {
+	// A jump can land on the bound, but cannot pass it. Offsets are integer byte positions.
+	return untilCursor?.reached(logId, position - 1) !== true;
 }
 
 // Out-parameter of `skipToTail()`: the tail's mapping when it is in another segment. Set only on
