@@ -3,6 +3,7 @@ import {
 	type LogBuffer,
 	type TransactionEntry,
 	TransactionLog,
+	type TransactionLogIterator,
 	type TransactionLogQueryOptions,
 } from './load-binding.ts';
 
@@ -10,6 +11,13 @@ const FLOAT_TO_UINT32 = new Float64Array(1);
 const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
 // `_findExactStart()` out-parameter: [stop, tail, segment removals]
 const EXACT_START_SPAN = new Float64Array(3);
+
+type IteratorCursor = {
+	sourceLog: TransactionLog;
+	// undefined means closed: there is no bound, rather than a bound not yet reached.
+	reached(logId: number, position: number): boolean | undefined;
+};
+const iteratorCursors = new WeakMap<TransactionLogIterator, IteratorCursor>();
 
 const {
 	TRANSACTION_LOG_FILE_HEADER_SIZE,
@@ -200,8 +208,18 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			startFromLastFlushed,
 			readUncommitted,
 			exclusiveStart,
+			until,
 		}: TransactionLogQueryOptions = {}
-	): IterableIterator<TransactionEntry> {
+	): TransactionLogIterator {
+		let untilCursor = until === undefined ? undefined : iteratorCursors.get(until);
+		if (
+			until !== undefined &&
+			(!untilCursor ||
+				untilCursor.sourceLog.name !== this.name ||
+				untilCursor.sourceLog.path !== this.path)
+		) {
+			throw new TypeError('until must be an iterator from query() on the same transaction log');
+		}
 		if (!this._lastCommittedPosition) {
 			// if this is the first time we are querying the log, initialize the last committed position and memory map cache
 			const lastCommittedPosition = this._getLastCommittedPosition();
@@ -214,7 +232,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		let { logId: latestLogId, size } = loadLastPosition(this, !!readUncommitted);
 		let logId = latestLogId;
 		let position = 0;
-		let dataView: DataView;
+		let dataView: DataView | undefined;
 		// weak: this is a fast path over the `_logBuffers` cache, and a strong reference here
 		// outlives every retention purge, keeping the unlinked segment's mapping resident for the
 		// life of the process (HarperFast/harper#2337)
@@ -274,6 +292,10 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 		const positionedAt = position;
+		if (untilCursor) {
+			// A timestamp-safe jump can cross the physical handoff boundary.
+			stopLogId = 0;
+		}
 		if (stopLogId !== 0 && pastStop(logId, position, stopLogId, stopPosition)) {
 			stopLogId = 0;
 			if (skipToTail(this, logId, position, tailLogId, tailPosition, segmentRemovals)) {
@@ -338,11 +360,38 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 		}
 
-		const iterator: IterableIterator<TransactionEntry> = {
-			[Symbol.iterator](): IterableIterator<TransactionEntry> {
+		let peeked: IteratorResult<TransactionEntry> | undefined;
+		let peekedLogId = 0;
+		let peekedPosition = 0;
+		let closed = false;
+		let needsCursorCheck = untilCursor !== undefined;
+		const endOfReadable = (): IteratorResult<TransactionEntry> => {
+			if (untilCursor?.reached(logBuffer!.logId || logId, position) === false) {
+				throw new Error(
+					`Transaction log reader stopped at position ${position.toString(16)} of log ${logBuffer!.logId || logId}, short of the iterator it reads until`
+				);
+			}
+			return { done: true, value: undefined };
+		};
+
+		const iterator: TransactionLogIterator = {
+			[Symbol.iterator](): TransactionLogIterator {
 				return this;
 			},
 			next() {
+				if (needsCursorCheck) {
+					if (peeked) {
+						const result = peeked;
+						if (!closed) {
+							peeked = undefined;
+							needsCursorCheck = untilCursor !== undefined;
+						}
+						return result;
+					}
+					if (untilCursor?.reached(logBuffer!.logId || logId, position)) {
+						return { done: true, value: undefined };
+					}
+				}
 				let timestamp: number;
 				if (startUnmapped) {
 					const mapped = getLogMemoryMap(transactionLog, logBuffer!.logId);
@@ -406,11 +455,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
+					if (untilCursor?.reached(logBuffer!.logId || logId, position)) {
+						return { done: true, value: undefined };
+					}
 				}
 
 				while (position < size) {
 					try {
-						timestamp = dataView.getFloat64(position);
+						timestamp = dataView!.getFloat64(position);
 					} catch (error) {
 						(error as Error).message += ` at position ${position.toString(16)} of log ${
 							logBuffer!.logId
@@ -419,7 +471,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					}
 					if (!timestamp) {
 						// we have gone beyond the last transaction and reached the end
-						return { done: true, value: undefined };
+						return endOfReadable();
 					}
 
 					// `size` is an entry boundary in both modes (only whole entries advance it), so the
@@ -434,7 +486,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								logBuffer!.logId
 							} (available=${limit - position})`,
 							transactionLog,
-							dataView,
+							dataView!,
 							logBuffer!,
 							position,
 							limit,
@@ -445,7 +497,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						previousEndedTransaction = true;
 						throw broken.error;
 					}
-					const length = dataView.getUint32(position + 8);
+					const length = dataView!.getUint32(position + 8);
 					if (length === 0 || position + TRANSACTION_LOG_ENTRY_HEADER_SIZE + length > limit) {
 						const broken = corruptFrame(
 							length === 0
@@ -456,7 +508,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 										logBuffer!.logId
 									}: declared length ${length} overruns the log (limit=${limit})`,
 							transactionLog,
-							dataView,
+							dataView!,
 							logBuffer!,
 							position,
 							limit,
@@ -539,6 +591,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						};
 					}
 					if (position >= size) {
+						if (untilCursor?.reached(logBuffer!.logId || logId, position)) {
+							return { done: true, value: undefined };
+						}
 						// move to the next log file
 						const { logId: latestLogId, size: latestSize } = loadLastPosition(
 							transactionLog,
@@ -565,7 +620,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								// nothing past this segment is mappable yet (mid-rotation, 0-byte at
 								// mmap time, FS race); stop cleanly rather than dereferencing an
 								// undefined buffer, and pick it up on the next poll
-								return { done: true, value: undefined };
+								return endOfReadable();
 							}
 							const unavailable = unavailableLogCount;
 							logBuffer = nextLogBuffer;
@@ -594,10 +649,48 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
+					if (untilCursor?.reached(logBuffer!.logId || logId, position)) {
+						return { done: true, value: undefined };
+					}
 				}
-				return { done: true, value: undefined };
+				return endOfReadable();
+			},
+			peek() {
+				if (peeked) {
+					return peeked;
+				}
+				const result = iterator.next();
+				if (!result.done) {
+					peeked = result;
+					needsCursorCheck = true;
+					peekedLogId = logBuffer!.logId;
+					peekedPosition = position - result.value.data.length - TRANSACTION_LOG_ENTRY_HEADER_SIZE;
+				}
+				return result;
+			},
+			close() {
+				closed = true;
+				needsCursorCheck = true;
+				peeked = { done: true, value: undefined };
+				logBuffer = undefined;
+				dataView = undefined;
+				untilCursor = undefined;
 			},
 		};
+		iteratorCursors.set(iterator, {
+			sourceLog: transactionLog,
+			reached(fromLogId, fromPosition) {
+				if (closed) {
+					return;
+				}
+				return pastStop(
+					fromLogId,
+					fromPosition,
+					peeked ? peekedLogId : logBuffer!.logId || logId,
+					peeked ? peekedPosition : position
+				);
+			},
+		});
 		return iterator;
 	},
 });

@@ -34,6 +34,8 @@ Two tighter alternatives are deliberately not used. Holding `transactionBindMute
 
 `query({ start, exactStart: true })` returns everything from the first entry whose timestamp equals `start`. Timestamps are not ordered (`setTimestamp()` adopts origin and replay timestamps), so a larger timestamp ends nothing. The running-maximum index gives only a lower bound, and a miss used to scan to end-of-log.
 
+A query bounded by `until` disables the stop-to-tail jump: a span proven timestamp-safe can still cross the other iterator's unread physical position.
+
 `TransactionLogStore::findPositionByTimestamp(timestamp, &span)` also returns a span `[stop, tail)` that holds no entry with a timestamp at or below `start`; the reader jumps over it once. Per segment, the index walk keeps two scalars for entries below the running maximum: their minimum timestamp and the end of the last one. The last possible candidate in a segment is then the later of the next maximum key above `start` and, when that minimum is at or below `start`, the last such entry. That gives the same yes/no answer per segment as a full suffix-minimum index. Precision is lost only inside the one segment holding the newest candidate. Memory stays constant per segment, where a suffix-minimum stack grows with every entry below a high outlier.
 
 `tail` is the newest examined byte and moves down to anything the scan must still see. Keep these, each covered by a test:
@@ -44,6 +46,12 @@ Two tighter alternatives are deliberately not used. Holding `transactionBindMute
 - **Purge after positioning.** A jump into another segment maps the tail, then re-checks `TransactionLogStore::segmentRemovals` (process-wide, bumped and read under `dataSetsMutex`). If it moved, the reader scans and reports the gap. A start that is already past the stop jumps inside `query()`, so a purge after `query()` returns is ordered after that jump.
 
 The first lookup in a process still indexes every segment from the newest down to the start. The index then persists per segment, so later lookups pay only the walk.
+
+# Iterator handoff
+
+`query({ until })` compares segment and offset before parsing or filtering each frame. `done` proves the reader reached the other iterator's unread cursor; `endOfReadable` throws if readable input ends short of it. Timestamps cannot express that boundary because commits can arrive with older timestamps.
+
+The private `iteratorCursors` comparison uses the start of a cached `peek()` frame rather than the advanced parsing cursor, including when filtering crossed segments before finding that frame. Only yielded entries are cached, so reaching the current tail does not end future reads. `close()` clears iterator-private references and removes its bound; it does not implement `return()`, preserving resumption after a `for...of` break.
 
 # Aborted batches
 

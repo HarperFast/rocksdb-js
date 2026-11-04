@@ -153,7 +153,21 @@ export type TransactionLogQueryOptions = {
 	startFromLastFlushed?: boolean;
 	readUncommitted?: boolean;
 	exclusiveStart?: boolean;
+	/**
+	 * Stop before this same-log iterator's unread position, including a peeked entry.
+	 * Resumes when it advances; a closed iterator no longer bounds this query.
+	 * A pull that runs out of readable entries short of the bound throws.
+	 * Invalid or foreign-log iterators throw TypeError at query creation.
+	 */
+	until?: TransactionLogIterator;
 };
+
+export interface TransactionLogIterator extends IterableIterator<TransactionEntry> {
+	/** Inspect the next entry without consuming it. A done result is never cached. */
+	peek(): IteratorResult<TransactionEntry>;
+	/** Permanently end this iterator and release any iterators bounded by it. */
+	close(): void;
+}
 
 export type TransactionEntry = {
 	timestamp: number;
@@ -248,7 +262,7 @@ export type TransactionLog = {
 	getStats(): TransactionLogStats;
 	name: string;
 	path: string;
-	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
+	query(options?: TransactionLogQueryOptions): TransactionLogIterator;
 	_currentLogBuffer: WeakRef<LogBuffer> | undefined;
 	_findPosition(timestamp: number): number;
 	_findExactStart(timestamp: number, span: Float64Array): number;
