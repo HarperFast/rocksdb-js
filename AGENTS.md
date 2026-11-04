@@ -1012,7 +1012,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     lingers (bounded, cleaned at env exit).
 
     Relatedly, `TransactionHandle::close()` is deliberately **napi-free** — the transaction holds
-    no `napi_env`/`napi_ref` fields (the JS database is passed to `UseLog` per-call; its former
+    no `napi_ref` fields, and its one `napi_env` (`ownerEnv`, invariant 35) is only ever compared
+    as an identity, never passed to an N-API call (the JS database is passed to `UseLog` per-call; its former
     weak `jsDatabaseRef` plus a recycled-pthread `std::thread::id` collision in close()'s
     thread-identity guard was the Linux corrupting write:
     `napi_delete_reference(dead env, dead ref)` from Shutdown). Close is therefore safe from any
@@ -1608,6 +1609,18 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     it logs. See
     [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
     [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
+
+35. **A transaction is used only from the env that created it**: transaction ids resolve through
+    the process-global `DBDescriptor`, so any `worker_threads` env on the path can name another env's
+    transaction, and `Store.getTxnId()`'s identity check cannot tell them apart. A RocksDB
+    `Transaction` and most `TransactionHandle` fields (`state`, `txn`, the touched-family set, the VT
+    intents) are unsynchronized, so a foreign env staging into one races the owner and the commit
+    lane. Every lookup by id therefore goes through `lookupOwnedTransaction()` (N-API callers through
+    its throwing wrapper `getOwnedTransaction()`), which refuses another env with
+    `ERR_TRANSACTION_WRONG_ENV` before reading any handle field — even the `txn` liveness check is a
+    data race from a foreign thread. `ownerEnv` is captured at construction and immutable, unlike
+    `dbHandle`, which `close()` resets from whichever thread runs it; `closeTransactionsByEnv` reaps by
+    the same field. Never add a by-id path that calls `transactionGet()` directly.
 
 ## Debugging native heap corruption
 

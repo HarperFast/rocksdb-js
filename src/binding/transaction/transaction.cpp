@@ -91,7 +91,7 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 
 	// create shared_ptr on heap so it persists after function returns
 	std::shared_ptr<TransactionHandle>* txnHandle = new std::shared_ptr<TransactionHandle>(
-		std::make_shared<TransactionHandle>(*dbHandle, disableSnapshot)
+		std::make_shared<TransactionHandle>(env, *dbHandle, disableSnapshot)
 	);
 	(*txnHandle)->coordinatedRetry = coordinatedRetry;
 
