@@ -42,8 +42,8 @@ class LogIterator implements TransactionLogIterator {
 		if (typeof value === 'object' && value !== null && #control in value) return value;
 	}
 
-	get sourceLog() {
-		return this.#sourceLog;
+	static isFrom(value: LogIterator, sourceLog: TransactionLog): boolean {
+		return sameTransactionLog(sourceLog, value.#sourceLog);
 	}
 
 	[Symbol.iterator](): TransactionLogIterator {
@@ -59,8 +59,13 @@ class LogIterator implements TransactionLogIterator {
 	}
 
 	// undefined means closed: there is no bound, rather than a bound not yet reached.
-	reached(logId: number, position: number, atSegmentEnd?: boolean): boolean | undefined {
-		return this.#control('reached', logId, position, atSegmentEnd) as boolean | undefined;
+	static reached(
+		value: LogIterator,
+		logId: number,
+		position: number,
+		atSegmentEnd?: boolean
+	): boolean | undefined {
+		return value.#control('reached', logId, position, atSegmentEnd) as boolean | undefined;
 	}
 }
 
@@ -272,7 +277,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		}: TransactionLogQueryOptions = {}
 	): TransactionLogIterator {
 		let untilCursor = LogIterator.cursor(until);
-		if (until !== undefined && (!untilCursor || !sameTransactionLog(this, untilCursor.sourceLog))) {
+		if (until !== undefined && (!untilCursor || !LogIterator.isFrom(untilCursor, this))) {
 			throw new TypeError('until must be an iterator from query() on the same transaction log');
 		}
 		if (!this._lastCommittedPosition) {
@@ -384,8 +389,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 
 			if (logBuffer === undefined) {
-				// Stands in for the starting segment until next() maps it. It keeps that segment's
-				// `logId` so an advance never restarts below `position`.
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
 				logBuffer.logId = logId;
 				logBuffer.size = 0;
@@ -436,7 +439,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						return result;
 					}
 					if (untilCursor) {
-						const reached = untilCursor.reached(
+						const reached = LogIterator.reached(
+							untilCursor,
 							logBuffer!.logId,
 							position,
 							position >= size && logBuffer!.length > 0 && position >= readableExtent(logBuffer!)
@@ -484,7 +488,15 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						// if it is not the latest log, get the file size
 						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 						if (position >= size) {
-							if (untilCursor?.reached(logBuffer!.logId, position, logBuffer!.length > 0)) {
+							if (
+								untilCursor &&
+								LogIterator.reached(
+									untilCursor,
+									logBuffer!.logId,
+									position,
+									logBuffer!.length > 0 && position >= readableExtent(logBuffer!)
+								)
+							) {
 								return { done: true, value: undefined };
 							}
 							// we can't read any further in this block, go to the next block
@@ -518,7 +530,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
-					if (untilCursor?.reached(logBuffer!.logId, position)) {
+					if (untilCursor && LogIterator.reached(untilCursor, logBuffer!.logId, position)) {
 						return { done: true, value: undefined };
 					}
 				}
@@ -655,7 +667,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						};
 					}
 					if (position >= size) {
-						if (untilCursor?.reached(logBuffer!.logId, position)) {
+						if (untilCursor && LogIterator.reached(untilCursor, logBuffer!.logId, position)) {
 							return { done: true, value: undefined };
 						}
 						// move to the next log file
@@ -672,7 +684,15 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							if (position < size) {
 								continue;
 							}
-							if (untilCursor?.reached(logBuffer!.logId, position, true)) {
+							if (
+								untilCursor &&
+								LogIterator.reached(
+									untilCursor,
+									logBuffer!.logId,
+									position,
+									logBuffer!.length > 0 && position >= readableExtent(logBuffer!)
+								)
+							) {
 								return { done: true, value: undefined };
 							}
 
@@ -716,7 +736,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
-					if (untilCursor?.reached(logBuffer!.logId, position)) {
+					if (untilCursor && LogIterator.reached(untilCursor, logBuffer!.logId, position)) {
 						return { done: true, value: undefined };
 					}
 				}
@@ -769,7 +789,9 @@ function endOfReadable(
 	position: number
 ): IteratorResult<TransactionEntry> {
 	if (
-		untilCursor?.reached(
+		untilCursor &&
+		LogIterator.reached(
+			untilCursor,
 			logBuffer.logId,
 			position,
 			logBuffer.length > 0 && position >= readableExtent(logBuffer)
@@ -786,7 +808,7 @@ function pastStop(logId: number, position: number, stopLogId: number, stopPositi
 
 function mayJumpTo(untilCursor: LogIterator | undefined, logId: number, position: number) {
 	// A jump can land on the bound, but cannot pass it. Offsets are integer byte positions.
-	return untilCursor?.reached(logId, position - 1) !== true;
+	return !untilCursor || LogIterator.reached(untilCursor, logId, position - 1) !== true;
 }
 
 // Out-parameter of `skipToTail()`: the tail's mapping when it is in another segment. Set only on
