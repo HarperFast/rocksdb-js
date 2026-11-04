@@ -2532,6 +2532,9 @@ Returns an iterable/iterator that streams all log entries for the given filter.
     have been written to the log but are no longer considered committed if they were not flushed to
     disk.
 
+An unbounded query whose starting segment is temporarily unmappable reports done and retries
+its original position on the next pull.
+
 `iterator.peek()` returns the next entry without consuming it. Repeated peeks return the same
 result until `next()` consumes it once. A `done` result is not cached, so later appends remain
 visible. Errors propagate as from `next()`.

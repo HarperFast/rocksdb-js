@@ -475,7 +475,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 				let timestamp: number;
 
-
 				if (position >= size) {
 					// our position is beyond the size limit, get the updated
 					// size in case we can keep reading further from the same block
