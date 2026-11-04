@@ -53,7 +53,7 @@ The first lookup in a process still indexes every segment from the newest down t
 
 The end of segment S and the header of S+1 are the same frontier, even when rotation has not created S+1 yet. `endOfReadable()` allows that comparison only after covering S's append-owned extent, not merely its committed watermark: a committed reader must still refuse catch-up past a pending uncommitted suffix. Missing intervening sequence numbers cannot be treated as adjacent frontiers.
 
-A cursor used as a bound must be the position the reader will resume from. An unmappable starting segment retains its original sequence and offset; `startUnmapped` retries that mapping before advancing, preserving the positioned offset when it becomes readable. If it is gone, advancing from below it preserves the existing gap report.
+A cursor used as a bound must be the position the reader will resume from. An unmappable starting segment retains its original sequence and offset; `startUnmapped` retries that mapping before advancing, preserving the positioned offset when it becomes readable. If it is gone, `startMissing` probes successors from below its sequence for the existing gap report, while leaving the advertised cursor fixed until a successor maps.
 
 The private `LogIterator` brand validates bounds without a per-query registry insertion. Its comparison uses the start of a cached `peek()` frame rather than the advanced parsing cursor, including when filtering crossed segments before finding that frame. `peek()` caches only yielded entries, so reaching the current tail does not end future reads. `close()` clears iterator-private references and removes its bound; it does not implement `return()`, preserving resumption after a `for...of` break.
 
