@@ -156,7 +156,7 @@ export type TransactionLogQueryOptions = {
 	/**
 	 * Stop before this same-log iterator's unread position, including a peeked entry.
 	 * Resumes when it advances; a closed iterator no longer bounds this query.
-	 * A pull that runs out of readable entries short of the bound throws.
+	 * A pull short of the bound throws TransactionLogUntilUnreachedError.
 	 * Invalid or foreign-log iterators throw TypeError at query creation.
 	 */
 	until?: TransactionLogIterator;

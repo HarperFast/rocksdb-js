@@ -1,10 +1,12 @@
 import {
 	CorruptFrameError,
+	Transaction,
+	TransactionLogUntilUnreachedError,
 	type RocksDatabase,
 	type TransactionLog,
 	type TransactionLogIterator,
 } from '../src/index.ts';
-import { constants } from '../src/load-binding.ts';
+import { constants, forceTryAgainForTesting } from '../src/load-binding.ts';
 import { dbRunner } from './lib/util.ts';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -29,6 +31,106 @@ function texts(iterator: TransactionLogIterator) {
 }
 
 describe('Transaction log iterator handoff', () => {
+	it.each([
+		{ size: 500 - FILE_HEADER - ENTRY_HEADER, reopen: false },
+		{ size: 600, reopen: false },
+		{ size: 500 - FILE_HEADER - ENTRY_HEADER, reopen: true },
+		{ size: 600, reopen: true },
+	])(
+		'meets a live reader at an unwritten segment after a $size-byte entry (reopen: $reopen)',
+		({ size, reopen }) =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, ({ db }) => {
+				let log = db.useLog('foo');
+				const payload = 'x'.repeat(size);
+				add(db, log, payload);
+				if (reopen) {
+					db.close();
+					db.open();
+					log = db.useLog('foo');
+				}
+				expect(log.getStats().lastCommittedPosition).toEqual({ sequence: 2, offset: 0 });
+				const live = log.query();
+				const replay = log.query({ start: 0, until: live });
+				expect(texts(replay)).toEqual([payload]);
+				expect(live.peek().done).toBe(true);
+				add(db, log, 'later');
+				expect(live.peek().value?.data.toString()).toBe('later');
+				expect(replay.next().done).toBe(true);
+				expect(texts(live)).toEqual(['later']);
+				expect(texts(replay)).toEqual(['later']);
+			})
+	);
+
+	it('meets a live reader after retention empties the log, then tails new entries', () =>
+		dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, ({ db }) => {
+			const log = db.useLog('foo');
+			db.transactionSync((txn) => {
+				txn.putSync('flush-key', true);
+				log.addEntry(Buffer.alloc(600, 'x'), txn.id);
+			});
+			db.flushSync();
+			expect(db.purgeLogs({ name: 'foo', before: Date.now() + 1000 })).toHaveLength(1);
+			const live = log.query();
+			const replay = log.query({ start: 0, until: live });
+			expect(replay.next().done).toBe(true);
+			add(db, log, 'later');
+			expect(texts(live)).toEqual(['later']);
+			expect(texts(replay)).toEqual(['later']);
+		}));
+
+	it('retries its original unmapped starting position without replaying older segments', () =>
+		dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, ({ db }) => {
+			const log = db.useLog('foo');
+			addAll(db, log, 2, 300);
+			log.query();
+			log._logBuffers.clear();
+			log._currentLogBuffer = undefined;
+			const original = log._getMemoryMapOfFile.bind(log);
+			const map = vi
+				.spyOn(log, '_getMemoryMapOfFile')
+				.mockImplementation((id) => (id === 2 ? undefined : original(id)));
+			try {
+				const live = log.query();
+				const replay = log.query({ start: 0, until: live });
+				expect(replay.next().value?.data.toString()).toBe('0'.padEnd(300, 'x'));
+				expect(() => replay.next()).toThrow(TransactionLogUntilUnreachedError);
+				map.mockRestore();
+				expect(texts(replay)).toEqual(['1'.padEnd(300, 'x')]);
+				add(db, log, 'later');
+				expect(texts(live)).toEqual(['later']);
+				expect(texts(replay)).toEqual(['later']);
+			} finally {
+				map.mockRestore();
+			}
+		}));
+
+	it('refuses committed catch-up to an uncommitted leader, then resumes after commit', () =>
+		dbRunner(async ({ db }) => {
+			const log = db.useLog('foo');
+			add(db, log, 'committed');
+			const txn = new Transaction(db.store);
+			let committed = false;
+			try {
+				txn.putSync('pending-key', 'pending');
+				log.addEntry(Buffer.from('pending'), txn.id);
+				forceTryAgainForTesting(1);
+				await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_TRY_AGAIN' });
+				expect(txn.logWritten()).toBe(true);
+				const live = log.query({ start: 0, readUncommitted: true });
+				expect(texts(live)).toEqual(['committed', 'pending']);
+				const replay = log.query({ start: 0, until: live });
+				expect(replay.next().value?.data.toString()).toBe('committed');
+				expect(() => replay.peek()).toThrow(TransactionLogUntilUnreachedError);
+				txn.putSync('pending-key', 'pending');
+				await txn.commit();
+				committed = true;
+				expect(texts(replay)).toEqual(['pending']);
+			} finally {
+				forceTryAgainForTesting(0);
+				if (!committed) txn.abort();
+			}
+		}));
+
 	it('keeps an initially empty handoff at the first appended entry', () =>
 		dbRunner(({ db }) => {
 			const log = db.useLog('foo');
@@ -243,8 +345,22 @@ describe('Transaction log iterator handoff', () => {
 			leader.next();
 			const follower = log.query({ start: 20, exactStart: true, until: leader });
 			expect(follower.next().done).toBe(true);
-			// If the miss skipped to the tail, this new follower could read 'after'.
 			expect(texts(log.query({ start: 0, until: follower }))).toEqual(['before']);
+		}));
+
+	it('keeps the exact-start skip when its target is at the bound', () =>
+		dbRunner(({ db }) => {
+			const log = db.useLog('foo');
+			add(db, log, 'before', 10);
+			for (let i = 0; i < 200; i++) add(db, log, 'after', 30 + i);
+			const live = log.query();
+			const read = vi.spyOn(DataView.prototype, 'getFloat64');
+			try {
+				expect(texts(log.query({ start: 20, exactStart: true, until: live }))).toEqual([]);
+				expect(read.mock.calls.length).toBeLessThan(10);
+			} finally {
+				read.mockRestore();
+			}
 		}));
 
 	it('checks until before parsing an aborted or corrupt frame, then preserves recovery', () =>
