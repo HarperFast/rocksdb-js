@@ -56,9 +56,6 @@ try {
 	assert.equal(secondLog.path, undefined);
 	assert.throws(() => firstLog.query({ start: 0, until: foreign }), TypeError);
 	assert.throws(() => secondLog.query({ start: 0, until: firstCursor }), TypeError);
-	console.log(
-		'Relative display-path collision, alias, constructor, transaction and closed-log identity passed'
-	);
 } finally {
 	for (const db of databases.toReversed()) db.close();
 	process.chdir(originalCwd);

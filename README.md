@@ -2522,7 +2522,9 @@ its target does not pass the handoff position.
 
 `iterator.close()` permanently ends the iterator and releases its cached entry and mapping.
 It is idempotent; later `next()` and `peek()` calls report done. Breaking out of `for...of`
-keeps the iterator resumable and does not close it.
+keeps the iterator resumable and does not close it. Destroying a log with
+`purgeLogs({ destroy: true })` invalidates its existing iterators; close them and create new
+iterators for a recreated log, including any `until` bounds.
 
 ```typescript
 const live = log.query();
