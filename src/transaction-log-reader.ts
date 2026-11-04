@@ -368,6 +368,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 		// not a gap.
 		let gapFloor = logId;
 		let startUnmapped = false;
+		let startMissing = false;
 
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
@@ -459,8 +460,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								return endOfReadable(untilCursor, logBuffer!, position);
 							}
 							if (fileSize === 0) {
-								// Advancing from below the missing segment includes it in the gap report.
-								logBuffer!.logId--;
+								// Probe from below the missing segment without moving its advertised cursor.
+								startMissing = true;
 							}
 						}
 						startUnmapped = false;
@@ -484,7 +485,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						size = logBuffer!.size ?? (logBuffer!.size = readableExtent(logBuffer!));
 						if (position >= size) {
 							// we can't read any further in this block, go to the next block
-							const fromLogId = logBuffer!.logId;
+							const fromLogId = logBuffer!.logId - (startMissing ? 1 : 0);
 							const nextLogBuffer = nextReadableLogBuffer(
 								transactionLog,
 								fromLogId,
@@ -492,6 +493,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								gapFloor
 							);
 							if (nextLogBuffer) {
+								startMissing = false;
 								const unavailable = unavailableLogCount;
 								dataView = nextLogBuffer.dataView;
 								logBuffer = nextLogBuffer;

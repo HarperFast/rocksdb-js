@@ -131,6 +131,34 @@ describe('Transaction log iterator handoff', () => {
 			}
 		}));
 
+	it('does not rewind its bound when a missing start is followed by an unmappable segment', () =>
+		dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, ({ db }) => {
+			const log = db.useLog('foo');
+			addAll(db, log, 2, 300);
+			log.query();
+			log._logBuffers.clear();
+			log._currentLogBuffer = undefined;
+			const originalMap = log._getMemoryMapOfFile.bind(log);
+			const originalSize = log.getLogFileSize.bind(log);
+			const map = vi
+				.spyOn(log, '_getMemoryMapOfFile')
+				.mockImplementation((id) => (id >= 2 ? undefined : originalMap(id)));
+			const size = vi
+				.spyOn(log, 'getLogFileSize')
+				.mockImplementation((id) => (id === 2 ? 0 : originalSize(id)));
+			try {
+				const live = log.query();
+				add(db, log, 'later'.padEnd(300));
+				expect(live.next().done).toBe(true);
+				const replay = log.query({ start: 0, until: live });
+				expect(replay.next().value?.data.toString()).toBe('0'.padEnd(300, 'x'));
+				expect(() => replay.next()).toThrow(TransactionLogUntilUnreachedError);
+			} finally {
+				map.mockRestore();
+				size.mockRestore();
+			}
+		}));
+
 	it('keeps an initially empty handoff at the first appended entry', () =>
 		dbRunner(({ db }) => {
 			const log = db.useLog('foo');
