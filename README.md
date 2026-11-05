@@ -2330,8 +2330,7 @@ While a backup with `transactionLogs` is copying a store's files, purges of that
 file is kept, since `txn.state` could not be made durable before deleting it.
 Before deleting any file, the purge records the largest key it held in the log's purge watermark
 ([`log.getPurgeWatermark()`](#loggetpurgewatermark-transactionlogpurgewatermark)) and makes that
-durable.
-Use `destroy: true` only to remove the store itself; a log recreated after it starts a new
+durable. Use `destroy: true` only to remove the store itself; a log recreated after it starts a new
 watermark history.
 
 - `options: object`
