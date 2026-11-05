@@ -184,6 +184,7 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
 		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
+	// Orders the owning env only; the unsynchronized read awaits #769 (invariant 35).
 	if (this->state != TransactionState::Pending) {
 		throw rocksdb_js::DBException("Transaction is not in pending state");
 	}
