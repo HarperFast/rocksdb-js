@@ -155,9 +155,11 @@ private:
 	bool exitFenced = false;
 
 	/**
-	 * The singleton instance of the registry.
+	 * The singleton instance of the registry. Never freed: Bun's `process.exit()`
+	 * runs static destructors while workers can still be inside `OpenDB()`, so
+	 * `Teardown()` is its terminal owner, not a destructor (invariant 26).
 	 */
-	static std::unique_ptr<DBRegistry> instance;
+	static DBRegistry* instance;
 
 public:
 	static CloseResult CloseDB(const std::shared_ptr<DBHandle> handle);

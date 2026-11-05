@@ -1388,9 +1388,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     steady would break the durable epoch contract, and adding a ratchet to the steady clock would
     distort elapsed measurement under contention. Whether host suspend counts is platform-defined
     (Linux excludes it; current macOS and Windows implementations include it).
-26. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
-    namespace-scope `static`, so anything still in `instance->databases` when the hook returns is
-    destroyed from an `atexit` handler. Closing a RocksDB database there runs
+26. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: nothing closes it later.
+    `DBRegistry::instance` is deliberately never freed: Bun's `process.exit()` runs static
+    destructors without stopping workers, and a worker still inside `OpenDB()` then locked a freed
+    `databasesMutex` (SIGSEGV in the `worker-churn` fixture). Leaving teardown to a destructor is
+    unsafe anyway: when the registry was a static `unique_ptr`, entries still in
+    `instance->databases` were destroyed from an `atexit` handler. Closing a RocksDB database there runs
     `DBImpl::CancelAllBackgroundWork()` → `PeriodicTaskScheduler::Unregister()` **after** RocksDB's
     own function-local statics have been destroyed, and RocksDB's `PthreadCall` wrapper reacts to
     the resulting `EINVAL` by printing `pthread lock: Invalid argument` and calling `std::abort()` —
