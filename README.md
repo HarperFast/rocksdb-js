@@ -2714,8 +2714,15 @@ You do not need to call it at exit. When rocksdb-js loads on the main thread, it
 `process.on('exit')` listener that runs the same shutdown, so a `process.exit()` (which skips the
 native cleanup Node runs on a natural exit) still flushes and closes every database, including
 those opened by workers that are still running. That listener reports failures to stderr instead
-of throwing, and afterwards opening a database throws. It does not run when the process is killed
-by a signal it does not handle.
+of throwing, and sets `process.exitCode` to 1 (unless it is already nonzero) when data may be left
+unflushed: a database another thread was still closing when the shutdown timed out, or a final
+flush that failed. Afterwards opening a database throws. It
+still runs when an earlier `exit` listener throws. It does not run when the process is killed by a
+signal it does not handle.
+
+Like the cleanup on a natural exit, it waits for native work already in flight (a commit, a flush
+waiting out a write stall, or a backup) without a time limit, so `process.exit()` returns only once
+that work finishes.
 
 Because it is registered when rocksdb-js loads, `exit` listeners added later run after databases
 are closed. An `exit` listener that still writes to a database must run first:
@@ -2727,9 +2734,9 @@ process.prependListener('exit', () => {
 ```
 
 Set `RocksDatabase.config({ shutdownOnExit: false })` to skip it, for example to leave memtables
-unflushed at `process.exit()` and exercise crash recovery in a test. This only removes the listener:
-on a natural exit the runtime's native cleanup still flushes, and whether Bun's does at
-`process.exit()` depends on the Bun release.
+unflushed at `process.exit()` and exercise crash recovery in a test. The listener stays registered
+and does nothing: on a natural exit the runtime's native cleanup still flushes, and whether Bun's
+does at `process.exit()` depends on the Bun release.
 Calling `shutdown()` from your own `exit` listener as well is safe.
 
 ### `versions: { 'rocksdb': string; 'rocksdb-js': string }`

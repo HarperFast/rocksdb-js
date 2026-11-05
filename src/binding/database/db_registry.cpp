@@ -1630,12 +1630,15 @@ void DBRegistry::FenceOpensForExit() {
  * Release every remaining registry entry (see the header for why this cannot be
  * left to the singleton's static destructor).
  */
-void DBRegistry::Teardown(bool quarantinedOnly) {
+bool DBRegistry::Teardown(bool quarantinedOnly) {
 	if (!instance) {
-		return;
+		return true;
 	}
 
 	std::unordered_map<DBKey, DBRegistryEntry, DBKeyHash> entries;
+	// A live descriptor left behind is one another thread is still closing, or
+	// one a timed-out Shutdown() never claimed.
+	bool liveDescriptorsRemain = false;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		if (quarantinedOnly) {
@@ -1644,6 +1647,7 @@ void DBRegistry::Teardown(bool quarantinedOnly) {
 					entries.emplace(it->first, std::move(it->second));
 					it = instance->databases.erase(it);
 				} else {
+					liveDescriptorsRemain |= static_cast<bool>(it->second.descriptor);
 					++it;
 				}
 			}
@@ -1662,6 +1666,7 @@ void DBRegistry::Teardown(bool quarantinedOnly) {
 	// short-circuits its own close() and is simply released here.
 	DEBUG_LOG("%p DBRegistry::Teardown Releasing %zu remaining descriptor(s)\n",
 		instance, entries.size());
+	bool flushed = true;
 	for (auto& [_key, entry] : entries) {
 		if (entry.descriptor) {
 			// One failed sweep must not release the rest unswept.
@@ -1670,9 +1675,11 @@ void DBRegistry::Teardown(bool quarantinedOnly) {
 			} catch (const std::exception& e) {
 				::fprintf(stderr, "rocksdb-js teardown of \"%s\" failed: %s\n", entry.descriptor->path.c_str(), e.what());
 			}
+			flushed &= entry.descriptor->finalFlush();
 		}
 	}
 	entries.clear();
+	return flushed && !liveDescriptorsRemain;
 }
 
 /**

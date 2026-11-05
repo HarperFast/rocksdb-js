@@ -99,22 +99,29 @@ static std::atomic<bool> mainThreadExited{false};
  * this is that path's terminal owner (AGENTS.md invariant 26). Other envs can
  * still be running, so it releases only quarantined entries: one another thread
  * is still closing belongs to that closer.
+ *
+ * Returns false if data may be left unflushed, so the listener can fail the
+ * exit code: under Bun no worker hook runs afterwards to finish it. A failed
+ * `Shutdown()` alone does not count, since teardown's final flush may recover it.
  */
 napi_value ShutdownOnExit(napi_env env, napi_callback_info info) {
-	if (!DBSettings::getInstance().getShutdownOnExit()) {
-		return nullptr;
+	bool flushed = true;
+	if (DBSettings::getInstance().getShutdownOnExit()) {
+		mainThreadExited.store(true, std::memory_order_release);
+		auto& stats = DBStats::getInstance();
+		const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
+		runCleanupStep("open fence", []() { DBRegistry::FenceOpensForExit(); });
+		runCleanupStep("database registry", []() { DBRegistry::Shutdown(); });
+		flushed = false;
+		runCleanupStep("database registry teardown", [&]() { flushed = DBRegistry::Teardown(true); });
+		runCleanupStep("global events", []() { GlobalEvents::Shutdown(); });
+		runCleanupStep("write buffer manager watchdog", [&]() {
+			stats.joinWriteBufferManagerWatchdog(false, watchdogShutdownGeneration);
+		});
 	}
-	mainThreadExited.store(true, std::memory_order_release);
-	auto& stats = DBStats::getInstance();
-	const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
-	runCleanupStep("open fence", []() { DBRegistry::FenceOpensForExit(); });
-	runCleanupStep("database registry", []() { DBRegistry::Shutdown(); });
-	runCleanupStep("database registry teardown", []() { DBRegistry::Teardown(true); });
-	runCleanupStep("global events", []() { GlobalEvents::Shutdown(); });
-	runCleanupStep("write buffer manager watchdog", [&]() {
-		stats.joinWriteBufferManagerWatchdog(false, watchdogShutdownGeneration);
-	});
-	return nullptr;
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, flushed, &result));
+	return result;
 }
 
 /**

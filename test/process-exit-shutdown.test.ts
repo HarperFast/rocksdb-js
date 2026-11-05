@@ -24,7 +24,7 @@ function exitThenVerify(
 		env,
 		status = 0,
 		verifySuffix = '',
-	}: { env?: NodeJS.ProcessEnv; status?: number; verifySuffix?: string } = {}
+	}: { env?: NodeJS.ProcessEnv; status?: number | null; verifySuffix?: string } = {}
 ) {
 	const path = generateDBPath();
 	try {
@@ -32,7 +32,9 @@ function exitThenVerify(
 		const exited = run(mode, path, env);
 		const elapsed = performance.now() - started;
 		expect(exited.signal, exited.stderr).toBeNull();
-		expect(exited.status, exited.stderr).toBe(status);
+		if (status !== null) {
+			expect(exited.status, exited.stderr).toBe(status);
+		}
 		const verified = run('verify', `${path}${verifySuffix}`);
 		expect(verified.status, verified.stderr).toBe(0);
 		return {
@@ -98,6 +100,13 @@ describe('Main-thread exit shutdown (#1004)', () => {
 		expect(lines[1]).toContain('the process is exiting and rocksdb-js has shut down');
 	});
 
+	it('flushes when an exit listener that runs first throws', () => {
+		// The exit status after a throwing exit listener differs by runtime.
+		const { exited, values } = exitThenVerify('throwing-listener', { status: null });
+		expect(values).toEqual(mainOnly);
+		expect(exited.stderr).toContain('exit listener failed');
+	});
+
 	it('tolerates a caller also calling shutdown() from its own exit listeners', () => {
 		const { exited, values } = exitThenVerify('caller-shutdown');
 		expect(values).toEqual(mainOnly);
@@ -109,6 +118,7 @@ describe('Main-thread exit shutdown (#1004)', () => {
 		try {
 			const exited = run('quarantined', path, { ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2' });
 			expect(exited.signal, exited.stderr).toBeNull();
+			// Teardown's final flush succeeds, so nothing is left unflushed.
 			expect(exited.status, exited.stderr).toBe(0);
 			expect(exited.stderr).toContain('rocksdb-js database registry cleanup failed');
 			expect(exited.stdout).toContain('later listener ran');
@@ -126,6 +136,8 @@ describe('Main-thread exit shutdown (#1004)', () => {
 		() => {
 			const { exited, values } = exitThenVerify('concurrent-close', {
 				env: { ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '2', ROCKSDB_JS_CLOSE_RETRY_DELAY_MS: '3000' },
+				// The main thread's shutdown timed out with descriptors still live, which Bun would lose.
+				status: 1,
 				verifySuffix: '-late',
 			});
 			expect(exited.stderr).toContain('Timed out waiting for another database shutdown to finish');

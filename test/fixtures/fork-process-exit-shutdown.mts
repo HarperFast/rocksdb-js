@@ -68,6 +68,15 @@ switch (mode) {
 		});
 		process.exit(0);
 	}
+	case 'throwing-listener': {
+		const db = RocksDatabase.open(path, { disableWAL: true });
+		db.putSync('main', 'value');
+		// Runs before the library's listener, as one added before rocksdb-js loaded would.
+		process.prependListener('exit', () => {
+			throw new Error('exit listener failed');
+		});
+		process.exit(0);
+	}
 	case 'caller-shutdown': {
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');

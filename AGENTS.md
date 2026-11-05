@@ -1427,10 +1427,19 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     (`mainThreadExited`) repeats `Shutdown()` and `Teardown(true)`: a worker's own close can finish
     after the main thread's sweep and quarantine, and a main-thread shutdown that timed out behind
     it never claimed the rest. Bun runs no worker hook on `process.exit()`, so there this is best
-    effort. And it does not call `TransactionLogStoreRegistry::Shutdown()`, since a worker may still
+    effort, so `ShutdownOnExit` returns false whenever `Teardown(true)` reports data possibly left
+    unflushed (a live descriptor still registered, or a failed final flush) and the listener fails
+    the exit code instead of exiting 0. A failed `Shutdown()` alone does not: a quarantined entry
+    gets one more flush in teardown (`DBDescriptor::finalFlush`). And it does not call
+    `TransactionLogStoreRegistry::Shutdown()`, since a worker may still
     hold a mapping of a log segment: a successful close unregisters its stores, so only a
     quarantined descriptor's stores reach static destruction, as every store did before. It never
-    throws: an exception from an `exit` listener skips every later listener. The `shutdownOnExit`
+    throws: in Node an exception from an `exit` listener skips every later listener. For the same
+    reason it is also run from an `uncaughtExceptionMonitor` listener while `process._exiting` is
+    set, so an earlier `exit` listener that throws cannot skip it (a JS flag keeps it to one run).
+    Its waits are as unbounded as the last-env hook's: `finishClose()` drains in-flight operations
+    without a timeout (invariant 6), and returning early instead would leave RocksDB threads running
+    into static destruction. The `shutdownOnExit`
     config option skips the listener, restoring the old behaviour for callers that simulate a crash
     with `process.exit()`; it does not stop a cleanup hook that does run (a natural exit, or
     `process.exit()` under a Bun release that runs the main env's hook) from flushing. Covered by `test/process-exit-shutdown.test.ts`.

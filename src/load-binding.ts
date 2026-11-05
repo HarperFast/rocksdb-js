@@ -649,7 +649,10 @@ export type RocksDatabaseConfig = {
 	 * listener it registers when rocksdb-js loads, so `process.exit()` does
 	 * not skip the flush. Defaults to `true`. After it runs, databases are
 	 * closed and opening one throws, so an `exit` listener that still needs a
-	 * database must be added with `process.prependListener`. Set to `false` to
+	 * database must be added with `process.prependListener`. If data may be
+	 * left unflushed (a timed-out shutdown, or a failed final flush), it sets
+	 * `process.exitCode` to 1 unless it is already nonzero. Like the cleanup on a natural exit, it waits for in-flight native
+	 * work (a commit, flush, or backup) without a time limit. Set to `false` to
 	 * leave memtables unflushed at a Node `process.exit()`, e.g. to exercise
 	 * crash recovery; a natural exit still flushes from the native cleanup hook.
 	 */
@@ -825,7 +828,20 @@ const binding = req(bindingPath);
 
 // Node runs no env cleanup hook for the main thread on process.exit().
 if (isMainThread) {
-	process.on('exit', binding.shutdownOnExit);
+	let exitShutdownRan = false;
+	const shutdownOnExit = () => {
+		if (exitShutdownRan) return;
+		exitShutdownRan = true;
+		// A failed exit shutdown may have left data unflushed; don't report success.
+		if (!binding.shutdownOnExit() && !process.exitCode) {
+			process.exitCode = 1;
+		}
+	};
+	process.on('exit', shutdownOnExit);
+	// In Node, an `exit` listener that throws skips every later one, this one included.
+	process.on('uncaughtExceptionMonitor', () => {
+		if ((process as { _exiting?: boolean })._exiting) shutdownOnExit();
+	});
 }
 
 /**
@@ -1017,8 +1033,8 @@ export const registryStatus: () => RegistryStatus = getRegistryStatus;
  *
  * You do not need to call it at exit: when rocksdb-js loads on the main
  * thread it registers a `process.on('exit')` listener that does the same and
- * reports failures to stderr instead of throwing (see the `shutdownOnExit`
- * config option). Calling it yourself as well is safe.
+ * reports failures to stderr and the exit code instead of throwing (see the
+ * `shutdownOnExit` config option). Calling it yourself as well is safe.
  */
 export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;

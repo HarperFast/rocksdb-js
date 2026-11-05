@@ -227,9 +227,9 @@ public:
 	 * Releases every remaining registry entry. Called from the module env
 	 * cleanup hook after `Shutdown()`, i.e. while the process is still running
 	 * normally. Nothing may keep a `rocksdb::DB` alive past that point: the
-	 * registry singleton is a namespace-scope static, so anything still in the
-	 * map is destroyed from an `atexit` handler, and closing a RocksDB database
-	 * there runs `DBImpl::CancelAllBackgroundWork()` after RocksDB's own
+	 * registry singleton is never freed, so nothing closes it later, and a
+	 * close left to a static destructor (as when the registry was a static
+	 * `unique_ptr`) runs `DBImpl::CancelAllBackgroundWork()` after RocksDB's own
 	 * function-local statics (the `PeriodicTaskScheduler` timer and its
 	 * `port::Mutex`) have already been destroyed -- which aborts the process in
 	 * `port::Mutex::Lock()` with `pthread lock: Invalid argument`.
@@ -241,8 +241,12 @@ public:
 	 * `quarantinedOnly` limits the release to quarantined entries, for the
 	 * main-thread exit path: other envs may still be running there, so an entry
 	 * another thread is still closing belongs to that closer.
+	 *
+	 * Returns false if data may be left unflushed: a final flush failed, or a
+	 * live descriptor is still registered (closed by another thread, or never
+	 * claimed by a timed-out `Shutdown()`).
 	 */
-	static void Teardown(bool quarantinedOnly = false);
+	static bool Teardown(bool quarantinedOnly = false);
 	static size_t Size();
 };
 
