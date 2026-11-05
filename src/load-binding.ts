@@ -230,10 +230,20 @@ export type TransactionLogStats = {
 	};
 };
 
+/**
+ * Returned by {@link TransactionLog.getPurgeWatermark}. When `known`, `purgedThrough` is at or above
+ * every entry key in every file deleted from the log (0 when none was). `known` is false when that
+ * cannot be vouched for, such as a log created by a release without the watermark.
+ */
+export type TransactionLogPurgeWatermark =
+	| { known: true; purgedThrough: number }
+	| { known: false };
+
 export type TransactionLog = {
 	new (db: NativeDatabase, name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	getLogFileSize(sequenceId?: number): number;
+	getPurgeWatermark(): TransactionLogPurgeWatermark;
 	getStats(): TransactionLogStats;
 	name: string;
 	path: string;

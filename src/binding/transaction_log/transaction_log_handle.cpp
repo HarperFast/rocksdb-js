@@ -108,6 +108,14 @@ LogPosition TransactionLogHandle::getLastFlushed() {
 	return { 0, 0 };
 }
 
+TransactionLogStore::PurgeWatermark TransactionLogHandle::getPurgeWatermark() {
+	auto store = this->store.lock();
+	if (!store || store->isClosing.load(std::memory_order_relaxed)) {
+		return {};
+	}
+	return store->getPurgeWatermark();
+}
+
 std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {
 	auto store = this->store.lock();
 	if (store) return store->getLastCommittedPosition();

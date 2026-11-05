@@ -295,6 +295,15 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   its resolution and wraps into the past, scanning nothing). Read once per process
   (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
   `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is started with
+- `ROCKSDB_JS_PURGE_SCAN_MS` - Budget (default `2000`) one purge run spends reading transaction-log
+  files written by an earlier process, to record each one's largest key in the purge watermark before
+  deleting it (invariant 35). Files it cannot read in time are kept for a later run, so a deployment
+  whose files take longer to read raises it. Open-time retention runs under the process-wide registry
+  lock, which is why it is bounded. It is a budget per store per purge run, so an open that loads N
+  stores with inherited backlogs can spend up to N times it. Honored literally (`0` reads nothing, so such files are never
+  purged), values above a day are clamped to a day, and malformed or negative values use the default.
+  Read once per process, so it
+  must be set in the environment a process is started with
 - `ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS` - Bound (default `2000`) on a writable open's
   transaction-log recovery scan. In particular, a copied Windows segment on POSIX must prove its
   entire zero-padded suffix within this time before recovery durably truncates it to the
@@ -1608,6 +1617,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     it logs. See
     [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
     [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
+
+35. **No transaction-log segment is unlinked before the purge watermark covers it**: `doPurge()`
+    persists `txn.purged`, raised to the largest key of every segment it is about to delete,
+    durably before its first unlink. A store reports the watermark as known only when every
+    deletion in its history was recorded that way, so a store an older release created stays
+    unknown. See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark).
 
 ## Debugging native heap corruption
 
