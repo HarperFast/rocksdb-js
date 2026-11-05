@@ -1490,7 +1490,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Transaction::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(5);
+	NAPI_METHOD_ARGV(6);
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get");
@@ -1521,15 +1521,14 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
+	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), (*txnHandle)->dbHandle);
 
 	VtSlotRef vtSlot;
-	uint64_t vtObserved = 0;
-	if (hasExpectedVersion) {
+	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
-		if (vtSlot) vtObserved = vtSlot.load();
 	}
 
-	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
+	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
 }
 
 /**
@@ -1624,7 +1623,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
-	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
+	bool wantsPopulate = readWantsPopulate(flags, (*txnHandle)->dbHandle);
 
 	// Establish the transaction snapshot BEFORE loading the VT slot.
 	// If we loaded the slot first, a complete write cycle (lock → commit →
