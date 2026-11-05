@@ -45,8 +45,11 @@ bool overwriteSlot(const std::filesystem::path& file, uint64_t generation, const
 	return written && !out.fail() && syncFile(file);
 }
 
-bool createRecordFile(const std::filesystem::path& storePath, const std::filesystem::path& file,
-	const TransactionLogPurgeRecord& record) {
+bool createRecordFile(
+	const std::filesystem::path& storePath,
+	const std::filesystem::path& file,
+	const TransactionLogPurgeRecord& record
+) {
 	auto temp = file;
 	temp += ".tmp-" + std::to_string(purgeRecordTempSequence.fetch_add(1, std::memory_order_relaxed));
 	std::string image = encodeTransactionLogPurgeRecordImage(record);
