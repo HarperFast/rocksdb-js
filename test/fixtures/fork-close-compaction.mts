@@ -87,8 +87,8 @@ if (!isMainThread) {
 		const second = timedClose(db, 'close() after reopen');
 		report({ mode, first, second });
 	} else if (mode === 'exit') {
-		// Left open: when the event loop drains, the env cleanup hook closes it.
-		// (process.exit() skips that hook and closes nothing.)
+		// Left open: when the event loop drains, the main thread's exit listener
+		// closes it.
 		await compactingDatabase(path);
 		report({ mode, compacting: true });
 	} else if (mode === 'verify') {
