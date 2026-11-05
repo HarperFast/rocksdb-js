@@ -4,6 +4,7 @@
 #include <chrono>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 #include <mutex>
 #include <string>
 #include <node_api.h>
@@ -244,15 +245,35 @@ public:
 	 */
 	static napi_value ListStores(napi_env env, const std::string& dbPath);
 
+	struct PurgeOptions final {
+		uint64_t before = 0;
+		bool destroy = false;
+		bool includeEntryCounts = false;
+		std::string name;
+	};
+
+	struct PurgedLogFile final {
+		std::string path;
+		uint32_t entryCount;
+	};
+
 	/**
-	 * Purges transaction logs for the given database path.
-	 *
-	 * @param env The N-API environment.
-	 * @param dbPath The database path.
-	 * @param options Purge options (before, destroy, name).
-	 * @returns A JavaScript array of removed file paths.
+	 * Reads `purgeLogs()` options. Runs caller JavaScript (getters), so it must
+	 * not be called while holding a descriptor's OperationGuard.
 	 */
-	static napi_value PurgeStores(napi_env env, const std::string& dbPath, napi_value options);
+	static napi_status ReadPurgeOptions(napi_env env, napi_value options, PurgeOptions& result);
+
+	/**
+	 * Purges transaction logs for the given database path. Calls no N-API.
+	 *
+	 * @returns The removed log files.
+	 */
+	static std::vector<PurgedLogFile> PurgeStores(const std::string& dbPath, const PurgeOptions& options);
+
+	/**
+	 * Builds `purgeLogs()`'s result: paths, or `{ path, entries }` objects.
+	 */
+	static napi_value PurgedLogFilesToJS(napi_env env, const std::vector<PurgedLogFile>& files, bool includeEntryCounts);
 
 	/**
 	 * Gets all stores for the given database path. Used by flush event

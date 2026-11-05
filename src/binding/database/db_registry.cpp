@@ -441,9 +441,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(destroyDelayMs));
 	}
 	if (destroyFailureFlag().load(std::memory_order_relaxed)) {
-		// Nothing was touched -- neither rocksdb::DestroyDB nor remove_all ran
-		// -- so this leaves no tombstone: the path is exactly as it was, and a
-		// caller can retry destroy() or just reopen it.
+		// Neither rocksdb::DestroyDB nor remove_all ran, so this leaves no
+		// tombstone and a caller can retry destroy() or reopen the path.
 		throw rocksdb_js::DBException("Injected database destruction failure");
 	}
 

@@ -10,11 +10,12 @@
 - [Transaction-log abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) — a logged transaction that ends without committing gets its batch marked, synced, before its position is released; failures fail closed.
 - [Write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal) — with abort markers and `transactionLogWriteIntents` on, an attempt behind an older write intent is refused before it logs.
 - [Conflict check before the log write](src/binding/transaction/DESIGN.md#conflict-check-before-the-log-write) — with abort markers on, RocksDB's own conflict check refuses a stale optimistic attempt before it logs.
-- [Verification table](src/binding/core/DESIGN.md): slots store versions encoded with a per-key tag; a park cancels its lock wake registration when it ends.
+- [Verification table](src/binding/core/DESIGN.md): slots store versions encoded with a per-key tag; only an opted-in handle publishes from a read, and its open creates the table before it can write; a park cancels its lock wake registration when it ends.
 - [Database resources](src/binding/database/DESIGN.md): optimistic commit validation policy,
   per-database lock buckets, concurrent commit threads, backup table verification, why
   pending lock/park wake TSFNs stay ref'd, the WriteBufferManager flush-policy and arena-size
-  defaults, and SST filters with where their blocks live.
+  defaults, SST filters with where their blocks live, and why close cancels compaction instead of
+  waiting for it.
 - [Transaction abort](src/binding/transaction/DESIGN.md): abort drains in-flight async gets before `Rollback()` and holds an `OperationGuard` so teardown cannot close the transaction under it.
 - [Pooled transaction iterators](src/binding/iterator/DESIGN.md): transaction `getRange()` re-seeks an idle native iterator after rewriting the read-bound Slices it points to.
 - [N-API error builders](src/binding/napi/DESIGN.md): `createRocksDBError`/`createJSError` always write their out-param, even when their own N-API calls fail.
