@@ -44,6 +44,8 @@ switch (mode) {
 		RocksDatabase.config({ shutdownOnExit: false });
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		db.putSync('main', 'value');
+		// Runs after the library's listener, so an open database proves it skipped the shutdown.
+		process.on('exit', () => writeSync(1, `${JSON.stringify({ open: db.isOpen() })}\n`));
 		process.exit(0);
 	}
 	case 'prepend': {

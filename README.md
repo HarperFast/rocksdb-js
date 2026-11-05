@@ -2724,7 +2724,8 @@ process.prependListener('exit', () => {
 
 Set `RocksDatabase.config({ shutdownOnExit: false })` to skip it, for example to leave memtables
 unflushed at `process.exit()` and exercise crash recovery in a test. This only removes the listener:
-on a natural exit, and on `process.exit()` under Bun, the runtime's native cleanup still flushes.
+on a natural exit the runtime's native cleanup still flushes, and whether Bun's does at
+`process.exit()` depends on the Bun release.
 Calling `shutdown()` from your own `exit` listener as well is safe.
 
 ### `versions: { 'rocksdb': string; 'rocksdb-js': string }`

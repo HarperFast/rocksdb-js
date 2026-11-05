@@ -71,8 +71,13 @@ describe('Main-thread exit shutdown (#1004)', () => {
 	});
 
 	it('skips the exit listener when shutdownOnExit is false', () => {
-		// Bun runs the main env's native cleanup hook on process.exit(), which flushes regardless.
-		expect(exitThenVerify('opt-out').values).toEqual(process.versions.bun ? mainOnly : nothing);
+		const { exited, values } = exitThenVerify('opt-out');
+		expect(JSON.parse(exited.stdout.trim())).toEqual({ open: true });
+		// Whether Bun's own cleanup flushes at process.exit() differs by release (1.4.0 did, 1.4.4
+		// does not), so only Node's outcome is asserted.
+		if (!process.versions.bun) {
+			expect(values).toEqual(nothing);
+		}
 	});
 
 	it('rejects a non-boolean shutdownOnExit', () => {

@@ -1408,8 +1408,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 
     **Node does not run the main env's cleanup hook on `process.exit()`**: it runs the `exit`
     listeners, stops the workers (their hooks run, but the main env still holds a module
-    reference, so the count never reaches zero), then calls `exit()`. Bun runs the main env's hook
-    but not the workers'. So the main thread's `process.on('exit')` listener, registered in
+    reference, so the count never reaches zero), then calls `exit()`. Bun never runs the workers'
+    hooks there, and whether it runs the main env's changed between releases (1.4.0 did, 1.4.4
+    does not). So the main thread's `process.on('exit')` listener, registered in
     `load-binding.ts` and calling `ShutdownOnExit` (`binding.cpp`), is the terminal owner on
     that path (rocksdb-js#1004). Workers are still running JS while it runs, which makes it
     different from the last-env hook in three ways. It **fences opens first**
@@ -1428,8 +1429,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     quarantined descriptor's stores reach static destruction, as every store did before. It never
     throws: an exception from an `exit` listener skips every later listener. The `shutdownOnExit`
     config option skips the listener, restoring the old behaviour for callers that simulate a crash
-    with `process.exit()`; it does not stop a cleanup hook that does run (Node's natural exit, Bun's
-    `process.exit()`) from flushing. Covered by `test/process-exit-shutdown.test.ts`.
+    with `process.exit()`; it does not stop a cleanup hook that does run (a natural exit, or
+    `process.exit()` under a Bun release that runs the main env's hook) from flushing. Covered by `test/process-exit-shutdown.test.ts`.
 
 27. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
     lifecycle waits**:
