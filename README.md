@@ -2426,6 +2426,13 @@ any version.
 
 #### `log.getPurgeWatermark(): TransactionLogPurgeWatermark`
 
+```typescript
+const log = db.useLog('foo');
+const entries = Array.from(log.query({ start: resumeKey, exclusiveStart: true }));
+const watermark = log.getPurgeWatermark();
+const complete = watermark.known && resumeKey >= watermark.purgedThrough;
+```
+
 Returns an upper bound on every entry key that retention or `db.purgeLogs()` has deleted from this
 log, or reports that no such bound can be given. A reader that needs every entry with a key above
 some position can be served from the log only when that position is at or above `purgedThrough`.
@@ -2444,11 +2451,10 @@ The result is a snapshot: a purge can run right after it. To trust what a read r
 first and check the watermark afterwards. See
 [the purge watermark](docs/transaction-log.md#purge-watermark) for the rules.
 
+##### `TransactionLogPurgeWatermark`
+
 ```typescript
-const log = db.useLog('foo');
-const entries = Array.from(log.query({ start: resumeKey, exclusiveStart: true }));
-const watermark = log.getPurgeWatermark();
-const complete = watermark.known && resumeKey >= watermark.purgedThrough;
+type TransactionLogPurgeWatermark = { known: true; purgedThrough: number } | { known: false };
 ```
 
 #### `log.path: string`
