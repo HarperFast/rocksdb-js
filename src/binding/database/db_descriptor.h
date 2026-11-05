@@ -708,6 +708,13 @@ public:
 	 */
 	void closeRemainingClosables();
 
+	/**
+	 * Flushes a descriptor released without a successful close-time flush.
+	 * Runs from the destructor; `DBRegistry::Teardown()` calls it first to learn
+	 * whether it succeeded. Returns false only if a needed flush failed.
+	 */
+	bool finalFlush() noexcept;
+
 	void closeClosables(std::unique_lock<std::mutex>& txnsLock);
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);

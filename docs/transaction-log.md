@@ -215,7 +215,34 @@ await db.transaction((txn) => {
 - Downgrading to a release without this rule after a store's last file was purged is unsafe: older
   releases restart an empty store at sequence 1, below the flushed position, so a replay from
   `txn.state` skips the new writes and retention treats them as flushed. Remove the store's
-  `txn.state` before downgrading.
+  `txn.state` and `txn.purged` before downgrading.
+
+### Purge Watermark
+
+Each store keeps `txn.purged`, the record behind `log.getPurgeWatermark()`: an upper bound on every
+entry key in every file the store deleted. Keys are not ordered within or across files (see below),
+so neither file age nor the keys still in the log bound what a purge removed; only the deleted files
+themselves did, and they are gone.
+
+- Every purge (`db.purgeLogs()` and the retention that runs when a database opens) raises the
+  record to the largest key of each file it is about to delete and syncs it before the first file is
+  deleted. A crash in between leaves the record above the files that survived, never below a file
+  that was deleted. A record that cannot be written stops the purge and warns through `log.warn`.
+  Closing a database and rotating a file delete nothing.
+- The largest key of a file this process wrote is tracked as entries are appended. A file written
+  by an earlier process is read once, before deletion, by the same scan that
+  [the timestamp floor](#the-timestamp-floor-at-open) uses; one purge run spends at most 2 seconds
+  on these reads (`ROCKSDB_JS_PURGE_SCAN_MS`, read once per process), and files it could not read wait
+  for the next run. A deployment whose files take longer than that to read raises the budget. A file whose keys cannot be
+  proven because it is corrupt is still deleted, and the watermark becomes unknown.
+- The record is reported as known only when every file deletion in the store's history was recorded
+  this way. A store created before this release has no record and reports unknown permanently, as
+  does a store whose files an older release deleted after the record was written (detected when a
+  sequence after the record's is missing), or whose record cannot be read. Files deleted outside
+  rocksdb-js cannot be detected in general.
+- `purgeLogs({ destroy: true })` marks the record unknown before it deletes anything, and leaves the
+  store open, with its files, if it cannot. A log recreated under the same name starts a new history.
+- Backups capture the record with the files they copy, so a restored store keeps its watermark.
 
 ### Error Handling
 
