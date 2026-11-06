@@ -117,9 +117,6 @@ CreateExternalSharedArrayBuffer resolveCreateExternalSharedArrayBuffer() {
 	return fn;
 }
 
-/**
- * See "Reader mappings are SharedArrayBuffers" in DESIGN.md.
- */
 napi_status createMemoryMapBuffer(
 	napi_env env,
 	std::shared_ptr<MemoryMap>* memoryMapHandle,
@@ -415,8 +412,8 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// Transfer ownership to the external buffer: this heap shared_ptr is held
-	// until finalize. For a frozen log the log file keeps only a weak handle, so
+	// Transfer ownership to the mapping buffer: this heap shared_ptr is held
+	// until its backing store is released. For a frozen log the log file keeps only a weak handle, so
 	// this (plus any still-live buffer for the same file) is the sole owner — the
 	// mapping is unmapped when JS GCs the buffer.
 	auto* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
@@ -426,7 +423,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	NAPI_STATUS_THROWS(::napi_type_tag_object(env, result, &READABLE_EXTENT_BUFFER_TAG));
 
 	// A separate shared handle keeps an extracted getter safe after the buffer's
-	// external-memory finalizer has released its own mapping reference.
+	// finalizer has released its own mapping reference.
 	auto readableExtentHandle = std::make_unique<std::shared_ptr<MemoryMap>>(memoryMap);
 	napi_value readableExtentExternal;
 	NAPI_STATUS_THROWS(::napi_create_external(
@@ -449,7 +446,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		sizeof(readableExtentProperties) / sizeof(napi_property_descriptor),
 		readableExtentProperties));
 
-	// at this point, the transaction log file and the external buffer have a ref to the memory map
+	// at this point, the transaction log file and the mapping buffer have a ref to the memory map
 
 	return result;
 }

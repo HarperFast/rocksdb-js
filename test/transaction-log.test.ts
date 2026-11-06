@@ -4864,11 +4864,10 @@ describe('Transaction Log', () => {
 					log.addEntry(value, txn.id);
 				});
 				const shared = transactionLogMapsShared();
-				if (
-					Number(process.versions.node.split('.')[0]) >= 27 &&
-					!('bun' in process.versions) &&
-					!('Deno' in globalThis)
-				) {
+				const [major, minor] = process.versions.node.split('.').map(Number);
+				const nodeExportsApi =
+					(major === 24 && minor >= 16) || (major === 26 && minor >= 1) || major >= 27;
+				if (nodeExportsApi && !('bun' in process.versions) && !('Deno' in globalThis)) {
 					expect(shared).toBe(true);
 				}
 				const externalBefore = process.memoryUsage().external;
