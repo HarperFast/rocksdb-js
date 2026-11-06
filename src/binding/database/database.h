@@ -32,6 +32,15 @@ inline bool parseExpectedVersion(napi_env env, napi_value arg, uint64_t& out) {
 	return true;
 }
 
+inline int32_t parseOptionalFlags(napi_env env, napi_value arg) {
+	napi_valuetype t;
+	int32_t flags = 0;
+	if (::napi_typeof(env, arg, &t) == napi_ok && t == napi_number) {
+		::napi_get_value_int32(env, arg, &flags);
+	}
+	return flags;
+}
+
 /**
  * Returns the verification-table slot and tag for (dbHandle, key), or an empty
  * ref when the table is absent or disabled.
@@ -163,7 +172,7 @@ inline void vtPopulateIfSettled(
 	const rocksdb::Snapshot* readSnapshot,
 	uint64_t observedSlot
 ) {
-	if (!slot) return;
+	if (!slot || !dbHandle->enableVerificationTable) return;
 	// No usable version in the value the caller read (too short, or lock-tagged
 	// garbage) — nothing to publish, and re-reading the latest wouldn't help.
 	if (readVersion == 0 || vtIsLock(readVersion)) return;
@@ -204,11 +213,12 @@ inline void vtPopulateIfSettled(
 #define ONLY_IF_IN_MEMORY_CACHE_FLAG 0x40000000
 #define NOT_IN_MEMORY_CACHE_FLAG 0x40000000
 #define ALWAYS_CREATE_NEW_BUFFER_FLAG 0x20000000
-// Set on getSync to opt in to populating the verification table after a
-// successful read. Extracts the first 8 bytes of the value as a big-endian
-// float64 version (Harper's record-encoder format) and CASes it into the
-// slot. Has no effect when no version is found (e.g., not-found, value < 8
-// bytes) or when the slot is currently lock-tagged.
+// Set on getSync, and passed on to the async get it falls back to, to opt in
+// to populating the verification table after a successful read. Extracts the
+// first 8 bytes of the value as a big-endian float64 version (Harper's
+// record-encoder format) and CASes it into the slot. Has no effect when no
+// version is found (e.g., not-found, value < 8 bytes) or when the slot is
+// currently lock-tagged.
 #define POPULATE_VERSION_FLAG 0x10000000
 // Returned by getSync when the caller-supplied expectedVersion matches the
 // verification-table slot for the key. Distinct from NOT_IN_MEMORY_CACHE_FLAG
@@ -218,6 +228,11 @@ inline void vtPopulateIfSettled(
 // and the transaction experienced an IsBusy conflict. JS should retry the
 // transaction body immediately without any backoff delay.
 #define RETRY_NOW_VALUE 0x04000000
+
+// Only a handle whose writes invalidate slots (verificationTable: true) publishes from a read.
+inline bool readWantsPopulate(int32_t flags, const std::shared_ptr<DBHandle>& dbHandle) {
+	return (flags & POPULATE_VERSION_FLAG) != 0 && dbHandle->enableVerificationTable;
+}
 
 #define UNWRAP_DB_HANDLE() \
 	std::shared_ptr<DBHandle>* dbHandle = nullptr; \
@@ -401,11 +416,16 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	// The pin must be released before async completion is signaled because that
 	// signal can unblock database teardown.
 	std::shared_ptr<ColumnFamilyDescriptor> readColumnDescriptor;
+	// Captured at setup because the owning handle's close resets its descriptor without waiting for
+	// a transaction's reads. The transaction's async-work registration keeps the database itself
+	// alive: teardown's closables sweep drains it before destroying the database.
+	rocksdb::DB* readDb = nullptr;
 
 	// Verification table state for post-read check and populate.
 	bool hasExpectedVersion = false;
 	uint64_t expectedVersion = 0;
 	bool wantsPopulate = false;
+	bool vtPublish = false;
 	VtSlotRef vtSlot;
 	// Slot value observed before the async read was queued; the post-read CAS
 	// publishes only if the slot is still this (no write cycle intervened).
@@ -430,17 +450,8 @@ void vtCheckAsyncGet(
 
 	const uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 	const uint64_t populateVersion = state->vtLatest.read ? state->vtLatest.latestVersion : extracted;
-	state->vtVersionSettled = vtVersionIsSettled(db, cf, populateVersion);
+	state->vtVersionSettled = state->vtPublish && vtVersionIsSettled(db, cf, populateVersion);
 }
-
-napi_value resolveGetSyncResult(
-	napi_env env,
-	const char* errorMsg,
-	rocksdb::Status& status,
-	std::string& value,
-	napi_value resolve,
-	napi_value reject
-);
 
 template<typename T>
 void resolveGetResult(

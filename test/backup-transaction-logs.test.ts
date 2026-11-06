@@ -135,7 +135,7 @@ describe('Transaction log backups', () => {
 				const backedUpStore = join(backupDir, 'transaction_logs', String(id), 'malformed');
 
 				expect(existsSync(join(backedUpStore, basename(lazySegment)))).toBe(false);
-				expect(readdirSync(backedUpStore).length).toBe(63);
+				expect(readdirSync(backedUpStore).filter((name) => name !== 'txn.purged').length).toBe(63);
 				await vi.waitFor(() => expect(warnings).toHaveLength(1));
 			} finally {
 				RocksDatabase.off('log.warn', onWarning);

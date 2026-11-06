@@ -295,6 +295,15 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   its resolution and wraps into the past, scanning nothing). Read once per process
   (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
   `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is started with
+- `ROCKSDB_JS_PURGE_SCAN_MS` - Budget (default `2000`) one purge run spends reading transaction-log
+  files written by an earlier process, to record each one's largest key in the purge watermark before
+  deleting it (invariant 35). Files it cannot read in time are kept for a later run, so a deployment
+  whose files take longer to read raises it. Open-time retention runs under the process-wide registry
+  lock, which is why it is bounded. It is a budget per store per purge run, so an open that loads N
+  stores with inherited backlogs can spend up to N times it. Honored literally (`0` reads nothing, so such files are never
+  purged), values above a day are clamped to a day, and malformed or negative values use the default.
+  Read once per process, so it
+  must be set in the environment a process is started with
 - `ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS` - Bound (default `2000`) on a writable open's
   transaction-log recovery scan. In particular, a copied Windows segment on POSIX must prove its
   entire zero-padded suffix within this time before recovery durably truncates it to the
@@ -329,6 +338,18 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   without depending on how long a real compaction runs; snapshotted in `initializeTestSeams()`
   like the per-row seams above, so the production path costs one relaxed load per manual
   compaction. Used by `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts`
+- `ROCKSDB_JS_COMPACTION_KEY_DELAY_MS` - Test-only: when non-zero, every column family gets a
+  compaction filter that sleeps this long per key, so a fixture can close while a long automatic
+  compaction runs (`test/fixtures/fork-close-compaction.mts`). RocksDB still checks for shutdown
+  between keys, so the compaction stays abortable. The filter is installed only while this is set.
+  Snapshotted in `initializeTestSeams()`
+- `ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS` - Test-only: delay at the top of
+  `TransactionLogEventListener::OnFlushCompleted`, on the RocksDB flush thread, so a close can start
+  while a flush's transaction-log position update is still pending. Snapshotted in
+  `initializeTestSeams()`
+- `ROCKSDB_JS_CLOSE_FAILURE_AFTER_CANCEL` - Test-only: a one-shot close failure (a **flag**) injected
+  right after `finishClose()` cancels background work, so the `shutdown()` retry must finish without
+  flushing again. Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_CLOSE_FLUSH_FAILURE` - Test-only: number of close-time flushes to fail with an
   injected `IOError` (a **count**, not a flag; `1` is one failure). More than one is what leaves a
   descriptor still quarantined at process exit, since the exit-time `DBRegistry::Shutdown()`
@@ -528,10 +549,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    `DBHandle::close()` arms its own immediately before that drain, and `finishClose()` arms every
    still-attached handle's through `Closable::cancelBlockingWork()` before its _first_ blocking
    step. The second is not belt-and-braces. A foreign `destroy()`/`shutdown()` reaches the handle
-   only through the closables sweep, which is the last step of teardown — and three earlier steps
+   only through the closables sweep, which is the last step of teardown — and two earlier steps
    can each block on that compaction: the optional `compactOnClose` pass takes `compactMutex`,
-   which the running compaction holds; `WaitForCompact()` does not return while a manual
-   compaction runs; then the sweep's own drain waits it out. The closer holds the path gate
+   which the running compaction holds; then the sweep's own drain waits it out. The closer holds the path gate
    throughout, so a late arm times out every concurrent `OpenDB()` for that path.
    The split between the two tokens is not redundancy either: a self-close (`db.close()` →
    `DBRegistry::CloseDB`) reaches `DBHandle::close()` **before** `PurgeIfUnreferenced`/`beginClose()`,
@@ -931,7 +951,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     that a concurrent `purgeLogs({destroy:true})` may be destroying, and that crashed a vitest
     worker on Bun/Windows (`transaction-log.test.ts`, "should write to same log from multiple
     workers"). So close can still wedge on a stall; fixing that has to happen without flushing into
-    the teardown race. Still
+    the teardown race. A `destroy()` does opt in, because it holds the path gate; `purgeLogs()`
+    holds an `OperationGuard` so that drain-then-flush cannot overlap a purge (see
+    `src/binding/database/DESIGN.md`, "Close does not wait for compaction"). Still
     uncovered: `flushBeforeBackup` (`src/binding/database/backup.cpp`) flushes inside RocksDB's
     `BackupEngine`, which builds its own default `FlushOptions` we cannot reach — and that wait is
     taken _after_ the exclusive `.backup.lock` is acquired, so a stalled database turns a backup
@@ -1375,9 +1397,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     steady would break the durable epoch contract, and adding a ratchet to the steady clock would
     distort elapsed measurement under contention. Whether host suspend counts is platform-defined
     (Linux excludes it; current macOS and Windows implementations include it).
-26. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
-    namespace-scope `static`, so anything still in `instance->databases` when the hook returns is
-    destroyed from an `atexit` handler. Closing a RocksDB database there runs
+26. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: nothing closes it later.
+    `DBRegistry::instance` is deliberately never freed: Bun's `process.exit()` runs static
+    destructors without stopping workers, and a worker still inside `OpenDB()` then locked a freed
+    `databasesMutex` (SIGSEGV in the `worker-churn` fixture). Leaving teardown to a destructor is
+    unsafe anyway: when the registry was a static `unique_ptr`, entries still in
+    `instance->databases` were destroyed from an `atexit` handler. Closing a RocksDB database there runs
     `DBImpl::CancelAllBackgroundWork()` → `PeriodicTaskScheduler::Unregister()` **after** RocksDB's
     own function-local statics have been destroyed, and RocksDB's `PthreadCall` wrapper reacts to
     the resulting `EINVAL` by printing `pthread lock: Invalid argument` and calling `std::abort()` —
@@ -1392,6 +1417,41 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `test/fixtures/fork-quarantined-exit.mts`; the same shape reproduces from JS by leaving a
     database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
     which is why its fixtures now tear down with `destroy()` rather than `close()`).
+
+    **Node does not run the main env's cleanup hook on `process.exit()`**: it runs the `exit`
+    listeners, stops the workers (their hooks run, but the main env still holds a module
+    reference, so the count never reaches zero), then calls `exit()`. Bun never runs the workers'
+    hooks there, and whether it runs the main env's changed between releases (1.4.0 did, 1.4.4
+    does not). So the main thread's `process.on('exit')` listener, registered in
+    `load-binding.ts` and calling `ShutdownOnExit` (`binding.cpp`), is the terminal owner on
+    that path (rocksdb-js#1004). Workers are still running JS while it runs, which makes it
+    different from the last-env hook in three ways. It **fences opens first**
+    (`DBRegistry::FenceOpensForExit`, checked on every pass of `OpenDB`'s wait loop): an open that
+    lands after the sweep has no later flush or close, and in Bun with a worker alive nothing else
+    ever runs. It **tears down quarantined entries only** (`Teardown(true)`), because an entry
+    still being closed by another env's thread (for example a `shutdown()` that timed out waiting
+    for it) belongs to that closer, whose `finishClose()` may still be draining operations; sweeping
+    its closables would close handles under it. Since the main env's hook never runs afterwards, the
+    count never reaches zero, so each worker hook that runs after the main thread's exit shutdown
+    (`mainThreadExited`) repeats `Shutdown()` and `Teardown(true)`: a worker's own close can finish
+    after the main thread's sweep and quarantine, and a main-thread shutdown that timed out behind
+    it never claimed the rest. Bun runs no worker hook on `process.exit()`, so there this is best
+    effort, so `ShutdownOnExit` returns false whenever `Teardown(true)` reports data possibly left
+    unflushed (a live descriptor still registered, or a failed final flush) and the listener fails
+    the exit code instead of exiting 0. A failed `Shutdown()` alone does not: a quarantined entry
+    gets one more flush in teardown (`DBDescriptor::finalFlush`). And it does not call
+    `TransactionLogStoreRegistry::Shutdown()`, since a worker may still
+    hold a mapping of a log segment: a successful close unregisters its stores, so only a
+    quarantined descriptor's stores reach static destruction, as every store did before. It never
+    throws: in Node an exception from an `exit` listener skips every later listener. For the same
+    reason it is also run from an `uncaughtExceptionMonitor` listener while `process._exiting` is
+    set, so an earlier `exit` listener that throws cannot skip it (a JS flag keeps it to one run).
+    Its waits are as unbounded as the last-env hook's: `finishClose()` drains in-flight operations
+    without a timeout (invariant 6), and returning early instead would leave RocksDB threads running
+    into static destruction. The `shutdownOnExit`
+    config option skips the listener, restoring the old behaviour for callers that simulate a crash
+    with `process.exit()`; it does not stop a cleanup hook that does run (a natural exit, or
+    `process.exit()` under a Bun release that runs the main env's hook) from flushing. Covered by `test/process-exit-shutdown.test.ts`.
 
 27. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
     lifecycle waits**:
@@ -1598,6 +1658,25 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     it logs. See
     [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
     [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
+
+35. **No transaction-log segment is unlinked before the purge watermark covers it**: `doPurge()`
+    persists `txn.purged`, raised to the largest key of every segment it is about to delete,
+    durably before its first unlink. A store reports the watermark as known only when every
+    deletion in its history was recorded that way, so a store an older release created stays
+    unknown. See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark).
+
+36. **A transaction's log batch is staged only while it is Pending**: from `Committing` on, the
+    commit owns `logEntryBatch` and `committedPosition` — its lane writes the batch, frees it, and
+    on a retry `resetTransaction()` frees it again — so `TransactionHandle::addLogEntry` refuses a
+    non-Pending transaction before it reads either or binds a store. Without that, a
+    `log.addEntry(buf, txn.id)` after a non-awaited `commit()` raced the lane on the batch (a heap
+    race), was silently dropped by the write-once return, or started a fresh batch nothing would
+    write. The check relies on the owning env leaving `Pending` in `Commit()`/`CommitSync()` before
+    dispatching and re-entering it in the commit completion, both on its own JS thread, so the owner
+    always observes its own transition. It is not synchronization: `state` is a plain field the lane
+    also writes (#769), and another env reaching the handle by id can observe `Pending` and stage
+    while the owner commits, so cross-env staging is safe only once by-id access is owner-only
+    (#886).
 
 ## Debugging native heap corruption
 

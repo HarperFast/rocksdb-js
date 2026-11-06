@@ -243,7 +243,9 @@ describe('Transaction Log', () => {
 
 					const getSize = async (logPath: string) => {
 						let size = 0;
-						for (const file of await readdir(logPath)) {
+						for (const file of (await readdir(logPath)).filter((name) =>
+							name.endsWith('.txnlog')
+						)) {
 							const info = await stat(join(logPath, file)).catch(() => undefined);
 							if (info) {
 								size += info.size;
@@ -1004,7 +1006,7 @@ describe('Transaction Log', () => {
 				}
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog', '3.txnlog']);
 				const queryResults = Array.from(log.query({ start: startTime, end: Date.now() + 1000 }));
 				expect(queryResults.length).toBe(20);
@@ -1057,6 +1059,71 @@ describe('Transaction Log', () => {
 				}
 			}));
 
+		it('rejects entries for a transaction that is committing', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const txn = new Transaction(db.store);
+				const txnLog = txn.useLog('foo');
+				log.addEntry(Buffer.from('staged'), txn.id);
+				await txn.put('key', 'value');
+
+				const committing = txn.commit();
+				expect(() => log.addEntry(Buffer.from('late'), txn.id)).toThrow(
+					'Transaction is not in pending state'
+				);
+				expect(() => txnLog.addEntry(Buffer.from('late'))).toThrow(
+					'Transaction is not in pending state'
+				);
+				await committing;
+				expect(() => log.addEntry(Buffer.from('late'), txn.id)).toThrow(
+					`Transaction id ${txn.id} not found`
+				);
+
+				expect(Array.from(log.query({ start: 0 }), ({ data }) => data.toString())).toEqual([
+					'staged',
+				]);
+			}));
+
+		it.each([
+			['dedicated commit threads', undefined],
+			['the legacy libuv path', '0'],
+			['the two-lane pipeline', '2'],
+		])(
+			'rejects entries from every environment while the commit is held (%s)',
+			(_mode, commitThread) =>
+				dbRunner({ skipOpen: true }, async ({ dbPath }) => {
+					const env: NodeJS.ProcessEnv = {
+						...process.env,
+						ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '1000',
+					};
+					if (commitThread === undefined) {
+						delete env.ROCKSDB_JS_COMMIT_THREAD;
+					} else {
+						env.ROCKSDB_JS_COMMIT_THREAD = commitThread;
+					}
+					const result = await new Promise<{
+						code: number | null;
+						signal: NodeJS.Signals | null;
+						stderr: string;
+					}>((resolve, reject) => {
+						const child = spawn(
+							process.execPath,
+							[join(__dirname, 'fixtures', 'fork-add-entry-during-commit.mts'), dbPath],
+							{ env, timeout: 20_000 }
+						);
+						let stderr = '';
+						child.stderr.on('data', (chunk) => (stderr += chunk));
+						child.once('error', reject);
+						child.once('close', (code, signal) => resolve({ code, signal, stderr }));
+					});
+					expect({ code: result.code, signal: result.signal }, result.stderr).toEqual({
+						code: 0,
+						signal: null,
+					});
+				}),
+			30_000
+		);
+
 		it('rejects the former unlimited transaction log size of 0', () =>
 			dbRunner({ dbOptions: [{ transactionLogMaxSize: 0 }], skipOpen: true }, async ({ db }) => {
 				expect(() => db.open()).toThrow(
@@ -1078,7 +1145,7 @@ describe('Transaction Log', () => {
 				const totalSize =
 					TRANSACTION_LOG_FILE_HEADER_SIZE + (TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10000) * 2000;
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 				expect(log.getStats().config.maxFileSize).toBe(16 * 1024 * 1024);
 				const firstSize = log.getLogFileSize(1);
@@ -1372,7 +1439,7 @@ describe('Transaction Log', () => {
 				}
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -1414,7 +1481,7 @@ describe('Transaction Log', () => {
 				});
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -1451,7 +1518,7 @@ describe('Transaction Log', () => {
 				});
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles).toEqual(['1.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -1485,7 +1552,7 @@ describe('Transaction Log', () => {
 				}
 
 				const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-				const logFiles = await readdir(logStorePath);
+				const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 				expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 				const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -1581,7 +1648,7 @@ describe('Transaction Log', () => {
 					});
 
 					const logStorePath = join(dbPath, 'transaction_logs', 'foo');
-					const logFiles = await readdir(logStorePath);
+					const logFiles = (await readdir(logStorePath)).filter((name) => name.endsWith('.txnlog'));
 					expect(logFiles.sort()).toEqual(['1.txnlog', '2.txnlog']);
 
 					const log1Path = join(dbPath, 'transaction_logs', 'foo', '1.txnlog');
@@ -2976,6 +3043,17 @@ describe('Transaction Log', () => {
 
 				db.open();
 				expect(db.purgeLogs({ destroy: true })).toEqual([logFile]);
+			}));
+
+		it('should not hang when an option getter closes the database', () =>
+			dbRunner(async ({ db }) => {
+				const options = {
+					get before() {
+						db.close();
+						return 0;
+					},
+				};
+				expect(() => db.purgeLogs(options)).toThrow(/Database not open/);
 			}));
 
 		it('should purge all transaction log files', () =>
@@ -4676,11 +4754,9 @@ describe('Transaction Log', () => {
 					await writeSmallTransaction(db, log, entryCount);
 					await writeSmallTransaction(db, log, entryCount + 1);
 					const logDirectory = join(dbPath, 'transaction_logs', 'foo');
-					expect((await readdir(logDirectory)).sort()).toEqual([
-						'1.txnlog',
-						'2.txnlog',
-						'3.txnlog',
-					]);
+					expect(
+						(await readdir(logDirectory)).filter((name) => name.endsWith('.txnlog')).sort()
+					).toEqual(['1.txnlog', '2.txnlog', '3.txnlog']);
 
 					expect(indices(log.query({ start: 0 }))).toEqual(range(entryCount + 2));
 					expect(indices(resumable)).toEqual([entryCount, entryCount + 1]);
