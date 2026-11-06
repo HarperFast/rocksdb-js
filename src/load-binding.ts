@@ -1087,7 +1087,7 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
 
 /**
  * Number of live transaction-log memory maps across the process. Internal —
- * used by tests to verify that releasing a frozen log's external buffer unmaps
+ * used by tests to verify that releasing a frozen log's mapping buffer unmaps
  * the underlying mapping rather than leaving it retained.
  */
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
