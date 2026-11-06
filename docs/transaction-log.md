@@ -296,7 +296,10 @@ segment's creation, so there is no shortcut: every segment is read.
 Retention can purge every segment of the named log. The walk then finds no keys and leaves the clock
 alone, so a backward step after restart can reissue a key that was only in purged segments. With
 age-based retention alone that needs a backward step at least as large as the retention period; a
-`purgeLogs({ before })` cutoff closer to now shrinks it to the time since that cutoff.
+`purgeLogs({ before })` cutoff closer to now shrinks it to the time since that cutoff. A caller that
+needs the guarantee past retention persists its own floor — the largest key it has issued, or any
+bound it has advertised — and restores it with `raiseTimestampFloor()` before the process starts a
+transaction. That call only raises the in-memory clock; persisting the value is the caller's job.
 
 Name only a log this process originates. A log a replication receiver writes under an adopted origin
 timestamp is keyed by another node's clock, and seeding from it would ratchet this process's clock

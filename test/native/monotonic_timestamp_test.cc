@@ -13,6 +13,7 @@ using rocksdb_js::budgetNearlyExhausted;
 using rocksdb_js::parseDurationMs;
 using rocksdb_js::parseTransactionLogSegmentName;
 using rocksdb_js::raiseMonotonicTimestampFloor;
+using rocksdb_js::timestampFloorRejection;
 
 // Tests share the process-global floor, so they derive targets from its current value.
 
@@ -64,6 +65,18 @@ TEST(MonotonicTimestamp, HonorsACallerSuppliedPlausibleBound) {
 	double bound = getMonotonicTimestamp() + 15.0;
 	EXPECT_FALSE(raiseMonotonicTimestampFloor(bound + 1000.0, bound));
 	EXPECT_TRUE(raiseMonotonicTimestampFloor(bound, bound));
+}
+
+TEST(MonotonicTimestamp, NamesWhyAFloorIsRejected) {
+	const double bound = getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS;
+	EXPECT_STREQ(timestampFloorRejection(std::numeric_limits<double>::quiet_NaN(), bound), "must be a finite number");
+	EXPECT_STREQ(timestampFloorRejection(-std::numeric_limits<double>::infinity(), bound), "must be a finite number");
+	EXPECT_STREQ(timestampFloorRejection(0, bound), "must be greater than 0");
+	EXPECT_STREQ(timestampFloorRejection(-0.0, bound), "must be greater than 0");
+	EXPECT_STREQ(timestampFloorRejection(MAX_TIMESTAMP_MS, MAX_TIMESTAMP_MS), "must be less than 8.64e15, the largest valid Date");
+	EXPECT_STREQ(timestampFloorRejection(bound + 1000.0, bound), "is implausibly far ahead of the wall clock");
+	EXPECT_EQ(timestampFloorRejection(bound, bound), nullptr);
+	EXPECT_EQ(timestampFloorRejection(std::numeric_limits<double>::denorm_min(), bound), nullptr);
 }
 
 // parseDurationMs backs ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS, whose documented cap

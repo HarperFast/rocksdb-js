@@ -1045,7 +1045,9 @@ again, so a backward step between runs can reissue a timestamp that is already a
 node's transaction log. Opening with
 [`timestampFloorLog`](#new-rocksdatabasepath-options) raises the clock
 above every batch key still durable in the named log before the database handle is returned, so no
-transaction can be constructed below it.
+transaction can be constructed below it. Keys in segments retention has purged are not durable, and
+neither is a bound advertised to peers; carry those across a restart yourself with
+[`raiseTimestampFloor()`](#raisetimestampfloortimestamp-number-boolean).
 
 Name only a log this process **originates**. A log written under a timestamp adopted from another
 node — a replication receiver calling [`txn.setTimestamp()`](#txnsettimestampts-number-void) — is
@@ -2707,6 +2709,55 @@ Contract:
   deadlines are not provided by this API.
 - **Cost**: one clock read and a double conversion; no lock, no native allocation, no wall-clock read,
   no database or log I/O, no per-worker calibration. Safe from any thread. The runtime may allocate a boxed JS number.
+
+### `raiseTimestampFloor(timestamp: number): boolean`
+
+Raises the process-wide monotonic timestamp clock — the clock behind
+[`db.getMonotonicTimestamp()`](#dbgetmonotonictimestamp-number), every transaction's initial
+timestamp and therefore every transaction-log batch key — so that every timestamp the process
+issues afterwards is strictly greater than `timestamp` (Unix epoch milliseconds). No database
+handle is needed.
+
+```typescript
+import { RocksDatabase, raiseTimestampFloor } from '@harperfast/rocksdb-js';
+
+// Before anything in this process starts a transaction:
+raiseTimestampFloor(persistedFloor);
+const db = RocksDatabase.open('/path/to/db', { timestampFloorLog: 'local' });
+```
+
+The clock is monotonic within a process, not across restarts, and
+[`timestampFloorLog`](#timestamp-floor-at-open) only restores keys still on disk. A bound this node
+has promised that is not in its log — a progress floor advertised to peers, or the largest key of
+segments retention has since purged — can only come back through this call. The caller names the
+value because only the caller knows which bounds it has promised.
+
+Contract:
+
+- **Returns** `true` if the clock was raised: `timestamp` was ahead of both the wall clock and every
+  timestamp already issued, as after a backward clock step. `false` if the clock was already at or
+  above it, which is the usual result at a restart. Raising is one-way; a lower value never moves
+  the clock back.
+- **Throws** a `TypeError` if `timestamp` is not a number, and a `RangeError` if it is not finite, is
+  not greater than `0`, is not less than `8.64e15`, or is more than ten years ahead of the wall
+  clock — the same bound `timestampFloorLog` applies to a durable key. An unusable persisted floor
+  therefore fails loudly rather than being ignored. The implausibility error includes the wall
+  clock it was checked against, since a host that booted with an unsynchronized clock trips it too.
+- **Process-wide**: it applies to every database and every `worker_threads` worker in the process,
+  but not to other processes. Each new process must call it again.
+- **Only issued timestamps**: a transaction constructed before the call keeps its timestamp, and
+  [`txn.setTimestamp(ts)`](#txnsettimestampts-number-void) can still adopt any valid timestamp,
+  including one below the floor. `txn.setTimestamp()` with no argument issues a fresh timestamp
+  above it.
+- **Not durable and not a fence**: the floor lives in memory only, and nothing stops a transaction
+  constructed concurrently with the call. Persist the floor yourself, and restore it before the
+  process starts any transaction it originates. It composes with `timestampFloorLog` (the clock takes
+  the larger of the two), so keep naming the local log unless the persisted floor already covers
+  every key written to it.
+- **Trusted input only**: the floor is not lowered until the process exits, so a value hours or years
+  ahead holds every timestamp that far ahead of wall time until the clock catches up — and keys
+  written in the meantime raise the next restart's seed with them. Pass only floors this node
+  persisted itself, never an unvalidated value received from another node.
 
 ### `currentThreadId(): number`
 

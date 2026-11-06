@@ -235,8 +235,24 @@ bool raiseMonotonicTimestampFloor(double floor) {
 	return raiseMonotonicTimestampFloor(floor, getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS);
 }
 
+const char* timestampFloorRejection(double floor, double plausibleBound) {
+	if (!std::isfinite(floor)) {
+		return "must be a finite number";
+	}
+	if (floor <= 0) {
+		return "must be greater than 0";
+	}
+	if (floor >= MAX_TIMESTAMP_MS) {
+		return "must be less than 8.64e15, the largest valid Date";
+	}
+	if (floor > plausibleBound) {
+		return "is implausibly far ahead of the wall clock";
+	}
+	return nullptr;
+}
+
 bool raiseMonotonicTimestampFloor(double floor, double plausibleBound) {
-	if (!std::isfinite(floor) || floor <= 0 || floor >= MAX_TIMESTAMP_MS || floor > plausibleBound) {
+	if (timestampFloorRejection(floor, plausibleBound) != nullptr) {
 		return false;
 	}
 
