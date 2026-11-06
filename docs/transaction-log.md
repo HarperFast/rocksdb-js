@@ -211,7 +211,8 @@ await db.transaction((txn) => {
   bytes can name a later position than was flushed, and retention would then treat unflushed
   entries below it as flushed.
 - A reader that starts from the last flushed position, or one already inside a purged file,
-  continues at the lowest retained sequence (or at the next write when nothing is retained).
+  continues at the next retained sequence after that position (or at the next write when nothing is
+  retained).
 - Downgrading to a release without this rule after a store's last file was purged is unsafe: older
   releases restart an empty store at sequence 1, below the flushed position, so a replay from
   `txn.state` skips the new writes and retention treats them as flushed. Remove the store's
