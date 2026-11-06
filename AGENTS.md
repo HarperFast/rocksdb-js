@@ -1662,6 +1662,19 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     deletion in its history was recorded that way, so a store an older release created stays
     unknown. See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark).
 
+36. **A transaction's log batch is staged only while it is Pending**: from `Committing` on, the
+    commit owns `logEntryBatch` and `committedPosition` — its lane writes the batch, frees it, and
+    on a retry `resetTransaction()` frees it again — so `TransactionHandle::addLogEntry` refuses a
+    non-Pending transaction before it reads either or binds a store. Without that, a
+    `log.addEntry(buf, txn.id)` after a non-awaited `commit()` raced the lane on the batch (a heap
+    race), was silently dropped by the write-once return, or started a fresh batch nothing would
+    write. The check relies on the owning env leaving `Pending` in `Commit()`/`CommitSync()` before
+    dispatching and re-entering it in the commit completion, both on its own JS thread, so the owner
+    always observes its own transition. It is not synchronization: `state` is a plain field the lane
+    also writes (#769), and another env reaching the handle by id can observe `Pending` and stage
+    while the owner commits, so cross-env staging is safe only once by-id access is owner-only
+    (#886).
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`
