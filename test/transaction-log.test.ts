@@ -4024,6 +4024,46 @@ describe('Transaction Log', () => {
 					})
 			);
 
+			it.each(
+				[{}, { readUncommitted: true }, { startFromLastFlushed: true }].flatMap((options) =>
+					[false, true].map((unread) => ({ options, unread }))
+				)
+			)(
+				'should advance past an unmappable starting segment only when exhausted (%o)',
+				({ options, unread }) =>
+					dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db }) => {
+						const log = db.useLog('foo');
+						await writeEntry(db, log, 1, 150);
+						db.flushSync();
+						const realGetMmapDescriptor = Object.getOwnPropertyDescriptor(
+							Object.getPrototypeOf(log),
+							'_getMemoryMapOfFile'
+						)!;
+						Object.defineProperty(log, '_getMemoryMapOfFile', {
+							value(logId: number) {
+								return logId === 1 ? undefined : realGetMmapDescriptor.value.call(this, logId);
+							},
+							configurable: true,
+							writable: true,
+						});
+						let iterator: IterableIterator<{ data: Buffer }>;
+						try {
+							iterator = log.query(options);
+							expect(drain(iterator)).toEqual({ entries: [], gaps: [] });
+							if (unread) {
+								await writeEntry(db, log, 2, 150);
+							}
+							await writeEntry(db, log, 3, 400);
+							expect(log.getLogFileSize(2)).toBeGreaterThan(TRANSACTION_LOG_FILE_HEADER_SIZE);
+							expect(drain(iterator)).toEqual({ entries: unread ? [] : [3], gaps: [] });
+						} finally {
+							Object.defineProperty(log, '_getMemoryMapOfFile', realGetMmapDescriptor);
+						}
+						await writeEntry(db, log, 4, 300);
+						expect(drain(iterator)).toEqual({ entries: unread ? [2, 3, 4] : [4], gaps: [] });
+					})
+			);
+
 			it('should not count an empty segment as unavailable', () =>
 				dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, async ({ db, dbPath }) => {
 					let database = db;

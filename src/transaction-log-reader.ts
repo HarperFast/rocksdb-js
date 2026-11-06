@@ -348,15 +348,17 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					if (mapped) {
 						logBuffer = mapped;
 						dataView = mapped.dataView;
-					} else if (
-						transactionLog.getLogFileSize(logBuffer!.logId) > TRANSACTION_LOG_FILE_HEADER_SIZE ||
-						logBuffer!.logId >= loadLastPosition(transactionLog, !!readUncommitted).logId
-					) {
-						// still the reader's to read: skipping it would drop durable history
-						return { done: true, value: undefined };
 					} else {
-						// gone: advancing from the segment below counts it against `gapFloor`
-						logBuffer!.logId--;
+						// Observe rotation before the extent, so an append racing rotation cannot be missed.
+						const latestLogId = loadLastPosition(transactionLog, !!readUncommitted).logId;
+						const fileSize = transactionLog.getLogFileSize(logBuffer!.logId);
+						if (logBuffer!.logId >= latestLogId || fileSize > position) {
+							return { done: true, value: undefined };
+						}
+						if (fileSize === 0) {
+							// gone: advancing from the segment below counts it against `gapFloor`
+							logBuffer!.logId--;
+						}
 					}
 					startUnmapped = false;
 					size = 0;
