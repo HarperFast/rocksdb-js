@@ -5,6 +5,7 @@
 #include "transaction_log/transaction_log_store.h" // TransactionLogBackupEntry
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <string>
 #include <functional>
 #include <vector>
@@ -41,6 +42,14 @@ rocksdb::Status collectTransactionLogBackupEntries(
 	const std::function<bool()>& abandon = nullptr,
 	bool waitForUnresolved = true
 );
+
+/**
+ * The bytes to write for an inline entry. A store's purge record reads as unknown once one of its
+ * segments vanished before it could be copied (a destroy or out-of-band delete): the record would
+ * otherwise vouch for a history the backup no longer holds. A store's record follows its segments.
+ */
+std::string backupInlineContents(
+	const NamedTransactionLogBackupEntry& named, const std::set<std::string>& storesMissingSegments);
 
 /**
  * Prefix of the staging directory a snapshot is copied into before being

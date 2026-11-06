@@ -109,6 +109,8 @@ struct DBOptions final {
 	uint64_t writeBufferSize = 16ULL * 1024 * 1024; // 16MB
 	// Memtable arena block size in bytes; 0 = auto (see `resolveArenaBlockSize`).
 	uint64_t arenaBlockSize = 0;
+	// Whole-key SST filter size; 0 = no filter (see `buildColumnFamilyOptions`).
+	double bloomFilterBitsPerKey = 10.0;
 	// Opt-in per-CF flag enabling Verification Table slot locking/tracking for
 	// this column family's writes (see core/verification_table.h).
 	bool verificationTable = false;

@@ -7,11 +7,10 @@ import { describe, expect, it } from 'vitest';
  * A transaction belongs to a *database*, so it must serve reads on any column
  * family in that database — not only the one it was created against.
  *
- * `TransactionHandle::get` attempts a synchronous block-cache read first and
- * only falls back to async work when that misses, so these tests reopen the
- * database to guarantee a cold block cache. Reading a value still resident in
- * the block cache takes the synchronous path and passes even when the async
- * path is broken.
+ * `get()` tries a synchronous block-cache read first and only falls back to
+ * async work when that misses, so these tests reopen the database to guarantee
+ * a cold block cache. Reading a value still resident in the block cache takes
+ * the synchronous path and passes even when the async path is broken.
  */
 describe('transaction reads across column families', () => {
 	async function seedAndReopen() {

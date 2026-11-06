@@ -22,6 +22,7 @@ struct TransactionLog final {
 	static napi_value GetName(napi_env env, napi_callback_info info);
 	static napi_value GetPath(napi_env env, napi_callback_info info);
 	static napi_value GetStats(napi_env env, napi_callback_info info);
+	static napi_value GetPurgeWatermark(napi_env env, napi_callback_info info);
 
 	static bool UsesSharedMemoryMaps();
 

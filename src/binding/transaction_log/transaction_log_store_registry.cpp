@@ -550,7 +550,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		throw rocksdb_js::DBException(firstUseFloorLogMessage(name, dbPath));
 	}
 
-	// Ensure the directory exists
+	std::error_code existsError;
+	bool createdDirectory = !std::filesystem::exists(logDirectory, existsError) && !existsError;
 	rocksdb_js::tryCreateDirectory(logDirectory);
 
 	auto txnLogStore = std::make_shared<TransactionLogStore>(
@@ -561,6 +562,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		config.transactionLogMaxAgeThreshold
 	);
 	txnLogStore->displayPath = std::filesystem::path(config.transactionLogsDisplayPath) / name;
+	if (createdDirectory) {
+		txnLogStore->initializeNewPurgeRecord();
+	}
 
 	// Use insert_or_assign to replace any closing store with the same name
 	entry->stores.insert_or_assign(txnLogStore->name, txnLogStore);
@@ -614,29 +618,48 @@ napi_value TransactionLogStoreRegistry::ListStores(napi_env env, const std::stri
 	return result;
 }
 
-/**
- * Purges transaction logs for the given database path.
- */
-napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::string& dbPath, napi_value options) {
+napi_status TransactionLogStoreRegistry::ReadPurgeOptions(napi_env env, napi_value options, PurgeOptions& result) {
+	napi_status status = rocksdb_js::getProperty(env, options, "before", result.before);
+	if (status == napi_ok) status = rocksdb_js::getProperty(env, options, "destroy", result.destroy);
+	if (status == napi_ok) status = rocksdb_js::getProperty(env, options, "includeEntryCounts", result.includeEntryCounts);
+	if (status == napi_ok) status = rocksdb_js::getProperty(env, options, "name", result.name);
+	return status;
+}
+
+napi_value TransactionLogStoreRegistry::PurgedLogFilesToJS(napi_env env, const std::vector<PurgedLogFile>& files, bool includeEntryCounts) {
 	napi_value removed;
-	NAPI_STATUS_THROWS(::napi_create_array(env, &removed));
+	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, files.size(), &removed));
+	for (size_t i = 0; i < files.size(); i++) {
+		napi_value pathValue;
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, files[i].path.c_str(), files[i].path.length(), &pathValue));
+
+		napi_value element = pathValue;
+		if (includeEntryCounts) {
+			// opt-in shape: { path: string, entries: number }
+			NAPI_STATUS_THROWS(::napi_create_object(env, &element));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, element, "path", pathValue));
+			napi_value entriesValue;
+			NAPI_STATUS_THROWS(::napi_create_uint32(env, files[i].entryCount, &entriesValue));
+			NAPI_STATUS_THROWS(::napi_set_named_property(env, element, "entries", entriesValue));
+		}
+
+		NAPI_STATUS_THROWS(::napi_set_element(env, removed, i, element));
+	}
+	return removed;
+}
+
+std::vector<TransactionLogStoreRegistry::PurgedLogFile> TransactionLogStoreRegistry::PurgeStores(const std::string& dbPath, const PurgeOptions& options) {
+	std::vector<PurgedLogFile> removed;
 
 	if (!instance) {
 		DEBUG_LOG("TransactionLogStoreRegistry::PurgeStores Registry not initialized\n");
 		return removed;
 	}
 
-	uint64_t before = 0;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "before", before));
-
-	bool destroy = false;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "destroy", destroy));
-
-	bool includeEntryCounts = false;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "includeEntryCounts", includeEntryCounts));
-
-	std::string name;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "name", name));
+	const uint64_t before = options.before;
+	const bool destroy = options.destroy;
+	const bool includeEntryCounts = options.includeEntryCounts;
+	const std::string& name = options.name;
 
 	std::shared_ptr<TransactionLogStoreRegistryEntry> entry;
 
@@ -653,7 +676,6 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 		entry = it->second;
 	}
 
-	size_t i = 0;
 	std::vector<std::shared_ptr<TransactionLogStore>> storesToPurge;
 
 	// Phase 1: Collect stores to process while holding the lock
@@ -668,22 +690,22 @@ napi_value TransactionLogStoreRegistry::PurgeStores(napi_env env, const std::str
 
 	// Phase 2: Process stores WITHOUT holding storesMutex
 	for (auto& store : storesToPurge) {
-		store->purge([&](const std::filesystem::path& filePath, uint32_t entryCount) -> void {
-			auto path = filePath.string();
-			napi_value pathValue;
-			NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, path.c_str(), path.length(), &pathValue));
-
-			napi_value element = pathValue;
-			if (includeEntryCounts) {
-				// opt-in shape: { path: string, entries: number }
-				NAPI_STATUS_THROWS_VOID(::napi_create_object(env, &element));
-				NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, element, "path", pathValue));
-				napi_value entriesValue;
-				NAPI_STATUS_THROWS_VOID(::napi_create_uint32(env, entryCount, &entriesValue));
-				NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, element, "entries", entriesValue));
+		// The record must read unknown before a destroy deletes anything: remove_all deletes in no fixed
+		// order, can stop part-way, and takes unflushed segments the purge skips. When that write fails
+		// the store stays open and registered, with every file.
+		if (destroy && !store->invalidatePurgeRecord()) {
+			try {
+				std::string msg = "Transaction log store " + store->displayPath.string() +
+					" was not deleted: its purge watermark could not be marked unknown first.";
+				DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores WARNING: %s\n", instance.get(), msg.c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg }));
+			} catch (...) {
+				// reporting is best-effort
 			}
-
-			NAPI_STATUS_THROWS_VOID(::napi_set_element(env, removed, i++, element));
+			continue;
+		}
+		store->purge([&](const std::filesystem::path& filePath, uint32_t entryCount) -> void {
+			removed.push_back(PurgedLogFile{filePath.string(), entryCount});
 		}, destroy, before, includeEntryCounts);
 
 		if (destroy) {

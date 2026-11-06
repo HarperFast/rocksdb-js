@@ -185,3 +185,84 @@ chosen for many databases and column families, not for one.
   `block / 8`. Smaller blocks refill shards more often and send more allocations to the shared
   arena mutex. Both constants are named so a benchmark can move them
   (`benchmark/wbm-flush-policy.mts`).
+
+# SST filters and where their blocks live
+
+`buildColumnFamilyOptions` (`db_descriptor.cpp`) writes a whole-key Bloom filter into every SST
+(`bloomFilterBitsPerKey`, default 10, `0` = none). Whole-key only: a `prefix_extractor` would change
+which keys `Seek` and range reads visit, so none is set. The options are rebuilt from code on every
+open (only compression is restored from OPTIONS), so a database written without filters opens with
+them and its files gain filters as compaction rewrites them; every built-in filter policy reads
+every built-in filter, so mixed files are fine.
+
+A filter only saves work for a file whose key range contains the key but whose data does not:
+RocksDB already skips files by their key bounds. A sequentially loaded database (Harper's YCSB
+load) has disjoint ranges across levels, so a present-key get reads exactly one data block with or
+without filters; the gain is on absent keys (one data-block read saved per probed file) and on
+overlapping files (random-order writes, updates sitting in L0). Measured October 2026 with
+`benchmark/sst-filter-get.mts` (random-order 8M keys, 3 L0 files over the last level) and Harper's
+YCSB at 2x its 8 GiB budget (17.2M records, 111 MB of index and 21.5 MB of filter):
+
+- **Filter blocks stay with the table reader, beside the index, not in the block cache.** Moving
+  index and filter blocks into the cache (`cache_index_and_filter_blocks`, with or without L0
+  pinning) added a cache lookup per probed file and took the index's 111 MB out of the data cache:
+  YCSB C +1.6% instructions per op and B -3.4%, against +0.3% and -7.5% here. The cost of this
+  placement is memory outside `blockCacheSize`: 1.25 bytes per key, beside the index that already
+  lives there (6.5 bytes per key in that database). Pinned L0 metadata also has no bound against
+  the cache capacity across many column families.
+- **Bloom, not Ribbon.** Equal get cost (within 1% instructions); Ribbon's filter is 29% smaller
+  (0.36 B/key) but its construction takes ~3x the temporary memory, which no budget accounts for.
+- **`optimize_filters_for_hits` stays off.** It drops last-level filters, and absent-key gets
+  (Harper's insert existence checks) then cost 73% more instructions.
+- Scope follows `writeBufferSize`: the first opener in the process sets every existing family; a
+  later open of a live family keeps its table factory. Filter bits do not change read results.
+
+# Close does not wait for compaction
+
+After `DBDescriptor::finishClose()`'s close-time flush succeeds, no close step waits on compaction
+progress: compaction is not needed for durability, and waiting for the backlog made a large,
+write-heavy database take minutes to close (rocksdb-js#1001). Four things hold it:
+
+- **Cancel, never `WaitForCompact`.** After the flush (and the opt-in `compactOnClose` pass, whose
+  `CompactRange()` returns only when its compaction is done), `finishClose()` calls
+  `rocksdb::CancelAllBackgroundWork(db, false)`: running compactions see `shutting_down_` between keys
+  and abort, and `DB::Close()` unschedules queued ones and waits only for running jobs. `DBDeleter`
+  calls `Close()` too. `WaitForCompact` waited for every queued compaction, and for one that RocksDB
+  will not schedule it waits forever. `CancelAllBackgroundWork(true)` is also wrong: it waits for jobs
+  queued in the process-wide thread pool behind other databases' compactions.
+- **Our flush is the only close-time flush.** RocksDB's own shutdown flush (in
+  `CancelAllBackgroundWork` and `Close()`, run whenever a `disableWAL` write ever happened) uses
+  `allow_write_stall=false`, and with `atomic_flush` it checks every column family for a stall before
+  it looks at whether any memtable has data, so even after our flush it can wait for compaction to
+  clear a stall. `DBDescriptor::open` sets `avoid_flush_during_shutdown`; in exchange,
+  `~DBDescriptor` flushes a descriptor that is released without a successful close-time flush (a
+  quarantined close at process exit), which RocksDB's implicit flush used to cover.
+- **The flushed log position is written explicitly.** `TransactionLogEventListener::OnFlushCompleted`
+  can still be running when `Flush()` returns, is skipped once `shutting_down_` is set, and finds no
+  stores after `TransactionLogStoreRegistry::Unregister`; a close flush with nothing to write does not
+  wait for an earlier flush's listener either. So `DBDescriptor::recordFlushedLogPosition` (writable
+  descriptors only, also after the destructor's flush) syncs each store's segments
+  (`databaseFlushBegin`, which a flush with nothing to write never triggered) and then records
+  `databaseFlushed(latest sequence)`. A clean close therefore records `txn.state` even for log-only
+  transactions; a test that simulates a crash after a clean close must remove it. `writeFlushedPosition`
+  never moves `txn.state` backward, so a late listener cannot undo it.
+- **`closeFlushed` makes a retry skip the flush.** Once background work is cancelled, a flush or
+  manual compaction fails with `ShutdownInProgress`, so a quarantined close that failed after the
+  cancel would wedge its `shutdown()` retry. No write can be admitted after `closing`, so nothing is
+  left to flush. It is set only by a successful flush, never by a `destroy()` whose flush failed, so
+  a non-destructive retry of that destroy fails instead of reporting a clean close.
+
+`destroy()` flushes too (rocksdb-js#1002). Its files can outlive the call — the deletion fails, or the
+process dies first — and with RocksDB's shutdown flush disabled, nothing else persists `disableWAL`
+writes. It flushes with `allow_write_stall=true`, because it holds the `destroyingPaths` gate, and
+it skips `compactOnClose`. A failed destroy flush does not stop the deletion (a database with a
+sticky background error must stay destroyable): `finishClose()` keeps the error in `closeError`,
+finishes teardown, and throws it after `db.reset()`. Destroy treats a completed teardown's error as
+non-fatal and reports it through `database:closeFailed`. The immediate flush fires listeners into
+the transaction-log stores, so `Database::PurgeLogs` takes an `OperationGuard`: the drain at the top
+of `finishClose()` waits for an admitted `purgeLogs({ destroy: true })` instead of flushing into the
+stores it is removing (the crash invariant 16 records for close).
+
+Nothing is logged through the RocksDB info log after `Close()`, which closes that logger.
+`test/close-compaction.test.ts` covers close, process exit and worker teardown during a compaction,
+`compactOnClose`, the explicit position write, and the retry.

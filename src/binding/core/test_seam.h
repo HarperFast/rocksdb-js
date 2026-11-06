@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 
 // Deterministic test seams that widen a race window are gated on a millisecond
@@ -102,6 +103,28 @@ inline std::atomic<int>& compactCancelDelayMsFlag() {
 	return delayMs;
 }
 
+// Per-key delay inside a compaction filter installed on every column family
+// only while this is non-zero, so a fixture gets a long automatic compaction
+// that RocksDB can still abort per key.
+inline std::atomic<int>& compactionKeyDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
+// Delays TransactionLogEventListener::OnFlushCompleted, which runs on a RocksDB
+// flush thread after Flush() may already have returned.
+inline std::atomic<int>& flushCompletedDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
+// One-shot close failure injected after finishClose() has cancelled background
+// work, so a retry has to complete without flushing again.
+inline std::atomic<bool>& closeFailureAfterCancelFlag() {
+	static std::atomic<bool> pending{false};
+	return pending;
+}
+
 // Delays DBHandle::open() after the registry has returned. A handle must
 // already be adopted and attached while this delay is observable.
 inline std::atomic<int>& openAttachDelayMsFlag() {
@@ -160,6 +183,16 @@ inline bool testConsumeAbortMarkFailure() {
 	return false;
 }
 
+inline std::atomic<bool>& prelogConflictCheckDisabled() {
+	static std::atomic<bool> disabled{false};
+	return disabled;
+}
+
+inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
+	static std::atomic<bool> retriesOnly{true};
+	return retriesOnly;
+}
+
 inline void initializeTestSeams() {
 	static std::once_flag initialized;
 	std::call_once(initialized, []() {
@@ -169,6 +202,14 @@ inline void initializeTestSeams() {
 		destroyFailureFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_CLOSE_FLUSH_FAILURE");
 		closeFlushFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
+		value = ::getenv("ROCKSDB_JS_CLOSE_FAILURE_AFTER_CANCEL");
+		closeFailureAfterCancelFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
+		value = ::getenv("ROCKSDB_JS_PRELOG_CHECK");
+		if (value && ::strcmp(value, "off") == 0) {
+			prelogConflictCheckDisabled().store(true, std::memory_order_relaxed);
+		} else if (value && ::strcmp(value, "always") == 0) {
+			prelogConflictCheckRetriesOnly().store(false, std::memory_order_relaxed);
+		}
 		value = ::getenv("ROCKSDB_JS_ABORT_MARK_FAILURE");
 		abortMarkFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		iteratorNextDelayMsFlag().store(
@@ -185,6 +226,10 @@ inline void initializeTestSeams() {
 			testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"), std::memory_order_relaxed);
 		compactCancelDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed);
+		compactionKeyDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_COMPACTION_KEY_DELAY_MS"), std::memory_order_relaxed);
+		flushCompletedDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS"), std::memory_order_relaxed);
 		openAttachDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_OPEN_ATTACH_DELAY_MS"), std::memory_order_relaxed);
 		backupDelayMsFlag().store(
@@ -202,6 +247,10 @@ inline void initializeTestSeams() {
 
 inline bool testConsumeCloseFailure() {
 	return closeFailureFlag().exchange(false, std::memory_order_relaxed);
+}
+
+inline bool testConsumeCloseFailureAfterCancel() {
+	return closeFailureAfterCancelFlag().exchange(false, std::memory_order_relaxed);
 }
 
 inline bool testConsumeCloseFlushFailure() {

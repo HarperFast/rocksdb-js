@@ -45,13 +45,19 @@ jobs:
           node-version: 24
           cache: 'pnpm'
 
+      - name: Identify RocksDB prebuild
+        id: prebuild
+        uses: ./.github/actions/rocksdb-prebuild-stamp
+        with:
+          gh-token: ${{ secrets.GH_TOKEN }}
+
       - name: Setup RocksDB cache
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: deps/rocksdb
-          key: benchmark-rocksdb-${{ hashFiles('package.json') }}
+          key: benchmark-rocksdb-${{ steps.prebuild.outputs.stamp }}-${{ hashFiles('package.json') }}
           restore-keys: |
-            benchmark-rocksdb-
+            benchmark-rocksdb-${{ steps.prebuild.outputs.stamp }}-
 
       - name: Install dependencies
         env:
