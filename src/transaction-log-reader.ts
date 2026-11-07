@@ -14,11 +14,11 @@ const UINT32_FROM_FLOAT = new Uint32Array(FLOAT_TO_UINT32.buffer);
 const EXACT_START_SPAN = new Float64Array(3);
 
 type IteratorControl = (
-	operation: 'peek' | 'close' | 'reached',
+	operation: 'peek' | 'close' | 'reached' | 'scanEnd',
 	logId?: number,
 	position?: number,
 	atSegmentEnd?: boolean
-) => IteratorResult<TransactionEntry> | boolean | void;
+) => IteratorResult<TransactionEntry> | boolean | number | void;
 const ITERATOR_TOKEN = Symbol('transactionLogIterator');
 
 class LogIterator implements TransactionLogIterator {
@@ -66,6 +66,11 @@ class LogIterator implements TransactionLogIterator {
 		atSegmentEnd?: boolean
 	): boolean | undefined {
 		return value.#control('reached', logId, position, atSegmentEnd) as boolean | undefined;
+	}
+
+	// Where a scan of `logId` with readable `size` must stop. undefined means no bound applies.
+	static scanEnd(value: LogIterator | undefined, logId: number, size: number): number | undefined {
+		return value && (value.#control('scanEnd', logId, size) as number | undefined);
 	}
 }
 
@@ -429,6 +434,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			ITERATOR_TOKEN,
 			transactionLog,
 			function next() {
+				// Nothing a pull runs can move its bound, so the bound is applied as one limit per pull
+				// rather than compared per frame. `+` lets the frame loop compare it without a tag check.
+				let scanEnd = +size;
 				if (needsCursorCheck) {
 					if (peeked) {
 						const result = peeked;
@@ -439,16 +447,25 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						return result;
 					}
 					if (untilCursor) {
-						const reached = LogIterator.reached(
-							untilCursor,
-							logBuffer!.logId,
-							position,
-							position >= size && logBuffer!.length > 0 && position >= readableExtent(logBuffer!)
-						);
-						if (reached) return { done: true, value: undefined };
-						if (reached === undefined) {
+						const limit = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size);
+						if (limit === undefined) {
 							untilCursor = undefined;
 							needsCursorCheck = startUnmapped;
+						} else {
+							if (
+								position >= limit &&
+								LogIterator.reached(
+									untilCursor,
+									logBuffer!.logId,
+									position,
+									position >= size &&
+										logBuffer!.length > 0 &&
+										position >= readableExtent(logBuffer!)
+								)
+							) {
+								return { done: true, value: undefined };
+							}
+							scanEnd = +limit;
 						}
 					}
 					if (startUnmapped) {
@@ -529,12 +546,11 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
-					if (untilCursor && LogIterator.reached(untilCursor, logBuffer!.logId, position)) {
-						return { done: true, value: undefined };
-					}
+					scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
 				}
 
-				while (position < size) {
+				let jumpRefused = false;
+				while (position < scanEnd) {
 					try {
 						timestamp = dataView!.getFloat64(position);
 					} catch (error) {
@@ -626,31 +642,35 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 					if (
 						!matchesRange &&
 						stopLogId !== 0 &&
-						pastStop(logBuffer!.logId, position + length, stopLogId, stopPosition) &&
-						mayJumpTo(untilCursor, tailLogId, tailPosition)
+						!jumpRefused &&
+						pastStop(logBuffer!.logId, position + length, stopLogId, stopPosition)
 					) {
-						stopLogId = 0;
-						position += length;
-						if (
-							skipToTail(
-								transactionLog,
-								logBuffer!.logId,
-								position,
-								tailLogId,
-								tailPosition,
-								segmentRemovals
-							)
-						) {
-							if (tailLogBuffer) {
-								logBuffer = tailLogBuffer;
-								dataView = tailLogBuffer.dataView;
+						if (mayJumpTo(untilCursor, tailLogId, tailPosition)) {
+							stopLogId = 0;
+							position += length;
+							if (
+								skipToTail(
+									transactionLog,
+									logBuffer!.logId,
+									position,
+									tailLogId,
+									tailPosition,
+									segmentRemovals
+								)
+							) {
+								if (tailLogBuffer) {
+									logBuffer = tailLogBuffer;
+									dataView = tailLogBuffer.dataView;
+								}
+								position = tailPosition;
+								previousEndedTransaction = true;
+								size = 0;
 							}
-							position = tailPosition;
-							previousEndedTransaction = true;
-							size = 0;
+							tailLogBuffer = undefined;
+							return iterator.next();
 						}
-						tailLogBuffer = undefined;
-						return iterator.next();
+						// Stays refused until the bound can move, which is the next pull.
+						jumpRefused = true;
 					}
 					const entryStart = position;
 					position += length;
@@ -665,7 +685,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							},
 						};
 					}
-					if (position >= size) {
+					if (position >= scanEnd) {
 						if (untilCursor && LogIterator.reached(untilCursor, logBuffer!.logId, position)) {
 							return { done: true, value: undefined };
 						}
@@ -681,6 +701,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								logBuffer!.size = size;
 							}
 							if (position < size) {
+								scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
 								continue;
 							}
 							if (
@@ -734,14 +755,23 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								);
 							}
 						}
-					}
-					if (untilCursor && LogIterator.reached(untilCursor, logBuffer!.logId, position)) {
-						return { done: true, value: undefined };
+						scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
 					}
 				}
 				return endOfReadable(untilCursor, logBuffer!, position);
 			},
 			function control(operation, fromLogId, fromPosition, atSegmentEnd) {
+				if (operation === 'scanEnd') {
+					if (closed) {
+						return;
+					}
+					const boundLogId = peeked ? peekedLogId : logBuffer!.logId;
+					if (boundLogId !== fromLogId) {
+						return boundLogId > fromLogId! ? fromPosition : 0;
+					}
+					const boundPosition = peeked ? peekedPosition : position;
+					return boundPosition < fromPosition! ? boundPosition : fromPosition;
+				}
 				if (operation === 'peek') {
 					if (peeked) {
 						return peeked;
