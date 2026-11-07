@@ -550,6 +550,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 
 				let jumpRefused = false;
+				// `size` is an entry boundary in both modes (only whole entries advance it), so the
+				// pre-extended map must never be the bound: a torn length short of it would pass and
+				// misframe every later read. The clamp covers a `size` that over-reports the buffer,
+				// where `subarray` would silently truncate. The throw leaves `position` at the
+				// resume point (HarperFast/harper#2016, #2063).
+				let limit = Math.min(size, logBuffer!.length);
 				while (position < scanEnd) {
 					try {
 						timestamp = dataView!.getFloat64(position);
@@ -564,12 +570,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						return endOfReadable(untilCursor, logBuffer!, position);
 					}
 
-					// `size` is an entry boundary in both modes (only whole entries advance it), so the
-					// pre-extended map must never be the bound: a torn length short of it would pass and
-					// misframe every later read. The clamp covers a `size` that over-reports the buffer,
-					// where `subarray` would silently truncate. The throw leaves `position` at the
-					// resume point (HarperFast/harper#2016, #2063).
-					const limit = Math.min(size, logBuffer!.length);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
 						const broken = corruptFrame(
 							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${
@@ -702,6 +702,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 							if (position < size) {
 								scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
+								limit = Math.min(size, logBuffer!.length);
 								continue;
 							}
 							if (
@@ -756,6 +757,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 						scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
+						limit = Math.min(size, logBuffer!.length);
 					}
 				}
 				return endOfReadable(untilCursor, logBuffer!, position);
