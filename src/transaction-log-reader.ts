@@ -68,9 +68,9 @@ class LogIterator implements TransactionLogIterator {
 		return value.#control('reached', logId, position, atSegmentEnd) as boolean | undefined;
 	}
 
-	// undefined means no bound applies.
-	static scanEnd(value: LogIterator | undefined, logId: number, size: number): number | undefined {
-		return value && (value.#control('scanEnd', logId, size) as number | undefined);
+	// undefined means closed, as for reached().
+	static scanEnd(value: LogIterator, logId: number, size: number): number | undefined {
+		return value.#control('scanEnd', logId, size) as number | undefined;
 	}
 }
 
@@ -545,9 +545,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
-					scanEnd = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size;
+					scanEnd = untilCursor
+						? (LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size)
+						: size;
 				}
 
+				if (position >= scanEnd) {
+					return endOfReadable(untilCursor, logBuffer!, position);
+				}
 				let jumpRefused = false;
 				// `size` is an entry boundary in both modes (only whole entries advance it), so the
 				// pre-extended map must never be the bound: a torn length short of it would pass and
@@ -699,7 +704,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								logBuffer!.size = size;
 							}
 							if (position < size) {
-								scanEnd = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size;
+								scanEnd = untilCursor
+									? (LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size)
+									: size;
 								limit = Math.min(size, logBuffer!.length);
 								continue;
 							}
@@ -754,7 +761,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								);
 							}
 						}
-						scanEnd = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size;
+						scanEnd = untilCursor
+							? (LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size)
+							: size;
 						limit = Math.min(size, logBuffer!.length);
 					}
 				}
