@@ -549,6 +549,20 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 
 				let jumpRefused = false;
+				// Corruption bound: a committed read can't legitimately extend past
+				// the committed `size` (a true entry boundary); an uncommitted read is
+				// bounded only by the physically mapped buffer. In both cases the bound
+				// is also clamped to `logBuffer.length` — if committed `size` over-reports
+				// the mapped buffer (e.g. a truncated/torn file), an unclamped `size`
+				// would let `position` advance past the buffer and `subarray` silently
+				// return a truncated frame instead of throwing. A torn/corrupt entry
+				// can declare a length far past this bound — without the checks below,
+				// `position` runs past the buffer, `subarray` hands back a misframed
+				// (garbage) transaction, and the advance-to-next-log path can
+				// dereference an undefined buffer. Fail loudly with a bounded error.
+				// The throw leaves `position` at the resume point, so a broken frame ends the
+				// entry rather than the rest of the log (HarperFast/harper#2016, #2063).
+				let limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 				while (position < scanEnd) {
 					try {
 						timestamp = dataView!.getFloat64(position);
@@ -563,20 +577,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						return endOfReadable(untilCursor, logBuffer!, position);
 					}
 
-					// Corruption bound: a committed read can't legitimately extend past
-					// the committed `size` (a true entry boundary); an uncommitted read is
-					// bounded only by the physically mapped buffer. In both cases the bound
-					// is also clamped to `logBuffer.length` — if committed `size` over-reports
-					// the mapped buffer (e.g. a truncated/torn file), an unclamped `size`
-					// would let `position` advance past the buffer and `subarray` silently
-					// return a truncated frame instead of throwing. A torn/corrupt entry
-					// can declare a length far past this bound — without the checks below,
-					// `position` runs past the buffer, `subarray` hands back a misframed
-					// (garbage) transaction, and the advance-to-next-log path can
-					// dereference an undefined buffer. Fail loudly with a bounded error.
-					// The throw leaves `position` at the resume point, so a broken frame ends the
-					// entry rather than the rest of the log (HarperFast/harper#2016, #2063).
-					const limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
 						const broken = corruptFrame(
 							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${
@@ -709,6 +709,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 							if (position < size) {
 								scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
+								limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 								continue;
 							}
 							if (
@@ -763,6 +764,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 						scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
+						limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 					}
 				}
 				return endOfReadable(untilCursor, logBuffer!, position);
