@@ -386,6 +386,24 @@ describe('Transaction log iterator handoff', () => {
 			})
 	);
 
+	it('covers a grown segment before meeting until at the next header', () =>
+		dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, ({ db }) => {
+			const log = db.useLog('foo');
+			addAll(db, log, 2, 100);
+			const leader = log.query({ start: 0 });
+			const filtered = log.query({ start: 0, end: 1, until: leader });
+			const witness = log.query({ start: 0, until: filtered });
+			leader.next();
+			expect(filtered.next().done).toBe(true);
+			addAll(db, log, 2, 100);
+			add(db, log, 'rotates'.padEnd(800, 'x'));
+			expect(log.getStats().lastCommittedPosition?.sequence).toBe(2);
+			for (let i = 0; i < 3; i++) leader.next();
+			expect(leader.peek().value?.data.toString()[0]).toBe('r');
+			expect(filtered.next().done).toBe(true);
+			expect(texts(witness).map((text) => text[0])).toEqual(['0', '1', '0', '1']);
+		}));
+
 	it('applies until to filtered scans in both committed and uncommitted directions', () =>
 		dbRunner(async ({ db }) => {
 			const log = db.useLog('foo');
