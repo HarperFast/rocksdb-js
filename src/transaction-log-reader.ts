@@ -68,7 +68,7 @@ class LogIterator implements TransactionLogIterator {
 		return value.#control('reached', logId, position, atSegmentEnd) as boolean | undefined;
 	}
 
-	// Where a scan of `logId` with readable `size` must stop. undefined means no bound applies.
+	// undefined means no bound applies.
 	static scanEnd(value: LogIterator | undefined, logId: number, size: number): number | undefined {
 		return value && (value.#control('scanEnd', logId, size) as number | undefined);
 	}
@@ -433,9 +433,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			ITERATOR_TOKEN,
 			transactionLog,
 			function next() {
-				// Nothing a pull runs can move its bound, so the bound is applied as one limit per pull
-				// rather than compared per frame. `+` lets the frame loop compare it without a tag check.
-				let scanEnd = +size;
+				// See "Iterator handoff" in src/binding/transaction_log/DESIGN.md.
+				let scanEnd = size;
 				if (needsCursorCheck) {
 					if (peeked) {
 						const result = peeked;
@@ -464,7 +463,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							) {
 								return { done: true, value: undefined };
 							}
-							scanEnd = +limit;
+							scanEnd = limit;
 						}
 					}
 					if (startUnmapped) {
@@ -545,7 +544,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
-					scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
+					scanEnd = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size;
 				}
 
 				let jumpRefused = false;
@@ -676,7 +675,6 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							tailLogBuffer = undefined;
 							return iterator.next();
 						}
-						// Stays refused until the bound can move, which is the next pull.
 						jumpRefused = true;
 					}
 					const entryStart = position;
@@ -708,7 +706,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								logBuffer!.size = size;
 							}
 							if (position < size) {
-								scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
+								scanEnd = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size;
 								limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 								continue;
 							}
@@ -763,24 +761,13 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								);
 							}
 						}
-						scanEnd = +(LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size);
+						scanEnd = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size;
 						limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 					}
 				}
 				return endOfReadable(untilCursor, logBuffer!, position);
 			},
 			function control(operation, fromLogId, fromPosition, atSegmentEnd) {
-				if (operation === 'scanEnd') {
-					if (closed) {
-						return;
-					}
-					const boundLogId = peeked ? peekedLogId : logBuffer!.logId;
-					if (boundLogId !== fromLogId) {
-						return boundLogId > fromLogId! ? fromPosition : 0;
-					}
-					const boundPosition = peeked ? peekedPosition : position;
-					return boundPosition < fromPosition! ? boundPosition : fromPosition;
-				}
 				if (operation === 'peek') {
 					if (peeked) {
 						return peeked;
@@ -809,6 +796,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				}
 				const boundLogId = peeked ? peekedLogId : logBuffer!.logId;
 				const boundPosition = peeked ? peekedPosition : position;
+				if (operation === 'scanEnd') {
+					if (boundLogId !== fromLogId) {
+						return boundLogId > fromLogId! ? fromPosition : 0;
+					}
+					return boundPosition < fromPosition! ? boundPosition : fromPosition;
+				}
 				return (
 					pastStop(fromLogId!, fromPosition!, boundLogId, boundPosition) ||
 					(!!atSegmentEnd &&

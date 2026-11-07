@@ -34,7 +34,7 @@ Two tighter alternatives are deliberately not used. Holding `transactionBindMute
 
 `query({ start, exactStart: true })` returns everything from the first entry whose timestamp equals `start`. Timestamps are not ordered (`setTimestamp()` adopts origin and replay timestamps), so a larger timestamp ends nothing. The running-maximum index gives only a lower bound, and a miss used to scan to end-of-log.
 
-A query bounded by `until` takes the stop-to-tail jump only when `mayJumpTo()` proves its target does not pass the other iterator's unread physical position. A span proven timestamp-safe can still cross that boundary.
+A query bounded by `until` takes the stop-to-tail jump only when `mayJumpTo()` proves its target does not pass the other iterator's unread physical position. A span proven timestamp-safe can still cross that boundary. A refusal holds for the rest of the pull, because the bound cannot move until the next pull, which retries.
 
 `TransactionLogStore::findPositionByTimestamp(timestamp, &span)` also returns a span `[stop, tail)` that holds no entry with a timestamp at or below `start`; the reader jumps over it once. Per segment, the index walk keeps two scalars for entries below the running maximum: their minimum timestamp and the end of the last one. The last possible candidate in a segment is then the later of the next maximum key above `start` and, when that minimum is at or below `start`, the last such entry. That gives the same yes/no answer per segment as a full suffix-minimum index. Precision is lost only inside the one segment holding the newest candidate. Memory stays constant per segment, where a suffix-minimum stack grows with every entry below a high outlier.
 
