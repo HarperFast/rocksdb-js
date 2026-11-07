@@ -37,6 +37,7 @@ export {
 	TransactionLog,
 	type FlushOptions,
 	type TransactionEntry,
+	type TransactionLogIterator,
 	type TransactionLogPosition,
 	type TransactionLogPurgeWatermark,
 	type TransactionLogStats,
@@ -66,7 +67,11 @@ export {
 export { ConflictKind, Transaction, TransactionAbortUnresolvedError } from './transaction.ts';
 
 import './transaction-log-reader.ts'; // installs TransactionLog.prototype.query
-export { CorruptFrameError, TransactionLogGapError } from './transaction-log-reader.ts';
+export {
+	CorruptFrameError,
+	TransactionLogGapError,
+	TransactionLogUntilUnreachedError,
+} from './transaction-log-reader.ts';
 
 export const versions: { rocksdb: string; 'rocksdb-js': string } = {
 	rocksdb: version,

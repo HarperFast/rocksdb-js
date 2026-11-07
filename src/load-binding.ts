@@ -153,7 +153,21 @@ export type TransactionLogQueryOptions = {
 	startFromLastFlushed?: boolean;
 	readUncommitted?: boolean;
 	exclusiveStart?: boolean;
+	/**
+	 * Stop before this same-log iterator's unread position, including a peeked entry.
+	 * Resumes when it advances; a closed iterator no longer bounds this query.
+	 * A pull short of the bound throws TransactionLogUntilUnreachedError.
+	 * Invalid or foreign-log iterators throw TypeError at query creation.
+	 */
+	until?: TransactionLogIterator;
 };
+
+export interface TransactionLogIterator extends IterableIterator<TransactionEntry> {
+	/** Inspect the next entry without consuming it. A done result is never cached. */
+	peek(): IteratorResult<TransactionEntry>;
+	/** Permanently end this iterator and release any iterators bounded by it. */
+	close(): void;
+}
 
 export type TransactionEntry = {
 	timestamp: number;
@@ -248,7 +262,7 @@ export type TransactionLog = {
 	getStats(): TransactionLogStats;
 	name: string;
 	path: string;
-	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
+	query(options?: TransactionLogQueryOptions): TransactionLogIterator;
 	_currentLogBuffer: WeakRef<LogBuffer> | undefined;
 	_findPosition(timestamp: number): number;
 	_findExactStart(timestamp: number, span: Float64Array): number;
@@ -1018,7 +1032,40 @@ export const supportedCompression: readonly string[] = Object.freeze(
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
-export const TransactionLog: TransactionLog = binding.TransactionLog;
+const transactionLogOwners = new WeakMap<TransactionLog, string>();
+const databaseIdentityGetter = Object.getOwnPropertyDescriptor(
+	NativeDatabase.prototype,
+	'identityPath'
+)!.get!;
+const logNameGetter = Object.getOwnPropertyDescriptor(
+	binding.TransactionLog.prototype,
+	'name'
+)!.get!;
+export const TransactionLog: TransactionLog = new Proxy(binding.TransactionLog, {
+	construct(target, args, newTarget) {
+		const log = Reflect.construct(target, args, newTarget) as TransactionLog;
+		registerTransactionLog(log, databaseIdentityGetter.call(args[0]));
+		return log;
+	},
+});
+Object.defineProperty(TransactionLog.prototype, 'constructor', { value: TransactionLog });
+
+export function registerTransactionLog(log: TransactionLog, database: string | undefined): void {
+	if (database !== undefined) {
+		transactionLogOwners.set(log, database);
+	}
+}
+
+export function sameTransactionLog(left: TransactionLog, right: TransactionLog): boolean {
+	const owner = transactionLogOwners.get(left);
+	const other = transactionLogOwners.get(right);
+	return (
+		owner !== undefined &&
+		other !== undefined &&
+		owner === other &&
+		logNameGetter.call(left) === logNameGetter.call(right)
+	);
+}
 /**
  * Returns the status of every database currently held by the native registry.
  * Walks every registered descriptor, so it samples live state rather than

@@ -6,6 +6,7 @@
 - [Transaction-log conditional close](src/binding/transaction_log/DESIGN.md#conditional-close) — why `tryClose()` refuses when any transaction bound during its check.
 - [Transaction-log sync failure](src/binding/transaction_log/DESIGN.md#a-failed-sync-freezes-the-flushed-state) — a failed segment sync stops `txn.state` from advancing for the life of the store instance.
 - [Transaction-log exact-start lookups](src/binding/transaction_log/DESIGN.md#exact-start-lookups) — the skip span an exact-start lookup jumps over, and what it must never cross.
+- [Transaction-log iterator handoff](src/binding/transaction_log/DESIGN.md#iterator-handoff) — physical bounds, peeked entries, and proving catch-up before reporting done.
 - [Transaction-log aborted batches](src/binding/transaction_log/DESIGN.md#aborted-batches) — readers skip a batch whose first entry carries the abort flag (0x02).
 - [Transaction-log abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) — a logged transaction that ends without committing gets its batch marked, synced, before its position is released; failures fail closed.
 - [Write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal) — with abort markers and `transactionLogWriteIntents` on, an attempt behind an older write intent is refused before it logs.
