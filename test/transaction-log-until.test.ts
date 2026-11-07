@@ -305,6 +305,123 @@ describe('Transaction log iterator handoff', () => {
 			expect(texts(follower)).toEqual(rest);
 		}));
 
+	// In these filtered cases `witness` is bounded by the filtered reader, so what it returns is
+	// exactly where the filtered reader's physical cursor stopped.
+	it('stops a filtered scan at a moving until, a peek and a close', () =>
+		dbRunner(({ db }) => {
+			const log = db.useLog('foo');
+			addAll(db, log, 6);
+			const leader = log.query({ start: 0 });
+			const filtered = log.query({ start: 0, end: 1, until: leader });
+			const witness = log.query({ start: 0, until: filtered });
+			leader.next();
+			leader.next();
+			expect(filtered.next().done).toBe(true);
+			expect(texts(witness)).toEqual(['0', '1']);
+			expect(leader.peek().value?.data.toString()).toBe('2');
+			expect(filtered.next().done).toBe(true);
+			expect(texts(witness)).toEqual([]);
+			leader.next();
+			leader.next();
+			expect(filtered.next().done).toBe(true);
+			expect(texts(witness)).toEqual(['2', '3']);
+			leader.close();
+			expect(filtered.next().done).toBe(true);
+			expect(texts(witness)).toEqual(['4', '5']);
+		}));
+
+	it('stops a filtered scan at until in a later segment', () =>
+		dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, ({ db }) => {
+			const log = db.useLog('foo');
+			addAll(db, log, 20, 200);
+			expect(log.getLogFileSize(3)).toBeGreaterThan(FILE_HEADER);
+			const leader = log.query({ start: 0 });
+			const filtered = log.query({ start: 0, end: 1, until: leader });
+			const witness = log.query({ start: 0, until: filtered });
+			// mid-segment: a bound at a segment's end would also stop a scan left on a stale limit
+			const led = Array.from({ length: 10 }, () => leader.next().value!.data.toString());
+			expect(filtered.next().done).toBe(true);
+			expect(texts(witness)).toEqual(led);
+			const rest = texts(leader);
+			expect(rest).toHaveLength(10);
+			expect(filtered.next().done).toBe(true);
+			expect(texts(witness)).toEqual(rest);
+		}));
+
+	it('stops immediately when starting in a segment past until', () =>
+		dbRunner({ dbOptions: [{ transactionLogMaxSize: 500 }] }, ({ db }) => {
+			const log = db.useLog('foo');
+			for (let i = 0; i < 4; i++) add(db, log, `${i}`.padEnd(600, 'x'), 10 + i);
+			const leader = log.query({ start: 0 });
+			leader.next();
+			const follower = log.query({ start: 13, until: leader });
+			expect(follower.next().done).toBe(true);
+			expect(texts(leader).map((text) => text[0])).toEqual(['1', '2', '3']);
+			expect(texts(follower).map((text) => text[0])).toEqual(['3']);
+		}));
+
+	it.each([false, true])(
+		're-applies until after a filtered scan outruns its size snapshot (rotated: %s)',
+		(rotated) =>
+			dbRunner({ dbOptions: [{ transactionLogMaxSize: 1000 }] }, ({ db }) => {
+				const log = db.useLog('foo');
+				addAll(db, log, 2, 100);
+				const leader = log.query({ start: 0 });
+				const filtered = log.query({ start: 0, end: 1, until: leader });
+				const witness = log.query({ start: 0, until: filtered });
+				leader.next();
+				expect(filtered.next().done).toBe(true);
+				addAll(db, log, 3, 100);
+				if (rotated) {
+					add(db, log, 'rotates'.padEnd(800, 'x'));
+					expect(log.getStats().lastCommittedPosition?.sequence).toBe(2);
+				}
+				leader.next();
+				leader.next();
+				expect(filtered.next().done).toBe(true);
+				expect(texts(witness).map((text) => text[0])).toEqual(['0', '1', '0']);
+				leader.next();
+				expect(filtered.next().done).toBe(true);
+				expect(texts(witness).map((text) => text[0])).toEqual(['1']);
+			})
+	);
+
+	it('applies until to filtered scans in both committed and uncommitted directions', () =>
+		dbRunner(async ({ db }) => {
+			const log = db.useLog('foo');
+			add(db, log, 'committed');
+			const txn = new Transaction(db.store);
+			let committed = false;
+			try {
+				txn.putSync('pending-key', 'pending');
+				log.addEntry(Buffer.from('pending'), txn.id);
+				forceTryAgainForTesting(1);
+				await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_TRY_AGAIN' });
+				const committedLive = log.query({ start: 0 });
+				expect(texts(committedLive)).toEqual(['committed']);
+				const uncommitted = log.query({
+					start: 0,
+					end: 1,
+					readUncommitted: true,
+					until: committedLive,
+				});
+				expect(uncommitted.next().done).toBe(true);
+				const witness = log.query({ start: 0, readUncommitted: true, until: uncommitted });
+				expect(texts(witness)).toEqual(['committed']);
+				const live = log.query({ start: 0, readUncommitted: true });
+				expect(texts(live)).toEqual(['committed', 'pending']);
+				const filtered = log.query({ start: 0, end: 1, until: live });
+				expect(() => filtered.next()).toThrow(TransactionLogUntilUnreachedError);
+				txn.putSync('pending-key', 'pending');
+				await txn.commit();
+				committed = true;
+				expect(filtered.next().done).toBe(true);
+			} finally {
+				forceTryAgainForTesting(0);
+				if (!committed) txn.abort();
+			}
+		}));
+
 	it('closes permanently and releases followers, including a pending peek', () =>
 		dbRunner(({ db }) => {
 			const log = db.useLog('foo');
@@ -448,6 +565,89 @@ describe('Transaction log iterator handoff', () => {
 				read.mockRestore();
 			}
 		}));
+
+	it('takes an exact-start skip on a later pull after until passes its target', () =>
+		dbRunner(({ db }) => {
+			const log = db.useLog('foo');
+			add(db, log, 'before', 10);
+			for (let i = 0; i < 200; i++) add(db, log, 'after', 30 + i);
+			const leader = log.query({ start: 0 });
+			for (let i = 0; i < 6; i++) leader.next();
+			const follower = log.query({ start: 20, exactStart: true, until: leader });
+			expect(follower.next().done).toBe(true);
+			const witness = log.query({ start: 0, until: follower });
+			expect(texts(witness)).toHaveLength(6);
+			expect(texts(leader)).toHaveLength(195);
+			const read = vi.spyOn(DataView.prototype, 'getFloat64');
+			try {
+				expect(texts(follower)).toEqual([]);
+				expect(read.mock.calls.length).toBeLessThan(10);
+			} finally {
+				read.mockRestore();
+			}
+			expect(texts(witness)).toHaveLength(195);
+		}));
+
+	describe('with a damaged frame between the reader and until', () => {
+		// The copy is what a follower maps; `leader` keeps reading the intact file, so the two
+		// disagree about framing the way they would after corruption the leader never read.
+		function damaged(
+			log: TransactionLog,
+			damage: (copy: Buffer, frame: (i: number) => number) => void
+		) {
+			const real = log._getMemoryMapOfFile(1)!;
+			const copy = Buffer.from(new ArrayBuffer(real.length));
+			real.copy(copy);
+			Object.defineProperty(copy, 'readableExtent', { value: real.readableExtent });
+			damage(copy, (i) => FILE_HEADER + i * (ENTRY_HEADER + 1));
+			log._logBuffers.clear();
+			log._currentLogBuffer = undefined;
+			return vi.spyOn(log, '_getMemoryMapOfFile').mockReturnValue(copy as typeof real);
+		}
+
+		it.each([false, true])('reads a frame straddling until whole (filtered: %s)', (filtered) =>
+			dbRunner(({ db }) => {
+				const log = db.useLog('foo');
+				addAll(db, log, 12);
+				const leader = log.query({ start: 0 });
+				for (let i = 0; i < 4; i++) leader.next();
+				const spanned = 4 * (ENTRY_HEADER + 1) - ENTRY_HEADER;
+				const map = damaged(log, (copy, frame) => copy.writeUInt32BE(spanned, frame(2) + 8));
+				try {
+					const follower = log.query({ start: 0, end: filtered ? 1 : undefined, until: leader });
+					const lengths = Array.from(follower, (entry) => entry.data.length);
+					expect(lengths).toEqual(filtered ? [] : [1, 1, spanned]);
+					expect(follower.next().done).toBe(true);
+				} finally {
+					map.mockRestore();
+				}
+			})
+		);
+
+		it.each([false, true])(
+			'stops at until when a corrupt frame resyncs past it (filtered: %s)',
+			(filtered) =>
+				dbRunner(({ db }) => {
+					const log = db.useLog('foo');
+					addAll(db, log, 12);
+					const leader = log.query({ start: 0 });
+					for (let i = 0; i < 4; i++) leader.next();
+					const map = damaged(log, (copy, frame) => {
+						for (let i = 2; i < 6; i++) copy.writeUInt32BE(0, frame(i) + 8);
+					});
+					try {
+						const follower = log.query({ start: 0, end: filtered ? 1 : undefined, until: leader });
+						if (!filtered)
+							expect([follower.next(), follower.next()].map((r) => r.done)).toEqual([false, false]);
+						expect(() => follower.next()).toThrow(CorruptFrameError);
+						expect(follower.next().done).toBe(true);
+						expect(follower.peek().done).toBe(true);
+					} finally {
+						map.mockRestore();
+					}
+				})
+		);
+	});
 
 	it('checks until before parsing an aborted or corrupt frame, then preserves recovery', () =>
 		dbRunner(({ db }) => {

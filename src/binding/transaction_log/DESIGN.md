@@ -49,7 +49,9 @@ The first lookup in a process still indexes every segment from the newest down t
 
 # Iterator handoff
 
-`query({ until })` compares segment and offset before parsing or filtering each frame. `done` proves the reader reached the other iterator's unread cursor; `endOfReadable` throws if readable input ends short of it. Timestamps cannot express that boundary because commits can arrive with older timestamps.
+`query({ until })` stops before parsing or filtering any frame at or past the other iterator's unread segment and offset. `done` proves the reader reached that cursor; `endOfReadable` throws if readable input ends short of it. Timestamps cannot express that boundary because commits can arrive with older timestamps.
+
+The bound is not compared per frame. A cursor moves only through its own `next()`, `peek()` or `close()`, and a pull runs none of those on the iterator bounding it, so `next()` turns the bound into one local limit (`scanEnd`): `size`, or the bound's offset when that is nearer in the current segment. It recomputes the limit on entry and after any change to `size` or the segment. `limit` and `corruptFrame()` keep reading the unclamped `size`: a frame straddling the bound is read whole, and clamping would report it as corrupt and cap the resync search at the bound. `reached` true implies `position >= scanEnd`, so an empty scan falls through to `endOfReadable`, which reports `done`.
 
 Display paths are not identities: separate databases can use the same relative spelling under different working directories, and an expired store reports no display path. `Store.useLog()` registers the store's immutable database identity for database and transaction logs; the public `TransactionLog` constructor captures `NativeDatabase.identityPath` directly. The native name getter is captured at module load and called only for bound validation, so subclass presentation getters cannot change ownership. `sameTransactionLog()` compares the immutable owner and native name; it never re-resolves a spelling after `chdir()` or treats two absent paths as equal.
 
