@@ -20,6 +20,21 @@ describe('Transaction log', () => {
 	});
 
 	benchmark('rocksdb', {
+		name: 'drain a transaction-log query that filters every entry',
+		mode: 'essential',
+		setup(ctx: BenchmarkContext<RocksDatabase>) {
+			ctx.log = ctx.db.useLog('0');
+			ctx.db.transactionSync((txn) => {
+				txn.setTimestamp(10_000);
+				for (let i = 0; i < 10_000; i++) ctx.log.addEntry(Buffer.from('x'), txn.id);
+			});
+		},
+		bench({ log }) {
+			log.query({ start: 0, end: 1 }).next();
+		},
+	});
+
+	benchmark('rocksdb', {
 		name: 'write with a transaction-bound log',
 		mode: 'essential',
 		bench({ db }: BenchmarkContext<RocksDatabase>) {
