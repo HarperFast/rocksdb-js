@@ -560,7 +560,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// where `subarray` would silently truncate. The throw leaves `position` at the
 				// resume point (HarperFast/harper#2016, #2063).
 				let limit = Math.min(size, logBuffer!.length);
-				while (position < scanEnd) {
+				do {
 					try {
 						timestamp = dataView!.getFloat64(position);
 					} catch (error) {
@@ -766,7 +766,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							: size;
 						limit = Math.min(size, logBuffer!.length);
 					}
-				}
+				} while (position < scanEnd);
 				return endOfReadable(untilCursor, logBuffer!, position);
 			},
 			function control(operation, fromLogId, fromPosition, atSegmentEnd) {
