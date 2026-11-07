@@ -68,9 +68,9 @@ class LogIterator implements TransactionLogIterator {
 		return value.#control('reached', logId, position, atSegmentEnd) as boolean | undefined;
 	}
 
-	// undefined means no bound applies.
-	static scanEnd(value: LogIterator | undefined, logId: number, size: number): number | undefined {
-		return value && (value.#control('scanEnd', logId, size) as number | undefined);
+	// undefined means closed, as for reached().
+	static scanEnd(value: LogIterator, logId: number, size: number): number | undefined {
+		return value.#control('scanEnd', logId, size) as number | undefined;
 	}
 }
 
@@ -544,9 +544,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							}
 						}
 					}
-					scanEnd = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size;
+					scanEnd = untilCursor
+						? (LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size)
+						: size;
 				}
 
+				if (position >= scanEnd) {
+					return endOfReadable(untilCursor, logBuffer!, position);
+				}
 				let jumpRefused = false;
 				// Corruption bound: a committed read can't legitimately extend past
 				// the committed `size` (a true entry boundary); an uncommitted read is
@@ -706,7 +711,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								logBuffer!.size = size;
 							}
 							if (position < size) {
-								scanEnd = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size;
+								scanEnd = untilCursor
+									? (LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size)
+									: size;
 								limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 								continue;
 							}
@@ -761,7 +768,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 								);
 							}
 						}
-						scanEnd = LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size;
+						scanEnd = untilCursor
+							? (LogIterator.scanEnd(untilCursor, logBuffer!.logId, size) ?? size)
+							: size;
 						limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 					}
 				}
