@@ -567,7 +567,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 				// The throw leaves `position` at the resume point, so a broken frame ends the
 				// entry rather than the rest of the log (HarperFast/harper#2016, #2063).
 				let limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
-				while (position < scanEnd) {
+				do {
 					try {
 						timestamp = dataView!.getFloat64(position);
 					} catch (error) {
@@ -773,7 +773,7 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 							: size;
 						limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
 					}
-				}
+				} while (position < scanEnd);
 				return endOfReadable(untilCursor, logBuffer!, position);
 			},
 			function control(operation, fromLogId, fromPosition, atSegmentEnd) {
