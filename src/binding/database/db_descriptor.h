@@ -1213,9 +1213,13 @@ struct ColumnFamilyDescriptor final {
 
 	/**
 	 * Verification-table participation (AGENTS invariant 38). Sticky: slots
-	 * outlive the handles that seeded them. Guarded by `databasesMutex`.
+	 * outlive the handles that seeded them. Only an explicit
+	 * `verificationTable: false` open clears it, and only once
+	 * `verifyingHandles` is 0. Guarded by `databasesMutex`.
 	 */
 	bool verificationTable = false;
+
+	std::atomic<uint32_t> verifyingHandles{0};
 
 	std::atomic<uint32_t> nonVerifyingHandles{0};
 

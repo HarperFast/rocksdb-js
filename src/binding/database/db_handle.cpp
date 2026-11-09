@@ -166,7 +166,9 @@ void DBHandle::close() {
 
 	// decrement the reference count on the column and descriptor
 	if (this->columnDescriptor) {
-		if (!this->enableVerificationTable) {
+		if (this->enableVerificationTable) {
+			this->columnDescriptor->verifyingHandles.fetch_sub(1);
+		} else {
 			// Raised before the count drops: OpenDB reads them in the other order.
 			if (this->descriptor) {
 				const uint64_t lastId = this->descriptor->nextTransactionId.load();

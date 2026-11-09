@@ -843,23 +843,35 @@ describe('Verification Table', () => {
 				}
 			));
 
-		it('rejects an explicit verificationTable: false on a participating column family', async () => {
+		it('rejects an explicit verificationTable: false only while a handle on the column family participates', async () => {
+			const conflict = expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' });
 			const path = generateDBPath();
 			const keepAlive = new RocksDatabase(path).open();
 			const cached = new RocksDatabase(path, cachedOptions).open();
+			const inherited = new RocksDatabase(path, plainOptions).open();
 			const optOut = new RocksDatabase(path, { ...plainOptions, verificationTable: false });
+			const reopened = new RocksDatabase(path, cachedOptions);
 			try {
-				expect(() => optOut.open()).toThrow(
-					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
-				);
-				// Participation outlives the opted-in handle while the database stays open.
+				const key = Buffer.from('explicit-false');
+				await cached.put(key, makeValue(1.5e12));
+				seed(cached, key, 1.5e12);
+				expect(() => optOut.open()).toThrow(conflict);
 				cached.close();
-				expect(() => optOut.open()).toThrow(
-					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
-				);
-				const plain = new RocksDatabase(path, plainOptions).open();
-				plain.close();
+				// still refused: the handle that joined without the option participates
+				expect(() => optOut.open()).toThrow(conflict);
+				inherited.close();
+
+				// Nothing participates any more, even though keepAlive holds the database open.
+				optOut.open();
+				optOut.putSync(key, makeValue(1.6e12));
+				expect(() => reopened.open()).toThrow(conflict);
+				optOut.close();
+				reopened.open();
+				expectStale(reopened, key, 1.5e12, 1.6e12);
 			} finally {
+				reopened.close();
+				optOut.close();
+				inherited.close();
 				cached.close();
 				keepAlive.close();
 			}

@@ -74,9 +74,14 @@ agree across every handle on a column family once any of them participates.
 - **A later handle inherits participation.** Once a `verificationTable: true` handle attaches, every
   handle that attaches to that generation participates, for as long as the generation lives in that
   descriptor, because a slot it seeded can still be trusted after it closes. A handle that left the
-  option unset joins silently. An explicit `verificationTable: false` is refused with
-  `ERR_VERIFICATION_TABLE_CONFLICT` (`DBOptions::verificationTableExplicit`) rather than overridden,
-  so a caller who asked to stay out is told it cannot.
+  option unset joins silently.
+- **An explicit opt-out ends participation once no handle participates.** A
+  `verificationTable: false` handle (`DBOptions::verificationTableExplicit`) is refused with
+  `ERR_VERIFICATION_TABLE_CONFLICT` while `verifyingHandles` is nonzero, since its writes would skip
+  slots those handles trust. With none attached, it opens and clears the column family's flag, so
+  later handles that leave the option unset do not participate either. The slots the earlier
+  participants seeded stay in the table; a later opt-in is an ordinary one and passes the checks
+  below, which settle them once the opt-out handle has detached.
 - **Opting in fails while a non-participating writer may exist.** A write staged without the option
   holds no write intent, so a slot seeded after the switch would survive its commit. The open is
   refused with `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle is attached

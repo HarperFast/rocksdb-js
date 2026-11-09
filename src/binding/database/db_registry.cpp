@@ -1047,15 +1047,21 @@ void DBRegistry::OpenDB(
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	// AGENTS invariant 38. Participation cannot be turned off for one handle: its
-	// writes would skip the slots the participating handles trust.
-	if (options.verificationTableExplicit && !options.verificationTable && columnDescriptor->verificationTable) {
-		throw rocksdb_js::DBException(
-			"ERR_VERIFICATION_TABLE_CONFLICT",
-			"Column family \"" + columnDescriptor->name + "\" participates in the verification table in this " +
-			"process, because a handle opened it with verificationTable: true; it keeps participating until every " +
-			"handle on this database closes, so open it with verificationTable: true or leave the option unset"
-		);
+	// AGENTS invariant 38. An explicit opt-out cannot join participating handles:
+	// its writes would skip the slots they trust. With none attached it takes the
+	// family out, and a later opt-in passes the checks below, which settle the
+	// slots the earlier participants seeded.
+	const bool optsOut = options.verificationTableExplicit && !options.verificationTable;
+	if (optsOut && columnDescriptor->verificationTable) {
+		const uint32_t verifying = columnDescriptor->verifyingHandles.load();
+		if (verifying > 0) {
+			throw rocksdb_js::DBException(
+				"ERR_VERIFICATION_TABLE_CONFLICT",
+				"Column family \"" + columnDescriptor->name + "\" is open with verificationTable through " +
+				std::to_string(verifying) + " handle(s) in this process; open it with verificationTable: true or " +
+				"leave the option unset, or close those handles first"
+			);
+		}
 	}
 	// A write staged through a non-participating handle
 	// holds no write intent, so switching on while one may exist would let a
@@ -1103,7 +1109,7 @@ void DBRegistry::OpenDB(
 			}
 		}
 	}
-	const bool participates = options.verificationTable || columnDescriptor->verificationTable;
+	const bool participates = options.verificationTable || (!optsOut && columnDescriptor->verificationTable);
 
 	const uint64_t verificationTableDbId = entry.descriptor->vtEpoch;
 	const uint32_t verificationTableColumnFamilyId = columnDescriptor->column->GetID();
@@ -1119,7 +1125,9 @@ void DBRegistry::OpenDB(
 	// count only for a handle holding both.
 	if (participates) {
 		columnDescriptor->verificationTable = true;
+		columnDescriptor->verifyingHandles.fetch_add(1);
 	} else {
+		columnDescriptor->verificationTable = false;
 		columnDescriptor->nonVerifyingHandles.fetch_add(1);
 	}
 	handle->enableVerificationTable = participates;

@@ -405,7 +405,8 @@ export type NativeDatabaseOptions = {
 	 * commit time). Enable only for column families whose records are
 	 * cached (e.g. the primary CF of a table). Default: false. Left unset, a
 	 * handle joins a column family another handle opened with `true`; an
-	 * explicit `false` there throws `ERR_VERIFICATION_TABLE_CONFLICT`.
+	 * explicit `false` throws `ERR_VERIFICATION_TABLE_CONFLICT` while any
+	 * handle on that column family participates.
 	 */
 	verificationTable?: boolean;
 	writeBufferSize?: number;
