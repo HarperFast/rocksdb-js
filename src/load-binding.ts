@@ -257,6 +257,11 @@ export type TransactionLogPurgeWatermark =
 export type TransactionLog = {
 	new (db: NativeDatabase, name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
+	/**
+	 * Whether `other` is the same logical log: the same database identity and log name.
+	 * Works after either database closes. Does not detect a destroyed and recreated log.
+	 */
+	equals(other: unknown): boolean;
 	getLogFileSize(sequenceId?: number): number;
 	getPurgeWatermark(): TransactionLogPurgeWatermark;
 	getStats(): TransactionLogStats;
@@ -1035,40 +1040,7 @@ export const supportedCompression: readonly string[] = Object.freeze(
 export const NativeDatabase: NativeDatabase = binding.Database;
 export const NativeIterator: typeof NativeIteratorCls = binding.Iterator;
 export const NativeTransaction: NativeTransaction = binding.Transaction;
-const transactionLogOwners = new WeakMap<TransactionLog, string>();
-const databaseIdentityGetter = Object.getOwnPropertyDescriptor(
-	NativeDatabase.prototype,
-	'identityPath'
-)!.get!;
-const logNameGetter = Object.getOwnPropertyDescriptor(
-	binding.TransactionLog.prototype,
-	'name'
-)!.get!;
-export const TransactionLog: TransactionLog = new Proxy(binding.TransactionLog, {
-	construct(target, args, newTarget) {
-		const log = Reflect.construct(target, args, newTarget) as TransactionLog;
-		registerTransactionLog(log, databaseIdentityGetter.call(args[0]));
-		return log;
-	},
-});
-Object.defineProperty(TransactionLog.prototype, 'constructor', { value: TransactionLog });
-
-export function registerTransactionLog(log: TransactionLog, database: string | undefined): void {
-	if (database !== undefined) {
-		transactionLogOwners.set(log, database);
-	}
-}
-
-export function sameTransactionLog(left: TransactionLog, right: TransactionLog): boolean {
-	const owner = transactionLogOwners.get(left);
-	const other = transactionLogOwners.get(right);
-	return (
-		owner !== undefined &&
-		other !== undefined &&
-		owner === other &&
-		logNameGetter.call(left) === logNameGetter.call(right)
-	);
-}
+export const TransactionLog: TransactionLog = binding.TransactionLog;
 /**
  * Returns the status of every database currently held by the native registry.
  * Walks every registered descriptor, so it samples live state rather than

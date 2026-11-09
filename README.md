@@ -2427,6 +2427,7 @@ to disk right before the transaction is committed. You may add multiple enties p
 underlying architecture is thread safe.
 
 - `log.addEntry()`
+- `log.equals()`
 - `log.getPurgeWatermark()`
 - `log.path`
 - `log.query()`
@@ -2459,6 +2460,24 @@ await db.transaction(async (txn) => {
 Note that the `TransactionLog` class also has internal methods `_getMemoryMapOfFile`,
 `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in
 any version.
+
+#### `log.equals(other): boolean`
+
+Returns `true` when `other` is a `TransactionLog` for the same log: the same database and the same
+log name. The database is compared by its resolved filesystem identity, so `db.useLog('foo')`,
+`txn.useLog('foo')` and a log from another handle opened with a different spelling of the same path
+all compare equal, and two databases opened through the same relative path from different working
+directories do not. The comparison still works after either database closes. Any other value
+compares unequal.
+
+```typescript
+const log = db.useLog('foo');
+log.equals(otherHandle.useLog('foo')); // true: same database and name
+log.equals(db.useLog('bar')); // false
+```
+
+A log destroyed with `purgeLogs({ destroy: true })` and recreated under the same name still compares
+equal to wrappers of the old one.
 
 #### `log.getPurgeWatermark(): TransactionLogPurgeWatermark`
 
@@ -2511,11 +2530,11 @@ Returns an iterable/iterator that streams all log entries for the given filter.
   - `end?: string` The transction end timestamp.
   - `exclusiveStart?: boolean` When `true`, this will only match transactions with timestamps after
     the start timestamp.
-  - `until?: TransactionLogIterator` Stops before another same-log iterator's unread position,
-    including an entry it has peeked. The bound is exclusive, compares segment and offset before
-    filtering, and works across rotation, even when this query starts past it. It resumes when
-    `until` advances. A closed iterator no longer bounds the query. An invalid or foreign-log
-    iterator throws `TypeError` at query creation.
+  - `until?: TransactionLogIterator` Stops before the unread position of another iterator from a log
+    that `equals()` this one, including an entry it has peeked. The bound is exclusive, compares
+    segment and offset before filtering, and works across rotation, even when this query starts past
+    it. It resumes when `until` advances. A closed iterator no longer bounds the query. An invalid or
+    foreign-log iterator throws `TypeError` at query creation.
   - `exactStart?: boolean` When `true`, this will only match and iterate starting from a transaction
     with the given start timestamp. Once the specified transaction is found, all subsequent
     transactions will be returned (regardless of whether their timestamp comes before the `start`

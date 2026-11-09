@@ -28,6 +28,14 @@ struct TransactionLogHandle final : Closable {
 	std::string logName;
 
 	/**
+	 * The owning database's resolved identity (`DBHandle::identityPath`), copied
+	 * at construction. Together with `logName` it names the logical log for
+	 * `TransactionLog.equals()`, and it outlives the database handle so two
+	 * wrappers still compare after either database closes.
+	 */
+	const std::string identityPath;
+
+	/**
 	 * Whether the associated DBHandle's DBDescriptor is opened in readonly mode.
 	 */
 	bool readOnly;

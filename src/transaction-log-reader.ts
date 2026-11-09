@@ -1,7 +1,6 @@
 import {
 	constants,
 	type LogBuffer,
-	sameTransactionLog,
 	type TransactionEntry,
 	TransactionLog,
 	type TransactionLogIterator,
@@ -20,6 +19,9 @@ type IteratorControl = (
 	atSegmentEnd?: boolean
 ) => IteratorResult<TransactionEntry> | boolean | number | void;
 const ITERATOR_TOKEN = Symbol('transactionLogIterator');
+// Captured so a subclass overriding equals() cannot vouch for a foreign bound.
+const logEquals: (this: TransactionLog, other: unknown) => boolean =
+	TransactionLog.prototype.equals;
 
 class LogIterator implements TransactionLogIterator {
 	#sourceLog: TransactionLog;
@@ -43,7 +45,7 @@ class LogIterator implements TransactionLogIterator {
 	}
 
 	static isFrom(value: LogIterator, sourceLog: TransactionLog): boolean {
-		return sameTransactionLog(sourceLog, value.#sourceLog);
+		return logEquals.call(sourceLog, value.#sourceLog);
 	}
 
 	[Symbol.iterator](): TransactionLogIterator {

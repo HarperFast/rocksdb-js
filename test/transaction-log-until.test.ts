@@ -33,7 +33,7 @@ function texts(iterator: TransactionLogIterator) {
 }
 
 describe('Transaction log iterator handoff', () => {
-	it('compares immutable owner identity across cwd changes, aliases and closed stores', () =>
+	it('compares logs natively with equals() across cwd changes, aliases, subclasses and closed stores', () =>
 		dbRunner({ skipOpen: true }, ({ dbPath }) => {
 			const fixture = fileURLToPath(
 				new URL('./fixtures/fork-transaction-log-until-identity.mts', import.meta.url)
