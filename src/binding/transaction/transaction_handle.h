@@ -22,6 +22,7 @@
 
 namespace rocksdb_js {
 
+struct DBDescriptor;
 struct DBHandle;
 struct DBIteratorHandle;
 struct DBIteratorOptions;
@@ -197,6 +198,14 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	const std::weak_ptr<DBDescriptor> owningDescriptor;
 
 	/**
+	 * The environment that created this transaction. A RocksDB transaction is
+	 * not thread-safe, so every by-id lookup rejects any other environment
+	 * (`lookupOwnedTransaction`). Immutable, unlike `dbHandle`, which close()
+	 * resets from whichever thread runs it.
+	 */
+	const napi_env ownerEnv;
+
+	/**
 	 * Whether to disable snapshots.
 	 */
 	bool disableSnapshot;
@@ -223,10 +232,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * lane's store through the commit-completion hand-off. Keep every store ahead
 	 * of the cleanup: the flag has to be set even when that cleanup fails.
 	 *
-	 * Only this field is synchronized. A write through this transaction while a
-	 * commit is in flight — from the owning env, or from another env through
-	 * Database::PutSync/RemoveSync by txnId — still reads the plain `state`, and
-	 * from another env can stage into `txn` with no ordering against the lane.
+	 * Only this field is synchronized. A write from the owning env while a
+	 * commit is in flight still reads the plain `state`. No other env can stage
+	 * into `txn`: every by-id lookup rejects it (`ownerEnv`).
 	 */
 	std::atomic<bool> writesAbandoned{false};
 	static_assert(std::atomic<bool>::is_always_lock_free);
@@ -426,7 +434,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	/** Adds the pinned time, if any, to `store`. */
 	void recordPinnedTime(TransactionLogStore& store);
 
-	TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
+	TransactionHandle(napi_env env, std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot = false);
 	~TransactionHandle();
 
 	void resetTransaction(DBDescriptor* descriptor);
@@ -593,6 +601,33 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
 };
+
+enum class TransactionLookup { Found, NotFound, WrongEnv };
+
+/**
+ * Resolves a transaction by id for a call made from `env`. Every lookup by id
+ * goes through here. Ownership is checked before any handle field is read,
+ * since a foreign env may not read them.
+ */
+TransactionLookup lookupOwnedTransaction(
+	DBDescriptor& descriptor,
+	uint64_t txnId,
+	napi_env env,
+	std::shared_ptr<TransactionHandle>& txnHandle
+);
+
+std::string foreignTransactionMessage(uint64_t txnId);
+
+/**
+ * `lookupOwnedTransaction` for N-API callers: throws and returns null unless
+ * the transaction was found, prefixing a not-found message with `context`.
+ */
+std::shared_ptr<TransactionHandle> getOwnedTransaction(
+	napi_env env,
+	DBDescriptor& descriptor,
+	uint64_t txnId,
+	const char* context
+);
 
 } // namespace rocksdb_js
 

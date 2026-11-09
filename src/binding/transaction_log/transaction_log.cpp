@@ -195,7 +195,10 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	}
 
 	try {
-		(*txnLogHandle)->addEntry(transactionId, data, static_cast<uint32_t>(size));
+		(*txnLogHandle)->addEntry(env, transactionId, data, static_cast<uint32_t>(size));
+	} catch (const rocksdb_js::DBException& e) {
+		::napi_throw_error(env, e.code(), e.what());
+		return nullptr;
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
