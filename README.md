@@ -1476,6 +1476,11 @@ Type: `number`
 The transaction ID, a positive integer no greater than `Number.MAX_SAFE_INTEGER`. Transaction IDs
 are unique to the RocksDB database path, regardless the database name/column family.
 
+A transaction belongs to the thread that created it. Although every `worker_threads` worker that
+opens the same path shares one id space, using a transaction by id from another worker (for example
+`{ transaction }` read options or `log.addEntry(data, txnId)`) throws `ERR_TRANSACTION_WRONG_ENV`:
+RocksDB transactions are not thread-safe.
+
 #### `txn.setTimestamp(ts?: number): void`
 
 Overrides the transaction timestamp in milliseconds since the Unix epoch. Replication receivers and

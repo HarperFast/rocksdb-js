@@ -108,9 +108,10 @@ inline void delayTransactionStagingForTesting() {
  * Creates a new RocksDB transaction, enables snapshots, and sets the
  * transaction id.
  */
-TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
+TransactionHandle::TransactionHandle(napi_env env, std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
 	owningDescriptor(dbHandle->descriptor),
+	ownerEnv(env),
 	disableSnapshot(disableSnapshot),
 	coordinatedRetry(false),
 	state(TransactionState::Pending),
@@ -166,6 +167,53 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
  */
 TransactionHandle::~TransactionHandle() {
 	this->close();
+}
+
+std::string foreignTransactionMessage(uint64_t txnId) {
+	return "Transaction " + std::to_string(txnId) +
+		" belongs to another thread; a transaction can only be used from the thread that created it";
+}
+
+TransactionLookup lookupOwnedTransaction(
+	DBDescriptor& descriptor,
+	uint64_t txnId,
+	napi_env env,
+	std::shared_ptr<TransactionHandle>& txnHandle
+) {
+	txnHandle = descriptor.transactionGet(txnId);
+	if (!txnHandle) {
+		return TransactionLookup::NotFound;
+	}
+	if (txnHandle->ownerEnv != env) {
+		txnHandle.reset();
+		return TransactionLookup::WrongEnv;
+	}
+	if (!txnHandle->txn) {
+		txnHandle.reset();
+		return TransactionLookup::NotFound;
+	}
+	return TransactionLookup::Found;
+}
+
+std::shared_ptr<TransactionHandle> getOwnedTransaction(
+	napi_env env,
+	DBDescriptor& descriptor,
+	uint64_t txnId,
+	const char* context
+) {
+	std::shared_ptr<TransactionHandle> txnHandle;
+	switch (lookupOwnedTransaction(descriptor, txnId, env, txnHandle)) {
+		case TransactionLookup::Found:
+			return txnHandle;
+		case TransactionLookup::WrongEnv:
+			::napi_throw_error(env, "ERR_TRANSACTION_WRONG_ENV", foreignTransactionMessage(txnId).c_str());
+			return nullptr;
+		case TransactionLookup::NotFound:
+			break;
+	}
+	std::string message = std::string(context) + ": Transaction not found (txnId: " + std::to_string(txnId) + ")";
+	::napi_throw_error(env, nullptr, message.c_str());
+	return nullptr;
 }
 
 /**
