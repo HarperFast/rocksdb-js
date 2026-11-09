@@ -73,6 +73,7 @@ DBSettings::DBSettings():
 	writeBufferManagerFlushPolicy(-1),
 	writeBufferManager(nullptr),
 	compactOnClose(false),
+	shutdownOnExit(true),
 	lifecycleWaitSeconds(30),
 	verificationTableEntries(128 * 1024), // 128K slots = 1 MB at 8 bytes per slot
 	verificationTableSeed(generateSeed()),
@@ -390,6 +391,14 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
 
+	bool shutdownOnExitProvided = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "shutdownOnExit", &shutdownOnExitProvided));
+	bool shutdownOnExit = settings.getShutdownOnExit();
+	if (rocksdb_js::getProperty(env, params, "shutdownOnExit", shutdownOnExit) != napi_ok) {
+		::napi_throw_type_error(env, nullptr, "shutdownOnExit must be a boolean");
+		return nullptr;
+	}
+
 	bool abortMarkers = settings.transactionLogAbortMarkers.load(std::memory_order_relaxed);
 	const bool abortMarkersProvided =
 		rocksdb_js::getProperty(env, params, "transactionLogAbortMarkers", abortMarkers, true) == napi_ok;
@@ -477,6 +486,9 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	}
 	if (writeIntentsProvided) {
 		settings.transactionLogWriteIntents.store(writeIntents, std::memory_order_relaxed);
+	}
+	if (shutdownOnExitProvided) {
+		settings.shutdownOnExit.store(shutdownOnExit, std::memory_order_relaxed);
 	}
 
 	NAPI_RETURN_UNDEFINED();

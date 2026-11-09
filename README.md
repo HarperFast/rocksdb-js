@@ -215,11 +215,12 @@ Creates a new database instance.
     nonempty directory that reappears before first use is refused until every handle closes and the
     path reopens with this option. The name must be a single path component that does not start with
     `.`: startup discovery skips such directories, so the log could never be scanned again.
-  - `verificationTable: boolean` When `true`, this column family participates in the process-global
-    [Verification Table](#verification-table): transaction writes to this column family invalidate
-    the verification slot for each written key. Enable this only for column families whose records
-    are cached (e.g. the primary column family of a table). Defaults to `false`. Requires
-    `verificationTableEntries` to be configured before the first database is opened.
+  - `verificationTable: boolean` When `true`, this handle participates in the process-global
+    [Verification Table](#verification-table): writes through it invalidate the verification slot
+    for each written key, and reads through it may seed slots. Enable this only for column families
+    whose records are cached (e.g. the primary column family of a table), on every handle that
+    opens them. Defaults to `false`. Requires `verificationTableEntries` to be configured before the
+    first database is opened.
   - `writeBufferSize: number` The per-column-family memtable size in bytes at which the memtable is
     sealed and flushed to an SST file. Smaller values produce more frequent, faster flushes; larger
     values batch more writes per SST file at the cost of memory. Defaults to `16777216` (16 MB).
@@ -306,6 +307,10 @@ Sets global database settings.
     callers could already produce it. With `1`, a database's async commits run one at a time in
     the order `commit()` was called. Databases already open keep their limit.
   - `compactOnClose: boolean` When `true`, compacts the database on close. Defaults to `false`.
+  - `shutdownOnExit: boolean` When `true`, the main thread runs [`shutdown()`](#shutdown-void)
+    from a `process.on('exit')` listener, so `process.exit()` still flushes and closes every
+    database. Defaults to `true`. Set to `false` to leave memtables unflushed at a Node
+    `process.exit()`, e.g. to exercise crash recovery.
   - `transactionLogAbortMarkers: boolean` When `true`, a transaction that wrote its
     transaction-log batch and then ends without committing (an `abort()`, a commit error it gives
     up on, or a worker torn down with it pending) gets that batch marked aborted in place, and every
@@ -2210,10 +2215,12 @@ The freshness check works as follows:
 2. On a cold read, pass `{ populateVersion: true }` (or call `db.populateVersion()` afterward) to
    seed the slot with the version extracted from the value, so subsequent freshness checks hit.
 
-Transaction writes to a column family opened with `verificationTable: true` invalidate the slot for
-each written key at write time, so a stale version can never survive a write. This is also what
-enables [`coordinatedRetry`](#transactionoptions): a conflicting transaction parks on the slot and
-retries once the write intent is released.
+Writes through a handle opened with `verificationTable: true` invalidate the slot for each written
+key at write time, so a stale version cannot survive them, and a read seeds a slot only through
+such a handle. Open every handle on a cached column family with the option: a write through a
+handle without it leaves the slot holding the previous version. Invalidation is also what enables
+[`coordinatedRetry`](#transactionoptions): a conflicting transaction parks on the slot and retries
+once the write intent is released.
 
 The table is **process-global** and backed by a single shared structure, so versions populated on
 the main thread are visible to `worker_threads` workers and vice versa.
@@ -2222,7 +2229,8 @@ the main thread are visible to `worker_threads` workers and vice versa.
 
 The table must be sized before the first database is opened, via the
 [`verificationTableEntries`](#dbconfigoptions) config option (default `131072` slots = 1 MB; set to
-`0` to disable). Then opt-in per column family with the `verificationTable: true` open option:
+`0` to disable). Then opt in each handle on a cached column family with the
+`verificationTable: true` open option:
 
 ```typescript
 import { RocksDatabase } from '@harperfast/rocksdb-js';
@@ -2335,7 +2343,10 @@ every file after it is retained regardless of age; `purge.retainedUnflushedFiles
 While a backup with `transactionLogs` is copying a store's files, purges of that store are skipped
 (`purge.retentionPins` reports it). On a filesystem that rejects a directory fsync, the store's last
 file is kept, since `txn.state` could not be made durable before deleting it.
-Use `destroy: true` only to remove the store itself.
+Before deleting any file, the purge records the largest key it held in the log's purge watermark
+([`log.getPurgeWatermark()`](#loggetpurgewatermark-transactionlogpurgewatermark)) and makes that
+durable. Use `destroy: true` only to remove the store itself; a log recreated after it starts a new
+watermark history.
 
 - `options: object`
   - `before?: number` Remove transaction log files older than the specified timestamp, subject to
@@ -2395,6 +2406,7 @@ to disk right before the transaction is committed. You may add multiple enties p
 underlying architecture is thread safe.
 
 - `log.addEntry()`
+- `log.getPurgeWatermark()`
 - `log.path`
 - `log.query()`
 
@@ -2426,6 +2438,39 @@ await db.transaction(async (txn) => {
 Note that the `TransactionLog` class also has internal methods `_getMemoryMapOfFile`,
 `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in
 any version.
+
+#### `log.getPurgeWatermark(): TransactionLogPurgeWatermark`
+
+```typescript
+const log = db.useLog('foo');
+const entries = Array.from(log.query({ start: resumeKey, exclusiveStart: true }));
+const watermark = log.getPurgeWatermark();
+const complete = watermark.known && resumeKey >= watermark.purgedThrough;
+```
+
+Returns an upper bound on every entry key that retention or `db.purgeLogs()` has deleted from this
+log, or reports that no such bound can be given. A reader that needs every entry with a key above
+some position can be served from the log only when that position is at or above `purgedThrough`.
+
+- `{ known: true, purgedThrough: number }` `purgedThrough` is at or above every key of every file
+  deleted from the log, in whatever order the keys were written (0 when nothing was deleted). It is
+  made durable before each file is deleted, including by the retention that runs when a database
+  opens.
+- `{ known: false }` The log cannot vouch for what was deleted. This holds permanently for a log
+  created by a release without the watermark, one that file deletions bypassed (such as an older
+  release's retention), and one whose record cannot be read. It is also returned when the log's
+  store no longer exists, such as after `purgeLogs({ destroy: true })` until the next write.
+
+The call is synchronous. A read-only or secondary database reads the record from disk on each call.
+The result is a snapshot: a purge can run right after it. To trust what a read returned, read the log
+first and check the watermark afterwards. See
+[the purge watermark](docs/transaction-log.md#purge-watermark) for the rules.
+
+##### `TransactionLogPurgeWatermark`
+
+```typescript
+type TransactionLogPurgeWatermark = { known: true; purgedThrough: number } | { known: false };
+```
 
 #### `log.path: string`
 
@@ -2697,25 +2742,39 @@ console.log(getRegistryStatus());
 ### `shutdown(): void`
 
 The `shutdown()` will flush all in-memory data to disk and cancel outstanding background
-compactions, for all open databases. It is highly recommended to call this in a `process` `exit` event
-listener (on the main thread), to ensure that all data is flushed to disk before the process exits.
-It throws the first close failure after attempting every claimed database; call it again to retry
-any descriptor whose native teardown did not complete. It reports pending destroy-cleanup
-tombstones without deleting their paths; retry those with an explicit `destroy()`.
+compactions, for all open databases. It throws the first close failure after attempting every
+claimed database; call it again to retry any descriptor whose native teardown did not complete. It
+reports pending destroy-cleanup tombstones without deleting their paths; retry those with an
+explicit `destroy()`.
 
-Wrap the call: an exception thrown from an `exit` listener skips every `exit` listener registered
-after it, and sets the exit code to 1 unless an `uncaughtException` handler is installed.
+You do not need to call it at exit. When rocksdb-js loads on the main thread, it registers a
+`process.on('exit')` listener that runs the same shutdown, so a `process.exit()` (which skips the
+native cleanup Node runs on a natural exit) still flushes and closes every database, including
+those opened by workers that are still running. That listener reports failures to stderr instead
+of throwing, and sets `process.exitCode` to 1 (unless it is already nonzero) when data may be left
+unflushed: a database another thread was still closing when the shutdown timed out, or a final
+flush that failed. Afterwards opening a database throws. It
+still runs when an earlier `exit` listener throws. It does not run when the process is killed by a
+signal it does not handle.
+
+Like the cleanup on a natural exit, it waits for native work already in flight (a commit, a flush
+waiting out a write stall, or a backup) without a time limit, so `process.exit()` returns only once
+that work finishes.
+
+Because it is registered when rocksdb-js loads, `exit` listeners added later run after databases
+are closed. An `exit` listener that still writes to a database must run first:
 
 ```typescript
-import { shutdown } from '@harperfast/rocksdb-js';
-process.on('exit', () => {
-	try {
-		shutdown();
-	} catch (error) {
-		console.error('rocksdb-js shutdown failed', error);
-	}
+process.prependListener('exit', () => {
+	db.putSync('lastSeen', Date.now());
 });
 ```
+
+Set `RocksDatabase.config({ shutdownOnExit: false })` to skip it, for example to leave memtables
+unflushed at `process.exit()` and exercise crash recovery in a test. The listener stays registered
+and does nothing: on a natural exit the runtime's native cleanup still flushes, and whether Bun's
+does at `process.exit()` depends on the Bun release.
+Calling `shutdown()` from your own `exit` listener as well is safe.
 
 ### `versions: { 'rocksdb': string; 'rocksdb-js': string }`
 
@@ -3041,11 +3100,12 @@ Options for `get()`, `getSync()`, and the `getBinary*` methods.
   - `expectedVersion: number` When set, the [Verification Table](#verification-table) is checked
     before reading. If the slot holds this version, the read is skipped and the
     `FRESH_VERSION_FLAG` sentinel is returned. After a database read, the slot is seeded with the
-    version extracted from the value. Requires the column family to be opened with
+    version extracted from the value. Requires the handle to be opened with
     `verificationTable: true`.
   - `populateVersion: boolean` When `true`, after a database read the verification-table slot is
     seeded with the version extracted from the value, eliminating the need for a separate
-    `db.populateVersion()` call on cold reads. Defaults to `false`.
+    `db.populateVersion()` call on cold reads. Requires the handle to be opened with
+    `verificationTable: true`; otherwise the read seeds nothing. Defaults to `false`.
   - `skipDecode: boolean` When `true`, the value is returned without being decoded. Defaults to
     `false`.
 

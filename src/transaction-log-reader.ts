@@ -284,8 +284,9 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			tailLogBuffer = undefined;
 		}
 		// Segments at or below this were never part of this iterator's history, so crossing them is
-		// not a gap. Captured before the fallback below substitutes a placeholder with `logId` 0.
+		// not a gap.
 		let gapFloor = logId;
+		let startUnmapped = false;
 
 		if (logBuffer === undefined || logBuffer.logId !== logId) {
 			// if the current log buffer is not the one we want, load the memory map
@@ -305,19 +306,14 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 
 			if (logBuffer === undefined) {
-				// create a fake log buffer if we don't have any log buffer yet
+				// Stands in for the starting segment until next() maps it. It keeps that segment's
+				// `logId` so an advance never restarts below `position`.
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
-				logBuffer.logId = 0;
+				logBuffer.logId = logId;
 				logBuffer.size = 0;
 				logBuffer.dataView = new DataView(logBuffer.buffer);
-				// the outer size variable was set from loadLastPosition() above, but if we
-				// couldn't acquire a memory map for that logId (e.g. the committed-position
-				// references a logId that doesn't exist on disk — purged, never created, or
-				// torn write of the position word), reading at any non-zero size would read
-				// past the empty buffer. force size to match the empty buffer; the iterator's
-				// position-vs-size logic then routes through the existing advance-to-next-log
-				// path, which correctly returns done when no log file can be mapped.
 				size = 0;
+				startUnmapped = logId > 0;
 				if (
 					positionedAt <= TRANSACTION_LOG_FILE_HEADER_SIZE ||
 					(logId > 0 && this.getLogFileSize(logId) > 0)
@@ -348,6 +344,26 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			},
 			next() {
 				let timestamp: number;
+				if (startUnmapped) {
+					const mapped = getLogMemoryMap(transactionLog, logBuffer!.logId);
+					if (mapped) {
+						logBuffer = mapped;
+						dataView = mapped.dataView;
+					} else {
+						// Observe rotation before the extent, so an append racing rotation cannot be missed.
+						const latestLogId = loadLastPosition(transactionLog, !!readUncommitted).logId;
+						const fileSize = transactionLog.getLogFileSize(logBuffer!.logId);
+						if (logBuffer!.logId >= latestLogId || fileSize > position) {
+							return { done: true, value: undefined };
+						}
+						if (fileSize === 0) {
+							// gone: advancing from the segment below counts it against `gapFloor`
+							logBuffer!.logId--;
+						}
+					}
+					startUnmapped = false;
+					size = 0;
+				}
 				if (position >= size) {
 					// our position is beyond the size limit, get the updated
 					// size in case we can keep reading further from the same block
