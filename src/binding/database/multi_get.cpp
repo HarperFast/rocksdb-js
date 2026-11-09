@@ -209,10 +209,8 @@ napi_value Database::GetManySync(napi_env env, napi_callback_info info) {
 		if (!rocksdb_js::readTransactionId(env, argv[4], txnId)) {
 			return nullptr;
 		}
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Get many failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Get many failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			return nullptr;
 		}
 		rocksdb::Status status = txnHandle->multiGetSync(batch, readOptions, *dbHandle);
@@ -264,10 +262,8 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 		if (!rocksdb_js::readTransactionId(env, argv[5], txnId)) {
 			return nullptr;
 		}
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Get many failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Get many failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
 			return nullptr;
 		}
 		return txnHandle->multiGet(env, keys, resolve, reject, *dbHandle);

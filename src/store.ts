@@ -1015,7 +1015,7 @@ export class Store {
 				// is not in memory cache, use async get since this will involve disk access
 				return new Promise((resolve, reject) => {
 					// We still use the same shared buffer for the key, the native side will make a copy for the async task
-					context.get(keyParam, resolve, reject, txnId, expectedVersion);
+					context.get(keyParam, resolve, reject, txnId, expectedVersion, flags);
 				});
 			}
 			if (result === FRESH_VERSION_FLAG) {
@@ -1656,6 +1656,8 @@ export interface GetOptions {
 	 * When `true`, after a DB read the native layer automatically seeds the
 	 * verification-table slot with the version extracted from the value.
 	 * Eliminates the need for a separate `populateVersion` call on cold reads.
+	 * Seeds nothing unless this handle was opened with
+	 * `verificationTable: true`.
 	 *
 	 * @default false
 	 */

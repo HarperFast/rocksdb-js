@@ -20,6 +20,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isMainThread } from 'node:worker_threads';
 
 /**
  * The `Error` subclass passed to `'error'` event listeners and returned by
@@ -120,7 +121,8 @@ export type NativeTransaction = {
 		resolve: (value: Buffer | number) => void,
 		reject: (err: Error) => void,
 		txnIdIgnored?: number,
-		expectedVersion?: number
+		expectedVersion?: number,
+		flags?: number
 	): number;
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
@@ -244,10 +246,20 @@ export type TransactionLogStats = {
 	};
 };
 
+/**
+ * Returned by {@link TransactionLog.getPurgeWatermark}. When `known`, `purgedThrough` is at or above
+ * every entry key in every file deleted from the log (0 when none was). `known` is false when that
+ * cannot be vouched for, such as a log created by a release without the watermark.
+ */
+export type TransactionLogPurgeWatermark =
+	| { known: true; purgedThrough: number }
+	| { known: false };
+
 export type TransactionLog = {
 	new (db: NativeDatabase, name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	getLogFileSize(sequenceId?: number): number;
+	getPurgeWatermark(): TransactionLogPurgeWatermark;
 	getStats(): TransactionLogStats;
 	name: string;
 	path: string;
@@ -520,13 +532,21 @@ export type NativeDatabase = {
 	flushSync(options?: FlushOptions): void;
 	syncWal(resolve: ResolveCallback<void>, reject: RejectCallback): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
-	// Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared buffer, or a direct buffer
+	/**
+	 * Reads on the thread pool, applying `expectedVersion` and `POPULATE_VERSION_FLAG` like
+	 * `getSync()`. It neither probes the block cache nor answers from the verification table first:
+	 * the caller has already done both with `getSync(..., ONLY_IF_IN_MEMORY_CACHE_FLAG)`.
+	 *
+	 * Note that keyLengthOrKeyBuffer can be the length of the key if it was written into the shared
+	 * buffer, or a direct buffer.
+	 */
 	get(
 		keyLengthOrKeyBuffer: number | Buffer,
 		resolve: ResolveCallback<Buffer | number>,
 		reject: RejectCallback,
 		txnId?: number,
-		expectedVersion?: number
+		expectedVersion?: number,
+		flags?: number
 	): number;
 	estimateCount(startKey?: Buffer, endKey?: Buffer): { count: number; confidence: number };
 	getCompression(): { algorithm: string; level?: number };
@@ -668,6 +688,19 @@ export type RocksDatabaseConfig = {
 	 */
 	verificationTableEntries?: number;
 	compactOnClose?: boolean;
+	/**
+	 * Whether the main thread runs `shutdown()` from a `process.on('exit')`
+	 * listener it registers when rocksdb-js loads, so `process.exit()` does
+	 * not skip the flush. Defaults to `true`. After it runs, databases are
+	 * closed and opening one throws, so an `exit` listener that still needs a
+	 * database must be added with `process.prependListener`. If data may be
+	 * left unflushed (a timed-out shutdown, or a failed final flush), it sets
+	 * `process.exitCode` to 1 unless it is already nonzero. Like the cleanup on a natural exit, it waits for in-flight native
+	 * work (a commit, flush, or backup) without a time limit. Set to `false` to
+	 * leave memtables unflushed at a Node `process.exit()`, e.g. to exercise
+	 * crash recovery; a natural exit still flushes from the native cleanup hook.
+	 */
+	shutdownOnExit?: boolean;
 	/**
 	 * Maximum seconds an open, destroy, or shutdown call waits for another
 	 * lifecycle operation. Defaults to 30.
@@ -836,6 +869,24 @@ export type RegistryStatus = RegistryStatusDB[];
 const bindingPath = locateBinding();
 // console.log(`Loading binding from ${bindingPath}`);
 const binding = req(bindingPath);
+
+// Node runs no env cleanup hook for the main thread on process.exit().
+if (isMainThread) {
+	let exitShutdownRan = false;
+	const shutdownOnExit = () => {
+		if (exitShutdownRan) return;
+		exitShutdownRan = true;
+		// A failed exit shutdown may have left data unflushed; don't report success.
+		if (!binding.shutdownOnExit() && !process.exitCode) {
+			process.exitCode = 1;
+		}
+	};
+	process.on('exit', shutdownOnExit);
+	// In Node, an `exit` listener that throws skips every later one, this one included.
+	process.on('uncaughtExceptionMonitor', () => {
+		if ((process as { _exiting?: boolean })._exiting) shutdownOnExit();
+	});
+}
 
 /**
  * The native `BackgroundError` constructor (a real `Error` subclass). Exported
@@ -1024,19 +1075,10 @@ export const registryStatus: () => RegistryStatus = getRegistryStatus;
  * `database:closeFailed`; a timeout has no event, so the throw is its only
  * signal.
  *
- * A `process.on('exit')` listener must therefore wrap it: an exception thrown
- * from an `exit` listener skips every `exit` listener registered after it (and
- * sets exit code 1 unless an `uncaughtException` handler is installed).
- *
- * ```typescript
- * process.on('exit', () => {
- * 	try {
- * 		shutdown();
- * 	} catch (error) {
- * 		console.error('rocksdb-js shutdown failed', error);
- * 	}
- * });
- * ```
+ * You do not need to call it at exit: when rocksdb-js loads on the main
+ * thread it registers a `process.on('exit')` listener that does the same and
+ * reports failures to stderr and the exit code instead of throwing (see the
+ * `shutdownOnExit` config option). Calling it yourself as well is safe.
  */
 export const shutdown: () => void = binding.shutdown;
 export const currentThreadId: () => number = binding.currentThreadId;

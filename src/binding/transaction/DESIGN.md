@@ -33,9 +33,13 @@ Other owning-thread mutations still run while an admitted get may be inside `txn
 batched `getMany()` inside `txn->MultiGet()`): commit (`Clear()` after the write),
 `putSync`/`removeSync` (batch append), and `resetTransaction()` (deletes and recreates `txn` on a
 coordinated retry). Draining in each would block `putSync` on unrelated disk reads; the candidate
-fix is for the worker to read through the database with a pinned transaction snapshot, since the
-setup's batch-consulting attempt already proved the key absent from the batch. For `getMany()` that
-holds only for the keys the attempt reported as not in memory, so it would re-read just those.
+fix is for the worker to read through the database with a pinned transaction snapshot. That the key
+is absent from the batch when the worker is queued is established by the caller: the async get's
+only caller, `Store.get()`, reaches it after a cache-tier `getSync()` in the same synchronous turn,
+which consulted the batch and did not resolve the key. `Store.getMany()` does the same with a
+cache-tier `getManySync()`, but that proves absence only for the keys it could not resolve, so the
+fix would re-read just those. Neither async setup consults the batch; their workers' `txn->Get()`
+and `txn->MultiGet()` still do, which is the race above.
 
 # Write-intent refusal
 
