@@ -23,6 +23,7 @@ TransactionLogHandle::~TransactionLogHandle() {
 }
 
 void TransactionLogHandle::addEntry(
+	napi_env env,
 	uint64_t transactionId,
 	char* data,
 	uint32_t size
@@ -32,10 +33,15 @@ void TransactionLogHandle::addEntry(
 		throw rocksdb_js::DBException("Database has been closed");
 	}
 
-	auto txnHandle = dbHandle->descriptor->transactionGet(transactionId);
-	if (!txnHandle) {
-		DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %llu not found\n", this, (unsigned long long)transactionId);
-		throw rocksdb_js::DBException("Transaction id " + std::to_string(transactionId) + " not found");
+	std::shared_ptr<TransactionHandle> txnHandle;
+	switch (lookupOwnedTransaction(*dbHandle->descriptor, transactionId, env, txnHandle)) {
+		case TransactionLookup::Found:
+			break;
+		case TransactionLookup::WrongEnv:
+			throw rocksdb_js::DBException("ERR_TRANSACTION_WRONG_ENV", foreignTransactionMessage(transactionId));
+		case TransactionLookup::NotFound:
+			DEBUG_LOG("%p TransactionLogHandle::addEntry ERROR: Transaction id %llu not found\n", this, (unsigned long long)transactionId);
+			throw rocksdb_js::DBException("Transaction id " + std::to_string(transactionId) + " not found");
 	}
 
 	auto store = this->store.lock();
@@ -106,6 +112,14 @@ LogPosition TransactionLogHandle::getLastFlushed() {
 	auto store = this->store.lock();
 	if (store) return store->getLastFlushedPosition();
 	return { 0, 0 };
+}
+
+TransactionLogStore::PurgeWatermark TransactionLogHandle::getPurgeWatermark() {
+	auto store = this->store.lock();
+	if (!store || store->isClosing.load(std::memory_order_relaxed)) {
+		return {};
+	}
+	return store->getPurgeWatermark();
 }
 
 std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {

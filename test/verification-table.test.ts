@@ -2,6 +2,9 @@ import { RocksDatabase } from '../src/index.ts';
 import { constants } from '../src/load-binding.ts';
 import { Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
+import { spawnSync } from 'node:child_process';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const { POPULATE_VERSION_FLAG, FRESH_VERSION_FLAG, VERSION_NOT_UNIQUE_FLAG } = constants;
@@ -132,7 +135,7 @@ describe('Verification Table', () => {
 			}));
 
 		it('seeds the slot when POPULATE_VERSION_FLAG is set on a successful read', () =>
-			dbRunner({ dbOptions: [{ encoding: false }] }, async ({ db }) => {
+			dbRunner({ dbOptions: [{ encoding: false, verificationTable: true }] }, async ({ db }) => {
 				const key = 'populate-key';
 				const valueVersion = 1.7e12;
 				const value = Buffer.alloc(16);
@@ -974,5 +977,293 @@ describe('Verification Table', () => {
 				keepAlive.close();
 			}
 		});
+	});
+
+	// A cold get() reads on the thread pool after its cache-tier getSync() misses. These read values
+	// flushed to an SST in a column family with no block cache, so that first attempt always misses.
+	describe('async (thread-pool) reads', () => {
+		const version = 1.7e12;
+		const coldOptions = {
+			encoding: false,
+			verificationTable: true,
+			noBlockCache: true,
+			enableStats: true,
+		} as const;
+		const keysRead = (db: RocksDatabase) => db.getStat('rocksdb.number.keys.read') as number;
+
+		async function readCold(read: () => any): Promise<Buffer> {
+			const result = read();
+			expect(result).toBeInstanceOf(Promise);
+			return result;
+		}
+
+		function expectFreshWithoutRead(db: RocksDatabase, key: Buffer): void {
+			const before = keysRead(db);
+			expect(db.getBinary(key, { expectedVersion: version } as any)).toBe(FRESH_VERSION_FLAG);
+			expect(keysRead(db)).toBe(before);
+		}
+
+		it('a populateVersion read seeds the VT', () =>
+			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+				const key = Buffer.from('async-populate');
+				const value = valueWithHeader(version);
+				await db.put(key, value);
+				await db.flush();
+
+				const read = await readCold(() => db.getBinary(key, { populateVersion: true } as any));
+				expect(read.equals(value)).toBe(true);
+				expectFreshWithoutRead(db, key);
+			}));
+
+		it('a populateVersion read through a transaction option seeds the VT', () =>
+			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+				const key = Buffer.from('async-populate-txn-option');
+				const value = valueWithHeader(version);
+				await db.put(key, value);
+				await db.flush();
+
+				const transaction = new Transaction(db.store);
+				try {
+					const read = await readCold(() =>
+						db.getBinary(key, { transaction, populateVersion: true } as any)
+					);
+					expect(read.equals(value)).toBe(true);
+				} finally {
+					transaction.abort();
+				}
+				expectFreshWithoutRead(db, key);
+			}));
+
+		it('a populateVersion read on a transaction seeds the VT', () =>
+			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+				const key = Buffer.from('async-populate-txn');
+				const value = valueWithHeader(version);
+				await db.put(key, value);
+				await db.flush();
+
+				const txn = new Transaction(db.store);
+				try {
+					const read = await readCold(() => txn.getBinary(key, { populateVersion: true } as any));
+					expect(read.equals(value)).toBe(true);
+				} finally {
+					txn.abort();
+				}
+				expectFreshWithoutRead(db, key);
+			}));
+
+		it("a transactional populateVersion read on another column family seeds that family's slot", () =>
+			dbRunner(
+				{ dbOptions: [coldOptions, { ...coldOptions, name: 'other' }] },
+				async ({ db }, { db: other }) => {
+					const key = Buffer.from('async-populate-cross-cf');
+					const value = valueWithHeader(version);
+					await other.put(key, value);
+					await other.flush();
+
+					// The transaction belongs to db's column family; the read is issued on other's.
+					const transaction = new Transaction(db.store);
+					try {
+						const read = await readCold(() =>
+							other.getBinary(key, { transaction, populateVersion: true } as any)
+						);
+						expect(read.equals(value)).toBe(true);
+					} finally {
+						transaction.abort();
+					}
+					expectFreshWithoutRead(other, key);
+					expect(db.verifyVersion(key, version)).toBe(false);
+				}
+			));
+
+		it('does not seed while a snapshot older than the latest write is open', () =>
+			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+				const key = Buffer.from('async-populate-gated');
+				await db.put(Buffer.from('async-populate-sentinel'), valueWithHeader(1.5e12));
+
+				const snap = new Transaction(db.store);
+				snap.getBinarySync(Buffer.from('async-populate-sentinel'));
+				try {
+					// Backdated, so only the sequence gate can block it.
+					await db.put(key, valueWithHeader(1.0e12));
+					await db.flush();
+					await readCold(() => db.getBinary(key, { populateVersion: true } as any));
+					expect(db.verifyVersion(key, 1.0e12)).toBe(false);
+				} finally {
+					snap.abort();
+				}
+			}));
+
+		it('does not publish from a transactional read whose snapshot is behind', () =>
+			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+				const key = Buffer.from('async-populate-behind');
+				await db.put(key, valueWithHeader(version));
+
+				const txn = new Transaction(db.store);
+				try {
+					expect(txn.getBinarySync(key)).toBeDefined();
+					await db.put(key, valueWithHeader(version + 1));
+					await db.flush();
+
+					const read = await readCold(() => txn.getBinary(key, { populateVersion: true } as any));
+					expect(read.readDoubleBE(0)).toBe(version);
+					expect(db.verifyVersion(key, version)).toBe(false);
+					expect(db.verifyVersion(key, version + 1)).toBe(false);
+				} finally {
+					txn.abort();
+				}
+			}));
+
+		// No snapshot is open, so only the completion's compare-and-swap against the slot value
+		// observed before the read can refuse the version the read returned.
+		it('does not publish a version superseded between the read and its completion', () =>
+			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+				const key = Buffer.from('async-populate-superseded');
+				await db.put(key, valueWithHeader(version));
+				await db.flush();
+
+				const pending = db.getBinary(key, { populateVersion: true } as any);
+				expect(pending).toBeInstanceOf(Promise);
+				// The completion runs on this thread, so it cannot run before the write below, and the
+				// worker's read has long finished by then.
+				const busyUntil = Date.now() + 300;
+				while (Date.now() < busyUntil) {}
+				db.putSync(key, valueWithHeader(version + 1));
+				expect(((await pending) as Buffer).readDoubleBE(0)).toBe(version);
+
+				expect(db.verifyVersion(key, version)).toBe(false);
+				const current = await db.getBinary(key, { expectedVersion: version } as any);
+				expect(current).not.toBe(FRESH_VERSION_FLAG);
+				expect((current as Buffer).readDoubleBE(0)).toBe(version + 1);
+			}));
+
+		it('does not publish a version marked not unique', () =>
+			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+				const key = Buffer.from('async-populate-not-unique');
+				await db.put(key, valueWithHeader(version, VERSION_NOT_UNIQUE_FLAG));
+				await db.flush();
+
+				await readCold(() => db.getBinary(key, { populateVersion: true } as any));
+				expect(db.verifyVersion(key, version)).toBe(false);
+			}));
+
+		// Its writes never invalidate a slot, so a version published through it would outlive the next
+		// write.
+		it('does not publish through a column family that did not opt in', () =>
+			dbRunner({ dbOptions: [{ ...coldOptions, verificationTable: false }] }, async ({ db }) => {
+				const key = Buffer.from('async-populate-not-opted-in');
+				await db.put(key, valueWithHeader(version));
+				await db.flush();
+
+				const transaction = new Transaction(db.store);
+				try {
+					await readCold(() => db.getBinary(key, { populateVersion: true } as any));
+					await readCold(() =>
+						db.getBinary(key, { transaction, expectedVersion: version - 1 } as any)
+					);
+				} finally {
+					transaction.abort();
+				}
+				await db.put(key, valueWithHeader(version + 1));
+				const native = (db as any).store.db;
+				native.getSync(key, POPULATE_VERSION_FLAG, undefined, undefined);
+				expect(db.verifyVersion(key, version)).toBe(false);
+				expect(db.verifyVersion(key, version + 1)).toBe(false);
+			}));
+	});
+
+	// The table is process-global and every in-process test above shares one already created, so
+	// these run where no earlier read could have created it (test/fixtures/fork-vt-cold-populate.mts).
+	describe('async reads in a fresh process', () => {
+		const fixturePath = join(__dirname, 'fixtures', 'fork-vt-cold-populate.mts');
+		function runScenario(scenario: string, env: Record<string, string> = {}): void {
+			const dbPath = generateDBPath();
+			try {
+				const child = spawnSync(process.execPath, [fixturePath, scenario, dbPath], {
+					encoding: 'utf8',
+					env: { ...process.env, ...env },
+					timeout: 25000,
+				});
+				expect(child.error, child.stderr).toBeUndefined();
+				expect(child.status, child.stderr).toBe(0);
+				expect(child.stdout.trim()).toBe('ok');
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					rmSync(dbPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+				}
+			}
+		}
+
+		it('a transactional populateVersion read seeds the VT when it is the first VT use', () =>
+			runScenario('txn-first'));
+
+		it('a write staged before the first VT use invalidates what a later read publishes', () =>
+			runScenario('staged-write'));
+
+		it('a write landing during a populateVersion read leaves its old version unpublished', () =>
+			runScenario('delayed-read', { ROCKSDB_JS_TXN_GET_DELAY_MS: '200' }));
+
+		it("a transactional read on another column family survives its transaction's handle closing", () =>
+			runScenario('owner-close', { ROCKSDB_JS_TXN_GET_DELAY_MS: '200' }));
+	});
+
+	// Store.get() tries the block cache with getSync() before it falls back to the thread pool, so
+	// the async read must not try it again. One flushed key, an empty block cache, and no VT options:
+	// each block-cache lookup of the key's data block misses and counts once.
+	describe('block-cache lookups per cold read', () => {
+		const statsOptions = { enableStats: true } as const;
+
+		async function lookupsForColdRead(
+			db: RocksDatabase,
+			read: () => any
+		): Promise<{ dataMisses: number; keysRead: number }> {
+			const missesBefore = db.getStat('rocksdb.block.cache.data.miss') as number;
+			const keysBefore = db.getStat('rocksdb.number.keys.read') as number;
+			const result = read();
+			expect(result).toBeInstanceOf(Promise);
+			expect(await result).toBe('value');
+			return {
+				dataMisses: (db.getStat('rocksdb.block.cache.data.miss') as number) - missesBefore,
+				keysRead: (db.getStat('rocksdb.number.keys.read') as number) - keysBefore,
+			};
+		}
+
+		it('a non-transactional read looks up the block cache twice', () =>
+			dbRunner({ dbOptions: [statsOptions] }, async ({ db }) => {
+				await db.put('cold', 'value');
+				await db.flush();
+				expect(await lookupsForColdRead(db, () => db.get('cold'))).toEqual({
+					dataMisses: 2,
+					keysRead: 2,
+				});
+			}));
+
+		it('a read through a transaction option looks up the block cache twice', () =>
+			dbRunner({ dbOptions: [statsOptions] }, async ({ db }) => {
+				await db.put('cold', 'value');
+				await db.flush();
+				const transaction = new Transaction(db.store);
+				try {
+					expect(
+						await lookupsForColdRead(db, () => db.get('cold', { transaction } as any))
+					).toEqual({ dataMisses: 2, keysRead: 2 });
+				} finally {
+					transaction.abort();
+				}
+			}));
+
+		it('a read on a transaction looks up the block cache twice', () =>
+			dbRunner({ dbOptions: [statsOptions] }, async ({ db }) => {
+				await db.put('cold', 'value');
+				await db.flush();
+				const txn = new Transaction(db.store);
+				try {
+					expect(await lookupsForColdRead(db, () => txn.get('cold'))).toEqual({
+						dataMisses: 2,
+						keysRead: 2,
+					});
+				} finally {
+					txn.abort();
+				}
+			}));
 	});
 });

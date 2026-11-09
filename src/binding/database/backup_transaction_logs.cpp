@@ -127,6 +127,19 @@ static rocksdb::Status copyPrefixWithMtime(
 	return rocksdb::Status::OK();
 }
 
+std::string backupInlineContents(
+	const NamedTransactionLogBackupEntry& named, const std::set<std::string>& storesMissingSegments) {
+	TransactionLogPurgeRecord record;
+	if (named.file.relativeName != TRANSACTION_LOG_PURGE_RECORD_NAME ||
+		!storesMissingSegments.contains(named.storeName) ||
+		decodeTransactionLogPurgeRecordImage(named.file.inlineContents.data(), named.file.inlineContents.size(), record) !=
+			TransactionLogPurgeRecordState::Valid) {
+		return named.file.inlineContents;
+	}
+	record.known = false;
+	return encodeTransactionLogPurgeRecordImage(record);
+}
+
 /**
  * Writes `contents` to `dst` and stamps it with `mtime`. Used for entries whose
  * bytes were captured inline at snapshot time (txn.state).
@@ -165,6 +178,7 @@ static rocksdb::Status copySnapshotEntries(
 	bool sync
 ) {
 	std::set<std::filesystem::path> createdDirs;
+	std::set<std::string> storesMissingSegments;
 	for (const auto& named : entries) {
 		std::filesystem::path destDir = destBaseDir / named.storeName;
 		std::error_code ec;
@@ -178,7 +192,7 @@ static rocksdb::Status copySnapshotEntries(
 
 		// Entries captured inline (txn.state) are written straight from memory.
 		if (!named.file.inlineContents.empty()) {
-			rocksdb::Status s = writeBytesWithMtime(dst, named.file.inlineContents, named.file.mtime);
+			rocksdb::Status s = writeBytesWithMtime(dst, backupInlineContents(named, storesMissingSegments), named.file.mtime);
 			if (s.ok() && sync) {
 				s = syncBackupFile(dst);
 			}
@@ -224,6 +238,7 @@ static rocksdb::Status copySnapshotEntries(
 			if (!std::filesystem::exists(named.file.sourcePath, existsEc) || existsEc) {
 				std::error_code removeEc;
 				std::filesystem::remove(dst, removeEc);
+				storesMissingSegments.insert(named.storeName);
 				continue;
 			}
 			return s;

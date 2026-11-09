@@ -708,6 +708,13 @@ public:
 	 */
 	void closeRemainingClosables();
 
+	/**
+	 * Flushes a descriptor released without a successful close-time flush.
+	 * Runs from the destructor; `DBRegistry::Teardown()` calls it first to learn
+	 * whether it succeeded. Returns false only if a needed flush failed.
+	 */
+	bool finalFlush() noexcept;
+
 	void closeClosables(std::unique_lock<std::mutex>& txnsLock);
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
@@ -769,8 +776,8 @@ public:
 	uint64_t transactionGetNextId();
 
 	/**
-	 * Closes every registered transaction whose owning DBHandle was created by
-	 * `env`, from that env's module cleanup hook. Pending transactions are only
+	 * Closes every registered transaction created on `env` (`ownerEnv`), from
+	 * that env's module cleanup hook. Pending transactions are only
 	 * removed from the registry by commit/abort, so a worker env that dies with
 	 * one still open leaks the TransactionHandle — holding a live RocksDB
 	 * transaction/snapshot — into this process-global descriptor, and the last
@@ -1205,7 +1212,7 @@ struct ColumnFamilyDescriptor final {
 	std::atomic<bool> compressionPersistDirty{false};
 
 	/**
-	 * Verification-table participation (AGENTS invariant 35). Sticky: slots
+	 * Verification-table participation (AGENTS invariant 38). Sticky: slots
 	 * outlive the handles that seeded them. Guarded by `databasesMutex`.
 	 */
 	bool verificationTable = false;

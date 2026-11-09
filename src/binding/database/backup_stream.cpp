@@ -503,12 +503,15 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 		if (!s.ok()) {
 			return s;
 		}
+		std::set<std::string> storesMissingSegments;
+		std::string inlineBytes;
 		for (const auto& named : entries) {
 			std::string tarPath = "transaction_logs/" + named.storeName + "/" + named.file.relativeName;
 
 			if (!named.file.inlineContents.empty()) {
 				// Inline bytes (txn.state): emit the header + the captured bytes.
-				const std::string& contents = named.file.inlineContents;
+				inlineBytes = backupInlineContents(named, storesMissingSegments);
+				const std::string& contents = inlineBytes;
 				auto fileEv = std::make_unique<StreamEvent>();
 				fileEv->kind = kEventFile;
 				fileEv->name = tarPath;
@@ -536,6 +539,7 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 			// BEFORE emitting a header we could not then fulfill.
 			std::error_code existsEc;
 			if (!std::filesystem::exists(named.file.sourcePath, existsEc) || existsEc) {
+				storesMissingSegments.insert(named.storeName);
 				continue;
 			}
 

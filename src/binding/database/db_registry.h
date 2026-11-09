@@ -151,10 +151,15 @@ private:
 	std::condition_variable lifecycleCondition;
 	std::unordered_set<std::string> destroyingPaths;
 
+	// One-way: see FenceOpensForExit().
+	bool exitFenced = false;
+
 	/**
-	 * The singleton instance of the registry.
+	 * The singleton instance of the registry. Never freed: Bun's `process.exit()`
+	 * runs static destructors while workers can still be inside `OpenDB()`, so
+	 * `Teardown()` is its terminal owner, not a destructor (invariant 26).
 	 */
-	static std::unique_ptr<DBRegistry> instance;
+	static DBRegistry* instance;
 
 public:
 	static CloseResult CloseDB(const std::shared_ptr<DBHandle> handle);
@@ -212,12 +217,19 @@ public:
 	static void ReleaseLockCallbacksByEnv(napi_env env);
 	static void Shutdown();
 	/**
+	 * Rejects every later `OpenDB()` for the rest of the process. The
+	 * main-thread exit shutdown sets it before its sweep: workers keep running
+	 * JS until Node stops them after the `exit` listeners, and an open that
+	 * lands after the sweep has no later flush or close.
+	 */
+	static void FenceOpensForExit();
+	/**
 	 * Releases every remaining registry entry. Called from the module env
 	 * cleanup hook after `Shutdown()`, i.e. while the process is still running
 	 * normally. Nothing may keep a `rocksdb::DB` alive past that point: the
-	 * registry singleton is a namespace-scope static, so anything still in the
-	 * map is destroyed from an `atexit` handler, and closing a RocksDB database
-	 * there runs `DBImpl::CancelAllBackgroundWork()` after RocksDB's own
+	 * registry singleton is never freed, so nothing closes it later, and a
+	 * close left to a static destructor (as when the registry was a static
+	 * `unique_ptr`) runs `DBImpl::CancelAllBackgroundWork()` after RocksDB's own
 	 * function-local statics (the `PeriodicTaskScheduler` timer and its
 	 * `port::Mutex`) have already been destroyed -- which aborts the process in
 	 * `port::Mutex::Lock()` with `pthread lock: Invalid argument`.
@@ -225,8 +237,16 @@ public:
 	 * `Shutdown()` normally empties the map on its own; a descriptor whose
 	 * close-time flush failed is deliberately quarantined instead, and at
 	 * process exit there is no later `shutdown()`/`destroy()` to retry it.
+	 *
+	 * `quarantinedOnly` limits the release to quarantined entries, for the
+	 * main-thread exit path: other envs may still be running there, so an entry
+	 * another thread is still closing belongs to that closer.
+	 *
+	 * Returns false if data may be left unflushed: a final flush failed, or a
+	 * live descriptor is still registered (closed by another thread, or never
+	 * claimed by a timed-out `Shutdown()`).
 	 */
-	static void Teardown();
+	static bool Teardown(bool quarantinedOnly = false);
 	static size_t Size();
 };
 

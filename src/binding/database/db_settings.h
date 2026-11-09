@@ -71,6 +71,7 @@ private:
 	uint64_t allowStallGeneration = 0;
 
 	bool compactOnClose;
+	std::atomic<bool> shutdownOnExit;
 	std::atomic<uint32_t> lifecycleWaitSeconds;
 
 	// Number of slots requested for the verification table. Default 128K
@@ -160,6 +161,10 @@ public:
 
 	inline bool getCompactOnClose() const {
 		return compactOnClose;
+	}
+
+	bool getShutdownOnExit() const {
+		return shutdownOnExit.load(std::memory_order_relaxed);
 	}
 
 	uint32_t getLifecycleWaitSeconds() const {

@@ -108,9 +108,10 @@ inline void delayTransactionStagingForTesting() {
  * Creates a new RocksDB transaction, enables snapshots, and sets the
  * transaction id.
  */
-TransactionHandle::TransactionHandle(std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
+TransactionHandle::TransactionHandle(napi_env env, std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
 	owningDescriptor(dbHandle->descriptor),
+	ownerEnv(env),
 	disableSnapshot(disableSnapshot),
 	coordinatedRetry(false),
 	state(TransactionState::Pending),
@@ -168,6 +169,53 @@ TransactionHandle::~TransactionHandle() {
 	this->close();
 }
 
+std::string foreignTransactionMessage(uint64_t txnId) {
+	return "Transaction " + std::to_string(txnId) +
+		" belongs to another thread; a transaction can only be used from the thread that created it";
+}
+
+TransactionLookup lookupOwnedTransaction(
+	DBDescriptor& descriptor,
+	uint64_t txnId,
+	napi_env env,
+	std::shared_ptr<TransactionHandle>& txnHandle
+) {
+	txnHandle = descriptor.transactionGet(txnId);
+	if (!txnHandle) {
+		return TransactionLookup::NotFound;
+	}
+	if (txnHandle->ownerEnv != env) {
+		txnHandle.reset();
+		return TransactionLookup::WrongEnv;
+	}
+	if (!txnHandle->txn) {
+		txnHandle.reset();
+		return TransactionLookup::NotFound;
+	}
+	return TransactionLookup::Found;
+}
+
+std::shared_ptr<TransactionHandle> getOwnedTransaction(
+	napi_env env,
+	DBDescriptor& descriptor,
+	uint64_t txnId,
+	const char* context
+) {
+	std::shared_ptr<TransactionHandle> txnHandle;
+	switch (lookupOwnedTransaction(descriptor, txnId, env, txnHandle)) {
+		case TransactionLookup::Found:
+			return txnHandle;
+		case TransactionLookup::WrongEnv:
+			::napi_throw_error(env, "ERR_TRANSACTION_WRONG_ENV", foreignTransactionMessage(txnId).c_str());
+			return nullptr;
+		case TransactionLookup::NotFound:
+			break;
+	}
+	std::string message = std::string(context) + ": Transaction not found (txnId: " + std::to_string(txnId) + ")";
+	::napi_throw_error(env, nullptr, message.c_str());
+	return nullptr;
+}
+
 /**
  * Adds a log entry to the specified transaction log store's batch.
  *
@@ -183,6 +231,11 @@ TransactionHandle::~TransactionHandle() {
 void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) {
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
 		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
+
+	// Orders the owning env only; the unsynchronized read awaits #769 (invariant 36).
+	if (this->state != TransactionState::Pending) {
+		throw rocksdb_js::DBException("Transaction is not in pending state");
+	}
 
 	// #668 (defense in depth): the write-ahead log is write-once per transaction. If
 	// committedPosition is already set, this transaction's batch was durably written by a
@@ -653,7 +706,7 @@ void TransactionHandle::close() {
 }
 
 /**
- * Get a value using the specified database handle.
+ * Reads a value on the thread pool through the caller's column family.
  */
 napi_value TransactionHandle::get(
 	napi_env env,
@@ -662,15 +715,14 @@ napi_value TransactionHandle::get(
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride,
 	VtSlotRef vtSlot,
-	uint64_t observedSlot,
 	bool hasExpectedVersion,
 	uint64_t expectedVersion,
 	bool wantsPopulate
 ) {
 	// Register before inspecting txn/state. Descriptor-wide close can select the
 	// transaction before the target DBHandle, and close() must not reset txn in
-	// the middle of this setup. Async fallback transfers this registration to its
-	// state; synchronous and failed setup paths release it on return.
+	// the middle of this setup. The registration is transferred to the async
+	// state; failed setup paths release it on return.
 	ScopedAsyncWorkRegistration transactionRegistration(this);
 	if (!transactionRegistration.ok() || this->isCancelled() || !this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
@@ -683,13 +735,12 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 
-	if (!this->disableSnapshot && !this->snapshotSet) {
-		this->snapshotSet = true;
-		this->txn->SetSnapshot();
-	}
+	this->ensureSnapshot();
+	// Observed after the snapshot is established, as in getSync; the post-read CAS publishes only if
+	// no write cycle changed the slot since.
+	const uint64_t observedSlot = vtSlot ? vtSlot.load() : 0;
 
 	napi_value returnStatus;
-	std::string value;
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	// Cross-column-family reads enter through another DBHandle. Register against
 	// that handle while copying its descriptor so a concurrent close cannot reset
@@ -700,56 +751,15 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 	auto readColumnDescriptor = dbHandle->columnDescriptor;
+	rocksdb::DB* readDb = dbHandle->descriptor ? dbHandle->descriptor->db.get() : nullptr;
+	if (!readDb) {
+		::napi_throw_error(env, nullptr, "Database closed during transaction get operation");
+		return nullptr;
+	}
 
 	rocksdb::ReadOptions readOptions;
 	if (this->snapshotSet) {
 		readOptions.snapshot = this->txn->GetSnapshot();
-	}
-	readOptions.read_tier = rocksdb::kBlockCacheTier;
-
-	rocksdb::Status status = this->txn->Get(
-		readOptions,
-		readColumnDescriptor->column.get(),
-		key,
-		&value
-	);
-
-	if (!status.IsIncomplete()) {
-		// Block-cache hit. Apply the VT freshness check and seed before resolving.
-		// vtPopulateIfSettled reads the key's LATEST committed version (not this
-		// transaction's snapshot value) and gates on the single-version invariant,
-		// so a transactional read seeds the cache only when settled and can never
-		// publish a stale snapshot value.
-		rocksdb::Slice valueSlice(value.data(), value.size());
-		if (vtSlot && status.ok() && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
-			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
-			const rocksdb::Snapshot* readSnapshot = this->readSnapshot();
-			const rocksdb::Slice keySlice(key.data(), key.size());
-			// The caller's column family, not the handle's: this read may be routed to another one.
-			const VtLatestCheck latest = vtCheckLatest(
-				dbHandle->descriptor->db.get(),
-				readColumnDescriptor->column.get(),
-				keySlice,
-				readSnapshot
-			);
-			if (!latest.notUnique) {
-				const uint64_t populateVersion = latest.read ? latest.latestVersion : extracted;
-				const rocksdb::Snapshot* populateSnapshot = latest.read ? nullptr : readSnapshot;
-				if (hasExpectedVersion && extracted != 0 && extracted == expectedVersion) {
-					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
-					napi_value global, freshResult;
-					::napi_get_global(env, &global);
-					::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult);
-					::napi_call_function(env, global, resolve, 1, &freshResult, nullptr);
-					NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
-					return returnStatus;
-				}
-				if ((hasExpectedVersion || wantsPopulate) && extracted != 0) {
-					vtPopulateIfSettled(dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, observedSlot);
-				}
-			}
-		}
-		return resolveGetSyncResult(env, "Transaction get failed", status, value, resolve, reject);
 	}
 
 	napi_value name;
@@ -760,7 +770,6 @@ napi_value TransactionHandle::get(
 		&name
 	));
 
-	readOptions.read_tier = rocksdb::kReadAllTier;
 	auto state = new AsyncGetState<std::shared_ptr<TransactionHandle>>(
 		env,
 		this->shared_from_this(),
@@ -775,11 +784,13 @@ napi_value TransactionHandle::get(
 	// releases this descriptor before signaling completion so the native column
 	// family handle cannot outlive its RocksDB database during teardown.
 	state->readColumnDescriptor = std::move(readColumnDescriptor);
+	state->readDb = readDb;
 	state->vtSlot = vtSlot;
 	state->vtObserved = observedSlot;
 	state->hasExpectedVersion = hasExpectedVersion;
 	state->expectedVersion = expectedVersion;
 	state->wantsPopulate = wantsPopulate;
+	state->vtPublish = dbHandle->enableVerificationTable;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -805,11 +816,7 @@ napi_value TransactionHandle::get(
 				// While the database and the caller's column family are still pinned — the completion
 				// runs after teardown may have released both.
 				if (state->status.ok() && state->vtSlot) {
-					vtCheckAsyncGet(
-						state,
-						state->handle->dbHandle->descriptor->db.get(),
-						state->readColumnDescriptor->column.get()
-					);
+					vtCheckAsyncGet(state, state->readDb, state->readColumnDescriptor->column.get());
 				}
 			}
 			state->readColumnDescriptor.reset();

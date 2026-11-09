@@ -125,20 +125,19 @@ std::exception_ptr closeClaimedDescriptors(
 
 } // namespace
 
-// Initialize the static instance
-std::unique_ptr<DBRegistry> DBRegistry::instance;
+DBRegistry* DBRegistry::instance = nullptr;
 
 /**
  * Close a RocksDB database handle.
  */
 CloseResult DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	if (!instance) {
-		DEBUG_LOG("%p DBRegistry::CloseDB Registry not initialized\n", instance.get());
+		DEBUG_LOG("%p DBRegistry::CloseDB Registry not initialized\n", instance);
 		return {};
 	}
 
 	if (!handle) {
-		DEBUG_LOG("%p DBRegistry::CloseDB Invalid handle\n", instance.get());
+		DEBUG_LOG("%p DBRegistry::CloseDB Invalid handle\n", instance);
 		return {};
 	}
 
@@ -147,7 +146,7 @@ CloseResult DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 #endif
 
 	if (!handle->descriptor) {
-		DEBUG_LOG("%p DBRegistry::CloseDB Database not opened\n", instance.get());
+		DEBUG_LOG("%p DBRegistry::CloseDB Database not opened\n", instance);
 		return {};
 	}
 
@@ -223,14 +222,14 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 		auto entryIterator = instance->databases.find(key);
 		if (entryIterator != instance->databases.end()) {
 			DBRegistryEntry& entry = entryIterator->second;
-			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance.get(), key.path.c_str(), entry.descriptor.use_count());
+			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance, key.path.c_str(), entry.descriptor.use_count());
 			if (entry.descriptor && entry.descriptor.use_count() <= 1 && entry.descriptor->beginClose()) {
-				DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance.get(), key.path.c_str());
+				DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance, key.path.c_str());
 				descriptor = entry.descriptor;
 				condition = entry.condition;
 			}
 		} else {
-			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced DBDescriptor not found! \"%s\"\n", instance.get(), key.path.c_str());
+			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced DBDescriptor not found! \"%s\"\n", instance, key.path.c_str());
 		}
 	}
 
@@ -304,11 +303,11 @@ private:
 
 void DBRegistry::DestroyDB(const std::string& path) {
 	if (!instance) {
-		DEBUG_LOG("%p DBRegistry::DestroyDB Registry not initialized\n", instance.get());
+		DEBUG_LOG("%p DBRegistry::DestroyDB Registry not initialized\n", instance);
 		return;
 	}
 
-	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance.get(), path.c_str());
+	DEBUG_LOG("%p DBRegistry::DestroyDB Destroying \"%s\"\n", instance, path.c_str());
 
 	const std::string& identityPath = path;
 	if (identityPath.empty()) {
@@ -446,7 +445,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		throw rocksdb_js::DBException("Injected database destruction failure");
 	}
 
-	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance.get(), identityPath.c_str());
+	DEBUG_LOG("%p DBRegistry::DestroyDB Calling rocksdb::DestroyDB for \"%s\"\n", instance, identityPath.c_str());
 	rocksdb::Status status = rocksdb::DestroyDB(identityPath, rocksdb::Options());
 	std::string destroyError;
 	if (!status.ok()) {
@@ -499,7 +498,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		condition->notify_all();
 	}
 
-	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance.get(), identityPath.c_str());
+	DEBUG_LOG("%p DBRegistry::DestroyDB Successfully destroyed database at \"%s\"\n", instance, identityPath.c_str());
 }
 
 bool DBRegistry::CollectWriteBufferManagerInventory(
@@ -571,8 +570,8 @@ static unsigned columnFamilyReclaimWaitMs() {
  */
 void DBRegistry::Init(napi_env env, napi_value exports) {
 	if (!instance) {
-		instance = std::unique_ptr<DBRegistry>(new DBRegistry());
-		DEBUG_LOG("%p DBRegistry::Initialize Initialized DBRegistry\n", instance.get());
+		instance = new DBRegistry();
+		DEBUG_LOG("%p DBRegistry::Initialize Initialized DBRegistry\n", instance);
 	}
 
 	napi_value registryStatusFn;
@@ -602,7 +601,7 @@ void DBRegistry::OpenDB(
 		throw rocksdb_js::DBException("Cannot open a database with an invalid handle");
 	}
 
-	DEBUG_LOG("%p DBRegistry::OpenDB Opening database \"%s\" (mode=%s read-only=%s column family=\"%s\")\n", instance.get(), path.c_str(), options.mode == DBMode::Optimistic ? "optimistic" : "pessimistic", options.readOnly ? "true" : "false", options.name.empty() ? "default" : options.name.c_str());
+	DEBUG_LOG("%p DBRegistry::OpenDB Opening database \"%s\" (mode=%s read-only=%s column family=\"%s\")\n", instance, path.c_str(), options.mode == DBMode::Optimistic ? "optimistic" : "pessimistic", options.readOnly ? "true" : "false", options.name.empty() ? "default" : options.name.c_str());
 
 	// A secondary open is read-only by construction; Database::Open normalizes
 	// the flag, and everything downstream (write guards, registry identity,
@@ -700,6 +699,10 @@ void DBRegistry::OpenDB(
 		// an entry erased and re-created while we waited carries a new condition,
 		// and staying on the old one would miss its notify.
 		while (true) {
+			// Every wait below releases databasesMutex and returns here.
+			if (instance->exitFenced) {
+				throw rocksdb_js::DBException("Cannot open database \"" + path + "\": the process is exiting and rocksdb-js has shut down");
+			}
 			// DestroyDB erases every entry for this path before its (potentially
 			// slow) physical deletion runs, to avoid holding databasesMutex across
 			// that I/O -- so once physical deletion starts, no registry entry is
@@ -708,9 +711,10 @@ void DBRegistry::OpenDB(
 			// below, since an empty scan at this instant could mean "free" or
 			// "mid-deletion" and only this check tells them apart.
 			if (instance->destroyingPaths.find(identityPath) != instance->destroyingPaths.end()) {
-				DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is being destroyed, waiting\n", instance.get(), path.c_str());
+				DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is being destroyed, waiting\n", instance, path.c_str());
 				if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
-					return instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
+					return instance->exitFenced ||
+						instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
 				})) {
 					throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": destruction is still in progress");
 				}
@@ -755,7 +759,7 @@ void DBRegistry::OpenDB(
 			if (pathClosingCondition) {
 				if (!pathClosingCondition->wait_until(lock, deadline, [&]() {
 					auto found = instance->databases.find(pathClosingKey);
-					return found == instance->databases.end() ||
+					return instance->exitFenced || found == instance->databases.end() ||
 						found->second.condition != pathClosingCondition ||
 						!found->second.descriptor || !found->second.descriptor->isClosing() ||
 						(!found->second.closeError.empty() && !found->second.closeRetrying);
@@ -804,7 +808,7 @@ void DBRegistry::OpenDB(
 			if (retryCondition) {
 				if (!retryCondition->wait_until(lock, deadline, [&]() {
 					auto found = instance->databases.find(retryKey);
-					return found == instance->databases.end() ||
+					return instance->exitFenced || found == instance->databases.end() ||
 						found->second.condition != retryCondition || !found->second.closeRetrying;
 				})) {
 					throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": close retry is still in progress");
@@ -826,7 +830,7 @@ void DBRegistry::OpenDB(
 			if (!current.descriptor->isClosing()) {
 				break; // database exists and is not closing
 			}
-			DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance.get(), path.c_str());
+			DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is closing, waiting for removal\n", instance, path.c_str());
 			// Keep the descriptor visible so a spurious wake cannot reopen early.
 			// Also wake (and re-loop from the top) the moment this entry quarantines
 			// -- isClosing() never resets on its own, so without the closeError
@@ -835,7 +839,7 @@ void DBRegistry::OpenDB(
 			std::shared_ptr<std::condition_variable> condition = current.condition;
 			if (!condition->wait_until(lock, deadline, [&]() {
 				auto found = instance->databases.find(key);
-				return found == instance->databases.end() ||
+				return instance->exitFenced || found == instance->databases.end() ||
 					!found->second.descriptor || !found->second.descriptor->isClosing() ||
 					!found->second.closeError.empty();
 			})) {
@@ -892,8 +896,8 @@ void DBRegistry::OpenDB(
 				}
 			}
 
-			DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance.get(), path.c_str());
-			DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance.get(), name.c_str());
+			DEBUG_LOG("%p DBRegistry::OpenDB Database already open \"%s\"\n", instance, path.c_str());
+			DEBUG_LOG("%p DBRegistry::OpenDB Checking for column family \"%s\"\n", instance, name.c_str());
 
 			// manually copy the columns because we don't know which ones are valid.
 			// Hold the descriptor's columns mutex across the copy-check-insert so a
@@ -936,7 +940,7 @@ void DBRegistry::OpenDB(
 			for (auto& it : entry.descriptor->columns) {
 				columns[it.first] = it.second;
 				if (it.first == name) {
-					DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" already exists\n", instance.get(), name.c_str());
+					DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" already exists\n", instance, name.c_str());
 					columnExists = true;
 				}
 			}
@@ -944,7 +948,7 @@ void DBRegistry::OpenDB(
 				if (entry.descriptor->readOnly) {
 					throw rocksdb_js::DBException("Column family \"" + name + "\" not found: cannot create column family in read-only mode");
 				}
-				DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance.get(), name.c_str());
+				DEBUG_LOG("%p DBRegistry::OpenDB Creating column family \"%s\"\n", instance, name.c_str());
 				// Preserve retained settings while applying every per-CF option from
 				// the handle creating this family. "Attached" is the descriptor's own record, not
 				// RocksDB's sanitized DBOptions: SanitizeOptions fills a missing manager with a
@@ -1022,7 +1026,7 @@ void DBRegistry::OpenDB(
 				instance->databases.erase(entryIterator);
 				throw;
 			}
-			DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance.get(), entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
+			DEBUG_LOG("%p DBRegistry::OpenDB Stored DBDescriptor %p for \"%s\" (ref count = %ld)\n", instance, entry.descriptor.get(), path.c_str(), entry.descriptor.use_count());
 			columns = entry.descriptor->columns;
 		}
 		break;
@@ -1035,15 +1039,15 @@ void DBRegistry::OpenDB(
 	auto colIterator = columns.find(name);
 	if (colIterator != columns.end()) {
 		// column family already exists
-		DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" found\n", instance.get(), name.c_str());
+		DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" found\n", instance, name.c_str());
 		columnDescriptor = colIterator->second;
 	} else {
 		// use the default column family
-		DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" not found, using \"default\"\n", instance.get(), name.c_str());
+		DEBUG_LOG("%p DBRegistry::OpenDB Column family \"%s\" not found, using \"default\"\n", instance, name.c_str());
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	// AGENTS invariant 35. A write staged through a non-participating handle
+	// AGENTS invariant 38. A write staged through a non-participating handle
 	// holds no write intent, so switching on while one may exist would let a
 	// seed taken now survive its commit. Read the count before the watermark;
 	// DBHandle::close() writes them in the other order.
@@ -1117,7 +1121,7 @@ void DBRegistry::OpenDB(
 	handle->disableWAL = options.disableWAL;
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Attached DBHandle %p for \"%s\" (ref count = %ld)\n",
-		instance.get(), handle.get(), path.c_str(), entry.descriptor.use_count());
+		instance, handle.get(), path.c_str(), entry.descriptor.use_count());
 }
 
 /**
@@ -1132,7 +1136,7 @@ void DBRegistry::PurgeAll() {
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
 #ifdef DEBUG
 			size_t initialSize = instance->databases.size();
-			DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", instance.get(), initialSize);
+			DEBUG_LOG("%p DBRegistry::PurgeAll Purging %zu databases:\n", instance, initialSize);
 #endif
 			descriptorsToClose.reserve(instance->databases.size());
 			for (auto it = instance->databases.begin(); it != instance->databases.end();) {
@@ -1148,7 +1152,7 @@ void DBRegistry::PurgeAll() {
 						continue;
 					}
 					DEBUG_LOG("%p DBRegistry::PurgeAll Claiming \"%s\" (ref count = %ld)\n",
-						instance.get(), it->first.path.c_str(), descriptor.use_count());
+						instance, it->first.path.c_str(), descriptor.use_count());
 					descriptorsToClose.emplace_back(it->first, descriptor, it->second.condition);
 					++it;
 					continue;
@@ -1158,7 +1162,7 @@ void DBRegistry::PurgeAll() {
 			}
 #ifdef DEBUG
 			DEBUG_LOG("%p DBRegistry::PurgeAll Claimed %zu of %zu descriptors\n",
-				instance.get(), descriptorsToClose.size(), initialSize);
+				instance, descriptorsToClose.size(), initialSize);
 #endif
 		}
 		for (const auto& condition : removedConditions) {
@@ -1599,7 +1603,7 @@ void DBRegistry::Shutdown() {
 				// do" and let shutdown() return while files are still being
 				// removed. Wait it out here instead.
 				destroysInFlight = !instance->destroyingPaths.empty();
-				DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", instance.get(), instance->databases.size());
+				DEBUG_LOG("%p DBRegistry::Shutdown Shutting down %zu databases\n", instance, instance->databases.size());
 				descriptorsToClose.reserve(instance->databases.size());
 				descriptorsToWaitFor.reserve(instance->databases.size());
 
@@ -1661,7 +1665,19 @@ void DBRegistry::Shutdown() {
 		// last handle detached between two passes above).
 		PurgeAll();
 
-		DEBUG_LOG("%p DBRegistry::Shutdown Shutdown complete\n", instance.get());
+		DEBUG_LOG("%p DBRegistry::Shutdown Shutdown complete\n", instance);
+	}
+}
+
+void DBRegistry::FenceOpensForExit() {
+	if (!instance) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(instance->databasesMutex);
+	instance->exitFenced = true;
+	instance->lifecycleCondition.notify_all();
+	for (auto& [_key, entry] : instance->databases) {
+		entry.condition->notify_all();
 	}
 }
 
@@ -1669,22 +1685,43 @@ void DBRegistry::Shutdown() {
  * Release every remaining registry entry (see the header for why this cannot be
  * left to the singleton's static destructor).
  */
-void DBRegistry::Teardown() {
+bool DBRegistry::Teardown(bool quarantinedOnly) {
 	if (!instance) {
-		return;
+		return true;
 	}
 
 	std::unordered_map<DBKey, DBRegistryEntry, DBKeyHash> entries;
+	// A live descriptor left behind is one another thread is still closing, or
+	// one a timed-out Shutdown() never claimed.
+	bool liveDescriptorsRemain = false;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		entries.swap(instance->databases);
+		if (quarantinedOnly) {
+			for (auto it = instance->databases.begin(); it != instance->databases.end();) {
+				if (it->second.descriptor && !it->second.closeError.empty() && !it->second.closeRetrying) {
+					entries.emplace(it->first, std::move(it->second));
+					it = instance->databases.erase(it);
+				} else {
+					liveDescriptorsRemain |= static_cast<bool>(it->second.descriptor);
+					++it;
+				}
+			}
+		} else {
+			entries.swap(instance->databases);
+		}
+	}
+	// Erasing ends an OpenDB() wait on these keys; wake it rather than letting
+	// it run to its deadline.
+	for (auto& [_key, entry] : entries) {
+		entry.condition->notify_all();
 	}
 
 	// Destroy outside the lock: ~DBDescriptor closes the RocksDB database and
 	// joins its worker threads. A descriptor already claimed by a failed close
 	// short-circuits its own close() and is simply released here.
 	DEBUG_LOG("%p DBRegistry::Teardown Releasing %zu remaining descriptor(s)\n",
-		instance.get(), entries.size());
+		instance, entries.size());
+	bool flushed = true;
 	for (auto& [_key, entry] : entries) {
 		if (entry.descriptor) {
 			// One failed sweep must not release the rest unswept.
@@ -1693,9 +1730,11 @@ void DBRegistry::Teardown() {
 			} catch (const std::exception& e) {
 				::fprintf(stderr, "rocksdb-js teardown of \"%s\" failed: %s\n", entry.descriptor->path.c_str(), e.what());
 			}
+			flushed &= entry.descriptor->finalFlush();
 		}
 	}
 	entries.clear();
+	return flushed && !liveDescriptorsRemain;
 }
 
 /**
