@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
-#include <atomic>
+#include <array>
+#include <barrier>
 #include <thread>
 #include "core/transaction_state.h"
 
@@ -56,23 +57,26 @@ TEST(TransactionStateCell, CommittedIsTerminal) {
 // A completion reverting Committing -> Pending races a foreign close() settling Aborted: whichever
 // runs first, the handle must end Aborted.
 TEST(TransactionStateCell, AbortWinsAgainstConcurrentRevert) {
-	for (int i = 0; i < 20000; ++i) {
-		TransactionStateCell state;
+	std::array<TransactionStateCell, 20000> states;
+	for (auto& state : states) {
 		ASSERT_TRUE(state.transition(TransactionState::Pending, TransactionState::Committing));
-		std::atomic<bool> go{false};
-		std::thread completion([&] {
-			while (!go.load(std::memory_order_acquire)) {
-			}
+	}
+	std::barrier start(2);
+	std::thread completion([&] {
+		for (auto& state : states) {
+			start.arrive_and_wait();
 			state.transition(TransactionState::Committing, TransactionState::Pending);
-		});
-		std::thread closer([&] {
-			while (!go.load(std::memory_order_acquire)) {
-			}
+		}
+	});
+	std::thread closer([&] {
+		for (auto& state : states) {
+			start.arrive_and_wait();
 			state.abort();
-		});
-		go.store(true, std::memory_order_release);
-		completion.join();
-		closer.join();
-		ASSERT_EQ(state.load(), TransactionState::Aborted) << "iteration " << i;
+		}
+	});
+	completion.join();
+	closer.join();
+	for (size_t i = 0; i < states.size(); ++i) {
+		ASSERT_EQ(states[i].load(), TransactionState::Aborted) << "iteration " << i;
 	}
 }
