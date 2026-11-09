@@ -534,26 +534,35 @@ DBDescriptor::~DBDescriptor() {
 	} catch (...) {
 		DEBUG_LOG("%p DBDescriptor::~DBDescriptor Close failed for \"%s\"\n", this, this->path.c_str());
 	}
-	// A quarantined descriptor (its close-time flush failed, and so did every
-	// retry) arrives here with its memtables unflushed. RocksDB will not flush
-	// them on close (avoid_flush_during_shutdown), so this is their last chance.
-	if (this->db && !this->closeFlushed) {
-		try {
-			const rocksdb::SequenceNumber flushedSequence = this->db->GetLatestSequenceNumber();
-			// Exit-time: nothing else can be admitted, so do not wait out a stall.
-			rocksdb::Status status = this->flush(true);
-			if (status.ok()) {
-				if (!this->readOnly) {
-					this->recordFlushedLogPosition(flushedSequence);
-				}
-			} else {
-				::fprintf(stderr, "rocksdb-js final flush of \"%s\" failed: %s\n", this->path.c_str(), status.ToString().c_str());
-			}
-		} catch (...) {
-			DEBUG_LOG("%p DBDescriptor::~DBDescriptor Final flush threw for \"%s\"\n", this, this->path.c_str());
-		}
-	}
+	this->finalFlush();
 	this->parkTimeouts->shutdown();
+}
+
+/**
+ * A quarantined descriptor (its close-time flush failed, and so did every
+ * retry) is released with its memtables unflushed. RocksDB will not flush them
+ * on close (avoid_flush_during_shutdown), so this is their last chance.
+ */
+bool DBDescriptor::finalFlush() noexcept {
+	if (!this->db || this->closeFlushed) {
+		return true;
+	}
+	try {
+		const rocksdb::SequenceNumber flushedSequence = this->db->GetLatestSequenceNumber();
+		// Exit-time: nothing else can be admitted, so do not wait out a stall.
+		rocksdb::Status status = this->flush(true);
+		if (status.ok()) {
+			if (!this->readOnly) {
+				this->recordFlushedLogPosition(flushedSequence);
+			}
+			this->closeFlushed = true;
+			return true;
+		}
+		::fprintf(stderr, "rocksdb-js final flush of \"%s\" failed: %s\n", this->path.c_str(), status.ToString().c_str());
+	} catch (...) {
+		DEBUG_LOG("%p DBDescriptor::finalFlush Final flush threw for \"%s\"\n", this, this->path.c_str());
+	}
+	return false;
 }
 
 /**

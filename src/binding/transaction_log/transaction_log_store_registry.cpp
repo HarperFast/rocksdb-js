@@ -550,7 +550,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		throw rocksdb_js::DBException(firstUseFloorLogMessage(name, dbPath));
 	}
 
-	// Ensure the directory exists
+	std::error_code existsError;
+	bool createdDirectory = !std::filesystem::exists(logDirectory, existsError) && !existsError;
 	rocksdb_js::tryCreateDirectory(logDirectory);
 
 	auto txnLogStore = std::make_shared<TransactionLogStore>(
@@ -561,6 +562,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 		config.transactionLogMaxAgeThreshold
 	);
 	txnLogStore->displayPath = std::filesystem::path(config.transactionLogsDisplayPath) / name;
+	if (createdDirectory) {
+		txnLogStore->initializeNewPurgeRecord();
+	}
 
 	// Use insert_or_assign to replace any closing store with the same name
 	entry->stores.insert_or_assign(txnLogStore->name, txnLogStore);
@@ -686,6 +690,20 @@ std::vector<TransactionLogStoreRegistry::PurgedLogFile> TransactionLogStoreRegis
 
 	// Phase 2: Process stores WITHOUT holding storesMutex
 	for (auto& store : storesToPurge) {
+		// The record must read unknown before a destroy deletes anything: remove_all deletes in no fixed
+		// order, can stop part-way, and takes unflushed segments the purge skips. When that write fails
+		// the store stays open and registered, with every file.
+		if (destroy && !store->invalidatePurgeRecord()) {
+			try {
+				std::string msg = "Transaction log store " + store->displayPath.string() +
+					" was not deleted: its purge watermark could not be marked unknown first.";
+				DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores WARNING: %s\n", instance.get(), msg.c_str());
+				emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg }));
+			} catch (...) {
+				// reporting is best-effort
+			}
+			continue;
+		}
 		store->purge([&](const std::filesystem::path& filePath, uint32_t entryCount) -> void {
 			removed.push_back(PurgedLogFile{filePath.string(), entryCount});
 		}, destroy, before, includeEntryCounts);

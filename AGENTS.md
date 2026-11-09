@@ -295,6 +295,15 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   its resolution and wraps into the past, scanning nothing). Read once per process
   (a function-local `static`, same `::getenv`-vs-`process.env` caveat as
   `ROCKSDB_JS_PARK_TIMEOUT_MS`), so it must be set in the environment a process is started with
+- `ROCKSDB_JS_PURGE_SCAN_MS` - Budget (default `2000`) one purge run spends reading transaction-log
+  files written by an earlier process, to record each one's largest key in the purge watermark before
+  deleting it (invariant 35). Files it cannot read in time are kept for a later run, so a deployment
+  whose files take longer to read raises it. Open-time retention runs under the process-wide registry
+  lock, which is why it is bounded. It is a budget per store per purge run, so an open that loads N
+  stores with inherited backlogs can spend up to N times it. Honored literally (`0` reads nothing, so such files are never
+  purged), values above a day are clamped to a day, and malformed or negative values use the default.
+  Read once per process, so it
+  must be set in the environment a process is started with
 - `ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS` - Bound (default `2000`) on a writable open's
   transaction-log recovery scan. In particular, a copied Windows segment on POSIX must prove its
   entire zero-padded suffix within this time before recovery durably truncates it to the
@@ -1012,7 +1021,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     lingers (bounded, cleaned at env exit).
 
     Relatedly, `TransactionHandle::close()` is deliberately **napi-free** — the transaction holds
-    no `napi_ref` fields, and its one `napi_env` (`ownerEnv`, invariant 35) is only ever compared
+    no `napi_ref` fields, and its one `napi_env` (`ownerEnv`, invariant 37) is only ever compared
     as an identity, never passed to an N-API call (the JS database is passed to `UseLog` per-call; its former
     weak `jsDatabaseRef` plus a recycled-pthread `std::thread::id` collision in close()'s
     thread-identity guard was the Linux corrupting write:
@@ -1389,9 +1398,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     steady would break the durable epoch contract, and adding a ratchet to the steady clock would
     distort elapsed measurement under contention. Whether host suspend counts is platform-defined
     (Linux excludes it; current macOS and Windows implementations include it).
-26. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: `DBRegistry::instance` is a
-    namespace-scope `static`, so anything still in `instance->databases` when the hook returns is
-    destroyed from an `atexit` handler. Closing a RocksDB database there runs
+26. **No `rocksdb::DB` may outlive the module's env-cleanup hook**: nothing closes it later.
+    `DBRegistry::instance` is deliberately never freed: Bun's `process.exit()` runs static
+    destructors without stopping workers, and a worker still inside `OpenDB()` then locked a freed
+    `databasesMutex` (SIGSEGV in the `worker-churn` fixture). Leaving teardown to a destructor is
+    unsafe anyway: when the registry was a static `unique_ptr`, entries still in
+    `instance->databases` were destroyed from an `atexit` handler. Closing a RocksDB database there runs
     `DBImpl::CancelAllBackgroundWork()` → `PeriodicTaskScheduler::Unregister()` **after** RocksDB's
     own function-local statics have been destroyed, and RocksDB's `PthreadCall` wrapper reacts to
     the resulting `EINVAL` by printing `pthread lock: Invalid argument` and calling `std::abort()` —
@@ -1406,6 +1418,41 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `test/fixtures/fork-quarantined-exit.mts`; the same shape reproduces from JS by leaving a
     database with a sticky RocksDB background error (`test/background-error.test.ts` used to,
     which is why its fixtures now tear down with `destroy()` rather than `close()`).
+
+    **Node does not run the main env's cleanup hook on `process.exit()`**: it runs the `exit`
+    listeners, stops the workers (their hooks run, but the main env still holds a module
+    reference, so the count never reaches zero), then calls `exit()`. Bun never runs the workers'
+    hooks there, and whether it runs the main env's changed between releases (1.4.0 did, 1.4.4
+    does not). So the main thread's `process.on('exit')` listener, registered in
+    `load-binding.ts` and calling `ShutdownOnExit` (`binding.cpp`), is the terminal owner on
+    that path (rocksdb-js#1004). Workers are still running JS while it runs, which makes it
+    different from the last-env hook in three ways. It **fences opens first**
+    (`DBRegistry::FenceOpensForExit`, checked on every pass of `OpenDB`'s wait loop): an open that
+    lands after the sweep has no later flush or close, and in Bun with a worker alive nothing else
+    ever runs. It **tears down quarantined entries only** (`Teardown(true)`), because an entry
+    still being closed by another env's thread (for example a `shutdown()` that timed out waiting
+    for it) belongs to that closer, whose `finishClose()` may still be draining operations; sweeping
+    its closables would close handles under it. Since the main env's hook never runs afterwards, the
+    count never reaches zero, so each worker hook that runs after the main thread's exit shutdown
+    (`mainThreadExited`) repeats `Shutdown()` and `Teardown(true)`: a worker's own close can finish
+    after the main thread's sweep and quarantine, and a main-thread shutdown that timed out behind
+    it never claimed the rest. Bun runs no worker hook on `process.exit()`, so there this is best
+    effort, so `ShutdownOnExit` returns false whenever `Teardown(true)` reports data possibly left
+    unflushed (a live descriptor still registered, or a failed final flush) and the listener fails
+    the exit code instead of exiting 0. A failed `Shutdown()` alone does not: a quarantined entry
+    gets one more flush in teardown (`DBDescriptor::finalFlush`). And it does not call
+    `TransactionLogStoreRegistry::Shutdown()`, since a worker may still
+    hold a mapping of a log segment: a successful close unregisters its stores, so only a
+    quarantined descriptor's stores reach static destruction, as every store did before. It never
+    throws: in Node an exception from an `exit` listener skips every later listener. For the same
+    reason it is also run from an `uncaughtExceptionMonitor` listener while `process._exiting` is
+    set, so an earlier `exit` listener that throws cannot skip it (a JS flag keeps it to one run).
+    Its waits are as unbounded as the last-env hook's: `finishClose()` drains in-flight operations
+    without a timeout (invariant 6), and returning early instead would leave RocksDB threads running
+    into static destruction. The `shutdownOnExit`
+    config option skips the listener, restoring the old behaviour for callers that simulate a crash
+    with `process.exit()`; it does not stop a cleanup hook that does run (a natural exit, or
+    `process.exit()` under a Bun release that runs the main env's hook) from flushing. Covered by `test/process-exit-shutdown.test.ts`.
 
 27. **A reopened handle clears its cancellation only after `DBRegistry::OpenDB()` finishes its
     lifecycle waits**:
@@ -1498,15 +1545,20 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
       at or below the segment the iterator was _positioned_ at (`gapFloor`), unless that segment
       did not map at query time while still the reader's to read — not written yet (positioned at
       its header) or live but unmappable (the store still has it) — so the floor is one lower. A
-      `startFromLastFlushed` query whose starting segment was already purged gets a
-      placeholder buffer with `logId` 0, and counting from that would report a prefix the reader
-      never owned. Initial positioning before the oldest retained entry is therefore not signalled:
+      starting segment that did not map is held by an empty placeholder that keeps its `logId`, and
+      the iterator keeps its position: `next()` retries the mapping while the segment is still the
+      reader's (unread entries remain, or it has not been written past yet). Once a later segment
+      is visible, it advances past an exhausted starting segment without a gap; if the starting
+      segment is gone, it counts it against the floor. The extent is checked after observing the
+      later segment so a racing append cannot be missed. A placeholder with `logId` 0 walked up from
+      the lowest retained segment and redelivered everything before the reader's position (#956); counting from it would also
+      report a prefix the reader never owned. Initial positioning before the oldest retained entry is therefore not signalled:
       the purged segments' timestamps no longer exist to compare against, and Harper guards that
       case at reconnect (`shouldForceBaseCopyForRetention`). A missing sequence number means
       continuity is unknown, not that it held entries (a rotation can skip a sequence whose
       creation failed). The error is deliberately not a `RangeError`, because consumers
       classify corrupt frames by that class. Only a
-      segment the store has no bytes for is skipped — one it still knows is merely unmappable for
+      later segment the store has no bytes for is skipped — one it still knows is merely unmappable for
       now (mid-rotation, 0 bytes at mmap time, transient resource pressure), so iteration stops and
       retries on the next poll rather than stepping over durable history. That gate is the
       segment's own extent.
@@ -1610,7 +1662,26 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     [abort markers](src/binding/transaction_log/DESIGN.md#abort-markers) and
     [write-intent refusal](src/binding/transaction/DESIGN.md#write-intent-refusal).
 
-35. **A transaction is used only from the env that created it**: transaction ids resolve through
+35. **No transaction-log segment is unlinked before the purge watermark covers it**: `doPurge()`
+    persists `txn.purged`, raised to the largest key of every segment it is about to delete,
+    durably before its first unlink. A store reports the watermark as known only when every
+    deletion in its history was recorded that way, so a store an older release created stays
+    unknown. See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark).
+
+36. **A transaction's log batch is staged only while it is Pending**: from `Committing` on, the
+    commit owns `logEntryBatch` and `committedPosition` — its lane writes the batch, frees it, and
+    on a retry `resetTransaction()` frees it again — so `TransactionHandle::addLogEntry` refuses a
+    non-Pending transaction before it reads either or binds a store. Without that, a
+    `log.addEntry(buf, txn.id)` after a non-awaited `commit()` raced the lane on the batch (a heap
+    race), was silently dropped by the write-once return, or started a fresh batch nothing would
+    write. The check relies on the owning env leaving `Pending` in `Commit()`/`CommitSync()` before
+    dispatching and re-entering it in the commit completion, both on its own JS thread, so the owner
+    always observes its own transition. It is not synchronization: `state` is a plain field the lane
+    also writes (#769). Another env reaching the handle by id could observe `Pending` and stage
+    while the owner commits; invariant 37 rules that out by refusing by-id access from any env but
+    the owner (#886).
+
+37. **A transaction is used only from the env that created it**: transaction ids resolve through
     the process-global `DBDescriptor`, so any `worker_threads` env on the path can name another env's
     transaction, and `Store.getTxnId()`'s identity check cannot tell them apart. A RocksDB
     `Transaction` and most `TransactionHandle` fields (`state`, `txn`, the touched-family set, the VT
