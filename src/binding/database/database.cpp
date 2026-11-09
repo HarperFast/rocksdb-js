@@ -1172,7 +1172,7 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
  * ```
  */
 napi_value Database::Get(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(5);
+	NAPI_METHOD_ARGV(6);
 
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
@@ -1194,15 +1194,11 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
+	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), *dbHandle);
 
-	// Pre-compute vtSlot so both the txn and DB async paths can use it, and
-	// observe its value before the async read so the post-read CAS only publishes
-	// when no write cycle intervened.
 	VtSlotRef vtSlot;
-	uint64_t vtObserved = 0;
-	if (hasExpectedVersion) {
+	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
-		if (vtSlot) vtObserved = vtSlot.load();
 	}
 
 	if (txnIdType == napi_number) {
@@ -1211,15 +1207,17 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Get failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Get failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		return txnHandle->get(env, key, resolve, reject, *dbHandle,
-		                      vtSlot, vtObserved, hasExpectedVersion, expectedVersion);
+		                      vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
 	}
+
+	// No snapshot to order against: observe the slot before the read so the post-read CAS only
+	// publishes when no write cycle intervened.
+	const uint64_t vtObserved = vtSlot ? vtSlot.load() : 0;
 
 	rocksdb::ReadOptions readOptions;
 	napi_value name;
@@ -1235,6 +1233,8 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	state->vtObserved = vtObserved;
 	state->hasExpectedVersion = hasExpectedVersion;
 	state->expectedVersion = expectedVersion;
+	state->wantsPopulate = wantsPopulate;
+	state->vtPublish = (*dbHandle)->enableVerificationTable;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -1635,11 +1635,9 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Get count failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Get count failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		try {
 			if (!txnHandle->getCount(itOptions, count, *dbHandle)) {
@@ -2070,7 +2068,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
-	bool wantsPopulate = (flags & POPULATE_VERSION_FLAG) != 0;
+	bool wantsPopulate = readWantsPopulate(flags, *dbHandle);
 
 	// For transactional reads, establish the snapshot BEFORE loading
 	// the VT slot. If we loaded the slot first, a complete write cycle
@@ -2087,11 +2085,9 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		if (!rocksdb_js::readTransactionId(env, argv[2], txnId)) {
 			return nullptr;
 		}
-		txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Get sync failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Get sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		txnHandle->ensureSnapshot();
 	}
@@ -2771,6 +2767,11 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	}
 
 	try {
+		if (dbHandleOptions.verificationTable) {
+			// Writers record a write intent only in a table that already exists; one created later by a
+			// read would let that read publish a version a write staged before it never invalidates.
+			DBSettings::getInstance().getVerificationTable();
+		}
 		(*dbHandle)->open(path, dbHandleOptions);
 	} catch (const rocksdb_js::DBException& e) {
 		DEBUG_LOG("%p Database::Open Error: %s\n", dbHandle->get(), e.what());
@@ -2838,11 +2839,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Put failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Put failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		if (txnHandle->writesAbandoned.load(std::memory_order_relaxed)) {
 			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
@@ -2925,11 +2924,9 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Remove sync failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Remove sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		if (txnHandle->writesAbandoned.load(std::memory_order_relaxed)) {
 			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
@@ -3178,45 +3175,6 @@ void Database::Init(napi_env env, napi_value exports) {
 	));
 
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, className, ctor));
-}
-
-/**
- * Resolves the result of a `Get` operation.
- */
-napi_value resolveGetSyncResult(
-	napi_env env,
-	const char* errorMsg,
-	rocksdb::Status& status,
-	std::string& value,
-	napi_value resolve,
-	napi_value reject
-) {
-	napi_value global;
-	NAPI_STATUS_THROWS(::napi_get_global(env, &global));
-
-	napi_value result;
-
-	if (status.IsNotFound()) {
-		napi_get_undefined(env, &result);
-		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr));
-	} else if (!status.ok()) {
-		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, errorMsg);
-		NAPI_STATUS_THROWS(::napi_call_function(env, global, reject, 1, &error, nullptr));
-	} else {
-		// TODO: when in "fast" mode, use the shared buffer
-		NAPI_STATUS_THROWS(::napi_create_buffer_copy(
-			env,
-			value.size(),
-			value.data(),
-			nullptr,
-			&result
-		));
-		NAPI_STATUS_THROWS(::napi_call_function(env, global, resolve, 1, &result, nullptr));
-	}
-
-	napi_value returnStatus;
-	NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &returnStatus));
-	return returnStatus;
 }
 
 } // namespace rocksdb_js

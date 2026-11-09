@@ -195,7 +195,10 @@ napi_value TransactionLog::AddEntry(napi_env env, napi_callback_info info) {
 	}
 
 	try {
-		(*txnLogHandle)->addEntry(transactionId, data, static_cast<uint32_t>(size));
+		(*txnLogHandle)->addEntry(env, transactionId, data, static_cast<uint32_t>(size));
+	} catch (const rocksdb_js::DBException& e) {
+		::napi_throw_error(env, e.code(), e.what());
+		return nullptr;
 	} catch (const std::exception& e) {
 		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
@@ -581,6 +584,22 @@ napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetPurgeWatermark");
+
+	auto watermark = (*txnLogHandle)->getPurgeWatermark();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	napi_value known;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, watermark.known, &known));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "known", known));
+	if (watermark.known) {
+		SET_STAT(result, "purgedThrough", watermark.purgedThrough);
+	}
+	return result;
+}
+
 /**
  * Initializes the `NativeTransactionLog` JavaScript class.
  */
@@ -591,6 +610,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "path", nullptr, nullptr, GetPath, nullptr, nullptr, napi_default, nullptr },
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },
 		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getPurgeWatermark", nullptr, GetPurgeWatermark, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findExactStart", nullptr, FindExactStart, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_segmentRemovals", nullptr, SegmentRemovals, nullptr, nullptr, nullptr, napi_default, nullptr },
