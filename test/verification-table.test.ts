@@ -843,17 +843,27 @@ describe('Verification Table', () => {
 				}
 			));
 
-		it('an explicit verificationTable: false handle participates too', () =>
-			dbRunner(
-				{ dbOptions: [cachedOptions, { ...plainOptions, verificationTable: false }] },
-				async ({ db: cached }, { db: plain }) => {
-					const key = Buffer.from('explicit-false');
-					await cached.put(key, makeValue(1.5e12));
-					seed(cached, key, 1.5e12);
-					plain.putSync(key, makeValue(1.6e12));
-					expectStale(cached, key, 1.5e12, 1.6e12);
-				}
-			));
+		it('rejects an explicit verificationTable: false on a participating column family', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const cached = new RocksDatabase(path, cachedOptions).open();
+			const optOut = new RocksDatabase(path, { ...plainOptions, verificationTable: false });
+			try {
+				expect(() => optOut.open()).toThrow(
+					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
+				);
+				// Participation outlives the opted-in handle while the database stays open.
+				cached.close();
+				expect(() => optOut.open()).toThrow(
+					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
+				);
+				const plain = new RocksDatabase(path, plainOptions).open();
+				plain.close();
+			} finally {
+				cached.close();
+				keepAlive.close();
+			}
+		});
 
 		it('keeps participating after every opted-in handle closes', async () => {
 			const path = generateDBPath();

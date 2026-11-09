@@ -72,9 +72,11 @@ agree across every handle on a column family once any of them participates.
 `DBRegistry::OpenDB` keeps it on `ColumnFamilyDescriptor`:
 
 - **A later handle inherits participation.** Once a `verificationTable: true` handle attaches, every
-  handle that attaches to that generation participates, whatever it requested, for as long as the
-  generation lives in that descriptor, because a slot it seeded can still be trusted after it
-  closes.
+  handle that attaches to that generation participates, for as long as the generation lives in that
+  descriptor, because a slot it seeded can still be trusted after it closes. A handle that left the
+  option unset joins silently. An explicit `verificationTable: false` is refused with
+  `ERR_VERIFICATION_TABLE_CONFLICT` (`DBOptions::verificationTableExplicit`) rather than overridden,
+  so a caller who asked to stay out is told it cannot.
 - **Opting in fails while a non-participating writer may exist.** A write staged without the option
   holds no write intent, so a slot seeded after the switch would survive its commit. The open is
   refused with `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle is attached

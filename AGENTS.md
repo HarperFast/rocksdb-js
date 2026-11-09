@@ -1695,8 +1695,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 
 38. **Verification-table participation belongs to the column family, not the handle**: every
     write path checks the writing handle's `enableVerificationTable`, but slots outlive handles, so
-    `DBRegistry::OpenDB` makes every handle on a participating column family participate and refuses
-    an opt-in while a non-participating writer may exist. See
+    `DBRegistry::OpenDB` makes every handle on a participating column family participate, refuses an
+    explicit `verificationTable: false` there, and refuses an opt-in while a non-participating writer
+    may exist. See
     [participation](src/binding/core/DESIGN.md#participation-is-per-column-family).
 
 ## Debugging native heap corruption

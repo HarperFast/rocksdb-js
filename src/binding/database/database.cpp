@@ -2456,6 +2456,17 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "disableWAL", dbHandleOptions.disableWAL));
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "verificationTable", dbHandleOptions.verificationTable));
+	{
+		bool hasVerificationTable = false;
+		NAPI_STATUS_THROWS(::napi_has_named_property(env, options, "verificationTable", &hasVerificationTable));
+		if (hasVerificationTable) {
+			napi_value value;
+			napi_valuetype valueType;
+			NAPI_STATUS_THROWS(::napi_get_named_property(env, options, "verificationTable", &value));
+			NAPI_STATUS_THROWS(::napi_typeof(env, value, &valueType));
+			dbHandleOptions.verificationTableExplicit = valueType == napi_boolean;
+		}
+	}
 
 	// compression: a friendly algorithm name (e.g. "lz4", "zstd", "none"). The
 	// TypeScript layer normalizes the string|object public option and validates

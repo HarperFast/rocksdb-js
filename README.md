@@ -219,8 +219,9 @@ Creates a new database instance.
     [Verification Table](#verification-table): writes through it invalidate the verification slot
     for each written key, and reads through it may seed slots. Enable this only for column families
     whose records are cached (e.g. the primary column family of a table), on every handle that
-    opens them. Defaults to `false`. Requires `verificationTableEntries` to be configured before the
-    first database is opened.
+    opens them. Defaults to `false`; a handle that leaves it unset joins a column family another
+    handle opened with `true`, and an explicit `false` there throws. Requires
+    `verificationTableEntries` to be configured before the first database is opened.
   - `writeBufferSize: number` The per-column-family memtable size in bytes at which the memtable is
     sealed and flushed to an SST file. Smaller values produce more frequent, faster flushes; larger
     values batch more writes per SST file at the cost of memory. Defaults to `16777216` (16 MB).
@@ -2250,7 +2251,10 @@ column family of a table); enabling it adds per-write slot invalidation overhead
 
 Participation applies to the whole column family within the process. Once a handle opens a column
 family with `verificationTable: true`, every later handle on it participates too, even one opened
-without the option, so a write through any handle invalidates its key's slot. Opening with
+without the option, so a write through any handle invalidates its key's slot. This lasts until
+every handle on the database closes. Opening such a column family with an explicit
+`verificationTable: false` throws `ERR_VERIFICATION_TABLE_CONFLICT`, since that handle's writes
+could not skip the table anyway; leave the option unset instead. Opening with
 `verificationTable: true` throws `ERR_VERIFICATION_TABLE_CONFLICT` while a handle without the option
 is open on that column family. After such a handle closes, the same error is thrown while a
 transaction that existed before it closed is still pending, or while another operation on the

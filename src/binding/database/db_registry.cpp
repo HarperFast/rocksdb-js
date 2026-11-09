@@ -1047,7 +1047,17 @@ void DBRegistry::OpenDB(
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	// AGENTS invariant 38. A write staged through a non-participating handle
+	// AGENTS invariant 38. Participation cannot be turned off for one handle: its
+	// writes would skip the slots the participating handles trust.
+	if (options.verificationTableExplicit && !options.verificationTable && columnDescriptor->verificationTable) {
+		throw rocksdb_js::DBException(
+			"ERR_VERIFICATION_TABLE_CONFLICT",
+			"Column family \"" + columnDescriptor->name + "\" participates in the verification table in this " +
+			"process, because a handle opened it with verificationTable: true; it keeps participating until every " +
+			"handle on this database closes, so open it with verificationTable: true or leave the option unset"
+		);
+	}
+	// A write staged through a non-participating handle
 	// holds no write intent, so switching on while one may exist would let a
 	// seed taken now survive its commit. Read the count before the watermark;
 	// DBHandle::close() writes them in the other order.
