@@ -37,7 +37,6 @@ constexpr napi_type_tag TRANSACTION_LOG_TAG = {
 	0x9e07a4d15b38f612,
 };
 
-// The log handle `value` wraps, or nullptr if `value` is not a TransactionLog.
 std::shared_ptr<TransactionLogHandle>* unwrapTaggedTransactionLog(napi_env env, napi_value value) {
 	napi_valuetype type;
 	if (::napi_typeof(env, value, &type) != napi_ok || type != napi_object) {
@@ -112,8 +111,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 
 	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
 	NAPI_GET_DB_HANDLE(argv[0], exportsRef, dbHandle, "Invalid argument, expected Database instance");
-	// A closed handle has no descriptor, which the handle constructor below
-	// dereferences. `db.useLog()` checks this already; direct construction did not.
+	// A closed handle has no descriptor for the handle constructor to read.
 	if (!(*dbHandle)->opened()) {
 		::napi_throw_error(env, nullptr, "Database not open");
 		return nullptr;
@@ -185,7 +183,7 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
  * whichever database handle created them and whether or not it is still open.
  * Equality does not distinguish a log destroyed and recreated under the same
  * name (HarperFast/rocksdb-js#1023). A value that is not a TransactionLog
- * compares unequal.
+ * compares unequal; a receiver that is not one throws a TypeError.
  *
  * @example
  * ```typescript

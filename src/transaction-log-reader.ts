@@ -396,6 +396,8 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 			}
 
 			if (logBuffer === undefined) {
+				// Stands in for the starting segment until next() maps it. It keeps that segment's
+				// `logId` so an advance never restarts below `position`.
 				logBuffer = Buffer.alloc(0) as unknown as LogBuffer;
 				logBuffer.logId = logId;
 				logBuffer.size = 0;
