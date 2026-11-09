@@ -2649,17 +2649,15 @@ describe('Transaction Log', () => {
 				const iterator = log.query({ start: 0, readUncommitted: true });
 				expect(iterator.next().done).toBe(false);
 				await write(3);
-				let read = 0;
-				while (!iterator.next().done) {
-					read++;
+				for (let i = 0; i < 5; i++) {
+					expect(iterator.next().done).toBe(false);
 				}
-				expect(read).toBe(5);
+				expect(iterator.next().done).toBe(true);
 				await write(2);
-				read = 0;
-				while (!iterator.next().done) {
-					read++;
+				for (let i = 0; i < 2; i++) {
+					expect(iterator.next().done).toBe(false);
 				}
-				expect(read).toBe(2);
+				expect(iterator.next().done).toBe(true);
 			}));
 
 		// A committed size that over-reports the mapped buffer must still terminate: leaving
