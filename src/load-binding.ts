@@ -259,7 +259,8 @@ export type TransactionLog = {
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
 	/**
 	 * Whether `other` is the same logical log: the same database identity and log name.
-	 * Works after either database closes. Does not detect a destroyed and recreated log.
+	 * Works after either database closes. A log destroyed and recreated under the same name
+	 * still compares equal.
 	 * Throws a TypeError when called on a receiver that is not a TransactionLog.
 	 */
 	equals(other: unknown): boolean;
