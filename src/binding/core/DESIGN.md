@@ -20,6 +20,20 @@ encoding of 0 is unpublishable and never matches.
 `test/verification-table-collision.test.ts` reproduces the stale read with a 16-slot table, and
 `test/native/verification_table_test.cc` covers the encoding directly.
 
+## Who may publish
+
+A slot may hold a version only while every write of its key invalidates the slot. Two rules keep it:
+
+- **Only an opted-in handle publishes from a read.** Writes lock a slot only through a
+  `verificationTable: true` handle, so `vtPopulateIfSettled()` and the async get's
+  `AsyncGetState::vtPublish` refuse to publish through any other handle. The explicit
+  `populateVersion()` primitive is not gated; its caller owns that contract.
+- **The table exists before an opted-in handle can write.** Writers never create it:
+  `TransactionHandle::lockVTSlot()` and `Database::PutSync` record no write intent when it is
+  absent, and a read that created it later could publish the committed version that an earlier
+  staged write's commit never invalidates. `Database::Open` creates it for an opted-in handle
+  (`test/fixtures/fork-vt-cold-populate.mts`, `staged-write`).
+
 ## Wake registrations
 
 A coordinated-retry park registers a callback on the conflicting holder's `LockTracker`, and the
