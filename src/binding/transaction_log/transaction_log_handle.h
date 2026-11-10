@@ -28,6 +28,12 @@ struct TransactionLogHandle final : Closable {
 	std::string logName;
 
 	/**
+	 * A copy rather than a read through `dbHandle`, which is weak, so
+	 * `TransactionLog.equals()` still answers after the database closes.
+	 */
+	const std::string identityPath;
+
+	/**
 	 * Whether the associated DBHandle's DBDescriptor is opened in readonly mode.
 	 */
 	bool readOnly;

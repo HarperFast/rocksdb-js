@@ -29,6 +29,32 @@ constexpr napi_type_tag READABLE_EXTENT_BUFFER_TAG = {
 	0x8b8399c4a9e6f252,
 };
 
+// Tags every object the TransactionLog constructor wraps, so `equals()` can
+// tell a log from an object some other class wrapped before unwrapping it:
+// `napi_unwrap` returns whatever pointer the object carries, of any type.
+constexpr napi_type_tag TRANSACTION_LOG_TAG = {
+	0x2d6c3f9e8a41b7c5,
+	0x9e07a4d15b38f612,
+};
+
+std::shared_ptr<TransactionLogHandle>* unwrapTaggedTransactionLog(napi_env env, napi_value value) {
+	napi_valuetype type;
+	if (::napi_typeof(env, value, &type) != napi_ok || type != napi_object) {
+		return nullptr;
+	}
+	bool isTransactionLog = false;
+	if (::napi_check_object_type_tag(env, value, &TRANSACTION_LOG_TAG, &isTransactionLog) != napi_ok ||
+		!isTransactionLog) {
+		return nullptr;
+	}
+	void* data = nullptr;
+	if (::napi_unwrap(env, value, &data) != napi_ok) {
+		return nullptr;
+	}
+	auto* txnLogHandle = static_cast<std::shared_ptr<TransactionLogHandle>*>(data);
+	return txnLogHandle && *txnLogHandle ? txnLogHandle : nullptr;
+}
+
 napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
 	size_t argc = 0;
 	napi_value jsThis;
@@ -85,6 +111,11 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 
 	napi_ref exportsRef = reinterpret_cast<napi_ref>(data);
 	NAPI_GET_DB_HANDLE(argv[0], exportsRef, dbHandle, "Invalid argument, expected Database instance");
+	// A closed handle has no descriptor for the handle constructor to read.
+	if (!(*dbHandle)->opened()) {
+		::napi_throw_error(env, nullptr, "Database not open");
+		return nullptr;
+	}
 
 	NAPI_GET_STRING(argv[1], name, "Transaction log store name is required");
 
@@ -141,8 +172,38 @@ napi_value TransactionLog::Constructor(napi_env env, napi_callback_info info) {
 		nullptr, // finalize_hint
 		nullptr  // result
 	));
+	NAPI_STATUS_THROWS(::napi_type_tag_object(env, jsThis, &TRANSACTION_LOG_TAG));
 
 	return jsThis;
+}
+
+/**
+ * Whether `other` is a TransactionLog for the same logical log: the same
+ * database identity and log name. Separate wrappers of one log compare equal,
+ * whichever database handle created them and whether or not it is still open.
+ * Equality does not distinguish a log destroyed and recreated under the same
+ * name (HarperFast/rocksdb-js#1023). A value that is not a TransactionLog
+ * compares unequal; a receiver that is not one throws a TypeError.
+ *
+ * @example
+ * ```typescript
+ * db.useLog('foo').equals(otherDb.useLog('foo'));
+ * ```
+ */
+napi_value TransactionLog::Equals(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	auto* self = unwrapTaggedTransactionLog(env, jsThis);
+	if (!self) {
+		::napi_throw_type_error(env, nullptr, "TransactionLog.equals called on an incompatible receiver");
+		return nullptr;
+	}
+	auto* other = unwrapTaggedTransactionLog(env, argv[0]);
+	const bool equal = other && !(*self)->identityPath.empty() &&
+		(*self)->identityPath == (*other)->identityPath &&
+		(*self)->logName == (*other)->logName;
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, equal, &result));
+	return result;
 }
 
 /**
@@ -606,6 +667,7 @@ napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info in
 void TransactionLog::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addEntry", nullptr, AddEntry, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "equals", nullptr, Equals, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLogFileSize", nullptr, GetLogFileSize, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "path", nullptr, nullptr, GetPath, nullptr, nullptr, napi_default, nullptr },
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },

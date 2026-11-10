@@ -153,7 +153,21 @@ export type TransactionLogQueryOptions = {
 	startFromLastFlushed?: boolean;
 	readUncommitted?: boolean;
 	exclusiveStart?: boolean;
+	/**
+	 * Stop before this same-log iterator's unread position, including a peeked entry.
+	 * Resumes when it advances; a closed iterator no longer bounds this query.
+	 * A pull short of the bound throws TransactionLogUntilUnreachedError.
+	 * Invalid or foreign-log iterators throw TypeError at query creation.
+	 */
+	until?: TransactionLogIterator;
 };
+
+export interface TransactionLogIterator extends IterableIterator<TransactionEntry> {
+	/** Inspect the next entry without consuming it. A done result is never cached. */
+	peek(): IteratorResult<TransactionEntry>;
+	/** Permanently end this iterator and release any iterators bounded by it. */
+	close(): void;
+}
 
 export type TransactionEntry = {
 	timestamp: number;
@@ -243,12 +257,19 @@ export type TransactionLogPurgeWatermark =
 export type TransactionLog = {
 	new (db: NativeDatabase, name: string): TransactionLog;
 	addEntry(data: Buffer | Uint8Array, txnId?: number): void;
+	/**
+	 * Whether `other` is the same logical log: the same database identity and log name.
+	 * Works after either database closes. A log destroyed and recreated under the same name
+	 * still compares equal.
+	 * Throws a TypeError when called on a receiver that is not a TransactionLog.
+	 */
+	equals(other: unknown): boolean;
 	getLogFileSize(sequenceId?: number): number;
 	getPurgeWatermark(): TransactionLogPurgeWatermark;
 	getStats(): TransactionLogStats;
 	name: string;
 	path: string;
-	query(options?: TransactionLogQueryOptions): IterableIterator<TransactionEntry>;
+	query(options?: TransactionLogQueryOptions): TransactionLogIterator;
 	_currentLogBuffer: WeakRef<LogBuffer> | undefined;
 	_findPosition(timestamp: number): number;
 	_findExactStart(timestamp: number, span: Float64Array): number;

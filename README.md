@@ -2427,6 +2427,7 @@ to disk right before the transaction is committed. You may add multiple enties p
 underlying architecture is thread safe.
 
 - `log.addEntry()`
+- `log.equals()`
 - `log.getPurgeWatermark()`
 - `log.path`
 - `log.query()`
@@ -2459,6 +2460,24 @@ await db.transaction(async (txn) => {
 Note that the `TransactionLog` class also has internal methods `_getMemoryMapOfFile`,
 `_findPosition`, and `_getLastCommittedPosition` that should not be used directly and may change in
 any version.
+
+#### `log.equals(other): boolean`
+
+Returns `true` when `other` is a `TransactionLog` for the same log: the same database and the same
+log name. The database is compared by its resolved filesystem identity, so `db.useLog('foo')`,
+`txn.useLog('foo')` and a log from another handle opened with a different spelling of the same path
+all compare equal, and two databases opened through the same relative path from different working
+directories do not. The comparison still works after either database closes. Any other value
+compares unequal.
+
+```typescript
+const log = db.useLog('foo');
+log.equals(otherHandle.useLog('foo')); // true: same database and name
+log.equals(db.useLog('bar')); // false
+```
+
+A log destroyed with `purgeLogs({ destroy: true })` and recreated under the same name still compares
+equal to wrappers of the old one.
 
 #### `log.getPurgeWatermark(): TransactionLogPurgeWatermark`
 
@@ -2502,7 +2521,7 @@ const log = db.useLog('foo');
 console.log(log.path);
 ```
 
-#### `log.query(options?): IterableIterator<TransactionLogEntry>`
+#### `log.query(options?): TransactionLogIterator`
 
 Returns an iterable/iterator that streams all log entries for the given filter.
 
@@ -2511,6 +2530,11 @@ Returns an iterable/iterator that streams all log entries for the given filter.
   - `end?: string` The transction end timestamp.
   - `exclusiveStart?: boolean` When `true`, this will only match transactions with timestamps after
     the start timestamp.
+  - `until?: TransactionLogIterator` Stops before the unread position of another iterator from a log
+    that `equals()` this one, including an entry it has peeked. The bound is exclusive, compares
+    segment and offset before filtering, and works across rotation, even when this query starts past
+    it. It resumes when `until` advances. A closed iterator no longer bounds the query. An invalid or
+    foreign-log iterator throws `TypeError` at query creation.
   - `exactStart?: boolean` When `true`, this will only match and iterate starting from a transaction
     with the given start timestamp. Once the specified transaction is found, all subsequent
     transactions will be returned (regardless of whether their timestamp comes before the `start`
@@ -2527,6 +2551,32 @@ Returns an iterable/iterator that streams all log entries for the given filter.
     have been written to the log but are no longer considered committed if they were not flushed to
     disk.
 
+An unbounded query whose starting segment is temporarily unmappable reports done and retries
+its original position on the next pull.
+
+`iterator.peek()` returns the next entry without consuming it. Repeated peeks return the same
+result until `next()` consumes it once. A `done` result is not cached, so later appends remain
+visible. Errors propagate as from `next()`.
+
+With `until`, `done: true` means the reader has caught up to the bound as of that pull. Running
+out of readable entries short of the bound throws instead, so an unavailable segment cannot
+silently trigger a handoff. Exact-start queries take the index's stop-to-tail jump only when
+its target does not pass the handoff position.
+
+`iterator.close()` permanently ends the iterator and releases its cached entry and mapping.
+It is idempotent; later `next()` and `peek()` calls report done. Breaking out of `for...of`
+keeps the iterator resumable and does not close it. Destroying a log with
+`purgeLogs({ destroy: true })` invalidates its existing iterators; close them and create new
+iterators for a recreated log, including any `until` bounds.
+
+```typescript
+const live = log.query();
+const replay = log.query({ start: startTime, until: live });
+for (const entry of replay) deliver(entry);
+replay.close();
+// A later commit belongs to live even if its timestamp is earlier than startTime.
+```
+
 The iterator produces an object with the log entry timestamp and data.
 
 - `object`
@@ -2534,10 +2584,11 @@ The iterator produces an object with the log entry timestamp and data.
   - `timestamp: number` The entry timestamp used to collate entries by transaction.
   - `endTxn: boolean` This is `true` when the entry is the last entry in a transaction.
 
-`next()` can throw two errors that leave the iterator usable, so calling `next()` again continues
-past the problem. Other errors, such as a failure to open a segment, do not move the iterator, so
-retrying them without a fix fails the same way.
+These errors leave the iterator usable:
 
+- `TransactionLogUntilUnreachedError`: readable input ended before `until`. The cursor stays in
+  place; retry after the input becomes readable or the pending transaction commits. Properties:
+  `logId` and `position`, identifying where the read stopped.
 - `TransactionLogGapError`: the iterator reached segments it had not read yet and could not read
   them, usually because retention purged them while the reader lagged. Their entries are not in
   this log anymore, so a consumer that replicates the log should treat its copy as discontinuous
@@ -2548,7 +2599,9 @@ retrying them without a fix fails the same way.
 - `CorruptFrameError` (a `RangeError`): an entry's framing is broken. `resyncPosition` is where
   valid framing resumes, or `undefined` when nothing follows the break.
 
-Both classes are exported from the package.
+All three classes are exported from the package. After a gap or corrupt frame, calling `next()`
+again continues past the problem. Other errors, such as a failure to open a segment, do not move
+the iterator, so retrying them without a fix fails the same way.
 
 ```typescript
 const log = db.useLog('foo');
