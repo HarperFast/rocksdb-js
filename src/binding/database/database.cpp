@@ -1207,11 +1207,9 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Get failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Get failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		return txnHandle->get(env, key, resolve, reject, *dbHandle,
 		                      vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
@@ -1637,11 +1635,9 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Get count failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Get count failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		try {
 			if (!txnHandle->getCount(itOptions, count, *dbHandle)) {
@@ -2089,11 +2085,9 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		if (!rocksdb_js::readTransactionId(env, argv[2], txnId)) {
 			return nullptr;
 		}
-		txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Get sync failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Get sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		txnHandle->ensureSnapshot();
 	}
@@ -2845,11 +2839,9 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Put failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Put failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		if (txnHandle->writesAbandoned.load(std::memory_order_relaxed)) {
 			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
@@ -2932,11 +2924,9 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		auto txnHandle = (*dbHandle)->descriptor->transactionGet(txnId);
+		auto txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Remove sync failed");
 		if (!txnHandle) {
-			std::string errorMsg = "Remove sync failed: Transaction not found (txnId: " + std::to_string(txnId) + ")";
-			::napi_throw_error(env, nullptr, errorMsg.c_str());
-			NAPI_RETURN_UNDEFINED();
+			return nullptr;
 		}
 		if (txnHandle->writesAbandoned.load(std::memory_order_relaxed)) {
 			NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");

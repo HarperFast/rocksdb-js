@@ -776,8 +776,8 @@ public:
 	uint64_t transactionGetNextId();
 
 	/**
-	 * Closes every registered transaction whose owning DBHandle was created by
-	 * `env`, from that env's module cleanup hook. Pending transactions are only
+	 * Closes every registered transaction created on `env` (`ownerEnv`), from
+	 * that env's module cleanup hook. Pending transactions are only
 	 * removed from the registry by commit/abort, so a worker env that dies with
 	 * one still open leaks the TransactionHandle — holding a live RocksDB
 	 * transaction/snapshot — into this process-global descriptor, and the last

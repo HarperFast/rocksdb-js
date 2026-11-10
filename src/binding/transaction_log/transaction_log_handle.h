@@ -52,9 +52,11 @@ struct TransactionLogHandle final : Closable {
 	~TransactionLogHandle();
 
 	/**
-	 * Adds an entry to the transaction log.
+	 * Adds an entry to the transaction log on behalf of a call from `env`, which
+	 * must have created the transaction.
 	 */
 	void addEntry(
+		napi_env env,
 		uint64_t transactionId,
 		char* data,
 		uint32_t size

@@ -1021,7 +1021,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     lingers (bounded, cleaned at env exit).
 
     Relatedly, `TransactionHandle::close()` is deliberately **napi-free** — the transaction holds
-    no `napi_env`/`napi_ref` fields (the JS database is passed to `UseLog` per-call; its former
+    no `napi_ref` fields, and its one `napi_env` (`ownerEnv`, invariant 37) is only ever compared
+    as an identity, never passed to an N-API call (the JS database is passed to `UseLog` per-call; its former
     weak `jsDatabaseRef` plus a recycled-pthread `std::thread::id` collision in close()'s
     thread-identity guard was the Linux corrupting write:
     `napi_delete_reference(dead env, dead ref)` from Shutdown). Close is therefore safe from any
@@ -1626,7 +1627,15 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     caller can omit `timestampFloorLog` only when its writes do not need restart-safe uniqueness.
     The floor covers only keys still on disk: retention can purge every segment of the named log,
     and the walk then raises nothing, so a backward step can reissue a key that lived only in purged
-    segments.
+    segments. A caller closes that gap — and restores bounds that were never log keys, such as a
+    progress floor advertised to peers — with the module-level `raiseTimestampFloor(ts)` (binding
+    `RaiseTimestampFloor`): the same raise-only `raiseMonotonicTimestampFloor` the seed uses, under
+    the same domain and ten-year plausibility bound (`timestampFloorRejection`, shared so the two
+    cannot drift), but throwing where the seed would refuse, so a corrupt persisted floor fails closed
+    instead of reading as "already covered". It is in-memory and process-wide, not a fence: persisting
+    the value and restoring it before any originating transaction is the caller's job. It touches
+    only issued timestamps — invariant 20's adoption is unaffected — and stays in the epoch domain
+    (invariant 25).
     The first descriptor that seeds it must be a writable primary: a read-only or secondary scan
     cannot establish a cross-process snapshot while a primary may append. Later read-only or
     secondary descriptors reuse that same in-process seed without rescanning. A seed that found its
@@ -1676,11 +1685,23 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     write. The check relies on the owning env leaving `Pending` in `Commit()`/`CommitSync()` before
     dispatching and re-entering it in the commit completion, both on its own JS thread, so the owner
     always observes its own transition. It is not synchronization: the check is an advisory load of
-    the state cell (invariant 37), and another env reaching the handle by id can observe `Pending`
-    and stage while the owner commits, so cross-env staging is safe only once by-id access is
-    owner-only (#886).
+    the state cell (invariant 38). Another env reaching the handle by id could observe `Pending` and
+    stage while the owner commits; invariant 37 rules that out by refusing by-id access from any env
+    but the owner (#886).
 
-37. **A transaction's `Committed` and `Aborted` states are terminal, and every state change is a
+37. **A transaction is used only from the env that created it**: transaction ids resolve through
+    the process-global `DBDescriptor`, so any `worker_threads` env on the path can name another env's
+    transaction, and `Store.getTxnId()`'s identity check cannot tell them apart. A RocksDB
+    `Transaction` and most `TransactionHandle` fields (`txn`, the touched-family set, the VT intents)
+    are unsynchronized, and `state` is a relaxed atomic that orders nothing, so a foreign env staging
+    into one races the owner and the commit lane. Every lookup by id therefore goes through `lookupOwnedTransaction()` (N-API callers through
+    its throwing wrapper `getOwnedTransaction()`), which refuses another env with
+    `ERR_TRANSACTION_WRONG_ENV` before reading any handle field — even the `txn` liveness check is a
+    data race from a foreign thread. `ownerEnv` is captured at construction and immutable, unlike
+    `dbHandle`, which `close()` resets from whichever thread runs it; `closeTransactionsByEnv` reaps by
+    the same field. Never add a by-id path that calls `transactionGet()` directly.
+
+38. **A transaction's `Committed` and `Aborted` states are terminal, and every state change is a
     compare-exchange**: `close()` settles `Aborted` from whichever thread tears the transaction down,
     concurrently with the owning thread's commit transitions, so a check-then-store
     (`if (state == Committing) state = Pending`) can put a closed handle back to `Pending` with no
