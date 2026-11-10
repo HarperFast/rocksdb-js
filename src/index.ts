@@ -31,6 +31,7 @@ export {
 	tryFileLock,
 	registryStatus,
 	stats,
+	raiseTimestampFloor,
 	shutdown,
 	steadyClockNow,
 	supportedCompression,

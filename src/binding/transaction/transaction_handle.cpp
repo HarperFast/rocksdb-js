@@ -85,7 +85,6 @@ TransactionHandle::TransactionHandle(napi_env env, std::shared_ptr<DBHandle> dbH
 	ownerEnv(env),
 	disableSnapshot(disableSnapshot),
 	coordinatedRetry(false),
-	state(TransactionState::Pending),
 	txn(nullptr),
 	committedPosition(0, 0),
 	batchAddress(0, 0) {
@@ -203,8 +202,8 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	DEBUG_LOG("%p TransactionHandle::addLogEntry Adding log entry to store \"%s\" for transaction %llu (size=%zu)\n",
 		this, entry->store->name.c_str(), (unsigned long long)this->id, entry->size);
 
-	// Orders the owning env only; the unsynchronized read awaits #769 (invariant 36).
-	if (this->state != TransactionState::Pending) {
+	// Advisory: orders the owning env's own commit transitions only (invariant 36).
+	if (this->state.load() != TransactionState::Pending) {
 		throw rocksdb_js::DBException("Transaction is not in pending state");
 	}
 
@@ -334,7 +333,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-	if (this->closed.load() || !this->txn || this->state != TransactionState::Pending) {
+	if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending) {
 		throw std::runtime_error("Transaction is not in pending state");
 	}
 	const std::shared_ptr<DBHandle>& targetHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
@@ -414,7 +413,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 		std::shared_ptr<DBIteratorHandle> discarded;
 		{
 			std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-			if (this->closed.load() || !this->txn || this->state != TransactionState::Pending) {
+			if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending) {
 				throw std::runtime_error("Transaction is not in pending state");
 			}
 			if (!targetHandle || !targetHandle->opened()) {
@@ -507,7 +506,7 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 	checkOrphan = false;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-		if (this->closed.load() || !this->txn || this->state != TransactionState::Pending
+		if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending
 			|| (iterator->writeBufferManagerAttached && DBSettings::getInstance().getWriteBufferManagerAllowStall())
 		) {
 			return false;
@@ -544,7 +543,7 @@ void TransactionHandle::closeOrphanIfUnused() {
 		return;
 	}
 
-	if (this->state == TransactionState::Committing) {
+	if (this->state.load() == TransactionState::Committing) {
 		DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Commit in flight, deferring close (txnId=%llu)\n", this, (unsigned long long)this->id);
 		return;
 	}
@@ -559,7 +558,7 @@ void TransactionHandle::closeOrphanIfUnused() {
 	}
 
 	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%llu, state=%d)\n",
-		this, (unsigned long long)this->id, static_cast<int>(this->state));
+		this, (unsigned long long)this->id, static_cast<int>(this->state.load()));
 	// transactionRemove() can drop the registry's last reference. Keep this
 	// object alive until close() returns even when the final dependent releases
 	// on a worker thread.
@@ -611,14 +610,13 @@ void TransactionHandle::close() {
 		std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
 	}
 
-	// Only now that no native work can be running: settle the final state.
-	if (this->state == TransactionState::Pending || this->state == TransactionState::Committing) {
-		this->state = TransactionState::Aborted;
-	}
+	// Only now that no native work can be running: settle the final state. A commit completion
+	// on the owning thread can still be mid-transition; abort() wins over it either way.
+	const bool committed = this->state.abort() == TransactionState::Committed;
 
 	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
 	// to remove the committed position from the log store
-	if (this->state != TransactionState::Committed && this->committedPosition.logSequenceNumber > 0) {
+	if (!committed && this->committedPosition.logSequenceNumber > 0) {
 		auto store = this->boundLogStore.lock();
 		if (store) {
 			if (this->cancelOnAbort && this->batchAddress.logSequenceNumber > 0) {
@@ -700,8 +698,8 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 
-	if (this->state != TransactionState::Pending) {
-		DEBUG_LOG("%p TransactionHandle::get Transaction is not in pending state (state=%d)\n", this, this->state);
+	if (this->state.load() != TransactionState::Pending) {
+		DEBUG_LOG("%p TransactionHandle::get Transaction is not in pending state (state=%d)\n", this, static_cast<int>(this->state.load()));
 		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 		return nullptr;
 	}
@@ -844,8 +842,8 @@ rocksdb::Status TransactionHandle::getSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
-	if (this->state != TransactionState::Pending) {
-		DEBUG_LOG("%p TransactionHandle::getSync Transaction is not in pending state (state=%d)\n", this, this->state);
+	if (this->state.load() != TransactionState::Pending) {
+		DEBUG_LOG("%p TransactionHandle::getSync Transaction is not in pending state (state=%d)\n", this, static_cast<int>(this->state.load()));
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -870,7 +868,7 @@ rocksdb::Status TransactionHandle::multiGetSync(
 	if (!this->txn) {
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
-	if (this->state != TransactionState::Pending) {
+	if (this->state.load() != TransactionState::Pending) {
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -906,7 +904,7 @@ napi_value TransactionHandle::multiGet(
 		::napi_throw_error(env, nullptr, "Transaction is closed");
 		return nullptr;
 	}
-	if (this->state != TransactionState::Pending) {
+	if (this->state.load() != TransactionState::Pending) {
 		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 		return nullptr;
 	}
@@ -1065,8 +1063,8 @@ rocksdb::Status TransactionHandle::putSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
-	if (this->state != TransactionState::Pending) {
-		DEBUG_LOG("%p TransactionHandle::putSync Transaction is not in pending state (state=%d)\n", this, this->state);
+	if (this->state.load() != TransactionState::Pending) {
+		DEBUG_LOG("%p TransactionHandle::putSync Transaction is not in pending state (state=%d)\n", this, static_cast<int>(this->state.load()));
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
@@ -1116,8 +1114,8 @@ rocksdb::Status TransactionHandle::removeSync(
 		return rocksdb::Status::Aborted("Transaction is closed");
 	}
 
-	if (this->state != TransactionState::Pending) {
-		DEBUG_LOG("%p TransactionHandle::removeSync Transaction is not in pending state (state=%d)\n", this, this->state);
+	if (this->state.load() != TransactionState::Pending) {
+		DEBUG_LOG("%p TransactionHandle::removeSync Transaction is not in pending state (state=%d)\n", this, static_cast<int>(this->state.load()));
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 

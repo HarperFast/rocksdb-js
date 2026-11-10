@@ -280,6 +280,7 @@
 				'test/native/transaction_log_try_close_test.cc',
 				'test/native/transaction_log_validation_test.cc',
 				'test/native/transaction_log_writev_test.cc',
+				'test/native/transaction_state_test.cc',
 				'test/native/verification_table_test.cc',
 				'test/native/wbm_stall_watchdog_test.cc',
 				'test/native/write_stall_debounce_test.cc',
