@@ -1627,7 +1627,15 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     caller can omit `timestampFloorLog` only when its writes do not need restart-safe uniqueness.
     The floor covers only keys still on disk: retention can purge every segment of the named log,
     and the walk then raises nothing, so a backward step can reissue a key that lived only in purged
-    segments.
+    segments. A caller closes that gap — and restores bounds that were never log keys, such as a
+    progress floor advertised to peers — with the module-level `raiseTimestampFloor(ts)` (binding
+    `RaiseTimestampFloor`): the same raise-only `raiseMonotonicTimestampFloor` the seed uses, under
+    the same domain and ten-year plausibility bound (`timestampFloorRejection`, shared so the two
+    cannot drift), but throwing where the seed would refuse, so a corrupt persisted floor fails closed
+    instead of reading as "already covered". It is in-memory and process-wide, not a fence: persisting
+    the value and restoring it before any originating transaction is the caller's job. It touches
+    only issued timestamps — invariant 20's adoption is unaffected — and stays in the epoch domain
+    (invariant 25).
     The first descriptor that seeds it must be a writable primary: a read-only or secondary scan
     cannot establish a cross-process snapshot while a primary may append. Later read-only or
     secondary descriptors reuse that same in-process seed without rescanning. A seed that found its
