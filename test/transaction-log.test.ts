@@ -2525,10 +2525,14 @@ describe('Transaction Log', () => {
 
 	// The edges the synthetic mid-log case doesn't reach: a run shorter than RESYNC_MIN_FRAMES
 	// (recovered only by landing exactly on the written extent), and the readUncommitted bound —
-	// the boot-replay path, where the read limit is the pre-extended mmap and scanning against it
-	// would find no resume point at all.
+	// the boot-replay path, whose mapping is pre-extended, so scanning against the map instead of
+	// the written extent would find no resume point at all.
 	describe('corrupt-frame resync bounds', () => {
-		async function logWithBrokenSecondEntry(db: RocksDatabase, entryCount: number) {
+		async function logWithBrokenSecondEntry(
+			db: RocksDatabase,
+			entryCount: number,
+			declaredLength: (extent: number, entryStart: number) => number = () => 0x7fffffff
+		) {
 			const log = db.useLog('foo');
 			const value = Buffer.alloc(10, 'a');
 			const entryStride = TRANSACTION_LOG_ENTRY_HEADER_SIZE + 10;
@@ -2548,7 +2552,10 @@ describe('Transaction Log', () => {
 			);
 			real.copy(copyBuffer);
 			const secondEntryStart = TRANSACTION_LOG_FILE_HEADER_SIZE + entryStride;
-			copyBuffer.writeUInt32BE(0x7fffffff, secondEntryStart + 8);
+			copyBuffer.writeUInt32BE(
+				declaredLength(real.readableExtent, secondEntryStart),
+				secondEntryStart + 8
+			);
 
 			log._logBuffers.clear();
 			(log as { _currentLogBuffer?: unknown })._currentLogBuffer = undefined;
@@ -2582,7 +2589,7 @@ describe('Transaction Log', () => {
 				}
 			}));
 
-		it('resyncs on the readUncommitted path, whose read limit is the pre-extended map', () =>
+		it('resyncs on the readUncommitted path against the written extent, not the pre-extended map', () =>
 			dbRunner(async ({ db }) => {
 				const { log, secondEntryStart, entryStride, restore } = await logWithBrokenSecondEntry(
 					db,
@@ -2598,6 +2605,59 @@ describe('Transaction Log', () => {
 				} finally {
 					restore();
 				}
+			}));
+
+		// The committed arm is a parity check: its bound was already the watermark.
+		it.each([false, true])(
+			'detects a torn frame whose length lands inside the map (readUncommitted: %s)',
+			(readUncommitted) =>
+				dbRunner(async ({ db }) => {
+					const { log, secondEntryStart, entryStride, restore } = await logWithBrokenSecondEntry(
+						db,
+						12,
+						(extent, entryStart) => extent - entryStart - TRANSACTION_LOG_ENTRY_HEADER_SIZE + 64
+					);
+					try {
+						const { entries, errors } = drainPastCorruption(
+							log.query({ start: 0, readUncommitted })
+						);
+						expect(errors.length).toBe(1);
+						expect(errors[0]).toBeInstanceOf(CorruptFrameError);
+						expect(errors[0].position).toBe(secondEntryStart);
+						expect(errors[0].resyncPosition).toBe(secondEntryStart + entryStride);
+						expect(entries.length).toBe(11);
+						for (const entry of entries) {
+							expect(entry.data.length).toBe(10);
+						}
+					} finally {
+						restore();
+					}
+				})
+		);
+
+		it('reads entries appended after a readUncommitted iterator captured its extent', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const write = async (count: number) => {
+					for (let i = 0; i < count; i++) {
+						await db.transaction(async (txn) => {
+							log.addEntry(Buffer.alloc(10, 'a'), txn.id);
+						});
+					}
+				};
+				await write(3);
+				const iterator = log.query({ start: 0, readUncommitted: true });
+				expect(iterator.next().done).toBe(false);
+				await write(3);
+				for (let i = 0; i < 5; i++) {
+					expect(iterator.next().done).toBe(false);
+				}
+				expect(iterator.next().done).toBe(true);
+				await write(2);
+				for (let i = 0; i < 2; i++) {
+					expect(iterator.next().done).toBe(false);
+				}
+				expect(iterator.next().done).toBe(true);
 			}));
 
 		// A committed size that over-reports the mapped buffer must still terminate: leaving
@@ -2797,7 +2857,7 @@ describe('Transaction Log', () => {
 			}
 
 			// Overruns the declared length of frame `index` past both the file and the pre-extended
-			// map an uncommitted read is bounded by; its bytes stay, so framing resumes at the next frame.
+			// map; its bytes stay, so framing resumes at the next frame.
 			function tearFrames(logPath: string, ...indexes: number[]) {
 				const image = readFileSync(logPath);
 				for (const index of indexes) {

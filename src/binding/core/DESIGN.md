@@ -63,3 +63,34 @@ the parks still waiting on it. `test/fixtures/fork-park-wake-registration.mts` c
   a leaf.
 - **A park cancels before it resolves.** `ParkTimeoutRegistry::resolve()` cancels before calling
   the TSFN, so JavaScript that observes a park's result never sees it still registered.
+
+## Participation is per column family
+
+Slots are keyed by database epoch and column family, not by handle, and outlive the handle that
+seeded them. Every write path checks its own handle's `enableVerificationTable`, so that flag must
+agree across every handle on a column family once any of them participates.
+`DBRegistry::OpenDB` keeps it on `ColumnFamilyDescriptor`:
+
+- **A later handle inherits participation.** Once a `verificationTable: true` handle attaches, every
+  handle that attaches to that generation participates, for as long as the generation lives in that
+  descriptor, because a slot it seeded can still be trusted after it closes. A handle that left the
+  option unset joins silently.
+- **An explicit opt-out ends participation once no handle participates.** A
+  `verificationTable: false` handle (`DBOptions::verificationTableExplicit`) is refused with
+  `ERR_VERIFICATION_TABLE_CONFLICT` while `verifyingHandles` is nonzero, since its writes would skip
+  slots those handles trust. With none attached, it opens and clears the column family's flag, so
+  later handles that leave the option unset do not participate either. The slots the earlier
+  participants seeded stay in the table; a later opt-in is an ordinary one and passes the checks
+  below, which settle them once the opt-out handle has detached.
+- **Opting in fails while a non-participating writer may exist.** A write staged without the option
+  holds no write intent, so a slot seeded after the switch would survive its commit. The open is
+  refused with `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle is attached
+  (`nonVerifyingHandles`). After one has detached, it is also refused while a transaction that
+  existed when it detached is still open (ids up to `nonVerifyingTransactionWatermark`; a closed
+  one can stay registered after its own handle closes),
+  since that transaction may hold a write staged through it, or while any descriptor operation is in
+  flight: env teardown removes a transaction from the registry before its admitted commit finishes,
+  and that commit still holds `operationsInFlight`. The switch then settles every slot, since that
+  handle could seed a slot (`populateVersion()`) that its own writes left stale.
+
+`test/verification-table.test.ts` (`participation is per column family`) covers both.

@@ -158,12 +158,13 @@ function corruptFrame(
 	size: number,
 	readUncommitted: boolean
 ): { error: CorruptFrameError; nextPosition: number } {
-	// An uncommitted read's `limit` is the pre-extended map, so resolve the written extent; a
-	// committed read is already bounded at the watermark. Never the mapped capacity: every offset
-	// in the map's zero fill reads as an end-of-entries marker, so scanning against it both loses
-	// the exact-end signal and byte-scans megabytes of padding on the JS thread, reporting a
-	// recoverable mid-log break as a torn tail (invariant 11). The mapping carries
-	// the append-owned extent even after the store forgets a purged segment.
+	// An uncommitted read's `limit` is the extent as of its last refresh, so resolve the live one
+	// and let the resync reach entries appended since; a committed read stays bounded at the
+	// watermark. Resolved here, on a break, because the getter crosses into native. Never the
+	// mapped capacity: every offset in the map's zero fill reads as an end-of-entries marker, so
+	// scanning against it both loses the exact-end signal and byte-scans megabytes of padding on
+	// the JS thread, reporting a recoverable mid-log break as a torn tail (invariant 11). The
+	// mapping carries the append-owned extent even after the store forgets a purged segment.
 	let dataEnd = limit;
 	if (readUncommitted) {
 		dataEnd = Math.min(logBuffer.length, logBuffer.size ?? readableExtent(logBuffer));
@@ -421,20 +422,12 @@ Object.defineProperty(TransactionLog.prototype, 'query', {
 						return { done: true, value: undefined };
 					}
 
-					// Corruption bound: a committed read can't legitimately extend past
-					// the committed `size` (a true entry boundary); an uncommitted read is
-					// bounded only by the physically mapped buffer. In both cases the bound
-					// is also clamped to `logBuffer.length` — if committed `size` over-reports
-					// the mapped buffer (e.g. a truncated/torn file), an unclamped `size`
-					// would let `position` advance past the buffer and `subarray` silently
-					// return a truncated frame instead of throwing. A torn/corrupt entry
-					// can declare a length far past this bound — without the checks below,
-					// `position` runs past the buffer, `subarray` hands back a misframed
-					// (garbage) transaction, and the advance-to-next-log path can
-					// dereference an undefined buffer. Fail loudly with a bounded error.
-					// The throw leaves `position` at the resume point, so a broken frame ends the
-					// entry rather than the rest of the log (HarperFast/harper#2016, #2063).
-					const limit = readUncommitted ? logBuffer!.length : Math.min(size, logBuffer!.length);
+					// `size` is an entry boundary in both modes (only whole entries advance it), so the
+					// pre-extended map must never be the bound: a torn length short of it would pass and
+					// misframe every later read. The clamp covers a `size` that over-reports the buffer,
+					// where `subarray` would silently truncate. The throw leaves `position` at the
+					// resume point (HarperFast/harper#2016, #2063).
+					const limit = Math.min(size, logBuffer!.length);
 					if (position + TRANSACTION_LOG_ENTRY_HEADER_SIZE > limit) {
 						const broken = corruptFrame(
 							`Corrupt transaction log: truncated entry header at position ${position.toString(16)} of log ${

@@ -114,6 +114,9 @@ struct DBOptions final {
 	// Opt-in per-CF flag enabling Verification Table slot locking/tracking for
 	// this column family's writes (see core/verification_table.h).
 	bool verificationTable = false;
+	// True when the caller passed `verificationTable` as a boolean rather than leaving it unset, so an
+	// explicit `false` on a participating column family can be refused instead of overridden.
+	bool verificationTableExplicit = false;
 	// Block/blob compression algorithm for this column family. `Database::Open`
 	// fills this in: the caller's explicit choice, or the LZ4 default when the
 	// build supports it (else `std::nullopt` = RocksDB's own default, Snappy when

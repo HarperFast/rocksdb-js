@@ -418,7 +418,10 @@ export type NativeDatabaseOptions = {
 	 * When true, transaction writes to this column family invalidate the
 	 * VerificationTable slot for each written key at write time (not at
 	 * commit time). Enable only for column families whose records are
-	 * cached (e.g. the primary CF of a table). Default: false.
+	 * cached (e.g. the primary CF of a table). Default: false. Left unset, a
+	 * handle joins a column family another handle opened with `true`; an
+	 * explicit `false` throws `ERR_VERIFICATION_TABLE_CONFLICT` while any
+	 * handle on that column family participates.
 	 */
 	verificationTable?: boolean;
 	writeBufferSize?: number;

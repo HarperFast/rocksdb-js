@@ -771,15 +771,19 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `TransactionLogFile::size` — see invariant 5 — and
     retained after the store forgets a purged segment. It must use neither the physical nor raw
     mapped size.
-    An uncommitted read's own limit is the pre-extended memory map, and every offset in that zero
-    fill reads as an end-of-entries marker: scanning against it both loses the exact-end signal and,
-    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding.
-    Resolve it only on a break: even the mapping-carried getter crosses into native, so a per-frame
-    call would tax every healthy read. The native walks run before `size` has been
-    corrected on a pre-extended (Windows) segment, so `findFramingResumeOffset()` also accepts a
-    chain landing exactly on the **end of the nonzero bytes** — a single offset, as conclusive as
-    EOF — otherwise a run shorter than `RESYNC_MIN_FRAMES` in front of the padding classifies as a
-    torn tail and recovery truncates its committed entries.
+    The pre-extended memory map is never a bound for either check: every offset in its zero fill
+    reads as an end-of-entries marker, so scanning against it both loses the exact-end signal and,
+    if a zero were taken as a terminator, would let a chain "end" anywhere in megabytes of padding;
+    and a per-frame overrun check against it accepts any torn length short of the whole map, then
+    misframes every later read (#749). An uncommitted read therefore checks frames against the
+    extent it captured when it last refreshed `size` (an entry boundary, refreshed before the loop
+    reads at or past it), and resolves the live extent for the resync only on a break: even the
+    mapping-carried getter crosses into native, so a per-frame call would tax every healthy read.
+    The native walks run before `size` has been corrected on a pre-extended (Windows) segment, so
+    `findFramingResumeOffset()` also accepts a chain landing exactly on the **end of the nonzero
+    bytes** — a single offset, as conclusive as EOF — otherwise a run shorter than
+    `RESYNC_MIN_FRAMES` in front of the padding classifies as a torn tail and recovery truncates its
+    committed entries.
 
     A resync that finds nothing is only conclusive over the bytes it could actually read. The index
     walk searches the mapped region (`min(size, mapSize)`), which is short of the written extent
@@ -1707,6 +1711,13 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     (`if (state == Committing) state = Pending`) can put a closed handle back to `Pending` with no
     `txn` (#769). `TransactionStateCell` has no plain store; use `transition(from, to)` or `abort()`.
     See [state transitions](src/binding/transaction/DESIGN.md#state-transitions).
+
+39. **Verification-table participation belongs to the column family, not the handle**: every
+    write path checks the writing handle's `enableVerificationTable`, but slots outlive handles, so
+    `DBRegistry::OpenDB` makes every handle on a participating column family participate, refuses an
+    explicit `verificationTable: false` while any of them is attached, and refuses an opt-in while a
+    non-participating writer may exist. See
+    [participation](src/binding/core/DESIGN.md#participation-is-per-column-family).
 
 ## Debugging native heap corruption
 

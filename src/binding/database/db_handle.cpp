@@ -166,6 +166,18 @@ void DBHandle::close() {
 
 	// decrement the reference count on the column and descriptor
 	if (this->columnDescriptor) {
+		if (this->enableVerificationTable) {
+			this->columnDescriptor->verifyingHandles.fetch_sub(1);
+		} else {
+			// Raised before the count drops: OpenDB reads them in the other order.
+			if (this->descriptor) {
+				const uint64_t lastId = this->descriptor->nextTransactionId.load();
+				std::atomic<uint64_t>& watermark = this->columnDescriptor->nonVerifyingTransactionWatermark;
+				uint64_t current = watermark.load();
+				while (current < lastId && !watermark.compare_exchange_weak(current, lastId)) {}
+			}
+			this->columnDescriptor->nonVerifyingHandles.fetch_sub(1);
+		}
 		this->columnDescriptor.reset();
 	}
 
