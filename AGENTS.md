@@ -1684,22 +1684,29 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     race), was silently dropped by the write-once return, or started a fresh batch nothing would
     write. The check relies on the owning env leaving `Pending` in `Commit()`/`CommitSync()` before
     dispatching and re-entering it in the commit completion, both on its own JS thread, so the owner
-    always observes its own transition. It is not synchronization: `state` is a plain field the lane
-    also writes (#769). Another env reaching the handle by id could observe `Pending` and stage
-    while the owner commits; invariant 37 rules that out by refusing by-id access from any env but
-    the owner (#886).
+    always observes its own transition. It is not synchronization: the check is an advisory load of
+    the state cell (invariant 38). Another env reaching the handle by id could observe `Pending` and
+    stage while the owner commits; invariant 37 rules that out by refusing by-id access from any env
+    but the owner (#886).
 
 37. **A transaction is used only from the env that created it**: transaction ids resolve through
     the process-global `DBDescriptor`, so any `worker_threads` env on the path can name another env's
     transaction, and `Store.getTxnId()`'s identity check cannot tell them apart. A RocksDB
-    `Transaction` and most `TransactionHandle` fields (`state`, `txn`, the touched-family set, the VT
-    intents) are unsynchronized, so a foreign env staging into one races the owner and the commit
-    lane. Every lookup by id therefore goes through `lookupOwnedTransaction()` (N-API callers through
+    `Transaction` and most `TransactionHandle` fields (`txn`, the touched-family set, the VT intents)
+    are unsynchronized, and `state` is a relaxed atomic that orders nothing, so a foreign env staging
+    into one races the owner and the commit lane. Every lookup by id therefore goes through `lookupOwnedTransaction()` (N-API callers through
     its throwing wrapper `getOwnedTransaction()`), which refuses another env with
     `ERR_TRANSACTION_WRONG_ENV` before reading any handle field — even the `txn` liveness check is a
     data race from a foreign thread. `ownerEnv` is captured at construction and immutable, unlike
     `dbHandle`, which `close()` resets from whichever thread runs it; `closeTransactionsByEnv` reaps by
     the same field. Never add a by-id path that calls `transactionGet()` directly.
+
+38. **A transaction's `Committed` and `Aborted` states are terminal, and every state change is a
+    compare-exchange**: `close()` settles `Aborted` from whichever thread tears the transaction down,
+    concurrently with the owning thread's commit transitions, so a check-then-store
+    (`if (state == Committing) state = Pending`) can put a closed handle back to `Pending` with no
+    `txn` (#769). `TransactionStateCell` has no plain store; use `transition(from, to)` or `abort()`.
+    See [state transitions](src/binding/transaction/DESIGN.md#state-transitions).
 
 ## Debugging native heap corruption
 
