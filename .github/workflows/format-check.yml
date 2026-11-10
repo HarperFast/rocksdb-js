@@ -4,7 +4,7 @@ name: Format Check
 #
 # If main ever requires a status check for formatting, require THIS job -- Test /
 # Check can't be required as-is, because paths-ignore leaves it pending on doc-only
-# PRs (same pairing validate-caller-workflows.yml documents for its own job).
+# PRs.
 
 on:
   pull_request:
