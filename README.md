@@ -3123,8 +3123,9 @@ Options for `get()`, `getSync()`, and the `getBinary*` methods.
     `verificationTable: true`.
   - `populateVersion: boolean` When `true`, after a database read the verification-table slot is
     seeded with the version extracted from the value, eliminating the need for a separate
-    `db.populateVersion()` call on cold reads. Requires the handle to be opened with
-    `verificationTable: true`; otherwise the read seeds nothing. Defaults to `false`.
+    `db.populateVersion()` call on cold reads. Requires the handle to participate in the
+    [Verification Table](#verification-table); otherwise the read seeds nothing. Defaults to
+    `false`.
   - `skipDecode: boolean` When `true`, the value is returned without being decoded. Defaults to
     `false`.
 
