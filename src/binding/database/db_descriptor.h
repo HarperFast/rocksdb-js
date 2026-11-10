@@ -1212,7 +1212,7 @@ struct ColumnFamilyDescriptor final {
 	std::atomic<bool> compressionPersistDirty{false};
 
 	/**
-	 * Verification-table participation (AGENTS invariant 38). Sticky: slots
+	 * Verification-table participation (AGENTS invariant 39). Sticky: slots
 	 * outlive the handles that seeded them. Only an explicit
 	 * `verificationTable: false` open clears it, and only once
 	 * `verifyingHandles` is 0. Guarded by `databasesMutex`.

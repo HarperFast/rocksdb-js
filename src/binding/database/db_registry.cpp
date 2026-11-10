@@ -1047,7 +1047,7 @@ void DBRegistry::OpenDB(
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	// AGENTS invariant 38. With no participant attached, an explicit opt-out
+	// AGENTS invariant 39. With no participant attached, an explicit opt-out
 	// ends participation; the next opt-in's checks below settle their slots.
 	const bool optsOut = options.verificationTableExplicit && !options.verificationTable;
 	if (optsOut && columnDescriptor->verificationTable) {

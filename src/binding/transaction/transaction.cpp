@@ -145,7 +145,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	static const char* unresolvedMessage =
 		"Transaction was aborted after writing to the transaction log, and its batch could not be marked aborted; "
 		"the log store refuses appends until a retry marks it";
-	TransactionState txnState = (*txnHandle)->state;
+	TransactionState txnState = (*txnHandle)->state.load();
 	if (txnState == TransactionState::Aborted) {
 		if ((*txnHandle)->committedPosition.logSequenceNumber > 0) {
 			auto cancellation = (*txnHandle)->cancellation.load();
@@ -191,7 +191,7 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 				(*txnHandle)->cancelAllAsyncWork();
 				(*txnHandle)->waitForAsyncWorkCompletion();
 			}
-			(*txnHandle)->state = TransactionState::Aborted;
+			(*txnHandle)->state.abort();
 
 			ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->txn->Rollback(), "Transaction rollback failed");
 			DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
@@ -234,7 +234,7 @@ napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_TRANSACTION_HANDLE("AbandonWrites");
 
-	TransactionState txnState = (*txnHandle)->state;
+	TransactionState txnState = (*txnHandle)->state.load();
 	if (txnState == TransactionState::Aborted) {
 		return nullptr;
 	}
@@ -488,8 +488,8 @@ struct PendingTransactionCommitState final {
 		if (!this->state) {
 			return;
 		}
-		if (this->state->handle && this->state->handle->state == TransactionState::Committing) {
-			this->state->handle->state = TransactionState::Pending;
+		if (this->state->handle) {
+			this->state->handle->state.transition(TransactionState::Committing, TransactionState::Pending);
 		}
 		if (this->state->resolveRef) {
 			::napi_delete_reference(this->env, this->state->resolveRef);
@@ -770,7 +770,10 @@ static void executeCommitWork(TransactionCommitState* state) {
 
 		if (state->status.ok()) {
 			DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%llu)\n", txnHandle.get(), (unsigned long long)txnHandle->id);
-			txnHandle->state = TransactionState::Committed;
+			// close() settles state only after this execute drains, so nothing else has moved it.
+			const bool committed = txnHandle->state.transition(TransactionState::Committing, TransactionState::Committed);
+			assert(committed && "Async commit left Committing before its execute finished");
+			(void)committed;
 			descriptor->notify("committed", nullptr);
 		} else if (state->status.IsBusy() || state->status.IsTryAgain()) {
 			DEBUG_LOG("%p Transaction::Commit ERROR: Commit failed with %s, resetting transaction\n",
@@ -828,9 +831,7 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		// holder's VT-slot lock, and TryAgain (stranded snapshot after a
 		// flush) has no lock holder to park on — it takes the normal
 		// reject→reset→retry path below instead.
-		if (state->handle->state == TransactionState::Committing) {
-			state->handle->state = TransactionState::Pending;
-		}
+		state->handle->state.transition(TransactionState::Committing, TransactionState::Pending);
 
 		// Nobody is left to act on RETRY_NOW — the resolve below fires into a dropped promise chain.
 		if (state->handle->wrapperCollected.load()) {
@@ -976,12 +977,10 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			}
 		}
 	} else {
-		// Normal error path: reset to Pending so JS can retry.
-		// Guard: keep Aborted if close() already set it (DB closing
-		// during commit) — don't let Transaction::Abort call Rollback()
-		// on a null txn.
-		if (state->handle && state->handle->state == TransactionState::Committing) {
-			state->handle->state = TransactionState::Pending;
+		// Normal error path: reset to Pending so JS can retry, unless a foreign close() already
+		// settled Aborted and deleted txn.
+		if (state->handle) {
+			state->handle->state.transition(TransactionState::Committing, TransactionState::Pending);
 		}
 		// A failed commit is deliberately left open for the caller to retry or abort; there is no
 		// caller left, so release it here rather than leaving it registered forever.
@@ -1090,10 +1089,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[1];
 	UNWRAP_TRANSACTION_HANDLE("Commit");
 
-	// Every terminal case is decided before the state/reference allocations below, so none of them
-	// can leak an allocation, and the rejection order matches CommitSync's (aborted before
-	// abandoned — a handle that is both reports the abort, which is the more specific state).
-	TransactionState txnState = (*txnHandle)->state;
+	// The rejection order matches CommitSync's (aborted before abandoned — a handle that is both
+	// reports the abort, which is the more specific state). Only a concurrent close() is decided
+	// after the allocations below, and stateOwner releases them.
+	TransactionState txnState = (*txnHandle)->state.load();
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
 	}
@@ -1122,7 +1121,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
 	DEBUG_LOG("%p Transaction::Commit Setting state to committing\n", (*txnHandle).get(), (*txnHandle)->id);
-	(*txnHandle)->state = TransactionState::Committing;
+	// Only a foreign close() can have moved Pending since the check above, and it settles Aborted.
+	if (!(*txnHandle)->state.transition(TransactionState::Pending, TransactionState::Committing)) {
+		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
+	}
 
 	CommitThreadMode mode = commitThreadMode();
 	descriptor = state->descriptor.lock();
@@ -1164,8 +1166,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		state->completion = completion;
 		if (!completionsClosed) {
 			// Register the commit with the transaction handle so close() can wait.
-			// Refusal means a concurrent close() already published cancellation (and,
-			// by the same happens-before edge, already forced state to Aborted) —
+			// Refusal means a concurrent close() already published cancellation (it
+			// settles state to Aborted once its drain finishes, overriding Committing) —
 			// undo the completion registration just above and reject rather than
 			// dispatching into a transaction that is being torn down. `stateOwner`
 			// still owns the state, so its destructor performs the rest of the
@@ -1313,7 +1315,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_TRANSACTION_HANDLE("CommitSync");
 
-	TransactionState txnState = (*txnHandle)->state;
+	TransactionState txnState = (*txnHandle)->state.load();
 	if (txnState == TransactionState::Aborted) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
 	}
@@ -1324,7 +1326,10 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 	(*txnHandle)->closeIterators();
-	(*txnHandle)->state = TransactionState::Committing;
+	// Only a foreign close() can have moved Pending since the check above, and it settles Aborted.
+	if (!(*txnHandle)->state.transition(TransactionState::Pending, TransactionState::Committing)) {
+		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
+	}
 
 	std::shared_ptr<TransactionLogStore> store = nullptr;
 	bool hasLog = false;
@@ -1333,7 +1338,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	std::shared_ptr<DBDescriptor> descriptor = (*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr;
 	if (!descriptor) {
-		(*txnHandle)->state = TransactionState::Pending;
+		(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 		::napi_throw_error(env, nullptr, "Database not open");
 		return nullptr;
 	}
@@ -1342,7 +1347,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	{
 		rocksdb::Status admission = claim.admit((*txnHandle)->touchedColumnFamilies, *descriptor);
 		if (!admission.ok()) {
-			(*txnHandle)->state = TransactionState::Pending;
+			(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 			if (admission.IsColumnFamilyDropped()) {
 				(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
 				if (!(*txnHandle)->lockedVTSlots.empty()) {
@@ -1380,7 +1385,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			try {
 				writeLogBatch(**txnHandle, *store);
 			} catch (const std::exception& e) {
-				(*txnHandle)->state = TransactionState::Pending;
+				(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 				claim.release(descriptor.get());
 				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
 			}
@@ -1388,9 +1393,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			(*txnHandle)->logEntryBatch.reset();
 		} else {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
-			if ((*txnHandle)->state == TransactionState::Committing) {
-				(*txnHandle)->state = TransactionState::Pending;
-			}
+			(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 			claim.release(descriptor.get());
 			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
 		}
@@ -1434,7 +1437,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 
 	if (status.ok()) {
 		DEBUG_LOG("%p Transaction::CommitSync Emitted committed event (txnId=%llu)\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
-		(*txnHandle)->state = TransactionState::Committed;
+		(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Committed);
 		(*txnHandle)->dbHandle->descriptor->notify("committed", nullptr);
 
 		DEBUG_LOG("%p Transaction::CommitSync Closing transaction (txnId=%llu)\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
@@ -1447,9 +1450,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			// (committedPosition survives, keeping the WAL write-once, #668). See async Commit.
 			(*txnHandle)->resetTransaction(descriptor.get());
 		}
-		if ((*txnHandle)->state == TransactionState::Committing) {
-			(*txnHandle)->state = TransactionState::Pending;
-		}
+		(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 		napi_value error;
 		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
 		napi_value hasLogValue;
@@ -1853,10 +1854,10 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
 
 	// The commit lane may delete txn after leaving Pending, so this check must precede the
-	// staged-write inspection. Reading state unsynchronized is safe here because Commit() leaves
+	// staged-write inspection. A relaxed load is enough here because Commit() leaves
 	// Pending on this same JS thread before dispatching, so a lane that can touch txn is never
 	// concurrent with a Pending observation.
-	if ((*txnHandle)->state != TransactionState::Pending) {
+	if ((*txnHandle)->state.load() != TransactionState::Pending) {
 		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction is not pending");
 	}
 

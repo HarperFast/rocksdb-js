@@ -87,6 +87,9 @@ std::filesystem::path resolveIdentityPath(const std::string& path);
  */
 bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::path& child);
 
+// nullptr when `floor` is acceptable, otherwise the reason it is not.
+const char* timestampFloorRejection(double floor, double plausibleBound);
+
 bool raiseMonotonicTimestampFloor(double floor);
 
 bool raiseMonotonicTimestampFloor(double floor, double plausibleBound);
