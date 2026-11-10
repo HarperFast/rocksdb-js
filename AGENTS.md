@@ -1712,6 +1712,13 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `txn` (#769). `TransactionStateCell` has no plain store; use `transition(from, to)` or `abort()`.
     See [state transitions](src/binding/transaction/DESIGN.md#state-transitions).
 
+39. **Verification-table participation belongs to the column family, not the handle**: every
+    write path checks the writing handle's `enableVerificationTable`, but slots outlive handles, so
+    `DBRegistry::OpenDB` makes every handle on a participating column family participate, refuses an
+    explicit `verificationTable: false` while any of them is attached, and refuses an opt-in while a
+    non-participating writer may exist. See
+    [participation](src/binding/core/DESIGN.md#participation-is-per-column-family).
+
 ## Debugging native heap corruption
 
 AddressSanitizer is the first choice (`ROCKSDB_ASAN=1 node-gyp rebuild` toggles `-fsanitize=address`

@@ -1211,6 +1211,24 @@ struct ColumnFamilyDescriptor final {
 	// Forces a persist retry after SetOptions changes memory but not OPTIONS.
 	std::atomic<bool> compressionPersistDirty{false};
 
+	/**
+	 * Verification-table participation (AGENTS invariant 39). Sticky: slots
+	 * outlive the handles that seeded them. Only an explicit
+	 * `verificationTable: false` open clears it, and only once
+	 * `verifyingHandles` is 0. Guarded by `databasesMutex`.
+	 */
+	bool verificationTable = false;
+
+	std::atomic<uint32_t> verifyingHandles{0};
+
+	std::atomic<uint32_t> nonVerifyingHandles{0};
+
+	/**
+	 * Highest transaction id that may hold a write staged through a detached
+	 * non-participating handle; 0 until one detaches.
+	 */
+	std::atomic<uint64_t> nonVerifyingTransactionWatermark{0};
+
 	ColumnFamilyDescriptor(
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,
 		std::string name,
