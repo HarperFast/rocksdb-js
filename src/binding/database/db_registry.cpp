@@ -1047,10 +1047,8 @@ void DBRegistry::OpenDB(
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	// AGENTS invariant 38. An explicit opt-out cannot join participating handles:
-	// its writes would skip the slots they trust. With none attached it takes the
-	// family out, and a later opt-in passes the checks below, which settle the
-	// slots the earlier participants seeded.
+	// AGENTS invariant 38. With no participant attached, an explicit opt-out
+	// ends participation; the next opt-in's checks below settle their slots.
 	const bool optsOut = options.verificationTableExplicit && !options.verificationTable;
 	if (optsOut && columnDescriptor->verificationTable) {
 		const uint32_t verifying = columnDescriptor->verifyingHandles.load();

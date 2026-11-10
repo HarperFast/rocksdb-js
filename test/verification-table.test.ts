@@ -857,11 +857,9 @@ describe('Verification Table', () => {
 				seed(cached, key, 1.5e12);
 				expect(() => optOut.open()).toThrow(conflict);
 				cached.close();
-				// still refused: the handle that joined without the option participates
 				expect(() => optOut.open()).toThrow(conflict);
 				inherited.close();
 
-				// Nothing participates any more, even though keepAlive holds the database open.
 				optOut.open();
 				optOut.putSync(key, makeValue(1.6e12));
 				expect(() => reopened.open()).toThrow(conflict);
