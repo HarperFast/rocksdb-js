@@ -1071,8 +1071,8 @@ void DBRegistry::OpenDB(
 			throw rocksdb_js::DBException(
 				"ERR_VERIFICATION_TABLE_CONFLICT",
 				"Column family \"" + columnDescriptor->name + "\" is already open without verificationTable through " +
-				std::to_string(nonVerifying) + " handle(s) in this process; open every handle on a cached column " +
-				"family with verificationTable: true, or close those handles first"
+				std::to_string(nonVerifying) + " handle(s) in this process; first close those handles and let pending " +
+				"transactions and operations finish, then retry opening with verificationTable: true"
 			);
 		}
 		const uint64_t watermark = columnDescriptor->nonVerifyingTransactionWatermark.load();
