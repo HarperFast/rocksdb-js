@@ -423,7 +423,7 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 
 	TransactionCommitState(
 		napi_env env,
-		std::shared_ptr<TransactionHandle> handle
+		const std::shared_ptr<TransactionHandle>& handle
 	) :
 		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
 		hasLog(false),
@@ -555,14 +555,6 @@ static rocksdb::Status admitCommit(TransactionCommitState* state, const std::sha
 	return state->claim.admit(txnHandle->touchedColumnFamilies, *descriptor);
 }
 
-/**
- * Log-lane stage of the commit: validates the handle and writes the
- * transaction-log batch (recording the committed position). Runs on the
- * database's log lane, on a libuv threadpool thread in the legacy path (which
- * runs both stages back to back), or inline in commitSync(). A pass-through no-op for
- * transactions with no log entries so total dispatch order is preserved into
- * the commit lane.
- */
 /** An attempt behind an older transaction's write intent (transaction/DESIGN.md, "Write-intent refusal"). */
 static const rocksdb::Status& intentRefusal() {
 	static const rocksdb::Status status =
@@ -603,6 +595,14 @@ static void writeLogBatch(TransactionHandle& txnHandle, TransactionLogStore& sto
 	store.writeBatch(*txnHandle.logEntryBatch, txnHandle.committedPosition, &txnHandle.batchAddress, txnHandle.cancelOnAbort);
 }
 
+/**
+ * Log-lane stage of the commit: validates the handle and writes the
+ * transaction-log batch (recording the committed position). Runs on the
+ * database's log lane, on a libuv threadpool thread in the legacy path (which
+ * runs both stages back to back), or inline in commitSync(). A pass-through no-op for
+ * transactions with no log entries so total dispatch order is preserved into
+ * the commit lane.
+ */
 static void executeLogWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
 	if (!txnHandle) {
