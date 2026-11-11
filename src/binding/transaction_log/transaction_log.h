@@ -11,6 +11,7 @@ namespace rocksdb_js {
 struct TransactionLog final {
 	static napi_value Constructor(napi_env env, napi_callback_info info);
 	static napi_value AddEntry(napi_env env, napi_callback_info info);
+	static napi_value Equals(napi_env env, napi_callback_info info);
 	static napi_value FindPosition(napi_env env, napi_callback_info info);
 	static napi_value FindExactStart(napi_env env, napi_callback_info info);
 	static napi_value SegmentRemovals(napi_env env, napi_callback_info info);

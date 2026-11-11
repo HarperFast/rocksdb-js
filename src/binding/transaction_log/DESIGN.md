@@ -34,6 +34,8 @@ Two tighter alternatives are deliberately not used. Holding `transactionBindMute
 
 `query({ start, exactStart: true })` returns everything from the first entry whose timestamp equals `start`. Timestamps are not ordered (`setTimestamp()` adopts origin and replay timestamps), so a larger timestamp ends nothing. The running-maximum index gives only a lower bound, and a miss used to scan to end-of-log.
 
+A query bounded by `until` takes the stop-to-tail jump only when `mayJumpTo()` proves its target does not pass the other iterator's unread physical position. A span proven timestamp-safe can still cross that boundary. A refusal holds for the rest of the pull, because the bound cannot move until the next pull, which retries.
+
 `TransactionLogStore::findPositionByTimestamp(timestamp, &span)` also returns a span `[stop, tail)` that holds no entry with a timestamp at or below `start`; the reader jumps over it once. Per segment, the index walk keeps two scalars for entries below the running maximum: their minimum timestamp and the end of the last one. The last possible candidate in a segment is then the later of the next maximum key above `start` and, when that minimum is at or below `start`, the last such entry. That gives the same yes/no answer per segment as a full suffix-minimum index. Precision is lost only inside the one segment holding the newest candidate. Memory stays constant per segment, where a suffix-minimum stack grows with every entry below a high outlier.
 
 `tail` is the newest examined byte and moves down to anything the scan must still see. Keep these, each covered by a test:
@@ -44,6 +46,20 @@ Two tighter alternatives are deliberately not used. Holding `transactionBindMute
 - **Purge after positioning.** A jump into another segment maps the tail, then re-checks `TransactionLogStore::segmentRemovals` (process-wide, bumped and read under `dataSetsMutex`). If it moved, the reader scans and reports the gap. A start that is already past the stop jumps inside `query()`, so a purge after `query()` returns is ordered after that jump.
 
 The first lookup in a process still indexes every segment from the newest down to the start. The index then persists per segment, so later lookups pay only the walk.
+
+# Iterator handoff
+
+`query({ until })` stops before parsing or filtering any frame at or past the other iterator's unread segment and offset. `done` proves the reader reached that cursor; `endOfReadable` throws if readable input ends short of it. Timestamps cannot express that boundary because commits can arrive with older timestamps.
+
+The bound is not compared per frame. A cursor moves only through its own `next()`, `peek()` or `close()`, and a pull runs none of those on the iterator bounding it (nothing enforces that against a subclass overriding an internal method to advance another iterator; doing so is unsupported), so `next()` turns the bound into one local limit (`scanEnd`): `size`, or the bound's offset when that is nearer in the current segment. It recomputes the limit on entry and after any change to `size` or the segment. The corruption bound (`limit`) is a second per-pull local, recomputed at the same points, and it and `corruptFrame()` read the unclamped `size`: a frame straddling the bound is read whole, and clamping would report it as corrupt and cap the resync search at the bound. `reached` true implies `position >= scanEnd`, so an empty scan falls through to `endOfReadable`, which reports `done`.
+
+A bound must come from the same logical log, which `TransactionLog.equals()` decides natively: `TransactionLogHandle` copies the database's resolved `identityPath` at construction, and `equals()` compares it and the log name. Display paths are not identities: separate databases can use the same relative spelling under different working directories, and an expired store reports no display path. The copy is what keeps the answer stable after either database closes, since the handle's `DBHandle` and store are weak references. Instances carry an N-API type tag, so `equals()` answers `false` for an object another class wrapped instead of unwrapping a pointer of the wrong type. The reader captures `TransactionLog.prototype.equals` at module load, so a subclass overriding `equals()` cannot vouch for a foreign bound. Equality names the logical log, not its generation: a log destroyed and recreated under the same name compares equal (HarperFast/rocksdb-js#1023).
+
+The end of segment S and the header of S+1 are the same frontier, even when rotation has not created S+1 yet. The reader checks that equivalence before probing a successor, and only after covering S's append-owned extent, not merely its committed watermark: a committed reader must still refuse catch-up past a pending uncommitted suffix. Missing intervening sequence numbers cannot be treated as adjacent frontiers.
+
+A cursor used as a bound must be the position the reader will resume from. An unmappable starting segment retains its original sequence and offset; `startUnmapped` retries that mapping before advancing, preserving the positioned offset when it becomes readable. If it is gone, `startMissing` probes successors from below its sequence for the existing gap report, while leaving the advertised cursor fixed until a successor maps.
+
+The private `LogIterator` brand validates bounds without a per-query registry insertion. Its comparison uses the start of a cached `peek()` frame rather than the advanced parsing cursor, including when filtering crossed segments before finding that frame. `peek()` caches only yielded entries, so reaching the current tail does not end future reads. `close()` clears iterator-private references and removes its bound; it does not implement `return()`, preserving resumption after a `for...of` break.
 
 # Aborted batches
 
