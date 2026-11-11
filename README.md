@@ -3321,10 +3321,11 @@ A one-shot command:
 - creates a missing database or column family only for `put`, and asks first. It also asks before
   destructive work (`clear`, `purge-logs`, `backups ... restore`, dropping `default`). When stdin is
   not a terminal there is nobody to ask, so pass `--yes`;
-- opens an existing database read-write for `backups <dir> restore` and holds it through the
-  confirmation, so the restore is refused while another process has the database open. Restoring
-  into a path with no database needs no open; a database that no longer opens must be removed
-  before restoring over it.
+- opens the database read-write for `backups <dir> backup` and `restore`, so they are refused while
+  another process has it open (pass `--readonly` to take a point-in-time backup anyway). Restore
+  holds that open through the confirmation and closes it just before restoring. Restoring into a
+  missing or empty directory needs no open; a database that no longer opens must be removed before
+  restoring over it.
 
 ```bash
 rocksdb-js ./data count

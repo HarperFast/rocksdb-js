@@ -109,6 +109,19 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				result = await cli([dbPath, 'put', 'd', '4', '--yes']);
 				expect(result.code).toBe(1);
 				expect(result.stderr).toMatch(/already open by another process/);
+
+				// A backup takes the lock unless --readonly asks for a point-in-time copy.
+				const backupDir = tempDBPath();
+				result = await cli([dbPath, 'backups', backupDir, 'backup']);
+				expect(result.code).toBe(1);
+				expect(result.stderr).toMatch(/already open by another process/);
+				result = await cli([dbPath, 'backups', backupDir, 'backup', '--readonly']);
+				expect(result.code).toBe(0);
+
+				// Usage errors are reported before anything is opened.
+				result = await cli([dbPath, 'backups', backupDir, 'restore', '--yes']);
+				expect(result.code).toBe(2);
+				expect(result.stderr).toContain('<backup-id>');
 			} finally {
 				writer.close();
 			}
@@ -119,6 +132,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			seed(dbPath, { a: 'one', b: 'two' });
 
 			expect((await cli([dbPath, 'put', 'c', 'three'])).code).toBe(0);
+			expect((await cli([dbPath, 'put', 'e', ''])).code).toBe(0);
 			expect((await cli([dbPath, 'remove', 'a'])).code).toBe(0);
 
 			let result = await cli([dbPath, 'clear']);
@@ -130,6 +144,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				expect(db.getSync('a')).toBeUndefined();
 				expect(db.getSync('b')).toBe('two');
 				expect(db.getSync('c')).toBe('three');
+				expect(db.getSync('e')).toBe('');
 			} finally {
 				db.close();
 			}

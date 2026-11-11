@@ -25,12 +25,8 @@ class CLIError extends Error {
 	}
 }
 
-/**
- * Shared by the REPL and one-shot mode. One-shot mode opens the database read-only for
- * `read` access, and only `creates` commands may create a missing database or column.
- * Restore opens an existing database read-write so RocksDB's LOCK refuses a live writer;
- * a path with no database has nothing to protect and needs no open.
- */
+// Backup and restore hold RocksDB's LOCK (a read-write open) so a live writer in another
+// process is refused rather than raced; only a restore into an empty path skips the open.
 const COMMANDS = [
 	{
 		name: 'backups',
@@ -38,8 +34,10 @@ const COMMANDS = [
 		summary: 'Manage backups (list, backup, restore, verify, delete, purge)',
 		access: ([, subcommand]) =>
 			subcommand === 'backup' ? 'read' : subcommand === 'restore' ? 'write' : 'none',
+		locks: ([, subcommand]) => subcommand === 'backup',
 		opens: ([, subcommand]) =>
-			subcommand === 'backup' || (subcommand === 'restore' && existsSync(join(dbPath, 'CURRENT'))),
+			subcommand === 'backup' || (subcommand === 'restore' && !isEmptyPath(dbPath)),
+		validate: validateBackupsArgs,
 		run: backupsCommand,
 		print: printBackupsResult,
 	},
@@ -246,14 +244,13 @@ try {
 	process.exit(2);
 }
 
-// A first positional that names a command means the database is the current directory;
-// a database directory that happens to share a command's name is addressed as `./<name>`.
 const [dbArg, commandName, commandArgs] = commandsByName.has(positionals[0])
 	? [undefined, positionals[0], positionals.slice(1)]
 	: [positionals[0], positionals[1], positionals.slice(2)];
 const dbPath = resolve(dbArg || process.cwd());
 const interactive = commandName === undefined;
-const dbs = {};
+// No prototype: a column named "__proto__" must still be an own, enumerable entry.
+const dbs = Object.create(null);
 let currentDB = null;
 let openReadOnly = Boolean(argv.readonly);
 let r = null;
@@ -603,7 +600,6 @@ function closeAllDatabases() {
 	currentDB = null;
 }
 
-/** `ifMissing` for `column`: `create` (after confirmation), `error`, or `default`. */
 async function openDatabases(column, ifMissing) {
 	currentDB = RocksDatabase.open(dbPath, openOptions());
 	dbs[currentDB.name] = currentDB;
@@ -632,17 +628,45 @@ async function ensureDatabaseExists(create) {
 	return true;
 }
 
-async function backupsCommand(args) {
-	const [dirArg, subcommand = 'list', extra] = args;
+function isEmptyPath(path) {
+	try {
+		return readdirSync(path).length === 0;
+	} catch (error) {
+		if (error.code === 'ENOENT') return true;
+		throw error;
+	}
+}
 
-	const backupDir = resolve(dirArg);
-
+function validateBackupsArgs([dirArg, subcommand = 'list', extra]) {
 	if (subcommand !== 'list' && subcommand !== 'ls' && !BACKUP_SUBCOMMANDS.includes(subcommand)) {
 		throw new CLIError(
 			`Unknown subcommand: ${subcommand}\nValid subcommands: list, ${BACKUP_SUBCOMMANDS.join(', ')}`,
 			2
 		);
 	}
+	if (['restore', 'verify', 'delete', 'purge'].includes(subcommand) && extra === undefined) {
+		const argName = subcommand === 'purge' ? '<keep-count>' : '<backup-id>';
+		throw new CLIError(
+			`Usage: backups ${dirArg} ${subcommand} ${argName}\nList the backups with "backups ${dirArg}"`,
+			2
+		);
+	}
+	const keepCount = Number(extra);
+	// The native layer reads keepCount as a uint32; values above that wrap.
+	if (
+		subcommand === 'purge' &&
+		(!Number.isInteger(keepCount) || keepCount < 0 || keepCount > 0xffffffff)
+	) {
+		throw new CLIError(
+			`Invalid keep count: ${extra}\nUsage: backups ${dirArg} purge <keep-count>`,
+			2
+		);
+	}
+}
+
+async function backupsCommand(args) {
+	const [dirArg, subcommand = 'list', extra] = args;
+	const backupDir = resolve(dirArg);
 
 	// The backup engine creates the directory when creating a backup; everything
 	// else operates on an existing backup directory.
@@ -664,14 +688,6 @@ async function backupsCommand(args) {
 		const { result: backupId, elapsedMs } = await timed(() => currentDB.backup(backupDir));
 		invalidateBackupListCache();
 		return { subcommand, backupId, elapsedMs };
-	}
-
-	if (extra === undefined) {
-		const argName = subcommand === 'purge' ? '<keep-count>' : '<backup-id>';
-		throw new CLIError(
-			`Usage: backups ${dirArg} ${subcommand} ${argName}\nList the backups with "backups ${dirArg}"`,
-			2
-		);
 	}
 
 	switch (subcommand) {
@@ -724,13 +740,6 @@ async function backupsCommand(args) {
 
 		case 'purge': {
 			const keepCount = Number(extra);
-			// The native layer reads keepCount as a uint32; values above that wrap.
-			if (!Number.isInteger(keepCount) || keepCount < 0 || keepCount > 0xffffffff) {
-				throw new CLIError(
-					`Invalid keep count: ${extra}\nUsage: backups ${dirArg} purge <keep-count>`,
-					2
-				);
-			}
 			const sizeBefore = await dirSize(backupDir);
 			const { elapsedMs } = await timed(() => backups.purge(backupDir, keepCount));
 			invalidateBackupListCache();
@@ -1152,9 +1161,10 @@ function assertAllowed(def, access) {
 
 function assertUsage(def, args) {
 	const required = def.usage?.match(/<[^>]+>/g)?.length ?? 0;
-	if (args.filter(Boolean).length < required) {
+	if (args.length < required) {
 		throw new CLIError(`Usage: ${commandSignature(def.name, def.usage)}`, 2);
 	}
+	def.validate?.(args);
 }
 
 async function runCommand(def, args) {
@@ -1234,12 +1244,11 @@ async function runOnce() {
 	if (def.replOnly) {
 		throw new CLIError(`"${def.name}" is only available in the REPL`, 2);
 	}
-	// Checked before opening, so a malformed or refused command creates and opens nothing.
 	assertUsage(def, commandArgs);
 	const access = resolveAccess(def, commandArgs);
 	assertAllowed(def, access);
 	if (def.opens ? def.opens(commandArgs) : access !== 'none') {
-		openReadOnly = access === 'read';
+		openReadOnly = argv.readonly || (access === 'read' && !def.locks?.(commandArgs));
 		if (!(await ensureDatabaseExists(Boolean(def.creates)))) throw new CLIError('Cancelled');
 		await openOrExplain(def.creates ? 'create' : 'error');
 	}
