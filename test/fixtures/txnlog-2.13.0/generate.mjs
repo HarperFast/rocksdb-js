@@ -14,8 +14,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const AHEAD_1 = Date.UTC(2100, 0, 1);
-export const AHEAD_2 = AHEAD_1 + 1000;
+const AHEAD_1 = Date.UTC(2100, 0, 1);
+const AHEAD_2 = AHEAD_1 + 1000;
 
 const installDir = process.argv[2];
 const require = createRequire(join(installDir, 'package.json'));
