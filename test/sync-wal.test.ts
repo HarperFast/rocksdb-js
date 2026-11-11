@@ -1,6 +1,76 @@
-import { stats } from '../src/index.ts';
-import { dbRunner } from './lib/util.ts';
+import { RocksDatabase, stats } from '../src/index.ts';
+import { dbRunner, generateDBPath, runFixture } from './lib/util.ts';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+
+const killFixture = join(__dirname, 'fixtures', 'fork-sync-wal-kill.mts');
+const failureFixture = join(__dirname, 'fixtures', 'fork-sync-wal-failure.mts');
+
+describe('syncWalSync', () => {
+	it('performs a WAL sync on the calling thread, counted by the engine', () =>
+		dbRunner(
+			{ dbOptions: [{ enableStats: true, statsLevel: stats.StatsLevel.All }] },
+			async ({ db }) => {
+				db.putSync('counted', 1);
+				const before = db.getStat('rocksdb.wal.synced') as number;
+				expect(db.syncWalSync()).toBeUndefined();
+				expect(db.getStat('rocksdb.wal.synced')).toBeGreaterThan(before);
+				expect(db.getSync('counted')).toBe(1);
+			}
+		));
+
+	// A kill keeps the page cache, so this passes without an fsync; the stat and failure tests cover
+	// the sync itself. This covers the database reopening intact after dying right after the call.
+	it('leaves earlier writes readable after a kill right after it', async () => {
+		const dbPath = generateDBPath();
+		try {
+			await runFixture(killFixture, dbPath, { killsItself: true });
+			const db = RocksDatabase.open(dbPath);
+			try {
+				for (let i = 0; i < 100; i++) {
+					expect(db.getSync(`key-${i}`)).toEqual({ i });
+				}
+			} finally {
+				db.close();
+			}
+		} finally {
+			if (!process.env.KEEP_FILES) rmSync(dbPath, { recursive: true, force: true });
+		}
+	}, 20_000);
+
+	it('throws, and the async form rejects, when the sync fails', async () => {
+		const dbPath = generateDBPath();
+		try {
+			await runFixture(failureFixture, dbPath, { env: { ROCKSDB_JS_SYNC_WAL_FAILURE: '2' } });
+		} finally {
+			if (!process.env.KEEP_FILES) rmSync(dbPath, { recursive: true, force: true });
+		}
+	}, 20_000);
+
+	it('returns on a database opened with disableWAL', () =>
+		dbRunner({ dbOptions: [{ disableWAL: true }] }, async ({ db }) => {
+			db.putSync('skipped', 'wal');
+			expect(db.syncWalSync()).toBeUndefined();
+		}));
+
+	it('returns without syncing on a read-only database', () =>
+		dbRunner({ dbOptions: [{}, { readOnly: true }] }, async ({ db }, { db: readOnly }) => {
+			db.putSync('key', 'value');
+			expect(readOnly.syncWalSync()).toBeUndefined();
+		}));
+
+	it('throws on a closed database and works again after reopen', () =>
+		dbRunner(async ({ db }) => {
+			db.putSync('a', 1);
+			db.close();
+			expect(() => db.syncWalSync()).toThrow('Database not open');
+			db.open();
+			db.putSync('b', 2);
+			expect(db.syncWalSync()).toBeUndefined();
+			expect(db.getSync('b')).toBe(2);
+		}));
+});
 
 describe('syncWal', () => {
 	it('performs a WAL sync, counted by the engine', () =>
