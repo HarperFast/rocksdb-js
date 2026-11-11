@@ -388,18 +388,15 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	getMany(keys: Key[], options?: T): MaybePromise<any[]> {
 		if (keys.length === 1) {
 			// get() can decode from the shared value buffer instead of a fresh one.
-			return when(
-				() => this.get(keys[0], options as GetOptions & T),
-				(value) => [value]
-			);
+			return when(this.get(keys[0], options as GetOptions & T), (value) => [value]);
 		}
 		const store = this.store;
 		if (!store.isOpen()) {
 			return Promise.reject(new Error('Database not open'));
 		}
-		// No closure here may reference `this` or `options` (which can hold the transaction): the
-		// callback would share their scope and keep a dropped transaction's wrapper reachable until
-		// a cold read settles, blocking its orphan cleanup.
+		// No closure in this method may reference `this` or `options` (which can hold the
+		// transaction): closures share one scope, so the decode callback would keep a dropped
+		// transaction's wrapper reachable until a cold read settles, blocking its orphan cleanup.
 		let values: MaybePromise<(Buffer | undefined)[]>;
 		try {
 			values = store.getMany(this._context, keys, options as DBITransactional);
@@ -407,7 +404,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			return Promise.reject(error);
 		}
 		return values instanceof Promise
-			? values.then(decodeManyWith(store))
+			? values.then((resolved) => decodeMany(store, resolved))
 			: decodeMany(store, values);
 	}
 
@@ -602,8 +599,4 @@ function decodeMany(store: Store, values: (Buffer | undefined)[]): any[] {
 		}
 	}
 	return values;
-}
-
-function decodeManyWith(store: Store): (values: (Buffer | undefined)[]) => any[] {
-	return (values) => decodeMany(store, values);
 }
