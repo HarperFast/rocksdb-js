@@ -32,6 +32,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
+  actions: read
   contents: write
   pull-requests: write
 
@@ -86,11 +87,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Baseline is the latest successful run on main that uploaded results;
-          # any failure here just means no comparison.
           rm -rf baseline && mkdir baseline
-          for run_id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow benchmark.yml \
-              --branch main --status success --limit 10 --json databaseId --jq '.[].databaseId'); do
+          run_ids=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow benchmark.yml \
+            --branch main --event push --status success --limit 10 \
+            --json databaseId --jq '.[].databaseId')
+          for run_id in $run_ids; do
             [ "$run_id" = "$GITHUB_RUN_ID" ] && continue
             if gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
                 --pattern 'benchmark-results-*' --dir baseline 2>/dev/null; then
@@ -118,14 +119,18 @@ jobs:
           fi
 
       - name: Summarize benchmark comparison
-        if: always() && steps.baseline.outputs.file != '' && hashFiles('bench-output.txt') != ''
+        if: always() && hashFiles('bench-output.txt') != ''
         env:
           BASELINE_RUN_ID: ${{ steps.baseline.outputs.run_id }}
         run: |
           {
-            echo "## Benchmark comparison"
+            echo "## Benchmark results"
             echo
-            echo "Baseline: latest successful run on main ([#$BASELINE_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$BASELINE_RUN_ID)). In each benchmark the first row is this run and the \`(baseline)\` row is the previous one."
+            if [ -n "$BASELINE_RUN_ID" ]; then
+              echo "Baseline: latest successful push run on main ([#$BASELINE_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$BASELINE_RUN_ID)). In each benchmark the first row is this run and the \`(baseline)\` row is the previous one."
+            else
+              echo "No baseline found; not compared."
+            fi
             echo
             echo '```'
             # Stay under the 1 MiB summary limit
