@@ -7,69 +7,277 @@ import {
 	validateTransactionLogStore,
 	versions,
 } from '../dist/index.mjs';
+import { once } from 'node:events';
 import { existsSync, readdirSync } from 'node:fs';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { stdin, stdout } from 'node:process';
+import { stderr, stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import repl from 'node:repl';
-import { inspect, parseArgs, styleText } from 'node:util';
-
-const COMMANDS = {
-	backups: backupsCommand,
-	clear: clearCommand,
-	columns: columnsCommand,
-	compact: compactCommand,
-	count: countCommand,
-	drop: dropCommand,
-	exit: () => process.exit(0),
-	get: getCommand,
-	help: helpCommand,
-	log: logCommand,
-	logs: logCommand, // alias for log
-	prop: propCommand,
-	'purge-logs': purgeLogsCommand,
-	put: putCommand,
-	query: queryCommand,
-	remove: removeCommand,
-	repl: replCommand,
-	stats: statsCommand,
-	use: useCommand,
-	'verify-logs': verifyLogsCommand,
-};
+import { inspect, parseArgs, stripVTControlCharacters, styleText } from 'node:util';
 
 const BACKUP_SUBCOMMANDS = ['backup', 'restore', 'verify', 'delete', 'purge'];
 
-// Resolved backup dir -> BackupInfo[]; warmed by list operations, used for tab completion.
-let backupListCache = { dir: null, list: null };
+class CLIError extends Error {
+	constructor(message, exitCode = 1) {
+		super(message);
+		this.exitCode = exitCode;
+	}
+}
 
-const { values: argv, positionals } = parseArgs({
-	allowPositionals: true,
-	arguments: process.argv.slice(2),
-	options: {
-		help: { type: 'boolean', short: 'h' },
-		readonly: { type: 'boolean', short: 'r' },
-		version: { type: 'boolean', short: 'v' },
+const usageError = (usage) => new CLIError(`Usage: ${usage}`, 2);
+
+/**
+ * The single definition of every command, shared by the REPL and one-shot mode.
+ *
+ * - `access`: what the command does with the database at `dbPath` — `none` (no
+ *   database is opened), `read` (one-shot mode opens it read-only), or `write`.
+ *   May be a function of the command's arguments.
+ * - `run(args)`: does the work and returns a JSON-serializable result (or an
+ *   async iterable, streamed as a JSON array). Throws `CLIError` on failure.
+ * - `print(result)`: renders the result for humans; `--json` bypasses it.
+ */
+const COMMANDS = [
+	{
+		name: 'backups',
+		usage: '<dir> [subcommand] [arg]',
+		summary: 'Manage backups (list, backup, restore, verify, delete, purge)',
+		access: ([, subcommand]) =>
+			subcommand === 'backup' ? 'read' : subcommand === 'restore' ? 'write' : 'none',
+		run: backupsCommand,
+		print: printBackupsResult,
 	},
-});
-const dbPath = resolve(positionals[0] || process.cwd());
+	{
+		name: 'clear',
+		summary: 'Clear all data in the current column family',
+		access: 'write',
+		run: clearCommand,
+		print: ({ column, elapsedMs }) =>
+			console.log(`Cleared ${hl(column)} ${note(`(${elapsedMs}ms)`)}`),
+	},
+	{
+		name: 'columns',
+		summary: 'List column families',
+		access: 'read',
+		run: () => currentDB.columns,
+		print: (columns) => {
+			for (const column of columns) console.log(hl(column));
+		},
+	},
+	{
+		name: 'compact',
+		summary: 'Compact the current column family',
+		access: 'write',
+		run: compactCommand,
+		print: printCompactResult,
+	},
+	{
+		name: 'count',
+		summary: 'Count the number of keys in the current column family',
+		access: 'read',
+		run: async () => {
+			const { result: count, elapsedMs } = await timed(() => currentDB.getKeysCount());
+			return { count, elapsedMs };
+		},
+		print: ({ count, elapsedMs }) => console.log(`Count: ${hl(count)} ${note(`(${elapsedMs}ms)`)}`),
+	},
+	{
+		name: 'drop',
+		usage: '<column>',
+		summary: 'Permanently drop a column family',
+		access: 'write',
+		run: dropCommand,
+		print: ({ column, cleared, elapsedMs }) =>
+			console.log(`${cleared ? 'Cleared' : 'Dropped'} ${hl(column)} ${note(`(${elapsedMs}ms)`)}`),
+	},
+	{
+		name: 'exit',
+		summary: 'Exit the REPL',
+		replOnly: true,
+		access: 'none',
+		run: () => process.exit(0),
+	},
+	{
+		name: 'get',
+		usage: '<key>',
+		summary: 'Get the value of a key',
+		access: 'read',
+		run: getCommand,
+		print: (value) => console.log(value),
+	},
+	{
+		name: 'help',
+		summary: 'Show this help message',
+		access: 'none',
+		run: () =>
+			commandsFor(interactive).map(({ name, usage, summary }) => ({
+				command: commandSignature(name, usage),
+				summary,
+			})),
+		// One-shot `help` is `--help`; the REPL lists only the commands.
+		print: (rows) => (interactive ? printCommandTable(rows) : printHelp()),
+	},
+	{
+		name: 'log',
+		aliases: ['logs'],
+		usage: '[name] [file] [entry]',
+		summary: 'List the transaction log store names and log store files',
+		access: 'read',
+		run: logCommand,
+		print: printLogResult,
+	},
+	{
+		name: 'prop',
+		usage: '<key>',
+		summary: 'Get a RocksDB property (try "rocksdb.stats")',
+		access: 'read',
+		run: ([key]) => {
+			if (!key) throw usageError('prop <key>');
+			return currentDB.getDBProperty(key) ?? null;
+		},
+		print: (value) => console.log(value),
+	},
+	{
+		name: 'purge-logs',
+		usage: '<name>',
+		summary: 'Purge transaction log files older than 3 days',
+		access: 'write',
+		run: purgeLogsCommand,
+		print: ({ removed, elapsedMs }) => {
+			console.log(
+				`Purged ${removed.length} log file${removed.length === 1 ? '' : 's'} ${note(`(${elapsedMs}ms)`)}`
+			);
+			for (const file of removed) console.log(hl(file));
+		},
+	},
+	{
+		name: 'put',
+		usage: '<key> <value>',
+		summary: 'Set the value of a key',
+		access: 'write',
+		run: putCommand,
+	},
+	{
+		name: 'query',
+		usage: '[start] [end]',
+		summary: 'Query a range of keys',
+		access: 'read',
+		run: queryCommand,
+		print: printQueryResult,
+	},
+	{
+		name: 'remove',
+		usage: '<key>',
+		summary: 'Delete a key',
+		access: 'write',
+		run: removeCommand,
+		print: ({ key, elapsedMs }) => console.log(`Removed ${hl(key)} ${note(`(${elapsedMs}ms)`)}`),
+	},
+	{
+		name: 'repl',
+		summary: 'Open a JS sub-REPL; "db" refers to the current column family',
+		replOnly: true,
+		access: 'none',
+		run: replCommand,
+	},
+	{
+		name: 'stats',
+		summary: 'Show the statistics for the current column family',
+		access: 'read',
+		run: () => currentDB.getStats(),
+		print: (stats) => {
+			const maxlen = Math.max(...Object.keys(stats).map((key) => key.length)) - 8;
+			for (const [key, value] of Object.entries(stats)) {
+				console.log(`${key.substring(8).padEnd(maxlen)} = ${hl(value)}`);
+			}
+		},
+	},
+	{
+		name: 'use',
+		usage: '[column]',
+		summary: 'Create a new column family or switch to an existing one',
+		replOnly: true,
+		access: 'none',
+		run: useCommand,
+	},
+	{
+		name: 'verify-logs',
+		usage: '[name]',
+		summary: 'Validate transaction log store files (all stores if no name)',
+		access: 'read',
+		run: verifyLogsCommand,
+		print: printVerifyLogsResult,
+	},
+];
+
+const commandsByName = new Map();
+for (const def of COMMANDS) {
+	for (const name of [def.name, ...(def.aliases ?? [])]) commandsByName.set(name, def);
+}
+
+function commandsFor(isInteractive) {
+	return COMMANDS.filter((def) => isInteractive || !def.replOnly);
+}
+
+function commandSignature(name, usage) {
+	return usage ? `${name} ${usage}` : name;
+}
+
+function resolveAccess(def, args) {
+	return typeof def.access === 'function' ? def.access(args) : def.access;
+}
+
+let argv;
+let positionals;
+try {
+	({ values: argv, positionals } = parseArgs({
+		allowPositionals: true,
+		args: process.argv.slice(2),
+		options: {
+			column: { type: 'string', short: 'c' },
+			help: { type: 'boolean', short: 'h' },
+			json: { type: 'boolean' },
+			readonly: { type: 'boolean', short: 'r' },
+			version: { type: 'boolean', short: 'v' },
+			yes: { type: 'boolean', short: 'y' },
+		},
+	}));
+} catch (error) {
+	console.error(`${error.message}\nRun "rocksdb-js --help" for usage.`);
+	process.exit(2);
+}
+
+// A first positional that names a command means the database is the current directory;
+// a database directory that happens to share a command's name is addressed as `./<name>`.
+const [dbArg, commandName, commandArgs] = commandsByName.has(positionals[0])
+	? [undefined, positionals[0], positionals.slice(1)]
+	: [positionals[0], positionals[1], positionals.slice(2)];
+const dbPath = resolve(dbArg || process.cwd());
+const interactive = commandName === undefined;
 const dbs = {};
 let currentDB = null;
+let openReadOnly = Boolean(argv.readonly);
 let r = null;
 const defaultOpenOptions = {
 	disableWAL: false,
 	encoding: 'msgpack',
 	freezeData: true,
 	randomAccessStructure: true,
-	readOnly: argv.readonly,
 };
+
+function openOptions(extra) {
+	return { ...defaultOpenOptions, readOnly: openReadOnly, ...extra };
+}
+
+// Resolved backup dir -> BackupInfo[]; warmed by list operations, used for tab completion.
+let backupListCache = { dir: null, list: null };
 
 function completer(line) {
 	const parts = line.trimStart().split(/[ \t]+/);
 	const command = parts[0];
 
 	if (parts.length <= 1) {
-		const hits = Object.keys(COMMANDS).filter((c) => c.startsWith(command));
+		const hits = [...commandsByName.keys()].filter((c) => c.startsWith(command));
 		return [hits.length ? hits : [], line];
 	}
 
@@ -170,11 +378,18 @@ function createRL() {
 	return iface;
 }
 
-let rl = createRL();
-let lineIterator = rl[Symbol.asyncIterator]();
+// Only the REPL reads commands from stdin; one-shot mode must not consume it.
+let rl = null;
+let lineIterator = null;
 let rlClosed = false;
 let ctrlC = false;
 let currentAbortController = null;
+
+function startRL() {
+	rl = createRL();
+	lineIterator = rl[Symbol.asyncIterator]();
+	rlClosed = false;
+}
 
 function whenAborted(signal) {
 	return new Promise((_resolve, reject) => {
@@ -193,10 +408,11 @@ function str(text) {
 		}
 		return String(text);
 	} catch {
-		return inspect(text, { colors: true, depth: 10 });
+		return inspect(text, { colors: useColors, depth: 10 });
 	}
 }
 
+const useColors = stdout.hasColors?.() ?? false;
 const hl = (text) => styleText('magenta', str(text));
 const note = (text) => styleText('gray', str(text));
 const warn = (text) => styleText('yellow', str(text));
@@ -252,11 +468,16 @@ function formatBytes(bytes) {
 	return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-async function run(fn) {
+function formatTimestamp(timestamp) {
+	return Number.isFinite(timestamp) && timestamp > 0
+		? new Date(timestamp).toISOString()
+		: String(timestamp);
+}
+
+async function timed(fn) {
 	const start = Date.now();
 	const result = await fn();
-	const end = Date.now();
-	return { time: end - start, result };
+	return { elapsedMs: Date.now() - start, result };
 }
 
 // Returns the next line, or `null` once the iterator itself reports `done`. `close` can
@@ -289,6 +510,32 @@ async function ask(prompt) {
 	}
 }
 
+/**
+ * Asks a yes/no question. The REPL reads the answer from its own input; one-shot mode
+ * needs `--yes`, or a terminal to prompt on (written to stderr so stdout stays results).
+ */
+async function confirm(question) {
+	if (argv.yes) return true;
+	let answer;
+	if (interactive) {
+		answer = await ask(`${question} (y/N) `);
+	} else if (stdin.isTTY) {
+		const iface = createInterface({ input: stdin, output: stderr });
+		try {
+			answer = await iface.question(`${question} (y/N) `);
+		} finally {
+			iface.close();
+		}
+	} else {
+		throw new CLIError(`${stripVTControlCharacters(question)} Pass --yes to confirm.`);
+	}
+	return answer === 'y' || answer === 'Y';
+}
+
+async function confirmOrCancel(question) {
+	if (!(await confirm(question))) throw new CLIError('Cancelled');
+}
+
 function invalidateBackupListCache() {
 	backupListCache = { dir: null, list: null };
 }
@@ -315,36 +562,16 @@ function printBackupList(list) {
 	}
 }
 
-async function listBackups(backupDir) {
-	let list;
-	try {
-		list = await fetchBackupList(backupDir);
-	} catch (error) {
-		console.log(bad(`Unable to list backups: ${error.message ?? error}`));
-		console.log(note(`Check the path or create a first backup with "backups <dir> backup"`));
-		return null;
-	}
-	printBackupList(list);
-	return list;
-}
-
-async function requireBackupId(backupDir, idStr, list = null) {
-	if (!list) {
-		list = await fetchBackupList(backupDir);
-	}
+async function requireBackupId(backupDir, idStr) {
+	const list = await fetchBackupList(backupDir);
 	const id = Number(idStr);
 	if (!Number.isInteger(id)) {
-		console.log(`Invalid backup id: ${hl(idStr)}\n`);
-		printBackupList(list);
-		return null;
+		throw new CLIError(`Invalid backup id: ${idStr}`, 2);
 	}
-	const backup = list.find((b) => b.backupId === id);
-	if (!backup) {
-		console.log(`Backup ${hl(id)} does not exist\n`);
-		printBackupList(list);
-		return null;
+	if (!list.some((b) => b.backupId === id)) {
+		throw new CLIError(`Backup ${id} does not exist`);
 	}
-	return { id, backup };
+	return id;
 }
 
 async function dirSize(dir) {
@@ -378,437 +605,401 @@ function closeAllDatabases() {
 	currentDB = null;
 }
 
-function reopenDatabases(preferredColumn) {
-	currentDB = RocksDatabase.open(dbPath, { ...defaultOpenOptions });
+/**
+ * Opens the default column family, then `column` if given. A missing column is created
+ * after confirmation when `createColumn` is set, otherwise the default stays current.
+ */
+async function openDatabases(column, { createColumn = true } = {}) {
+	currentDB = RocksDatabase.open(dbPath, openOptions());
 	dbs[currentDB.name] = currentDB;
-	if (
-		preferredColumn &&
-		preferredColumn !== currentDB.name &&
-		currentDB.columns.includes(preferredColumn)
-	) {
-		dbs[preferredColumn] = RocksDatabase.open(dbPath, {
-			name: preferredColumn,
-			...defaultOpenOptions,
-		});
-		currentDB = dbs[preferredColumn];
+	if (!column || column === currentDB.name) return;
+	if (!currentDB.columns.includes(column)) {
+		if (!createColumn) return;
+		if (openReadOnly) throw new CLIError(`Column family "${column}" does not exist`);
+		await confirmOrCancel(`Create new column ${hl(column)}?`);
 	}
-	console.log(wrapColumns(currentDB.columns));
+	dbs[column] = RocksDatabase.open(dbPath, openOptions({ name: column }));
+	currentDB = dbs[column];
 }
 
+/** Returns false if the user declined to create a missing database. */
+async function ensureDatabaseExists() {
+	if (existsSync(join(dbPath, 'CURRENT'))) return true;
+	if (openReadOnly) {
+		throw new CLIError(`RocksDB database does not exist: ${dbPath}`);
+	}
+	if (!(await confirm('RocksDB database does not exist, create it?'))) return false;
+	await mkdir(dbPath, { recursive: true });
+	if ((await readdir(dbPath)).length > 0) {
+		return confirm('Directory not empty, are you sure you want to continue?');
+	}
+	return true;
+}
+
+const BACKUPS_USAGE = 'backups <dir> [subcommand] [arg]';
+
 async function backupsCommand(args) {
-	const [dirArg, subcommand, extra] = args;
+	const [dirArg, subcommand = 'list', extra] = args;
 	if (!dirArg) {
-		console.log(`Usage: ${hl('backups <dir> [subcommand] [arg]')}`);
-		console.log(`Subcommands: ${BACKUP_SUBCOMMANDS.map((s) => hl(s)).join(', ')}\n`);
-		return;
+		throw new CLIError(
+			`Usage: ${BACKUPS_USAGE}\nSubcommands: list, ${BACKUP_SUBCOMMANDS.join(', ')}`,
+			2
+		);
 	}
 
 	const backupDir = resolve(dirArg);
 
-	if (subcommand && !BACKUP_SUBCOMMANDS.includes(subcommand)) {
-		console.log(`Unknown subcommand: ${hl(subcommand)}`);
-		console.log(`Valid subcommands: ${BACKUP_SUBCOMMANDS.map((s) => hl(s)).join(', ')}\n`);
-		return;
+	if (subcommand !== 'list' && subcommand !== 'ls' && !BACKUP_SUBCOMMANDS.includes(subcommand)) {
+		throw new CLIError(
+			`Unknown subcommand: ${subcommand}\nValid subcommands: list, ${BACKUP_SUBCOMMANDS.join(', ')}`,
+			2
+		);
 	}
 
 	// The backup engine creates the directory when creating a backup; everything
 	// else operates on an existing backup directory.
 	if (subcommand !== 'backup' && !existsSync(backupDir)) {
-		console.log(`Backup directory ${hl(backupDir)} does not exist`);
-		console.log(note(`Create a first backup with "backups ${dirArg} backup"\n`));
-		return;
+		throw new CLIError(
+			`Backup directory ${backupDir} does not exist\nCreate a first backup with "backups ${dirArg} backup"`
+		);
 	}
 
-	if (!subcommand || subcommand === 'ls' || subcommand === 'list') {
-		await listBackups(backupDir);
-		console.log();
-		return;
+	if (subcommand === 'list' || subcommand === 'ls') {
+		try {
+			return { subcommand: 'list', backups: await fetchBackupList(backupDir) };
+		} catch (error) {
+			throw new CLIError(`Unable to list backups: ${error.message ?? error}`);
+		}
 	}
 
 	if (subcommand === 'backup') {
-		const { result: id, time } = await run(() => currentDB.backup(backupDir));
+		const { result: backupId, elapsedMs } = await timed(() => currentDB.backup(backupDir));
 		invalidateBackupListCache();
-		console.log(`Created backup ${hl(id)} ${note(`(${time}ms)`)}\n`);
-		return;
+		return { subcommand, backupId, elapsedMs };
 	}
 
 	if (extra === undefined) {
-		const list = await listBackups(backupDir);
-		if (list?.length) {
-			const argName = subcommand === 'purge' ? '<keep-count>' : '<backup-id>';
-			console.log(`\nUsage: ${hl(`backups ${dirArg} ${subcommand} ${argName}`)}`);
-		}
-		console.log();
-		return;
+		const argName = subcommand === 'purge' ? '<keep-count>' : '<backup-id>';
+		throw new CLIError(
+			`Usage: backups ${dirArg} ${subcommand} ${argName}\nList the backups with "backups ${dirArg}"`,
+			2
+		);
 	}
 
 	switch (subcommand) {
 		case 'restore': {
-			if (argv.readonly) {
-				console.log(
-					'Restore is not available in read-only mode. Restart without --readonly to restore.\n'
-				);
-				return;
-			}
 			if (backupDir === dbPath) {
-				console.log(bad('Backup directory and database directory must be different\n'));
-				return;
+				throw new CLIError('Backup directory and database directory must be different');
 			}
-			const found = await requireBackupId(backupDir, extra);
-			if (!found) {
-				console.log();
-				return;
-			}
-			const answer = await ask(`Are you sure you want to restore backup ${hl(found.id)}? (y/N) `);
-			if (answer !== 'y' && answer !== 'Y') {
-				console.log();
-				return;
-			}
+			const backupId = await requireBackupId(backupDir, extra);
+			await confirmOrCancel(`Are you sure you want to restore backup ${hl(backupId)}?`);
 			const preferredColumn = currentDB?.name;
 			closeAllDatabases();
-			let time;
+			let elapsedMs;
 			try {
-				({ time } = await run(() => backups.restore(backupDir, dbPath, { backupId: found.id })));
+				({ elapsedMs } = await timed(() => backups.restore(backupDir, dbPath, { backupId })));
 			} catch (error) {
 				// Don't reopen: the destructive restore may have purged the database
 				// directory and a read-write open would create a new, empty database.
-				console.error(bad(`Restore failed, the database may be incomplete: ${error}`));
+				const message = `Restore failed, the database may be incomplete: ${error}`;
+				if (!interactive) throw new CLIError(message);
+				console.error(bad(message));
 				process.exit(1);
 			}
-			reopenDatabases(preferredColumn);
-			console.log(`Restored backup ${hl(found.id)} ${note(`(${time}ms)`)}\n`);
-			return;
+			if (interactive) {
+				await openDatabases(preferredColumn, { createColumn: false });
+				console.log(wrapColumns(currentDB.columns));
+			}
+			return { subcommand, backupId, elapsedMs };
 		}
 
 		case 'verify': {
-			const found = await requireBackupId(backupDir, extra);
-			if (!found) {
-				console.log();
-				return;
-			}
+			const backupId = await requireBackupId(backupDir, extra);
 			try {
-				const { time } = await run(() =>
-					backups.verify(backupDir, found.id, { verifyWithChecksum: true })
+				const { elapsedMs } = await timed(() =>
+					backups.verify(backupDir, backupId, { verifyWithChecksum: true })
 				);
-				console.log(`Backup ${hl(found.id)} verified OK ${note(`(${time}ms)`)}\n`);
+				return { subcommand, backupId, elapsedMs };
 			} catch (error) {
-				console.error(bad(`Verify failed: ${error.toString()}`));
+				throw new CLIError(`Verify failed: ${error}`);
 			}
-			return;
 		}
 
 		case 'delete': {
-			const found = await requireBackupId(backupDir, extra);
-			if (!found) {
-				console.log();
-				return;
-			}
+			const backupId = await requireBackupId(backupDir, extra);
 			const sizeBefore = await dirSize(backupDir);
-			const { time } = await run(() => backups.delete(backupDir, found.id));
+			const { elapsedMs } = await timed(() => backups.delete(backupDir, backupId));
 			invalidateBackupListCache();
-			const sizeAfter = await dirSize(backupDir);
-			console.log(
-				`Deleted backup ${hl(found.id)}, recovered ${hl(formatBytes(Math.max(0, sizeBefore - sizeAfter)))} ${note(`(${time}ms)`)}\n`
-			);
-			return;
+			const recoveredBytes = Math.max(0, sizeBefore - (await dirSize(backupDir)));
+			return { subcommand, backupId, recoveredBytes, elapsedMs };
 		}
 
 		case 'purge': {
 			const keepCount = Number(extra);
 			// The native layer reads keepCount as a uint32; values above that wrap.
 			if (!Number.isInteger(keepCount) || keepCount < 0 || keepCount > 0xffffffff) {
-				console.log(`Invalid keep count: ${hl(extra)}`);
-				console.log(`Usage: ${hl(`backups ${dirArg} purge <keep-count>`)}\n`);
-				return;
+				throw new CLIError(
+					`Invalid keep count: ${extra}\nUsage: backups ${dirArg} purge <keep-count>`,
+					2
+				);
 			}
 			const sizeBefore = await dirSize(backupDir);
-			const { time } = await run(() => backups.purge(backupDir, keepCount));
+			const { elapsedMs } = await timed(() => backups.purge(backupDir, keepCount));
 			invalidateBackupListCache();
-			const sizeAfter = await dirSize(backupDir);
-			console.log(
-				`Purged backups, keeping ${hl(keepCount)}, recovered ${hl(formatBytes(Math.max(0, sizeBefore - sizeAfter)))} ${note(`(${time}ms)`)}\n`
-			);
-			return;
+			const recoveredBytes = Math.max(0, sizeBefore - (await dirSize(backupDir)));
+			return { subcommand, keepCount, recoveredBytes, elapsedMs };
 		}
 	}
 }
 
-async function clearCommand() {
-	const answer = await ask(`Are you sure you want to clear all data? (y/N) `);
-	if (answer !== 'y' && answer !== 'Y') {
-		console.log();
-		return;
+function printBackupsResult(result) {
+	const elapsed = note(`(${result.elapsedMs}ms)`);
+	switch (result.subcommand) {
+		case 'list':
+			printBackupList(result.backups);
+			return;
+		case 'backup':
+			console.log(`Created backup ${hl(result.backupId)} ${elapsed}`);
+			return;
+		case 'restore':
+			console.log(`Restored backup ${hl(result.backupId)} ${elapsed}`);
+			return;
+		case 'verify':
+			console.log(`Backup ${hl(result.backupId)} verified OK ${elapsed}`);
+			return;
+		case 'delete':
+			console.log(
+				`Deleted backup ${hl(result.backupId)}, recovered ${hl(formatBytes(result.recoveredBytes))} ${elapsed}`
+			);
+			return;
+		case 'purge':
+			console.log(
+				`Purged backups, keeping ${hl(result.keepCount)}, recovered ${hl(formatBytes(result.recoveredBytes))} ${elapsed}`
+			);
 	}
-	const { time } = await run(() => currentDB.clear());
-	console.log(`Cleared ${hl(currentDB.name)} ${note(`(${time}ms)`)}\n`);
 }
 
-function columnsCommand() {
-	for (const column of currentDB.columns) {
-		console.log(hl(column));
-	}
-	console.log();
+async function clearCommand() {
+	await confirmOrCancel('Are you sure you want to clear all data?');
+	const { elapsedMs } = await timed(() => currentDB.clear());
+	return { column: currentDB.name, elapsedMs };
 }
 
 async function compactCommand() {
 	const sizeBefore = currentDB.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
-	const { time } = await run(() => currentDB.compact());
+	const { elapsedMs } = await timed(() => currentDB.compact());
 	const sizeAfter = currentDB.getDBIntProperty('rocksdb.estimate-live-data-size') ?? 0;
+	return { sizeBefore, sizeAfter, elapsedMs };
+}
+
+function printCompactResult({ sizeBefore, sizeAfter, elapsedMs }) {
 	const ratio =
 		sizeBefore > 0
 			? `reduced by ${(((sizeBefore - sizeAfter) / sizeBefore) * 100).toFixed(2)}%`
 			: sizeAfter > 0
 				? `increased by ${sizeAfter.toLocaleString()} bytes`
 				: 'no change';
-	console.log(`Compacted, ${ratio} ${note(`(${time}ms)`)}`);
-	console.log(`${hl(sizeBefore.toLocaleString())} -> ${hl(sizeAfter.toLocaleString())} bytes\n`);
-	console.log();
+	console.log(`Compacted, ${ratio} ${note(`(${elapsedMs}ms)`)}`);
+	console.log(`${hl(sizeBefore.toLocaleString())} -> ${hl(sizeAfter.toLocaleString())} bytes`);
 }
 
-async function countCommand() {
-	const { result: count, time } = await run(() => currentDB.getKeysCount());
-	console.log(`Count: ${hl(count)} ${note(`(${time}ms)`)}\n`);
-}
+async function dropCommand([column]) {
+	if (!column) throw usageError('drop <column>');
 
-async function dropCommand(args) {
-	const [column] = args;
-	if (!column) {
-		console.log(`Usage: ${hl('drop <column>')}\n`);
-		return;
-	}
-
-	const { columns } = dbs.default;
-	if (!columns.includes(column)) {
-		console.log(`Column family ${hl(column)} does not exist\n`);
-		return;
+	if (!dbs.default.columns.includes(column)) {
+		throw new CLIError(`Column family "${column}" does not exist`);
 	}
 
 	if (column === 'default') {
-		console.log('You cannot drop the default column family');
-		const answer = await ask(`Are you sure you want to clear all data? (y/N) `);
-		if (answer !== 'y' && answer !== 'Y') {
-			console.log();
-			return;
-		}
-		const { time } = await run(() => dbs.default.drop());
-		console.log(`Cleared ${hl('default')} ${note(`(${time}ms)`)}\n`);
-		return;
+		if (interactive) console.log('You cannot drop the default column family');
+		await confirmOrCancel('Are you sure you want to clear all data in "default"?');
+		const { elapsedMs } = await timed(() => dbs.default.drop());
+		return { column, cleared: true, elapsedMs };
 	}
 
-	const db = dbs[column] || RocksDatabase.open(dbPath, { name: column, ...defaultOpenOptions });
-	const { time } = await run(() => db.drop());
+	const db = dbs[column] || RocksDatabase.open(dbPath, openOptions({ name: column }));
+	const { elapsedMs } = await timed(() => db.drop());
 	db.close();
 	delete dbs[column];
-	console.log(`Dropped ${hl(column)} ${note(`(${time}ms)`)}\n`);
 	if (currentDB.name === column) {
-		console.log(`Switching ${hl(currentDB.name)} => ${hl('default')}\n`);
+		if (interactive) console.log(`Switching ${hl(column)} => ${hl('default')}`);
 		currentDB = dbs.default;
 	}
+	return { column, cleared: false, elapsedMs };
 }
 
-async function getCommand(args) {
-	const [key] = args;
-	if (!key) {
-		console.log(`Usage: ${hl('get <key>')}\n`);
-		return;
-	}
+async function getCommand([key]) {
+	if (!key) throw usageError('get <key>');
 	const value = await currentDB.get(key);
-	if (value === undefined) {
-		console.log('Key not found\n');
-		return;
+	if (value === undefined) throw new CLIError('Key not found');
+	return value;
+}
+
+function printCommandTable(rows) {
+	const width = Math.max(...rows.map((row) => row.command.length)) + 2;
+	for (const { command, summary } of rows) {
+		console.log(`${hl(command.padEnd(width))} ${summary}`);
 	}
-	console.log(value);
-	console.log();
 }
 
-async function propCommand(args) {
-	const [key] = args;
-	if (!key) {
-		console.log(`Usage: ${hl('prop <key>')}\n`);
-		return;
-	}
-	const value = currentDB.getDBProperty(key);
-	console.log(value);
-	console.log();
-}
-
-function helpCommand() {
-	console.log(
-		`${hl('backups <dir> [subcommand]')} Manage backups (list, backup, restore, verify, delete, purge)`
-	);
-	console.log(`${hl('clear')}                      Clear all data in the current column family`);
-	console.log(`${hl('columns')}                    List column families`);
-	console.log(`${hl('compact')}                    Compact the current column family`);
-	console.log(
-		`${hl('count')}                      Count the number of keys in the current column family`
-	);
-	console.log(`${hl('drop <column>')}              Permanently drop a column family`);
-	console.log(`${hl('exit')}                       Exit the REPL`);
-	console.log(`${hl('get <key>')}                  Get the value of a key`);
-	console.log(`${hl('help')}                       Show this help message`);
-	console.log(
-		`${hl('log [name] [file] [entry]')}  List the transaction log store names and log store files`
-	);
-	console.log(`${hl('prop <key>')}                 Get a RocksDB property (try "rocksdb.stats")`);
-	console.log(`${hl('purge-logs <name>')}          Purge transaction log files older than 3 days`);
-	console.log(`${hl('put <key> <value>')}          Set the value of a key`);
-	console.log(`${hl('query [start] [end]')}        Query a range of keys`);
-	console.log(`${hl('remove <key>')}               Delete a key`);
-	console.log(
-		`${hl('repl')}                       Open a JS sub-REPL; "db" refers to the current column family`
-	);
-	console.log(
-		`${hl('stats')}                      Show the statistics for the current column family`
-	);
-	console.log(
-		`${hl('use [column]')}               Create a new column family or switch to an existing one`
-	);
-	console.log(
-		`${hl('verify-logs [name]')}         Validate transaction log store files (all stores if no name)`
-	);
-	console.log();
-}
-
-async function logCommand(args) {
-	const [name, file, entryStr] = args;
+async function logCommand([name, file, entryStr]) {
 	const logs = currentDB.listLogs();
-	if (name) {
-		if (!logs.includes(name)) {
-			console.log(`Log store ${hl(name)} does not exist\n`);
-			return;
+	if (!name) {
+		const stores = [];
+		for (const storeName of logs) {
+			const storePath = join(currentDB.path, 'transaction_logs', storeName);
+			const files = [];
+			for (const logFile of await readdir(storePath)) {
+				if (!logFile.endsWith('.txnlog')) continue;
+				files.push({ file: logFile, size: (await stat(join(storePath, logFile))).size });
+			}
+			stores.push({ name: storeName, files });
 		}
-		if (file) {
-			const logPath = join(currentDB.path, 'transaction_logs', name, file);
-			const log = parseTransactionLog(logPath);
-			const entry = entryStr ? parseInt(entryStr) : undefined;
-			if (!isNaN(entry)) {
-				if (entry < 1 || entry > log.entries.length) {
-					console.log(`Entry ${hl(entry)} does not exist\n`);
-					return;
-				}
-				const { data } = log.entries[entry - 1];
-				console.log(`Entry ${entry} (${data.length.toLocaleString()} bytes)\n`);
-				console.log(formatHexDump(data));
-				console.log();
+		return { view: 'stores', stores };
+	}
+
+	if (!logs.includes(name)) throw new CLIError(`Log store "${name}" does not exist`);
+
+	if (!file) {
+		const logPath = join(currentDB.path, 'transaction_logs', name);
+		const files = [];
+		for (const logFile of await readdir(logPath)) {
+			if (!logFile.endsWith('.txnlog')) continue;
+			const log = parseTransactionLog(join(logPath, logFile), { skipData: true });
+			files.push({
+				file: logFile,
+				size: log.size,
+				version: log.version,
+				timestamp: log.timestamp,
+				entries: log.entries.length,
+				anomalies: log.anomalies,
+				entryAnomalyCount: log.entryAnomalyCount,
+			});
+		}
+		return { view: 'files', store: name, files };
+	}
+
+	const log = parseTransactionLog(join(currentDB.path, 'transaction_logs', name, file));
+	if (entryStr !== undefined) {
+		const entry = Number(entryStr);
+		if (!Number.isInteger(entry) || entry < 1 || entry > log.entries.length) {
+			throw new CLIError(`Entry ${entryStr} does not exist`);
+		}
+		const { data } = log.entries[entry - 1];
+		return { view: 'entry', store: name, file, entry, length: data.length, data };
+	}
+	return {
+		view: 'entries',
+		store: name,
+		file,
+		anomalies: log.anomalies,
+		entries: log.entries.map(({ timestamp, length, flags, anomalies }, i) => ({
+			entry: i + 1,
+			timestamp,
+			length,
+			flags,
+			anomalies: anomalies ?? [],
+		})),
+	};
+}
+
+function printLogResult(result) {
+	switch (result.view) {
+		case 'stores': {
+			if (result.stores.length === 0) {
+				console.log('No log stores found');
 				return;
 			}
-
-			for (const anomaly of log.anomalies) {
-				console.log(bad(`!  ${anomaly}`));
+			for (const { name, files } of result.stores) {
+				const maxlen = files.reduce((max, { file }) => Math.max(max, file.length), 0);
+				console.log(hl(name));
+				for (const { file, size } of files) {
+					console.log(`  ${file.padEnd(maxlen)} ${note(`(${formatBytes(size)})`)}`);
+				}
 			}
-			let i = 1;
-			for (const entry of log.entries) {
-				const ts =
-					Number.isFinite(entry.timestamp) && entry.timestamp > 0
-						? new Date(entry.timestamp).toISOString()
-						: String(entry.timestamp);
-				console.log(
-					`${String(i++).padStart(3)})  ${hl(ts)}  ${entry.length.toLocaleString()} bytes  ${entry.flags & 0x01 ? note('(end of transaction)') : ''}`
-				);
-				if (entry.anomalies) {
-					for (const anomaly of entry.anomalies) {
-						console.log(`     ${bad(`! ${anomaly}`)}`);
+			return;
+		}
+		case 'files': {
+			for (const log of result.files) {
+				console.log(hl(log.file));
+				console.log(`  Size      = ${hl(`${log.size.toLocaleString()} bytes`)}`);
+				console.log(`  Version   = ${hl(log.version)}`);
+				console.log(`  Timestamp = ${hl(formatTimestamp(log.timestamp))}`);
+				console.log(`  Entries   = ${hl(log.entries)}`);
+				const totalAnomalies = log.anomalies.length + log.entryAnomalyCount;
+				if (totalAnomalies > 0) {
+					console.log(`  Anomalies = ${bad(totalAnomalies)}`);
+					for (const anomaly of log.anomalies) {
+						console.log(`    ${bad(`! ${anomaly}`)}`);
+					}
+					if (log.entryAnomalyCount > 0) {
+						console.log(
+							`    ${bad(`! ${log.entryAnomalyCount} entr${log.entryAnomalyCount === 1 ? 'y has' : 'ies have'} anomalies (run "log ${result.store} ${log.file}" for details)`)}`
+						);
 					}
 				}
 			}
-			console.log();
 			return;
 		}
-
-		const logPath = join(currentDB.path, 'transaction_logs', name);
-		const logFiles = await readdir(logPath);
-		for (const logFile of logFiles) {
-			if (!logFile.endsWith('.txnlog')) continue;
-			console.log(hl(logFile));
-
-			const log = parseTransactionLog(join(logPath, logFile), { skipData: true });
-			const ts =
-				Number.isFinite(log.timestamp) && log.timestamp > 0
-					? new Date(log.timestamp).toISOString()
-					: String(log.timestamp);
-			console.log(`  Size      = ${hl(`${log.size.toLocaleString()} bytes`)}`);
-			console.log(`  Version   = ${hl(log.version)}`);
-			console.log(`  Timestamp = ${hl(ts)}`);
-			console.log(`  Entries   = ${hl(log.entries.length)}`);
-			const totalAnomalies = log.anomalies.length + log.entryAnomalyCount;
-			if (totalAnomalies > 0) {
-				console.log(`  Anomalies = ${bad(totalAnomalies)}`);
-				for (const anomaly of log.anomalies) {
-					console.log(`    ${bad(`! ${anomaly}`)}`);
-				}
-				if (log.entryAnomalyCount > 0) {
-					console.log(
-						`    ${bad(`! ${log.entryAnomalyCount} entr${log.entryAnomalyCount === 1 ? 'y has' : 'ies have'} anomalies (run "log ${name} ${logFile}" for details)`)}`
-					);
+		case 'entries': {
+			for (const anomaly of result.anomalies) {
+				console.log(bad(`!  ${anomaly}`));
+			}
+			for (const entry of result.entries) {
+				console.log(
+					`${String(entry.entry).padStart(3)})  ${hl(formatTimestamp(entry.timestamp))}  ${entry.length.toLocaleString()} bytes  ${entry.flags & 0x01 ? note('(end of transaction)') : ''}`
+				);
+				for (const anomaly of entry.anomalies) {
+					console.log(`     ${bad(`! ${anomaly}`)}`);
 				}
 			}
+			return;
 		}
-	} else if (logs.length > 0) {
-		for (const name of logs) {
-			const files = (await readdir(join(currentDB.path, 'transaction_logs', name))).filter((f) =>
-				f.endsWith('.txnlog')
-			);
-			const maxlen = files.reduce((max, file) => Math.max(max, file.length), 0);
-			console.log(hl(name));
-			for (const file of files) {
-				const { size } = await stat(join(currentDB.path, 'transaction_logs', name, file));
-				console.log(`  ${file.padEnd(maxlen)} ${note(`(${formatBytes(size)})`)}`);
-			}
-		}
-	} else {
-		console.log('No log stores found');
+		case 'entry':
+			console.log(`Entry ${result.entry} (${result.length.toLocaleString()} bytes)\n`);
+			console.log(formatHexDump(result.data));
 	}
-	console.log();
 }
 
-async function purgeLogsCommand(args) {
-	const [name] = args;
-	if (!name) {
-		console.log(`Usage: ${hl('purge-logs <name>')}\n`);
-		return;
-	}
-	const answer = await ask(`Are you sure you want to purge logs? (y/N) `);
-	if (answer !== 'y' && answer !== 'Y') {
-		console.log();
-		return;
-	}
-	const { result: removed, time } = await run(() => currentDB.purgeLogs({ name }));
-	console.log(
-		`Purged ${removed.length} log file${removed.length === 1 ? '' : 's'} ${note(`(${time}ms)`)}`
-	);
-	for (const file of removed) {
-		console.log(hl(file));
-	}
-	console.log();
+async function purgeLogsCommand([name]) {
+	if (!name) throw usageError('purge-logs <name>');
+	await confirmOrCancel('Are you sure you want to purge logs?');
+	const { result: removed, elapsedMs } = await timed(() => currentDB.purgeLogs({ name }));
+	return { removed, elapsedMs };
 }
 
-async function verifyLogsCommand(args) {
-	const [name] = args;
+async function verifyLogsCommand([name]) {
 	const logs = currentDB.listLogs();
 	if (name && !logs.includes(name)) {
-		console.log(`Log store ${hl(name)} does not exist\n`);
-		return;
+		throw new CLIError(`Log store "${name}" does not exist`);
 	}
-	if (logs.length === 0) {
-		console.log('No log stores found\n');
-		return;
-	}
-
-	let invalidStores = 0;
+	const stores = [];
 	for (const storeName of name ? [name] : logs) {
 		const storePath = join(currentDB.path, 'transaction_logs', storeName);
-		const { result, time } = await run(() => validateTransactionLogStore(storePath));
-		console.log(`${hl(storeName)}  ${result.valid ? 'OK' : bad('INVALID')} ${note(`(${time}ms)`)}`);
-		if (!result.valid) {
-			invalidStores++;
-		}
-		for (const error of result.errors) {
+		const { result, elapsedMs } = await timed(() => validateTransactionLogStore(storePath));
+		stores.push({ name: storeName, ...result, elapsedMs });
+	}
+	const invalidStores = stores.filter((store) => !store.valid).length;
+	if (invalidStores > 0 && !interactive) process.exitCode = 1;
+	return { valid: invalidStores === 0, invalidStores, stores };
+}
+
+function printVerifyLogsResult({ invalidStores, stores }) {
+	if (stores.length === 0) {
+		console.log('No log stores found');
+		return;
+	}
+	for (const store of stores) {
+		console.log(
+			`${hl(store.name)}  ${store.valid ? 'OK' : bad('INVALID')} ${note(`(${store.elapsedMs}ms)`)}`
+		);
+		for (const error of store.errors) {
 			console.log(`  ${bad(`! ${error}`)}`);
 		}
-		for (const warning of result.warnings) {
+		for (const warning of store.warnings) {
 			console.log(`  ${warn(`! ${warning}`)}`);
 		}
-		for (const file of result.files) {
+		for (const file of store.files) {
 			console.log(
 				`  ${file.file}  ${file.valid ? 'OK' : bad('INVALID')}  ${note(
 					`${file.entries.toLocaleString()} entr${file.entries === 1 ? 'y' : 'ies'}, ${formatBytes(file.size)}`
@@ -827,59 +1018,57 @@ async function verifyLogsCommand(args) {
 			`\n${bad(`${invalidStores} log store${invalidStores === 1 ? ' is' : 's are'} invalid`)}`
 		);
 	}
-	console.log();
 }
 
-async function putCommand(args) {
-	const [key, ...valueParts] = args;
-	if (!key || valueParts.length === 0) {
-		console.log(`Usage: ${hl('put <key> <value>')}\n`);
-		return;
-	}
+async function putCommand([key, ...valueParts]) {
+	if (!key || valueParts.length === 0) throw usageError('put <key> <value>');
 	let value = valueParts.join(' ');
 	if (value.startsWith('"') && value.endsWith('"')) {
 		value = value.slice(1, -1);
 	}
 	await currentDB.put(key, value);
+	return { key, value };
 }
 
-async function queryCommand(args) {
-	const startTime = Date.now();
-	let count = 0;
-	const [start, end] = args;
-	try {
-		for await (const { key } of currentDB.getRange({ start, end, values: false })) {
-			try {
-				const value = await currentDB.get(key);
-				console.log(`${str(key)} = ${inspect(value, { colors: true, depth: 10 })}`);
-			} catch (error) {
+// Each value is read with its own get() so one undecodable value is reported in place
+// rather than aborting the whole range.
+async function* queryCommand([start, end]) {
+	for await (const { key } of currentDB.getRange({ start, end, values: false })) {
+		try {
+			yield { key, value: await currentDB.get(key) };
+		} catch (error) {
+			yield { key, error: String(error) };
+		}
+	}
+}
+
+async function printQueryResult(rows) {
+	const { result: count, elapsedMs } = await timed(async () => {
+		let n = 0;
+		for await (const { key, value, error } of rows) {
+			if (error === undefined) {
+				console.log(`${str(key)} = ${inspect(value, { colors: useColors, depth: 10 })}`);
+			} else {
 				console.error(`${str(key)} = ${bad(error)}`);
 			}
-			count++;
+			n++;
 		}
-		const endTime = Date.now();
-		console.log(`\n${count} results ${note(`(${endTime - startTime}ms)`)}`);
-	} catch (err) {
-		console.log(bad(err.toString()));
-	}
-	console.log();
+		return n;
+	});
+	console.log(`\n${count} results ${note(`(${elapsedMs}ms)`)}`);
 }
 
-async function removeCommand(args) {
-	const [key] = args;
-	if (!key) {
-		console.log(`Usage: ${hl('remove <key>')}\n`);
-		return;
-	}
-	const { time } = await run(() => currentDB.remove(key));
-	console.log(`Removed ${hl(key)} ${note(`(${time}ms)`)}\n`);
+async function removeCommand([key]) {
+	if (!key) throw usageError('remove <key>');
+	const { elapsedMs } = await timed(() => currentDB.remove(key));
+	return { key, elapsedMs };
 }
 
 async function replCommand() {
 	// A non-TTY stdin can't feed the sub-REPL interactively, and input already read out
 	// of it has no defined recipient once this CLI's interface closes.
 	if (!stdin.isTTY) {
-		console.log(bad('The JS sub-REPL needs an interactive terminal; stdin is not one here.\n'));
+		console.error(bad('The JS sub-REPL needs an interactive terminal; stdin is not one here.\n'));
 		process.exit(1);
 	}
 	const history = [...rl.history];
@@ -889,137 +1078,237 @@ async function replCommand() {
 	r.on('SIGINT', () => r.close());
 	await new Promise((resolve) => r.on('exit', resolve));
 	r = null;
-	console.log();
-	rl = createRL();
+	startRL();
 	rl.history = history;
-	lineIterator = rl[Symbol.asyncIterator]();
-	rlClosed = false;
 }
 
-function statsCommand() {
-	const stats = currentDB.getStats();
-	const maxlen = Math.max(...Object.keys(stats).map((key) => key.length)) - 8;
-	for (const [key, value] of Object.entries(stats)) {
-		console.log(`${key.substring(8).padEnd(maxlen)} = ${hl(value)}`);
-	}
-	console.log();
-}
-
-async function useCommand(args) {
-	const [name] = args;
-	if (!name) {
-		currentDB = dbs.default;
-		console.log(`${hl(currentDB.name)}\n`);
+async function useCommand([name]) {
+	if (!name || name === currentDB.name) {
+		currentDB = name ? currentDB : dbs.default;
+		console.log(hl(currentDB.name));
 		return;
 	}
-	if (name === currentDB.name) {
-		console.log(`${hl(currentDB.name)}\n`);
-		return;
-	}
-
-	const columns = currentDB.columns;
 	if (!dbs[name]) {
-		if (columns.includes(name)) {
-			console.log(`Switching ${hl(currentDB.name)} => ${hl(name)}\n`);
+		if (currentDB.columns.includes(name)) {
+			console.log(`Switching ${hl(currentDB.name)} => ${hl(name)}`);
 		} else {
-			const answer = await ask(`Create new column ${hl(name)}? (y/N) `);
-			if (answer !== 'y' && answer !== 'Y') {
-				console.log();
-				return;
-			}
-			console.log(`Created ${hl(name)}\n`);
+			await confirmOrCancel(`Create new column ${hl(name)}?`);
+			console.log(`Created ${hl(name)}`);
 		}
-		dbs[name] = RocksDatabase.open(dbPath, { name, ...defaultOpenOptions });
+		dbs[name] = RocksDatabase.open(dbPath, openOptions({ name }));
 	} else {
-		console.log(`Switching ${hl(currentDB.name)} => ${hl(name)}\n`);
+		console.log(`Switching ${hl(currentDB.name)} => ${hl(name)}`);
 	}
 	currentDB = dbs[name];
 }
 
-async function main() {
-	console.log(`rocksdb.js CLI v${versions['rocksdb-js']} (RocksDB v${versions.rocksdb})`);
-
-	if (argv.help) {
-		console.log(`\nUsage: ${hl('rocksdb-js [dbpath]')}`);
-		console.log('\nOptions:');
-		console.log(`  ${hl('-h, --help')}      Show this help message`);
-		console.log(`  ${hl('-r, --readonly')}  Open the database in read-only mode`);
-		console.log(`  ${hl('-v, --version')}   Show the version information`);
-		console.log();
-		process.exit(0);
+function toJSON(_key, value) {
+	if (typeof value === 'bigint') return value.toString();
+	if (value instanceof Map) return Object.fromEntries(value);
+	if (value instanceof Set) return [...value];
+	// Binary data (keys, log entries) is hex; Buffer#toJSON has already run by this point.
+	if (ArrayBuffer.isView(value)) {
+		return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('hex');
 	}
-
-	if (argv.version) {
-		process.exit(0);
+	if (value?.type === 'Buffer' && Array.isArray(value.data)) {
+		return Buffer.from(value.data).toString('hex');
 	}
+	return value;
+}
 
+function writeJSON(stream, value) {
+	stream.write(`${JSON.stringify(value, toJSON)}\n`);
+}
+
+async function emitResult(def, result) {
+	if (argv.json) {
+		if (result?.[Symbol.asyncIterator]) {
+			// Streamed so a large range is never buffered whole.
+			let first = true;
+			stdout.write('[');
+			for await (const item of result) {
+				if (!stdout.write(`${first ? '' : ','}\n${JSON.stringify(item, toJSON)}`)) {
+					await once(stdout, 'drain');
+				}
+				first = false;
+			}
+			stdout.write(first ? ']\n' : '\n]\n');
+		} else {
+			writeJSON(stdout, result ?? null);
+		}
+		return;
+	}
+	if (def.print && result !== undefined) await def.print(result);
+}
+
+function reportError(error) {
+	const message = error instanceof CLIError ? error.message : String(error);
+	if (argv.json) {
+		writeJSON(stderr, { error: stripVTControlCharacters(message), code: error.code });
+	} else {
+		console.error(styleText('red', message, { stream: stderr }));
+	}
+}
+
+function assertAllowed(def, access) {
+	if (argv.readonly && access === 'write') {
+		throw new CLIError(
+			`"${def.name}" writes to the database and is not available in read-only mode`,
+			2
+		);
+	}
+}
+
+async function runCommand(def, args) {
+	assertAllowed(def, resolveAccess(def, args));
+	await emitResult(def, await def.run(args));
+}
+
+function printHelp() {
+	console.log(`Usage:
+  ${hl('rocksdb-js [dbpath] [options]')}                    Start the interactive REPL
+  ${hl('rocksdb-js [dbpath] <command> [args...] [options]')} Run one command and exit
+
+${hl('dbpath')} defaults to the current directory. If the first argument is a command name, the
+current directory is used; address a database directory that shares a command's name as
+${hl('./<name>')}. Put ${hl('--')} before arguments that start with "-".
+
+A one-shot command prints its result to stdout and errors to stderr, and exits 0 on
+success, 1 on failure, and 2 on a usage error. Commands that only read open the database
+read-only, so they work alongside a process that holds it open.
+
+Options:
+  ${hl('-c, --column <name>')}  Column family to use (default: "default")
+  ${hl('-h, --help')}           Show this help message
+  ${hl('    --json')}           Print results (and errors, to stderr) as JSON
+  ${hl('-r, --readonly')}       Open the database in read-only mode
+  ${hl('-v, --version')}        Show the version information
+  ${hl('-y, --yes')}            Answer "yes" to confirmation prompts; required for a
+                       destructive one-shot command when stdin is not a terminal
+
+Commands:`);
+	printCommandTable(
+		COMMANDS.map(({ name, usage, summary, replOnly }) => ({
+			command: commandSignature(name, usage),
+			summary: replOnly ? `${summary} (REPL only)` : summary,
+		}))
+	);
+	console.log(`
+Examples:
+  ${hl('rocksdb-js ./data')}                        Open the REPL on ./data
+  ${hl('rocksdb-js ./data count')}                  Count the keys in the default column family
+  ${hl('rocksdb-js ./data get user:1 --json')}      Print one value as JSON
+  ${hl('rocksdb-js ./data -c users query a m')}     Query a range of the "users" column family
+  ${hl('rocksdb-js ./data verify-logs')}            Exit non-zero if any transaction log is invalid
+  ${hl('rocksdb-js ./data backups ./bk backup')}    Create a backup in ./bk`);
+}
+
+function versionString() {
+	return `rocksdb.js CLI v${versions['rocksdb-js']} (RocksDB v${versions.rocksdb})`;
+}
+
+async function openOrExplain() {
+	try {
+		await openDatabases(argv.column);
+	} catch (error) {
+		if (!error.message?.includes('Resource temporarily unavailable')) throw error;
+		// One-shot read commands already open read-only, so the hint only helps the REPL.
+		throw new CLIError(
+			interactive
+				? `RocksDB is already open by another process; rerun with --readonly:\n  rocksdb-js --readonly ${dbPath}`
+				: 'RocksDB is already open by another process'
+		);
+	}
+}
+
+async function runOnce() {
+	const def = commandsByName.get(commandName);
+	if (!def) {
+		throw new CLIError(`Unknown command: ${commandName}\nRun "rocksdb-js --help" for usage.`, 2);
+	}
+	if (def.replOnly) {
+		throw new CLIError(`"${def.name}" is only available in the REPL`, 2);
+	}
+	const access = resolveAccess(def, commandArgs);
+	// Checked before opening: a write command must not open read-write under --readonly.
+	assertAllowed(def, access);
+	if (access !== 'none') {
+		openReadOnly = access === 'read';
+		if (!(await ensureDatabaseExists())) throw new CLIError('Cancelled');
+		await openOrExplain();
+	}
+	await runCommand(def, commandArgs);
+}
+
+async function runREPL() {
+	startRL();
+	console.log(versionString());
 	console.log();
 	if (argv.readonly) {
 		console.log(`Mode:    ${warn('READ-ONLY')}`);
 	}
 	console.log(`Path:    ${hl(dbPath)}`);
 
+	if (!existsSync(join(dbPath, 'CURRENT'))) console.log();
+	if (!(await ensureDatabaseExists())) return;
+	await openOrExplain();
+
+	console.log(wrapColumns(currentDB.columns) + '\n');
+	console.log(`Type "help" for more information.`);
+
+	while (true) {
+		const raw = await ask('> ');
+		if (raw === null) break;
+		const line = raw.trim().split(/[ \t]+/);
+		const command = line[0];
+		if (!command) continue;
+		const def = commandsByName.get(command);
+		console.log();
+		if (def) {
+			try {
+				await runCommand(def, line.slice(1));
+			} catch (error) {
+				reportError(error);
+			}
+		} else {
+			console.error(bad(`Unknown command: ${command}`));
+		}
+		console.log();
+	}
+}
+
+async function main() {
+	if (argv.help) {
+		console.log(`${versionString()}\n`);
+		printHelp();
+		return;
+	}
+	if (argv.version) {
+		if (argv.json) {
+			writeJSON(stdout, { 'rocksdb-js': versions['rocksdb-js'], rocksdb: versions.rocksdb });
+		} else {
+			console.log(versionString());
+		}
+		return;
+	}
+
+	// `rocksdb-js db query | head` closes the pipe early; that is not a failure.
+	stdout.on('error', (error) => {
+		if (error.code !== 'EPIPE') throw error;
+		process.exit(process.exitCode ?? 0);
+	});
+
 	try {
-		if (!existsSync(join(dbPath, 'CURRENT'))) {
-			console.log();
-			let answer = await ask('RocksDB database does not exist, create it? (y/N) ');
-			if (answer !== 'y' && answer !== 'Y') {
-				process.exit(0);
-			}
-			await mkdir(dbPath, { recursive: true });
-
-			const count = await readdir(dbPath);
-			if (count.length > 0) {
-				answer = await ask('Directory not empty, are you sure you want to continue? (y/N) ');
-				if (answer !== 'y' && answer !== 'Y') {
-					process.exit(0);
-				}
-			}
-		}
-
-		currentDB = RocksDatabase.open(dbPath, { ...defaultOpenOptions });
-		dbs[currentDB.name] = currentDB;
-
-		console.log(wrapColumns(currentDB.columns) + '\n');
-		console.log(`Type "help" for more information.`);
-
-		while (true) {
-			const raw = await ask('> ');
-			if (raw === null) break;
-			const line = raw.trim().split(/[ \t]+/);
-			const command = line[0];
-			if (!command) continue;
-			const commandFn = COMMANDS[command];
-			console.log();
-			if (commandFn) {
-				try {
-					await commandFn(line.slice(1));
-				} catch (error) {
-					console.error(bad(error));
-				}
-			} else {
-				console.log(`Unknown command: ${command}\n`);
-			}
-		}
+		await (interactive ? runREPL() : runOnce());
 	} catch (error) {
-		if (error.message.includes('Resource temporarily unavailable')) {
-			console.log();
-			console.error(
-				bad('Error: RocksDB is already open by another process, rerun with the read-only flag:\n')
-			);
-			console.log(hl(`  rocksdb-js --readonly ${dbPath}\n`));
-			process.exit(1);
-		}
 		if (error.code !== 'ABORT_ERR') {
-			console.error(bad(error));
-			process.exit(1);
+			reportError(error);
+			process.exitCode = error.exitCode ?? 1;
 		}
 	} finally {
 		r?.close();
-		for (const db of Object.values(dbs)) {
-			db?.close();
-		}
-		rl.close();
+		closeAllDatabases();
+		rl?.close();
 	}
 }
 

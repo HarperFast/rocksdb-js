@@ -3286,43 +3286,79 @@ Extends `RangeOptions`.
 
 ## CLI
 
-The `rocksdb-js` CLI is a command line interface for interacting with RocksDB databases.
+The `rocksdb-js` CLI is a command line interface for interacting with RocksDB databases. With no
+command it starts an interactive REPL; with a command it runs that one command and exits.
 
 ```bash
-rocksdb-js [dbpath]
+rocksdb-js [dbpath] [options]                   # interactive REPL
+rocksdb-js [dbpath] <command> [args...] [options] # run one command and exit
 ```
+
+`dbpath` defaults to the current directory. If the first argument is a command name, the current
+directory is used, so `rocksdb-js count` counts the keys of the database in the current directory;
+address a database directory that shares a command's name as `./<name>`. Put `--` before arguments
+that start with `-` (for example `rocksdb-js ./data get -- -1`).
 
 Options:
 
-- `-h, --help` Show this help message
+- `-c, --column <name>` Column family to use (default: `default`)
+- `-h, --help` Show the help message
+- `--json` Print results as JSON to stdout, and errors as `{ "error": "..." }` to stderr
 - `-r, --readonly` Open the database in read-only mode
 - `-v, --version` Show the version information
+- `-y, --yes` Answer "yes" to confirmation prompts
 
-Available commands:
+A one-shot command:
 
-- `backups <dir> [subcommand]` Manage database backups; with no subcommand or `ls`/`list`, lists the backups in
-  `<dir>`. Subcommands: `backup` (create a backup of the open database), `restore <backup-id>`
-  (restore into the open database after confirmation; unavailable in read-only mode),
-  `verify <backup-id>` (checksum verification, including the backup's transaction log snapshot),
-  `delete <backup-id>`, and `purge <keep-count>` (delete all but the newest backups). `delete` and
-  `purge` report the recovered disk space.
+- prints its result to stdout and errors to stderr;
+- exits `0` on success, `1` on failure (including `get` of a missing key and `verify-logs` finding an
+  invalid store), and `2` on a usage error;
+- opens the database read-only when the command only reads, so it works alongside a process that
+  holds the database open, and read-write only for commands that write;
+- never creates a missing database for a read command, and asks before creating one, a column family,
+  or before destructive work (`clear`, `purge-logs`, `backups ... restore`, dropping `default`). When
+  stdin is not a terminal there is nobody to ask, so pass `--yes`.
+
+```bash
+rocksdb-js ./data count
+rocksdb-js ./data get user:1 --json
+rocksdb-js ./data -c users query a m --json | jq '.[].key'
+rocksdb-js ./data verify-logs || echo "transaction logs are invalid"
+rocksdb-js ./data backups ./backups backup
+rocksdb-js ./data clear --yes
+```
+
+`--json` results are the command's data: `get` prints the value, `query` an array of `{ key, value }`
+(streamed, so large ranges are not buffered), `columns` an array of names, `count` `{ count }`, and
+the other commands an object describing what they did. Binary data is hex encoded.
+
+The REPL and one-shot mode share one command table. Available commands:
+
+- `backups <dir> [subcommand] [arg]` Manage database backups; with no subcommand or `ls`/`list`,
+  lists the backups in `<dir>`. Subcommands: `backup` (create a backup of the open database),
+  `restore <backup-id>` (restore into the database after confirmation; unavailable in read-only
+  mode), `verify <backup-id>` (checksum verification, including the backup's transaction log
+  snapshot), `delete <backup-id>`, and `purge <keep-count>` (delete all but the newest backups).
+  `delete` and `purge` report the recovered disk space. `list`, `verify`, `delete` and `purge` only
+  need the backup directory, not a database.
 - `clear` Clear all data in the current column family
 - `columns` List column families
 - `compact` Compact the current column family
 - `count` Count the number of keys in the current column family
 - `drop <column>` Permanently drop a column family
-- `exit` Exit the REPL
+- `exit` Exit the REPL (REPL only)
 - `get <key>` Get the value of a key
-- `help` Show this help message
+- `help` Show the help message
 - `log [name] [file] [entry]` List the transaction log store names and log store files
 - `prop <key>` Get a RocksDB property (try "rocksdb.stats")
 - `purge-logs <name>` Purge transaction log files older than 3 days
 - `put <key> <value>` Set the value of a key
 - `query [start] [end]` Query a range of keys
 - `remove <key>` Delete a key
-- `repl` Open a JS sub-REPL; "db" refers to the current column family
+- `repl` Open a JS sub-REPL; "db" refers to the current column family (REPL only)
 - `stats` Show the statistics for the current column family
-- `use [column]` Create a new column family or switch to an existing one
+- `use [column]` Create a new column family or switch to an existing one (REPL only; use `--column`
+  in one-shot mode)
 - `verify-logs [name]` Validate the transaction log store files (all stores if no name)
 
 ## Development
