@@ -956,11 +956,20 @@ takes the single-key path. `benchmark/multi-get.mts` compares the two on your ow
 
 Synchronous version of `getMany()`.
 
-### `db.getManyBinary(keys: Key[], options?): MaybePromise<(Buffer | undefined)[]>`
+### `db.getManyBinary(keys: Key[], options?: { transaction?: Transaction }): MaybePromise<(Buffer | undefined)[]>`
 
 Like `getMany()`, but returns the raw value buffers without decoding. The buffers of one batch share
-a single allocation and stay valid after later reads. `db.getManyBinarySync()` is the synchronous
-version.
+a single allocation and stay valid after later reads.
+
+### `db.getManyBinarySync(keys: Key[], options?: { transaction?: Transaction }): (Buffer | undefined)[]`
+
+Synchronous version of `getManyBinary()`: reads every key on the calling thread, including any not
+in the memtable or block cache, and returns the raw value buffers in key order, with `undefined` for
+a key that does not exist.
+
+```typescript
+const [product, variant] = db.getManyBinarySync(['product:1', 'variant:7']);
+```
 
 ### `db.getEstimatedKeyCount(): number`
 
