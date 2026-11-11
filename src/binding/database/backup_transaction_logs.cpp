@@ -128,7 +128,8 @@ static rocksdb::Status copyPrefixWithMtime(
 }
 
 std::string backupInlineContents(
-	const NamedTransactionLogBackupEntry& named, const std::set<std::string>& storesMissingSegments) {
+	const NamedTransactionLogBackupEntry& named, const std::set<std::string>& storesMissingSegments
+) {
 	TransactionLogPurgeRecord record;
 	if (named.file.relativeName != TRANSACTION_LOG_PURGE_RECORD_NAME ||
 		!storesMissingSegments.contains(named.storeName) ||
@@ -316,7 +317,8 @@ rocksdb::Status backupTransactionLogsToDir(
 		std::filesystem::rename(stagingDir, destBaseDir, ec);
 		if (ec) {
 			status = rocksdb::Status::IOError(
-				"Failed to publish transaction log snapshot: " + ec.message(), destBaseDir.string());
+				"Failed to publish transaction log snapshot: " + ec.message(), destBaseDir.string()
+			);
 		} else if (sync) {
 			// The rename is directory metadata: persist it, or a crash could roll
 			// the published snapshot back to its (invisible) staging name. The

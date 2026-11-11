@@ -151,7 +151,7 @@ inline bool vtVersionIsSettled(
 
 	uint64_t oldestSnapshotSec = 0;
 	bool hasOpenSnapshot = db->GetIntProperty(cf, "rocksdb.oldest-snapshot-time", &oldestSnapshotSec) &&
-	                       oldestSnapshotSec != 0;
+		oldestSnapshotSec != 0;
 	if (!hasOpenSnapshot) return true;
 
 	double versionMs;
@@ -161,7 +161,7 @@ inline bool vtVersionIsSettled(
 	uint64_t oldestSnapshotSeq = 0;
 	uint64_t latestSeq = db->GetLatestSequenceNumber();
 	return !db->GetIntProperty(cf, "rocksdb.oldest-snapshot-sequence", &oldestSnapshotSeq) ||
-	       oldestSnapshotSeq >= latestSeq;
+		oldestSnapshotSeq >= latestSeq;
 }
 
 inline void vtPopulateIfSettled(
@@ -185,7 +185,7 @@ inline void vtPopulateIfSettled(
 
 	uint64_t version;
 	if (readSnapshot == nullptr ||
-	    readSnapshot->GetSequenceNumber() >= db->GetLatestSequenceNumber()) {
+		readSnapshot->GetSequenceNumber() >= db->GetLatestSequenceNumber()) {
 		// The value the caller just read is provably the latest committed version
 		// (read with no snapshot, or at a snapshot with nothing committed since),
 		// so trust it directly and skip the extra latest read.
@@ -356,8 +356,7 @@ struct AsyncClearState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		const char* failureMsg = "Clear failed"
 	) :
 		BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle),
-		failureMsg(failureMsg)
-	{}
+		failureMsg(failureMsg) {}
 };
 
 /**
@@ -370,10 +369,8 @@ struct AsyncCompactState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	bool hasEnd = false;
 	bool bottommost = false;
 
-	AsyncCompactState(napi_env env, std::shared_ptr<DBHandle> handle)
-		: BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle) {}
+	AsyncCompactState(napi_env env, std::shared_ptr<DBHandle> handle) : BaseAsyncState<std::shared_ptr<DBHandle>>(env, handle) {}
 };
-
 
 /**
  * State for the `Flush` async work.
@@ -394,7 +391,7 @@ struct AsyncFlushState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
  * State for the `Get` async work. This is used for both `DBHandle` and
  * `TransactionHandle`.
  */
-template<typename T>
+template <typename T>
 struct AsyncGetState final : BaseAsyncState<T> {
 	AsyncGetState(
 		napi_env env,
@@ -436,7 +433,7 @@ struct AsyncGetState final : BaseAsyncState<T> {
 	bool vtVersionSettled = false;
 };
 
-template<typename T>
+template <typename T>
 void vtCheckAsyncGet(
 	AsyncGetState<T>* state,
 	rocksdb::DB* db,
@@ -453,7 +450,7 @@ void vtCheckAsyncGet(
 	state->vtVersionSettled = state->vtPublish && vtVersionIsSettled(db, cf, populateVersion);
 }
 
-template<typename T>
+template <typename T>
 void resolveGetResult(
 	napi_env env,
 	const char* errorMsg,
@@ -467,8 +464,7 @@ void resolveGetResult(
 		if (state->status.ok() && state->vtSlot && !VerificationTable::valueVersionIsNotUnique(valueSlice)) {
 			uint64_t extracted = VerificationTable::extractVersionFromValue(valueSlice);
 			const uint64_t populateVersion = state->vtLatest.read ? state->vtLatest.latestVersion : extracted;
-			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion
-					&& !state->vtLatest.notUnique) {
+			if (state->hasExpectedVersion && extracted != 0 && extracted == state->expectedVersion && !state->vtLatest.notUnique) {
 				// Soft miss: value still carries the expected version — signal FRESH.
 				// Conditional CAS from the value observed before the read (no-op if
 				// a write cycle intervened) so we never publish a superseded version.
@@ -480,8 +476,7 @@ void resolveGetResult(
 				state->callResolve(freshResult);
 				return;
 			}
-			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0
-					&& !state->vtLatest.notUnique && state->vtVersionSettled) {
+			if ((state->wantsPopulate || state->hasExpectedVersion) && extracted != 0 && !state->vtLatest.notUnique && state->vtVersionSettled) {
 				VerificationTable::populateVersionIfUnchanged(state->vtSlot, state->vtObserved, populateVersion);
 			}
 		}

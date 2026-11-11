@@ -375,7 +375,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * implementation-dependent and are assigned lazily with a default of 0
 	 * causing collisions in the transactions map.
 	 */
-	std::atomic<uint64_t> nextTransactionId{1};
+	std::atomic<uint64_t> nextTransactionId{ 1 };
 
 	/**
 	 * Mutex to protect the transactions map and closables set. When both are
@@ -406,7 +406,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * this descriptor should not be used, and it should create a new
 	 * descriptor.
 	 */
-	std::atomic<bool> closing{false};
+	std::atomic<bool> closing{ false };
 	// finishClose() can be retried after a quarantined failure. These guards
 	// prevent its one-shot stages from running twice while later idempotent
 	// cleanup resumes from the failed point.
@@ -454,13 +454,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * `finishClose()` -- for a single descriptor those are equivalent, and the
 	 * batch-claim case in (1) is what makes this the right home.
 	 */
-	std::atomic<bool> compactCancelRequested{false};
+	std::atomic<bool> compactCancelRequested{ false };
 
 	/**
 	 * Counter tracking in-flight database operations. close() uses
 	 * atomic::wait() to block until this reaches zero.
 	 */
-	std::atomic<uint32_t> operationsInFlight{0};
+	std::atomic<uint32_t> operationsInFlight{ 0 };
 
 	/**
 	 * Mutex to prevent concurrent compaction operations.
@@ -545,8 +545,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * down the log lane before the worker it feeds; finishClose() shuts both
 	 * down explicitly in that order first.
 	 */
-	CommitWorker commitWorker{"rocksdb-commit"};
-	CommitWorker logWorker{"rocksdb-txnlog"};
+	CommitWorker commitWorker{ "rocksdb-commit" };
+	CommitWorker logWorker{ "rocksdb-txnlog" };
 
 	/**
 	 * Per-env commit-completion plumbing. The commit thread is shared across
@@ -666,7 +666,8 @@ private:
 
 public:
 	static std::shared_ptr<DBDescriptor> open(
-		const std::string& path, const std::string& identityPath, const DBOptions& options);
+		const std::string& path, const std::string& identityPath, const DBOptions& options
+	);
 	~DBDescriptor();
 
 	void close();
@@ -1020,15 +1021,14 @@ struct LockCallbackCompletionData final {
 	 * Flag indicating resolve/reject callback has been called and prevent
 	 * the callback from being called again.
 	 */
-	std::atomic<bool> completed{false};
+	std::atomic<bool> completed{ false };
 };
 
 /**
  * Holds a threadsafe callback and its associated deferred promise (if any).
  */
 struct LockCallback final {
-	LockCallback(napi_threadsafe_function callback, napi_env env, std::shared_ptr<LockCallbackCompletionData> completion)
-		: callback(callback), completion(std::move(completion)), env(env) {}
+	LockCallback(napi_threadsafe_function callback, napi_env env, std::shared_ptr<LockCallbackCompletionData> completion) : callback(callback), completion(std::move(completion)), env(env) {}
 
 	napi_threadsafe_function callback;
 	std::shared_ptr<LockCallbackCompletionData> completion;
@@ -1047,8 +1047,7 @@ struct LockCallback final {
  * executed at the same time.
  */
 struct LockHandle final {
-	LockHandle(std::weak_ptr<DBHandle> owner, napi_env env)
-		: owner(owner), env(env) {}
+	LockHandle(std::weak_ptr<DBHandle> owner, napi_env env) : owner(owner), env(env) {}
 
 	~LockHandle() {
 		while (!threadsafeCallbacks.empty()) {
@@ -1183,8 +1182,8 @@ struct ColumnFamilyDescriptor final {
 	 * A count rather than a parity bit, so two overlapping clears never read
 	 * as none.
 	 */
-	std::atomic<uint64_t> clearEpoch{0};
-	static constexpr uint64_t CLEAR_EPOCH_FINISHED = uint64_t{1} << 32;
+	std::atomic<uint64_t> clearEpoch{ 0 };
+	static constexpr uint64_t CLEAR_EPOCH_FINISHED = uint64_t{ 1 } << 32;
 	static constexpr uint64_t CLEAR_EPOCH_RUNNING = CLEAR_EPOCH_FINISHED - 1;
 
 	/**
@@ -1209,7 +1208,7 @@ struct ColumnFamilyDescriptor final {
 	const int64_t maxWriteBufferSizeToMaintain;
 
 	// Forces a persist retry after SetOptions changes memory but not OPTIONS.
-	std::atomic<bool> compressionPersistDirty{false};
+	std::atomic<bool> compressionPersistDirty{ false };
 
 	/**
 	 * Verification-table participation (AGENTS invariant 39). Sticky: slots
@@ -1219,15 +1218,15 @@ struct ColumnFamilyDescriptor final {
 	 */
 	bool verificationTable = false;
 
-	std::atomic<uint32_t> verifyingHandles{0};
+	std::atomic<uint32_t> verifyingHandles{ 0 };
 
-	std::atomic<uint32_t> nonVerifyingHandles{0};
+	std::atomic<uint32_t> nonVerifyingHandles{ 0 };
 
 	/**
 	 * Highest transaction id that may hold a write staged through a detached
 	 * non-participating handle; 0 until one detaches.
 	 */
-	std::atomic<uint64_t> nonVerifyingTransactionWatermark{0};
+	std::atomic<uint64_t> nonVerifyingTransactionWatermark{ 0 };
 
 	ColumnFamilyDescriptor(
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,

@@ -91,8 +91,8 @@ TEST(ColumnFamilyLifetime, ReclaimIsClaimedExactlyOnceUntilUnclaimed) {
 TEST(ColumnFamilyLifetime, ConcurrentAdmittersAndRetirerAgreeOnOneOwner) {
 	for (int round = 0; round < 200; round++) {
 		ColumnFamilyLifetime lifetime;
-		std::atomic<int> owners{0};
-		std::atomic<int> start{0};
+		std::atomic<int> owners{ 0 };
+		std::atomic<int> start{ 0 };
 		auto claimDrop = [&]() {
 			if (lifetime.claimReclaim()) {
 				owners.fetch_add(1);

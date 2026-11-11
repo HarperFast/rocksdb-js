@@ -560,7 +560,8 @@ TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures)
 	EXPECT_EQ(badVersion.version, TRANSACTION_LOG_FORMAT_VERSION);
 	EXPECT_THROW(checkTransactionLogSegmentVersion(badVersionPath), TransactionLogVersionException);
 	EXPECT_THROW(
-		rocksdb_js::scanTransactionLogForFloor(badVersionPath, 0, 0), TransactionLogVersionException);
+		rocksdb_js::scanTransactionLogForFloor(badVersionPath, 0, 0), TransactionLogVersionException
+	);
 	EXPECT_FALSE(checkTransactionLogSegmentVersion(badTokenPath));
 	EXPECT_FALSE(checkTransactionLogSegmentVersion(tooSmallPath));
 
@@ -573,7 +574,7 @@ TEST(TransactionLogFileOpen, ClassifiesMalformedHeadersSeparatelyFromIoFailures)
 	// A short header is malformed, as open() classifies it, even when its version byte is newer.
 	auto shortNewerPath = dir / "7.txnlog";
 	{
-		char bytes[5] = {0, 0, 0, 0, 2};
+		char bytes[5] = { 0, 0, 0, 0, 2 };
 		rocksdb_js::writeUint32BE(bytes, TRANSACTION_LOG_TOKEN);
 		std::ofstream(shortNewerPath, std::ios::binary).write(bytes, sizeof(bytes));
 	}
@@ -600,7 +601,8 @@ TEST(TransactionLogFileOpen, WriteDoesNotRotatePastANewerFormatSegment) {
 		std::string payload = "entry";
 		rocksdb_js::TransactionLogEntryBatch batch(1770000000001.0);
 		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())
+		));
 		EXPECT_THROW(store.writeBatch(batch, position), TransactionLogVersionException);
 		store.close();
 	}

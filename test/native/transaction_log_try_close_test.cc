@@ -19,7 +19,8 @@ std::filesystem::path uniqueTryClosePath() {
 
 std::unique_ptr<rocksdb_js::TransactionLogStore> openStore(const std::filesystem::path& storePath) {
 	return std::make_unique<rocksdb_js::TransactionLogStore>(
-		"store", storePath, 0, std::chrono::milliseconds(0), 0);
+		"store", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 }
 
 // Mirrors TransactionHandle::close() for a transaction that bound but never wrote.
@@ -34,7 +35,8 @@ rocksdb_js::LogPosition writeUncommitted(rocksdb_js::TransactionLogStore& store)
 	std::string payload = "not yet committed";
 	rocksdb_js::TransactionLogEntryBatch batch(1770000000001.0);
 	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())
+	));
 	rocksdb_js::LogPosition position;
 	store.writeBatch(batch, position);
 	return position;

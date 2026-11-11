@@ -9,17 +9,17 @@
 namespace rocksdb_js {
 
 // Iterator flags (bitmask) passed from JS to the iterator constructor
-#define ITERATOR_REVERSE_FLAG                    0x01
-#define ITERATOR_INCLUSIVE_END_FLAG              0x02
-#define ITERATOR_EXCLUSIVE_START_FLAG            0x04
-#define ITERATOR_INCLUDE_VALUES_FLAG             0x08
-#define ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG  0x10
+#define ITERATOR_REVERSE_FLAG 0x01
+#define ITERATOR_INCLUSIVE_END_FLAG 0x02
+#define ITERATOR_EXCLUSIVE_START_FLAG 0x04
+#define ITERATOR_INCLUDE_VALUES_FLAG 0x08
+#define ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG 0x10
 // Set by JS when `context` (argv[0]) is a NativeTransaction instance.
 // When unset, `context` is treated as a NativeDatabase instance. The native
 // constructor relies on this flag to skip the expensive
 // napi_get_named_property + napi_instanceof type checks.
-#define ITERATOR_CONTEXT_IS_TRANSACTION_FLAG     0x20
-#define ITERATOR_HAS_TRANSACTION_ID_FLAG         0x40
+#define ITERATOR_CONTEXT_IS_TRANSACTION_FLAG 0x20
+#define ITERATOR_HAS_TRANSACTION_ID_FLAG 0x40
 
 // Iterator Next() return signals
 #define ITERATOR_RESULT_DONE 0

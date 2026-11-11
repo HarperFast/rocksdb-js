@@ -47,8 +47,8 @@ struct DBKey {
 struct DBKeyHash {
 	size_t operator()(const DBKey& key) const {
 		return std::hash<std::string>()(key.path) ^
-		       std::hash<bool>()(key.readOnly) ^
-		       (std::hash<std::string>()(key.secondaryPath) << 1);
+			std::hash<bool>()(key.readOnly) ^
+			(std::hash<std::string>()(key.secondaryPath) << 1);
 	}
 };
 
@@ -57,7 +57,7 @@ struct DBKeyHash {
  * close paths must use this rather than hand-building a partial key.
  */
 inline DBKey descriptorKey(const DBDescriptor& descriptor) {
-	return DBKey{descriptor.identityPath, descriptor.readOnly, descriptor.secondaryPath};
+	return DBKey{ descriptor.identityPath, descriptor.readOnly, descriptor.secondaryPath };
 }
 
 /**
@@ -89,8 +89,7 @@ struct DBRegistryEntry final {
 	// Default constructor
 	DBRegistryEntry() : condition(std::make_shared<std::condition_variable>()) {}
 
-	DBRegistryEntry(std::shared_ptr<DBDescriptor> desc)
-		: descriptor(std::move(desc)), condition(std::make_shared<std::condition_variable>()) {}
+	DBRegistryEntry(std::shared_ptr<DBDescriptor> desc) : descriptor(std::move(desc)), condition(std::make_shared<std::condition_variable>()) {}
 };
 
 /**

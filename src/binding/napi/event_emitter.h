@@ -133,12 +133,11 @@ struct ListenerCallback final {
 	 */
 	bool hasOwner;
 
-	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<void> owner, bool hasOwner)
-		: env(env),
-		  threadsafeCallback(nullptr),
-		  callbackRef(callbackRef),
-		  owner(std::move(owner)),
-		  hasOwner(hasOwner) {}
+	ListenerCallback(napi_env env, napi_ref callbackRef, std::weak_ptr<void> owner, bool hasOwner) : env(env),
+																									 threadsafeCallback(nullptr),
+																									 callbackRef(callbackRef),
+																									 owner(std::move(owner)),
+																									 hasOwner(hasOwner) {}
 };
 
 /**
@@ -288,7 +287,7 @@ private:
 	 * the map) but read without the lock by `hasListeners` / `notify` for the
 	 * lock-free fast path. Atomic to make those unlocked reads well-defined.
 	 */
-	std::atomic<size_t> listenerCount{0};
+	std::atomic<size_t> listenerCount{ 0 };
 };
 
 } // namespace rocksdb_js

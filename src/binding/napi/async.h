@@ -15,7 +15,7 @@
 
 namespace rocksdb_js {
 
-template<typename T>
+template <typename T>
 struct BaseAsyncState {
 	napi_env env;
 	T handle;
@@ -24,7 +24,7 @@ struct BaseAsyncState {
 	napi_ref rejectRef;
 	rocksdb::Status status;
 
-	std::atomic<bool> completed{false};
+	std::atomic<bool> completed{ false };
 
 	BaseAsyncState(
 		napi_env env,
@@ -136,8 +136,8 @@ struct BaseAsyncState {
 };
 
 struct AsyncWorkHandle {
-	std::atomic<bool> cancelled{false};
-	std::atomic<int32_t> activeAsyncWorkCount{0};
+	std::atomic<bool> cancelled{ false };
+	std::atomic<int32_t> activeAsyncWorkCount{ 0 };
 	std::mutex waitMutex;
 	std::condition_variable asyncWorkComplete;
 
@@ -177,7 +177,11 @@ struct AsyncWorkHandle {
 		this->cancelled.store(true);
 	}
 
-	enum class IdleCancel { Cancelled, AlreadyCancelled, Busy };
+	enum class IdleCancel {
+		Cancelled,
+		AlreadyCancelled,
+		Busy
+	};
 
 	/**
 	 * Publishes cancellation only when no work is admitted. Deciding both under
@@ -244,7 +248,7 @@ struct AsyncWorkHandle {
  * `state`, and returns false — the caller must return to JS immediately
  * without dereferencing any native state `state` was set up to use.
  */
-template<typename State>
+template <typename State>
 bool admitAsyncWorkOrReject(napi_env env, AsyncWorkHandle* handle, State* state, const char* message) {
 	if (handle->registerAsyncWork()) {
 		return true;
@@ -296,7 +300,7 @@ bool admitAsyncWorkOrReject(napi_env env, AsyncWorkHandle* handle, State* state,
  * with `registerWork` false) — otherwise `signalExecuteCompleted()` would
  * unregister a claim that was never taken, underflowing the count.
  */
-template<typename State>
+template <typename State>
 bool queueAsyncWorkOrReject(napi_env env, State* state, const char* message, bool admitted = true) {
 	if (::napi_queue_async_work(env, state->asyncWork) == napi_ok) {
 		return true;

@@ -53,7 +53,7 @@ struct ScanReader {
 			return nonzeroEndValue;
 		}
 		std::vector<char> tail(RESYNC_WINDOW);
-		for (uint32_t end = fileSize; end > 0; ) {
+		for (uint32_t end = fileSize; end > 0;) {
 			uint32_t len = std::min(RESYNC_WINDOW, end);
 			readExact(end - len, tail.data(), len);
 			for (uint32_t i = len; i > 0; --i) {
@@ -92,7 +92,7 @@ struct ScanReader {
 		if (window.size() < RESYNC_WINDOW) {
 			window.resize(RESYNC_WINDOW);
 		}
-		for (uint32_t at = from; at < fileSize; ) {
+		for (uint32_t at = from; at < fileSize;) {
 			uint32_t chunk = std::min(RESYNC_WINDOW, fileSize - at);
 			readExact(at, window.data(), chunk);
 			windowStart = at;
@@ -197,8 +197,7 @@ uint32_t findFramingResumeOffset(
 } // namespace
 
 uint32_t findFramingResumeOffset(
-	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from,
-	bool endIsWrittenExtent
+	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from, bool endIsWrittenExtent
 ) {
 	if (from == 0 || from >= fileSize) {
 		return 0;
@@ -263,8 +262,9 @@ RecoveryScan scanTransactionLogForRecovery(
 					return terminate(RecoveryScan::Kind::Clean, pos);
 				}
 				return scan(source.tailIsAllZero(pos)
-					? RecoveryScan::Kind::Clean
-					: RecoveryScan::Kind::MidFileCorruption, pos);
+						? RecoveryScan::Kind::Clean
+						: RecoveryScan::Kind::MidFileCorruption,
+					pos);
 			}
 			uint32_t length = readUint32BE(header + 8);
 			if (length == 0 ||
@@ -348,7 +348,8 @@ uint32_t findFramingResumeOffset(
 	const char* data, uint32_t fileSize, uint32_t from, bool endIsWrittenExtent
 ) {
 	return findFramingResumeOffset(
-		fileSize, readFromBuffer, const_cast<char*>(data), from, endIsWrittenExtent);
+		fileSize, readFromBuffer, const_cast<char*>(data), from, endIsWrittenExtent
+	);
 }
 
 namespace {
@@ -396,7 +397,8 @@ RecoveryScan scanTransactionLogForFloor(
 	if (retiredAppendBoundary > 0) {
 		if (retiredAppendBoundary > extent) {
 			throw TransactionLogAppendBoundaryException(
-				"Transaction log append boundary exceeds physical extent: " + path.string());
+				"Transaction log append boundary exceeds physical extent: " + path.string()
+			);
 		}
 		extent = retiredAppendBoundary;
 	}
@@ -422,7 +424,8 @@ RecoveryScan scanTransactionLogForFloor(
 	}
 	if (version != TRANSACTION_LOG_FORMAT_VERSION) {
 		throw TransactionLogFormatException(
-			"Invalid transaction log file version " + std::to_string(version) + ": " + path.string());
+			"Invalid transaction log file version " + std::to_string(version) + ": " + path.string()
+		);
 	}
 
 	auto scan = scanTransactionLogForRecovery(extent, readFromStream, &input, plausibleBound,
@@ -433,8 +436,7 @@ RecoveryScan scanTransactionLogForFloor(
 	}
 	uint32_t remaining = extent - scan.validEnd;
 	if (scan.kind == RecoveryScan::Kind::TruncateTail &&
-		remaining > 0 && remaining < TRANSACTION_LOG_ENTRY_HEADER_SIZE
-	) {
+		remaining > 0 && remaining < TRANSACTION_LOG_ENTRY_HEADER_SIZE) {
 		// Zeros here are the end-of-entries marker of a Windows segment padded to
 		// its mapped size, not a torn write; a torn-tail warning about one would be
 		// a warning about a healthy file.

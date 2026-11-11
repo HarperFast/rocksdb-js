@@ -61,7 +61,8 @@ napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, nullptr, &jsThis, nullptr));
 	bool isReadableExtentBuffer = false;
 	napi_status tagStatus = ::napi_check_object_type_tag(
-		env, jsThis, &READABLE_EXTENT_BUFFER_TAG, &isReadableExtentBuffer);
+		env, jsThis, &READABLE_EXTENT_BUFFER_TAG, &isReadableExtentBuffer
+	);
 	if (tagStatus != napi_ok || !isReadableExtentBuffer) {
 		::napi_throw_type_error(env, nullptr, "readableExtent getter called on an incompatible receiver");
 		return nullptr;
@@ -75,7 +76,8 @@ napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_create_uint32(
 		env,
 		(*memoryMapHandle)->readableExtent.load(std::memory_order_acquire),
-		&result));
+		&result
+	));
 	return result;
 }
 
@@ -294,7 +296,7 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 		return nullptr;
 	}
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_double(env, (double) fileSize, &result));
+	NAPI_STATUS_THROWS(::napi_create_double(env, (double)fileSize, &result));
 	return result;
 }
 
@@ -407,7 +409,8 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 			delete static_cast<std::shared_ptr<MemoryMap>*>(data);
 		},
 		nullptr,
-		&readableExtentExternal));
+		&readableExtentExternal
+	));
 	readableExtentHandle.release();
 	napi_property_descriptor readableExtentProperties[] = {
 		{ READABLE_EXTENT_HANDLE, nullptr, nullptr, nullptr,
@@ -418,7 +421,8 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	NAPI_STATUS_THROWS(::napi_define_properties(
 		env, result,
 		sizeof(readableExtentProperties) / sizeof(napi_property_descriptor),
-		readableExtentProperties));
+		readableExtentProperties
+	));
 
 	// at this point, the transaction log file and the external buffer have a ref to the memory map
 

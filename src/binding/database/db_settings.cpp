@@ -59,7 +59,7 @@ bool setLiveFlushPolicy(
 /**
  * The constructor for the DBSettings class.
  */
-DBSettings::DBSettings():
+DBSettings::DBSettings() :
 	blockCacheSize(32 * 1024 * 1024), // 32MB (RocksDB default)
 	blockCache(nullptr),
 	occLockBucketCount(1 << 16),
@@ -77,8 +77,7 @@ DBSettings::DBSettings():
 	lifecycleWaitSeconds(30),
 	verificationTableEntries(128 * 1024), // 128K slots = 1 MB at 8 bytes per slot
 	verificationTableSeed(generateSeed()),
-	verificationTable(nullptr)
-{}
+	verificationTable(nullptr) {}
 
 /**
  * Get the LRU block cache instance if the block cache size is greater than 0
@@ -324,13 +323,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 		// The derived policy follows allowStall; applied before anything else in this
 		// section is mutated so a failure leaves the manager's settings unchanged.
-		if (wbmAlreadyCreated && allowStallProvided && !setLiveFlushPolicy(
-			env,
-			*settings.writeBufferManager,
-			DBSettings::resolveWriteBufferManagerFlushPolicy(
-				settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed), newAllowStall
-			)
-		)) {
+		if (wbmAlreadyCreated && allowStallProvided && !setLiveFlushPolicy(env, *settings.writeBufferManager, DBSettings::resolveWriteBufferManagerFlushPolicy(settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed), newAllowStall))) {
 			return nullptr;
 		}
 
@@ -426,8 +419,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 		if (!std::isfinite(lifecycleWaitSeconds) || lifecycleWaitSeconds <= 0 ||
 			std::trunc(lifecycleWaitSeconds) != lifecycleWaitSeconds ||
-			lifecycleWaitSeconds > std::numeric_limits<uint32_t>::max()
-		) {
+			lifecycleWaitSeconds > std::numeric_limits<uint32_t>::max()) {
 			::napi_throw_range_error(env, nullptr, "Lifecycle wait seconds must be a positive integer");
 			return nullptr;
 		}

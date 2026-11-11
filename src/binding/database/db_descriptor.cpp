@@ -36,7 +36,7 @@ static void lockCallbackCallJs(napi_env env, napi_value jsCallback, void* contex
 // Process-global monotonic source for DBDescriptor::vtEpoch. Starts at 1 so a
 // valid epoch is never 0. 64-bit: never wraps in practice, so every descriptor
 // open across the process lifetime gets a distinct VerificationTable identity.
-static std::atomic<uint64_t> vtEpochCounter{1};
+static std::atomic<uint64_t> vtEpochCounter{ 1 };
 
 static uint64_t nextVtEpoch() {
 	return vtEpochCounter.fetch_add(1, std::memory_order_relaxed);
@@ -159,9 +159,9 @@ static void warnIfHistoryExceedsWriteBufferBudget(
 		<< "-byte WriteBufferManager budget. Retained history is only trimmed down to that target, "
 		<< "so that memory is never returned to the manager"
 		<< (stalls
-			? ", and because the manager is configured to stall writers, writes to this database "
-			  "can stall permanently. "
-			: ". ")
+				   ? ", and because the manager is configured to stall writers, writes to this database "
+					 "can stall permanently. "
+				   : ". ")
 		<< "Only the column families known at this open are counted; families created later add to "
 		<< "the same budget, so a database that does not warn is not proven safe.";
 	const std::string text = msg.str();
@@ -349,8 +349,7 @@ private:
  */
 class TransactionLogEventListener : public rocksdb::EventListener {
 public:
-	TransactionLogEventListener(std::shared_ptr<DBEventListenerState> state)
-		: state(std::move(state)) {}
+	TransactionLogEventListener(std::shared_ptr<DBEventListenerState> state) : state(std::move(state)) {}
 
 	void OnFlushBegin(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
 		auto desc = this->state->lockDescriptor();
@@ -501,7 +500,7 @@ DBDescriptor::DBDescriptor(
 	rocksdb::WriteBufferManager* attachedWriteBufferManager,
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
 	std::shared_ptr<rocksdb::Statistics> statistics
-):
+) :
 	path(path),
 	identityPath(identityPath),
 	vtEpoch(nextVtEpoch()),
@@ -514,8 +513,7 @@ DBDescriptor::DBDescriptor(
 	columns(std::move(columns)),
 	retiringCondition(std::make_shared<std::condition_variable>()),
 	statistics(statistics),
-	commitWorker("rocksdb-commit", DBSettings::getInstance().getCommitThreads())
-{
+	commitWorker("rocksdb-commit", DBSettings::getInstance().getCommitThreads()) {
 	// Resolve the debounce window here (JS thread, open path) so the emit path on
 	// a RocksDB background thread reads a plain field instead of calling ::getenv.
 	this->writeStallDebounceWindowMs = writeStallDebounceMs();
@@ -581,7 +579,7 @@ void DBDescriptor::close() {
 
 void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
 	// Close all handles that still exist and reset their descriptor references
-	for (auto it = this->closables.begin(); it != this->closables.end(); ) {
+	for (auto it = this->closables.begin(); it != this->closables.end();) {
 		if (auto closable = it->second.lock()) {
 			// Remove from map before closing to avoid re-entrant detach() calls
 			it = this->closables.erase(it);
@@ -1558,7 +1556,8 @@ void DBDescriptor::lockReleaseByOwner(DBHandle* owner) {
  * Creates a new DBDescriptor.
  */
 std::shared_ptr<DBDescriptor> DBDescriptor::open(
-	const std::string& path, const std::string& identityPath, const DBOptions& options) {
+	const std::string& path, const std::string& identityPath, const DBOptions& options
+) {
 	bool parallelValidation = false;
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
@@ -1746,7 +1745,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		if (secondaryLock.token == 0) {
 			throw rocksdb_js::DBException(
 				"secondaryPath \"" + options.secondaryPath + "\" is locked by another secondary "
-				"instance; each secondary requires its own workspace directory"
+															 "instance; each secondary requires its own workspace directory"
 			);
 		}
 
@@ -1765,7 +1764,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 					"Secondary open failed: a file this open needed was already gone when it tried to "
 					"read it. If the primary is live, it removed the file (compaction, blob GC, or "
 					"flush) mid-open and the database is not corrupt — retry the open. If the primary "
-					"is not running, the file is genuinely missing. (" + status.ToString() + ")"
+					"is not running, the file is genuinely missing. (" +
+						status.ToString() + ")"
 				);
 			}
 			throw rocksdb_js::DBException(
@@ -1795,7 +1795,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 					"compaction, blob GC, or flush removed the file and the database is not corrupt — "
 					"retry the open, or open as a secondary (secondaryPath) to follow a live database. "
 					"If nothing is writing this database, the file is genuinely missing. (" +
-					status.ToString() + ")"
+						status.ToString() + ")"
 				);
 			}
 			if (status.IsIOError()) {
@@ -1824,7 +1824,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		rocksdb::OptimisticTransactionDBOptions occOptions;
 		occOptions.occ_lock_buckets = settings.getOccLockBucketCount();
 		occOptions.validate_policy = settings.getOccValidateSerial() ? rocksdb::OccValidationPolicy::kValidateSerial
-		                                                              : rocksdb::OccValidationPolicy::kValidateParallel;
+																	 : rocksdb::OccValidationPolicy::kValidateParallel;
 		parallelValidation = occOptions.validate_policy == rocksdb::OccValidationPolicy::kValidateParallel;
 		rocksdb::OptimisticTransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
@@ -1898,7 +1898,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	TransactionLogStoreRegistry::Register(descriptor->identityPath, logConfig);
 	TransactionLogStoreRegistry::DiscoverStores(descriptor->identityPath, options.readOnly);
 	TransactionLogStoreRegistry::SeedTimestampFloor(
-		descriptor->identityPath, options.timestampFloorLog, options.readOnly);
+		descriptor->identityPath, options.timestampFloorLog, options.readOnly
+	);
 
 	return descriptor;
 }
@@ -2296,13 +2297,15 @@ void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::s
  */
 #ifdef DEBUG
 	#define CALL_JS_CB_DEBUG_LOG(msg, ...) \
-		do { \
-			std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
-			rocksdb_js::debugLog(true, "lockCallbackCallJs() " msg ": %s (key=\"%s\")", ##__VA_ARGS__, errorStr.c_str(), callbackData->key.c_str()); \
-		} while (0)
+	do { \
+		std::string errorStr = rocksdb_js::getNapiExtendedError(env, status); \
+		rocksdb_js::debugLog(true, "lockCallbackCallJs() " msg ": %s (key=\"%s\")", ##__VA_ARGS__, errorStr.c_str(), callbackData->key.c_str()); \
+	} while (0)
 #else
 	#define CALL_JS_CB_DEBUG_LOG(msg, ...) \
-		do { if (false) { rocksdb_js::debugLog(true, "lockCallbackCallJs() " msg, ##__VA_ARGS__); } } while (0)
+	do { \
+		if (false) { rocksdb_js::debugLog(true, "lockCallbackCallJs() " msg, ##__VA_ARGS__); } \
+	} while (0)
 #endif
 
 #define CALL_JS_CB_NAPI_STATUS_CHECK(call, code, msg, ...) \
@@ -2365,9 +2368,7 @@ static napi_status createLockSettleCallback(
 	auto* ref = new std::shared_ptr<LockCallbackCompletionData>(callbackData);
 	napi_status status = ::napi_create_function(env, name, NAPI_AUTO_LENGTH, callback, ref, result);
 	if (status == napi_ok) {
-		status = ::napi_add_finalizer(env, *result, ref, [](napi_env, void* data, void*) {
-			delete static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data);
-		}, nullptr, nullptr);
+		status = ::napi_add_finalizer(env, *result, ref, [](napi_env, void* data, void*) { delete static_cast<std::shared_ptr<LockCallbackCompletionData>*>(data); }, nullptr, nullptr);
 	}
 	if (status != napi_ok) {
 		// The function, if created, is unreachable: it is never handed to `.then()`.
@@ -2454,8 +2455,7 @@ static void lockCallbackCallJs(napi_env env, napi_value jsCallback, void* contex
 			napi_value message;
 			if (
 				::napi_create_string_utf8(env, "Failed to run the withLock() callback", NAPI_AUTO_LENGTH, &message) != napi_ok ||
-				::napi_create_error(env, nullptr, message, &error) != napi_ok
-			) {
+				::napi_create_error(env, nullptr, message, &error) != napi_ok) {
 				::napi_get_undefined(env, &error);
 			}
 		}
@@ -2768,13 +2768,10 @@ void DBDescriptor::emitWriteStall(
 		columnFamily, isStalled, std::chrono::steady_clock::now(), this->writeStallDebounceWindowMs,
 		[&]() {
 			if (this->events.hasListeners()) {
-				this->events.notify("writeStall", ListenerData::fromStrings({
-					columnFamily,
-					writeStallConditionName(previous),
-					writeStallConditionName(current)
-				}));
+				this->events.notify("writeStall", ListenerData::fromStrings({ columnFamily, writeStallConditionName(previous), writeStallConditionName(current) }));
 			}
-		});
+		}
+	);
 }
 
 /**
@@ -2863,8 +2860,7 @@ rocksdb::Status DBDescriptor::compactRange(
 			const auto deadline =
 				std::chrono::steady_clock::now() + std::chrono::milliseconds(cancelWaitMs);
 			while (!canceled->load() &&
-				std::chrono::steady_clock::now() < deadline
-			) {
+				std::chrono::steady_clock::now() < deadline) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
 		}

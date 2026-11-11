@@ -7,13 +7,13 @@ namespace rocksdb_js {
 namespace {
 
 // Process-global counter for LockTracker generation tags.
-static std::atomic<uint16_t> vtGlobalGen{0};
+static std::atomic<uint16_t> vtGlobalGen{ 0 };
 
 // Process-global counter for settle generations (62-bit; starts at 1 so a
 // settled-empty marker is always distinct from the all-zero initial state).
-static std::atomic<uint64_t> vtGlobalSettleGen{1};
+static std::atomic<uint64_t> vtGlobalSettleGen{ 1 };
 
-static std::atomic<int64_t> registeredWakeCallbackCount{0};
+static std::atomic<int64_t> registeredWakeCallbackCount{ 0 };
 
 // SplitMix64 finalizer.
 inline uint64_t mix64(uint64_t x) {
@@ -77,8 +77,7 @@ inline uint64_t toHostEndian(uint64_t beValue) {
 
 } // namespace
 
-VerificationTable::VerificationTable(size_t numEntries, uint64_t seed)
-	: slots_(nullptr), mask_(0), seed_(seed) {
+VerificationTable::VerificationTable(size_t numEntries, uint64_t seed) : slots_(nullptr), mask_(0), seed_(seed) {
 	if (numEntries == 0) {
 		return;
 	}
@@ -224,9 +223,7 @@ bool VerificationTable::valueVersionIsNotUnique(const rocksdb::Slice& value) {
 	if (word[0] != VERSION_HEADER_TAG) {
 		return false;
 	}
-	const uint32_t flags = (static_cast<uint32_t>(word[1]) << 16)
-		| (static_cast<uint32_t>(word[2]) << 8)
-		| static_cast<uint32_t>(word[3]);
+	const uint32_t flags = (static_cast<uint32_t>(word[1]) << 16) | (static_cast<uint32_t>(word[2]) << 8) | static_cast<uint32_t>(word[3]);
 	return (flags & VERSION_NOT_UNIQUE_FLAG) != 0;
 }
 
@@ -369,7 +366,7 @@ void VerificationTable::releaseWriteIntent(std::atomic<uint64_t>* slot, LockTrac
 		// version into this slot, because the slot no longer equals what it saw.
 		uint64_t expected = vtEncodeLock(t, t->generation);
 		slot->compare_exchange_strong(expected, vtEncodeSettled(vtNextSettleGen()),
-		    std::memory_order_release, std::memory_order_acquire);
+			std::memory_order_release, std::memory_order_acquire);
 		t->wake();
 	}
 	if (t->refcount.fetch_sub(1, std::memory_order_acq_rel) == 1) delete t;
@@ -415,7 +412,8 @@ void VerificationTable::settleAllSlots() {
 					v,
 					settledValue,
 					std::memory_order_release,
-					std::memory_order_acquire)) {
+					std::memory_order_acquire
+				)) {
 				break;
 			}
 		}
@@ -440,7 +438,7 @@ void VerificationTable::cancelForDB(uint64_t dbId) {
 		// harmlessly if it changed. (Like releaseWriteIntent, never back to 0.)
 		uint64_t expected = vtEncodeLock(t, gen);
 		slots_[i].compare_exchange_strong(expected, vtEncodeSettled(vtNextSettleGen()),
-		    std::memory_order_release, std::memory_order_acquire);
+			std::memory_order_release, std::memory_order_acquire);
 
 		// Wake any parked TSFN waiters — idempotent if already woken. The
 		// outstanding holders' releaseWriteIntent calls will free the tracker;

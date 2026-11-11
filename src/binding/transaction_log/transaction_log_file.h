@@ -32,11 +32,11 @@
 	#include <windows.h>
 	#include <io.h>
 
-	// define iovec for Windows compatibility
-	struct iovec {
-		void* iov_base;
-		size_t iov_len;
-	};
+// define iovec for Windows compatibility
+struct iovec {
+	void* iov_base;
+	size_t iov_len;
+};
 #else
 	#include <fcntl.h>
 	#include <unistd.h>
@@ -70,14 +70,16 @@ bool parseTransactionLogSegmentName(const std::string& filename, uint32_t& seque
  * listings and backup enumeration continue to contain only log data.
  */
 std::filesystem::path transactionLogAppendBoundaryMarkerPath(
-	const std::filesystem::path& logPath);
+	const std::filesystem::path& logPath
+);
 
 /**
  * Reads a persisted append boundary. Returns 0 when no marker exists or the
  * marker records a clean segment; throws when an existing marker is malformed.
  */
 uint32_t readTransactionLogAppendBoundaryMarker(
-	const std::filesystem::path& logPath);
+	const std::filesystem::path& logPath
+);
 
 class TransactionLogFormatException final : public std::exception {
 	std::string message;
@@ -432,7 +434,8 @@ struct TransactionLogFile final {
 	TransactionLogFile(
 		const std::filesystem::path& p,
 		const uint32_t seq,
-		bool appendBoundaryMarkerEnabled = false);
+		bool appendBoundaryMarkerEnabled = false
+	);
 
 	// prevent copying
 	TransactionLogFile(const TransactionLogFile&) = delete;
@@ -489,7 +492,7 @@ struct TransactionLogFile final {
 	/**
 	 * Opens the log file for reading and writing.
 	 */
- 	void open(const double latestTimestamp);
+	void open(const double latestTimestamp);
 
 	/**
 	 * Opens an existing log file without creating either it or its parent.
@@ -523,7 +526,8 @@ struct TransactionLogFile final {
 	 */
 	RecoveryScan scanRecoveryLocked(
 		double plausibleBound = std::numeric_limits<double>::infinity(),
-		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt
+	);
 
 	/**
 	 * Drops the trailing entries of a transaction that never closed, so the file
@@ -543,7 +547,8 @@ struct TransactionLogFile final {
 	 * @param protectedPosition Earliest offset that recovery may erase.
 	 */
 	void discardUnclosedTransaction(
-		const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition);
+		const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition
+	);
 
 	/**
 	 * The offset this file must end at so it does not end mid-transaction:
@@ -555,7 +560,8 @@ struct TransactionLogFile final {
 	 * boundary — so the two cannot drift apart. Caller holds fileMutex.
 	 */
 	uint32_t unclosedTransactionBoundary(
-		const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition);
+		const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition
+	);
 	void resetTimestampIndex();
 
 	/**
@@ -587,7 +593,8 @@ struct TransactionLogFile final {
 	 */
 	MaxEntryScan scanMaxEntryTimestamp(
 		double plausibleBound,
-		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+		std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt
+	);
 
 	/** This file's largest entry key, when it is known without reading the file. */
 	bool knownMaxEntryKey(double& maxKey);
@@ -659,8 +666,7 @@ struct TransactionLogFile final {
 	 * @returns The offset the first entry of this call was appended at, read after the lazy open, or
 	 * 0 when nothing was written.
 	 */
-	uint32_t writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0,
-		double latestTimestamp = 0);
+	uint32_t writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize = 0, double latestTimestamp = 0);
 
 	/**
 	 * Return a memory map of the file and mark it as in use. Thin wrapper that
@@ -748,7 +754,8 @@ struct TransactionLogFile final {
 	 * @param span When non-null, filled from the same indexed extent the position came from.
 	 */
 	uint32_t findPositionByTimestamp(
-		double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld = false, TimestampSpan* span = nullptr);
+		double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld = false, TimestampSpan* span = nullptr
+	);
 
 	/**
 	 * Platform specific function that writes data to the log file.
@@ -953,8 +960,7 @@ struct MemoryMap final {
 	 */
 	static std::atomic<int64_t> liveCount;
 
-	MemoryMap(void* map, uint32_t mapSize, uint32_t readableExtent)
-		: map(map), mapSize(mapSize), fileSize(mapSize), readableExtent(std::min(readableExtent, mapSize)) {
+	MemoryMap(void* map, uint32_t mapSize, uint32_t readableExtent) : map(map), mapSize(mapSize), fileSize(mapSize), readableExtent(std::min(readableExtent, mapSize)) {
 		liveCount.fetch_add(1, std::memory_order_relaxed);
 	}
 

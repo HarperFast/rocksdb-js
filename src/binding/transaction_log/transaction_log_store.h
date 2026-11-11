@@ -56,18 +56,14 @@ union LogPosition {
 	 */
 	double fullPosition;
 
-	bool operator()( const LogPosition a, const LogPosition b ) const {
+	bool operator()(const LogPosition a, const LogPosition b) const {
 		// Comparing fullPosition is presumably faster than comparing the individual fields and should work on little-endian...
 		// unless compilers can figure this out?
-		return a.logSequenceNumber == b.logSequenceNumber ?
-			a.positionInLogFile < b.positionInLogFile :
-			a.logSequenceNumber < b.logSequenceNumber;
+		return a.logSequenceNumber == b.logSequenceNumber ? a.positionInLogFile < b.positionInLogFile : a.logSequenceNumber < b.logSequenceNumber;
 	};
 
 	bool operator<(const LogPosition& other) const {
-		return logSequenceNumber == other.logSequenceNumber ?
-			positionInLogFile < other.positionInLogFile :
-			logSequenceNumber < other.logSequenceNumber;
+		return logSequenceNumber == other.logSequenceNumber ? positionInLogFile < other.positionInLogFile : logSequenceNumber < other.logSequenceNumber;
 	}
 
 	LogPosition() = default;
@@ -672,7 +668,8 @@ struct TransactionLogStore final {
 
 	DurableKeyScan scanLargestDurableKey(
 		double plausibleBound,
-		std::chrono::milliseconds budget);
+		std::chrono::milliseconds budget
+	);
 
 	/**
 	 * Returns a point-in-time snapshot of the files that make up this store, for
@@ -686,7 +683,8 @@ struct TransactionLogStore final {
 	 * them to a `rocksdb::Status` before control returns to a backup worker.
 	 */
 	std::vector<TransactionLogBackupEntry> snapshotForBackup(
-		const std::function<bool()>& abandon = nullptr, bool waitForUnresolved = true);
+		const std::function<bool()>& abandon = nullptr, bool waitForUnresolved = true
+	);
 
 	/**
 	 * Holds off ordinary (non-destroy) retention purges of `store` until the
@@ -767,7 +765,8 @@ struct TransactionLogStore final {
 	 * entry was actually written, or {0, 0} if nothing was written.
 	 */
 	void writeBatch(
-		TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry = nullptr, bool cancellable = false);
+		TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry = nullptr, bool cancellable = false
+	);
 
 	/**
 	 * Load all transaction logs from a directory into a new transaction log
@@ -834,7 +833,8 @@ private:
 	 * `lock` on dataSetsMutex.
 	 */
 	void waitForResolution(
-		std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved, const std::function<bool()>& abandon);
+		std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved, const std::function<bool()>& abandon
+	);
 
 	/**
 	 * Set while `failedCancellations` is non-empty, or for good once a failed cancellation could not
@@ -925,7 +925,8 @@ private:
 	MaxKeyResolution resolveMaxKey(
 		const std::shared_ptr<TransactionLogFile>& file,
 		std::optional<std::chrono::steady_clock::time_point> deadline,
-		double& maxKey);
+		double& maxKey
+	);
 
 	/** Runs before purge() takes writeMutex, so appends do not wait on these reads. */
 	void scanPurgeCandidates(uint64_t before, std::chrono::steady_clock::time_point deadline);
@@ -969,7 +970,7 @@ private:
 	// All callers must hold dataSetsMutex.
 	void positionInsert(LogPosition pos) {
 		auto it = std::lower_bound(uncommittedTransactionPositions.begin(),
-		                           uncommittedTransactionPositions.end(), pos);
+			uncommittedTransactionPositions.end(), pos);
 		// Mimic std::set::insert: skip if the element already exists.
 		if (it == uncommittedTransactionPositions.end() || pos < *it) {
 			uncommittedTransactionPositions.insert(it, pos);
@@ -977,7 +978,7 @@ private:
 	}
 	void positionErase(LogPosition pos) {
 		auto it = std::lower_bound(uncommittedTransactionPositions.begin(),
-		                           uncommittedTransactionPositions.end(), pos);
+			uncommittedTransactionPositions.end(), pos);
 		if (it != uncommittedTransactionPositions.end() && !(*it < pos) && !(pos < *it)) {
 			uncommittedTransactionPositions.erase(it);
 		}

@@ -45,7 +45,7 @@ TEST(SteadyClock, MicrosecondStepsStayStrictlyIncreasingAcrossACentury) {
 	// ~61 ns at 10 years, ~0.5 µs at 100 years. 1 µs steps must therefore still
 	// map to strictly larger values at both, which is the precision the contract
 	// promises (sub-microsecond for any realistic uptime).
-	for (int64_t years : {0LL, 1LL, 10LL, 100LL}) {
+	for (int64_t years : { 0LL, 1LL, 10LL, 100LL }) {
 		const int64_t base = years * kNanosPerYear + 123456789;
 		double previous = steadyClockMilliseconds(fromNanoseconds(base));
 		for (int step = 1; step <= 1000; ++step) {
@@ -61,11 +61,11 @@ TEST(SteadyClock, ConversionIsNonDecreasingOnAdjacentTicks) {
 	// collapse to equality far from the origin but never invert. Sample the
 	// boundary regions where the double's spacing crosses the tick period.
 	for (int64_t base : std::array<int64_t, 4>{
-		0LL,
-		(1LL << 33) * kNanosPerMilli - 5000,  // ~99 days: spacing reaches ~2 ns
-		(1LL << 38) * kNanosPerMilli - 5000,  // ~8.7 years
-		100 * kNanosPerYear,
-	}) {
+			 0LL,
+			 (1LL << 33) * kNanosPerMilli - 5000,  // ~99 days: spacing reaches ~2 ns
+			 (1LL << 38) * kNanosPerMilli - 5000,  // ~8.7 years
+			 100 * kNanosPerYear,
+		 }) {
 		double previous = steadyClockMilliseconds(fromNanoseconds(base));
 		for (int64_t tick = 1; tick <= 10000; ++tick) {
 			const double next = steadyClockMilliseconds(fromNanoseconds(base + tick));
@@ -140,7 +140,8 @@ TEST(SteadyClock, DoesNotDisturbTheWallClockRatchet) {
 	const auto epochMs = [] {
 		return static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::system_clock::now().time_since_epoch()
-		).count());
+		)
+				.count());
 	};
 
 	double previous = getMonotonicTimestamp();

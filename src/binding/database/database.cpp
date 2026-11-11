@@ -498,7 +498,7 @@ struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	 * claim left standing there makes `finishClose()` — which waits on the
 	 * counter unbounded — wedge close and destroy.
 	 */
-	std::atomic<bool> inFlightReleased{false};
+	std::atomic<bool> inFlightReleased{ false };
 
 	AsyncCatchUpState(
 		napi_env env,
@@ -588,7 +588,7 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	auto descriptor = (*dbHandle)->descriptor;
 	++descriptor->operationsInFlight;
 	bool handedOff = false;
-	CatchUpInFlightClaim claim{descriptor.get(), handedOff};
+	CatchUpInFlightClaim claim{ descriptor.get(), handedOff };
 
 	if (descriptor->isClosing()) {
 		::napi_throw_error(env, nullptr, "Database is closing");
@@ -649,7 +649,7 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 				state->rejectRef = nullptr;
 			}
 		}
-	} setupRefs{state};
+	} setupRefs{ state };
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -860,14 +860,16 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		NAPI_STATUS_THROWS_ERROR(::napi_call_function(
-			env, global, reject, 1, &error, nullptr
-		), "Failed to call reject function");
+									 env, global, reject, 1, &error, nullptr
+								 ),
+			"Failed to call reject function");
 		return nullptr;
 	}
 
 	NAPI_STATUS_THROWS_ERROR(::napi_call_function(
-		env, global, resolve, 0, nullptr, nullptr
-	), "Failed to call resolve function");
+								 env, global, resolve, 0, nullptr, nullptr
+							 ),
+		"Failed to call resolve function");
 	DEBUG_LOG("%p Database::Drop dropped database\n", dbHandle->get());
 	NAPI_RETURN_UNDEFINED();
 }
@@ -1095,7 +1097,7 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 				state->rejectRef = nullptr;
 			}
 		}
-	} setupRefs{state};
+	} setupRefs{ state };
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -1212,7 +1214,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		return txnHandle->get(env, key, resolve, reject, *dbHandle,
-		                      vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
+			vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
 	}
 
 	// No snapshot to order against: observe the slot before the read so the post-read CAS only
@@ -1500,8 +1502,7 @@ napi_value Database::SetCompression(napi_env env, napi_callback_info info) {
 		double compressionLevel = 0;
 		NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[1], &compressionLevel));
 		if (std::isnan(compressionLevel) || compressionLevel != std::trunc(compressionLevel) ||
-			compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0
-		) {
+			compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0) {
 			::napi_throw_error(env, nullptr, "compressionLevel must be a 32-bit integer");
 			return nullptr;
 		}
@@ -2180,8 +2181,8 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && // this flag is used by getBinary() to force a new buffer to be created (that can safely live long-term)
-			(*dbHandle)->defaultValueBufferPtr != nullptr &&
-			value.size() <= (*dbHandle)->defaultValueBufferLength) {
+		(*dbHandle)->defaultValueBufferPtr != nullptr &&
+		value.size() <= (*dbHandle)->defaultValueBufferLength) {
 		// if it fits in the default value buffer, copy the data and just return the length
 		::memcpy((*dbHandle)->defaultValueBufferPtr, value.data(), value.size());
 		NAPI_STATUS_THROWS(::napi_create_int32(env, value.size(), &result));
@@ -2303,7 +2304,7 @@ napi_value Database::SetDefaultValueBuffer(napi_env env, napi_callback_info info
 	size_t length;
 	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &data, &length));
 
-	(*dbHandle)->defaultValueBufferPtr = (char*) data;
+	(*dbHandle)->defaultValueBufferPtr = (char*)data;
 	(*dbHandle)->defaultValueBufferLength = length;
 
 	NAPI_RETURN_UNDEFINED();
@@ -2323,7 +2324,7 @@ napi_value Database::SetDefaultKeyBuffer(napi_env env, napi_callback_info info) 
 	size_t length;
 	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &data, &length));
 
-	(*dbHandle)->defaultKeyBufferPtr = (char*) data;
+	(*dbHandle)->defaultKeyBufferPtr = (char*)data;
 	(*dbHandle)->defaultKeyBufferLength = length;
 
 	NAPI_RETURN_UNDEFINED();
@@ -2342,7 +2343,7 @@ napi_value Database::SetIteratorState(napi_env env, napi_callback_info info) {
 	size_t length;
 	NAPI_STATUS_THROWS(::napi_get_buffer_info(env, argv[0], &data, &length));
 
-	(*dbHandle)->iteratorStatePtr = (char*) data;
+	(*dbHandle)->iteratorStatePtr = (char*)data;
 	(*dbHandle)->iteratorStateLength = length;
 
 	NAPI_RETURN_UNDEFINED();
@@ -2507,8 +2508,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 				double compressionLevel = 0;
 				NAPI_STATUS_THROWS(::napi_get_value_double(env, levelValue, &compressionLevel));
 				if (std::isnan(compressionLevel) || compressionLevel != std::trunc(compressionLevel) ||
-					compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0
-				) {
+					compressionLevel < -2147483648.0 || compressionLevel > 2147483647.0) {
 					::napi_throw_error(env, nullptr, "compressionLevel must be a 32-bit integer");
 					return nullptr;
 				}
@@ -2614,8 +2614,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	double maxOpenFilesValue = static_cast<double>(dbHandleOptions.maxOpenFiles);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxOpenFiles", maxOpenFilesValue));
 	if (std::isnan(maxOpenFilesValue) || maxOpenFilesValue != std::trunc(maxOpenFilesValue) ||
-		maxOpenFilesValue < -1.0 || maxOpenFilesValue > 2147483647.0
-	) {
+		maxOpenFilesValue < -1.0 || maxOpenFilesValue > 2147483647.0) {
 		::napi_throw_error(env, nullptr, "maxOpenFiles must be -1 (unlimited), 0 (auto), or a positive 32-bit integer");
 		return nullptr;
 	}
@@ -2654,8 +2653,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	double maxLogFileSizeValue = static_cast<double>(dbHandleOptions.maxLogFileSize);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "maxLogFileSize", maxLogFileSizeValue));
 	if (std::isnan(maxLogFileSizeValue) || maxLogFileSizeValue != std::trunc(maxLogFileSizeValue) ||
-		maxLogFileSizeValue < 0.0 || maxLogFileSizeValue > 9007199254740991.0
-	) {
+		maxLogFileSizeValue < 0.0 || maxLogFileSizeValue > 9007199254740991.0) {
 		::napi_throw_error(env, nullptr, "maxLogFileSize must be a non-negative integer no greater than Number.MAX_SAFE_INTEGER");
 		return nullptr;
 	}
@@ -2693,8 +2691,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 			NAPI_STATUS_THROWS(::napi_get_value_double(env, infoLogLevelValue, &infoLogLevel));
 			if (std::isnan(infoLogLevel) || infoLogLevel != std::trunc(infoLogLevel) ||
 				infoLogLevel < static_cast<double>(rocksdb::InfoLogLevel::DEBUG_LEVEL) ||
-				infoLogLevel > static_cast<double>(rocksdb::InfoLogLevel::HEADER_LEVEL)
-			) {
+				infoLogLevel > static_cast<double>(rocksdb::InfoLogLevel::HEADER_LEVEL)) {
 				::napi_throw_error(env, nullptr, "infoLogLevel must be an integer between 0 (debug) and 5 (header)");
 				return nullptr;
 			}
@@ -2709,8 +2706,7 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 		static_cast<double>(std::numeric_limits<size_t>::max())
 	);
 	if (!std::isfinite(dbWriteBufferSizeValue) || dbWriteBufferSizeValue != std::trunc(dbWriteBufferSizeValue) ||
-		dbWriteBufferSizeValue < 0.0 || dbWriteBufferSizeValue > maxSafeSizeValue
-	) {
+		dbWriteBufferSizeValue < 0.0 || dbWriteBufferSizeValue > maxSafeSizeValue) {
 		::napi_throw_error(env, nullptr, "dbWriteBufferSize must be a non-negative safe integer");
 		return nullptr;
 	}
@@ -2718,16 +2714,14 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	double arenaBlockSizeValue = static_cast<double>(dbHandleOptions.arenaBlockSize);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "arenaBlockSize", arenaBlockSizeValue));
 	if (!std::isfinite(arenaBlockSizeValue) || arenaBlockSizeValue != std::trunc(arenaBlockSizeValue) ||
-		arenaBlockSizeValue < 0.0 || arenaBlockSizeValue > maxSafeSizeValue
-	) {
+		arenaBlockSizeValue < 0.0 || arenaBlockSizeValue > maxSafeSizeValue) {
 		::napi_throw_error(env, nullptr, "arenaBlockSize must be a non-negative safe integer");
 		return nullptr;
 	}
 	dbHandleOptions.arenaBlockSize = static_cast<uint64_t>(arenaBlockSizeValue);
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, options, "bloomFilterBitsPerKey", dbHandleOptions.bloomFilterBitsPerKey));
 	if (dbHandleOptions.bloomFilterBitsPerKey != 0.0 &&
-		!(dbHandleOptions.bloomFilterBitsPerKey >= 1.0 && dbHandleOptions.bloomFilterBitsPerKey <= 100.0)
-	) {
+		!(dbHandleOptions.bloomFilterBitsPerKey >= 1.0 && dbHandleOptions.bloomFilterBitsPerKey <= 100.0)) {
 		::napi_throw_error(env, nullptr, "bloomFilterBitsPerKey must be 0 (no filter) or a number from 1 to 100");
 		return nullptr;
 	}
@@ -2885,8 +2879,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		writeOptions.ignore_missing_column_families = true;
 		if (!(*dbHandle)->columnDescriptor->droppable ||
-			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
-		) {
+			!(*dbHandle)->columnDescriptor->lifetime.isRetired()) {
 			status = (*dbHandle)->descriptor->db->Put(
 				writeOptions,
 				(*dbHandle)->getColumnFamilyHandle(),
@@ -2910,7 +2903,6 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 
 	NAPI_RETURN_UNDEFINED();
 }
-
 
 /**
  * Removes a key from the RocksDB database.
@@ -2961,8 +2953,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		writeOptions.disableWAL = (*dbHandle)->disableWAL;
 		writeOptions.ignore_missing_column_families = true;
 		if (!(*dbHandle)->columnDescriptor->droppable ||
-			!(*dbHandle)->columnDescriptor->lifetime.isRetired()
-		) {
+			!(*dbHandle)->columnDescriptor->lifetime.isRetired()) {
 			status = (*dbHandle)->descriptor->db->Delete(
 				writeOptions,
 				(*dbHandle)->getColumnFamilyHandle(),

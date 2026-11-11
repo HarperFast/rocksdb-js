@@ -19,14 +19,18 @@ std::filesystem::path uniqueRetentionPath() {
 
 uint64_t futureCutoffMs() {
 	return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::system_clock::now().time_since_epoch()).count()) + 60000;
+			   std::chrono::system_clock::now().time_since_epoch()
+		   )
+				   .count()) +
+		60000;
 }
 
 rocksdb_js::LogPosition writeAndFlush(rocksdb_js::TransactionLogStore& store, double timestamp, rocksdb::SequenceNumber sequence) {
 	std::string payload = "entry";
 	rocksdb_js::TransactionLogEntryBatch batch(timestamp);
 	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())
+	));
 	rocksdb_js::LogPosition position;
 	store.writeBatch(batch, position);
 	store.commitFinished(position, [sequence]() -> rocksdb::SequenceNumber { return sequence; });
@@ -50,7 +54,8 @@ std::shared_ptr<rocksdb_js::TransactionLogStore> loadStore(const std::filesystem
 TEST(TransactionLogRetention, PurgesFlushedCurrentSegmentAndAppendsPastIt) {
 	auto storePath = uniqueRetentionPath();
 	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 
 	writeAndFlush(*store, 1001.0, 10);
 	ASSERT_EQ(store->currentSequenceNumber.load(), 1u);
@@ -72,7 +77,8 @@ TEST(TransactionLogRetention, PurgesFlushedCurrentSegmentAndAppendsPastIt) {
 TEST(TransactionLogRetention, RetentionPinHoldsOffOrdinaryPurge) {
 	auto storePath = uniqueRetentionPath();
 	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 
 	writeAndFlush(*store, 1001.0, 10);
 	auto pin = rocksdb_js::TransactionLogStore::pinRetention(store);
@@ -140,11 +146,13 @@ TEST(TransactionLogRetention, LoadRefusesAnUnreadableStateWithNoSegment) {
 
 	// a surviving segment still records the sequence, so the torn state is ignored
 	auto writer = std::make_shared<rocksdb_js::TransactionLogStore>(
-		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 	std::string payload = "entry";
 	rocksdb_js::TransactionLogEntryBatch batch(1001.0);
 	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())
+	));
 	rocksdb_js::LogPosition position;
 	writer->writeBatch(batch, position);
 	writer->close();
@@ -163,7 +171,8 @@ TEST(TransactionLogRetention, PurgeMovesAWatermarkOutOfAPurgedSegment) {
 	auto storePath = uniqueRetentionPath();
 	{
 		auto writer = std::make_shared<rocksdb_js::TransactionLogStore>(
-			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		writeAndFlush(*writer, 1001.0, 10);
 		writer->close();
 	}
@@ -195,7 +204,8 @@ TEST(TransactionLogRetention, KeepsACurrentSegmentWithNoSuccessorSequence) {
 	auto storePath = uniqueRetentionPath();
 	{
 		auto writer = std::make_shared<rocksdb_js::TransactionLogStore>(
-			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		writeAndFlush(*writer, 1001.0, 10);
 		writer->close();
 	}

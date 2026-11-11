@@ -124,7 +124,11 @@ struct AsyncBackupListState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
  * State for the `backupDelete`, `backupPurge`, and `backupVerify` async work.
  */
 struct AsyncBackupOpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
-	enum class Op { Delete, Purge, Verify };
+	enum class Op {
+		Delete,
+		Purge,
+		Verify
+	};
 
 	Op op;
 	std::string backupDir;
@@ -145,7 +149,7 @@ struct AsyncBackupOpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
  * Returns `undefined`. On the rare N-API failure path the state leaks, matching
  * the behavior of the existing async methods (e.g. `Database::Flush`).
  */
-template<typename State>
+template <typename State>
 static napi_value queueBackupWork(
 	napi_env env,
 	const char* resourceName,
@@ -376,7 +380,7 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 	auto descriptor = (*dbHandle)->descriptor;
 	++descriptor->operationsInFlight;
 	bool handedOff = false;
-	BackupInFlightClaim claim{descriptor.get(), handedOff};
+	BackupInFlightClaim claim{ descriptor.get(), handedOff };
 	if (descriptor->isClosing()) {
 		::napi_throw_error(env, nullptr, "Database is closing");
 		NAPI_RETURN_UNDEFINED();
@@ -413,8 +417,7 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 			// A cancelled queued work item never ran execute, so complete owns the
 			// in-flight decrement in that case.
 			if (status == napi_cancelled &&
-				--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()
-			) {
+				--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
 				state->descriptor->operationsInFlight.notify_all();
 			}
 			// Promise settlement is the public completion boundary. Release the

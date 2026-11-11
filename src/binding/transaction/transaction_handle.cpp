@@ -32,8 +32,7 @@ struct ScopedAsyncWorkRegistration {
 	AsyncWorkHandle* handle;
 	bool admitted;
 
-	explicit ScopedAsyncWorkRegistration(AsyncWorkHandle* handle)
-		: handle(handle), admitted(false) {
+	explicit ScopedAsyncWorkRegistration(AsyncWorkHandle* handle) : handle(handle), admitted(false) {
 		if (this->handle) {
 			this->admitted = this->handle->registerAsyncWork();
 		}
@@ -57,13 +56,12 @@ struct ScopedAsyncWorkRegistration {
 	}
 };
 
-template<typename State>
+template <typename State>
 struct PendingAsyncState {
 	napi_env env;
 	State* state;
 
-	PendingAsyncState(napi_env env, State* state)
-		: env(env), state(state) {}
+	PendingAsyncState(napi_env env, State* state) : env(env), state(state) {}
 
 	~PendingAsyncState() {
 		if (!this->state) return;
@@ -95,8 +93,7 @@ inline void delayTransactionStagingForTesting() {
 	transactionStagingDelayActive().store(true, std::memory_order_release);
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 	while (transactionStagingDelayActive().load(std::memory_order_acquire) &&
-		std::chrono::steady_clock::now() < deadline
-	) {
+		std::chrono::steady_clock::now() < deadline) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 	transactionStagingDelayActive().store(false, std::memory_order_release);
@@ -248,7 +245,7 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	// write-once here too so a stray re-stage from any caller cannot corrupt the watermark.
 	if (this->committedPosition.logSequenceNumber > 0) {
 		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %llu "
-			"(WAL already written at seq %u)\n",
+				  "(WAL already written at seq %u)\n",
 			this, (unsigned long long)this->id, this->committedPosition.logSequenceNumber);
 		return;
 	}
@@ -452,9 +449,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			// A stalling WriteBufferManager can block a synchronous write on the JS
 			// thread until memory is released, and the per-macrotask trim that
 			// releases idle iterators' pinned memtables runs on that same thread.
-			const bool poolable = this->snapshotSet && !this->disableSnapshot
-				&& !(targetHandle->descriptor->attachedWriteBufferManager
-					&& DBSettings::getInstance().getWriteBufferManagerAllowStall());
+			const bool poolable = this->snapshotSet && !this->disableSnapshot && !(targetHandle->descriptor->attachedWriteBufferManager && DBSettings::getInstance().getWriteBufferManagerAllowStall());
 			if (poolable) {
 				for (auto& slot : this->idleIterators) {
 					if (slot && slot->dbHandle == targetHandle && slot->boundsMatch(options)) {
@@ -535,9 +530,7 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 	checkOrphan = false;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-		if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending
-			|| (iterator->writeBufferManagerAttached && DBSettings::getInstance().getWriteBufferManagerAllowStall())
-		) {
+		if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending || (iterator->writeBufferManagerAttached && DBSettings::getInstance().getWriteBufferManagerAllowStall())) {
 			return false;
 		}
 		auto registered = this->activeIterators.find(iterator);
@@ -708,7 +701,7 @@ void TransactionHandle::close() {
  */
 napi_value TransactionHandle::get(
 	napi_env env,
-	std::string &key,
+	std::string& key,
 	napi_value resolve,
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride,
@@ -798,7 +791,7 @@ napi_value TransactionHandle::get(
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
-	const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
+			const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
 			if (getDelayMs > 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
 			}

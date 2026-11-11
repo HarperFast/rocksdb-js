@@ -112,7 +112,7 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 	// Releases the claim on any early return below; cleared once the worker takes
 	// ownership of the decrement (at the end of execute) after a successful queue.
 	bool handedOff = false;
-	CheckpointInFlightClaim claim{descriptor.get(), handedOff};
+	CheckpointInFlightClaim claim{ descriptor.get(), handedOff };
 
 	if (descriptor->isClosing()) {
 		::napi_throw_error(env, nullptr, "Database is closing");
@@ -171,8 +171,7 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 			auto state = reinterpret_cast<AsyncCheckpointState*>(data);
 			state->deleteAsyncWork();
 			if (status == napi_cancelled &&
-				--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()
-			) {
+				--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
 				state->descriptor->operationsInFlight.notify_all();
 			}
 			state->releaseDescriptor();

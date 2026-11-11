@@ -43,10 +43,10 @@ private:
 	 */
 	const uint64_t stallWarnMs;
 
-	std::atomic<rocksdb::WriteBufferManager*> writeBufferManager{nullptr};
-	std::atomic<uint64_t> writeBufferManagerStallActiveMs{0};
-	std::atomic<bool> writeBufferManagerWatchdogRunning{false};
-	std::atomic<bool> writeBufferManagerWatchdogStopping{false};
+	std::atomic<rocksdb::WriteBufferManager*> writeBufferManager{ nullptr };
+	std::atomic<uint64_t> writeBufferManagerStallActiveMs{ 0 };
+	std::atomic<bool> writeBufferManagerWatchdogRunning{ false };
+	std::atomic<bool> writeBufferManagerWatchdogStopping{ false };
 
 	std::thread watchdogThread;
 	std::mutex watchdogMutex;
@@ -66,7 +66,7 @@ private:
 	 * is left with no watchdog for the rest of the process.
 	 */
 	bool watchdogArmPendingAfterStop = false;
-	std::atomic<uint64_t> watchdogGeneration{0};
+	std::atomic<uint64_t> watchdogGeneration{ 0 };
 
 	void armWatchdogLocked();
 	void runWriteBufferManagerWatchdog();

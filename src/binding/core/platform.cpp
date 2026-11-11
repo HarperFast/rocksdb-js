@@ -63,8 +63,7 @@ uint64_t getEffectiveOpenFileLimit() {
 	size_t size = sizeof(maxFilesPerProc);
 	if (::sysctlbyname("kern.maxfilesperproc", &maxFilesPerProc, &size, nullptr, 0) == 0 &&
 		maxFilesPerProc > 0 &&
-		static_cast<uint64_t>(maxFilesPerProc) < effectiveLimit
-	) {
+		static_cast<uint64_t>(maxFilesPerProc) < effectiveLimit) {
 		effectiveLimit = static_cast<uint64_t>(maxFilesPerProc);
 	}
 	#endif
@@ -116,33 +115,37 @@ std::chrono::system_clock::time_point convertFileTimeToSystemTime(
 	constexpr auto epoch_diff = std::chrono::seconds(11644473600);
 	return std::chrono::system_clock::time_point(
 		std::chrono::duration_cast<std::chrono::system_clock::duration>(
-			fileTime.time_since_epoch() - epoch_diff));
+			fileTime.time_since_epoch() - epoch_diff
+		)
+	);
 #else
 	#if defined(__cpp_lib_chrono) && __cpp_lib_chrono >= 201907L
-		return std::chrono::clock_cast<std::chrono::system_clock>(fileTime);
+	return std::chrono::clock_cast<std::chrono::system_clock>(fileTime);
 	#else
-		using file_clock = std::filesystem::file_time_type::clock;
-		static const auto offset = []() -> std::chrono::nanoseconds {
-			auto sys_now = std::chrono::system_clock::now();
-			auto file_now = file_clock::now();
-			auto sys_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(sys_now.time_since_epoch());
-			auto file_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(file_now.time_since_epoch());
-			return sys_ns - file_ns;
-		}();
-		auto file_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(fileTime.time_since_epoch());
-		auto sys_ns = file_ns + offset;
-		return std::chrono::system_clock::time_point(
-			std::chrono::duration_cast<std::chrono::system_clock::duration>(sys_ns));
+	using file_clock = std::filesystem::file_time_type::clock;
+	static const auto offset = []() -> std::chrono::nanoseconds {
+		auto sys_now = std::chrono::system_clock::now();
+		auto file_now = file_clock::now();
+		auto sys_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(sys_now.time_since_epoch());
+		auto file_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(file_now.time_since_epoch());
+		return sys_ns - file_ns;
+	}();
+	auto file_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(fileTime.time_since_epoch());
+	auto sys_ns = file_ns + offset;
+	return std::chrono::system_clock::time_point(
+		std::chrono::duration_cast<std::chrono::system_clock::duration>(sys_ns)
+	);
 	#endif
 #endif
 }
 
-static std::atomic<double> lastTimestamp{0.0};
+static std::atomic<double> lastTimestamp{ 0.0 };
 
 double getWallClockTimestamp() {
 	int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
 		std::chrono::system_clock::now().time_since_epoch()
-	).count();
+	)
+					  .count();
 	return static_cast<double>(now) / 1000000.0;
 }
 
@@ -198,7 +201,7 @@ bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::pa
 	// comparison that is right on both kinds.
 	std::error_code error;
 	if (std::filesystem::exists(parent, error) && !error) {
-		for (auto probe = child; !probe.empty(); ) {
+		for (auto probe = child; !probe.empty();) {
 			error.clear();
 			if (std::filesystem::exists(probe, error) && !error) {
 				error.clear();
@@ -222,8 +225,7 @@ bool isPathWithin(const std::filesystem::path& parent, const std::filesystem::pa
 		return parentStr == childStr;
 	}
 	if (childStr.size() <= parentStr.size() ||
-		childStr.compare(0, parentStr.size(), parentStr) != 0
-	) {
+		childStr.compare(0, parentStr.size(), parentStr) != 0) {
 		return false;
 	}
 	// A root ("/", "c:/") already ends in the separator, so requiring another
@@ -333,8 +335,7 @@ bool syncDirectory(const std::filesystem::path& path, bool allowUnsupported) {
 	int rc = ::fsync(fd);
 	int syncErrno = errno;
 	::close(fd);
-	if (rc != 0 && !(allowUnsupported &&
-		(syncErrno == EINVAL || syncErrno == ENOTSUP || syncErrno == EOPNOTSUPP))) {
+	if (rc != 0 && !(allowUnsupported && (syncErrno == EINVAL || syncErrno == ENOTSUP || syncErrno == EOPNOTSUPP))) {
 		return false;
 	}
 #endif

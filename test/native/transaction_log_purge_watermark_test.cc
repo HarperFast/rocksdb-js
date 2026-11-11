@@ -49,7 +49,8 @@ struct PurgeWatermarkTest : ::testing::Test {
 	}
 
 	std::shared_ptr<TransactionLogStore> loadStore(
-		std::chrono::milliseconds retention = std::chrono::milliseconds(0), bool readOnly = false) {
+		std::chrono::milliseconds retention = std::chrono::milliseconds(0), bool readOnly = false
+	) {
 		return TransactionLogStore::load(storePath, MAX_FILE_SIZE, retention, 0, readOnly);
 	}
 
@@ -58,7 +59,8 @@ struct PurgeWatermarkTest : ::testing::Test {
 		std::string payload(PAYLOAD_SIZE, 'x');
 		rocksdb_js::TransactionLogEntryBatch batch(timestamp);
 		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())
+		));
 		rocksdb_js::LogPosition position;
 		store.writeBatch(batch, position);
 		auto sequence = ++rocksSequence;
@@ -76,7 +78,9 @@ struct PurgeWatermarkTest : ::testing::Test {
 
 	static uint64_t cutoffOneHourAgo() {
 		return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-			(std::chrono::system_clock::now() - std::chrono::hours(1)).time_since_epoch()).count());
+			(std::chrono::system_clock::now() - std::chrono::hours(1)).time_since_epoch()
+		)
+				.count());
 	}
 
 	TransactionLogPurgeRecord recordOnDisk(const std::filesystem::path& path) const {
@@ -154,7 +158,9 @@ TEST_F(PurgeWatermarkTest, InheritedSegmentIsScannedForItsTrueMaximum) {
 // A key minted ahead of the local clock, in a segment old enough to purge by mtime.
 TEST_F(PurgeWatermarkTest, CoversAKeyAheadOfTheClock) {
 	double nowMs = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::system_clock::now().time_since_epoch()).count());
+		std::chrono::system_clock::now().time_since_epoch()
+	)
+			.count());
 	double aheadOfClock = nowMs + 24.0 * 60 * 60 * 1000;
 	{
 		auto writer = createStore();
@@ -270,7 +276,8 @@ TEST_F(PurgeWatermarkTest, CrashBeforeUnlinkingTheCurrentSegmentStaysKnown) {
 	EXPECT_TRUE(std::filesystem::exists(crashImage / "2.txnlog"));
 	recovered->close();
 	EXPECT_TRUE(TransactionLogStore::load(crashImage, MAX_FILE_SIZE, std::chrono::milliseconds(0), 0, false)
-		->getPurgeWatermark().known);
+			->getPurgeWatermark()
+			.known);
 }
 
 // An unlink that fails stops the run before the chosen current segment is deleted; the writer has
@@ -651,7 +658,9 @@ TEST_F(PurgeWatermarkTest, BackupOfAStoreMissingASegmentIsUnknown) {
 	for (const auto& entry : store->snapshotForBackup(nullptr, false)) {
 		if (entry.relativeName == TRANSACTION_LOG_PURGE_RECORD_NAME) {
 			ASSERT_EQ(rocksdb_js::decodeTransactionLogPurgeRecordImage(
-				entry.inlineContents.data(), entry.inlineContents.size(), captured), TransactionLogPurgeRecordState::Valid);
+						  entry.inlineContents.data(), entry.inlineContents.size(), captured
+					  ),
+				TransactionLogPurgeRecordState::Valid);
 			found = true;
 		}
 	}
@@ -677,7 +686,9 @@ TEST_F(PurgeWatermarkTest, BackupThatOmitsAMalformedSegmentIsUnknown) {
 		sawSegment1 = sawSegment1 || entry.relativeName == "1.txnlog";
 		if (entry.relativeName == TRANSACTION_LOG_PURGE_RECORD_NAME) {
 			ASSERT_EQ(rocksdb_js::decodeTransactionLogPurgeRecordImage(
-				entry.inlineContents.data(), entry.inlineContents.size(), captured), TransactionLogPurgeRecordState::Valid);
+						  entry.inlineContents.data(), entry.inlineContents.size(), captured
+					  ),
+				TransactionLogPurgeRecordState::Valid);
 		}
 	}
 	EXPECT_FALSE(sawSegment1);

@@ -8,7 +8,7 @@ using rocksdb_js::TransactionStateCell;
 
 // Single-threaded reference for the old plain-field checks and stores. Never use concurrently.
 struct PlainStateCell {
-	TransactionState state{TransactionState::Pending};
+	TransactionState state{ TransactionState::Pending };
 
 	bool transition(TransactionState from, TransactionState to) {
 		// Only the failed-commit revert used a check before the old store.
@@ -34,7 +34,11 @@ static void observe(Cell& cell) {
 	asm volatile("" : "+m"(cell) : : "memory");
 }
 
-enum class Lifecycle { Commit, RetryThenCommit, Abort };
+enum class Lifecycle {
+	Commit,
+	RetryThenCommit,
+	Abort
+};
 
 template <typename Cell, Lifecycle lifecycle>
 static double measure(int iterations) {

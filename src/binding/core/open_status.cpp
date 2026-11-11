@@ -24,8 +24,7 @@ static bool namesFileWithExtension(const std::string& message, const char* exten
 		// explicitly matches and which ends lines with CRLF.
 		if (next == ':' || next == ' ' || next == '\'' || next == '"' ||
 			next == ')' || next == ',' || next == ';' ||
-			next == '\n' || next == '\r' || next == '\t'
-		) {
+			next == '\n' || next == '\r' || next == '\t') {
 			return true;
 		}
 		offset = end;
@@ -42,8 +41,7 @@ static std::string namedRocksFile(const std::string& message, const char* extens
 			const char next = message[end];
 			if (next != ':' && next != ' ' && next != '\'' && next != '"' &&
 				next != ')' && next != ',' && next != ';' &&
-				next != '\n' && next != '\r' && next != '\t'
-			) {
+				next != '\n' && next != '\r' && next != '\t') {
 				offset = end;
 				continue;
 			}
@@ -87,8 +85,7 @@ bool isMissingSstOpenRace(
 	const std::string message = status.ToString();
 	if (!namesFileWithExtension(message, ".sst") &&
 		!namesFileWithExtension(message, ".blob") &&
-		!namesFileWithExtension(message, ".log")
-	) {
+		!namesFileWithExtension(message, ".log")) {
 		return false;
 	}
 	if (status.IsPathNotFound()) {
@@ -99,8 +96,7 @@ bool isMissingSstOpenRace(
 	// subcode name as printed by Status::ToString.
 	if (message.find("No such file or directory") != std::string::npos ||
 		message.find("The system cannot find") != std::string::npos ||
-		message.find("PathNotFound") != std::string::npos
-	) {
+		message.find("PathNotFound") != std::string::npos) {
 		return true;
 	}
 

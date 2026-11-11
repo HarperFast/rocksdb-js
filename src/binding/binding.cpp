@@ -92,7 +92,7 @@ static void runCleanupStep(const char* name, Step&& step) noexcept {
  * the main env's cleanup hook never runs, so `moduleRefCount` cannot reach zero,
  * and each worker hook repeats the shutdown for what that worker left behind.
  */
-static std::atomic<bool> mainThreadExited{false};
+static std::atomic<bool> mainThreadExited{ false };
 
 /**
  * The main thread's `exit` listener (`load-binding.ts`), on every exit that
@@ -381,7 +381,7 @@ napi_value IteratorPoolStatsFn(napi_env env, napi_callback_info info) {
  * (main thread + worker threads) and we only want to cleanup after the last
  * instance exits.
  */
-static std::atomic<int32_t> moduleRefCount{0};
+static std::atomic<int32_t> moduleRefCount{ 0 };
 
 NAPI_MODULE_INIT() {
 	initializeTestSeams();
@@ -476,8 +476,7 @@ NAPI_MODULE_INIT() {
 			rocksdb_js::runCleanupStep("database registry teardown", []() { rocksdb_js::DBRegistry::Teardown(true); });
 		} else {
 			DEBUG_LOG("Binding::Init Skipping cleanup, %d remaining instances\n", newRefCount);
-		}
-	}, env));
+		} }, env));
 
 	// BackgroundError class + per-env addon data (must precede any DB open so the
 	// 'error' event and getLastError() can build instances).

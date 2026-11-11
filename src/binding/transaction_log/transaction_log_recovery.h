@@ -127,7 +127,8 @@ RecoveryScan scanTransactionLogForRecovery(
 	void* context,
 	double plausibleBound = std::numeric_limits<double>::infinity(),
 	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt,
-	bool requirePaddedTail = false);
+	bool requirePaddedTail = false
+);
 
 /**
  * In-memory adapter over scanTransactionLogForRecovery(fileSize, read, context).
@@ -138,7 +139,8 @@ RecoveryScan scanTransactionLogForRecovery(
 	uint32_t fileSize,
 	double plausibleBound = std::numeric_limits<double>::infinity(),
 	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt,
-	bool requirePaddedTail = false);
+	bool requirePaddedTail = false
+);
 
 /**
  * Scans a segment for the monotonic clock floor seed, which needs a stronger
@@ -165,7 +167,8 @@ RecoveryScan scanTransactionLogForFloor(
 	const std::filesystem::path& path,
 	uint32_t retiredAppendBoundary,
 	double plausibleBound,
-	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt);
+	std::optional<std::chrono::steady_clock::time_point> deadline = std::nullopt
+);
 
 /**
  * File adapter: takes fileMutex, then scans via positional reads on `file`.
@@ -190,12 +193,13 @@ RecoveryScan scanTransactionLogForRecovery(TransactionLogFile& file);
  * only signal.
  */
 uint32_t findFramingResumeOffset(
-	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from,
-	bool endIsWrittenExtent = true);
+	uint32_t fileSize, TransactionLogReadFn read, void* context, uint32_t from, bool endIsWrittenExtent = true
+);
 
 /** In-memory adapter over findFramingResumeOffset(fileSize, read, context, from). */
 uint32_t findFramingResumeOffset(
-	const char* data, uint32_t fileSize, uint32_t from, bool endIsWrittenExtent = true);
+	const char* data, uint32_t fileSize, uint32_t from, bool endIsWrittenExtent = true
+);
 
 /**
  * Counts the well-formed v1 entry frames in an in-memory transaction log image.

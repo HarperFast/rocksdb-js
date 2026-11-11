@@ -57,12 +57,14 @@ TEST(TransactionLogFlushedState, DestructivePurgeInvalidatesOldFlushCorrelations
 	auto storePath = uniqueFlushedStatePath();
 	auto statePath = storePath / "txn.state";
 	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 
 	std::string payload = "entry";
 	rocksdb_js::TransactionLogEntryBatch batch(1001.0);
 	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())
+	));
 	rocksdb_js::LogPosition position;
 	store->writeBatch(batch, position);
 	store->commitFinished(position, []() -> rocksdb::SequenceNumber { return 10; });
@@ -85,12 +87,14 @@ TEST(TransactionLogFlushedState, RejectsFlushSelectedBeforeGenerationChange) {
 	auto storePath = uniqueFlushedStatePath();
 	auto statePath = storePath / "txn.state";
 	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 
 	auto observedGeneration = store->flushedStateGeneration.load(std::memory_order_relaxed);
 	store->flushedStateGeneration.fetch_add(1, std::memory_order_relaxed);
 	rocksdb_js::TransactionLogStoreTestPeer::writeFlushedPosition(
-		*store, rocksdb_js::LogPosition(100, 1), observedGeneration);
+		*store, rocksdb_js::LogPosition(100, 1), observedGeneration
+	);
 
 	EXPECT_FALSE(std::filesystem::exists(statePath));
 	EXPECT_EQ(store->databaseFlushes.load(std::memory_order_relaxed), 0u);
@@ -111,7 +115,8 @@ TEST(TransactionLogFlushedState, RewritesStateFileAfterItIsUnlinked) {
 
 	{
 		auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 
 		store->recentlyCommittedSequencePositions[0] = { 10, rocksdb_js::LogPosition(100, 1) };
 		store->databaseFlushed(10);
@@ -147,7 +152,8 @@ TEST(TransactionLogFlushedState, ReopensReplacedStateFileByPathname) {
 
 	{
 		auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store->recentlyCommittedSequencePositions[0] = { 10, rocksdb_js::LogPosition(100, 1) };
 		store->databaseFlushed(10);
 		expectFlushedPosition(*store, 100, 1);
@@ -181,7 +187,8 @@ TEST(TransactionLogFlushedState, RewritesUnchangedPositionAfterFileIsUnlinked) {
 
 	{
 		auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store->recentlyCommittedSequencePositions[0] = { 10, rocksdb_js::LogPosition(100, 1) };
 		store->databaseFlushed(10);
 		ASSERT_TRUE(std::filesystem::exists(statePath));
@@ -192,7 +199,8 @@ TEST(TransactionLogFlushedState, RewritesUnchangedPositionAfterFileIsUnlinked) {
 		expectFlushedPosition(*store, 100, 1);
 
 		auto emptyStore = std::make_shared<rocksdb_js::TransactionLogStore>(
-			"bar", storePath.parent_path() / "bar", 0, std::chrono::milliseconds(0), 0);
+			"bar", storePath.parent_path() / "bar", 0, std::chrono::milliseconds(0), 0
+		);
 		emptyStore->databaseFlushed(10);
 		EXPECT_FALSE(std::filesystem::exists(storePath.parent_path() / "bar"));
 
@@ -213,7 +221,8 @@ TEST(TransactionLogFlushedState, LeavesPositionUnrecordedWhenPathCannotBeChecked
 
 	{
 		auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store->recentlyCommittedSequencePositions[0] = { 10, rocksdb_js::LogPosition(100, 1) };
 		store->databaseFlushed(10);
 		ASSERT_EQ(store->databaseFlushes.load(), 1u);
@@ -221,7 +230,7 @@ TEST(TransactionLogFlushedState, LeavesPositionUnrecordedWhenPathCannotBeChecked
 		// no search permission: exists() on a child reports an error, not absence
 		std::filesystem::permissions(storePath, std::filesystem::perms::owner_read);
 		std::error_code probe;
-		(void) std::filesystem::exists(storePath / "txn.state", probe);
+		(void)std::filesystem::exists(storePath / "txn.state", probe);
 		if (!probe) {
 			std::filesystem::permissions(storePath, std::filesystem::perms::owner_all);
 			store->close();
@@ -256,7 +265,8 @@ TEST(TransactionLogFlushedState, RetriesAfterDirectoryCannotBeRecreated) {
 
 	{
 		auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-			"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+			"foo", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store->recentlyCommittedSequencePositions[0] = { 10, rocksdb_js::LogPosition(100, 1) };
 		store->databaseFlushed(10);
 		ASSERT_TRUE(std::filesystem::exists(statePath));
@@ -298,7 +308,8 @@ TEST(TransactionLogFlushedState, NeverMovesBackToAnOlderPosition) {
 	auto storePath = uniqueFlushedStatePath();
 	std::filesystem::create_directories(storePath);
 	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 
 	store->recentlyCommittedSequencePositions[0] = { 20, rocksdb_js::LogPosition(200, 2) };
 	store->recentlyCommittedSequencePositions[1] = { 10, rocksdb_js::LogPosition(100, 1) };
@@ -316,13 +327,15 @@ TEST(TransactionLogFlushedState, NeverMovesBackToAnOlderPosition) {
 TEST(TransactionLogFlushedState, OutOfOrderCommitsKeepFlushCorrelationBehindUnflushedPositions) {
 	auto storePath = uniqueFlushedStatePath();
 	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 
 	std::string payload = "entry";
 	auto writeOne = [&](double timestamp) {
 		rocksdb_js::TransactionLogEntryBatch batch(timestamp);
 		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())
+		));
 		rocksdb_js::LogPosition position;
 		store->writeBatch(batch, position);
 		return position;
@@ -384,12 +397,14 @@ TEST(TransactionLogFlushedState, OutOfOrderCommitsKeepFlushCorrelationBehindUnfl
 TEST(TransactionLogFlushedState, FailedSegmentSyncStopsFlushedStateFromAdvancing) {
 	auto storePath = uniqueFlushedStatePath();
 	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
-		"foo", storePath, 0, std::chrono::milliseconds(0), 0);
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 	auto commit = [&](double timestamp, rocksdb::SequenceNumber sequence) {
 		std::string payload = "entry";
 		rocksdb_js::TransactionLogEntryBatch batch(timestamp);
 		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-			nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+			nullptr, payload.data(), static_cast<uint32_t>(payload.size())
+		));
 		rocksdb_js::LogPosition position;
 		store->writeBatch(batch, position);
 		store->commitFinished(position, [sequence]() { return sequence; });

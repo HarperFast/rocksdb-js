@@ -37,8 +37,7 @@ struct TransactionLogEntry final {
 		char* data,
 		uint32_t size
 	) :
-		store(store)
-	{
+		store(store) {
 		this->size = size + TRANSACTION_LOG_ENTRY_HEADER_SIZE;
 		this->data = std::make_unique<char[]>(this->size);
 
@@ -71,8 +70,7 @@ struct TransactionLogEntryBatch final {
 	uint32_t currentEntryIndex = 0;
 
 	TransactionLogEntryBatch(const double timestamp) :
-		timestamp(timestamp)
-	{}
+		timestamp(timestamp) {}
 
 	/**
 	 * Adds a new entry to the batch.

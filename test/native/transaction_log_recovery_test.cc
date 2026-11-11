@@ -48,8 +48,7 @@ public:
 
 	// Append an entry header that declares `declaredLength` but only writes
 	// `actualDataLen` data bytes (used to simulate a torn/partial entry).
-	LogImage& entryRaw(uint32_t declaredLength, uint32_t actualDataLen, uint8_t flags = 1,
-		double timestamp = 2.0) {
+	LogImage& entryRaw(uint32_t declaredLength, uint32_t actualDataLen, uint8_t flags = 1, double timestamp = 2.0) {
 		appendF64(timestamp); // any non-zero timestamp
 		appendU32(declaredLength);
 		appendU8(flags);
@@ -251,7 +250,8 @@ TEST(TransactionLogRecovery, DeadlineLeavesTheImageIntact) {
 	img.entry(10, 1, 500.0).entry(10, 1, 900.0);
 	auto deadline = std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
 	auto incomplete = scanTransactionLogForRecovery(
-		img.data(), img.size(), std::numeric_limits<double>::infinity(), deadline);
+		img.data(), img.size(), std::numeric_limits<double>::infinity(), deadline
+	);
 	EXPECT_EQ(incomplete.kind, RecoveryScan::Kind::Incomplete);
 	EXPECT_DOUBLE_EQ(incomplete.maxTimestamp, 0.0);
 
@@ -267,7 +267,8 @@ TEST(TransactionLogRecovery, DeadlineKeepsTheScannedPrefix) {
 	DelayedReadContext reader{ img.data() };
 	auto scan = scanTransactionLogForRecovery(
 		img.size(), delayAfterFirstRead, &reader, std::numeric_limits<double>::infinity(),
-		std::chrono::steady_clock::now() + std::chrono::milliseconds(10));
+		std::chrono::steady_clock::now() + std::chrono::milliseconds(10)
+	);
 	EXPECT_EQ(scan.kind, RecoveryScan::Kind::Incomplete);
 	EXPECT_EQ(scan.validEnd, afterFirst);
 	EXPECT_DOUBLE_EQ(scan.maxTimestamp, 500.0);
@@ -719,7 +720,8 @@ TEST(TransactionLogWindowsOpen, MappingFailureCannotAppendPastZeroPadding) {
 	std::string payload = "first-entry";
 	rocksdb_js::TransactionLogEntryBatch batch(3.0);
 	batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-		nullptr, payload.data(), static_cast<uint32_t>(payload.size())));
+		nullptr, payload.data(), static_cast<uint32_t>(payload.size())
+	));
 	TransactionLogFile::forceMapFailureForTests.store(true);
 	EXPECT_THROW(file.writeEntries(batch, 128 * 1024, 3.0),
 		rocksdb_js::TransactionLogOpenException);
@@ -881,7 +883,8 @@ TEST(TransactionLogResumeOffset, ACutIsNotTheWrittenExtent) {
 	EXPECT_EQ(findFramingResumeOffset(img.data(), img.size(), breakOffset + 1), resumeOffset);
 	EXPECT_EQ(
 		findFramingResumeOffset(img.data(), img.size(), breakOffset + 1, /*endIsWrittenExtent=*/false),
-		0u);
+		0u
+	);
 }
 
 TEST(TransactionLogResumeOffset, IoFailureThrows) {
@@ -1139,7 +1142,6 @@ TEST(TransactionLogRecoveryFile, ReadsAHeaderPastTwoGiBOnASparseFile) {
 }
 #endif
 
-
 namespace {
 
 std::filesystem::path uniqueMaxEntryScanPath() {
@@ -1168,7 +1170,8 @@ TEST(TransactionLogMaxEntryScan, AnUnprovedTornTailStopsTheWalkAndSaysSo) {
 		img.entry(10, 1, 500.0);
 		img.entryRaw(
 			/*declaredLength=*/std::numeric_limits<uint32_t>::max() - 12,
-			/*actualDataLen=*/8, 1, 4000.0);
+			/*actualDataLen=*/8, 1, 4000.0
+		);
 		std::ofstream out(path, std::ios::binary | std::ios::trunc);
 		out.write(img.data(), img.size());
 	}
@@ -1274,7 +1277,8 @@ TEST(TransactionLogFloorScan, ProtectedTornTailIsIncomplete) {
 
 	{
 		rocksdb_js::TransactionLogStore store(
-			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+			"store", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(logPath, 1));
 		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
 		EXPECT_FALSE(scan.complete);
@@ -1311,7 +1315,8 @@ TEST(TransactionLogFloorScan, OlderProtectedTornTailIsIncomplete) {
 
 	{
 		rocksdb_js::TransactionLogStore store(
-			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+			"store", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(previousPath, 1));
 		store.sequenceFiles.emplace(2, std::make_shared<TransactionLogFile>(currentPath, 2));
 		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
@@ -1344,7 +1349,8 @@ TEST(TransactionLogFloorScan, OlderTornTailBeforeALaggingFlushIsIncomplete) {
 
 	{
 		rocksdb_js::TransactionLogStore store(
-			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+			"store", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(previousPath, 1));
 		store.sequenceFiles.emplace(2, std::make_shared<TransactionLogFile>(currentPath, 2));
 		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
@@ -1503,7 +1509,8 @@ TEST(TransactionLogFloorScan, UnprovedTailPastTheFlushedPositionStillRefuses) {
 
 	{
 		rocksdb_js::TransactionLogStore store(
-			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+			"store", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(logPath, 1));
 		auto scan = store.scanLargestDurableKey(std::numeric_limits<double>::infinity(), std::chrono::seconds(1));
 		EXPECT_FALSE(scan.complete);
@@ -1534,7 +1541,8 @@ TEST(TransactionLogFloorScan, ADoomedNewestSegmentStopsTheWalk) {
 
 	{
 		rocksdb_js::TransactionLogStore store(
-			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+			"store", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(previousPath, 1));
 		store.sequenceFiles.emplace(2, std::make_shared<TransactionLogFile>(currentPath, 2));
 		auto scan = store.scanLargestDurableKey(/*plausibleBound=*/1000.0, std::chrono::seconds(1));
@@ -1621,7 +1629,8 @@ TEST(TransactionLogDiscovery, AShadowNameDoesNotTakeACanonicalSegmentsSlot) {
 	writeLogImage(storePath / "1 copy.txnlog", shadow);
 
 	auto store = rocksdb_js::TransactionLogStore::load(
-		storePath, 0, std::chrono::milliseconds(0), 0, /*readOnly=*/true);
+		storePath, 0, std::chrono::milliseconds(0), 0, /*readOnly=*/true
+	);
 	ASSERT_TRUE(store);
 	EXPECT_TRUE(store->discoveryIncomplete);
 	ASSERT_EQ(store->discoverySkipped.size(), 1u);
@@ -1644,7 +1653,8 @@ TEST(TransactionLogDiscovery, ANonCanonicalNameWithNoCollisionIsNotRegistered) {
 	writeLogImage(storePath / "9 copy.txnlog", foreign);
 
 	auto store = rocksdb_js::TransactionLogStore::load(
-		storePath, 0, std::chrono::milliseconds(0), 0, /*readOnly=*/true);
+		storePath, 0, std::chrono::milliseconds(0), 0, /*readOnly=*/true
+	);
 	ASSERT_TRUE(store);
 	EXPECT_TRUE(store->discoveryIncomplete);
 	EXPECT_EQ(store->sequenceFiles.count(9), 0u);
@@ -1665,7 +1675,8 @@ TEST(TransactionLogDiscovery, ACanonicalDirectoryStaysComplete) {
 	writeLogImage(storePath / "2.txnlog", second);
 
 	auto store = rocksdb_js::TransactionLogStore::load(
-		storePath, 0, std::chrono::milliseconds(0), 0, /*readOnly=*/true);
+		storePath, 0, std::chrono::milliseconds(0), 0, /*readOnly=*/true
+	);
 	ASSERT_TRUE(store);
 	EXPECT_FALSE(store->discoveryIncomplete);
 	EXPECT_EQ(store->sequenceFiles.size(), 2u);
@@ -1683,7 +1694,8 @@ TEST(TransactionLogDiscovery, ASecondFileForARegisteredSequenceIsRefused) {
 	writeLogImage(storePath / "elsewhere.txnlog", first);
 
 	rocksdb_js::TransactionLogStore store(
-		"store", storePath, 0, std::chrono::milliseconds(0), 0);
+		"store", storePath, 0, std::chrono::milliseconds(0), 0
+	);
 	EXPECT_TRUE(store.registerLogFile(storePath / "1.txnlog", 1));
 	// The registry, not the filename, is what refuses here.
 	EXPECT_FALSE(store.registerLogFile(storePath / "elsewhere.txnlog", 1));
@@ -1702,10 +1714,12 @@ TEST(TransactionLogFloorScan, AnAbandonedSegmentIsNotCountedAsCovered) {
 
 	{
 		rocksdb_js::TransactionLogStore store(
-			"store", storePath, 0, std::chrono::milliseconds(0), 0);
+			"store", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		store.sequenceFiles.emplace(1, std::make_shared<TransactionLogFile>(logPath, 1));
 		auto scan = store.scanLargestDurableKey(
-			std::numeric_limits<double>::infinity(), std::chrono::milliseconds(0));
+			std::numeric_limits<double>::infinity(), std::chrono::milliseconds(0)
+		);
 		EXPECT_FALSE(scan.complete);
 		EXPECT_TRUE(scan.budgetExhausted);
 		EXPECT_EQ(scan.segmentsScanned, 0u);

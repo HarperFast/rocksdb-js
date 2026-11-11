@@ -42,8 +42,7 @@ struct CommitWorker final {
 	unsigned idleThreads = 0;
 	bool stopped = false;
 
-	explicit CommitWorker(const char* threadName, unsigned maxThreads = 1)
-		: threadName(threadName), maxThreads(maxThreads < 1 ? 1 : maxThreads) {}
+	explicit CommitWorker(const char* threadName, unsigned maxThreads = 1) : threadName(threadName), maxThreads(maxThreads < 1 ? 1 : maxThreads) {}
 
 	~CommitWorker() {
 		this->shutdown();

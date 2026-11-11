@@ -117,7 +117,8 @@ bool decodeTransactionLogPurgeRecordSlot(const char* slot, TransactionLogPurgeRe
 }
 
 TransactionLogPurgeRecordState decodeTransactionLogPurgeRecordImage(
-	const char* data, size_t size, TransactionLogPurgeRecord& record, bool* otherSlotDamaged) {
+	const char* data, size_t size, TransactionLogPurgeRecord& record, bool* otherSlotDamaged
+) {
 	TransactionLogPurgeRecord slots[2];
 	bool valid[2] = { false, false };
 	bool zero[2] = { true, true };
@@ -151,7 +152,8 @@ std::string encodeTransactionLogPurgeRecordImage(const TransactionLogPurgeRecord
 }
 
 TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
-	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged) noexcept {
+	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged
+) noexcept {
 	try {
 		auto file = storePath / TRANSACTION_LOG_PURGE_RECORD_NAME;
 		std::error_code statusError;
@@ -179,7 +181,8 @@ TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
 }
 
 bool writeTransactionLogPurgeRecord(
-	const std::filesystem::path& storePath, const TransactionLogPurgeRecord& record) noexcept {
+	const std::filesystem::path& storePath, const TransactionLogPurgeRecord& record
+) noexcept {
 	try {
 		auto file = storePath / TRANSACTION_LOG_PURGE_RECORD_NAME;
 		std::error_code existsError;

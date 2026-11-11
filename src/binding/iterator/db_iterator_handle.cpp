@@ -17,8 +17,7 @@ namespace {
 constexpr bool WRITE_BATCH_HONORS_BOUNDS = ROCKSDB_MAJOR > 8 || (ROCKSDB_MAJOR == 8 && ROCKSDB_MINOR >= 10);
 
 bool needsBoundCheck(const DBIteratorOptions& options, bool writeBatch) {
-	return (writeBatch && !WRITE_BATCH_HONORS_BOUNDS)
-		|| (options.reverse && options.exclusiveStart && options.startKeyStr != nullptr);
+	return (writeBatch && !WRITE_BATCH_HONORS_BOUNDS) || (options.reverse && options.exclusiveStart && options.startKeyStr != nullptr);
 }
 
 }
@@ -51,8 +50,7 @@ DBIteratorHandle::DBIteratorHandle(
 	enforceBounds(needsBoundCheck(options, false)),
 	pooled(false),
 	hasLowerBound(options.startKeyStr != nullptr),
-	hasUpperBound(options.endKeyStr != nullptr)
-{
+	hasUpperBound(options.endKeyStr != nullptr) {
 	DEBUG_LOG("%p DBIteratorHandle::Constructor dbHandle=%p\n", this, dbHandle.get());
 	this->init(options);
 
@@ -82,8 +80,7 @@ DBIteratorHandle::DBIteratorHandle(
 	enforceBounds(needsBoundCheck(options, true)),
 	pooled(pooled),
 	hasLowerBound(options.startKeyStr != nullptr),
-	hasUpperBound(options.endKeyStr != nullptr)
-{
+	hasUpperBound(options.endKeyStr != nullptr) {
 	DEBUG_LOG("DBIteratorHandle::Constructor txnHandle=%p dbDescriptor=%p pooled=%d\n", this->txnHandle.get(), dbHandle->descriptor.get(), pooled);
 	this->txnHandle->ensureSnapshot();
 	if (this->txnHandle->snapshotSet) {
@@ -134,8 +131,7 @@ bool DBIteratorHandle::closeIfOpen() {
 }
 
 bool DBIteratorHandle::boundsMatch(const DBIteratorOptions& options) const {
-	return this->hasLowerBound == (options.startKeyStr != nullptr)
-		&& this->hasUpperBound == (options.endKeyStr != nullptr);
+	return this->hasLowerBound == (options.startKeyStr != nullptr) && this->hasUpperBound == (options.endKeyStr != nullptr);
 }
 
 void DBIteratorHandle::reuse(DBIteratorOptions& options) {
@@ -165,10 +161,7 @@ void DBIteratorHandle::reuse(DBIteratorOptions& options) {
 bool DBIteratorHandle::readsColumnOf(const std::shared_ptr<DBHandle>& target) const {
 	// Control-block identity, without the atomic increment of lock(): a
 	// recreated family is a new descriptor and never shares it.
-	return !this->column.owner_before(target->columnDescriptor)
-		&& !target->columnDescriptor.owner_before(this->column)
-		&& (this->clearEpoch & ColumnFamilyDescriptor::CLEAR_EPOCH_RUNNING) == 0
-		&& target->columnDescriptor->clearEpoch.load(std::memory_order_acquire) == this->clearEpoch;
+	return !this->column.owner_before(target->columnDescriptor) && !target->columnDescriptor.owner_before(this->column) && (this->clearEpoch & ColumnFamilyDescriptor::CLEAR_EPOCH_RUNNING) == 0 && target->columnDescriptor->clearEpoch.load(std::memory_order_acquire) == this->clearEpoch;
 }
 
 void DBIteratorHandle::init(DBIteratorOptions& options) {

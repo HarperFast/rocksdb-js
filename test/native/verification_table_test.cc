@@ -279,11 +279,11 @@ TEST(LockTrackerWake, WakeInvokesLiveCallbacksInOrderOnce) {
 	EXPECT_TRUE(b.cancel());
 
 	t.wake();
-	EXPECT_EQ(order, (std::vector<int>{0, 2}));
+	EXPECT_EQ(order, (std::vector<int>{ 0, 2 }));
 	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
 
 	t.wake();
-	EXPECT_EQ(order, (std::vector<int>{0, 2}));
+	EXPECT_EQ(order, (std::vector<int>{ 0, 2 }));
 	EXPECT_FALSE(a.cancel());
 	EXPECT_FALSE(c.cancel());
 	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
@@ -363,7 +363,7 @@ TEST(LockTrackerWake, MoveAssignmentCancelsReplacedRegistration) {
 	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base + 1);
 
 	t.wake();
-	EXPECT_EQ(invoked, (std::vector<int>{1}));
+	EXPECT_EQ(invoked, (std::vector<int>{ 1 }));
 	EXPECT_EQ(LockTracker::registeredWakeCallbacks(), base);
 }
 
@@ -380,7 +380,7 @@ TEST(LockTrackerWake, CancelRacingWakeSettlesEachRegistrationOnce) {
 		LockTracker t(0, 1, 0x1);
 		const int64_t base = LockTracker::registeredWakeCallbacks();
 		std::vector<std::atomic<int>> settled(kThreads * kPerThread);
-		std::atomic<int> added{0};
+		std::atomic<int> added{ 0 };
 		std::vector<std::thread> threads;
 		for (int th = 0; th < kThreads; ++th) {
 			threads.emplace_back([&, th] {
