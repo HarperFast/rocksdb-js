@@ -80,10 +80,58 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: pnpm build
 
+      - name: Download previous benchmark results
+        id: baseline
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Baseline is the latest successful run on main that uploaded results;
+          # any failure here just means no comparison.
+          rm -rf baseline && mkdir baseline
+          for run_id in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow benchmark.yml \
+              --branch main --status success --limit 10 --json databaseId --jq '.[].databaseId'); do
+            [ "$run_id" = "$GITHUB_RUN_ID" ] && continue
+            if gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+                --pattern 'benchmark-results-*' --dir baseline 2>/dev/null; then
+              file=$(find baseline -name benchmark-results.json | head -n 1)
+              if [ -n "$file" ]; then
+                echo "file=$file" >> "$GITHUB_OUTPUT"
+                echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            fi
+          done
+          echo "No previous benchmark results found; skipping comparison."
+
       - name: Run benchmarks
         env:
           BENCHMARK_MODE: ${{ github.event.inputs.mode || 'essential' }}
-        run: pnpm bench
+          BASELINE_FILE: ${{ steps.baseline.outputs.file }}
+          NO_COLOR: '1'
+        shell: bash
+        run: |
+          if [ -n "$BASELINE_FILE" ]; then
+            pnpm bench --compare "$BASELINE_FILE" 2>&1 | tee bench-output.txt
+          else
+            pnpm bench 2>&1 | tee bench-output.txt
+          fi
+
+      - name: Summarize benchmark comparison
+        if: always() && steps.baseline.outputs.file != '' && hashFiles('bench-output.txt') != ''
+        env:
+          BASELINE_RUN_ID: ${{ steps.baseline.outputs.run_id }}
+        run: |
+          {
+            echo "## Benchmark comparison"
+            echo
+            echo "Baseline: latest successful run on main ([#$BASELINE_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$BASELINE_RUN_ID)). In each benchmark the first row is this run and the \`(baseline)\` row is the previous one."
+            echo
+            echo '```'
+            # Stay under the 1 MiB summary limit
+            tail -c 900000 bench-output.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark results as artifact
         if: always() && hashFiles('benchmark-results.json') != ''
