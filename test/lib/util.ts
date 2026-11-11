@@ -157,12 +157,16 @@ const nodeExecutable =
 		: process.execPath);
 
 /**
- * Runs a fixture that prints `ready` and then SIGKILLs itself, resolving only when it died that way
- * after printing it.
+ * Runs a forked fixture, resolving on a clean exit or, with `killsItself`, only when it SIGKILLed
+ * itself after printing `ready`.
  */
-export function runSelfKillingFixture(fixture: string, dbPath: string): Promise<void> {
+export function runFixture(
+	fixture: string,
+	dbPath: string,
+	{ env, killsItself = false }: { env?: NodeJS.ProcessEnv; killsItself?: boolean } = {}
+): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(nodeExecutable, [fixture, dbPath]);
+		const child = spawn(nodeExecutable, [fixture, dbPath], { env: { ...process.env, ...env } });
 		let output = '';
 		child.stdout.on('data', (chunk) => (output += chunk));
 		child.stderr.on('data', (chunk) => (output += chunk));
@@ -176,7 +180,7 @@ export function runSelfKillingFixture(fixture: string, dbPath: string): Promise<
 			// Windows maps a self-kill to TerminateProcess(h, 1).
 			const killed =
 				signal === 'SIGKILL' || code === 137 || (process.platform === 'win32' && code === 1);
-			if (killed && output.includes('ready')) {
+			if (killsItself ? killed && output.includes('ready') : code === 0 && signal === null) {
 				resolve();
 			} else {
 				reject(new Error(`fixture exited (code=${code} signal=${signal}): ${output}`));

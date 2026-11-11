@@ -612,7 +612,8 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	 * its next step and cannot await. It blocks the event loop for one fsync of each live WAL file
 	 * holding unsynced writes, after any WAL sync already running on another thread. It does not
 	 * wait for a write stall, a flush or a compaction, and has no timeout: a failing or saturated
-	 * disk holds it for as long as that fsync takes.
+	 * disk holds it for as long as that fsync takes. Writes made with `disableWAL` are not covered.
+	 * Throws when the sync fails or the database is closed or closing.
 	 *
 	 * On a read-only database it returns without syncing.
 	 */

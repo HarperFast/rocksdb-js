@@ -1,5 +1,5 @@
 import { backups, RocksDatabase, validateTransactionLogStore } from '../src/index.ts';
-import { dbRunner, generateDBPath, runSelfKillingFixture } from './lib/util.ts';
+import { dbRunner, generateDBPath, runFixture } from './lib/util.ts';
 import { cpSync, existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -234,10 +234,9 @@ describe('log.getPurgeWatermark()', () => {
 		it('keeps the floor and the watermark across a kill right after a boot purge', async () => {
 			const dbPath = tempPath();
 			const storePath = copyRelease213Store(dbPath);
-			await runSelfKillingFixture(
-				join(__dirname, 'fixtures', 'fork-purge-baseline-boot.mts'),
-				dbPath
-			);
+			await runFixture(join(__dirname, 'fixtures', 'fork-purge-baseline-boot.mts'), dbPath, {
+				killsItself: true,
+			});
 			expect(existsSync(join(storePath, '2.txnlog'))).toBe(false);
 			const db = RocksDatabase.open(dbPath);
 			try {

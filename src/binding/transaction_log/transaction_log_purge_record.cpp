@@ -210,7 +210,7 @@ bool writeTransactionLogPurgeRecord(
 	}
 }
 
-void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath) {
+void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath, bool keepRecord) {
 	if (!std::filesystem::exists(storePath)) {
 		return;
 	}
@@ -223,7 +223,9 @@ void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath) 
 	for (const auto& other : others) {
 		std::filesystem::remove_all(other);
 	}
-	std::filesystem::remove_all(storePath);
+	if (!keepRecord) {
+		std::filesystem::remove_all(storePath);
+	}
 }
 
 } // namespace rocksdb_js

@@ -86,7 +86,6 @@ struct PurgeWatermarkTest : ::testing::Test {
 			(std::chrono::system_clock::now() - std::chrono::hours(1)).time_since_epoch()).count());
 	}
 
-	/** The raw bytes of the slot a record of `generation` occupies. */
 	std::string readSlot(uint64_t generation) const {
 		std::string bytes(rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE, '\0');
 		std::ifstream file(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME, std::ios::binary);
@@ -834,7 +833,6 @@ TEST_F(PurgeWatermarkTest, Release213StoreAdoptsABaseline) {
 TEST_F(PurgeWatermarkTest, BaselineNeverHidesAPurgedKeyAheadOfTheClock) {
 	copyRelease213Store();
 	ageSegment(2);
-	// retention at open deletes segment 2 after the record began
 	auto store = loadStore(std::chrono::milliseconds(60 * 60 * 1000));
 	EXPECT_FALSE(std::filesystem::exists(segment(2)));
 	EXPECT_FALSE(store->getPurgeWatermark().known);
@@ -1115,6 +1113,29 @@ TEST_F(PurgeWatermarkTest, InvalidationClearsTracking) {
 	EXPECT_FALSE(store->setPurgeBaseline(5000).known);
 	store->close();
 	EXPECT_FALSE(recordOnDisk(storePath).tracked);
+}
+
+// A destroy that a bound transaction keeps open leaves the store alive, so its unknown record stays:
+// an absent one would read as a store that predates the record, and become adoptable.
+TEST_F(PurgeWatermarkTest, DestroyPurgeKeepsTheRecordOfASurvivingStore) {
+	copyRelease213Store();
+	auto store = loadStore();
+	ASSERT_TRUE(store->invalidatePurgeRecord());
+	store->purge(nullptr, /*all=*/true, 0);
+	EXPECT_FALSE(std::filesystem::exists(segment(2)));
+	EXPECT_FALSE(std::filesystem::exists(segment(3)));
+	ASSERT_TRUE(std::filesystem::exists(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
+	write(*store, 9000);
+	store->close();
+	EXPECT_FALSE(loadStore()->setPurgeBaseline(9000).known);
+}
+
+TEST_F(PurgeWatermarkTest, BaselineThrowsOnAClosingStore) {
+	copyRelease213Store();
+	auto store = loadStore();
+	store->close();
+	EXPECT_THROW(store->setPurgeBaseline(5000), rocksdb_js::DBException);
+	EXPECT_FALSE(recordOnDisk(storePath).known);
 }
 
 // 2.13.0 deleted every segment; txn.state is all that names the sequence. Everything is before the

@@ -1,10 +1,11 @@
 import { RocksDatabase, stats } from '../src/index.ts';
-import { dbRunner, generateDBPath, runSelfKillingFixture } from './lib/util.ts';
+import { dbRunner, generateDBPath, runFixture } from './lib/util.ts';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const killFixture = join(__dirname, 'fixtures', 'fork-sync-wal-kill.mts');
+const failureFixture = join(__dirname, 'fixtures', 'fork-sync-wal-failure.mts');
 
 describe('syncWalSync', () => {
 	it('performs a WAL sync on the calling thread, counted by the engine', () =>
@@ -22,7 +23,7 @@ describe('syncWalSync', () => {
 	it('keeps writes made before it across a kill right after it', async () => {
 		const dbPath = generateDBPath();
 		try {
-			await runSelfKillingFixture(killFixture, dbPath);
+			await runFixture(killFixture, dbPath, { killsItself: true });
 			const db = RocksDatabase.open(dbPath);
 			try {
 				for (let i = 0; i < 100; i++) {
@@ -31,6 +32,15 @@ describe('syncWalSync', () => {
 			} finally {
 				db.close();
 			}
+		} finally {
+			if (!process.env.KEEP_FILES) rmSync(dbPath, { recursive: true, force: true });
+		}
+	}, 20_000);
+
+	it('throws, and the async form rejects, when the sync fails', async () => {
+		const dbPath = generateDBPath();
+		try {
+			await runFixture(failureFixture, dbPath, { env: { ROCKSDB_JS_SYNC_WAL_FAILURE: '2' } });
 		} finally {
 			if (!process.env.KEEP_FILES) rmSync(dbPath, { recursive: true, force: true });
 		}

@@ -256,6 +256,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   write, `always` runs it on every attempt instead of retries alone. Write-intent refusal has no such
   switch; it is the `transactionLogWriteIntents` option. Snapshotted in `initializeTestSeams()`; tests
   use the equivalent `*ForTesting` binding functions
+- `ROCKSDB_JS_SYNC_WAL_FAILURE` - Test-only: number of WAL syncs (`syncWal()`, `syncWalSync()`) to
+  fail with an injected I/O error (a **count**). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_ABORT_MARK_FAILURE` - Test-only: number of abort-marker writes to fail with an
   injected error (a **count**). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a

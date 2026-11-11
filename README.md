@@ -2574,8 +2574,10 @@ deleted since the record began, made durable before the call returns.
 - **Once.** A log that reads unknown again later (its `txn.purged` was removed, for example by the
   downgrade procedure in [the transaction-log notes](docs/transaction-log.md#purge-watermark)) has
   a new record, and a baseline for it must also cover everything the earlier watermark covered.
-- Throws a `TypeError` unless `baseline` is a finite number at or above 0, an error when the record
-  cannot be written (the log stays unknown), and `ERR_DATABASE_READONLY` on a read-only database. A
+- Throws a `TypeError` unless `baseline` is a finite number at or above 0, an error when the log's
+  store is closing or the record cannot be written (the log stays unknown), and
+  `ERR_DATABASE_READONLY` on a read-only database. Returns `{ known: false }` when the log has no
+  store, such as after `purgeLogs({ destroy: true })` until the next write. A
   read-only or secondary database opened after the writer's first open sees the result; one opened
   before reports unknown until it reopens.
 

@@ -1218,7 +1218,9 @@ TransactionLogPurgeRecord TransactionLogStore::purgeRecordSnapshot() {
 		}
 		// A damaged other slot may have held a newer record whose purge already ran, and a writer
 		// mid-write looks the same, so both read as unknown.
-		record.known = record.known && this->purgeHistoryAccountedAtLoad && record.generation >= seen && !otherSlotDamaged;
+		bool trusted = this->purgeHistoryAccountedAtLoad && record.generation >= seen && !otherSlotDamaged;
+		record.known = record.known && trusted;
+		record.tracked = record.tracked && trusted;
 		return record;
 	}
 	std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
@@ -1237,10 +1239,15 @@ TransactionLogStore::PurgeWatermark TransactionLogStore::setPurgeBaseline(double
 	// The locks a purge publishes under, so no deletion lands between the read and the write.
 	std::lock_guard<std::mutex> lock(this->writeMutex);
 	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
+	// A close sets this before taking writeMutex, so a store that passed here closes after the write.
+	if (this->isClosing.load(std::memory_order_relaxed)) {
+		throw rocksdb_js::DBException("Transaction log store is closed");
+	}
 	TransactionLogPurgeRecord record = this->purgeRecordSnapshot();
 	if (!record.known && record.tracked) {
 		record.known = true;
 		record.watermark = std::max(record.watermark, baseline);
+		// Above the disk's generation, so writePurgeRecord() does not AND `known` with the disk's.
 		record.generation++;
 		// One slot holds the flag and the value, so a torn write leaves the previous, unknown record.
 		if (!this->writePurgeRecord(record)) {
@@ -1581,8 +1588,10 @@ void TransactionLogStore::doPurge(
 		*this->lastCommittedPosition = { 0, next != this->sequenceFiles.end() ? next->first : currentSequence };
 	}
 
-	// if all log files have been removed, clean up the empty directory
-	// only try to remove if we actually removed at least one file from this store
+	// If all log files have been removed, clean up what is left but the record (only after removing
+	// at least one file). The store can survive this destroy while a transaction is still bound, and
+	// an absent record would read as a store that predates it; the registry removes the directory
+	// once the store closes.
 	if (all && this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		// The live store can survive this destroy when a transaction is still
 		// bound. Invalidate both the correlation ring and callbacks that already
@@ -1607,7 +1616,7 @@ void TransactionLogStore::doPurge(
 		try {
 			if (std::filesystem::exists(this->path)) {
 				DEBUG_LOG("%p TransactionLogStore::purge Removing log store directory: %s\n", this, this->path.string().c_str());
-				removeTransactionLogStoreDirectory(this->path);
+				removeTransactionLogStoreDirectory(this->path, /*keepRecord=*/true);
 				DEBUG_LOG("%p TransactionLogStore::purge Removed log store directory: %s\n", this, this->path.string().c_str());
 			}
 		} catch (const std::filesystem::filesystem_error& e) {

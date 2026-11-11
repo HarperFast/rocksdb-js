@@ -77,9 +77,10 @@ bool writeTransactionLogPurgeRecord(
 
 /**
  * `remove_all(storePath)`, except that the record goes last: a deletion that stops part-way leaves
- * the record, whose absence would read as a store that predates it. Throws filesystem_error.
+ * the record, whose absence would read as a store that predates it. With `keepRecord`, the record
+ * and the directory stay. Throws filesystem_error.
  */
-void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath);
+void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath, bool keepRecord = false);
 
 } // namespace rocksdb_js
 

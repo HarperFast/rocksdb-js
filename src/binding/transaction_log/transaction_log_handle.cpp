@@ -124,7 +124,7 @@ TransactionLogStore::PurgeWatermark TransactionLogHandle::getPurgeWatermark() {
 
 TransactionLogStore::PurgeWatermark TransactionLogHandle::setPurgeBaseline(double baseline) {
 	auto store = this->store.lock();
-	if (!store || store->isClosing.load(std::memory_order_relaxed)) {
+	if (!store) {
 		return {};
 	}
 	return store->setPurgeBaseline(baseline);

@@ -729,7 +729,7 @@ struct TransactionLogStore final {
 	 * Makes an unknown watermark known at `max(watermark, baseline)`, durably, when the record proves
 	 * every deletion since it began was recorded: `baseline` must cover what was deleted before it. A
 	 * known or untracked record is left as it is. Returns the resulting watermark; throws when the
-	 * record cannot be written. See DESIGN.md, "Purge baseline".
+	 * store is closing or the record cannot be written. See DESIGN.md, "Purge baseline".
 	 */
 	PurgeWatermark setPurgeBaseline(double baseline);
 
