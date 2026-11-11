@@ -1,4 +1,5 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { type ChildResult, runChild } from './lib/child-process.ts';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,92 +12,31 @@ const exitFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-exit.mts'
 const disabledFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-disabled.mts');
 const WARN_MS = 2000;
 
-type ChildResult = { stdout: string; stderr: string; timedOut: boolean };
+const childEnv = { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: String(WARN_MS) };
 
 function runStallChild(
 	dbPath: string,
 	deadlineMs: number,
 	shutdownWhenStalled = false
 ): Promise<ChildResult> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(
-			process.execPath,
-			[fixturePath, dbPath, ...(shutdownWhenStalled ? ['shutdown'] : [])],
-			{
-				env: { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: String(WARN_MS) },
-			}
-		);
-		let stdout = '';
-		let stderr = '';
-		let timedOut = false;
-		let settled = false;
-
-		const finish = () => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			clearTimeout(deadline);
-			child.kill('SIGKILL');
-			resolve({ stdout, stderr, timedOut });
-		};
-
-		const deadline = setTimeout(() => {
-			timedOut = true;
-			finish();
-		}, deadlineMs);
-
-		child.stdout?.on('data', (chunk) => {
-			stdout += chunk.toString();
-			if (!shutdownWhenStalled && /^(STALLED|NEVER_STALLED|CLEARED)\r?$/m.test(stdout)) {
-				finish();
-			}
-		});
-		child.stderr?.on('data', (chunk) => {
-			stderr += chunk.toString();
-			if (shutdownWhenStalled && stderr.includes('WriteBufferManager write stall active for')) {
-				finish();
-			}
-		});
-		child.on('error', (error) => {
-			clearTimeout(deadline);
-			reject(error);
-		});
-		child.on('close', finish);
-	});
+	return runChild(
+		process.execPath,
+		[fixturePath, dbPath, ...(shutdownWhenStalled ? ['shutdown'] : [])],
+		{
+			deadlineMs,
+			env: childEnv,
+			stopWhen: ({ stdout, stderr }) =>
+				shutdownWhenStalled
+					? stderr.includes('WriteBufferManager write stall active for')
+					: /^(STALLED|NEVER_STALLED|CLEARED)\r?$/m.test(stdout),
+		}
+	);
 }
 
-function runExitChild(
-	dbPath: string,
-	listenerOrder: 'before' | 'after'
-): Promise<{
-	code: number | null;
-	signal: NodeJS.Signals | null;
-	timedOut: boolean;
-	stderr: string;
-}> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [exitFixturePath, dbPath, listenerOrder], {
-			env: { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: String(WARN_MS) },
-		});
-		let stderr = '';
-		let timedOut = false;
-		const deadline = setTimeout(() => {
-			timedOut = true;
-			child.kill('SIGKILL');
-		}, 15_000);
-
-		child.stderr?.on('data', (chunk) => {
-			stderr += chunk.toString();
-		});
-		child.on('error', (error) => {
-			clearTimeout(deadline);
-			reject(error);
-		});
-		child.on('close', (code, signal) => {
-			clearTimeout(deadline);
-			resolve({ code, signal, timedOut, stderr });
-		});
+function runExitChild(dbPath: string, listenerOrder: 'before' | 'after'): Promise<ChildResult> {
+	return runChild(process.execPath, [exitFixturePath, dbPath, listenerOrder], {
+		deadlineMs: 15_000,
+		env: childEnv,
 	});
 }
 
@@ -147,9 +87,6 @@ describe('WriteBufferManager stall watchdog', () => {
 			result = await runStallChild(join(dir, 'db'), 120_000);
 		} finally {
 			if (!process.env.KEEP_FILES) {
-				// The child was SIGKILLed a moment ago; on Windows its handles can
-				// outlive it briefly, and an EPERM thrown here would mask the real
-				// assertion result.
 				rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
 			}
 		}
