@@ -1,4 +1,5 @@
 #include <node_api.h>
+#include <algorithm>
 #include <climits>
 #include <cstring>
 #include <new>
@@ -41,13 +42,21 @@ bool MultiGetBatch::allocateResults() noexcept {
 	return true;
 }
 
+// A value's length travels as an int32, so the whole result is bounded the same way.
+static const size_t MAX_RESULT_SIZE = static_cast<size_t>(INT32_MAX);
+
 size_t MultiGetBatch::findFailure(size_t& resultSize) const {
 	const size_t count = this->size();
-	resultSize = count * sizeof(int32_t);
+	// Saturates just past the cap rather than wrapping, so the callers' cap check holds on any
+	// size_t width (the same pinned value can be requested many times).
+	resultSize = count > MAX_RESULT_SIZE / sizeof(int32_t) ? MAX_RESULT_SIZE + 1 : count * sizeof(int32_t);
 	for (size_t i = 0; i < count; i++) {
 		const rocksdb::Status& status = this->statuses[i];
 		if (status.ok()) {
-			resultSize += this->values[i].size();
+			const size_t size = this->values[i].size();
+			resultSize = size > MAX_RESULT_SIZE - std::min(resultSize, MAX_RESULT_SIZE)
+				? MAX_RESULT_SIZE + 1
+				: resultSize + size;
 		} else if (!status.IsNotFound()) {
 			return i;
 		}
@@ -126,9 +135,6 @@ bool readMultiGetKeys(
 	}
 	return true;
 }
-
-// A value's length travels as an int32, so the whole result is bounded the same way.
-static const size_t MAX_RESULT_SIZE = static_cast<size_t>(INT32_MAX);
 
 napi_value multiGetSyncResult(napi_env env, const char* errorMsg, const MultiGetBatch& batch) {
 	napi_value result;

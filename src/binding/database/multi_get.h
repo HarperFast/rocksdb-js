@@ -34,7 +34,8 @@ struct MultiGetBatch {
 
 	/**
 	 * Returns the index of the first key whose read failed (neither found nor not found), or
-	 * `size()` when none did, and sets `resultSize` to the bytes `writeResult()` needs.
+	 * `size()` when none did, and sets `resultSize` to the bytes `writeResult()` needs, or to just
+	 * past `INT32_MAX` when that exceeds the int32 cap.
 	 */
 	size_t findFailure(size_t& resultSize) const;
 
