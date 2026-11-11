@@ -2,5 +2,5 @@ pre-commit:
   parallel: true
   commands:
     check:
-      glob: '*.{js,ts}'
+      glob: '*.{js,ts,c,cc,cpp,cxx,h,hh,hpp,hxx}'
       run: pnpm check
