@@ -300,11 +300,12 @@ int syncDescriptor(int fd, bool dataOnly) {
 	int result;
 	do {
 #ifdef __APPLE__
-		// fsync() on macOS does not flush the drive cache; F_FULLFSYNC does. Not every filesystem
-		// supports it, so fall back to fsync as SQLite and RocksDB do.
 		(void)dataOnly;
 		result = ::fcntl(fd, F_FULLFSYNC);
-		if (result < 0 && errno != EINTR) {
+		// Only an unsupported F_FULLFSYNC falls back: after an I/O error the pages may already be
+		// clean, so a following fsync would report success for lost data.
+		if (result < 0 && (errno == ENOTSUP || errno == EOPNOTSUPP || errno == EINVAL ||
+			errno == ENOTTY)) {
 			result = ::fsync(fd);
 		}
 #else

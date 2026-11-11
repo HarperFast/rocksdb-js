@@ -60,17 +60,7 @@ namespace rocksdb_js {
 static std::atomic<uint64_t> appendBoundaryTempSequence{0};
 
 static void syncAppendBoundaryMarkerDirectory(const std::filesystem::path& directory) {
-	int directoryFd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if (directoryFd < 0) {
-		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Failed to open transaction log append-boundary directory for sync: " +
-			directory.string());
-	}
-	int syncResult = rocksdb_js::syncDescriptor(directoryFd, false);
-	int syncError = errno;
-	::close(directoryFd);
-	if (syncResult != 0 && syncError != EINVAL && syncError != ENOTSUP &&
-		syncError != EOPNOTSUPP) {
+	if (!rocksdb_js::syncDirectory(directory, /*allowUnsupported=*/true)) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
 			"Failed to sync transaction log append-boundary directory: " +
 			directory.string());

@@ -114,10 +114,9 @@ bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs);
 
 #ifndef _WIN32
 /**
- * Flushes `fd` to stable storage; the single POSIX durability primitive. On macOS it uses
- * `F_FULLFSYNC` (plain `fsync` leaves data in the drive cache) and falls back to `fsync` when
- * that fails. Elsewhere `dataOnly` selects `fdatasync` over `fsync`. Retries on EINTR; returns
- * 0 on success, -1 with errno set on failure.
+ * Flushes `fd` to stable storage. macOS uses `F_FULLFSYNC` (plain `fsync` leaves data in the drive
+ * cache), falling back to `fsync` only where it is unsupported; elsewhere `dataOnly` picks
+ * `fdatasync`. Returns 0, or -1 with errno set.
  */
 int syncDescriptor(int fd, bool dataOnly);
 #endif
