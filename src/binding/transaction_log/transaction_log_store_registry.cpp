@@ -716,7 +716,8 @@ std::vector<TransactionLogStoreRegistry::PurgedLogFile> TransactionLogStoreRegis
 	// Phase 3: Remove closed stores from the registry and delete their directories under the lock. A
 	// useLog() between the two would build a store over the directory the removal then deletes, and
 	// that store's next write would recreate it without a record, which reads as a store that predates
-	// the record. The purge already removed the segments, so this deletes little more than the record.
+	// the record. The purge already removed every flushed segment, so this unlinks the record and the
+	// unflushed segments the purge skipped.
 	if (destroy) {
 		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
 		for (auto& store : storesToPurge) {
