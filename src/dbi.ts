@@ -393,13 +393,22 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 				(value) => [value]
 			);
 		}
-		if (!this.store.isOpen()) {
+		const store = this.store;
+		if (!store.isOpen()) {
 			return Promise.reject(new Error('Database not open'));
 		}
-		return when(
-			() => this.store.getMany(this._context, keys, options as DBITransactional),
-			(values) => this.#decodeMany(values)
-		);
+		// No closure here may reference `this` or `options` (which can hold the transaction): the
+		// callback would share their scope and keep a dropped transaction's wrapper reachable until
+		// a cold read settles, blocking its orphan cleanup.
+		let values: MaybePromise<(Buffer | undefined)[]>;
+		try {
+			values = store.getMany(this._context, keys, options as DBITransactional);
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		return values instanceof Promise
+			? values.then(decodeManyWith(store))
+			: decodeMany(store, values);
 	}
 
 	/**
@@ -431,20 +440,7 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (keys.length === 1) {
 			return [this.getSync(keys[0], options as GetOptions & T)];
 		}
-		return this.#decodeMany(this.getManyBinarySync(keys, options));
-	}
-
-	#decodeMany(values: (Buffer | undefined)[]): any[] {
-		if (this.store.encoding === 'binary' || !this.store.decoder) {
-			return values;
-		}
-		for (let i = 0; i < values.length; i++) {
-			const value = values[i];
-			if (value !== undefined) {
-				values[i] = this.store.decodeValue(value as BufferWithDataView);
-			}
-		}
-		return values;
+		return decodeMany(this.store, this.getManyBinarySync(keys, options));
 	}
 
 	/**
@@ -593,4 +589,21 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	useLog(name: string | number): TransactionLog {
 		return this.store.useLog(this._context, name);
 	}
+}
+
+function decodeMany(store: Store, values: (Buffer | undefined)[]): any[] {
+	if (store.encoding === 'binary' || !store.decoder) {
+		return values;
+	}
+	for (let i = 0; i < values.length; i++) {
+		const value = values[i];
+		if (value !== undefined) {
+			values[i] = store.decodeValue(value as BufferWithDataView);
+		}
+	}
+	return values;
+}
+
+function decodeManyWith(store: Store): (values: (Buffer | undefined)[]) => any[] {
+	return (values) => decodeMany(store, values);
 }

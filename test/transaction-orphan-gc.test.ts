@@ -39,7 +39,7 @@ const itWithGC = it.skipIf(!forceGC);
 const itWithNodeGC = it.skipIf(Boolean(process.versions.bun || process.versions.deno));
 
 function runDependentFixture(
-	mode: 'async-get' | 'async-get-many' | 'iterator' | 'routed-iterator',
+	mode: 'async-get' | 'async-get-many' | 'async-get-many-decoded' | 'iterator' | 'routed-iterator',
 	dbPath: string
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -59,7 +59,7 @@ function runDependentFixture(
 }
 
 async function expectDependentFixtureSurvives(
-	mode: 'async-get' | 'async-get-many' | 'iterator' | 'routed-iterator'
+	mode: 'async-get' | 'async-get-many' | 'async-get-many-decoded' | 'iterator' | 'routed-iterator'
 ): Promise<void> {
 	const dbPath = join(process.cwd(), `.transaction-orphan-${mode}-${process.pid}-${Date.now()}`);
 	try {
@@ -96,6 +96,12 @@ describe('orphaned transactions', () => {
 	itWithNodeGC(
 		'should defer orphan cleanup past a pending batched read',
 		() => expectDependentFixtureSurvives('async-get-many'),
+		15_000
+	);
+
+	itWithNodeGC(
+		'should not retain a dropped transaction through a decoded batched read',
+		() => expectDependentFixtureSurvives('async-get-many-decoded'),
 		15_000
 	);
 

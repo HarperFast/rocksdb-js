@@ -9,13 +9,15 @@ const dbPath = process.argv[3];
 if (
 	(mode !== 'async-get' &&
 		mode !== 'async-get-many' &&
+		mode !== 'async-get-decoded' &&
+		mode !== 'async-get-many-decoded' &&
 		mode !== 'iterator' &&
 		mode !== 'routed-iterator') ||
 	!dbPath ||
 	!globalThis.gc
 ) {
 	console.error(
-		'Usage: node --expose-gc transaction-orphan-dependents.mts <async-get|async-get-many|iterator|routed-iterator> <dbPath>'
+		'Usage: node --expose-gc transaction-orphan-dependents.mts <async-get[-many][-decoded]|iterator|routed-iterator> <dbPath>'
 	);
 	process.exit(1);
 }
@@ -44,7 +46,12 @@ async function waitForTransactionClose(): Promise<void> {
 	assert.equal(transactionCount(), 0);
 }
 
-async function testDelayedAsyncGet(db: RocksDatabase, batched: boolean): Promise<void> {
+// A decoded read must not retain the transaction wrapper through its completion callback either.
+async function testDelayedAsyncGet(
+	db: RocksDatabase,
+	batched: boolean,
+	decoded: boolean
+): Promise<void> {
 	await db.put('key', 'value');
 	await db.put('other', 'value');
 	await db.flush();
@@ -53,7 +60,10 @@ async function testDelayedAsyncGet(db: RocksDatabase, batched: boolean): Promise
 
 	const pendingRead = (() => {
 		const txn = new Transaction(db.store);
-		return batched ? txn.getManyBinary(['key', 'other']) : txn.getBinary('key');
+		if (batched) {
+			return decoded ? txn.getMany(['key', 'other']) : txn.getManyBinary(['key', 'other']);
+		}
+		return decoded ? txn.get('key') : txn.getBinary('key');
 	})();
 	assert.ok(pendingRead instanceof Promise, 'expected a cold-cache async read');
 
@@ -91,8 +101,8 @@ async function testLiveIterator(db: RocksDatabase, routed: boolean): Promise<voi
 
 const db = RocksDatabase.open(dbPath);
 try {
-	if (mode === 'async-get' || mode === 'async-get-many') {
-		await testDelayedAsyncGet(db, mode === 'async-get-many');
+	if (mode.startsWith('async-get')) {
+		await testDelayedAsyncGet(db, mode.startsWith('async-get-many'), mode.endsWith('-decoded'));
 	} else {
 		await testLiveIterator(db, mode === 'routed-iterator');
 	}
