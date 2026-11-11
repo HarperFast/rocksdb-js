@@ -477,7 +477,7 @@ describe('transaction-log abort markers', () => {
 					{ maxRetries: 2 }
 				)
 			).toThrow(expect.objectContaining({ refusedBeforeLog: true }));
-			expect(attempts).toBe(3);
+			expect(attempts).toBe(2);
 			blocker.abort();
 			expect(readEntries(db)).toEqual(['sync']);
 		}));

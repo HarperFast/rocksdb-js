@@ -1322,7 +1322,7 @@ returned from the transaction call.
 The `txn` parameter is a `Transaction`. See the [Transaction](#class-transaction) section for more
 details.
 
-The `attempt` parameter is the number of times the transaction has been retried.
+The `attempt` parameter is the 1-based attempt number (`1` for the first run).
 
 ### `TransactionOptions`
 
@@ -1333,7 +1333,7 @@ The `attempt` parameter is the number of times the transaction has been retried.
   Requires the column family to be opened with `verificationTable: true`. See
   [Verification Table](#verification-table). Defaults to `false`.
 - `disableSnapshot?: boolean` Whether to disable snapshots. Defaults to `false`.
-- `maxRetries?: number` The maximum number of attempts, including the first, for both `transaction()` and
+- `maxRetries?: number` The maximum number of attempts, including the first (minimum `1`), for both `transaction()` and
   `transactionSync()`. Defaults to `3`.
 - `retryOnBusy?: boolean` Whether to retry the transaction if the commit fails with `IsBusy`.
   Defaults to `true` when the transaction wrote a transaction-log batch or was refused before
