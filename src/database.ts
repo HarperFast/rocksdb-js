@@ -1279,7 +1279,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 				!(
 					err instanceof TransactionRetryableError &&
 					(options?.retryOnBusy ?? (err.hasLog || err.refusedBeforeLog)) &&
-					attempt <= maxRetries
+					attempt < maxRetries
 				)
 			) {
 				return false;

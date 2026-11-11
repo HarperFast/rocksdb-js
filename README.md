@@ -1333,7 +1333,8 @@ The `attempt` parameter is the number of times the transaction has been retried.
   Requires the column family to be opened with `verificationTable: true`. See
   [Verification Table](#verification-table). Defaults to `false`.
 - `disableSnapshot?: boolean` Whether to disable snapshots. Defaults to `false`.
-- `maxRetries?: number` The maximum number of times to retry the transaction. Defaults to `3`.
+- `maxRetries?: number` The maximum number of attempts, including the first, for both `transaction()` and
+  `transactionSync()`. Defaults to `3`.
 - `retryOnBusy?: boolean` Whether to retry the transaction if the commit fails with `IsBusy`.
   Defaults to `true` when the transaction wrote a transaction-log batch or was refused before
   writing one (`refusedBeforeLog`), otherwise `false`. With `false`, `db.transaction()` also
