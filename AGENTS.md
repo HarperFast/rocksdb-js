@@ -1600,9 +1600,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     recreates the directory the way `getLogFile()` does and re-checks `isClosing` under
     `flushedStateMutex`, so a concurrent destroy cannot be resurrected (`doClose()` sets `isClosing`
     before taking that mutex, so a reopen that saw it clear is ordered before the destroy's final
-    directory removal; `doPurge`'s own `remove_all` of an emptied directory runs earlier with
-    `isClosing` still clear, and a directory recreated in that window is removed again by the
-    destroy). An all-segment purge that actually empties the registered set also advances a store
+    directory removal; `doPurge`'s own removal of an emptied store's files, which keeps `txn.purged`
+    and the directory, runs earlier with `isClosing` still clear, and anything written there in that
+    window is removed again by the destroy). An all-segment purge that actually empties the registered set also advances a store
     generation, clears the old commit-correlation ring, closes and resets the state stream, and
     resets the last-written position under the existing `dataSetsMutex -> flushedStateMutex` order.
     A flush callback captures that generation with its correlation scan and checks it after taking

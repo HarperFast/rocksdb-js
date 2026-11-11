@@ -223,8 +223,19 @@ void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath, 
 	for (const auto& other : others) {
 		std::filesystem::remove_all(other);
 	}
-	if (!keepRecord) {
-		std::filesystem::remove_all(storePath);
+	if (keepRecord) {
+		return;
+	}
+	std::filesystem::remove(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME);
+	std::error_code rmdirError;
+	std::filesystem::remove(storePath, rmdirError);
+	if (rmdirError) {
+		// Something appeared after the sweep (a concurrent open, a delete-pending file on Windows), so
+		// the directory outlives its record: put back an unknown one, best effort.
+		TransactionLogPurgeRecord unknown;
+		unknown.generation = 1;
+		writeTransactionLogPurgeRecord(storePath, unknown);
+		throw std::filesystem::filesystem_error("Failed to remove transaction log store directory", storePath, rmdirError);
 	}
 }
 
