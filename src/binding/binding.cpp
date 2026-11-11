@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstdio>
 #include <thread>
+#include <vector>
 
 namespace rocksdb_js {
 
@@ -225,6 +226,77 @@ napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &delayMs));
 	setWriteBufferManagerJoinDelayForTesting(std::max(countdown, 0), std::max(delayMs, 0));
 	NAPI_RETURN_UNDEFINED();
+}
+
+/**
+ * A process-global native switch a test sets from JS. Vitest runs every test file in one process,
+ * so `test/setup.ts` calls `resetTestSwitchesForTesting()` before each file to restore all of them.
+ * Every `*ForTesting` setter is exported from this table, so none can be left out of that reset;
+ * `test/test-switches.test.ts` fails if one is exported any other way.
+ */
+struct TestSwitch {
+	const char* name;
+	napi_callback set;
+	// Restores the default and reports whether the switch held anything else.
+	bool (*restoreDefault)();
+};
+
+static const TestSwitch testSwitches[] = {
+	{"forceTryAgainForTesting", ForceTryAgainForTesting, []() {
+		return forceTryAgainCounter().exchange(0, std::memory_order_relaxed) != 0;
+	}},
+	{"disablePrelogConflictCheckForTesting", DisablePrelogConflictCheckForTesting, []() {
+		const bool initial = prelogConflictCheckDisabledDefault().load(std::memory_order_relaxed);
+		return prelogConflictCheckDisabled().exchange(initial, std::memory_order_relaxed) != initial;
+	}},
+	{"setPrelogConflictCheckRetriesOnlyForTesting", SetPrelogConflictCheckRetriesOnlyForTesting, []() {
+		const bool initial = prelogConflictCheckRetriesOnlyDefault().load(std::memory_order_relaxed);
+		return prelogConflictCheckRetriesOnly().exchange(initial, std::memory_order_relaxed) != initial;
+	}},
+	{"forceDropFailureForTesting", ForceDropFailureForTesting, []() {
+		return forceDropFailureMode().exchange(0, std::memory_order_relaxed) != 0;
+	}},
+	{"setTransactionStagingDelayForTesting", SetTransactionStagingDelayForTesting, []() {
+		const bool changed = transactionStagingDelayCountdown().load(std::memory_order_relaxed) != 0 ||
+			transactionStagingDelayMs().load(std::memory_order_relaxed) != 0 ||
+			transactionStagingDelayActive().load(std::memory_order_acquire);
+		setTransactionStagingDelayForTesting(0, 0);
+		return changed;
+	}},
+	{"setTransactionCommitAdmissionDelayForTesting", SetTransactionCommitAdmissionDelayForTesting, []() {
+		const bool changed = transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) != 0 ||
+			transactionCommitAdmissionDelayActive().load(std::memory_order_acquire);
+		setTransactionCommitAdmissionDelayForTesting(0);
+		return changed;
+	}},
+	{"setWriteBufferManagerJoinDelayForTesting", SetWriteBufferManagerJoinDelayForTesting, []() {
+		const bool changed = writeBufferManagerJoinDelayCountdown().load(std::memory_order_relaxed) != 0 ||
+			writeBufferManagerJoinDelayMs().load(std::memory_order_relaxed) != 0;
+		setWriteBufferManagerJoinDelayForTesting(0, 0);
+		return changed;
+	}},
+};
+
+/**
+ * Test-only: restores every switch in `testSwitches` and returns the names of those that were not
+ * at their default.
+ */
+napi_value ResetTestSwitchesForTesting(napi_env env, napi_callback_info info) {
+	// Restore all of them before any N-API call that could fail part-way.
+	std::vector<const char*> changed;
+	for (const auto& testSwitch : testSwitches) {
+		if (testSwitch.restoreDefault()) {
+			changed.push_back(testSwitch.name);
+		}
+	}
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, changed.size(), &result));
+	for (uint32_t i = 0; i < changed.size(); ++i) {
+		napi_value name;
+		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, changed[i], NAPI_AUTO_LENGTH, &name));
+		NAPI_STATUS_THROWS(::napi_set_element(env, result, i, name));
+	}
+	return result;
 }
 
 /**
@@ -517,36 +589,15 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "shutdownOnExit", NAPI_AUTO_LENGTH, ShutdownOnExit, nullptr, &shutdownOnExitFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "shutdownOnExit", shutdownOnExitFn));
 
-	// test-only stranded-snapshot seam (see core/test_seam.h)
-	napi_value forceTryAgainFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "forceTryAgainForTesting", NAPI_AUTO_LENGTH, ForceTryAgainForTesting, nullptr, &forceTryAgainFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceTryAgainForTesting", forceTryAgainFn));
-	napi_value disablePrelogCheckFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "disablePrelogConflictCheckForTesting", NAPI_AUTO_LENGTH, DisablePrelogConflictCheckForTesting, nullptr, &disablePrelogCheckFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "disablePrelogConflictCheckForTesting", disablePrelogCheckFn));
-	napi_value retriesOnlyFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "setPrelogConflictCheckRetriesOnlyForTesting", NAPI_AUTO_LENGTH, SetPrelogConflictCheckRetriesOnlyForTesting, nullptr, &retriesOnlyFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setPrelogConflictCheckRetriesOnlyForTesting", retriesOnlyFn));
-
-	napi_value forceDropFailureFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "forceDropFailureForTesting", NAPI_AUTO_LENGTH, ForceDropFailureForTesting, nullptr, &forceDropFailureFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "forceDropFailureForTesting", forceDropFailureFn));
-
-	napi_value setTransactionStagingDelayFn;
-	NAPI_STATUS_THROWS(::napi_create_function(
-		env,
-		"setTransactionStagingDelayForTesting",
-		NAPI_AUTO_LENGTH,
-		SetTransactionStagingDelayForTesting,
-		nullptr,
-		&setTransactionStagingDelayFn
-	));
-	NAPI_STATUS_THROWS(::napi_set_named_property(
-		env,
-		exports,
-		"setTransactionStagingDelayForTesting",
-		setTransactionStagingDelayFn
-	));
+	// test-only switches (see core/test_seam.h and testSwitches above)
+	for (const auto& testSwitch : testSwitches) {
+		napi_value setFn;
+		NAPI_STATUS_THROWS(::napi_create_function(env, testSwitch.name, NAPI_AUTO_LENGTH, testSwitch.set, nullptr, &setFn));
+		NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, testSwitch.name, setFn));
+	}
+	napi_value resetTestSwitchesFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "resetTestSwitchesForTesting", NAPI_AUTO_LENGTH, ResetTestSwitchesForTesting, nullptr, &resetTestSwitchesFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "resetTestSwitchesForTesting", resetTestSwitchesFn));
 
 	napi_value isTransactionStagingDelayedFn;
 	NAPI_STATUS_THROWS(::napi_create_function(
@@ -580,25 +631,6 @@ NAPI_MODULE_INIT() {
 		isTransactionCommitExecuteDelayedFn
 	));
 
-	napi_value setWriteBufferManagerJoinDelayFn;
-	NAPI_STATUS_THROWS(::napi_create_function(
-		env,
-		"setWriteBufferManagerJoinDelayForTesting",
-		NAPI_AUTO_LENGTH,
-		SetWriteBufferManagerJoinDelayForTesting,
-		nullptr,
-		&setWriteBufferManagerJoinDelayFn
-	));
-	NAPI_STATUS_THROWS(::napi_set_named_property(
-		env,
-		exports,
-		"setWriteBufferManagerJoinDelayForTesting",
-		setWriteBufferManagerJoinDelayFn
-	));
-
-	napi_value setCommitAdmissionDelayFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "setTransactionCommitAdmissionDelayForTesting", NAPI_AUTO_LENGTH, SetTransactionCommitAdmissionDelayForTesting, nullptr, &setCommitAdmissionDelayFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "setTransactionCommitAdmissionDelayForTesting", setCommitAdmissionDelayFn));
 	napi_value isCommitAdmissionDelayedFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCommitAdmissionDelayedForTesting", NAPI_AUTO_LENGTH, IsTransactionCommitAdmissionDelayedForTesting, nullptr, &isCommitAdmissionDelayedFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isTransactionCommitAdmissionDelayedForTesting", isCommitAdmissionDelayedFn));
