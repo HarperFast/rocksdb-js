@@ -236,7 +236,9 @@ void DBHandle::releaseLogRefsLocked() {
 
 bool DBHandle::tryActivateVerification(uint32_t heldOperations) const {
 	// A foreign close leaves `descriptor` alone; only this owner thread resets it.
-	if (!this->descriptor) {
+	// Checked before taking a guard too: under load this is the usual refusal,
+	// and it should not cost shared-line RMWs on every read.
+	if (!this->descriptor || this->descriptor->operationsInFlight.load() > heldOperations) {
 		return false;
 	}
 	OperationGuard guard(this->descriptor);

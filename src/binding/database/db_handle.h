@@ -85,9 +85,8 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	}
 
 	struct VerificationGates {
-		// A read may publish the version it reads.
 		bool publish = false;
-		// A slot may answer FRESH, or take an explicit seed.
+		// Also gates explicit seeds.
 		bool verify = false;
 	};
 

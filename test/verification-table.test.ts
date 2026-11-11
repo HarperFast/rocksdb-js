@@ -968,7 +968,6 @@ describe('Verification Table', () => {
 				cached.getSync(key, { populateVersion: true });
 				expect(cached.verifyVersion(key, 1.5e12)).toBe(false);
 				txn.abort();
-				// a transaction read completes the conversion as well as a database read
 				const reader = new Transaction(cached.store);
 				reader.getBinarySync(key, { populateVersion: true } as any);
 				reader.abort();

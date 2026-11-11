@@ -6,6 +6,12 @@
 
 namespace rocksdb_js {
 
+/** Column families in this process between `beginConversion()` and activation. */
+inline std::atomic<uint32_t>& verificationConversionsPending() {
+	static std::atomic<uint32_t> pending{0};
+	return pending;
+}
+
 /**
  * Verification-table participation of one column-family generation, shared by
  * every handle on it (AGENTS.md invariant 39; core/DESIGN.md "Participation is
@@ -18,12 +24,6 @@ namespace rocksdb_js {
  * staged without an intent (any transaction with an id up to `watermark`, any
  * operation in flight at the opt-in) remains.
  */
-/** Column families in this process between `beginConversion()` and activation. */
-inline std::atomic<uint32_t>& verificationConversionsPending() {
-	static std::atomic<uint32_t> pending{0};
-	return pending;
-}
-
 struct VerificationParticipation final {
 	enum Mode : uint32_t {
 		None = 0,
@@ -45,7 +45,6 @@ struct VerificationParticipation final {
 		return this->mode.load() != None;
 	}
 
-	/** Slots may be trusted (FRESH, `verifyVersion`) or explicitly seeded. */
 	bool verifies() const {
 		const uint32_t current = this->mode.load();
 		return current == None || current == Publishing;
@@ -104,8 +103,6 @@ private:
 			verificationConversionsPending().fetch_sub(1);
 		}
 	}
-
-public:
 };
 
 } // namespace rocksdb_js

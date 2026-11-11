@@ -231,7 +231,6 @@ inline void vtPopulateIfSettled(
 // transaction body immediately without any backoff delay.
 #define RETRY_NOW_VALUE 0x04000000
 
-// Only a column family whose writes all invalidate slots publishes from a read.
 inline bool readWantsPopulate(int32_t flags, bool publish) {
 	return (flags & POPULATE_VERSION_FLAG) != 0 && publish;
 }
