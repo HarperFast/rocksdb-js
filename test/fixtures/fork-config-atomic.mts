@@ -52,14 +52,12 @@ if (mode === 'beforeOpen') {
 	});
 	result.settings = wbm();
 
-	// None of the rejected calls may have sized the block cache or enabled a manager.
 	const db = RocksDatabase.open(dbPath);
 	db.putSync('k', 'v');
 	result.blockCacheCapacity = db.getStats()['rocksdb.block-cache-capacity'];
 	result.afterOpen = wbm();
 	db.close();
 } else {
-	// A live manager and a materialized verification table.
 	RocksDatabase.config({ writeBufferManagerSize: 16 * MiB });
 	const db = RocksDatabase.open(dbPath, { verificationTable: true });
 	db.putSync('k', 'v');

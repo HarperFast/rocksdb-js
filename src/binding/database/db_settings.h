@@ -84,6 +84,8 @@ private:
 	uint64_t verificationTableSeed;
 
 	std::unique_ptr<VerificationTable> verificationTable;
+	// A leaf: config() takes it under writeBufferManagerMutex, and nothing holding it takes
+	// another lock. Every verification-table read takes it, so hold it only briefly.
 	std::mutex verificationTableMutex;
 
 public:

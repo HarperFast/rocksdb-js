@@ -347,17 +347,16 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	// Nothing above mutates settings, so a rejected call changes nothing. A getter that throws
-	// (rather than supplying the wrong type) leaves a pending exception that the `== napi_ok` reads
-	// above treat as "not provided".
+	// A getter that throws (rather than supplying the wrong type) leaves a pending exception that the
+	// `== napi_ok` reads above treat as "not provided".
 	bool exceptionPending = false;
 	::napi_is_exception_pending(env, &exceptionPending);
 	if (exceptionPending) {
 		return nullptr;
 	}
 
-	// The checks against live state and the one fallible live update run before any store, under the
-	// locks the stores take, so a concurrent first open cannot land between check and apply.
+	// Checks against live state and the one fallible live update run before any store, under the
+	// locks a concurrent first open takes, so it cannot land between check and apply.
 	bool enableStallAfterDrain = false;
 	uint64_t stallGeneration = 0;
 	{
@@ -372,32 +371,62 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 
-		{
-			// Held across the policy update so a failed update leaves the entries unstored. No
-			// other holder of this mutex takes another of ours, so nesting it here cannot deadlock.
-			std::lock_guard<std::mutex> vtLock(settings.verificationTableMutex);
-			if (verificationTableEntriesProvided && settings.verificationTable) {
-				::napi_throw_error(env, nullptr, "Verification table size cannot be changed after the first database is opened");
+		constexpr const char* verificationTableFrozen =
+			"Verification table size cannot be changed after the first database is opened";
+		if (verificationTableEntriesProvided && settings.getVerificationTableRaw()) {
+			::napi_throw_error(env, nullptr, verificationTableFrozen);
+			return nullptr;
+		}
+
+		const bool updateLivePolicy = wbmAlreadyCreated && (allowStallProvided || flushPolicyProvided);
+		const rocksdb::WriteBufferFlushPolicy previousPolicy =
+			wbmAlreadyCreated ? settings.writeBufferManager->flush_policy() : rocksdb::WriteBufferFlushPolicy::kFlushOldest;
+		if (updateLivePolicy && !setLiveFlushPolicy(
+			env,
+			*settings.writeBufferManager,
+			DBSettings::resolveWriteBufferManagerFlushPolicy(
+				flushPolicyProvided
+					? static_cast<int>(newFlushPolicy)
+					: settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed),
+				allowStallProvided
+					? newAllowStall
+					: settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed)
+			)
+		)) {
+			return nullptr;
+		}
+
+		// Rechecked under the lock that materializes the table: a first open on another thread may
+		// have done so since the check above. The policy update stays outside this lock because
+		// every verification-table read takes it.
+		if (verificationTableEntriesProvided) {
+			bool frozen = false;
+			{
+				std::lock_guard<std::mutex> vtLock(settings.verificationTableMutex);
+				frozen = settings.verificationTable != nullptr;
+				if (!frozen) {
+					settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
+				}
+			}
+			if (frozen) {
+				if (updateLivePolicy) {
+					try {
+						settings.writeBufferManager->SetFlushPolicy(previousPolicy);
+					} catch (...) {
+						// The rejection is the error to report.
+					}
+				}
+				::napi_throw_error(env, nullptr, verificationTableFrozen);
 				return nullptr;
 			}
+		}
 
-			if (wbmAlreadyCreated && (allowStallProvided || flushPolicyProvided) && !setLiveFlushPolicy(
-				env,
-				*settings.writeBufferManager,
-				DBSettings::resolveWriteBufferManagerFlushPolicy(
-					flushPolicyProvided
-						? static_cast<int>(newFlushPolicy)
-						: settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed),
-					allowStallProvided
-						? newAllowStall
-						: settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed)
-				)
-			)) {
-				return nullptr;
-			}
-
-			if (verificationTableEntriesProvided) {
-				settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
+		// Before the WBM size and costToCache become visible: a first open may construct the manager
+		// as soon as this mutex is released, and with costToCache it charges this cache.
+		if (blockCacheSizeProvided) {
+			settings.blockCacheSize = static_cast<size_t>(blockCacheSize);
+			if (settings.blockCache) {
+				settings.blockCache->SetCapacity(blockCacheSize);
 			}
 		}
 
@@ -430,8 +459,6 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			stallGeneration = ++settings.allowStallGeneration;
 		}
 
-		// SetAllowStall is RocksDB's runtime knob; already-open DBs see the
-		// new behavior on their next write.
 		if (wbmAlreadyCreated && allowStallProvided) {
 			if (newAllowStall) {
 				enableStallAfterDrain = true;
@@ -442,12 +469,6 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	if (blockCacheSizeProvided) {
-		settings.blockCacheSize = static_cast<size_t>(blockCacheSize);
-		if (settings.blockCache) {
-			settings.blockCache->SetCapacity(blockCacheSize);
-		}
-	}
 	if (compactOnCloseProvided) {
 		settings.compactOnClose = compactOnClose;
 	}
@@ -473,14 +494,14 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		settings.shutdownOnExit.store(shutdownOnExit, std::memory_order_relaxed);
 	}
 
-	// Last: a failed drain is not a rejected value, and every field is already applied.
 	if (enableStallAfterDrain) {
 		// A stalling manager can block a synchronous write on the JS thread
 		// that alone releases idle pooled iterators' pinned memtables. The flag
 		// stored above already stops new pooling; close what is idle now, then
 		// let the manager stall unless a later change superseded this one (a
 		// superseding enable runs its own drain). If the drain fails, the flag
-		// keeps pooling off and the manager is left not stalling.
+		// keeps pooling off and the manager is left not stalling; it runs after
+		// every other store, so that failure leaves the rest of the call applied.
 		try {
 			DBRegistry::CloseIdlePooledIterators();
 		} catch (const std::exception& e) {
