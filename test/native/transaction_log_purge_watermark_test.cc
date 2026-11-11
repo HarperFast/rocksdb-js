@@ -1253,6 +1253,8 @@ TEST_F(PurgeWatermarkTest, StoreDirectoryRemovalKeepsForeignFilesBehindALink) {
 	auto target = root / "shared";
 	std::filesystem::rename(storePath, target);
 	std::ofstream(target / "sentinel") << "x";
+	std::filesystem::create_directory(target / "9.txnlog");
+	std::ofstream(target / "9.txnlog" / "sentinel") << "x";
 	std::filesystem::create_directory_symlink(target, storePath);
 
 	rocksdb_js::removeTransactionLogStoreDirectory(storePath, /*keepRecord=*/true);
@@ -1265,6 +1267,7 @@ TEST_F(PurgeWatermarkTest, StoreDirectoryRemovalKeepsForeignFilesBehindALink) {
 	EXPECT_FALSE(std::filesystem::exists(std::filesystem::symlink_status(storePath)));
 	EXPECT_FALSE(std::filesystem::exists(target / TRANSACTION_LOG_PURGE_RECORD_NAME));
 	EXPECT_TRUE(std::filesystem::exists(target / "sentinel"));
+	EXPECT_TRUE(std::filesystem::exists(target / "9.txnlog" / "sentinel"));
 #endif
 }
 
