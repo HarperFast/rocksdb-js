@@ -43,9 +43,10 @@ async function expectSurvives(
 	} else {
 		env.ROCKSDB_JS_COMMIT_THREAD = commitThreadMode;
 	}
-	const deadlineMs = Math.floor(CHILD_BUDGET_MS / iterations);
+	const budgetEnd = performance.now() + CHILD_BUDGET_MS;
 
 	for (let i = 0; i < iterations; i++) {
+		const deadlineMs = Math.max(0, Math.floor(budgetEnd - performance.now()));
 		const { code, signal, stderr, timedOut } = await runChild(
 			process.execPath,
 			[fixturePath, generateDBPath()],

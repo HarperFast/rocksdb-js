@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 
-export type ChildOutput = { stdout: string; stderr: string };
+type ChildOutput = { stdout: string; stderr: string };
 
 export type ChildResult = ChildOutput & {
 	code: number | null;
@@ -9,13 +9,11 @@ export type ChildResult = ChildOutput & {
 	timedOut: boolean;
 };
 
-export type RunChildOptions = {
-	/** Hard deadline after which the child is killed and `timedOut` is set. */
+type RunChildOptions = {
 	deadlineMs: number;
 	env?: NodeJS.ProcessEnv;
-	/** Kills the child once its output satisfies this, for fixtures that never exit. */
+	/** For fixtures that never exit: kill once the output has what the test needs. */
 	stopWhen?: (output: ChildOutput) => boolean;
-	/** How long to wait for `close` after the kill before giving up on reaping. */
 	closeTimeoutMs?: number;
 };
 
@@ -56,6 +54,8 @@ export function runChild(
 			if (closeTimer) {
 				return;
 			}
+			// A stopWhen kill must not be reported as a timeout if close lands after the deadline.
+			clearTimeout(deadline);
 			child.kill('SIGKILL');
 			closeTimer = setTimeout(() => {
 				settle(
