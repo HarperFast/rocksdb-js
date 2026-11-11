@@ -1158,8 +1158,9 @@ TEST_F(PurgeWatermarkTest, Release213StoreWithNoSegmentLeftAdoptsABaseline) {
 // A destroy that stops part-way must not leave the store without its record: an absent record reads
 // as a store that predates it, which a caller's baseline could then make known.
 TEST_F(PurgeWatermarkTest, StoreDirectoryRemovalDeletesTheRecordLast) {
-#ifdef _WIN32
-	GTEST_SKIP() << "relies on a POSIX directory permission to stop the removal";
+#ifndef __linux__
+	// libc++'s remove_all on macOS did not stop at the read-only child directory in CI.
+	GTEST_SKIP() << "relies on a Linux directory permission to stop the removal";
 #else
 	if (::geteuid() == 0) {
 		GTEST_SKIP() << "root ignores the directory permission that stops the removal";
