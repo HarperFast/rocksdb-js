@@ -515,9 +515,13 @@ async function confirm(question) {
 	} else if (stdin.isTTY) {
 		const iface = createInterface({ input: stdin, output: stderr });
 		try {
-			answer = await iface.question(`${question} (y/N) `);
-		} catch (error) {
-			if (error.code !== 'ABORT_ERR') throw error;
+			// EOF can close the interface without settling the question.
+			answer = await new Promise((resolve, reject) => {
+				iface.once('close', () => resolve(null));
+				iface
+					.question(`${question} (y/N) `)
+					.then(resolve, (error) => (error.code === 'ABORT_ERR' ? resolve(null) : reject(error)));
+			});
 		} finally {
 			iface.close();
 		}
@@ -1293,6 +1297,12 @@ async function runREPL() {
 }
 
 async function main() {
+	// `rocksdb-js db query | head` closes the pipe early; that is not a failure.
+	stdout.on('error', (error) => {
+		if (error.code !== 'EPIPE') throw error;
+		process.exit(process.exitCode ?? 0);
+	});
+
 	if (argv.help) {
 		console.log(`${versionString()}\n`);
 		printHelp();
@@ -1306,12 +1316,6 @@ async function main() {
 		}
 		return;
 	}
-
-	// `rocksdb-js db query | head` closes the pipe early; that is not a failure.
-	stdout.on('error', (error) => {
-		if (error.code !== 'EPIPE') throw error;
-		process.exit(process.exitCode ?? 0);
-	});
 
 	try {
 		await (interactive ? runREPL() : runOnce());

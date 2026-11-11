@@ -113,7 +113,6 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				expect(result.code).toBe(1);
 				expect(result.stderr).toMatch(/already open by another process/);
 
-				// A backup takes the lock unless --readonly asks for a point-in-time copy.
 				const backupDir = tempDBPath();
 				result = await cli([dbPath, 'backups', backupDir, 'backup']);
 				expect(result.code).toBe(1);
@@ -121,7 +120,6 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				result = await cli([dbPath, 'backups', backupDir, 'backup', '--readonly']);
 				expect(result.code).toBe(0);
 
-				// Usage errors are reported before anything is opened.
 				result = await cli([dbPath, 'backups', backupDir, 'restore', '--yes']);
 				expect(result.code).toBe(2);
 				expect(result.stderr).toContain('<backup-id>');
