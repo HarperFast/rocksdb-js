@@ -1158,6 +1158,41 @@ TEST_F(PurgeWatermarkTest, InvalidationWritesARecordWhereNoneExists) {
 	reloaded->close();
 }
 
+// A useLog() that replaces the store a destroy closed, before the registry removes the directory,
+// gets a store built over the kept record: ResolveStore initializes a record only in a directory it
+// created. That store stays unknown, never too low.
+TEST_F(PurgeWatermarkTest, StoreRecreatedOverADestroysKeptRecordStaysUnknown) {
+	auto store = createStore();
+	writeOutOfOrderSegments(*store);
+	ASSERT_TRUE(store->invalidatePurgeRecord());
+	store->purge(nullptr, /*all=*/true, 0);
+	ASSERT_TRUE(store->tryClose());
+	ASSERT_TRUE(std::filesystem::exists(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
+
+	auto recreated = std::make_shared<TransactionLogStore>("foo", storePath, MAX_FILE_SIZE, std::chrono::milliseconds(0), 0);
+	write(*recreated, 9000);
+	EXPECT_FALSE(recreated->getPurgeWatermark().known);
+	EXPECT_FALSE(recreated->setPurgeBaseline(9000).known);
+	recreated->close();
+	EXPECT_FALSE(loadStore()->getPurgeWatermark().known);
+}
+
+// 2.14.0 accepts only flag 0 or 0x01, so it reads the slot adoption leaves tracked-only as damaged
+// until the next record write replaces it.
+TEST_F(PurgeWatermarkTest, AdoptionLeavesTheOlderSlotTrackedOnlyUntilTheNextWrite) {
+	copyRelease213Store();
+	auto store = loadStore();
+	ASSERT_TRUE(store->setPurgeBaseline(RELEASE_213_AHEAD_1).known);
+	auto generation = recordOnDisk(storePath).generation;
+	EXPECT_EQ(readSlot(generation)[5], 0x01);
+	EXPECT_EQ(readSlot(generation - 1)[5], 0x02);
+	ageSegment(2);
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	ASSERT_FALSE(std::filesystem::exists(segment(2)));
+	EXPECT_EQ(readSlot(generation + 1)[5], 0x01);
+	store->close();
+}
+
 TEST_F(PurgeWatermarkTest, BaselineThrowsOnAClosingStore) {
 	copyRelease213Store();
 	auto store = loadStore();
