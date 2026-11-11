@@ -560,9 +560,6 @@ function printBackupList(list) {
 async function requireBackupId(backupDir, idStr) {
 	const list = await fetchBackupList(backupDir);
 	const id = Number(idStr);
-	if (!Number.isInteger(id)) {
-		throw new CLIError(`Invalid backup id: ${idStr}`, 2);
-	}
 	if (!list.some((b) => b.backupId === id)) {
 		throw new CLIError(`Backup ${id} does not exist`);
 	}
@@ -651,12 +648,12 @@ function validateBackupsArgs([dirArg, subcommand = 'list', extra]) {
 			2
 		);
 	}
-	const keepCount = Number(extra);
-	// The native layer reads keepCount as a uint32; values above that wrap.
-	if (
-		subcommand === 'purge' &&
-		(!Number.isInteger(keepCount) || keepCount < 0 || keepCount > 0xffffffff)
-	) {
+	if (['restore', 'verify', 'delete'].includes(subcommand) && !/^\d+$/.test(extra)) {
+		throw new CLIError(`Invalid backup id: ${extra}`, 2);
+	}
+	// Digits only: Number('') is 0, which would purge every backup. The native layer
+	// reads keepCount as a uint32; values above that wrap.
+	if (subcommand === 'purge' && (!/^\d+$/.test(extra) || Number(extra) > 0xffffffff)) {
 		throw new CLIError(
 			`Invalid keep count: ${extra}\nUsage: backups ${dirArg} purge <keep-count>`,
 			2
@@ -1015,7 +1012,8 @@ function printVerifyLogsResult({ invalidStores, stores }) {
 
 async function putCommand([key, ...valueParts]) {
 	let value = valueParts.join(' ');
-	if (value.startsWith('"') && value.endsWith('"')) {
+	// The REPL splits on whitespace, so it accepts quotes; a shell has already removed them.
+	if (interactive && value.startsWith('"') && value.endsWith('"')) {
 		value = value.slice(1, -1);
 	}
 	await currentDB.put(key, value);
@@ -1100,17 +1098,15 @@ async function useCommand([name]) {
 	currentDB = dbs[name];
 }
 
-function toJSON(_key, value) {
+// A function, not an arrow: `this[key]` is the original value, before Buffer#toJSON ran.
+function toJSON(key, value) {
+	const original = this[key];
+	if (ArrayBuffer.isView(original)) {
+		return Buffer.from(original.buffer, original.byteOffset, original.byteLength).toString('hex');
+	}
 	if (typeof value === 'bigint') return value.toString();
 	if (value instanceof Map) return Object.fromEntries(value);
 	if (value instanceof Set) return [...value];
-	// Binary data (keys, log entries) is hex; Buffer#toJSON has already run by this point.
-	if (ArrayBuffer.isView(value)) {
-		return Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString('hex');
-	}
-	if (value?.type === 'Buffer' && Array.isArray(value.data)) {
-		return Buffer.from(value.data).toString('hex');
-	}
 	return value;
 }
 

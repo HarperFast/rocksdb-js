@@ -87,7 +87,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 
 		it('prints results to stdout and runs read commands read-only alongside a writer', async () => {
 			const dbPath = tempDBPath();
-			seed(dbPath, { a: 'one', b: { x: 1 }, c: 3 });
+			seed(dbPath, { a: 'one', b: { x: 1 }, c: 3, d: { type: 'Buffer', data: [65, 66] } });
 			// Holding the database open read-write in this process takes RocksDB's LOCK, so
 			// only a read-only open can succeed in the child.
 			const writer = RocksDatabase.open(dbPath);
@@ -97,7 +97,10 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 
 				result = await cli([dbPath, 'count', '--json']);
 				expect(result.code).toBe(0);
-				expect(JSON.parse(result.stdout).count).toBe(3);
+				expect(JSON.parse(result.stdout).count).toBe(4);
+
+				result = await cli([dbPath, 'get', 'd', '--json']);
+				expect(JSON.parse(result.stdout)).toEqual({ type: 'Buffer', data: [65, 66] });
 
 				result = await cli([dbPath, 'query', 'a', 'c', '--json']);
 				expect(result.code).toBe(0);
@@ -133,6 +136,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 
 			expect((await cli([dbPath, 'put', 'c', 'three'])).code).toBe(0);
 			expect((await cli([dbPath, 'put', 'e', ''])).code).toBe(0);
+			expect((await cli([dbPath, 'put', 'q', '"quoted"'])).code).toBe(0);
 			expect((await cli([dbPath, 'remove', 'a'])).code).toBe(0);
 
 			let result = await cli([dbPath, 'clear']);
@@ -145,6 +149,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				expect(db.getSync('b')).toBe('two');
 				expect(db.getSync('c')).toBe('three');
 				expect(db.getSync('e')).toBe('');
+				expect(db.getSync('q')).toBe('"quoted"');
 			} finally {
 				db.close();
 			}
@@ -314,6 +319,13 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			result = await cli(['backups', backupDir, 'verify', '1'], { cwd: backupDir });
 			expect(result.code).toBe(0);
 			expect(result.stdout).toContain('verified OK');
+
+			for (const keepCount of ['', ' ', '-1', '1.5']) {
+				result = await cli(['backups', backupDir, 'purge', keepCount], { cwd: backupDir });
+				expect(result.code).toBe(2);
+			}
+			result = await cli(['backups', backupDir, '--json'], { cwd: backupDir });
+			expect(JSON.parse(result.stdout).backups).toHaveLength(1);
 
 			result = await cli(['backups', backupDir, 'verify', '9'], { cwd: backupDir });
 			expect(result.code).toBe(1);
