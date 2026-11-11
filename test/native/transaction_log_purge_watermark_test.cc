@@ -107,7 +107,8 @@ struct PurgeWatermarkTest : ::testing::Test {
 	 */
 	void copyRelease213Store() {
 		auto fixture = std::filesystem::current_path() / "test" / "fixtures" / "txnlog-2.13.0" / "store";
-		ASSERT_TRUE(std::filesystem::exists(fixture / "2.txnlog")) << fixture;
+		ASSERT_TRUE(std::filesystem::exists(fixture / "2.txnlog"))
+			<< "fixture not found at " << fixture << "; run the tests from the repository root";
 		std::filesystem::create_directories(root);
 		std::filesystem::copy(fixture, storePath, std::filesystem::copy_options::recursive);
 		ASSERT_FALSE(std::filesystem::exists(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
@@ -1033,6 +1034,15 @@ TEST_F(PurgeWatermarkTest, BaselineIsRefusedForARelease214UnknownRecord) {
 	store->close();
 }
 
+TEST_F(PurgeWatermarkTest, BaselineIsRefusedWhenTheRecordIsUnreadable) {
+	copyRelease213Store();
+	std::filesystem::create_directory(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME);
+	auto store = loadStore();
+	EXPECT_FALSE(store->setPurgeBaseline(RELEASE_213_AHEAD_2).known);
+	store->close();
+	EXPECT_TRUE(std::filesystem::is_directory(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
+}
+
 TEST_F(PurgeWatermarkTest, BaselineIsRefusedWhenDiscoveryIsIncomplete) {
 	copyRelease213Store();
 	std::ofstream(storePath / "not-a-sequence.txnlog") << "x";
@@ -1128,6 +1138,24 @@ TEST_F(PurgeWatermarkTest, DestroyPurgeKeepsTheRecordOfASurvivingStore) {
 	write(*store, 9000);
 	store->close();
 	EXPECT_FALSE(loadStore()->setPurgeBaseline(9000).known);
+}
+
+// A destroy that stops part-way must leave a record behind: an absent one reads as a store that
+// predates the record and accepts a baseline that never bounded the segments the destroy removed.
+TEST_F(PurgeWatermarkTest, InvalidationWritesARecordWhereNoneExists) {
+	copyRelease213Store();
+	std::ofstream(storePath / "not-a-sequence.txnlog") << "x";
+	auto store = loadStore();
+	ASSERT_FALSE(std::filesystem::exists(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
+	ASSERT_TRUE(store->invalidatePurgeRecord());
+	store->close();
+	auto record = recordOnDisk(storePath);
+	EXPECT_FALSE(record.known);
+	EXPECT_FALSE(record.tracked);
+	std::filesystem::remove(storePath / "not-a-sequence.txnlog");
+	auto reloaded = loadStore();
+	EXPECT_FALSE(reloaded->setPurgeBaseline(RELEASE_213_AHEAD_2).known);
+	reloaded->close();
 }
 
 TEST_F(PurgeWatermarkTest, BaselineThrowsOnAClosingStore) {

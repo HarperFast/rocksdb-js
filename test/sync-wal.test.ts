@@ -20,7 +20,9 @@ describe('syncWalSync', () => {
 			}
 		));
 
-	it('keeps writes made before it across a kill right after it', async () => {
+	// A kill keeps the page cache, so this passes without an fsync; the stat and failure tests cover
+	// the sync itself. This covers the database reopening intact after dying right after the call.
+	it('leaves earlier writes readable after a kill right after it', async () => {
 		const dbPath = generateDBPath();
 		try {
 			await runFixture(killFixture, dbPath, { killsItself: true });

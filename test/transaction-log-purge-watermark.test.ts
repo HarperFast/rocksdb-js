@@ -230,8 +230,10 @@ describe('log.getPurgeWatermark()', () => {
 				}
 			}));
 
-		// The caller's synchronous boot purge: adopt, commit a floor, sync the WAL, purge, then die.
-		it('keeps the floor and the watermark across a kill right after a boot purge', async () => {
+		// The caller's synchronous boot purge: adopt, commit a floor, sync the WAL, purge, then die. A
+		// kill keeps the page cache, so this passes without an fsync (the syncWalSync() tests cover the
+		// sync); it covers the order of the steps and the database reopening intact.
+		it('leaves the floor and the watermark readable after a kill right after a boot purge', async () => {
 			const dbPath = tempPath();
 			const storePath = copyRelease213Store(dbPath);
 			await runFixture(join(__dirname, 'fixtures', 'fork-purge-baseline-boot.mts'), dbPath, {
@@ -250,6 +252,15 @@ describe('log.getPurgeWatermark()', () => {
 			}
 		}, 20_000);
 
+		it('returns unknown once the log has no store', () =>
+			dbRunner({ skipOpen: true }, async ({ db, dbPath }) => {
+				copyRelease213Store(dbPath);
+				db.open();
+				const log = db.useLog('legacy');
+				db.purgeLogs({ destroy: true });
+				expect(log.setPurgeBaseline(AHEAD_2)).toEqual({ known: false });
+			}));
+
 		it('rejects a baseline that is not a finite number at or above 0', () =>
 			dbRunner(async ({ db }) => {
 				await write(db, 1000, 100);
@@ -267,7 +278,10 @@ describe('log.getPurgeWatermark()', () => {
 				try {
 					const readerLog = reader.useLog('legacy');
 					expect(() => readerLog.setPurgeBaseline(5000)).toThrow(
-						'Unsupported operation in read-only mode'
+						expect.objectContaining({
+							code: 'ERR_DATABASE_READONLY',
+							message: 'Unsupported operation in read-only mode',
+						})
 					);
 					expect(readerLog.getPurgeWatermark()).toEqual({ known: false });
 					db.useLog('legacy').setPurgeBaseline(5000);

@@ -1192,9 +1192,10 @@ bool TransactionLogStore::invalidatePurgeRecord() {
 	}
 	TransactionLogPurgeRecord record = this->purgeRecordSnapshot();
 	record.loseCoverage();
-	// An absent or corrupt record already reads as unknown. A valid one is rewritten even when it reads
-	// unknown: after a failed sync, a read proves nothing about what is durable.
-	if (state == TransactionLogPurgeRecordState::Valid) {
+	// A corrupt record already reads as unknown, but an absent one reads as a store that predates the
+	// record and can be given a baseline, so it is written too. A valid one is rewritten even when it
+	// reads unknown: after a failed sync, a read proves nothing about what is durable.
+	if (state != TransactionLogPurgeRecordState::Corrupt) {
 		record.generation++;
 		if (!this->writePurgeRecord(record)) {
 			return false;
@@ -1590,8 +1591,9 @@ void TransactionLogStore::doPurge(
 
 	// If all log files have been removed, clean up what is left but the record (only after removing
 	// at least one file). The store can survive this destroy while a transaction is still bound, and
-	// an absent record would read as a store that predates it; the registry removes the directory
-	// once the store closes.
+	// an absent record would read as a store that predates it. The registry removes the directory
+	// when this destroy also closes the store; a store that survives keeps its unknown record until
+	// a later destroy.
 	if (all && this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		// The live store can survive this destroy when a transaction is still
 		// bound. Invalidate both the correlation ring and callbacks that already

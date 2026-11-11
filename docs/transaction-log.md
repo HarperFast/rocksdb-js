@@ -248,7 +248,9 @@ themselves did, and they are gone.
   a deletion since the record began went unrecorded, for a hole in the files at the first open, and
   for a record 2.14.0 wrote, since it cannot say why it is unknown.
 - `purgeLogs({ destroy: true })` marks the record unknown before it deletes anything, and leaves the
-  store open, with its files, if it cannot. A log recreated under the same name starts a new history.
+  store open, with its files, if it cannot. A log recreated under the same name after the destroy
+  finishes starts a new history; one kept open by a bound transaction, or recreated while the destroy
+  runs, keeps the unknown record until a later destroy.
 - Backups capture the record with the files they copy, so a restored store keeps its watermark.
 
 ### Error Handling

@@ -2555,8 +2555,8 @@ if (!log.getPurgeWatermark().known) {
 }
 ```
 
-Makes the watermark of a log created by a release without it known. The first open by this release
-starts the log's record at its oldest surviving file, and every file deleted from then on is
+Makes the watermark of a log created by a release without it known. The first writable open by this
+release starts the log's record at its oldest surviving file, and every file deleted from then on is
 recorded. Files an older release deleted before that were not, and their keys can be anywhere,
 including ahead of the clock, so this library cannot bound them. `baseline` is the caller's bound
 for them: it must be at or above every key deleted from the log before its record began. The result
