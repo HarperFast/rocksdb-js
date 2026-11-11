@@ -219,9 +219,9 @@ Creates a new database instance.
     [Verification Table](#verification-table): writes through it invalidate the verification slot
     for each written key, and reads through it may seed slots. Enable this only for column families
     whose records are cached (e.g. the primary column family of a table). Defaults to `false`; a
-    handle that leaves it unset joins a column family another handle opened with `true`, and an
-    explicit `false` throws while any handle on that column family participates (see
-    [Verification Table](#verification-table)). Requires `verificationTableEntries` to be configured
+    handle that leaves it unset joins a column family another handle opened with `true`, `true`
+    converts handles already open without it, and an explicit `false` throws while any handle on a
+    participating column family is open (see [Verification Table](#verification-table)). Requires `verificationTableEntries` to be configured
     before the first database is opened.
   - `writeBufferSize: number` The per-column-family memtable size in bytes at which the memtable is
     sealed and flushed to an SST file. Smaller values produce more frequent, faster flushes; larger
@@ -2253,16 +2253,19 @@ Enable `verificationTable` only for column families whose records are cached (e.
 column family of a table); enabling it adds per-write slot invalidation overhead.
 
 Participation applies to the whole column family within the process. Once a handle opens a column
-family with `verificationTable: true`, every later handle on it participates too, even one opened
+family with `verificationTable: true`, every handle on it participates, including ones already open
 without the option, so a write through any handle invalidates its key's slot. This lasts until
 every handle on the database closes, or until the column family is opened with an explicit
-`verificationTable: false` after every participating handle on it has closed. While any handle on
-it participates, that explicit `false` throws `ERR_VERIFICATION_TABLE_CONFLICT`. Opening with
-`verificationTable: true` throws `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle
-is open on that column family: one opened before any opt-in, or with an explicit `false`. After
-such a handle closes, the same error is thrown while a transaction that existed before it closed
-is still pending, or while another operation on the database is running; retry the open once they
-finish.
+`verificationTable: false` after every handle on it has closed. While any handle on it is open,
+that explicit `false` throws `ERR_VERIFICATION_TABLE_CONFLICT`, and so does opening with
+`verificationTable: true` while a handle opened with an explicit `false` is open.
+
+When handles without the option already used the column family, the opt-in converts it: their
+writes invalidate slots from then on, but a transaction that started earlier may hold a write that
+does not. Until every such transaction has finished and no other operation on the database is
+running, reads of that column family neither seed slots nor answer `FRESH_VERSION_FLAG`,
+`verifyVersion()` returns `false`, and `populateVersion()` does nothing; they behave as uncached
+reads. The open itself never waits.
 
 ### `db.verifyVersion(key: Key, version: number): boolean`
 

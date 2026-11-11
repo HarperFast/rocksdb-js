@@ -715,7 +715,8 @@ napi_value TransactionHandle::get(
 	VtSlotRef vtSlot,
 	bool hasExpectedVersion,
 	uint64_t expectedVersion,
-	bool wantsPopulate
+	bool wantsPopulate,
+	bool vtPublish
 ) {
 	// Register before inspecting txn/state. Descriptor-wide close can select the
 	// transaction before the target DBHandle, and close() must not reset txn in
@@ -788,7 +789,7 @@ napi_value TransactionHandle::get(
 	state->hasExpectedVersion = hasExpectedVersion;
 	state->expectedVersion = expectedVersion;
 	state->wantsPopulate = wantsPopulate;
-	state->vtPublish = dbHandle->enableVerificationTable;
+	state->vtPublish = vtPublish;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -996,7 +997,7 @@ rocksdb::Status TransactionHandle::putSync(
 	// transaction's write buffer — not deferred to commit time. This upholds
 	// the invariant that a cached version is only trusted when there is a
 	// single visible version of the record across all transactions.
-	if (status.ok() && dbHandle->enableVerificationTable) {
+	if (status.ok() && dbHandle->guardsVerifiedWrites()) {
 		this->lockVTSlot(dbHandle, key);
 	}
 
@@ -1042,7 +1043,7 @@ rocksdb::Status TransactionHandle::removeSync(
 		}
 	}
 
-	if (status.ok() && dbHandle->enableVerificationTable) {
+	if (status.ok() && dbHandle->guardsVerifiedWrites()) {
 		this->lockVTSlot(dbHandle, key);
 	}
 

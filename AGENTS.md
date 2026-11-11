@@ -1712,11 +1712,13 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `txn` (#769). `TransactionStateCell` has no plain store; use `transition(from, to)` or `abort()`.
     See [state transitions](src/binding/transaction/DESIGN.md#state-transitions).
 
-39. **Verification-table participation belongs to the column family, not the handle**: every
-    write path checks the writing handle's `enableVerificationTable`, but slots outlive handles, so
-    `DBRegistry::OpenDB` makes every handle on a participating column family participate, refuses an
-    explicit `verificationTable: false` while any of them is attached, and refuses an opt-in while a
-    non-participating writer may exist. See
+39. **Verification-table participation belongs to the column family, not the handle**: slots
+    outlive handles, so every handle reads one `VerificationParticipation` per column-family
+    generation. `DBRegistry::OpenDB` refuses an explicit `verificationTable: false` while any handle
+    is attached to a participating column family, and converts a non-participating one on a late
+    opt-in: writes take intents at once, but the table stays inert for that column family until no
+    transaction that existed at the opt-in is open and no other operation is in flight. A read
+    decides whether it may publish before it observes the slot. See
     [participation](src/binding/core/DESIGN.md#participation-is-per-column-family).
 
 ## Debugging native heap corruption

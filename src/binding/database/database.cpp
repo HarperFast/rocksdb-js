@@ -801,7 +801,7 @@ static rocksdb::Status dropColumnFamily(DBHandle& dbHandle) noexcept {
 		dbHandle.descriptor->retryPendingReclaims();
 		bool retiredNow = false;
 		rocksdb::Status status = dbHandle.descriptor->retireColumnFamily(dbHandle.columnDescriptor, retiredNow);
-		if (retiredNow && dbHandle.enableVerificationTable) {
+		if (retiredNow && dbHandle.guardsVerifiedWrites()) {
 			VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
 			if (vt) vt->settleAllSlots();
 		}
@@ -1194,7 +1194,10 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
-	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), *dbHandle);
+	const int32_t flags = parseOptionalFlags(env, argv[5]);
+	const bool vtPublish = (hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0) &&
+		(*dbHandle)->publishesVerifiedReads(1);
+	const bool wantsPopulate = readWantsPopulate(flags, vtPublish);
 
 	VtSlotRef vtSlot;
 	if (hasExpectedVersion || wantsPopulate) {
@@ -1212,7 +1215,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		return txnHandle->get(env, key, resolve, reject, *dbHandle,
-		                      vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
+		                      vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate, vtPublish);
 	}
 
 	// No snapshot to order against: observe the slot before the read so the post-read CAS only
@@ -1234,7 +1237,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	state->hasExpectedVersion = hasExpectedVersion;
 	state->expectedVersion = expectedVersion;
 	state->wantsPopulate = wantsPopulate;
-	state->vtPublish = (*dbHandle)->enableVerificationTable;
+	state->vtPublish = vtPublish;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -2068,7 +2071,10 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
-	bool wantsPopulate = readWantsPopulate(flags, *dbHandle);
+	const bool usesTable = hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0;
+	const bool vtPublish = usesTable && (*dbHandle)->publishesVerifiedReads(1);
+	const bool vtVerify = hasExpectedVersion && (*dbHandle)->verifiesThroughTable();
+	bool wantsPopulate = readWantsPopulate(flags, vtPublish);
 
 	// For transactional reads, establish the snapshot BEFORE loading
 	// the VT slot. If we loaded the slot first, a complete write cycle
@@ -2104,7 +2110,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 
 	// Fast path: caller-supplied version matches the table — return FRESH
 	// sentinel without touching RocksDB. Snapshot already established above.
-	if (vtSlot && hasExpectedVersion && vtSlot.holds(vtObserved, expectedVersion)) {
+	if (vtSlot && vtVerify && hasExpectedVersion && vtSlot.holds(vtObserved, expectedVersion)) {
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
 		return result;
@@ -2170,12 +2176,12 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 			if (hasExpectedVersion && extracted == expectedVersion) {
 				// Soft VT miss confirmed fresh: the value still carries the caller's
 				// expected version, so the cached value is valid for this read.
-				vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
+				vtPopulateIfSettled(*dbHandle, vtPublish, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
 				napi_value freshResult;
 				NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &freshResult));
 				return freshResult;
 			}
-			vtPopulateIfSettled(*dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
+			vtPopulateIfSettled(*dbHandle, vtPublish, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
 		}
 	}
 
@@ -2233,7 +2239,7 @@ napi_value Database::VerifyVersion(napi_env env, napi_callback_info info) {
 	bool fresh = false;
 	if (parseExpectedVersion(env, argv[1], version)) {
 		const VtSlotRef slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
-		if (slot) {
+		if (slot && (*dbHandle)->verifiesThroughTable()) {
 			fresh = VerificationTable::verifyVersion(slot, version);
 		}
 	}
@@ -2270,8 +2276,9 @@ napi_value Database::PopulateVersion(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
+	// A converting column family keeps nothing it could later trust.
 	const VtSlotRef slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
-	if (slot) {
+	if (slot && (*dbHandle)->verifiesThroughTable()) {
 		// Low-level explicit primitive: publish exactly the caller-supplied
 		// version. The snapshot-isolation gating lives on the read/getSync
 		// populate path (vtPopulateIfSettled); callers of this API assert the
@@ -2869,7 +2876,7 @@ napi_value Database::PutSync(napi_env env, napi_callback_info info) {
 		// releaseWriteIntent). Without pre-locking, a reader that observes the
 		// old VT version just before the write and populates it just after the
 		// write completes (but before any settle) could publish a stale value.
-		VerificationTable* vt = (*dbHandle)->enableVerificationTable
+		VerificationTable* vt = (*dbHandle)->guardsVerifiedWrites()
 			? DBSettings::getInstance().getVerificationTableRaw()
 			: nullptr;
 		std::atomic<uint64_t>* vtSlot = nullptr;
@@ -2945,7 +2952,7 @@ napi_value Database::RemoveSync(napi_env env, napi_callback_info info) {
 		status = txnHandle->removeSync(keySlice, *dbHandle);
 	} else {
 		// Same lock-before-write, settle-after pattern as PutSync above.
-		VerificationTable* vt = (*dbHandle)->enableVerificationTable
+		VerificationTable* vt = (*dbHandle)->guardsVerifiedWrites()
 			? DBSettings::getInstance().getVerificationTableRaw()
 			: nullptr;
 		std::atomic<uint64_t>* vtSlot = nullptr;

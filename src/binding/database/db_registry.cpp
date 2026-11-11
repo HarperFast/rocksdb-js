@@ -1047,67 +1047,43 @@ void DBRegistry::OpenDB(
 		columnDescriptor = columns[rocksdb::kDefaultColumnFamilyName];
 	}
 
-	// AGENTS invariant 39. With no participant attached, an explicit opt-out
-	// ends participation; the next opt-in's checks below settle their slots.
+	// AGENTS invariant 39. With no handle attached, an explicit opt-out ends
+	// participation; a later opt-in converts the column family again.
+	VerificationParticipation& participation = *columnDescriptor->participation;
 	const bool optsOut = options.verificationTableExplicit && !options.verificationTable;
-	if (optsOut && columnDescriptor->verificationTable) {
-		const uint32_t verifying = columnDescriptor->verifyingHandles.load();
-		if (verifying > 0) {
+	if (optsOut && participation.guardsWrites()) {
+		const uint32_t attached = columnDescriptor->attachedHandles.load();
+		if (attached > 0) {
 			throw rocksdb_js::DBException(
 				"ERR_VERIFICATION_TABLE_CONFLICT",
 				"Column family \"" + columnDescriptor->name + "\" is open with verificationTable through " +
-				std::to_string(verifying) + " handle(s) in this process; open it with verificationTable: true or " +
+				std::to_string(attached) + " handle(s) in this process; open it with verificationTable: true or " +
 				"leave the option unset, or close those handles first"
 			);
 		}
 	}
-	// A write staged through a non-participating handle
-	// holds no write intent, so switching on while one may exist would let a
-	// seed taken now survive its commit. Read the count before the watermark;
-	// DBHandle::close() writes them in the other order.
-	if (options.verificationTable && !columnDescriptor->verificationTable) {
-		const uint32_t nonVerifying = columnDescriptor->nonVerifyingHandles.load();
-		if (nonVerifying > 0) {
+	// Converting would override an explicit request not to participate.
+	if (options.verificationTable && !participation.guardsWrites()) {
+		const uint32_t optedOut = columnDescriptor->optOutHandles.load();
+		if (optedOut > 0) {
 			throw rocksdb_js::DBException(
 				"ERR_VERIFICATION_TABLE_CONFLICT",
-				"Column family \"" + columnDescriptor->name + "\" is already open without verificationTable through " +
-				std::to_string(nonVerifying) + " handle(s) in this process; first close those handles and let pending " +
-				"transactions and operations finish, then retry opening with verificationTable: true"
+				"Column family \"" + columnDescriptor->name + "\" is open with verificationTable: false through " +
+				std::to_string(optedOut) + " handle(s) in this process; close those handles before opening it " +
+				"with verificationTable: true"
 			);
 		}
-		const uint64_t watermark = columnDescriptor->nonVerifyingTransactionWatermark.load();
-		if (watermark > 0) {
-			bool mayHoldUnguardedWrite = false;
-			{
-				std::lock_guard<std::mutex> txnsLock(entry.descriptor->txnsMutex);
-				// A closed transaction can linger here once its owning handle has
-				// closed; its commit, if still running, holds an operation.
-				for (const auto& registered : entry.descriptor->transactions) {
-					if (registered.first <= watermark && registered.second && !registered.second->closed.load()) {
-						mayHoldUnguardedWrite = true;
-						break;
-					}
-				}
-			}
-			// Env teardown removes a transaction from the map before cancelling
-			// its queued commit, which can still admit and write; only the
-			// descriptor-wide operation count covers it before its family claim.
-			if (mayHoldUnguardedWrite || entry.descriptor->operationsInFlight.load() > 0) {
-				throw rocksdb_js::DBException(
-					"ERR_VERIFICATION_TABLE_CONFLICT",
-					"Column family \"" + columnDescriptor->name + "\" was open without verificationTable and a " +
-					"transaction or operation that may have written through it is still running; retry the open " +
-					"once it finishes"
-				);
-			}
-			// A non-participating handle can seed a slot (populateVersion) that
-			// its own later writes left stale.
-			if (VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw()) {
-				vt->settleAllSlots();
-			}
+		if (columnDescriptor->hadNonParticipatingHandle) {
+			entry.descriptor->convertToVerification(participation);
+		} else {
+			participation.publish();
 		}
+	} else if (optsOut) {
+		participation.optOut();
 	}
-	const bool participates = options.verificationTable || (!optsOut && columnDescriptor->verificationTable);
+	if (!participation.guardsWrites()) {
+		columnDescriptor->hadNonParticipatingHandle = true;
+	}
 
 	const uint64_t verificationTableDbId = entry.descriptor->vtEpoch;
 	const uint32_t verificationTableColumnFamilyId = columnDescriptor->column->GetID();
@@ -1120,15 +1096,13 @@ void DBRegistry::OpenDB(
 	entry.descriptor->attach(handle);
 
 	// No throw from here until columnDescriptor is set: close() decrements the
-	// count only for a handle holding both.
-	if (participates) {
-		columnDescriptor->verificationTable = true;
-		columnDescriptor->verifyingHandles.fetch_add(1);
-	} else {
-		columnDescriptor->verificationTable = false;
-		columnDescriptor->nonVerifyingHandles.fetch_add(1);
+	// counts only for a handle holding both.
+	columnDescriptor->attachedHandles.fetch_add(1);
+	if (optsOut) {
+		columnDescriptor->optOutHandles.fetch_add(1);
 	}
-	handle->enableVerificationTable = participates;
+	handle->verificationTableOptOut = optsOut;
+	handle->participation = columnDescriptor->participation;
 	handle->columnDescriptor = std::move(columnDescriptor);
 	handle->descriptor = entry.descriptor;
 	handle->identityPath = entry.descriptor->identityPath;

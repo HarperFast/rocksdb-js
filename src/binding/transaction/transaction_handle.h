@@ -437,7 +437,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * (main JS thread) so the slot is invalidated as soon as the key enters
 	 * the transaction's write buffer — not deferred to commit time.
 	 *
-	 * Only acts when dbHandle->enableVerificationTable is true and the VT
+	 * Only acts when dbHandle->guardsVerifiedWrites() and the VT
 	 * has been materialized. Skips slots already locked by any transaction.
 	 * On successful CAS, appends to lockedVTSlots / heldTrackers.
 	 */
@@ -519,7 +519,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		VtSlotRef vtSlot = {},
 		bool hasExpectedVersion = false,
 		uint64_t expectedVersion = 0,
-		bool wantsPopulate = false
+		bool wantsPopulate = false,
+		bool vtPublish = false
 	);
 
 	/**

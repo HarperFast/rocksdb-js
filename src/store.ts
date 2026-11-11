@@ -655,7 +655,8 @@ export class Store {
 	timestampFloorLog?: string;
 
 	/**
-	 * Whether this store's column family participates in the VerificationTable.
+	 * The `verificationTable` option this store was opened with. The column
+	 * family can participate without it, when another handle opted in.
 	 */
 	verificationTable?: boolean;
 
@@ -1522,9 +1523,9 @@ export interface GetOptions {
 	 * When `true`, after a DB read the native layer automatically seeds the
 	 * verification-table slot with the version extracted from the value.
 	 * Eliminates the need for a separate `populateVersion` call on cold reads.
-	 * Seeds nothing unless this handle participates in the verification
-	 * table: opened with `verificationTable: true`, or opened without the
-	 * option on a column family another handle opened with it.
+	 * Seeds nothing unless this handle's column family participates in the
+	 * verification table (some handle opened it with `verificationTable: true`)
+	 * and is not still converting.
 	 *
 	 * @default false
 	 */

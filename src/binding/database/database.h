@@ -164,15 +164,17 @@ inline bool vtVersionIsSettled(
 	       oldestSnapshotSeq >= latestSeq;
 }
 
+// `publish` is `DBHandle::publishesVerifiedReads()`, captured before `observedSlot` was loaded.
 inline void vtPopulateIfSettled(
 	const std::shared_ptr<DBHandle>& dbHandle,
+	bool publish,
 	const VtSlotRef& slot,
 	const rocksdb::Slice& key,
 	uint64_t readVersion,
 	const rocksdb::Snapshot* readSnapshot,
 	uint64_t observedSlot
 ) {
-	if (!slot || !dbHandle->enableVerificationTable) return;
+	if (!slot || !publish) return;
 	// No usable version in the value the caller read (too short, or lock-tagged
 	// garbage) — nothing to publish, and re-reading the latest wouldn't help.
 	if (readVersion == 0 || vtIsLock(readVersion)) return;
@@ -229,9 +231,9 @@ inline void vtPopulateIfSettled(
 // transaction body immediately without any backoff delay.
 #define RETRY_NOW_VALUE 0x04000000
 
-// Only a handle whose writes invalidate slots (verificationTable: true) publishes from a read.
-inline bool readWantsPopulate(int32_t flags, const std::shared_ptr<DBHandle>& dbHandle) {
-	return (flags & POPULATE_VERSION_FLAG) != 0 && dbHandle->enableVerificationTable;
+// Only a column family whose writes all invalidate slots publishes from a read.
+inline bool readWantsPopulate(int32_t flags, bool publish) {
+	return (flags & POPULATE_VERSION_FLAG) != 0 && publish;
 }
 
 #define UNWRAP_DB_HANDLE() \

@@ -1522,14 +1522,18 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
-	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), (*txnHandle)->dbHandle);
+	// No operation guard here to activate a converting column family under.
+	const int32_t flags = parseOptionalFlags(env, argv[5]);
+	const bool vtPublish = (hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0) &&
+		(*txnHandle)->dbHandle->publishesVerifiedReads(-1);
+	const bool wantsPopulate = readWantsPopulate(flags, vtPublish);
 
 	VtSlotRef vtSlot;
 	if (hasExpectedVersion || wantsPopulate) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
 	}
 
-	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
+	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate, vtPublish);
 }
 
 /**
@@ -1624,7 +1628,10 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
-	bool wantsPopulate = readWantsPopulate(flags, (*txnHandle)->dbHandle);
+	const bool vtPublish = (hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0) &&
+		(*txnHandle)->dbHandle->publishesVerifiedReads(-1);
+	const bool vtVerify = hasExpectedVersion && (*txnHandle)->dbHandle->verifiesThroughTable();
+	bool wantsPopulate = readWantsPopulate(flags, vtPublish);
 
 	// Establish the transaction snapshot BEFORE loading the VT slot.
 	// If we loaded the slot first, a complete write cycle (lock → commit →
@@ -1646,7 +1653,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	}
 
 	// VT fast-path: caller-supplied version matches the table → return FRESH
-	if (vtSlot && hasExpectedVersion && vtSlot.holds(vtObserved, expectedVersion)) {
+	if (vtSlot && vtVerify && hasExpectedVersion && vtSlot.holds(vtObserved, expectedVersion)) {
 		// Snapshot already established above; no further action needed.
 		napi_value result;
 		NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
@@ -1702,11 +1709,11 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 			const rocksdb::Snapshot* populateSnapshot = latest.read ? nullptr : readSnapshot;
 			if (hasExpectedVersion && extracted == expectedVersion) {
 				// Soft VT miss confirmed fresh: value carries the caller's expected version.
-				vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
+				vtPopulateIfSettled((*txnHandle)->dbHandle, vtPublish, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
 				NAPI_STATUS_THROWS(::napi_create_int32(env, FRESH_VERSION_FLAG, &result));
 				return result;
 			}
-			vtPopulateIfSettled((*txnHandle)->dbHandle, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
+			vtPopulateIfSettled((*txnHandle)->dbHandle, vtPublish, vtSlot, keySlice, populateVersion, populateSnapshot, vtObserved);
 		}
 	}
 

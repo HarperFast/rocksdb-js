@@ -72,15 +72,43 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	bool disableWAL = false;
 
 	/**
-	 * Whether to register writes from this column family into the
-	 * VerificationTable so that cached record versions are invalidated
-	 * on commit. Set via the `verificationTable: true` open option.
-	 *
-	 * Only enable this for column families whose records are cached
-	 * (typically the primary CF of a table). Secondary-index CFs should
-	 * leave this false to avoid unnecessary VT contention.
+	 * The column family's verification-table participation, copied at open and
+	 * replaced only by the next open, so this env's reads of it stay valid while
+	 * a foreign close resets `columnDescriptor`. Null until the first open.
 	 */
-	bool enableVerificationTable = false;
+	std::shared_ptr<VerificationParticipation> participation;
+
+	/** Opened with an explicit `verificationTable: false`. */
+	bool verificationTableOptOut = false;
+
+	/** Whether writes through this handle must take write intents. */
+	bool guardsVerifiedWrites() const {
+		return this->participation && this->participation->guardsWrites();
+	}
+
+	/**
+	 * Whether a read through this handle may publish its version. Capture it
+	 * before observing the slot: a read that started while the column family was
+	 * converting must not publish after it completes, since a write without an
+	 * intent may have committed under the slot it observed. Requires the
+	 * caller's own `OperationGuard` (counted in `heldOperations`) or no
+	 * conversion attempt (`heldOperations` < 0).
+	 */
+	bool publishesVerifiedReads(int heldOperations) const {
+		if (!this->participation) {
+			return false;
+		}
+		if (this->participation->publishing()) {
+			return true;
+		}
+		return heldOperations >= 0 && this->participation->converting() &&
+			this->descriptor->activateVerification(*this->participation, static_cast<uint32_t>(heldOperations));
+	}
+
+	/** Whether a slot may answer FRESH or take an explicit seed through this handle. */
+	bool verifiesThroughTable() const {
+		return this->participation && this->participation->verifies();
+	}
 
 	/**
 	 * Immutable VerificationTable address components for this open lifecycle.

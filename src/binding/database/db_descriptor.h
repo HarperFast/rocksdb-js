@@ -24,6 +24,7 @@
 #include "database/commit_worker.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include "core/background_error.h"
+#include "core/verification_participation.h"
 #include "core/verification_table.h"
 #include "core/platform.h"
 #include "core/write_stall_debounce.h"
@@ -368,6 +369,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * Map of transaction id to transaction handle.
 	 */
 	std::unordered_map<uint64_t, std::shared_ptr<TransactionHandle>> transactions;
+
+	/**
+	 * Entries erased from `transactions`, incremented under `txnsMutex`. Lets a
+	 * conversion that found a transaction blocking it skip rescanning until one
+	 * leaves (`activateVerification`).
+	 */
+	std::atomic<uint64_t> transactionRemovals{0};
 
 	/**
 	 * Atomic counter for generating unique transaction IDs for this RocksDB
@@ -774,6 +782,21 @@ public:
 	std::shared_ptr<TransactionHandle> transactionGet(uint64_t id);
 	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
 	uint64_t transactionGetNextId();
+
+	/**
+	 * Converts a column family a non-participating handle may have written to:
+	 * guards its writes at once and keeps the verification table inert for it
+	 * until `activateVerification()` succeeds. Requires `databasesMutex`.
+	 */
+	void convertToVerification(VerificationParticipation& participation);
+
+	/**
+	 * Completes a conversion once no transaction that existed at it is open and
+	 * no operation besides the caller's own `heldOperations` is in flight
+	 * (a closed transaction's commit, and a non-transactional write, hold one).
+	 * The caller holds an `OperationGuard` or `databasesMutex`.
+	 */
+	bool activateVerification(VerificationParticipation& participation, uint32_t heldOperations);
 
 	/**
 	 * Closes every registered transaction created on `env` (`ownerEnv`), from
@@ -1214,20 +1237,22 @@ struct ColumnFamilyDescriptor final {
 	/**
 	 * Verification-table participation (AGENTS invariant 39). Sticky: slots
 	 * outlive the handles that seeded them. Only an explicit
-	 * `verificationTable: false` open clears it, and only once
-	 * `verifyingHandles` is 0. Guarded by `databasesMutex`.
+	 * `verificationTable: false` open with no handle attached clears it. Each
+	 * handle keeps its own reference for its open lifecycle, so owner-thread
+	 * reads survive a foreign close.
 	 */
-	bool verificationTable = false;
-
-	std::atomic<uint32_t> verifyingHandles{0};
-
-	std::atomic<uint32_t> nonVerifyingHandles{0};
+	const std::shared_ptr<VerificationParticipation> participation = std::make_shared<VerificationParticipation>();
 
 	/**
-	 * Highest transaction id that may hold a write staged through a detached
-	 * non-participating handle; 0 until one detaches.
+	 * A non-participating handle has attached to this generation, so writes
+	 * without intents (and explicit seeds) may exist. Guarded by `databasesMutex`.
 	 */
-	std::atomic<uint64_t> nonVerifyingTransactionWatermark{0};
+	bool hadNonParticipatingHandle = false;
+
+	std::atomic<uint32_t> attachedHandles{0};
+
+	/** Attached handles opened with an explicit `verificationTable: false`. */
+	std::atomic<uint32_t> optOutHandles{0};
 
 	ColumnFamilyDescriptor(
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,

@@ -895,27 +895,64 @@ describe('Verification Table', () => {
 			}
 		});
 
-		it('rejects opting in while a handle without the option is open on the column family', async () => {
+		it('converts a handle opened without the option when another handle opts in', async () => {
 			const path = generateDBPath();
 			const plain = new RocksDatabase(path, plainOptions).open();
 			const cached = new RocksDatabase(path, cachedOptions);
-			const other = new RocksDatabase(path, { ...cachedOptions, name: 'other' });
 			try {
-				expect(() => cached.open()).toThrow(
-					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
-				);
-				other.open();
-				plain.close();
+				const key = Buffer.from('converted');
+				await plain.put(key, makeValue(1.5e12));
 				cached.open();
-				expect(cached.isOpen()).toBe(true);
+
+				seed(plain, key, 1.5e12);
+				expect(cached.verifyVersion(key, 1.5e12)).toBe(true);
+				plain.putSync(key, makeValue(1.6e12));
+				expectStale(cached, key, 1.5e12, 1.6e12);
+
+				seed(plain, key, 1.6e12);
+				await plain.transaction(async (txn: Transaction) => {
+					plain.putSync(key, makeValue(1.7e12), { transaction: txn });
+				});
+				expectStale(plain, key, 1.6e12, 1.7e12);
+
+				seed(cached, key, 1.7e12);
+				plain.removeSync(key);
+				expectStale(cached, key, 1.7e12);
 			} finally {
 				cached.close();
-				other.close();
 				plain.close();
 			}
 		});
 
-		it('rejects opting in while a transaction may hold a write staged through a closed handle', async () => {
+		it('publishes nothing until a write staged before the opt-in commits', async () => {
+			const path = generateDBPath();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			try {
+				const key = Buffer.from('staged-before-opt-in');
+				await plain.put(key, makeValue(1.5e12));
+				const txn = new Transaction(plain.store);
+				plain.putSync(key, makeValue(1.6e12), { transaction: txn });
+				cached.open();
+
+				cached.getSync(key, { populateVersion: true });
+				plain.getSync(key, { populateVersion: true });
+				expect(cached.verifyVersion(key, 1.5e12)).toBe(false);
+				// its own write, not a verified answer for the version before it
+				const own = txn.getBinarySync(key, { expectedVersion: 1.5e12 } as any);
+				expect(Buffer.from(own as Buffer).readDoubleBE(0)).toBe(1.6e12);
+
+				await txn.commit();
+				expectStale(cached, key, 1.5e12, 1.6e12);
+				seed(cached, key, 1.6e12);
+				expect(plain.verifyVersion(key, 1.6e12)).toBe(true);
+			} finally {
+				cached.close();
+				plain.close();
+			}
+		});
+
+		it('publishes nothing until a transaction that wrote through a closed handle finishes', async () => {
 			const path = generateDBPath();
 			const keepAlive = new RocksDatabase(path).open();
 			const plain = new RocksDatabase(path, plainOptions).open();
@@ -927,16 +964,59 @@ describe('Verification Table', () => {
 				const txn = new Transaction(keepAlive.store);
 				plain.putSync(key, makeValue(1.6e12), { transaction: txn });
 				plain.close();
-				expect(() => cached.open()).toThrow(
-					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
-				);
-				txn.abort();
 				cached.open();
-				expect(cached.isOpen()).toBe(true);
+				cached.getSync(key, { populateVersion: true });
+				expect(cached.verifyVersion(key, 1.5e12)).toBe(false);
+				txn.abort();
+				seed(cached, key, 1.5e12);
 			} finally {
 				cached.close();
 				plain.close();
 				keepAlive.close();
+			}
+		});
+
+		it('opts in while unrelated work runs on the database', async () => {
+			const path = generateDBPath();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const busy = new RocksDatabase(path, { name: 'busy', encoding: false }).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			try {
+				const key = Buffer.from('opt-in-under-load');
+				await plain.put(key, makeValue(1.5e12));
+				const commits = Array.from({ length: 8 }, (_, i) =>
+					busy.transaction(async (txn: Transaction) => {
+						busy.putSync(Buffer.from(`busy-${i}`), makeValue(1.5e12), { transaction: txn });
+					})
+				);
+				cached.open();
+				await Promise.all(commits);
+				seed(cached, key, 1.5e12);
+			} finally {
+				cached.close();
+				busy.close();
+				plain.close();
+			}
+		});
+
+		it('rejects opting in while a handle opened with verificationTable: false is open', async () => {
+			const path = generateDBPath();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const optOut = new RocksDatabase(path, { ...plainOptions, verificationTable: false }).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			try {
+				expect(() => cached.open()).toThrow(
+					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
+				);
+				optOut.close();
+				cached.open();
+				const key = Buffer.from('after-opt-out-closed');
+				await plain.put(key, makeValue(1.5e12));
+				seed(plain, key, 1.5e12);
+			} finally {
+				cached.close();
+				optOut.close();
+				plain.close();
 			}
 		});
 
@@ -1034,6 +1114,21 @@ describe('Verification Table', () => {
 				expect(read.equals(value)).toBe(true);
 				expectFreshWithoutRead(db, key);
 			}));
+
+		it('a populateVersion read through a handle converted by a later opt-in seeds the VT', () =>
+			dbRunner(
+				{ dbOptions: [{ ...coldOptions, verificationTable: undefined }, coldOptions] },
+				async ({ db: plain }, { db: cached }) => {
+					const key = Buffer.from('async-populate-converted');
+					const value = valueWithHeader(version);
+					await plain.put(key, value);
+					await plain.flush();
+
+					const read = await readCold(() => plain.getBinary(key, { populateVersion: true } as any));
+					expect(read.equals(value)).toBe(true);
+					expectFreshWithoutRead(cached, key);
+				}
+			));
 
 		it('a populateVersion read through a transaction option seeds the VT', () =>
 			dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
@@ -1194,15 +1289,22 @@ describe('Verification Table', () => {
 	// The table is process-global and every in-process test above shares one already created, so
 	// these run where no earlier read could have created it (test/fixtures/fork-vt-cold-populate.mts).
 	describe('async reads in a fresh process', () => {
-		const fixturePath = join(__dirname, 'fixtures', 'fork-vt-cold-populate.mts');
-		function runScenario(scenario: string, env: Record<string, string> = {}): void {
+		function runScenario(
+			scenario: string,
+			env: Record<string, string> = {},
+			fixture = 'fork-vt-cold-populate.mts'
+		): void {
 			const dbPath = generateDBPath();
 			try {
-				const child = spawnSync(process.execPath, [fixturePath, scenario, dbPath], {
-					encoding: 'utf8',
-					env: { ...process.env, ...env },
-					timeout: 25000,
-				});
+				const child = spawnSync(
+					process.execPath,
+					[join(__dirname, 'fixtures', fixture), scenario, dbPath],
+					{
+						encoding: 'utf8',
+						env: { ...process.env, ...env },
+						timeout: 25000,
+					}
+				);
 				expect(child.error, child.stderr).toBeUndefined();
 				expect(child.status, child.stderr).toBe(0);
 				expect(child.stdout.trim()).toBe('ok');
@@ -1224,6 +1326,13 @@ describe('Verification Table', () => {
 
 		it("a transactional read on another column family survives its transaction's handle closing", () =>
 			runScenario('owner-close', { ROCKSDB_JS_TXN_GET_DELAY_MS: '200' }));
+
+		it('a read begun while a late opt-in converts does not publish after the conversion completes', () =>
+			runScenario(
+				'read-across-activation',
+				{ ROCKSDB_JS_TXN_GET_DELAY_MS: '300' },
+				'fork-vt-late-opt-in.mts'
+			));
 	});
 
 	// Store.get() tries the block cache with getSync() before it falls back to the thread pool, so

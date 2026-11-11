@@ -425,9 +425,11 @@ export type NativeDatabaseOptions = {
 	 * VerificationTable slot for each written key at write time (not at
 	 * commit time). Enable only for column families whose records are
 	 * cached (e.g. the primary CF of a table). Default: false. Left unset, a
-	 * handle joins a column family another handle opened with `true`; an
-	 * explicit `false` throws `ERR_VERIFICATION_TABLE_CONFLICT` while any
-	 * handle on that column family participates.
+	 * handle joins a column family another handle opened with `true`, and
+	 * `true` converts handles already open without it. An explicit `false`
+	 * throws `ERR_VERIFICATION_TABLE_CONFLICT` while any handle on a
+	 * participating column family is open, and blocks a `true` open while it
+	 * is open itself.
 	 */
 	verificationTable?: boolean;
 	writeBufferSize?: number;

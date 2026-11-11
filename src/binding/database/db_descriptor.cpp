@@ -1936,6 +1936,7 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %llu mismatch! expected %p, got %p\n", this, (unsigned long long)txnHandle->id, it->second.get(), txnHandle.get());
 		}
 		this->transactions.erase(it);
+		this->transactionRemovals.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
@@ -2011,6 +2012,66 @@ void DBDescriptor::releaseLogRefsByEnv(napi_env env) {
  */
 uint64_t DBDescriptor::transactionGetNextId() {
 	return ++this->nextTransactionId;
+}
+
+void DBDescriptor::convertToVerification(VerificationParticipation& participation) {
+	participation.beginConversion();
+	// An RMW, not a load: a transaction whose id is allocated after it reads
+	// from this modification, so the guard stored above is visible to its writes.
+	const uint64_t watermark = this->nextTransactionId.fetch_add(0);
+	// A non-participating handle can seed a slot (populateVersion) that its own
+	// later writes left stale.
+	if (VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw()) {
+		vt->settleAllSlots();
+	}
+	participation.finishSweep(watermark);
+	this->activateVerification(participation, 0);
+}
+
+bool DBDescriptor::activateVerification(VerificationParticipation& participation, uint32_t heldOperations) {
+	if (participation.publishing()) {
+		return true;
+	}
+	if (!participation.converting() || this->operationsInFlight.load() > heldOperations) {
+		return false;
+	}
+	const auto steadyNow = []() {
+		return std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()
+		).count();
+	};
+	if (this->transactionRemovals.load(std::memory_order_relaxed) ==
+			participation.blockedAtRemovals.load(std::memory_order_relaxed) &&
+		steadyNow() < participation.rescanAt.load(std::memory_order_relaxed)) {
+		return false;
+	}
+	const uint64_t watermark = participation.watermark.load();
+	{
+		std::unique_lock<std::mutex> txnsLock(this->txnsMutex, std::try_to_lock);
+		if (!txnsLock.owns_lock()) {
+			return false;
+		}
+		// A closed transaction can stay registered once its owning handle has
+		// closed; its commit, if still running, holds an operation.
+		for (const auto& registered : this->transactions) {
+			if (registered.first <= watermark && registered.second && !registered.second->closed.load()) {
+				participation.blockedAtRemovals.store(
+					this->transactionRemovals.load(std::memory_order_relaxed), std::memory_order_relaxed
+				);
+				participation.rescanAt.store(
+					steadyNow() + std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds(100)).count(),
+					std::memory_order_relaxed
+				);
+				return false;
+			}
+		}
+	}
+	// After the scan: a transaction it skipped as closed, or env teardown
+	// removed, can still be committing.
+	if (this->operationsInFlight.load() > heldOperations) {
+		return false;
+	}
+	return participation.activate();
 }
 
 std::shared_ptr<ColumnFamilyDescriptor> DBDescriptor::findRetiringLocked(const std::string& columnName) {
