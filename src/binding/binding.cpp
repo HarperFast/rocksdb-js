@@ -24,11 +24,11 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <thread>
-#include <vector>
 
 namespace rocksdb_js {
 
@@ -229,15 +229,13 @@ napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_
 }
 
 /**
- * A process-global native switch a test sets from JS. Vitest runs every test file in one process,
- * so `test/setup.ts` calls `resetTestSwitchesForTesting()` before each file to restore all of them.
- * Every `*ForTesting` setter is exported from this table, so none can be left out of that reset;
- * `test/test-switches.test.ts` fails if one is exported any other way.
+ * Every `*ForTesting` setter is exported from this table so `ResetTestSwitchesForTesting` cannot
+ * miss it: the switches are process-global, and Vitest runs many test files in one process.
  */
 struct TestSwitch {
 	const char* name;
 	napi_callback set;
-	// Restores the default and reports whether the switch held anything else.
+	// Returns whether the switch held anything but its default.
 	bool (*restoreDefault)();
 };
 
@@ -277,21 +275,18 @@ static const TestSwitch testSwitches[] = {
 	}},
 };
 
-/**
- * Test-only: restores every switch in `testSwitches` and returns the names of those that were not
- * at their default.
- */
 napi_value ResetTestSwitchesForTesting(napi_env env, napi_callback_info info) {
 	// Restore all of them before any N-API call that could fail part-way.
-	std::vector<const char*> changed;
+	std::array<const char*, std::size(testSwitches)> changed;
+	uint32_t changedCount = 0;
 	for (const auto& testSwitch : testSwitches) {
 		if (testSwitch.restoreDefault()) {
-			changed.push_back(testSwitch.name);
+			changed[changedCount++] = testSwitch.name;
 		}
 	}
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, changed.size(), &result));
-	for (uint32_t i = 0; i < changed.size(); ++i) {
+	NAPI_STATUS_THROWS(::napi_create_array_with_length(env, changedCount, &result));
+	for (uint32_t i = 0; i < changedCount; ++i) {
 		napi_value name;
 		NAPI_STATUS_THROWS(::napi_create_string_utf8(env, changed[i], NAPI_AUTO_LENGTH, &name));
 		NAPI_STATUS_THROWS(::napi_set_element(env, result, i, name));
@@ -589,7 +584,6 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "shutdownOnExit", NAPI_AUTO_LENGTH, ShutdownOnExit, nullptr, &shutdownOnExitFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "shutdownOnExit", shutdownOnExitFn));
 
-	// test-only switches (see core/test_seam.h and testSwitches above)
 	for (const auto& testSwitch : testSwitches) {
 		napi_value setFn;
 		NAPI_STATUS_THROWS(::napi_create_function(env, testSwitch.name, NAPI_AUTO_LENGTH, testSwitch.set, nullptr, &setFn));
