@@ -283,7 +283,8 @@ db.setCompression({ algorithm: 'zstd', level: 19 });
 
 ### `db.config(options)`
 
-Sets global database settings.
+Sets global database settings. Every field is validated before any is applied, so a call that
+throws changes no setting.
 
 - `options: object`
   - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks.

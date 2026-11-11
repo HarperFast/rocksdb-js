@@ -271,18 +271,11 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	}
 
 	int64_t blockCacheSize = 0;
-	napi_status status = rocksdb_js::getProperty(env, params, "blockCacheSize", blockCacheSize, true);
-	if (status == napi_ok) {
-		if (blockCacheSize < 0) {
-			::napi_throw_range_error(env, nullptr, "Block cache size must be a positive integer or 0 to disable caching");
-			return nullptr;
-		}
-
-		settings.blockCacheSize = static_cast<size_t>(blockCacheSize);
-
-		if (settings.blockCache) {
-			settings.blockCache->SetCapacity(blockCacheSize);
-		}
+	const bool blockCacheSizeProvided =
+		rocksdb_js::getProperty(env, params, "blockCacheSize", blockCacheSize, true) == napi_ok;
+	if (blockCacheSizeProvided && blockCacheSize < 0) {
+		::napi_throw_range_error(env, nullptr, "Block cache size must be a positive integer or 0 to disable caching");
+		return nullptr;
 	}
 
 	int64_t writeBufferManagerSize = 0;
@@ -293,45 +286,123 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	// `costToCache` is immutable after WBM creation — the cache reservation
-	// manager is configured at construction. `allowStall` IS mutable via
-	// SetAllowStall, so we propagate runtime changes to the live manager.
-	// Already-open DBs see the new behavior on their next write.
-	bool newCostToCache = settings.writeBufferManagerCostToCache.load(std::memory_order_relaxed);
-	bool newAllowStall = settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed);
+	bool newCostToCache = false;
+	bool newAllowStall = false;
 	const bool costToCacheProvided =
 		rocksdb_js::getProperty(env, params, "writeBufferManagerCostToCache", newCostToCache, true) == napi_ok;
 	const bool allowStallProvided =
 		rocksdb_js::getProperty(env, params, "writeBufferManagerAllowStall", newAllowStall, true) == napi_ok;
 
-	// All WBM updates run under one critical section so the costToCache
-	// invariant check, SetBufferSize, and SetAllowStall observe a single
-	// consistent view of the manager. Throwing happens before any state
-	// mutation, so a rejected costToCache change leaves the live manager
-	// untouched.
+	bool compactOnCloseProvided = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "compactOnClose", &compactOnCloseProvided));
+	bool compactOnClose = settings.compactOnClose;
+	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", compactOnClose, false));
+
+	bool shutdownOnExitProvided = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "shutdownOnExit", &shutdownOnExitProvided));
+	bool shutdownOnExit = settings.getShutdownOnExit();
+	if (rocksdb_js::getProperty(env, params, "shutdownOnExit", shutdownOnExit) != napi_ok) {
+		::napi_throw_type_error(env, nullptr, "shutdownOnExit must be a boolean");
+		return nullptr;
+	}
+
+	bool abortMarkers = false;
+	const bool abortMarkersProvided =
+		rocksdb_js::getProperty(env, params, "transactionLogAbortMarkers", abortMarkers, true) == napi_ok;
+	bool writeIntents = false;
+	const bool writeIntentsProvided =
+		rocksdb_js::getProperty(env, params, "transactionLogWriteIntents", writeIntents, true) == napi_ok;
+
+	double lifecycleWaitSeconds = 0;
+	bool lifecycleWaitProvided = false;
+	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitProvided));
+	if (lifecycleWaitProvided) {
+		napi_value lifecycleWaitValue;
+		NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitValue));
+		napi_valuetype lifecycleWaitType;
+		NAPI_STATUS_THROWS(::napi_typeof(env, lifecycleWaitValue, &lifecycleWaitType));
+		if (lifecycleWaitType == napi_undefined || lifecycleWaitType == napi_null) {
+			lifecycleWaitProvided = false;
+		}
+	}
+	if (lifecycleWaitProvided) {
+		if (rocksdb_js::getProperty(env, params, "lifecycleWaitSeconds", lifecycleWaitSeconds, true) != napi_ok) {
+			::napi_throw_type_error(env, nullptr, "Lifecycle wait seconds must be a number");
+			return nullptr;
+		}
+		if (!std::isfinite(lifecycleWaitSeconds) || lifecycleWaitSeconds <= 0 ||
+			std::trunc(lifecycleWaitSeconds) != lifecycleWaitSeconds ||
+			lifecycleWaitSeconds > std::numeric_limits<uint32_t>::max()
+		) {
+			::napi_throw_range_error(env, nullptr, "Lifecycle wait seconds must be a positive integer");
+			return nullptr;
+		}
+	}
+
+	int64_t verificationTableEntries = 0;
+	const bool verificationTableEntriesProvided =
+		rocksdb_js::getProperty(env, params, "verificationTableEntries", verificationTableEntries, true) == napi_ok;
+	if (verificationTableEntriesProvided && verificationTableEntries < 0) {
+		::napi_throw_range_error(env, nullptr, "Verification table entries must be a positive integer or 0 to disable verification");
+		return nullptr;
+	}
+
+	// Nothing above mutates settings, so a rejected call changes nothing. A getter that throws
+	// (rather than supplying the wrong type) leaves a pending exception that the `== napi_ok` reads
+	// above treat as "not provided".
+	bool exceptionPending = false;
+	::napi_is_exception_pending(env, &exceptionPending);
+	if (exceptionPending) {
+		return nullptr;
+	}
+
+	// The checks against live state and the one fallible live update run before any store, under the
+	// locks the stores take, so a concurrent first open cannot land between check and apply.
 	bool enableStallAfterDrain = false;
 	uint64_t stallGeneration = 0;
 	{
 		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
 		const bool wbmAlreadyCreated = (settings.writeBufferManager != nullptr);
-		const bool oldCostToCache = settings.writeBufferManagerCostToCache.load(std::memory_order_relaxed);
 
-		if (wbmAlreadyCreated && costToCacheProvided && newCostToCache != oldCostToCache) {
+		// The cache reservation manager is configured at WBM construction.
+		if (wbmAlreadyCreated && costToCacheProvided &&
+			newCostToCache != settings.writeBufferManagerCostToCache.load(std::memory_order_relaxed)) {
 			::napi_throw_error(env, nullptr,
 				"writeBufferManagerCostToCache cannot be changed after the WriteBufferManager has been created; set it on the first config() call before any database is opened");
 			return nullptr;
 		}
 
-		// The derived policy follows allowStall; applied before anything else in this
-		// section is mutated so a failure leaves the manager's settings unchanged.
-		if (wbmAlreadyCreated && allowStallProvided && !setLiveFlushPolicy(
-			env,
-			*settings.writeBufferManager,
-			DBSettings::resolveWriteBufferManagerFlushPolicy(
-				settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed), newAllowStall
-			)
-		)) {
-			return nullptr;
+		{
+			// Held across the policy update so a failed update leaves the entries unstored. No
+			// other holder of this mutex takes another of ours, so nesting it here cannot deadlock.
+			std::lock_guard<std::mutex> vtLock(settings.verificationTableMutex);
+			if (verificationTableEntriesProvided && settings.verificationTable) {
+				::napi_throw_error(env, nullptr, "Verification table size cannot be changed after the first database is opened");
+				return nullptr;
+			}
+
+			if (wbmAlreadyCreated && (allowStallProvided || flushPolicyProvided) && !setLiveFlushPolicy(
+				env,
+				*settings.writeBufferManager,
+				DBSettings::resolveWriteBufferManagerFlushPolicy(
+					flushPolicyProvided
+						? static_cast<int>(newFlushPolicy)
+						: settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed),
+					allowStallProvided
+						? newAllowStall
+						: settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed)
+				)
+			)) {
+				return nullptr;
+			}
+
+			if (verificationTableEntriesProvided) {
+				settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
+			}
+		}
+
+		if (flushPolicyProvided) {
+			settings.writeBufferManagerFlushPolicy.store(static_cast<int>(newFlushPolicy), std::memory_order_relaxed);
 		}
 
 		if (wbmSizeProvided) {
@@ -349,16 +420,18 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			}
 		}
 
-		settings.writeBufferManagerCostToCache.store(newCostToCache, std::memory_order_relaxed);
-		// Only a supplied value: storing the value read before this mutex would
+		// Only supplied values: storing a value read before this mutex would
 		// let a concurrent config() undo another's change.
+		if (costToCacheProvided) {
+			settings.writeBufferManagerCostToCache.store(newCostToCache, std::memory_order_relaxed);
+		}
 		if (allowStallProvided) {
 			settings.writeBufferManagerAllowStall.store(newAllowStall, std::memory_order_relaxed);
 			stallGeneration = ++settings.allowStallGeneration;
 		}
 
-		// Propagate allowStall to the live manager if it exists — this is
-		// the RocksDB-supported runtime knob.
+		// SetAllowStall is RocksDB's runtime knob; already-open DBs see the
+		// new behavior on their next write.
 		if (wbmAlreadyCreated && allowStallProvided) {
 			if (newAllowStall) {
 				enableStallAfterDrain = true;
@@ -369,108 +442,17 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		}
 	}
 
-	if (enableStallAfterDrain) {
-		// A stalling manager can block a synchronous write on the JS thread
-		// that alone releases idle pooled iterators' pinned memtables. The flag
-		// stored above already stops new pooling; close what is idle now, then
-		// let the manager stall unless a later change superseded this one (a
-		// superseding enable runs its own drain). If the drain fails, the flag
-		// keeps pooling off and the manager is left not stalling.
-		try {
-			DBRegistry::CloseIdlePooledIterators();
-		} catch (const std::exception& e) {
-			::napi_throw_error(env, nullptr, e.what());
-			return nullptr;
-		}
-		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
-		if (settings.allowStallGeneration == stallGeneration && settings.writeBufferManager) {
-			settings.writeBufferManager->SetAllowStall(true);
-			DBStats::getInstance().ensureWriteBufferManagerWatchdog();
+	if (blockCacheSizeProvided) {
+		settings.blockCacheSize = static_cast<size_t>(blockCacheSize);
+		if (settings.blockCache) {
+			settings.blockCache->SetCapacity(blockCacheSize);
 		}
 	}
-
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", settings.compactOnClose, false));
-
-	bool shutdownOnExitProvided = false;
-	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "shutdownOnExit", &shutdownOnExitProvided));
-	bool shutdownOnExit = settings.getShutdownOnExit();
-	if (rocksdb_js::getProperty(env, params, "shutdownOnExit", shutdownOnExit) != napi_ok) {
-		::napi_throw_type_error(env, nullptr, "shutdownOnExit must be a boolean");
-		return nullptr;
-	}
-
-	bool abortMarkers = settings.transactionLogAbortMarkers.load(std::memory_order_relaxed);
-	const bool abortMarkersProvided =
-		rocksdb_js::getProperty(env, params, "transactionLogAbortMarkers", abortMarkers, true) == napi_ok;
-	bool writeIntents = settings.transactionLogWriteIntents.load(std::memory_order_relaxed);
-	const bool writeIntentsProvided =
-		rocksdb_js::getProperty(env, params, "transactionLogWriteIntents", writeIntents, true) == napi_ok;
-
-	double lifecycleWaitSeconds = 0;
-	bool lifecycleWaitProvided = false;
-	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitProvided));
-	if (lifecycleWaitProvided) {
-		napi_value lifecycleWaitValue;
-		NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitValue));
-		napi_valuetype lifecycleWaitType;
-		NAPI_STATUS_THROWS(::napi_typeof(env, lifecycleWaitValue, &lifecycleWaitType));
-		if (lifecycleWaitType == napi_undefined || lifecycleWaitType == napi_null) {
-			lifecycleWaitProvided = false;
-		}
+	if (compactOnCloseProvided) {
+		settings.compactOnClose = compactOnClose;
 	}
 	if (lifecycleWaitProvided) {
-		status = rocksdb_js::getProperty(env, params, "lifecycleWaitSeconds", lifecycleWaitSeconds, true);
-		if (status != napi_ok) {
-			::napi_throw_type_error(env, nullptr, "Lifecycle wait seconds must be a number");
-			return nullptr;
-		}
-		if (!std::isfinite(lifecycleWaitSeconds) || lifecycleWaitSeconds <= 0 ||
-			std::trunc(lifecycleWaitSeconds) != lifecycleWaitSeconds ||
-			lifecycleWaitSeconds > std::numeric_limits<uint32_t>::max()
-		) {
-			::napi_throw_range_error(env, nullptr, "Lifecycle wait seconds must be a positive integer");
-			return nullptr;
-		}
-		settings.lifecycleWaitSeconds.store(
-			static_cast<uint32_t>(lifecycleWaitSeconds),
-			std::memory_order_relaxed
-		);
-	}
-
-	int64_t verificationTableEntries = 0;
-	status = rocksdb_js::getProperty(env, params, "verificationTableEntries", verificationTableEntries, true);
-	if (status == napi_ok) {
-		if (verificationTableEntries < 0) {
-			::napi_throw_range_error(env, nullptr, "Verification table entries must be a positive integer or 0 to disable verification");
-			return nullptr;
-		}
-
-		std::lock_guard<std::mutex> lock(settings.verificationTableMutex);
-		if (settings.verificationTable) {
-			::napi_throw_error(env, nullptr, "Verification table size cannot be changed after the first database is opened");
-			return nullptr;
-		}
-		settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
-	}
-
-	// Stored last: these fields are validated up front, but a later field's
-	// throw must still leave them untouched. A getter that throws (rather than just
-	// supplying the wrong type) leaves a pending exception none of the reads above
-	// check for; catch it here, right before the stores, so it stays correct
-	// regardless of which field above is last.
-	bool exceptionPending = false;
-	::napi_is_exception_pending(env, &exceptionPending);
-	if (exceptionPending) {
-		return nullptr;
-	}
-	// Also last: an explicit policy is permanent, so a rejected call must not leave it behind.
-	if (flushPolicyProvided) {
-		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
-		if (settings.writeBufferManager &&
-			!setLiveFlushPolicy(env, *settings.writeBufferManager, newFlushPolicy)) {
-			return nullptr;
-		}
-		settings.writeBufferManagerFlushPolicy.store(static_cast<int>(newFlushPolicy), std::memory_order_relaxed);
+		settings.lifecycleWaitSeconds.store(static_cast<uint32_t>(lifecycleWaitSeconds), std::memory_order_relaxed);
 	}
 	if (occLockBucketsProvided) {
 		settings.occLockBucketCount.store(static_cast<uint32_t>(count), std::memory_order_relaxed);
@@ -489,6 +471,27 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	}
 	if (shutdownOnExitProvided) {
 		settings.shutdownOnExit.store(shutdownOnExit, std::memory_order_relaxed);
+	}
+
+	// Last: a failed drain is not a rejected value, and every field is already applied.
+	if (enableStallAfterDrain) {
+		// A stalling manager can block a synchronous write on the JS thread
+		// that alone releases idle pooled iterators' pinned memtables. The flag
+		// stored above already stops new pooling; close what is idle now, then
+		// let the manager stall unless a later change superseded this one (a
+		// superseding enable runs its own drain). If the drain fails, the flag
+		// keeps pooling off and the manager is left not stalling.
+		try {
+			DBRegistry::CloseIdlePooledIterators();
+		} catch (const std::exception& e) {
+			::napi_throw_error(env, nullptr, e.what());
+			return nullptr;
+		}
+		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
+		if (settings.allowStallGeneration == stallGeneration && settings.writeBufferManager) {
+			settings.writeBufferManager->SetAllowStall(true);
+			DBStats::getInstance().ensureWriteBufferManagerWatchdog();
+		}
 	}
 
 	NAPI_RETURN_UNDEFINED();
