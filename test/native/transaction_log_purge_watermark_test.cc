@@ -1242,6 +1242,32 @@ TEST_F(PurgeWatermarkTest, StoreDirectoryRemovalDeletesTheRecordLast) {
 #endif
 }
 
+TEST_F(PurgeWatermarkTest, StoreDirectoryRemovalKeepsForeignFilesBehindALink) {
+#ifdef _WIN32
+	GTEST_SKIP() << "a directory symlink needs a privilege on Windows";
+#else
+	copyRelease213Store();
+	TransactionLogPurgeRecord record;
+	record.generation = 1;
+	ASSERT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, record));
+	auto target = root / "shared";
+	std::filesystem::rename(storePath, target);
+	std::ofstream(target / "sentinel") << "x";
+	std::filesystem::create_directory_symlink(target, storePath);
+
+	rocksdb_js::removeTransactionLogStoreDirectory(storePath, /*keepRecord=*/true);
+	EXPECT_FALSE(std::filesystem::exists(target / "2.txnlog"));
+	EXPECT_FALSE(std::filesystem::exists(target / "txn.state"));
+	EXPECT_TRUE(std::filesystem::exists(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
+	EXPECT_TRUE(std::filesystem::exists(target / "sentinel"));
+
+	rocksdb_js::removeTransactionLogStoreDirectory(storePath);
+	EXPECT_FALSE(std::filesystem::exists(std::filesystem::symlink_status(storePath)));
+	EXPECT_FALSE(std::filesystem::exists(target / TRANSACTION_LOG_PURGE_RECORD_NAME));
+	EXPECT_TRUE(std::filesystem::exists(target / "sentinel"));
+#endif
+}
+
 TEST(TransactionLogPurgeRecord, SlotRoundTripsAndRejectsInvalidValues) {
 	TransactionLogPurgeRecord record;
 	record.known = true;

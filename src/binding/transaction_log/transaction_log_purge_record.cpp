@@ -214,11 +214,20 @@ void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath, 
 	if (!std::filesystem::exists(storePath)) {
 		return;
 	}
+	// A store directory that is a link can point at a directory holding files the store never wrote,
+	// so only the store's own files are removed there, and then the link.
+	bool link = std::filesystem::is_symlink(storePath);
 	std::vector<std::filesystem::path> others;
 	for (const auto& entry : std::filesystem::directory_iterator(storePath)) {
-		if (entry.path().filename() != TRANSACTION_LOG_PURGE_RECORD_NAME) {
-			others.push_back(entry.path());
+		auto name = entry.path().filename().string();
+		if (name == TRANSACTION_LOG_PURGE_RECORD_NAME) {
+			continue;
 		}
+		if (link && entry.path().extension() != ".txnlog" && name != "txn.state" &&
+			name.rfind(TRANSACTION_LOG_PURGE_RECORD_NAME ".tmp-", 0) != 0) {
+			continue;
+		}
+		others.push_back(entry.path());
 	}
 	for (const auto& other : others) {
 		std::filesystem::remove_all(other);
