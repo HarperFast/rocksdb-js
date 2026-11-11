@@ -18,7 +18,6 @@ describe('commitSync() shares the async commit sequence', () => {
 						attempts.push(attempt as number);
 						txnIds.add(txn.id);
 						if (attempt === 2) {
-							// The TryAgain attempt rolled back and published nothing.
 							expect(db.getSync('k')).toBeUndefined();
 							expect([...log.query({ start: 0 })]).toEqual([]);
 							expect(txn.logWritten()).toBe(true);

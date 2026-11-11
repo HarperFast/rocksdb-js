@@ -557,9 +557,9 @@ static rocksdb::Status admitCommit(TransactionCommitState* state, const std::sha
 
 /**
  * Log-lane stage of the commit: validates the handle and writes the
- * transaction-log batch (recording the committed position). Runs off the JS
- * thread — on the database's log lane, or on a libuv threadpool thread in the
- * legacy path (which runs both stages back to back). A pass-through no-op for
+ * transaction-log batch (recording the committed position). Runs on the
+ * database's log lane, on a libuv threadpool thread in the legacy path (which
+ * runs both stages back to back), or inline in commitSync(). A pass-through no-op for
  * transactions with no log entries so total dispatch order is preserved into
  * the commit lane.
  */
@@ -654,9 +654,9 @@ static void executeLogWork(TransactionCommitState* state) {
 
 /**
  * Commit-lane stage of the commit: commits the RocksDB transaction and records
- * the committed position against the RocksDB sequence number. Runs off the JS
- * thread — on the database's commit lane, or on a libuv threadpool thread in
- * the legacy path. Always runs after executeLogWork on the same state; skips
+ * the committed position against the RocksDB sequence number. Runs on the
+ * database's commit lane, on a libuv threadpool thread in the legacy path, or
+ * inline in commitSync(). Always runs after executeLogWork on the same state; skips
  * the RocksDB commit if the log stage failed. This stage's commitFinished can
  * run concurrently with the log lane's writeBatch for a later transaction —
  * the store synchronizes the shared position state on dataSetsMutex (the same
@@ -825,8 +825,11 @@ static void createCommitError(napi_env env, const TransactionCommitState& state,
 	}
 }
 
-/** Shared by both commit paths, on the owning JS thread. Returns false with `error` set on failure. */
-static bool settleCommit(napi_env env, TransactionCommitState* state, napi_value& error) {
+/**
+ * Runs no JavaScript, so commitSync() can call it while still holding its descriptor operation; the
+ * caller builds the error for a failed commit afterwards with createCommitError().
+ */
+static bool settleCommit(TransactionCommitState* state) {
 	if (state->status.ok()) {
 		if (state->handle) {
 			DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%llu)\n", state->handle.get(), (unsigned long long)state->handle->id);
@@ -843,7 +846,6 @@ static bool settleCommit(napi_env env, TransactionCommitState* state, napi_value
 	if (state->handle && state->handle->wrapperCollected.load()) {
 		state->handle->close();
 	}
-	createCommitError(env, *state, error);
 	return false;
 }
 
@@ -1015,10 +1017,11 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		return;
 	}
 
-	napi_value error;
-	if (settleCommit(env, state, error)) {
+	if (settleCommit(state)) {
 		state->callResolve();
 	} else {
+		napi_value error;
+		createCommitError(env, *state, error);
 		state->callReject(error);
 	}
 }
@@ -1354,26 +1357,27 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_CLOSING", "Transaction is closing");
 	}
 	TransactionCommitState state(env, *txnHandle);
-	std::shared_ptr<DBDescriptor> descriptor = (*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr;
-	napi_value error;
 	bool committed;
 	{
 		// Held through settleCommit(): its close() leaves the closables before deleting `txn`, so a
-		// foreign finishClose() must not get past its drain until then. No purge retry is needed for
-		// the `descriptor` pin: this handle is open, and foreign teardown claims regardless of it.
-		OperationGuard operationGuard(descriptor);
+		// foreign finishClose() must not get past its drain until then. Released, with the descriptor
+		// pin, before any JavaScript runs.
+		OperationGuard operationGuard((*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr);
+		DBDescriptor* descriptor = operationGuard.descriptor.get();
 		if (!descriptor || descriptor->isClosing()) {
 			state.status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 			state.signalExecuteCompleted();
 		} else {
-			state.operationDescriptor = descriptor.get();
+			state.operationDescriptor = descriptor;
 			executeLogWork(&state);
 			executeCommitWork(&state);
 		}
 		// Never parks: the holder of a coordinated-retry conflict may need this event loop.
-		committed = settleCommit(env, &state, error);
+		committed = settleCommit(&state);
 	}
 	if (!committed) {
+		napi_value error;
+		createCommitError(env, state, error);
 		NAPI_STATUS_THROWS(::napi_throw(env, error));
 		return nullptr;
 	}
