@@ -12,7 +12,6 @@ export type ChildResult = ChildOutput & {
 type RunChildOptions = {
 	deadlineMs: number;
 	env?: NodeJS.ProcessEnv;
-	/** For fixtures that never exit: kill once the output has what the test needs. */
 	stopWhen?: (output: ChildOutput) => boolean;
 	closeTimeoutMs?: number;
 };
@@ -35,6 +34,7 @@ export function runChild(
 		let timedOut = false;
 		let settled = false;
 		let closeTimer: NodeJS.Timeout | undefined;
+		let childError: Error | undefined;
 
 		const settle = (error: Error | undefined, result?: ChildResult) => {
 			if (settled) {
@@ -60,7 +60,8 @@ export function runChild(
 			closeTimer = setTimeout(() => {
 				settle(
 					new Error(
-						`Child ${child.pid} did not close within ${closeTimeoutMs}ms of SIGKILL\nstderr:\n${output.stderr}`
+						`Child ${child.pid} did not close within ${closeTimeoutMs}ms of SIGKILL\nstderr:\n${output.stderr}`,
+						{ cause: childError }
 					)
 				);
 			}, closeTimeoutMs);
@@ -84,6 +85,8 @@ export function runChild(
 			// Without a pid nothing was started, so there is no process to wait for.
 			if (child.pid === undefined) {
 				settle(error);
+			} else {
+				childError = error;
 			}
 		});
 		child.on('close', (code, signal) => {
