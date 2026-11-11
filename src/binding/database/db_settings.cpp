@@ -293,10 +293,14 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	const bool allowStallProvided =
 		rocksdb_js::getProperty(env, params, "writeBufferManagerAllowStall", newAllowStall, true) == napi_ok;
 
-	bool compactOnCloseProvided = false;
-	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "compactOnClose", &compactOnCloseProvided));
-	bool compactOnClose = settings.compactOnClose;
-	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, params, "compactOnClose", compactOnClose, false));
+	// `napi_invalid_arg` is absent, null or undefined; any other failure (a non-boolean) throws.
+	bool compactOnClose = false;
+	const napi_status compactOnCloseStatus =
+		rocksdb_js::getProperty(env, params, "compactOnClose", compactOnClose, true);
+	const bool compactOnCloseProvided = compactOnCloseStatus == napi_ok;
+	if (!compactOnCloseProvided && compactOnCloseStatus != napi_invalid_arg) {
+		NAPI_STATUS_THROWS(compactOnCloseStatus);
+	}
 
 	bool shutdownOnExitProvided = false;
 	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "shutdownOnExit", &shutdownOnExitProvided));

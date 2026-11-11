@@ -1,7 +1,4 @@
-// Usage: fork-config-atomic.mts <dbPath> <beforeOpen|live>
-//
-// config() settings are process-global, so each mode starts from a fresh process. Prints one
-// `CONFIG <json>` line: the error each rejected call threw and the settings visible after it.
+// config() settings are process-global, so each mode starts from a fresh process.
 import { getWriteBufferManagerStats, RocksDatabase } from '../../src/index.ts';
 
 const [dbPath, mode] = process.argv.slice(2);
