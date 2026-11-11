@@ -1,0 +1,5 @@
+# Bulk formatting commits skipped by `git blame` (GitHub applies this file automatically).
+# Locally: git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# chore(fmt): apply clang-format to C/C++ sources (#317)
+3cab1deae17e9e9bccf85e779dfebf034ff55dfe
