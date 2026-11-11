@@ -66,7 +66,7 @@ static void syncAppendBoundaryMarkerDirectory(const std::filesystem::path& direc
 			"Failed to open transaction log append-boundary directory for sync: " +
 			directory.string());
 	}
-	int syncResult = ::fsync(directoryFd);
+	int syncResult = rocksdb_js::syncDescriptor(directoryFd, false);
 	int syncError = errno;
 	::close(directoryFd);
 	if (syncResult != 0 && syncError != EINVAL && syncError != ENOTSUP &&
@@ -140,7 +140,8 @@ void TransactionLogFile::ensureAppendBoundaryMarker() {
 	writeUint32BE(bytes + 8, UINT32_MAX);
 	ssize_t written = ::pwrite(markerFd, bytes, sizeof(bytes), 0);
 	int writeError = errno;
-	bool synced = written == static_cast<ssize_t>(sizeof(bytes)) && ::fsync(markerFd) == 0;
+	bool synced = written == static_cast<ssize_t>(sizeof(bytes)) &&
+		rocksdb_js::syncDescriptor(markerFd, false) == 0;
 	int syncError = errno;
 	::close(markerFd);
 	if (!synced) {
@@ -194,7 +195,8 @@ void TransactionLogFile::writeAppendBoundaryMarker(uint32_t boundary) {
 	writeUint32BE(bytes + 8, ~boundary);
 	ssize_t written = ::pwrite(markerFd, bytes, sizeof(bytes), 0);
 	int writeError = errno;
-	bool synced = written == static_cast<ssize_t>(sizeof(bytes)) && ::fsync(markerFd) == 0;
+	bool synced = written == static_cast<ssize_t>(sizeof(bytes)) &&
+		rocksdb_js::syncDescriptor(markerFd, false) == 0;
 	int syncError = errno;
 	::close(markerFd);
 	if (!synced) {
@@ -238,20 +240,6 @@ struct CloseOnExit {
 		}
 	}
 };
-
-int syncDescriptor(int fd) {
-	int result;
-	do {
-		// macOS doesn't have fdatasync, use fsync instead
-		// fdatasync is faster on Linux as it doesn't sync metadata
-#ifdef __APPLE__
-		result = ::fsync(fd);
-#else
-		result = ::fdatasync(fd);
-#endif
-	} while (result < 0 && errno == EINTR);
-	return result;
-}
 
 } // namespace
 
@@ -308,7 +296,7 @@ void TransactionLogFile::flushSyncHeld() {
 	}
 #endif
 
-	if (syncDescriptor(fdToFlush) < 0) {
+	if (rocksdb_js::syncDescriptor(fdToFlush, /*dataOnly=*/true) < 0) {
 		int error = errno;
 		recordFailure();
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: sync failed: %s (errno=%d)\n",
@@ -729,7 +717,7 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	}
 	// Persist the size change so a second crash can't resurrect the dropped
 	// tail. fsync (not fdatasync) because the metadata size must be durable.
-	if (::fsync(this->fd) != 0) {
+	if (rocksdb_js::syncDescriptor(this->fd, false) != 0) {
 		DEBUG_LOG("%p TransactionLogFile::truncateFile fsync after ftruncate failed: %s (errno=%d)\n",
 			this, ::strerror(errno), errno);
 		throw rocksdb_js::DBException(

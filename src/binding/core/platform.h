@@ -112,6 +112,16 @@ constexpr double BUDGET_PRESSURE_FRACTION = 0.75;
 /** True when `elapsedMs` used at least BUDGET_PRESSURE_FRACTION of `budgetMs`. */
 bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs);
 
+#ifndef _WIN32
+/**
+ * Flushes `fd` to stable storage; the single POSIX durability primitive. On macOS it uses
+ * `F_FULLFSYNC` (plain `fsync` leaves data in the drive cache) and falls back to `fsync` when
+ * that fails. Elsewhere `dataOnly` selects `fdatasync` over `fsync`. Retries on EINTR; returns
+ * 0 on success, -1 with errno set on failure.
+ */
+int syncDescriptor(int fd, bool dataOnly);
+#endif
+
 /**
  * Flushes an existing file's data and metadata to stable storage by path.
  * Returns false when the file cannot be opened or the sync fails.

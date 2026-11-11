@@ -295,6 +295,26 @@ bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs) {
 		static_cast<double>(budgetMs) * BUDGET_PRESSURE_FRACTION;
 }
 
+#ifndef _WIN32
+int syncDescriptor(int fd, bool dataOnly) {
+	int result;
+	do {
+#ifdef __APPLE__
+		// fsync() on macOS does not flush the drive cache; F_FULLFSYNC does. Not every filesystem
+		// supports it, so fall back to fsync as SQLite and RocksDB do.
+		(void)dataOnly;
+		result = ::fcntl(fd, F_FULLFSYNC);
+		if (result < 0 && errno != EINTR) {
+			result = ::fsync(fd);
+		}
+#else
+		result = dataOnly ? ::fdatasync(fd) : ::fsync(fd);
+#endif
+	} while (result < 0 && errno == EINTR);
+	return result;
+}
+#endif
+
 bool syncFile(const std::filesystem::path& path) {
 #ifdef _WIN32
 	// FlushFileBuffers requires GENERIC_WRITE access.
@@ -318,7 +338,7 @@ bool syncFile(const std::filesystem::path& path) {
 	if (fd < 0) {
 		return false;
 	}
-	int rc = ::fsync(fd);
+	int rc = syncDescriptor(fd, /*dataOnly=*/false);
 	::close(fd);
 	return rc == 0;
 #endif
@@ -330,7 +350,7 @@ bool syncDirectory(const std::filesystem::path& path, bool allowUnsupported) {
 	if (fd < 0) {
 		return false;
 	}
-	int rc = ::fsync(fd);
+	int rc = syncDescriptor(fd, /*dataOnly=*/false);
 	int syncErrno = errno;
 	::close(fd);
 	if (rc != 0 && !(allowUnsupported &&

@@ -32,3 +32,31 @@ TEST(FdLimit, EffectiveLimitIsPositiveOnUnix) {
 	EXPECT_GT(getEffectiveOpenFileLimit(), 0u);
 }
 #endif
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstdlib>
+#include <filesystem>
+
+TEST(SyncDescriptor, SyncsRegularFileAndDirectory) {
+	auto dir = std::filesystem::temp_directory_path() / "rocksdb-js-sync-descriptor-test";
+	std::filesystem::create_directories(dir);
+	auto file = dir / "f";
+	int fd = ::open(file.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+	ASSERT_GE(fd, 0);
+	ASSERT_EQ(::write(fd, "x", 1), 1);
+	EXPECT_EQ(rocksdb_js::syncDescriptor(fd, false), 0);
+	EXPECT_EQ(rocksdb_js::syncDescriptor(fd, true), 0);
+	::close(fd);
+	int dirFd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	ASSERT_GE(dirFd, 0);
+	EXPECT_EQ(rocksdb_js::syncDescriptor(dirFd, false), 0);
+	::close(dirFd);
+	std::filesystem::remove_all(dir);
+}
+
+TEST(SyncDescriptor, FailsOnInvalidDescriptor) {
+	EXPECT_EQ(rocksdb_js::syncDescriptor(-1, false), -1);
+}
+#endif
