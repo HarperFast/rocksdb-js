@@ -1,18 +1,16 @@
 import { RocksDatabase } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const cliPath = join(import.meta.dirname, '..', 'bin', 'rocksdb-js.mjs');
-// bin/rocksdb-js.mjs imports from ../dist.
 const distBuilt = existsSync(join(import.meta.dirname, '..', 'dist', 'index.mjs'));
 const CLI_TIMEOUT_MS = 20_000;
 
 type CLIResult = { code: number | null; stdout: string; stderr: string };
 
-/** Runs one CLI invocation with stdin closed (not a TTY) and a bounded lifetime. */
 function cli(args: string[], options: { cwd?: string } = {}): Promise<CLIResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(process.execPath, [cliPath, ...args], {
@@ -60,7 +58,6 @@ function seed(dbPath: string, entries: Record<string, unknown>, name?: string) {
 	}
 }
 
-// Node-only, like test/repl-piped-stdin.test.ts: the CLI is a Node script.
 describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.bun))(
 	'CLI one-shot commands',
 	() => {
@@ -175,8 +172,9 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.code).toBe(2);
 			expect(result.stderr).toContain('not available in read-only mode');
 
-			result = await cli(['--no-such-option']);
+			result = await cli(['--no-such-option', '--json']);
 			expect(result.code).toBe(2);
+			expect(JSON.parse(result.stderr).error).toContain('--no-such-option');
 		});
 
 		it('does not create a missing database for a read command, nor without --yes', async () => {
@@ -191,9 +189,43 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.code).toBe(1);
 			expect(existsSync(dbPath)).toBe(false);
 
+			result = await cli([dbPath, 'clear', '--yes']);
+			expect(result.code).toBe(1);
+			expect(existsSync(dbPath)).toBe(false);
+
 			result = await cli([dbPath, 'put', 'a', '1', '--yes']);
 			expect(result.code).toBe(0);
 			expect((await cli([dbPath, 'get', 'a'])).stdout).toBe('1\n');
+
+			result = await cli([dbPath, '-c', 'typo', 'clear', '--yes']);
+			expect(result.code).toBe(1);
+			expect(result.stderr).toContain('Column family "typo" does not exist');
+			expect(JSON.parse((await cli([dbPath, 'columns', '--json'])).stdout)).toEqual(['default']);
+		});
+
+		it('fails a query whose rows cannot all be read, but still prints the readable ones', async () => {
+			const dbPath = tempDBPath();
+			seed(dbPath, { a: 'one', c: 'three' });
+			const raw = RocksDatabase.open(dbPath, { encoding: 'binary' });
+			try {
+				// A str8 header promising 5 bytes that are not there.
+				raw.putSync('b', Buffer.from([0xd9, 0x05]));
+			} finally {
+				raw.close();
+			}
+
+			let result = await cli([dbPath, 'query']);
+			expect(result.code).toBe(1);
+			expect(result.stdout).toContain("a = 'one'");
+			expect(result.stdout).toContain("c = 'three'");
+			expect(result.stderr).toContain('b = ');
+
+			result = await cli([dbPath, 'query', '--json']);
+			expect(result.code).toBe(1);
+			const rows = JSON.parse(result.stdout);
+			expect(rows.map((row: { key: string }) => row.key)).toEqual(['a', 'b', 'c']);
+			expect(rows[1].error).toBeTypeOf('string');
+			expect(JSON.parse(result.stderr).error).toContain('Unable to read b');
 		});
 
 		it('uses the current directory when the first argument is a command', async () => {
@@ -254,7 +286,6 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.code).toBe(0);
 			expect(JSON.parse(result.stdout)).toMatchObject({ subcommand: 'backup', backupId: 1 });
 
-			// No dbpath and no database in the cwd: list and verify only need the backup dir.
 			result = await cli(['backups', backupDir, '--json'], { cwd: backupDir });
 			expect(result.code).toBe(0);
 			expect(JSON.parse(result.stdout).backups).toHaveLength(1);
@@ -266,6 +297,29 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			result = await cli(['backups', backupDir, 'verify', '9'], { cwd: backupDir });
 			expect(result.code).toBe(1);
 			expect(result.stderr).toContain('Backup 9 does not exist');
+		});
+
+		it('restores a backup over a database that no longer opens', async () => {
+			const dbPath = tempDBPath();
+			const backupDir = tempDBPath();
+			seed(dbPath, { a: 'one' });
+			expect((await cli([dbPath, 'backups', backupDir, 'backup'])).code).toBe(0);
+
+			for (const file of readdirSync(dbPath)) {
+				if (file.startsWith('OPTIONS-')) rmSync(join(dbPath, file));
+			}
+			expect((await cli([dbPath, 'get', 'a'])).code).toBe(1);
+
+			let result = await cli([dbPath, 'backups', backupDir, 'restore', '1']);
+			expect(result.code).toBe(1);
+			expect(result.stderr).toContain('Pass --yes to confirm');
+
+			result = await cli([dbPath, 'backups', backupDir, 'restore', '1', '--yes']);
+			expect(result.code).toBe(0);
+			expect((await cli([dbPath, 'get', 'a'])).stdout).toBe('one\n');
+
+			result = await cli([dbPath, 'backups', backupDir, 'restore', '1', '--readonly', '--yes']);
+			expect(result.code).toBe(2);
 		});
 	}
 );

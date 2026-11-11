@@ -3311,13 +3311,18 @@ Options:
 A one-shot command:
 
 - prints its result to stdout and errors to stderr;
-- exits `0` on success, `1` on failure (including `get` of a missing key and `verify-logs` finding an
-  invalid store), and `2` on a usage error;
-- opens the database read-only when the command only reads, so it works alongside a process that
-  holds the database open, and read-write only for commands that write;
-- never creates a missing database for a read command, and asks before creating one, a column family,
-  or before destructive work (`clear`, `purge-logs`, `backups ... restore`, dropping `default`). When
-  stdin is not a terminal there is nobody to ask, so pass `--yes`.
+- exits `0` on success, `1` on failure (including `get` of a missing key, a `query` row that cannot be
+  read, and `verify-logs` finding an invalid store), and `2` on a usage error;
+- opens the database read-only when the command only reads, and read-write only for commands that
+  write. A read-only open does not need the lock held by another process that has the database open,
+  but it is a point-in-time read: if that process compacts while the command runs, the command can
+  fail and should be retried. To follow a live writer, use a secondary instance
+  (the `secondaryPath` open option);
+- creates a missing database or column family only for `put`, and asks first. It also asks before
+  destructive work (`clear`, `purge-logs`, `backups ... restore`, dropping `default`). When stdin is
+  not a terminal there is nobody to ask, so pass `--yes`;
+- runs `backups <dir> restore` without opening the database, so it can restore over a database that
+  no longer opens.
 
 ```bash
 rocksdb-js ./data count

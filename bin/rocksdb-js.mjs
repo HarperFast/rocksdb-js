@@ -30,12 +30,13 @@ const usageError = (usage) => new CLIError(`Usage: ${usage}`, 2);
 /**
  * The single definition of every command, shared by the REPL and one-shot mode.
  *
- * - `access`: what the command does with the database at `dbPath` — `none` (no
- *   database is opened), `read` (one-shot mode opens it read-only), or `write`.
- *   May be a function of the command's arguments.
- * - `run(args)`: does the work and returns a JSON-serializable result (or an
- *   async iterable, streamed as a JSON array). Throws `CLIError` on failure.
- * - `print(result)`: renders the result for humans; `--json` bypasses it.
+ * - `access`: `none`, `read` (one-shot mode opens the database read-only) or `write`
+ *   (refused under --readonly); may be a function of the arguments.
+ * - `opens(args)`: overrides whether one-shot mode opens the database (default: any
+ *   access but `none`). Restore writes the directory but must not need to open it.
+ * - `creates`: one-shot mode may create a missing database or column family.
+ * - `run(args)` returns JSON-serializable data, or an async iterable streamed as a
+ *   JSON array; `print(result)` renders it for humans.
  */
 const COMMANDS = [
 	{
@@ -44,6 +45,7 @@ const COMMANDS = [
 		summary: 'Manage backups (list, backup, restore, verify, delete, purge)',
 		access: ([, subcommand]) =>
 			subcommand === 'backup' ? 'read' : subcommand === 'restore' ? 'write' : 'none',
+		opens: ([, subcommand]) => subcommand === 'backup',
 		run: backupsCommand,
 		print: printBackupsResult,
 	},
@@ -114,7 +116,6 @@ const COMMANDS = [
 				command: commandSignature(name, usage),
 				summary,
 			})),
-		// One-shot `help` is `--help`; the REPL lists only the commands.
 		print: (rows) => (interactive ? printCommandTable(rows) : printHelp()),
 	},
 	{
@@ -155,6 +156,7 @@ const COMMANDS = [
 		usage: '<key> <value>',
 		summary: 'Set the value of a key',
 		access: 'write',
+		creates: true,
 		run: putCommand,
 	},
 	{
@@ -243,7 +245,10 @@ try {
 		},
 	}));
 } catch (error) {
-	console.error(`${error.message}\nRun "rocksdb-js --help" for usage.`);
+	const message = `${error.message}\nRun "rocksdb-js --help" for usage.`;
+	console.error(
+		process.argv.includes('--json') ? JSON.stringify({ error: message, code: error.code }) : message
+	);
 	process.exit(2);
 }
 
@@ -510,10 +515,7 @@ async function ask(prompt) {
 	}
 }
 
-/**
- * Asks a yes/no question. The REPL reads the answer from its own input; one-shot mode
- * needs `--yes`, or a terminal to prompt on (written to stderr so stdout stays results).
- */
+// One-shot prompts go to stderr so stdout carries only results.
 async function confirm(question) {
 	if (argv.yes) return true;
 	let answer;
@@ -523,6 +525,8 @@ async function confirm(question) {
 		const iface = createInterface({ input: stdin, output: stderr });
 		try {
 			answer = await iface.question(`${question} (y/N) `);
+		} catch (error) {
+			if (error.code !== 'ABORT_ERR') throw error;
 		} finally {
 			iface.close();
 		}
@@ -605,17 +609,16 @@ function closeAllDatabases() {
 	currentDB = null;
 }
 
-/**
- * Opens the default column family, then `column` if given. A missing column is created
- * after confirmation when `createColumn` is set, otherwise the default stays current.
- */
-async function openDatabases(column, { createColumn = true } = {}) {
+/** `ifMissing` for `column`: `create` (after confirmation), `error`, or `default`. */
+async function openDatabases(column, ifMissing) {
 	currentDB = RocksDatabase.open(dbPath, openOptions());
 	dbs[currentDB.name] = currentDB;
 	if (!column || column === currentDB.name) return;
 	if (!currentDB.columns.includes(column)) {
-		if (!createColumn) return;
-		if (openReadOnly) throw new CLIError(`Column family "${column}" does not exist`);
+		if (ifMissing === 'default') return;
+		if (ifMissing === 'error' || openReadOnly) {
+			throw new CLIError(`Column family "${column}" does not exist`);
+		}
 		await confirmOrCancel(`Create new column ${hl(column)}?`);
 	}
 	dbs[column] = RocksDatabase.open(dbPath, openOptions({ name: column }));
@@ -623,9 +626,9 @@ async function openDatabases(column, { createColumn = true } = {}) {
 }
 
 /** Returns false if the user declined to create a missing database. */
-async function ensureDatabaseExists() {
+async function ensureDatabaseExists(create) {
 	if (existsSync(join(dbPath, 'CURRENT'))) return true;
-	if (openReadOnly) {
+	if (openReadOnly || !create) {
 		throw new CLIError(`RocksDB database does not exist: ${dbPath}`);
 	}
 	if (!(await confirm('RocksDB database does not exist, create it?'))) return false;
@@ -707,7 +710,7 @@ async function backupsCommand(args) {
 				process.exit(1);
 			}
 			if (interactive) {
-				await openDatabases(preferredColumn, { createColumn: false });
+				await openDatabases(preferredColumn, 'default');
 				console.log(wrapColumns(currentDB.columns));
 			}
 			return { subcommand, backupId, elapsedMs };
@@ -1037,6 +1040,8 @@ async function* queryCommand([start, end]) {
 		try {
 			yield { key, value: await currentDB.get(key) };
 		} catch (error) {
+			if (!interactive) process.exitCode = 1;
+			if (argv.json) reportError(new CLIError(`Unable to read ${str(key)}: ${error}`));
 			yield { key, error: String(error) };
 		}
 	}
@@ -1092,6 +1097,7 @@ async function useCommand([name]) {
 		if (currentDB.columns.includes(name)) {
 			console.log(`Switching ${hl(currentDB.name)} => ${hl(name)}`);
 		} else {
+			if (openReadOnly) throw new CLIError(`Column family "${name}" does not exist`);
 			await confirmOrCancel(`Create new column ${hl(name)}?`);
 			console.log(`Created ${hl(name)}`);
 		}
@@ -1123,7 +1129,6 @@ function writeJSON(stream, value) {
 async function emitResult(def, result) {
 	if (argv.json) {
 		if (result?.[Symbol.asyncIterator]) {
-			// Streamed so a large range is never buffered whole.
 			let first = true;
 			stdout.write('[');
 			for await (const item of result) {
@@ -1175,7 +1180,8 @@ ${hl('./<name>')}. Put ${hl('--')} before arguments that start with "-".
 
 A one-shot command prints its result to stdout and errors to stderr, and exits 0 on
 success, 1 on failure, and 2 on a usage error. Commands that only read open the database
-read-only, so they work alongside a process that holds it open.
+read-only: a point-in-time read that does not need the lock another process holds, but
+that can fail if that process is compacting at the time.
 
 Options:
   ${hl('-c, --column <name>')}  Column family to use (default: "default")
@@ -1207,12 +1213,11 @@ function versionString() {
 	return `rocksdb.js CLI v${versions['rocksdb-js']} (RocksDB v${versions.rocksdb})`;
 }
 
-async function openOrExplain() {
+async function openOrExplain(ifMissing) {
 	try {
-		await openDatabases(argv.column);
+		await openDatabases(argv.column, ifMissing);
 	} catch (error) {
 		if (!error.message?.includes('Resource temporarily unavailable')) throw error;
-		// One-shot read commands already open read-only, so the hint only helps the REPL.
 		throw new CLIError(
 			interactive
 				? `RocksDB is already open by another process; rerun with --readonly:\n  rocksdb-js --readonly ${dbPath}`
@@ -1232,10 +1237,10 @@ async function runOnce() {
 	const access = resolveAccess(def, commandArgs);
 	// Checked before opening: a write command must not open read-write under --readonly.
 	assertAllowed(def, access);
-	if (access !== 'none') {
+	if (def.opens ? def.opens(commandArgs) : access !== 'none') {
 		openReadOnly = access === 'read';
-		if (!(await ensureDatabaseExists())) throw new CLIError('Cancelled');
-		await openOrExplain();
+		if (!(await ensureDatabaseExists(Boolean(def.creates)))) throw new CLIError('Cancelled');
+		await openOrExplain(def.creates ? 'create' : 'error');
 	}
 	await runCommand(def, commandArgs);
 }
@@ -1250,8 +1255,8 @@ async function runREPL() {
 	console.log(`Path:    ${hl(dbPath)}`);
 
 	if (!existsSync(join(dbPath, 'CURRENT'))) console.log();
-	if (!(await ensureDatabaseExists())) return;
-	await openOrExplain();
+	if (!(await ensureDatabaseExists(true))) return;
+	await openOrExplain('create');
 
 	console.log(wrapColumns(currentDB.columns) + '\n');
 	console.log(`Type "help" for more information.`);
@@ -1301,7 +1306,7 @@ async function main() {
 	try {
 		await (interactive ? runREPL() : runOnce());
 	} catch (error) {
-		if (error.code !== 'ABORT_ERR') {
+		if (!interactive || error.code !== 'ABORT_ERR') {
 			reportError(error);
 			process.exitCode = error.exitCode ?? 1;
 		}
