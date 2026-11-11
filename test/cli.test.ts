@@ -1,7 +1,7 @@
 import { RocksDatabase } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -197,6 +197,12 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.code).toBe(0);
 			expect((await cli([dbPath, 'get', 'a'])).stdout).toBe('1\n');
 
+			const emptyPath = tempDBPath();
+			result = await cli([emptyPath, 'put', '--yes']);
+			expect(result.code).toBe(2);
+			expect(result.stderr).toContain('Usage: put <key> <value>');
+			expect(existsSync(emptyPath)).toBe(false);
+
 			result = await cli([dbPath, '-c', 'typo', 'clear', '--yes']);
 			expect(result.code).toBe(1);
 			expect(result.stderr).toContain('Column family "typo" does not exist');
@@ -225,7 +231,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			const rows = JSON.parse(result.stdout);
 			expect(rows.map((row: { key: string }) => row.key)).toEqual(['a', 'b', 'c']);
 			expect(rows[1].error).toBeTypeOf('string');
-			expect(JSON.parse(result.stderr).error).toContain('Unable to read b');
+			expect(JSON.parse(result.stderr).error).toBe('1 row(s) could not be read');
 		});
 
 		it('uses the current directory when the first argument is a command', async () => {
@@ -299,16 +305,13 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.stderr).toContain('Backup 9 does not exist');
 		});
 
-		it('restores a backup over a database that no longer opens', async () => {
+		it('restores a backup, but never under a live writer', async () => {
 			const dbPath = tempDBPath();
 			const backupDir = tempDBPath();
+			const freshPath = tempDBPath();
 			seed(dbPath, { a: 'one' });
 			expect((await cli([dbPath, 'backups', backupDir, 'backup'])).code).toBe(0);
-
-			for (const file of readdirSync(dbPath)) {
-				if (file.startsWith('OPTIONS-')) rmSync(join(dbPath, file));
-			}
-			expect((await cli([dbPath, 'get', 'a'])).code).toBe(1);
+			seed(dbPath, { a: 'changed' });
 
 			let result = await cli([dbPath, 'backups', backupDir, 'restore', '1']);
 			expect(result.code).toBe(1);
@@ -317,6 +320,10 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			result = await cli([dbPath, 'backups', backupDir, 'restore', '1', '--yes']);
 			expect(result.code).toBe(0);
 			expect((await cli([dbPath, 'get', 'a'])).stdout).toBe('one\n');
+
+			result = await cli([freshPath, 'backups', backupDir, 'restore', '1', '--yes']);
+			expect(result.code).toBe(0);
+			expect((await cli([freshPath, 'get', 'a'])).stdout).toBe('one\n');
 
 			const writer = RocksDatabase.open(dbPath);
 			try {

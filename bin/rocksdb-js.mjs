@@ -25,12 +25,11 @@ class CLIError extends Error {
 	}
 }
 
-const usageError = (usage) => new CLIError(`Usage: ${usage}`, 2);
-
 /**
  * Shared by the REPL and one-shot mode. One-shot mode opens the database read-only for
  * `read` access, and only `creates` commands may create a missing database or column.
- * `opens` exists for restore: it writes the directory but must work when it cannot open.
+ * Restore opens an existing database read-write so RocksDB's LOCK refuses a live writer;
+ * a path with no database has nothing to protect and needs no open.
  */
 const COMMANDS = [
 	{
@@ -39,7 +38,8 @@ const COMMANDS = [
 		summary: 'Manage backups (list, backup, restore, verify, delete, purge)',
 		access: ([, subcommand]) =>
 			subcommand === 'backup' ? 'read' : subcommand === 'restore' ? 'write' : 'none',
-		opens: ([, subcommand]) => subcommand === 'backup',
+		opens: ([, subcommand]) =>
+			subcommand === 'backup' || (subcommand === 'restore' && existsSync(join(dbPath, 'CURRENT'))),
 		run: backupsCommand,
 		print: printBackupsResult,
 	},
@@ -127,7 +127,6 @@ const COMMANDS = [
 		summary: 'Get a RocksDB property (try "rocksdb.stats")',
 		access: 'read',
 		run: ([key]) => {
-			if (!key) throw usageError('prop <key>');
 			return currentDB.getDBProperty(key) ?? null;
 		},
 		print: (value) => console.log(value),
@@ -152,6 +151,7 @@ const COMMANDS = [
 		access: 'write',
 		creates: true,
 		run: putCommand,
+		print: ({ key }) => console.log(`Stored ${hl(key)}`),
 	},
 	{
 		name: 'query',
@@ -632,16 +632,8 @@ async function ensureDatabaseExists(create) {
 	return true;
 }
 
-const BACKUPS_USAGE = 'backups <dir> [subcommand] [arg]';
-
 async function backupsCommand(args) {
 	const [dirArg, subcommand = 'list', extra] = args;
-	if (!dirArg) {
-		throw new CLIError(
-			`Usage: ${BACKUPS_USAGE}\nSubcommands: list, ${BACKUP_SUBCOMMANDS.join(', ')}`,
-			2
-		);
-	}
 
 	const backupDir = resolve(dirArg);
 
@@ -688,7 +680,6 @@ async function backupsCommand(args) {
 				throw new CLIError('Backup directory and database directory must be different');
 			}
 			const backupId = await requireBackupId(backupDir, extra);
-			if (!currentDB) assertNoOtherWriter();
 			await confirmOrCancel(`Are you sure you want to restore backup ${hl(backupId)}?`);
 			const preferredColumn = currentDB?.name;
 			closeAllDatabases();
@@ -801,8 +792,6 @@ function printCompactResult({ sizeBefore, sizeAfter, elapsedMs }) {
 }
 
 async function dropCommand([column]) {
-	if (!column) throw usageError('drop <column>');
-
 	if (!dbs.default.columns.includes(column)) {
 		throw new CLIError(`Column family "${column}" does not exist`);
 	}
@@ -826,7 +815,6 @@ async function dropCommand([column]) {
 }
 
 async function getCommand([key]) {
-	if (!key) throw usageError('get <key>');
 	const value = await currentDB.get(key);
 	if (value === undefined) throw new CLIError('Key not found');
 	return value;
@@ -959,7 +947,6 @@ function printLogResult(result) {
 }
 
 async function purgeLogsCommand([name]) {
-	if (!name) throw usageError('purge-logs <name>');
 	await confirmOrCancel('Are you sure you want to purge logs?');
 	const { result: removed, elapsedMs } = await timed(() => currentDB.purgeLogs({ name }));
 	return { removed, elapsedMs };
@@ -1018,7 +1005,6 @@ function printVerifyLogsResult({ invalidStores, stores }) {
 }
 
 async function putCommand([key, ...valueParts]) {
-	if (!key || valueParts.length === 0) throw usageError('put <key> <value>');
 	let value = valueParts.join(' ');
 	if (value.startsWith('"') && value.endsWith('"')) {
 		value = value.slice(1, -1);
@@ -1030,14 +1016,18 @@ async function putCommand([key, ...valueParts]) {
 // Each value is read with its own get() so one undecodable value is reported in place
 // rather than aborting the whole range.
 async function* queryCommand([start, end]) {
+	let unreadable = 0;
 	for await (const { key } of currentDB.getRange({ start, end, values: false })) {
 		try {
 			yield { key, value: await currentDB.get(key) };
 		} catch (error) {
-			if (!interactive) process.exitCode = 1;
-			if (argv.json) reportError(new CLIError(`Unable to read ${str(key)}: ${error}`));
+			unreadable++;
 			yield { key, error: String(error) };
 		}
+	}
+	if (unreadable > 0 && !interactive) {
+		process.exitCode = 1;
+		if (argv.json) reportError(new CLIError(`${unreadable} row(s) could not be read`));
 	}
 }
 
@@ -1058,7 +1048,6 @@ async function printQueryResult(rows) {
 }
 
 async function removeCommand([key]) {
-	if (!key) throw usageError('remove <key>');
 	const { elapsedMs } = await timed(() => currentDB.remove(key));
 	return { key, elapsedMs };
 }
@@ -1125,13 +1114,16 @@ async function emitResult(def, result) {
 		if (result?.[Symbol.asyncIterator]) {
 			let first = true;
 			stdout.write('[');
-			for await (const item of result) {
-				if (!stdout.write(`${first ? '' : ','}\n${JSON.stringify(item, toJSON)}`)) {
-					await once(stdout, 'drain');
+			try {
+				for await (const item of result) {
+					if (!stdout.write(`${first ? '' : ','}\n${JSON.stringify(item, toJSON)}`)) {
+						await once(stdout, 'drain');
+					}
+					first = false;
 				}
-				first = false;
+			} finally {
+				stdout.write(first ? ']\n' : '\n]\n');
 			}
-			stdout.write(first ? ']\n' : '\n]\n');
 		} else {
 			writeJSON(stdout, result ?? null);
 		}
@@ -1158,7 +1150,15 @@ function assertAllowed(def, access) {
 	}
 }
 
+function assertUsage(def, args) {
+	const required = def.usage?.match(/<[^>]+>/g)?.length ?? 0;
+	if (args.filter(Boolean).length < required) {
+		throw new CLIError(`Usage: ${commandSignature(def.name, def.usage)}`, 2);
+	}
+}
+
 async function runCommand(def, args) {
+	assertUsage(def, args);
 	assertAllowed(def, resolveAccess(def, args));
 	await emitResult(def, await def.run(args));
 }
@@ -1213,22 +1213,6 @@ function isLockError(error) {
 	);
 }
 
-/**
- * One-shot restore skips the normal open so it can repair a database that no longer opens,
- * but a destructive restore under a live writer would corrupt it. A read-write open still
- * takes RocksDB's LOCK, so it refuses a held lock and tolerates any other open failure.
- */
-function assertNoOtherWriter() {
-	if (!existsSync(join(dbPath, 'CURRENT'))) return;
-	try {
-		RocksDatabase.open(dbPath, { ...defaultOpenOptions, readOnly: false }).close();
-	} catch (error) {
-		if (isLockError(error)) {
-			throw new CLIError('RocksDB is already open by another process; close it before restoring');
-		}
-	}
-}
-
 async function openOrExplain(ifMissing) {
 	try {
 		await openDatabases(argv.column, ifMissing);
@@ -1250,8 +1234,9 @@ async function runOnce() {
 	if (def.replOnly) {
 		throw new CLIError(`"${def.name}" is only available in the REPL`, 2);
 	}
+	// Checked before opening, so a malformed or refused command creates and opens nothing.
+	assertUsage(def, commandArgs);
 	const access = resolveAccess(def, commandArgs);
-	// Checked before opening: a write command must not open read-write under --readonly.
 	assertAllowed(def, access);
 	if (def.opens ? def.opens(commandArgs) : access !== 'none') {
 		openReadOnly = access === 'read';
