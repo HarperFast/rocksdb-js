@@ -564,8 +564,7 @@ describe.skipIf(!iteratorPoolEnabled)('Transaction iterator pool', () => {
 	);
 
 	// Bun's collector also scans the native stack conservatively, so a stale slot can keep a dropped
-	// wrapper reachable across every forced GC (#983); V8's is precise. The registry records which
-	// wrappers were collected, so on Bun the assertion covers exactly those.
+	// wrapper reachable across every forced GC (#983); V8's is precise.
 	it.skipIf(!forceGC)(
 		'closes a dropped transaction that only holds idle pooled iterators',
 		(context) =>
@@ -590,25 +589,25 @@ describe.skipIf(!iteratorPoolEnabled)('Transaction iterator pool', () => {
 				const open = () => status(dbPath).transactions - baseline.transactions;
 				expect(open()).toBe(dropped);
 				await collectUntil(() => open() === 0);
-				// Every idle pooled iterator was trimmed, whether or not its transaction was closed.
 				const { closables, transactions } = status(dbPath);
-				expect(closables - baseline.closables).toBe(transactions - baseline.transactions);
+				expect(closables - baseline.closables, 'untrimmed pooled iterators').toBe(
+					transactions - baseline.transactions
+				);
 				if (!process.versions.bun) {
 					expect(open()).toBe(0);
 					return;
 				}
 				// A wrapper's native finalizer and its registry callback are separate tasks.
 				await collectUntil(() => open() === dropped - collected, 500);
+				const retained = open();
 				expect(
-					open(),
+					retained,
 					'transactions left open after their wrapper was collected'
 				).toBeLessThanOrEqual(dropped - collected);
-				if (collected < dropped) {
-					await context.annotate(
-						`${dropped - collected} of ${dropped} dropped wrappers stayed reachable`
-					);
+				if (retained > 0) {
+					await context.annotate(`${retained} of ${dropped} dropped wrappers stayed reachable`);
 				}
-				context.skip(collected === 0, 'every dropped wrapper stayed reachable');
+				context.skip(retained === dropped, 'every dropped wrapper stayed reachable');
 			})
 	);
 });
