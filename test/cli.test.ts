@@ -318,6 +318,17 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.code).toBe(0);
 			expect((await cli([dbPath, 'get', 'a'])).stdout).toBe('one\n');
 
+			const writer = RocksDatabase.open(dbPath);
+			try {
+				writer.putSync('a', 'live');
+				result = await cli([dbPath, 'backups', backupDir, 'restore', '1', '--yes']);
+				expect(result.code).toBe(1);
+				expect(result.stderr).toContain('already open by another process');
+				expect(writer.getSync('a')).toBe('live');
+			} finally {
+				writer.close();
+			}
+
 			result = await cli([dbPath, 'backups', backupDir, 'restore', '1', '--readonly', '--yes']);
 			expect(result.code).toBe(2);
 		});

@@ -28,15 +28,9 @@ class CLIError extends Error {
 const usageError = (usage) => new CLIError(`Usage: ${usage}`, 2);
 
 /**
- * The single definition of every command, shared by the REPL and one-shot mode.
- *
- * - `access`: `none`, `read` (one-shot mode opens the database read-only) or `write`
- *   (refused under --readonly); may be a function of the arguments.
- * - `opens(args)`: overrides whether one-shot mode opens the database (default: any
- *   access but `none`). Restore writes the directory but must not need to open it.
- * - `creates`: one-shot mode may create a missing database or column family.
- * - `run(args)` returns JSON-serializable data, or an async iterable streamed as a
- *   JSON array; `print(result)` renders it for humans.
+ * Shared by the REPL and one-shot mode. One-shot mode opens the database read-only for
+ * `read` access, and only `creates` commands may create a missing database or column.
+ * `opens` exists for restore: it writes the directory but must work when it cannot open.
  */
 const COMMANDS = [
 	{
@@ -625,7 +619,6 @@ async function openDatabases(column, ifMissing) {
 	currentDB = dbs[column];
 }
 
-/** Returns false if the user declined to create a missing database. */
 async function ensureDatabaseExists(create) {
 	if (existsSync(join(dbPath, 'CURRENT'))) return true;
 	if (openReadOnly || !create) {
@@ -695,6 +688,7 @@ async function backupsCommand(args) {
 				throw new CLIError('Backup directory and database directory must be different');
 			}
 			const backupId = await requireBackupId(backupDir, extra);
+			if (!currentDB) assertNoOtherWriter();
 			await confirmOrCancel(`Are you sure you want to restore backup ${hl(backupId)}?`);
 			const preferredColumn = currentDB?.name;
 			closeAllDatabases();
@@ -1213,11 +1207,33 @@ function versionString() {
 	return `rocksdb.js CLI v${versions['rocksdb-js']} (RocksDB v${versions.rocksdb})`;
 }
 
+function isLockError(error) {
+	return /While lock file|lock hold by current process|Resource temporarily unavailable/i.test(
+		error?.message ?? ''
+	);
+}
+
+/**
+ * One-shot restore skips the normal open so it can repair a database that no longer opens,
+ * but a destructive restore under a live writer would corrupt it. A read-write open still
+ * takes RocksDB's LOCK, so it refuses a held lock and tolerates any other open failure.
+ */
+function assertNoOtherWriter() {
+	if (!existsSync(join(dbPath, 'CURRENT'))) return;
+	try {
+		RocksDatabase.open(dbPath, { ...defaultOpenOptions, readOnly: false }).close();
+	} catch (error) {
+		if (isLockError(error)) {
+			throw new CLIError('RocksDB is already open by another process; close it before restoring');
+		}
+	}
+}
+
 async function openOrExplain(ifMissing) {
 	try {
 		await openDatabases(argv.column, ifMissing);
 	} catch (error) {
-		if (!error.message?.includes('Resource temporarily unavailable')) throw error;
+		if (!isLockError(error)) throw error;
 		throw new CLIError(
 			interactive
 				? `RocksDB is already open by another process; rerun with --readonly:\n  rocksdb-js --readonly ${dbPath}`
