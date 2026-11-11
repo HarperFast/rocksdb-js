@@ -53,7 +53,31 @@ TEST(VerificationParticipation, OptOutStopsGuardingWrites) {
 	EXPECT_FALSE(participation.publishing());
 }
 
+TEST(VerificationParticipation, PendingCountCoversConversionUntilItEnds) {
+	const uint32_t before = rocksdb_js::verificationConversionsPending().load();
+	{
+		VerificationParticipation activated;
+		activated.beginConversion();
+		activated.finishSweep(1);
+		EXPECT_EQ(rocksdb_js::verificationConversionsPending().load(), before + 1);
+		EXPECT_TRUE(activated.activate());
+		EXPECT_EQ(rocksdb_js::verificationConversionsPending().load(), before);
+
+		VerificationParticipation optedOut;
+		optedOut.beginConversion();
+		optedOut.finishSweep(1);
+		optedOut.optOut();
+		EXPECT_EQ(rocksdb_js::verificationConversionsPending().load(), before);
+
+		VerificationParticipation abandoned;
+		abandoned.beginConversion();
+		EXPECT_EQ(rocksdb_js::verificationConversionsPending().load(), before + 1);
+	}
+	EXPECT_EQ(rocksdb_js::verificationConversionsPending().load(), before);
+}
+
 TEST(VerificationParticipation, ConcurrentActivationsAllObservePublishing) {
+	const uint32_t before = rocksdb_js::verificationConversionsPending().load();
 	VerificationParticipation participation;
 	participation.beginConversion();
 	participation.finishSweep(1);
@@ -71,4 +95,5 @@ TEST(VerificationParticipation, ConcurrentActivationsAllObservePublishing) {
 	}
 	EXPECT_EQ(published.load(), 8);
 	EXPECT_TRUE(participation.publishing());
+	EXPECT_EQ(rocksdb_js::verificationConversionsPending().load(), before);
 }

@@ -234,6 +234,16 @@ void DBHandle::releaseLogRefsLocked() {
 	this->logRefs.clear();
 }
 
+bool DBHandle::tryActivateVerification(uint32_t heldOperations) const {
+	// A foreign close leaves `descriptor` alone; only this owner thread resets it.
+	if (!this->descriptor) {
+		return false;
+	}
+	OperationGuard guard(this->descriptor);
+	return !this->descriptor->isClosing() &&
+		this->descriptor->activateVerification(*this->participation, heldOperations + 1);
+}
+
 rocksdb::ColumnFamilyHandle* DBHandle::getColumnFamilyHandle() const {
 	return this->columnDescriptor->column.get();
 }

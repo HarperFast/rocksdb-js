@@ -938,7 +938,6 @@ describe('Verification Table', () => {
 				cached.getSync(key, { populateVersion: true });
 				plain.getSync(key, { populateVersion: true });
 				expect(cached.verifyVersion(key, 1.5e12)).toBe(false);
-				// its own write, not a verified answer for the version before it
 				const own = txn.getBinarySync(key, { expectedVersion: 1.5e12 } as any);
 				expect(Buffer.from(own as Buffer).readDoubleBE(0)).toBe(1.6e12);
 
@@ -961,17 +960,83 @@ describe('Verification Table', () => {
 				const key = Buffer.from('staged-before-close');
 				await keepAlive.put(Buffer.from('anchor'), makeValue(1.4e12));
 				await plain.put(key, makeValue(1.5e12));
-				const txn = new Transaction(keepAlive.store);
+				// Owned by the handle that closes, so it stays registered after it closes.
+				const txn = new Transaction(plain.store);
 				plain.putSync(key, makeValue(1.6e12), { transaction: txn });
 				plain.close();
 				cached.open();
 				cached.getSync(key, { populateVersion: true });
 				expect(cached.verifyVersion(key, 1.5e12)).toBe(false);
 				txn.abort();
-				seed(cached, key, 1.5e12);
+				// a transaction read completes the conversion as well as a database read
+				const reader = new Transaction(cached.store);
+				reader.getBinarySync(key, { populateVersion: true } as any);
+				reader.abort();
+				expect(cached.verifyVersion(key, 1.5e12)).toBe(true);
 			} finally {
 				cached.close();
 				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it('completes a conversion while commits keep running on another column family', async () => {
+			const path = generateDBPath();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const busy = new RocksDatabase(path, { name: 'busy', encoding: false }).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			let stop = false;
+			let writers: Promise<void>[] = [];
+			try {
+				const key = Buffer.from('converts-under-load');
+				await plain.put(key, makeValue(1.5e12));
+				const txn = new Transaction(plain.store);
+				plain.putSync(Buffer.from('staged'), makeValue(1.6e12), { transaction: txn });
+				cached.open();
+				writers = Array.from({ length: 4 }, async (_, writer) => {
+					for (let i = 0; !stop; i++) {
+						await busy.transaction(async (busyTxn: Transaction) => {
+							busy.putSync(Buffer.from(`busy-${writer}-${i % 100}`), makeValue(1.5e12), {
+								transaction: busyTxn,
+							});
+						});
+					}
+				});
+				txn.abort();
+				let activated = false;
+				for (const deadline = Date.now() + 10_000; !activated && Date.now() < deadline;) {
+					cached.getSync(key, { populateVersion: true });
+					activated = cached.verifyVersion(key, 1.5e12);
+					if (!activated) await new Promise((resolve) => setImmediate(resolve));
+				}
+				expect(stop).toBe(false);
+				expect(activated).toBe(true);
+			} finally {
+				stop = true;
+				await Promise.all(writers);
+				cached.close();
+				busy.close();
+				plain.close();
+			}
+		});
+
+		it('an explicit opt-out clears the slots the participants seeded', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const cached = new RocksDatabase(path, cachedOptions).open();
+			const optOut = new RocksDatabase(path, { ...plainOptions, verificationTable: false });
+			try {
+				const key = Buffer.from('opt-out-clears');
+				await cached.put(key, makeValue(1.5e12));
+				seed(cached, key, 1.5e12);
+				expect(cached.verifyVersion(key, 1.5e12)).toBe(true);
+				cached.close();
+				optOut.open();
+				optOut.putSync(key, makeValue(1.6e12));
+				expectStale(optOut, key, 1.5e12, 1.6e12);
+			} finally {
+				optOut.close();
+				cached.close();
 				keepAlive.close();
 			}
 		});

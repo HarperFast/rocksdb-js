@@ -78,37 +78,41 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 */
 	std::shared_ptr<VerificationParticipation> participation;
 
-	/** Opened with an explicit `verificationTable: false`. */
 	bool verificationTableOptOut = false;
 
-	/** Whether writes through this handle must take write intents. */
 	bool guardsVerifiedWrites() const {
 		return this->participation && this->participation->guardsWrites();
 	}
 
+	struct VerificationGates {
+		// A read may publish the version it reads.
+		bool publish = false;
+		// A slot may answer FRESH, or take an explicit seed.
+		bool verify = false;
+	};
+
 	/**
-	 * Whether a read through this handle may publish its version. Capture it
-	 * before observing the slot: a read that started while the column family was
-	 * converting must not publish after it completes, since a write without an
-	 * intent may have committed under the slot it observed. Requires the
-	 * caller's own `OperationGuard` (counted in `heldOperations`) or no
-	 * conversion attempt (`heldOperations` < 0).
+	 * Read once per operation, before the slot is observed: a read that started
+	 * while the column family was converting must not publish after it
+	 * completes, since a write without an intent may have committed under the
+	 * slot it observed. Owner thread only; `heldOperations` counts the
+	 * `OperationGuard`s the caller already holds.
 	 */
-	bool publishesVerifiedReads(int heldOperations) const {
+	VerificationGates verificationGates(uint32_t heldOperations) const {
+		VerificationGates gates;
 		if (!this->participation) {
-			return false;
+			return gates;
 		}
-		if (this->participation->publishing()) {
-			return true;
+		uint32_t mode = this->participation->mode.load();
+		if (mode == VerificationParticipation::Guarding && this->tryActivateVerification(heldOperations)) {
+			mode = VerificationParticipation::Publishing;
 		}
-		return heldOperations >= 0 && this->participation->converting() &&
-			this->descriptor->activateVerification(*this->participation, static_cast<uint32_t>(heldOperations));
+		gates.publish = mode == VerificationParticipation::Publishing;
+		gates.verify = gates.publish || mode == VerificationParticipation::None;
+		return gates;
 	}
 
-	/** Whether a slot may answer FRESH or take an explicit seed through this handle. */
-	bool verifiesThroughTable() const {
-		return this->participation && this->participation->verifies();
-	}
+	bool tryActivateVerification(uint32_t heldOperations) const;
 
 	/**
 	 * Immutable VerificationTable address components for this open lifecycle.

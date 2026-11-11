@@ -18,6 +18,12 @@ namespace rocksdb_js {
  * staged without an intent (any transaction with an id up to `watermark`, any
  * operation in flight at the opt-in) remains.
  */
+/** Column families in this process between `beginConversion()` and activation. */
+inline std::atomic<uint32_t>& verificationConversionsPending() {
+	static std::atomic<uint32_t> pending{0};
+	return pending;
+}
+
 struct VerificationParticipation final {
 	enum Mode : uint32_t {
 		None = 0,
@@ -30,10 +36,9 @@ struct VerificationParticipation final {
 
 	std::atomic<uint32_t> mode{None};
 	std::atomic<uint64_t> watermark{0};
-	// The descriptor's transaction-removal count when a drain scan last found a
-	// blocker, and a steady_clock deadline (ns) after which it is rescanned anyway:
-	// a transaction whose handle closed first can close without leaving the registry.
-	std::atomic<uint64_t> blockedAtRemovals{UINT64_MAX};
+	// `transactionCloseCount()` when a drain scan last found a blocker, and a
+	// steady_clock deadline (ns) after which it is rescanned regardless.
+	std::atomic<uint64_t> blockedAtCloses{UINT64_MAX};
 	std::atomic<int64_t> rescanAt{0};
 
 	bool guardsWrites() const {
@@ -66,7 +71,8 @@ struct VerificationParticipation final {
 	 * calls `finishSweep()`.
 	 */
 	void beginConversion() {
-		this->blockedAtRemovals.store(UINT64_MAX, std::memory_order_relaxed);
+		this->blockedAtCloses.store(UINT64_MAX, std::memory_order_relaxed);
+		verificationConversionsPending().fetch_add(1);
 		this->mode.store(Sweeping);
 	}
 
@@ -75,15 +81,31 @@ struct VerificationParticipation final {
 		this->mode.store(Guarding);
 	}
 
-	/** Returns whether the column family now publishes. */
 	bool activate() {
 		uint32_t expected = Guarding;
-		return this->mode.compare_exchange_strong(expected, Publishing) || expected == Publishing;
+		if (this->mode.compare_exchange_strong(expected, Publishing)) {
+			verificationConversionsPending().fetch_sub(1);
+			return true;
+		}
+		return expected == Publishing;
 	}
 
 	void optOut() {
-		this->mode.store(None);
+		this->endConversion(this->mode.exchange(None));
 	}
+
+	~VerificationParticipation() {
+		this->endConversion(this->mode.load());
+	}
+
+private:
+	static void endConversion(uint32_t previous) {
+		if (previous == Sweeping || previous == Guarding) {
+			verificationConversionsPending().fetch_sub(1);
+		}
+	}
+
+public:
 };
 
 } // namespace rocksdb_js

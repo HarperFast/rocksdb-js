@@ -164,7 +164,7 @@ inline bool vtVersionIsSettled(
 	       oldestSnapshotSeq >= latestSeq;
 }
 
-// `publish` is `DBHandle::publishesVerifiedReads()`, captured before `observedSlot` was loaded.
+// `publish` is `DBHandle::verificationGates().publish`, read before `observedSlot` was loaded.
 inline void vtPopulateIfSettled(
 	const std::shared_ptr<DBHandle>& dbHandle,
 	bool publish,

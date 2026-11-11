@@ -1522,10 +1522,9 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
-	// No operation guard here to activate a converting column family under.
 	const int32_t flags = parseOptionalFlags(env, argv[5]);
 	const bool vtPublish = (hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0) &&
-		(*txnHandle)->dbHandle->publishesVerifiedReads(-1);
+		(*txnHandle)->dbHandle->verificationGates(0).publish;
 	const bool wantsPopulate = readWantsPopulate(flags, vtPublish);
 
 	VtSlotRef vtSlot;
@@ -1628,9 +1627,11 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
-	const bool vtPublish = (hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0) &&
-		(*txnHandle)->dbHandle->publishesVerifiedReads(-1);
-	const bool vtVerify = hasExpectedVersion && (*txnHandle)->dbHandle->verifiesThroughTable();
+	const DBHandle::VerificationGates vtGates = hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0
+		? (*txnHandle)->dbHandle->verificationGates(0)
+		: DBHandle::VerificationGates{};
+	const bool vtPublish = vtGates.publish;
+	const bool vtVerify = vtGates.verify;
 	bool wantsPopulate = readWantsPopulate(flags, vtPublish);
 
 	// Establish the transaction snapshot BEFORE loading the VT slot.

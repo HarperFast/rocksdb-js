@@ -3,17 +3,19 @@
  * open that converts a column family other handles hold without the option, and of reads and
  * writes through a converted handle, against a handle that participated from its first open.
  *
- *   node --expose-gc benchmark/vt-late-opt-in.mts [--phase <name>]... [--keys 10000] [--rounds 5]
+ *   node --expose-gc benchmark/vt-late-opt-in.mts [--phase <group>]... [--keys 10000] [--rounds 5]
  *
- * Phases (each prints ns/op per round, then the median):
- *   - open-fresh: `verificationTable: true` open of a column family nothing holds.
- *   - open-late: the same open while a handle without the option holds the column family
- *     (on a build without conversion this throws, so the phase reports `unsupported`).
- *   - fresh-native / fresh-converted: `getSync(key, { expectedVersion })` answered FRESH.
- *   - populate-native / populate-converted: `getSync(key, { populateVersion: true })`.
- *   - put-plain / txn-plain: `putSync` and a one-key transaction through a handle on a column
- *     family nothing has opted in to; the write paths a conversion adds bookkeeping to.
- *   - txn-native: the same transaction through a participating handle.
+ * Groups (`--phase`) and what each prints (ns/op per round, then the median):
+ *   - open-native: a `verificationTable: true` open of a column family another opted-in handle
+ *     holds (no conversion).
+ *   - open-late: the same open while a handle without the option holds the column family, which
+ *     converts it (on a build without conversion this throws, so it reports `unsupported`).
+ *   - native / converted: through a handle that participated from its first open, or one a later
+ *     opt-in converted: `fresh-*` is `getSync(key, { expectedVersion })` answered FRESH from the
+ *     table, `populate-*` a `getSync(key, { populateVersion: true })` read (slots already
+ *     seeded), and `txn-native` a one-key transaction.
+ *   - write: `put-plain` / `txn-plain`, `putSync` and a one-key transaction through a handle on a
+ *     column family nothing has opted in to.
  *
  * Runs against `src` (native type stripping), so the same file measures whichever binary sits in
  * `build/Release`. Run it under `bench-run`.
@@ -89,10 +91,13 @@ function openRounds(name: string, holdPlain: boolean): void {
 		for (let i = 0; i < OPENS; i++) {
 			const familyName = `cf-${openSequence++}`;
 			names.push(familyName);
-			const plain = new RocksDatabase(path, { encoding: false, name: familyName }).open();
-			plain.putSync(keys[0], value(VERSION));
-			if (holdPlain) plains.push(plain);
-			else plain.close();
+			const holder = new RocksDatabase(path, {
+				encoding: false,
+				name: familyName,
+				verificationTable: holdPlain ? undefined : true,
+			}).open();
+			holder.putSync(keys[0], value(VERSION));
+			plains.push(holder);
 		}
 		const opened: RocksDatabase[] = [];
 		globalThis.gc?.();
@@ -188,9 +193,9 @@ function writePhases(): void {
 	plain.close();
 }
 
-const phases = new Set(args.phase ?? ['open-fresh', 'open-late', 'native', 'converted', 'write']);
+const phases = new Set(args.phase ?? ['open-native', 'open-late', 'native', 'converted', 'write']);
 try {
-	if (phases.has('open-fresh')) openRounds('open-fresh', false);
+	if (phases.has('open-native')) openRounds('open-native', false);
 	if (phases.has('open-late')) openRounds('open-late', true);
 	if (phases.has('native')) readPhases('native');
 	if (phases.has('converted')) readPhases('converted');

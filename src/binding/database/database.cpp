@@ -1196,7 +1196,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	}
 	const int32_t flags = parseOptionalFlags(env, argv[5]);
 	const bool vtPublish = (hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0) &&
-		(*dbHandle)->publishesVerifiedReads(1);
+		(*dbHandle)->verificationGates(1).publish;
 	const bool wantsPopulate = readWantsPopulate(flags, vtPublish);
 
 	VtSlotRef vtSlot;
@@ -2071,9 +2071,11 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[3], expectedVersion);
 	}
 
-	const bool usesTable = hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0;
-	const bool vtPublish = usesTable && (*dbHandle)->publishesVerifiedReads(1);
-	const bool vtVerify = hasExpectedVersion && (*dbHandle)->verifiesThroughTable();
+	const DBHandle::VerificationGates vtGates = hasExpectedVersion || (flags & POPULATE_VERSION_FLAG) != 0
+		? (*dbHandle)->verificationGates(1)
+		: DBHandle::VerificationGates{};
+	const bool vtPublish = vtGates.publish;
+	const bool vtVerify = vtGates.verify;
 	bool wantsPopulate = readWantsPopulate(flags, vtPublish);
 
 	// For transactional reads, establish the snapshot BEFORE loading
@@ -2239,7 +2241,7 @@ napi_value Database::VerifyVersion(napi_env env, napi_callback_info info) {
 	bool fresh = false;
 	if (parseExpectedVersion(env, argv[1], version)) {
 		const VtSlotRef slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
-		if (slot && (*dbHandle)->verifiesThroughTable()) {
+		if (slot && (*dbHandle)->verificationGates(0).verify) {
 			fresh = VerificationTable::verifyVersion(slot, version);
 		}
 	}
@@ -2276,14 +2278,17 @@ napi_value Database::PopulateVersion(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// A converting column family keeps nothing it could later trust.
 	const VtSlotRef slot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
-	if (slot && (*dbHandle)->verifiesThroughTable()) {
+	if (slot) {
 		// Low-level explicit primitive: publish exactly the caller-supplied
 		// version. The snapshot-isolation gating lives on the read/getSync
 		// populate path (vtPopulateIfSettled); callers of this API assert the
-		// version directly.
-		VerificationTable::populateVersion(slot, version);
+		// version directly. Observed before the mode, so a conversion that
+		// settles the slot after that check makes the CAS fail.
+		const uint64_t observed = slot.load();
+		if ((*dbHandle)->verificationGates(0).verify) {
+			VerificationTable::populateVersionIfUnchanged(slot, observed, version);
+		}
 	}
 
 	NAPI_RETURN_UNDEFINED();

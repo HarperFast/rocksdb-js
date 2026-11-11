@@ -371,13 +371,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::unordered_map<uint64_t, std::shared_ptr<TransactionHandle>> transactions;
 
 	/**
-	 * Entries erased from `transactions`, incremented under `txnsMutex`. Lets a
-	 * conversion that found a transaction blocking it skip rescanning until one
-	 * leaves (`activateVerification`).
-	 */
-	std::atomic<uint64_t> transactionRemovals{0};
-
-	/**
 	 * Atomic counter for generating unique transaction IDs for this RocksDB
 	 * instance. Sadly we cannot use RocksDB's transaction IDs because they are
 	 * implementation-dependent and are assigned lazily with a default of 0
@@ -1251,7 +1244,6 @@ struct ColumnFamilyDescriptor final {
 
 	std::atomic<uint32_t> attachedHandles{0};
 
-	/** Attached handles opened with an explicit `verificationTable: false`. */
 	std::atomic<uint32_t> optOutHandles{0};
 
 	ColumnFamilyDescriptor(

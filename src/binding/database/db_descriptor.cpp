@@ -1936,7 +1936,6 @@ void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandl
 			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %llu mismatch! expected %p, got %p\n", this, (unsigned long long)txnHandle->id, it->second.get(), txnHandle.get());
 		}
 		this->transactions.erase(it);
-		this->transactionRemovals.fetch_add(1, std::memory_order_relaxed);
 	}
 }
 
@@ -2040,8 +2039,10 @@ bool DBDescriptor::activateVerification(VerificationParticipation& participation
 			std::chrono::steady_clock::now().time_since_epoch()
 		).count();
 	};
-	if (this->transactionRemovals.load(std::memory_order_relaxed) ==
-			participation.blockedAtRemovals.load(std::memory_order_relaxed) &&
+	// Read before the scan: a transaction closes before it counts, so one this
+	// scan sees open moves the count past the value recorded below.
+	const uint64_t closes = transactionCloseCount();
+	if (closes == participation.blockedAtCloses.load(std::memory_order_relaxed) &&
 		steadyNow() < participation.rescanAt.load(std::memory_order_relaxed)) {
 		return false;
 	}
@@ -2055,9 +2056,7 @@ bool DBDescriptor::activateVerification(VerificationParticipation& participation
 		// closed; its commit, if still running, holds an operation.
 		for (const auto& registered : this->transactions) {
 			if (registered.first <= watermark && registered.second && !registered.second->closed.load()) {
-				participation.blockedAtRemovals.store(
-					this->transactionRemovals.load(std::memory_order_relaxed), std::memory_order_relaxed
-				);
+				participation.blockedAtCloses.store(closes, std::memory_order_relaxed);
 				participation.rescanAt.store(
 					steadyNow() + std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::milliseconds(100)).count(),
 					std::memory_order_relaxed

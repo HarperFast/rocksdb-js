@@ -42,6 +42,13 @@ struct TransactionLogStore;
  * up front, so recording one can never fail after its count was taken
  * (invariant 24).
  */
+/**
+ * Transactions closed in this process while a verification-table conversion is
+ * pending, counted at the start of `TransactionHandle::close()`. A pending
+ * conversion rescans for transactions that predate it only after this moves.
+ */
+uint64_t transactionCloseCount() noexcept;
+
 template<typename T, size_t N>
 struct InlineVector final {
 	static constexpr size_t inlineCapacity = N;

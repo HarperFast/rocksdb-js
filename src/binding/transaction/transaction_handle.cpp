@@ -603,9 +603,19 @@ void TransactionHandle::closeOrphanIfUnused() {
  * from multiple threads concurrently (e.g. DBDescriptor::close() on env M's
  * JS thread racing the async commit's complete callback on env W's JS thread).
  */
+static std::atomic<uint64_t> transactionCloses{0};
+
+uint64_t transactionCloseCount() noexcept {
+	return transactionCloses.load();
+}
+
 void TransactionHandle::close() {
 	if (this->closed.exchange(true)) {
 		return;
+	}
+	// Only a pending conversion reads the count; skip the shared RMW otherwise.
+	if (verificationConversionsPending().load() != 0) {
+		transactionCloses.fetch_add(1);
 	}
 	this->closeIterators();
 

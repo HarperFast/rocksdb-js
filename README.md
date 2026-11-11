@@ -2263,9 +2263,11 @@ that explicit `false` throws `ERR_VERIFICATION_TABLE_CONFLICT`, and so does open
 When handles without the option already used the column family, the opt-in converts it: their
 writes invalidate slots from then on, but a transaction that started earlier may hold a write that
 does not. Until every such transaction has finished and no other operation on the database is
-running, reads of that column family neither seed slots nor answer `FRESH_VERSION_FLAG`,
+running, reads of that column family neither seed slots nor are answered from them (a read still
+returns `FRESH_VERSION_FLAG` when the value it reads carries the expected version),
 `verifyVersion()` returns `false`, and `populateVersion()` does nothing; they behave as uncached
-reads. The open itself never waits.
+reads. The open itself never waits. Opening with an explicit `false` after the last handle closes
+clears every slot.
 
 ### `db.verifyVersion(key: Key, version: number): boolean`
 

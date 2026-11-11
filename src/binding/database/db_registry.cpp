@@ -1078,8 +1078,13 @@ void DBRegistry::OpenDB(
 		} else {
 			participation.publish();
 		}
-	} else if (optsOut) {
+	} else if (optsOut && participation.guardsWrites()) {
+		// No handle is attached (checked above). Slots the participants seeded
+		// would otherwise be trusted while this handle's writes skip them.
 		participation.optOut();
+		if (VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw()) {
+			vt->settleAllSlots();
+		}
 	}
 	if (!participation.guardsWrites()) {
 		columnDescriptor->hadNonParticipatingHandle = true;

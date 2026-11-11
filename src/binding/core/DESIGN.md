@@ -26,7 +26,7 @@ A slot may hold a version only while every write of its key invalidates the slot
 
 - **Only a participating column family publishes from a read.** Writes lock a slot only on a column
   family whose `VerificationParticipation` guards writes, and reads publish only once it is
-  `Publishing` (`DBHandle::publishesVerifiedReads()`, passed to `vtPopulateIfSettled()` and stored in
+  `Publishing` (`DBHandle::verificationGates()`, passed to `vtPopulateIfSettled()` and stored in
   `AsyncGetState::vtPublish`). The explicit `populateVersion()` primitive is not gated on a
   non-participating column family; its caller owns that contract.
 - **The table exists before an opted-in handle can write.** Writers never create it:
@@ -74,16 +74,19 @@ changes it:
 
 - **A later handle inherits participation**, for as long as the generation lives in that descriptor:
   a slot a closed handle seeded can still be trusted.
-- **An explicit opt-out ends participation once no handle is attached.** Before that, a
-  `verificationTable: false` open is refused with `ERR_VERIFICATION_TABLE_CONFLICT`, since its writes
-  would skip slots the others trust.
+- **An explicit opt-out ends participation once no handle is attached**, and settles every slot,
+  since its writes skip the slots the participants seeded. Before that, a `verificationTable: false`
+  open is refused with `ERR_VERIFICATION_TABLE_CONFLICT`.
 - **A late opt-in converts the column family in place**, unless a handle opened with an explicit
   `false` is attached (refused, as above). Writes through every handle take write intents from the
   moment of the opt-in, but a write a non-participating handle staged before it holds none, so the
-  table stays inert for that column family (no publish, no FRESH, no explicit seed) until
+  table stays inert for that column family (no publish, no answer from a slot, no explicit seed) until
   `DBDescriptor::activateVerification()` finds no registered transaction with an id up to the
   watermark taken at the opt-in still open, and no operation besides the caller's own in flight (a
-  closed transaction's commit, and a non-transactional write, hold one). The watermark is an RMW on
+  closed transaction's commit, and a non-transactional write, hold one). Every verification-table
+  access through a handle tries it, under an `OperationGuard` of its own; after a scan that found
+  such a transaction, the next scan waits for any transaction in the process to close
+  (`transactionCloseCount()`), or 100 ms. The watermark is an RMW on
   `nextTransactionId` after the guard is published, so a transaction allocated later sees the guard.
   A transaction that existed at the opt-in therefore never sees a verified read of that column
   family. `convertToVerification()` settles every slot first: a non-participating handle could have
@@ -92,7 +95,8 @@ changes it:
 - **Publish eligibility is decided before the slot is observed**, never after the read: a write
   without an intent leaves the settled generation a read observed unchanged when it commits, so a
   read that started while the column family converted must not publish once it activates.
-  Activation runs on read paths that hold an `OperationGuard`.
+  An explicit `populateVersion()` CASes from the slot value it observed before reading the mode, so
+  a conversion that settles the slot in between defeats it.
 
 `test/verification-table.test.ts` (`participation is per column family`) covers these;
 `test/fixtures/fork-vt-late-opt-in.mts` covers a read that crosses activation.
