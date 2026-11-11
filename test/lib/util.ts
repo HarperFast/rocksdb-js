@@ -1,4 +1,5 @@
 import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.ts';
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -146,5 +147,40 @@ export async function terminateWorker(worker: Worker): Promise<void> {
 
 	await new Promise<void>((resolve) => {
 		worker.on('exit', () => resolve());
+	});
+}
+
+const nodeExecutable =
+	process.env.NODE_BINARY ??
+	(process.versions.bun || process.versions.deno
+		? (process.env.npm_node_execpath ?? 'node')
+		: process.execPath);
+
+/**
+ * Runs a fixture that prints `ready` and then SIGKILLs itself, resolving only when it died that way
+ * after printing it.
+ */
+export function runSelfKillingFixture(fixture: string, dbPath: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(nodeExecutable, [fixture, dbPath]);
+		let output = '';
+		child.stdout.on('data', (chunk) => (output += chunk));
+		child.stderr.on('data', (chunk) => (output += chunk));
+		const timeout = setTimeout(() => {
+			child.kill();
+			reject(new Error(`fixture timed out\n${output}`));
+		}, 10_000);
+		child.on('error', reject);
+		child.on('close', (code, signal) => {
+			clearTimeout(timeout);
+			// Windows maps a self-kill to TerminateProcess(h, 1).
+			const killed =
+				signal === 'SIGKILL' || code === 137 || (process.platform === 'win32' && code === 1);
+			if (killed && output.includes('ready')) {
+				resolve();
+			} else {
+				reject(new Error(`fixture exited (code=${code} signal=${signal}): ${output}`));
+			}
+		});
 	});
 }

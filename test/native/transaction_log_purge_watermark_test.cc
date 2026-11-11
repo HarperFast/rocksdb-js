@@ -8,6 +8,9 @@
 #include <limits>
 #include <memory>
 #include <string>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "core/encoding.h"
 #include "transaction_log/transaction_log_entry.h"
 #include "transaction_log/transaction_log_purge_record.h"
@@ -22,6 +25,10 @@ using rocksdb_js::TransactionLogStore;
 // Two 100-byte entries fit a 256-byte segment; a third rotates.
 constexpr uint32_t MAX_FILE_SIZE = 256;
 constexpr uint32_t PAYLOAD_SIZE = 100;
+
+// Keys the 2.13.0 fixture holds ahead of the clock: 2100-01-01T00:00:00Z and a second after it.
+constexpr double RELEASE_213_AHEAD_1 = 4102444800000.0;
+constexpr double RELEASE_213_AHEAD_2 = RELEASE_213_AHEAD_1 + 1000;
 
 struct PurgeWatermarkTest : ::testing::Test {
 	std::filesystem::path root;
@@ -79,10 +86,32 @@ struct PurgeWatermarkTest : ::testing::Test {
 			(std::chrono::system_clock::now() - std::chrono::hours(1)).time_since_epoch()).count());
 	}
 
+	/** The raw bytes of the slot a record of `generation` occupies. */
+	std::string readSlot(uint64_t generation) const {
+		std::string bytes(rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE, '\0');
+		std::ifstream file(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME, std::ios::binary);
+		file.seekg((generation & 1) ? rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_STRIDE : 0);
+		file.read(bytes.data(), bytes.size());
+		return bytes;
+	}
+
 	TransactionLogPurgeRecord recordOnDisk(const std::filesystem::path& path) const {
 		TransactionLogPurgeRecord record;
 		EXPECT_EQ(rocksdb_js::readTransactionLogPurgeRecord(path, record), TransactionLogPurgeRecordState::Valid);
 		return record;
+	}
+
+	/**
+	 * Copies the store rocksdb-js 2.13.0 wrote (test/fixtures/txnlog-2.13.0/generate.mjs): 2.13.0
+	 * deleted segment 1, which held RELEASE_213_AHEAD_1; segment 2 holds 2000 and RELEASE_213_AHEAD_2;
+	 * segment 3, the current one, holds 3000. txn.state covers all of them.
+	 */
+	void copyRelease213Store() {
+		auto fixture = std::filesystem::current_path() / "test" / "fixtures" / "txnlog-2.13.0" / "store";
+		ASSERT_TRUE(std::filesystem::exists(fixture / "2.txnlog")) << fixture;
+		std::filesystem::create_directories(root);
+		std::filesystem::copy(fixture, storePath, std::filesystem::copy_options::recursive);
+		ASSERT_FALSE(std::filesystem::exists(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
 	}
 
 	/**
@@ -774,6 +803,360 @@ TEST_F(PurgeWatermarkTest, InvalidationIsDurable) {
 	EXPECT_FALSE(loadStore()->getPurgeWatermark().known);
 }
 
+// A store 2.13.0 wrote has no record. Its first writable open starts one at the oldest surviving
+// segment; a caller vouches for what 2.13.0 deleted before that.
+TEST_F(PurgeWatermarkTest, Release213StoreAdoptsABaseline) {
+	copyRelease213Store();
+	auto store = loadStore();
+	EXPECT_FALSE(store->getPurgeWatermark().known);
+	auto record = recordOnDisk(storePath);
+	EXPECT_FALSE(record.known);
+	EXPECT_TRUE(record.tracked);
+	EXPECT_EQ(record.throughSequence, 1u);
+	EXPECT_EQ(record.watermark, 0);
+
+	auto adopted = store->setPurgeBaseline(RELEASE_213_AHEAD_1);
+	ASSERT_TRUE(adopted.known);
+	EXPECT_EQ(adopted.purgedThrough, RELEASE_213_AHEAD_1);
+	EXPECT_EQ(store->getPurgeWatermark().purgedThrough, RELEASE_213_AHEAD_1);
+	store->close();
+
+	EXPECT_TRUE(recordOnDisk(storePath).known);
+	auto reloaded = loadStore();
+	auto watermark = reloaded->getPurgeWatermark();
+	ASSERT_TRUE(watermark.known);
+	EXPECT_EQ(watermark.purgedThrough, RELEASE_213_AHEAD_1);
+	reloaded->close();
+}
+
+// Whatever the caller asserts, the watermark stays at or above every key this release deleted,
+// including one minted ahead of the clock in a segment old enough to purge by age.
+TEST_F(PurgeWatermarkTest, BaselineNeverHidesAPurgedKeyAheadOfTheClock) {
+	copyRelease213Store();
+	ageSegment(2);
+	// retention at open deletes segment 2 after the record began
+	auto store = loadStore(std::chrono::milliseconds(60 * 60 * 1000));
+	EXPECT_FALSE(std::filesystem::exists(segment(2)));
+	EXPECT_FALSE(store->getPurgeWatermark().known);
+	EXPECT_EQ(recordOnDisk(storePath).watermark, RELEASE_213_AHEAD_2);
+
+	auto adopted = store->setPurgeBaseline(3000);
+	ASSERT_TRUE(adopted.known);
+	EXPECT_EQ(adopted.purgedThrough, RELEASE_213_AHEAD_2);
+	store->close();
+}
+
+TEST_F(PurgeWatermarkTest, PurgeAfterTheBaselineStillRaisesIt) {
+	copyRelease213Store();
+	auto store = loadStore();
+	ASSERT_TRUE(store->setPurgeBaseline(3000).known);
+	ageSegment(2);
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	EXPECT_FALSE(std::filesystem::exists(segment(2)));
+	auto watermark = store->getPurgeWatermark();
+	ASSERT_TRUE(watermark.known);
+	EXPECT_EQ(watermark.purgedThrough, RELEASE_213_AHEAD_2);
+	store->close();
+}
+
+// The flag and the value share one slot: a write that fails, tears, or never reaches the disk leaves
+// the previous, unknown record, never a known one with a lower value.
+TEST_F(PurgeWatermarkTest, FailedBaselineWriteLeavesItUnknown) {
+	copyRelease213Store();
+	auto store = loadStore();
+	auto durable = recordOnDisk(storePath).generation;
+	store->failPurgeRecordWriteForTests = []() { return true; };
+	EXPECT_THROW(store->setPurgeBaseline(5000), rocksdb_js::DBException);
+	EXPECT_FALSE(store->getPurgeWatermark().known);
+	EXPECT_EQ(recordOnDisk(storePath).generation, durable);
+	store->failPurgeRecordWriteForTests = nullptr;
+	store->close();
+
+	auto reloaded = loadStore();
+	EXPECT_FALSE(reloaded->getPurgeWatermark().known);
+	EXPECT_TRUE(reloaded->setPurgeBaseline(5000).known);
+	reloaded->close();
+}
+
+TEST_F(PurgeWatermarkTest, TornBaselineWriteLeavesItUnknown) {
+	copyRelease213Store();
+	auto store = loadStore();
+	auto durable = recordOnDisk(storePath).generation;
+	store->failPurgeRecordWriteForTests = [&]() {
+		TransactionLogPurgeRecord attempted;
+		attempted.known = true;
+		attempted.tracked = true;
+		attempted.watermark = 5000;
+		attempted.throughSequence = 1;
+		attempted.generation = durable + 1;
+		EXPECT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, attempted));
+		std::fstream file(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME, std::ios::binary | std::ios::in | std::ios::out);
+		file.seekp(((durable + 1) & 1) ? rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_STRIDE + 20 : 20);
+		file.write("\xff\xff", 2);
+		return true;
+	};
+	EXPECT_THROW(store->setPurgeBaseline(5000), rocksdb_js::DBException);
+	store->failPurgeRecordWriteForTests = nullptr;
+	store->close();
+
+	auto record = recordOnDisk(storePath);
+	EXPECT_EQ(record.generation, durable);
+	EXPECT_FALSE(record.known);
+	EXPECT_FALSE(loadStore()->getPurgeWatermark().known);
+}
+
+// A write whose sync failed may still reach the disk later. The store's next write retries that slot
+// with what memory holds, so the unsynced adoption is overwritten rather than left to surface.
+TEST_F(PurgeWatermarkTest, UnsyncedBaselineIsOverwrittenByTheNextWrite) {
+	copyRelease213Store();
+	auto store = loadStore();
+	auto durable = recordOnDisk(storePath).generation;
+	store->failPurgeRecordWriteForTests = [&]() {
+		TransactionLogPurgeRecord attempted;
+		attempted.known = true;
+		attempted.tracked = true;
+		attempted.watermark = 5000;
+		attempted.throughSequence = 1;
+		attempted.generation = durable + 1;
+		EXPECT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, attempted));
+		return true;
+	};
+	auto durableSlot = readSlot(durable);
+	EXPECT_THROW(store->setPurgeBaseline(5000), rocksdb_js::DBException);
+	store->failPurgeRecordWriteForTests = nullptr;
+	EXPECT_FALSE(store->getPurgeWatermark().known);
+
+	ageSegment(2);
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	EXPECT_FALSE(std::filesystem::exists(segment(2)));
+	EXPECT_EQ(readSlot(durable), durableSlot);
+	auto record = recordOnDisk(storePath);
+	EXPECT_EQ(record.generation, durable + 1);
+	EXPECT_FALSE(record.known);
+	EXPECT_TRUE(record.tracked);
+	EXPECT_EQ(record.watermark, RELEASE_213_AHEAD_2);
+	store->close();
+}
+
+// Retrying the adoption also rewrites the failed write's slot, never the last durable one.
+TEST_F(PurgeWatermarkTest, BaselineRetryKeepsTheDurableSlot) {
+	copyRelease213Store();
+	auto store = loadStore();
+	auto durable = recordOnDisk(storePath).generation;
+	auto durableSlot = readSlot(durable);
+	store->failPurgeRecordWriteForTests = [&]() {
+		TransactionLogPurgeRecord attempted;
+		attempted.known = true;
+		attempted.tracked = true;
+		attempted.watermark = 4000;
+		attempted.throughSequence = 1;
+		attempted.generation = durable + 1;
+		EXPECT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, attempted));
+		return true;
+	};
+	EXPECT_THROW(store->setPurgeBaseline(4000), rocksdb_js::DBException);
+	store->failPurgeRecordWriteForTests = nullptr;
+	auto watermark = store->setPurgeBaseline(5000);
+	ASSERT_TRUE(watermark.known);
+	EXPECT_EQ(watermark.purgedThrough, 5000);
+	EXPECT_EQ(readSlot(durable), durableSlot);
+	EXPECT_EQ(recordOnDisk(storePath).generation, durable + 1);
+	store->close();
+}
+
+TEST_F(PurgeWatermarkTest, BaselineLeavesAKnownWatermarkAsItIs) {
+	auto store = createStore();
+	writeOutOfOrderSegments(*store);
+	ageSegment(1);
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	auto generation = recordOnDisk(storePath).generation;
+	auto watermark = store->setPurgeBaseline(9000);
+	ASSERT_TRUE(watermark.known);
+	EXPECT_EQ(watermark.purgedThrough, 5000);
+	EXPECT_EQ(recordOnDisk(storePath).generation, generation);
+	store->close();
+}
+
+// A segment whose keys could not be proven was deleted after the record began: no baseline covers it.
+TEST_F(PurgeWatermarkTest, BaselineIsRefusedAfterACorruptSegmentWasPurged) {
+	copyRelease213Store();
+	{
+		std::fstream file(segment(2), std::ios::binary | std::ios::in | std::ios::out);
+		file.seekp(TRANSACTION_LOG_FILE_HEADER_SIZE + 8);
+		const char zeros[4] = { 0, 0, 0, 0 };
+		file.write(zeros, sizeof(zeros));
+	}
+	auto store = loadStore();
+	ageSegment(2);
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	EXPECT_FALSE(std::filesystem::exists(segment(2)));
+	EXPECT_FALSE(store->setPurgeBaseline(RELEASE_213_AHEAD_2).known);
+	store->close();
+	EXPECT_FALSE(recordOnDisk(storePath).tracked);
+	EXPECT_FALSE(loadStore()->setPurgeBaseline(RELEASE_213_AHEAD_2).known);
+}
+
+// After the record began, something that does not update it (an older release) deleted a segment.
+TEST_F(PurgeWatermarkTest, BaselineIsRefusedAfterAnUnrecordedDeletion) {
+	copyRelease213Store();
+	loadStore()->close();
+	std::filesystem::remove(segment(2));
+	auto store = loadStore();
+	EXPECT_FALSE(store->setPurgeBaseline(RELEASE_213_AHEAD_2).known);
+	store->close();
+	EXPECT_FALSE(recordOnDisk(storePath).tracked);
+}
+
+// An interior hole at the first open is not a prefix an older release's retention left, so the record
+// cannot start below it.
+TEST_F(PurgeWatermarkTest, BaselineIsRefusedForAnInteriorHoleAtTheFirstOpen) {
+	{
+		auto writer = createStore();
+		writeOutOfOrderSegments(*writer);
+		writer->close();
+	}
+	std::filesystem::remove(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME);
+	std::filesystem::remove(segment(2));
+	auto store = loadStore();
+	EXPECT_FALSE(store->setPurgeBaseline(9000).known);
+	store->close();
+	EXPECT_FALSE(recordOnDisk(storePath).tracked);
+}
+
+// 2.14.0 wrote the same unknown record for a store it found without one as for a corrupt purge,
+// so its records cannot tell the caller's baseline would cover everything.
+TEST_F(PurgeWatermarkTest, BaselineIsRefusedForARelease214UnknownRecord) {
+	copyRelease213Store();
+	TransactionLogPurgeRecord release214;
+	release214.generation = 1;
+	ASSERT_TRUE(rocksdb_js::writeTransactionLogPurgeRecord(storePath, release214));
+	auto store = loadStore();
+	EXPECT_FALSE(store->setPurgeBaseline(RELEASE_213_AHEAD_2).known);
+	store->close();
+}
+
+TEST_F(PurgeWatermarkTest, BaselineIsRefusedWhenDiscoveryIsIncomplete) {
+	copyRelease213Store();
+	std::ofstream(storePath / "not-a-sequence.txnlog") << "x";
+	auto store = loadStore();
+	EXPECT_FALSE(store->setPurgeBaseline(RELEASE_213_AHEAD_2).known);
+	store->close();
+	EXPECT_FALSE(std::filesystem::exists(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
+}
+
+// A follower vouches only for a record it found at open: one that opened before the writer started
+// the record reports unknown until it reopens.
+TEST_F(PurgeWatermarkTest, ReadOnlyStoreSeesABaselineOnlyForARecordItOpenedWith) {
+	copyRelease213Store();
+	auto early = loadStore(std::chrono::milliseconds(0), /*readOnly=*/true);
+	auto writer = loadStore();
+	auto reader = loadStore(std::chrono::milliseconds(0), /*readOnly=*/true);
+	EXPECT_FALSE(reader->getPurgeWatermark().known);
+	ASSERT_TRUE(writer->setPurgeBaseline(5000).known);
+	auto watermark = reader->getPurgeWatermark();
+	ASSERT_TRUE(watermark.known);
+	EXPECT_EQ(watermark.purgedThrough, 5000);
+	EXPECT_FALSE(early->getPurgeWatermark().known);
+	early->close();
+	reader->close();
+	writer->close();
+	EXPECT_TRUE(loadStore(std::chrono::milliseconds(0), /*readOnly=*/true)->getPurgeWatermark().known);
+}
+
+// A purge that chose the current segment of a store not yet given a baseline, then stopped before the
+// unlink: the writer starts past it, so the store stays adoptable and no key lands in a covered sequence.
+TEST_F(PurgeWatermarkTest, CrashBeforeUnlinkingTheCurrentSegmentStaysAdoptable) {
+	copyRelease213Store();
+	auto store = loadStore();
+	ageSegment(2);
+	ageSegment(3);
+	auto crashImage = root / "crash";
+	store->afterPurgeRecordPersistedForTests = [&]() {
+		std::filesystem::copy(storePath, crashImage, std::filesystem::copy_options::recursive);
+	};
+	store->purge(nullptr, false, cutoffOneHourAgo());
+	store->afterPurgeRecordPersistedForTests = nullptr;
+	EXPECT_FALSE(std::filesystem::exists(segment(3)));
+	store->close();
+
+	ASSERT_TRUE(std::filesystem::exists(crashImage / "3.txnlog"));
+	auto recovered = TransactionLogStore::load(crashImage, MAX_FILE_SIZE, std::chrono::milliseconds(0), 0, false);
+	EXPECT_EQ(recovered->currentSequenceNumber.load(), 4u);
+	auto watermark = recovered->setPurgeBaseline(3000);
+	ASSERT_TRUE(watermark.known);
+	EXPECT_EQ(watermark.purgedThrough, RELEASE_213_AHEAD_2);
+	write(*recovered, 9000);
+	EXPECT_TRUE(std::filesystem::exists(crashImage / "4.txnlog"));
+	recovered->close();
+}
+
+TEST_F(PurgeWatermarkTest, BackupOfATrackedStoreMissingASegmentIsNotTracked) {
+	copyRelease213Store();
+	auto store = loadStore();
+	std::filesystem::remove(segment(2));
+	TransactionLogPurgeRecord captured;
+	bool found = false;
+	for (const auto& entry : store->snapshotForBackup(nullptr, false)) {
+		if (entry.relativeName == TRANSACTION_LOG_PURGE_RECORD_NAME) {
+			ASSERT_EQ(rocksdb_js::decodeTransactionLogPurgeRecordImage(
+				entry.inlineContents.data(), entry.inlineContents.size(), captured), TransactionLogPurgeRecordState::Valid);
+			found = true;
+		}
+	}
+	ASSERT_TRUE(found);
+	EXPECT_FALSE(captured.tracked);
+	store->close();
+}
+
+TEST_F(PurgeWatermarkTest, InvalidationClearsTracking) {
+	copyRelease213Store();
+	auto store = loadStore();
+	ASSERT_TRUE(store->invalidatePurgeRecord());
+	EXPECT_FALSE(store->setPurgeBaseline(5000).known);
+	store->close();
+	EXPECT_FALSE(recordOnDisk(storePath).tracked);
+}
+
+// 2.13.0 deleted every segment; txn.state is all that names the sequence. Everything is before the
+// record, so the baseline alone bounds it.
+TEST_F(PurgeWatermarkTest, Release213StoreWithNoSegmentLeftAdoptsABaseline) {
+	copyRelease213Store();
+	std::filesystem::remove(segment(2));
+	std::filesystem::remove(segment(3));
+	auto store = loadStore();
+	EXPECT_EQ(store->currentSequenceNumber.load(), 4u);
+	EXPECT_EQ(recordOnDisk(storePath).throughSequence, 3u);
+	ASSERT_TRUE(store->setPurgeBaseline(RELEASE_213_AHEAD_2).known);
+	write(*store, 9000);
+	store->close();
+	auto watermark = loadStore()->getPurgeWatermark();
+	ASSERT_TRUE(watermark.known);
+	EXPECT_EQ(watermark.purgedThrough, RELEASE_213_AHEAD_2);
+}
+
+// A destroy that stops part-way must not leave the store without its record: an absent record reads
+// as a store that predates it, which a caller's baseline could then make known.
+TEST_F(PurgeWatermarkTest, StoreDirectoryRemovalDeletesTheRecordLast) {
+#ifdef _WIN32
+	GTEST_SKIP() << "relies on a POSIX directory permission to stop the removal";
+#else
+	if (::geteuid() == 0) {
+		GTEST_SKIP() << "root ignores the directory permission that stops the removal";
+	}
+	copyRelease213Store();
+	loadStore()->close();
+	auto blocker = storePath / "blocker";
+	std::filesystem::create_directory(blocker);
+	std::ofstream(blocker / "file") << "x";
+	std::filesystem::permissions(blocker, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+	EXPECT_THROW(rocksdb_js::removeTransactionLogStoreDirectory(storePath), std::filesystem::filesystem_error);
+	std::filesystem::permissions(blocker, std::filesystem::perms::owner_all);
+	EXPECT_TRUE(std::filesystem::exists(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
+	rocksdb_js::removeTransactionLogStoreDirectory(storePath);
+	EXPECT_FALSE(std::filesystem::exists(storePath));
+#endif
+}
+
 TEST(TransactionLogPurgeRecord, SlotRoundTripsAndRejectsInvalidValues) {
 	TransactionLogPurgeRecord record;
 	record.known = true;
@@ -785,6 +1168,7 @@ TEST(TransactionLogPurgeRecord, SlotRoundTripsAndRejectsInvalidValues) {
 	TransactionLogPurgeRecord decoded;
 	ASSERT_TRUE(rocksdb_js::decodeTransactionLogPurgeRecordSlot(slot, decoded));
 	EXPECT_TRUE(decoded.known);
+	EXPECT_TRUE(decoded.tracked);
 	EXPECT_EQ(decoded.watermark, 1234.5);
 	EXPECT_EQ(decoded.throughSequence, 7u);
 	EXPECT_EQ(decoded.generation, 3u);
@@ -796,8 +1180,22 @@ TEST(TransactionLogPurgeRecord, SlotRoundTripsAndRejectsInvalidValues) {
 
 	record.watermark = 1;
 	rocksdb_js::encodeTransactionLogPurgeRecordSlot(slot, record);
-	slot[5] |= 0x02; // undefined flag bit
+	slot[5] |= 0x02; // a combination never written
 	EXPECT_FALSE(rocksdb_js::decodeTransactionLogPurgeRecordSlot(slot, decoded));
+	slot[5] = 0x04; // undefined flag bit
+	EXPECT_FALSE(rocksdb_js::decodeTransactionLogPurgeRecordSlot(slot, decoded));
+
+	// 2.14.0 accepts only 0x01 or 0: a known record keeps that byte, a tracked-only one does not
+	record.known = true;
+	record.tracked = true;
+	rocksdb_js::encodeTransactionLogPurgeRecordSlot(slot, record);
+	EXPECT_EQ(slot[5], 0x01);
+	record.known = false;
+	rocksdb_js::encodeTransactionLogPurgeRecordSlot(slot, record);
+	EXPECT_EQ(slot[5], 0x02);
+	ASSERT_TRUE(rocksdb_js::decodeTransactionLogPurgeRecordSlot(slot, decoded));
+	EXPECT_FALSE(decoded.known);
+	EXPECT_TRUE(decoded.tracked);
 
 	char zeros[rocksdb_js::TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE] = {};
 	EXPECT_FALSE(rocksdb_js::decodeTransactionLogPurgeRecordSlot(zeros, decoded));

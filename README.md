@@ -146,9 +146,9 @@ Creates a new database instance.
     permitted. Write operations will throw an error with code `ERR_DATABASE_READONLY`. Transactions
     are a no-op in read-only mode. [`flush()`](#dbflushoptions-promisevoid),
     [`flushSync()`](#dbflushsyncoptions-void), [`compact()`](#dbcompactoptions-promisevoid),
-    [`compactSync()`](#dbcompactsyncoptions-void) and [`syncWal()`](#dbsyncwal-promisevoid) are the
-    exception: they have nothing to do when there are no writes, so they succeed as no-ops rather
-    than throwing.
+    [`compactSync()`](#dbcompactsyncoptions-void), [`syncWal()`](#dbsyncwal-promisevoid) and
+    [`syncWalSync()`](#dbsyncwalsync-void) are the exception: they have nothing to do when there are
+    no writes, so they succeed as no-ops rather than throwing.
 
     A read-only open is a **point-in-time snapshot**: it never sees later writes. It is safe
     against a quiescent database, but **unsafe against a live writer**: the open holds no reference
@@ -888,6 +888,37 @@ await db.syncWal();
 
 On a [read-only](#new-rocksdatabasepath-options) database the returned promise resolves without
 syncing.
+
+### `db.syncWalSync(): void`
+
+[`syncWal()`](#dbsyncwal-promisevoid) on the calling thread, for code that must make earlier writes
+durable before its next step and cannot await, such as committing a floor and then deleting the log
+files it covers during startup. It throws when the sync fails or the database is closed or closing,
+so a caller that continues only after it returns never acts on writes that were not synced.
+
+```typescript
+db.putSync('floor', floor);
+db.syncWalSync();
+db.purgeLogs({ before });
+```
+
+It blocks the event loop for:
+
+- any WAL sync already running on another thread or worker (RocksDB runs them one at a time), then
+- one fsync of each live WAL file holding writes not yet synced, plus one fsync of the WAL directory
+  after a new WAL file is created.
+
+It does not wait for a write stall, a memtable flush or a compaction, and has no timeout. Its cost
+grows with the WAL bytes written since the last sync that the operating system has not already
+written back, and with the storage's flush latency. On a local NVMe drive (Lexar NM790, ext4) it
+measured 0.8 ms p50 with nothing to sync, about 1.3 ms p50 (2.8 ms max) with up to 64 KiB unsynced,
+1.9 ms p50 with 1 MiB, and 6 ms p50 with 16 MiB. Waiting behind another thread that syncs in a loop
+raised the 4 KiB case to 2.7 ms p50 and 43 ms max, and a memtable flush competing for the disk took
+a sync to 30 ms. Network block storage is typically slower, and a failing or saturated disk holds it
+for as long as that fsync takes. A database that writes with
+`disableWAL` has nothing for it to sync.
+
+On a [read-only](#new-rocksdatabasepath-options) database it returns without syncing.
 
 ### `db.get(key: Key, options?: GetOptions): MaybePromise<any>`
 
@@ -2429,6 +2460,7 @@ underlying architecture is thread safe.
 - `log.addEntry()`
 - `log.equals()`
 - `log.getPurgeWatermark()`
+- `log.setPurgeBaseline()`
 - `log.path`
 - `log.query()`
 
@@ -2496,10 +2528,12 @@ some position can be served from the log only when that position is at or above 
   deleted from the log, in whatever order the keys were written (0 when nothing was deleted). It is
   made durable before each file is deleted, including by the retention that runs when a database
   opens.
-- `{ known: false }` The log cannot vouch for what was deleted. This holds permanently for a log
-  created by a release without the watermark, one that file deletions bypassed (such as an older
-  release's retention), and one whose record cannot be read. It is also returned when the log's
-  store no longer exists, such as after `purgeLogs({ destroy: true })` until the next write.
+- `{ known: false }` The log cannot vouch for what was deleted. This holds for a log created by a
+  release without the watermark until a caller gives it a baseline
+  ([`log.setPurgeBaseline()`](#logsetpurgebaselinebaseline-transactionlogpurgewatermark)), and
+  permanently for one that file deletions bypassed (such as an older release's retention) or whose
+  record cannot be read. It is also returned when the log's store no longer exists, such as after
+  `purgeLogs({ destroy: true })` until the next write.
 
 The call is synchronous. A read-only or secondary database reads the record from disk on each call.
 The result is a snapshot: a purge can run right after it. To trust what a read returned, read the log
@@ -2511,6 +2545,41 @@ first and check the watermark afterwards. See
 ```typescript
 type TransactionLogPurgeWatermark = { known: true; purgedThrough: number } | { known: false };
 ```
+
+#### `log.setPurgeBaseline(baseline): TransactionLogPurgeWatermark`
+
+```typescript
+const log = db.useLog('foo');
+if (!log.getPurgeWatermark().known) {
+	const watermark = log.setPurgeBaseline(boundOfKeysDeletedBeforeTheRecord);
+}
+```
+
+Makes the watermark of a log created by a release without it known. The first open by this release
+starts the log's record at its oldest surviving file, and every file deleted from then on is
+recorded. Files an older release deleted before that were not, and their keys can be anywhere,
+including ahead of the clock, so this library cannot bound them. `baseline` is the caller's bound
+for them: it must be at or above every key deleted from the log before its record began. The result
+is `{ known: true, purgedThrough }` with `purgedThrough` the larger of `baseline` and every key
+deleted since the record began, made durable before the call returns.
+
+- **The baseline is an assertion, not a check.** Nothing here can verify it; a value below a key an
+  older release deleted makes `known` vouch for history that is gone. Pass a bound you hold for this
+  log, never a time cutoff, and leave a log you hold no bound for unknown.
+- **Refused** (returns `{ known: false }`, changes nothing) when the log cannot prove every deletion
+  since its record began was recorded: a file whose keys could not be read was purged, files went
+  missing after the record began, a hole in the log's files at its first open, a record written by
+  release 2.14.0 or that cannot be read, or a directory listing that was incomplete at open.
+- **Already known**: returns the watermark unchanged; `purgedThrough` can be below `baseline`.
+- **Once.** A log that reads unknown again later (its `txn.purged` was removed, for example by the
+  downgrade procedure in [the transaction-log notes](docs/transaction-log.md#purge-watermark)) has
+  a new record, and a baseline for it must also cover everything the earlier watermark covered.
+- Throws a `TypeError` unless `baseline` is a finite number at or above 0, an error when the record
+  cannot be written (the log stays unknown), and `ERR_DATABASE_READONLY` on a read-only database. A
+  read-only or secondary database opened after the writer's first open sees the result; one opened
+  before reports unknown until it reopens.
+
+The call is synchronous and syncs one small file when it changes the record.
 
 #### `log.path: string`
 

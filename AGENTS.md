@@ -1678,7 +1678,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     persists `txn.purged`, raised to the largest key of every segment it is about to delete,
     durably before its first unlink. A store reports the watermark as known only when every
     deletion in its history was recorded that way, so a store an older release created stays
-    unknown. See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark).
+    unknown until a caller's baseline (`setPurgeBaseline()`) covers what it deleted before the record
+    began, accepted only while the record's `tracked` flag proves every later deletion was recorded.
+    See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark) and
+    [purge baseline](src/binding/transaction_log/DESIGN.md#purge-baseline).
 
 36. **A transaction's log batch is staged only while it is Pending**: from `Committing` on, the
     commit owns `logEntryBatch` and `committedPosition` — its lane writes the batch, frees it, and

@@ -136,7 +136,7 @@ std::string backupInlineContents(
 			TransactionLogPurgeRecordState::Valid) {
 		return named.file.inlineContents;
 	}
-	record.known = false;
+	record.loseCoverage();
 	return encodeTransactionLogPurgeRecordImage(record);
 }
 

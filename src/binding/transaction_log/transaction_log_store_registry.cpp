@@ -732,7 +732,7 @@ std::vector<TransactionLogStoreRegistry::PurgedLogFile> TransactionLogStoreRegis
 	// Phase 4: Delete directories outside the lock
 	for (auto& store : storesActuallyRemoved) {
 		try {
-			std::filesystem::remove_all(store->path);
+			removeTransactionLogStoreDirectory(store->path);
 		} catch (const std::filesystem::filesystem_error& e) {
 			DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to remove log directory %s: %s\n",
 				instance.get(), store->path.string().c_str(), e.what());
