@@ -593,7 +593,7 @@ describe.skipIf(!iteratorPoolEnabled)('Transaction iterator pool', () => {
 				expect(closables - baseline.closables, 'untrimmed pooled iterators').toBe(
 					transactions - baseline.transactions
 				);
-				if (!process.versions.bun) {
+				if (!process.versions.bun || open() === 0) {
 					expect(open()).toBe(0);
 					return;
 				}
