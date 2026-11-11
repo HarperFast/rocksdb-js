@@ -634,7 +634,12 @@ function isEmptyPath(path) {
 	}
 }
 
+// The native layer reads backup ids and keep counts as uint32; larger values wrap.
+const isUint32 = (text) => /^\d+$/.test(text) && Number(text) <= 0xffffffff;
+
 function validateBackupsArgs([dirArg, subcommand = 'list', extra]) {
+	// A blank directory would resolve to the working directory.
+	if (!dirArg.trim()) throw new CLIError('Usage: backups <dir> [subcommand] [arg]', 2);
 	if (subcommand !== 'list' && subcommand !== 'ls' && !BACKUP_SUBCOMMANDS.includes(subcommand)) {
 		throw new CLIError(
 			`Unknown subcommand: ${subcommand}\nValid subcommands: list, ${BACKUP_SUBCOMMANDS.join(', ')}`,
@@ -648,12 +653,11 @@ function validateBackupsArgs([dirArg, subcommand = 'list', extra]) {
 			2
 		);
 	}
-	if (['restore', 'verify', 'delete'].includes(subcommand) && !/^\d+$/.test(extra)) {
+	if (['restore', 'verify', 'delete'].includes(subcommand) && !isUint32(extra)) {
 		throw new CLIError(`Invalid backup id: ${extra}`, 2);
 	}
-	// Digits only: Number('') is 0, which would purge every backup. The native layer
-	// reads keepCount as a uint32; values above that wrap.
-	if (subcommand === 'purge' && (!/^\d+$/.test(extra) || Number(extra) > 0xffffffff)) {
+	// Digits only: Number('') is 0, which would purge every backup.
+	if (subcommand === 'purge' && !isUint32(extra)) {
 		throw new CLIError(
 			`Invalid keep count: ${extra}\nUsage: backups ${dirArg} purge <keep-count>`,
 			2

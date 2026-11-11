@@ -320,8 +320,13 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.code).toBe(0);
 			expect(result.stdout).toContain('verified OK');
 
-			for (const keepCount of ['', ' ', '-1', '1.5']) {
-				result = await cli(['backups', backupDir, 'purge', keepCount], { cwd: backupDir });
+			for (const args of [
+				...['', ' ', '-1', '1.5', '4294967296'].map((n) => [backupDir, 'purge', n]),
+				[backupDir, 'verify', '4294967296'],
+				['', 'purge', '0'],
+				[' ', 'list'],
+			]) {
+				result = await cli(['backups', ...args], { cwd: backupDir });
 				expect(result.code).toBe(2);
 			}
 			result = await cli(['backups', backupDir, '--json'], { cwd: backupDir });
