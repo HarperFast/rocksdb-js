@@ -170,13 +170,20 @@ export function runFixture(
 		let output = '';
 		child.stdout.on('data', (chunk) => (output += chunk));
 		child.stderr.on('data', (chunk) => (output += chunk));
+		// Under the callers' 20 s test timeout; the rejection waits for the child to exit, so a caller's
+		// cleanup does not remove the database under it.
+		let timedOut = false;
 		const timeout = setTimeout(() => {
-			child.kill();
-			reject(new Error(`fixture timed out\n${output}`));
-		}, 10_000);
+			timedOut = true;
+			child.kill('SIGKILL');
+		}, 15_000);
 		child.on('error', reject);
 		child.on('close', (code, signal) => {
 			clearTimeout(timeout);
+			if (timedOut) {
+				reject(new Error(`fixture timed out\n${output}`));
+				return;
+			}
 			// Windows maps a self-kill to TerminateProcess(h, 1).
 			const killed =
 				signal === 'SIGKILL' || code === 137 || (process.platform === 'win32' && code === 1);

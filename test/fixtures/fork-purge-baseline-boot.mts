@@ -7,7 +7,8 @@ import { join } from 'node:path';
 const dbPath = process.argv[2];
 const db = RocksDatabase.open(dbPath);
 const log = db.useLog('legacy');
-if (!log.setPurgeBaseline(3000).known) throw new Error('The baseline was not adopted');
+if (!log.setPurgeBaseline(Date.UTC(2100, 0, 1)).known)
+	throw new Error('The baseline was not adopted');
 db.putSync('floor', 4242);
 db.syncWalSync();
 const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
