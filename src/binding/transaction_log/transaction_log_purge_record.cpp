@@ -8,6 +8,7 @@
 #include <vector>
 #include "core/encoding.h"
 #include "core/platform.h"
+#include "transaction_log_file.h"
 
 namespace rocksdb_js {
 
@@ -224,8 +225,9 @@ void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath, 
 		if (name == TRANSACTION_LOG_PURGE_RECORD_NAME) {
 			continue;
 		}
+		uint32_t sequence = 0;
 		if (link && (entry.symlink_status().type() != std::filesystem::file_type::regular ||
-			(entry.path().extension() != ".txnlog" && name != "txn.state" &&
+			(!parseTransactionLogSegmentName(name, sequence) && name != "txn.state" &&
 				name.rfind(TRANSACTION_LOG_PURGE_RECORD_NAME ".tmp-", 0) != 0))) {
 			continue;
 		}
