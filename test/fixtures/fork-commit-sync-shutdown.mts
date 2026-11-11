@@ -2,10 +2,7 @@ import { RocksDatabase, Transaction } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 
-// Run with ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS and ROCKSDB_JS_TXN_CLOSE_DELAY_MS: commitSync() parks
-// before its RocksDB commit, while a worker runs shutdown(), and again inside its own close() of
-// the committed transaction. shutdown() must wait out both rather than destroy the database under
-// them; a use-after-free there does not reliably crash, so the timing is what is asserted.
+// A use-after-free here does not reliably crash, so the timing of shutdown() is what is asserted.
 const path = process.argv[2];
 const executeDelayMs = Number(process.env.ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS);
 const closeDelayMs = Number(process.env.ROCKSDB_JS_TXN_CLOSE_DELAY_MS);

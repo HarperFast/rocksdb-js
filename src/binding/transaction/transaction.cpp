@@ -599,9 +599,9 @@ static void writeLogBatch(TransactionHandle& txnHandle, TransactionLogStore& sto
  * Log-lane stage of the commit: validates the handle and writes the
  * transaction-log batch (recording the committed position). Runs on the
  * database's log lane, on a libuv threadpool thread in the legacy path (which
- * runs both stages back to back), or inline in commitSync(). A pass-through no-op for
- * transactions with no log entries so total dispatch order is preserved into
- * the commit lane.
+ * runs both stages back to back), or inline in commitSync(). A pass-through
+ * no-op for transactions with no log entries so total dispatch order is
+ * preserved into the commit lane.
  */
 static void executeLogWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
@@ -775,7 +775,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%llu)\n", txnHandle.get(), (unsigned long long)txnHandle->id);
 			// close() settles state only after this execute drains, so nothing else has moved it.
 			const bool committed = txnHandle->state.transition(TransactionState::Committing, TransactionState::Committed);
-			assert(committed && "Async commit left Committing before its execute finished");
+			assert(committed && "Commit left Committing before its execute finished");
 			(void)committed;
 			descriptor->notify("committed", nullptr);
 		} else if (state->status.IsBusy() || state->status.IsTryAgain()) {
