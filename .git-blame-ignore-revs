@@ -3,3 +3,6 @@
 
 # chore(fmt): apply clang-format to C/C++ sources (#317)
 3cab1deae17e9e9bccf85e779dfebf034ff55dfe
+
+# chore(fmt): apply clang-format to C/C++ changed on main since the reformat (#317)
+ceb019f730ba50a3f4fc284642d2e49b3bed1c90
