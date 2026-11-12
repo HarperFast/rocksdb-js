@@ -1,11 +1,15 @@
 #include "database/db_settings.h"
 #include <algorithm>
 #include <cmath>
-#include <cstring>
+#include <initializer_list>
 #include <limits>
+#include <optional>
 #include <random>
+#include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include "database/db_registry.h"
 #include "database/db_stats.h"
 #include "napi/macros.h"
@@ -51,6 +55,95 @@ bool setLiveFlushPolicy(
 		}
 		::napi_throw_error(env, nullptr, e.what());
 		return false;
+	}
+}
+
+/**
+ * Reads an optional `config()` field: absent, null and undefined leave `out` empty. A value of the
+ * wrong type throws `typeError`, or is ignored when none is given. Returns false with an exception
+ * pending, including one thrown by a getter.
+ */
+template <typename T>
+bool readField(
+	napi_env env,
+	napi_value params,
+	const char* name,
+	std::optional<T>& out,
+	const char* typeError = nullptr
+) {
+	napi_value value;
+	napi_valuetype type;
+	napi_status status = ::napi_get_named_property(env, params, name, &value);
+	if (status == napi_ok) {
+		status = ::napi_typeof(env, value, &type);
+	}
+	if (status != napi_ok) {
+		bool pending = false;
+		::napi_is_exception_pending(env, &pending);
+		if (!pending) {
+			const std::string error = getNapiExtendedError(env, status);
+			::napi_throw_error(env, nullptr, error.c_str());
+		}
+		return false;
+	}
+	if (type == napi_undefined || type == napi_null) {
+		return true;
+	}
+	T result;
+	// getValue() also accepts a Buffer for a string.
+	const bool typeMatches = (!std::is_same_v<T, std::string> || type == napi_string) &&
+		getValue(env, value, result) == napi_ok;
+	if (typeMatches) {
+		out = std::move(result);
+	} else if (typeError) {
+		::napi_throw_type_error(env, nullptr, typeError);
+		return false;
+	}
+	return true;
+}
+
+template <typename T>
+bool readEnumField(
+	napi_env env,
+	napi_value params,
+	const char* name,
+	std::initializer_list<std::pair<std::string_view, T>> values,
+	std::optional<T>& out,
+	const char* typeError,
+	const char* rangeError
+) {
+	std::optional<std::string> text;
+	if (!readField(env, params, name, text, typeError)) {
+		return false;
+	}
+	if (!text) {
+		return true;
+	}
+	for (const auto& [key, value] : values) {
+		if (*text == key) {
+			out = value;
+			return true;
+		}
+	}
+	::napi_throw_range_error(env, nullptr, rangeError);
+	return false;
+}
+
+bool checkRange(napi_env env, bool valid, const char* rangeError) {
+	if (!valid) {
+		::napi_throw_range_error(env, nullptr, rangeError);
+	}
+	return valid;
+}
+
+bool isIntegerInRange(double value, double min, double max) {
+	return std::isfinite(value) && std::trunc(value) == value && value >= min && value <= max;
+}
+
+template <typename A, typename T>
+void storeIfSet(std::atomic<A>& target, const std::optional<T>& value) {
+	if (value) {
+		target.store(static_cast<A>(*value), std::memory_order_relaxed);
 	}
 }
 
@@ -186,176 +279,62 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	DBSettings& settings = DBSettings::getInstance();
 	napi_value params = argv[0];
 
-	napi_value occLockBucketsValue;
-	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "occLockBuckets", &occLockBucketsValue));
-	napi_valuetype occLockBucketsType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, occLockBucketsValue, &occLockBucketsType));
-	double count = 0;
-	const bool occLockBucketsProvided = occLockBucketsType != napi_undefined && occLockBucketsType != napi_null;
-	if (occLockBucketsProvided) {
-		if (::napi_get_value_double(env, occLockBucketsValue, &count) != napi_ok) {
-			::napi_throw_type_error(env, nullptr, "occLockBuckets must be a number");
-			return nullptr;
-		}
-		if (!std::isfinite(count) || std::trunc(count) != count || count < 16 || count > (1 << 24)) {
-			::napi_throw_range_error(env, nullptr, "occLockBuckets must be an integer between 16 and 16777216");
-			return nullptr;
-		}
-	}
-
-	napi_value occValidationValue;
-	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "occValidation", &occValidationValue));
-	napi_valuetype occValidationType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, occValidationValue, &occValidationType));
-	bool validateSerial = false;
-	const bool occValidationProvided = occValidationType != napi_undefined && occValidationType != napi_null;
-	if (occValidationProvided) {
-		if (occValidationType != napi_string) {
-			::napi_throw_type_error(env, nullptr, "occValidation must be a string");
-			return nullptr;
-		}
-		char policy[16];
-		size_t length = 0;
-		NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, occValidationValue, policy, sizeof(policy), &length));
-		if (length == 6 && std::strcmp(policy, "serial") == 0) {
-			validateSerial = true;
-		} else if (!(length == 8 && std::strcmp(policy, "parallel") == 0)) {
-			::napi_throw_range_error(env, nullptr, "occValidation must be 'parallel' or 'serial'");
-			return nullptr;
-		}
-	}
-
-	napi_value flushPolicyValue;
-	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "writeBufferManagerFlushPolicy", &flushPolicyValue));
-	napi_valuetype flushPolicyType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, flushPolicyValue, &flushPolicyType));
-	rocksdb::WriteBufferFlushPolicy newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushOldest;
-	const bool flushPolicyProvided = flushPolicyType != napi_undefined && flushPolicyType != napi_null;
-	if (flushPolicyProvided) {
-		if (flushPolicyType != napi_string) {
-			::napi_throw_type_error(env, nullptr, "writeBufferManagerFlushPolicy must be a string");
-			return nullptr;
-		}
-		char policy[32];
-		size_t length = 0;
-		NAPI_STATUS_THROWS(::napi_get_value_string_utf8(env, flushPolicyValue, policy, sizeof(policy), &length));
-		const std::string_view name(policy, length);
-		if (name == "oldest") {
-			newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushOldest;
-		} else if (name == "largest") {
-			newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushLargest;
-		} else if (name == "largestAcrossDBs") {
-			newFlushPolicy = rocksdb::WriteBufferFlushPolicy::kFlushLargestAcrossDBs;
-		} else {
-			::napi_throw_range_error(env, nullptr,
-				"writeBufferManagerFlushPolicy must be 'oldest', 'largest' or 'largestAcrossDBs'");
-			return nullptr;
-		}
-	}
-
-	napi_value commitThreadsValue;
-	NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "commitThreads", &commitThreadsValue));
-	napi_valuetype commitThreadsType;
-	NAPI_STATUS_THROWS(::napi_typeof(env, commitThreadsValue, &commitThreadsType));
-	double commitThreads = 0;
-	const bool commitThreadsProvided = commitThreadsType != napi_undefined && commitThreadsType != napi_null;
-	if (commitThreadsProvided) {
-		if (::napi_get_value_double(env, commitThreadsValue, &commitThreads) != napi_ok) {
-			::napi_throw_type_error(env, nullptr, "commitThreads must be a number");
-			return nullptr;
-		}
-		if (!std::isfinite(commitThreads) || std::trunc(commitThreads) != commitThreads || commitThreads < 1 || commitThreads > 64) {
-			::napi_throw_range_error(env, nullptr, "commitThreads must be an integer between 1 and 64");
-			return nullptr;
-		}
-	}
-
-	int64_t blockCacheSize = 0;
-	const bool blockCacheSizeProvided =
-		rocksdb_js::getProperty(env, params, "blockCacheSize", blockCacheSize, true) == napi_ok;
-	if (blockCacheSizeProvided && blockCacheSize < 0) {
-		::napi_throw_range_error(env, nullptr, "Block cache size must be a positive integer or 0 to disable caching");
-		return nullptr;
-	}
-
-	int64_t writeBufferManagerSize = 0;
-	const bool wbmSizeProvided =
-		rocksdb_js::getProperty(env, params, "writeBufferManagerSize", writeBufferManagerSize, true) == napi_ok;
-	if (wbmSizeProvided && writeBufferManagerSize < 0) {
-		::napi_throw_range_error(env, nullptr, "Write buffer manager size must be a positive integer or 0 to disable");
-		return nullptr;
-	}
-
-	bool newCostToCache = false;
-	bool newAllowStall = false;
-	const bool costToCacheProvided =
-		rocksdb_js::getProperty(env, params, "writeBufferManagerCostToCache", newCostToCache, true) == napi_ok;
-	const bool allowStallProvided =
-		rocksdb_js::getProperty(env, params, "writeBufferManagerAllowStall", newAllowStall, true) == napi_ok;
-
-	// `napi_invalid_arg` is absent, null or undefined; any other failure (a non-boolean) throws.
-	bool compactOnClose = false;
-	const napi_status compactOnCloseStatus =
-		rocksdb_js::getProperty(env, params, "compactOnClose", compactOnClose, true);
-	const bool compactOnCloseProvided = compactOnCloseStatus == napi_ok;
-	if (!compactOnCloseProvided && compactOnCloseStatus != napi_invalid_arg) {
-		NAPI_STATUS_THROWS(compactOnCloseStatus);
-	}
-
-	bool shutdownOnExitProvided = false;
-	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "shutdownOnExit", &shutdownOnExitProvided));
-	bool shutdownOnExit = settings.getShutdownOnExit();
-	if (rocksdb_js::getProperty(env, params, "shutdownOnExit", shutdownOnExit) != napi_ok) {
-		::napi_throw_type_error(env, nullptr, "shutdownOnExit must be a boolean");
-		return nullptr;
-	}
-
-	bool abortMarkers = false;
-	const bool abortMarkersProvided =
-		rocksdb_js::getProperty(env, params, "transactionLogAbortMarkers", abortMarkers, true) == napi_ok;
-	bool writeIntents = false;
-	const bool writeIntentsProvided =
-		rocksdb_js::getProperty(env, params, "transactionLogWriteIntents", writeIntents, true) == napi_ok;
-
-	double lifecycleWaitSeconds = 0;
-	bool lifecycleWaitProvided = false;
-	NAPI_STATUS_THROWS(::napi_has_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitProvided));
-	if (lifecycleWaitProvided) {
-		napi_value lifecycleWaitValue;
-		NAPI_STATUS_THROWS(::napi_get_named_property(env, params, "lifecycleWaitSeconds", &lifecycleWaitValue));
-		napi_valuetype lifecycleWaitType;
-		NAPI_STATUS_THROWS(::napi_typeof(env, lifecycleWaitValue, &lifecycleWaitType));
-		if (lifecycleWaitType == napi_undefined || lifecycleWaitType == napi_null) {
-			lifecycleWaitProvided = false;
-		}
-	}
-	if (lifecycleWaitProvided) {
-		if (rocksdb_js::getProperty(env, params, "lifecycleWaitSeconds", lifecycleWaitSeconds, true) != napi_ok) {
-			::napi_throw_type_error(env, nullptr, "Lifecycle wait seconds must be a number");
-			return nullptr;
-		}
-		if (!std::isfinite(lifecycleWaitSeconds) || lifecycleWaitSeconds <= 0 ||
-			std::trunc(lifecycleWaitSeconds) != lifecycleWaitSeconds ||
-			lifecycleWaitSeconds > std::numeric_limits<uint32_t>::max()
-		) {
-			::napi_throw_range_error(env, nullptr, "Lifecycle wait seconds must be a positive integer");
-			return nullptr;
-		}
-	}
-
-	int64_t verificationTableEntries = 0;
-	const bool verificationTableEntriesProvided =
-		rocksdb_js::getProperty(env, params, "verificationTableEntries", verificationTableEntries, true) == napi_ok;
-	if (verificationTableEntriesProvided && verificationTableEntries < 0) {
-		::napi_throw_range_error(env, nullptr, "Verification table entries must be a positive integer or 0 to disable verification");
-		return nullptr;
-	}
-
-	// A getter that throws (rather than supplying the wrong type) leaves a pending exception that the
-	// `== napi_ok` reads above treat as "not provided".
-	bool exceptionPending = false;
-	::napi_is_exception_pending(env, &exceptionPending);
-	if (exceptionPending) {
+	// Every field is read and validated before any is applied.
+	std::optional<double> occLockBuckets;
+	std::optional<bool> occValidateSerial;
+	std::optional<double> commitThreads;
+	std::optional<bool> abortMarkers;
+	std::optional<bool> writeIntents;
+	std::optional<bool> compactOnClose;
+	std::optional<bool> shutdownOnExit;
+	std::optional<double> lifecycleWaitSeconds;
+	std::optional<int64_t> blockCacheSize;
+	std::optional<int64_t> wbmSize;
+	std::optional<bool> costToCache;
+	std::optional<bool> allowStall;
+	std::optional<rocksdb::WriteBufferFlushPolicy> flushPolicy;
+	std::optional<int64_t> vtEntries;
+	if (
+		!readField(env, params, "occLockBuckets", occLockBuckets, "occLockBuckets must be a number") ||
+		!checkRange(env, !occLockBuckets || isIntegerInRange(*occLockBuckets, 16, 1 << 24),
+			"occLockBuckets must be an integer between 16 and 16777216") ||
+		!readEnumField(env, params, "occValidation", { { "parallel", false }, { "serial", true } },
+			occValidateSerial,
+			"occValidation must be a string",
+			"occValidation must be 'parallel' or 'serial'") ||
+		!readField(env, params, "commitThreads", commitThreads, "commitThreads must be a number") ||
+		!checkRange(env, !commitThreads || isIntegerInRange(*commitThreads, 1, 64),
+			"commitThreads must be an integer between 1 and 64") ||
+		!readField(env, params, "transactionLogAbortMarkers", abortMarkers) ||
+		!readField(env, params, "transactionLogWriteIntents", writeIntents) ||
+		!readField(env, params, "compactOnClose", compactOnClose, "compactOnClose must be a boolean") ||
+		!readField(env, params, "shutdownOnExit", shutdownOnExit, "shutdownOnExit must be a boolean") ||
+		!readField(env, params, "lifecycleWaitSeconds", lifecycleWaitSeconds,
+			"Lifecycle wait seconds must be a number") ||
+		!checkRange(env,
+			!lifecycleWaitSeconds ||
+				isIntegerInRange(*lifecycleWaitSeconds, 1, std::numeric_limits<uint32_t>::max()),
+			"Lifecycle wait seconds must be a positive integer") ||
+		!readField(env, params, "blockCacheSize", blockCacheSize) ||
+		!checkRange(env, !blockCacheSize || *blockCacheSize >= 0,
+			"Block cache size must be a positive integer or 0 to disable caching") ||
+		!readField(env, params, "writeBufferManagerSize", wbmSize) ||
+		!checkRange(env, !wbmSize || *wbmSize >= 0,
+			"Write buffer manager size must be a positive integer or 0 to disable") ||
+		!readField(env, params, "writeBufferManagerCostToCache", costToCache) ||
+		!readField(env, params, "writeBufferManagerAllowStall", allowStall) ||
+		!readEnumField(env, params, "writeBufferManagerFlushPolicy", {
+				{ "oldest", rocksdb::WriteBufferFlushPolicy::kFlushOldest },
+				{ "largest", rocksdb::WriteBufferFlushPolicy::kFlushLargest },
+				{ "largestAcrossDBs", rocksdb::WriteBufferFlushPolicy::kFlushLargestAcrossDBs },
+			},
+			flushPolicy,
+			"writeBufferManagerFlushPolicy must be a string",
+			"writeBufferManagerFlushPolicy must be 'oldest', 'largest' or 'largestAcrossDBs'") ||
+		!readField(env, params, "verificationTableEntries", vtEntries) ||
+		!checkRange(env, !vtEntries || *vtEntries >= 0,
+			"Verification table entries must be a positive integer or 0 to disable verification")
+	) {
 		return nullptr;
 	}
 
@@ -365,11 +344,11 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 	uint64_t stallGeneration = 0;
 	{
 		std::lock_guard<std::mutex> lock(settings.writeBufferManagerMutex);
-		const bool wbmAlreadyCreated = (settings.writeBufferManager != nullptr);
+		const std::shared_ptr<rocksdb::WriteBufferManager>& manager = settings.writeBufferManager;
 
 		// The cache reservation manager is configured at WBM construction.
-		if (wbmAlreadyCreated && costToCacheProvided &&
-			newCostToCache != settings.writeBufferManagerCostToCache.load(std::memory_order_relaxed)) {
+		if (manager && costToCache &&
+			*costToCache != settings.writeBufferManagerCostToCache.load(std::memory_order_relaxed)) {
 			::napi_throw_error(env, nullptr,
 				"writeBufferManagerCostToCache cannot be changed after the WriteBufferManager has been created; set it on the first config() call before any database is opened");
 			return nullptr;
@@ -377,24 +356,22 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 		constexpr const char* verificationTableFrozen =
 			"Verification table size cannot be changed after the first database is opened";
-		if (verificationTableEntriesProvided && settings.getVerificationTableRaw()) {
+		if (vtEntries && settings.getVerificationTableRaw()) {
 			::napi_throw_error(env, nullptr, verificationTableFrozen);
 			return nullptr;
 		}
 
-		const bool updateLivePolicy = wbmAlreadyCreated && (allowStallProvided || flushPolicyProvided);
+		const bool updateLivePolicy = manager && (allowStall || flushPolicy);
 		const rocksdb::WriteBufferFlushPolicy previousPolicy =
-			wbmAlreadyCreated ? settings.writeBufferManager->flush_policy() : rocksdb::WriteBufferFlushPolicy::kFlushOldest;
+			manager ? manager->flush_policy() : rocksdb::WriteBufferFlushPolicy::kFlushOldest;
 		if (updateLivePolicy && !setLiveFlushPolicy(
 			env,
-			*settings.writeBufferManager,
+			*manager,
 			DBSettings::resolveWriteBufferManagerFlushPolicy(
-				flushPolicyProvided
-					? static_cast<int>(newFlushPolicy)
+				flushPolicy
+					? static_cast<int>(*flushPolicy)
 					: settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed),
-				allowStallProvided
-					? newAllowStall
-					: settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed)
+				allowStall.value_or(settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed))
 			)
 		)) {
 			return nullptr;
@@ -403,19 +380,19 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		// Rechecked under the lock that materializes the table: a first open on another thread may
 		// have done so since the check above. The policy update stays outside this lock because
 		// every verification-table read takes it.
-		if (verificationTableEntriesProvided) {
+		if (vtEntries) {
 			bool frozen = false;
 			{
 				std::lock_guard<std::mutex> vtLock(settings.verificationTableMutex);
 				frozen = settings.verificationTable != nullptr;
 				if (!frozen) {
-					settings.verificationTableEntries = static_cast<size_t>(verificationTableEntries);
+					settings.verificationTableEntries = static_cast<size_t>(*vtEntries);
 				}
 			}
 			if (frozen) {
 				if (updateLivePolicy) {
 					try {
-						settings.writeBufferManager->SetFlushPolicy(previousPolicy);
+						manager->SetFlushPolicy(previousPolicy);
 					} catch (...) {
 						// The rejection is the error to report.
 					}
@@ -427,20 +404,19 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 
 		// Before the WBM size and costToCache become visible: a first open may construct the manager
 		// as soon as this mutex is released, and with costToCache it charges this cache.
-		if (blockCacheSizeProvided) {
-			settings.blockCacheSize = static_cast<size_t>(blockCacheSize);
+		if (blockCacheSize) {
+			settings.blockCacheSize = static_cast<size_t>(*blockCacheSize);
 			if (settings.blockCache) {
-				settings.blockCache->SetCapacity(blockCacheSize);
+				settings.blockCache->SetCapacity(*blockCacheSize);
 			}
 		}
 
-		if (flushPolicyProvided) {
-			settings.writeBufferManagerFlushPolicy.store(static_cast<int>(newFlushPolicy), std::memory_order_relaxed);
+		if (flushPolicy) {
+			settings.writeBufferManagerFlushPolicy.store(static_cast<int>(*flushPolicy), std::memory_order_relaxed);
 		}
 
-		if (wbmSizeProvided) {
-			const size_t newSize = static_cast<size_t>(writeBufferManagerSize);
-			settings.writeBufferManagerSize.store(newSize, std::memory_order_relaxed);
+		if (wbmSize) {
+			settings.writeBufferManagerSize.store(static_cast<size_t>(*wbmSize), std::memory_order_relaxed);
 
 			// If the manager was already created, adjust its buffer size in
 			// place (SetBufferSize is atomic). RocksDB asserts new_size > 0,
@@ -448,55 +424,39 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			// alone — already-open DBs keep their reference, and subsequent
 			// opens skip the manager entirely (see getWriteBufferManager).
 			// Runtime size=0 is a "no new attachments" signal, not a teardown.
-			if (newSize > 0 && wbmAlreadyCreated) {
-				settings.writeBufferManager->SetBufferSize(newSize);
+			if (*wbmSize > 0 && manager) {
+				manager->SetBufferSize(static_cast<size_t>(*wbmSize));
 			}
 		}
 
 		// Only supplied values: storing a value read before this mutex would
 		// let a concurrent config() undo another's change.
-		if (costToCacheProvided) {
-			settings.writeBufferManagerCostToCache.store(newCostToCache, std::memory_order_relaxed);
-		}
-		if (allowStallProvided) {
-			settings.writeBufferManagerAllowStall.store(newAllowStall, std::memory_order_relaxed);
-			stallGeneration = ++settings.allowStallGeneration;
-		}
+		storeIfSet(settings.writeBufferManagerCostToCache, costToCache);
 
-		if (wbmAlreadyCreated && allowStallProvided) {
-			if (newAllowStall) {
-				enableStallAfterDrain = true;
-			} else {
-				settings.writeBufferManager->SetAllowStall(false);
-				DBStats::getInstance().disableWriteBufferManagerWatchdog();
+		if (allowStall) {
+			settings.writeBufferManagerAllowStall.store(*allowStall, std::memory_order_relaxed);
+			stallGeneration = ++settings.allowStallGeneration;
+			if (manager) {
+				if (*allowStall) {
+					enableStallAfterDrain = true;
+				} else {
+					manager->SetAllowStall(false);
+					DBStats::getInstance().disableWriteBufferManagerWatchdog();
+				}
 			}
 		}
 	}
 
-	if (compactOnCloseProvided) {
-		settings.compactOnClose = compactOnClose;
+	if (compactOnClose) {
+		settings.compactOnClose = *compactOnClose;
 	}
-	if (lifecycleWaitProvided) {
-		settings.lifecycleWaitSeconds.store(static_cast<uint32_t>(lifecycleWaitSeconds), std::memory_order_relaxed);
-	}
-	if (occLockBucketsProvided) {
-		settings.occLockBucketCount.store(static_cast<uint32_t>(count), std::memory_order_relaxed);
-	}
-	if (occValidationProvided) {
-		settings.occValidateSerial.store(validateSerial, std::memory_order_relaxed);
-	}
-	if (commitThreadsProvided) {
-		settings.commitThreads.store(static_cast<uint32_t>(commitThreads), std::memory_order_relaxed);
-	}
-	if (abortMarkersProvided) {
-		settings.transactionLogAbortMarkers.store(abortMarkers, std::memory_order_relaxed);
-	}
-	if (writeIntentsProvided) {
-		settings.transactionLogWriteIntents.store(writeIntents, std::memory_order_relaxed);
-	}
-	if (shutdownOnExitProvided) {
-		settings.shutdownOnExit.store(shutdownOnExit, std::memory_order_relaxed);
-	}
+	storeIfSet(settings.lifecycleWaitSeconds, lifecycleWaitSeconds);
+	storeIfSet(settings.occLockBucketCount, occLockBuckets);
+	storeIfSet(settings.occValidateSerial, occValidateSerial);
+	storeIfSet(settings.commitThreads, commitThreads);
+	storeIfSet(settings.transactionLogAbortMarkers, abortMarkers);
+	storeIfSet(settings.transactionLogWriteIntents, writeIntents);
+	storeIfSet(settings.shutdownOnExit, shutdownOnExit);
 
 	if (enableStallAfterDrain) {
 		// A stalling manager can block a synchronous write on the JS thread
