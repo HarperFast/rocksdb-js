@@ -3376,9 +3376,12 @@ Options:
 - `-c, --column <name>` Column family to use (default: `default`)
 - `-h, --help` Show the help message
 - `--json` Print results as JSON to stdout, and errors as `{ "error": "..." }` to stderr
-- `-r, --readonly` Open the database in read-only mode
+- `-r, --readonly` Open the database in read-only mode (REPL or command)
 - `-v, --version` Show the version information
 - `-y, --yes` Answer "yes" to confirmation prompts
+
+`-c`, `--json` and `-y` only apply to a one-shot command. Given without a command, the CLI prints
+`Error: specify a command` and the help text to stderr and exits `2` instead of starting the REPL.
 
 A one-shot command:
 

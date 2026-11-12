@@ -834,10 +834,10 @@ async function getCommand([key]) {
 	return value;
 }
 
-function printCommandTable(rows) {
+function printCommandTable(rows, log = console.log) {
 	const width = Math.max(...rows.map((row) => row.command.length)) + 2;
 	for (const { command, summary } of rows) {
-		console.log(`${hl(command.padEnd(width))} ${summary}`);
+		log(`${hl(command.padEnd(width))} ${summary}`);
 	}
 }
 
@@ -1177,8 +1177,8 @@ async function runCommand(def, args) {
 	await emitResult(def, await def.run(args));
 }
 
-function printHelp() {
-	console.log(`Usage:
+function printHelp(log = console.log) {
+	log(`Usage:
   ${hl('rocksdb-js [dbpath] [options]')}                    Start the interactive REPL
   ${hl('rocksdb-js [dbpath] <command> [args...] [options]')} Run one command and exit
 
@@ -1191,23 +1191,24 @@ success, 1 on failure, and 2 on a usage error. Commands that only read open the 
 read-only: a point-in-time read that does not need the lock another process holds, but
 that can fail if that process is compacting at the time.
 
-Options:
+Options (-c, --json and -y need a command; without one they are a usage error):
   ${hl('-c, --column <name>')}  Column family to use (default: "default")
   ${hl('-h, --help')}           Show this help message
   ${hl('    --json')}           Print results (and errors, to stderr) as JSON
-  ${hl('-r, --readonly')}       Open the database in read-only mode
+  ${hl('-r, --readonly')}       Open the database in read-only mode (REPL or command)
   ${hl('-v, --version')}        Show the version information
   ${hl('-y, --yes')}            Answer "yes" to confirmation prompts; required for a
-                       destructive one-shot command when stdin is not a terminal
+                       destructive command when stdin is not a terminal
 
 Commands:`);
 	printCommandTable(
 		COMMANDS.map(({ name, usage, summary, replOnly }) => ({
 			command: commandSignature(name, usage),
 			summary: replOnly ? `${summary} (REPL only)` : summary,
-		}))
+		})),
+		log
 	);
-	console.log(`
+	log(`
 Examples:
   ${hl('rocksdb-js ./data')}                        Open the REPL on ./data
   ${hl('rocksdb-js ./data count')}                  Count the keys in the default column family
@@ -1308,6 +1309,15 @@ async function main() {
 		} else {
 			console.log(versionString());
 		}
+		return;
+	}
+
+	const oneShotOptions = ['column', 'json', 'yes'].filter((name) => argv[name] !== undefined);
+	if (interactive && oneShotOptions.length > 0) {
+		const flags = oneShotOptions.map((name) => `--${name}`).join(', ');
+		console.error(`Error: specify a command (${flags} only applies to a one-shot command)\n`);
+		printHelp(console.error);
+		process.exitCode = 2;
 		return;
 	}
 

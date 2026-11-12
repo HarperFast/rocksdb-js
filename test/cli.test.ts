@@ -11,12 +11,12 @@ const CLI_TIMEOUT_MS = 20_000;
 
 type CLIResult = { code: number | null; stdout: string; stderr: string };
 
-function cli(args: string[], options: { cwd?: string } = {}): Promise<CLIResult> {
+function cli(args: string[], options: { cwd?: string; input?: string } = {}): Promise<CLIResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(process.execPath, [cliPath, ...args], {
 			cwd: options.cwd,
 			env: { ...process.env, NO_COLOR: '1' },
-			stdio: ['ignore', 'pipe', 'pipe'],
+			stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
 		});
 		let stdout = '';
 		let stderr = '';
@@ -24,12 +24,13 @@ function cli(args: string[], options: { cwd?: string } = {}): Promise<CLIResult>
 			child.kill('SIGKILL');
 			reject(new Error(`CLI timed out: ${args.join(' ')}\n${stdout}\n${stderr}`));
 		}, CLI_TIMEOUT_MS);
-		child.stdout.on('data', (chunk) => {
+		child.stdout?.on('data', (chunk) => {
 			stdout += chunk.toString();
 		});
-		child.stderr.on('data', (chunk) => {
+		child.stderr?.on('data', (chunk) => {
 			stderr += chunk.toString();
 		});
+		if (options.input !== undefined) child.stdin?.end(options.input);
 		child.on('error', (err) => {
 			clearTimeout(timer);
 			reject(err);
@@ -64,6 +65,24 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 		afterEach(() => {
 			for (const path of tempPaths) rmSync(path, { force: true, recursive: true, maxRetries: 3 });
 			tempPaths.length = 0;
+		});
+
+		it('requires a command for one-shot-only options, but starts the REPL without them', async () => {
+			const dbPath = tempDBPath();
+			seed(dbPath, { a: 'one' });
+
+			for (const options of [['-c', 'foo'], ['--json'], ['--yes']]) {
+				const result = await cli([dbPath, ...options]);
+				expect(result.code).toBe(2);
+				expect(result.stdout).toBe('');
+				expect(result.stderr).toContain('Error: specify a command');
+				expect(result.stderr).toContain('rocksdb-js [dbpath] <command>');
+			}
+
+			const repl = await cli([dbPath], { input: 'get a\nexit\n' });
+			expect(repl.code).toBe(0);
+			expect(repl.stdout).toContain('Type "help" for more information.');
+			expect(repl.stdout).toContain('\none\n');
 		});
 
 		it('documents every command and option in --help', async () => {
