@@ -9,6 +9,8 @@ const config: UserConfig = defineConfig({
 	checks: { legacyCjs: false },
 	deps: {
 		neverBundle: ['msgpackr', 'ordered-binary'],
+		// extended-iterable does not expose declarations for its CommonJS entry point.
+		dts: { alwaysBundle: ['@harperfast/extended-iterable'] },
 	},
 	entry: './src/index.ts',
 	format: ['es', 'cjs'],

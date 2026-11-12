@@ -266,6 +266,12 @@ export type TransactionLog = {
 	equals(other: unknown): boolean;
 	getLogFileSize(sequenceId?: number): number;
 	getPurgeWatermark(): TransactionLogPurgeWatermark;
+	/**
+	 * Makes an unknown watermark known at `max(recorded, baseline)` when the log can prove every file
+	 * deletion since its record began was recorded; `baseline` must be at or above every key deleted
+	 * before that. Leaves a known or unprovable watermark as it is. Returns the resulting watermark.
+	 */
+	setPurgeBaseline(baseline: number): TransactionLogPurgeWatermark;
 	getStats(): TransactionLogStats;
 	name: string;
 	path: string;
@@ -540,6 +546,7 @@ export type NativeDatabase = {
 	flush(resolve: ResolveCallback<void>, reject: RejectCallback, options?: FlushOptions): void;
 	flushSync(options?: FlushOptions): void;
 	syncWal(resolve: ResolveCallback<void>, reject: RejectCallback): void;
+	syncWalSync(): void;
 	notify(event: string | BufferWithDataView, args?: any[]): boolean;
 	/**
 	 * Reads on the thread pool, applying `expectedVersion` and `POPULATE_VERSION_FLAG` like

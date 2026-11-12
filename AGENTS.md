@@ -256,6 +256,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   write, `always` runs it on every attempt instead of retries alone. Write-intent refusal has no such
   switch; it is the `transactionLogWriteIntents` option. Snapshotted in `initializeTestSeams()`; tests
   use the equivalent `*ForTesting` binding functions
+- `ROCKSDB_JS_SYNC_WAL_FAILURE` - Test-only: number of WAL syncs (`syncWal()`, `syncWalSync()`) to
+  fail with an injected I/O error (a **count**). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_ABORT_MARK_FAILURE` - Test-only: number of abort-marker writes to fail with an
   injected error (a **count**). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
@@ -1603,9 +1605,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     recreates the directory the way `getLogFile()` does and re-checks `isClosing` under
     `flushedStateMutex`, so a concurrent destroy cannot be resurrected (`doClose()` sets `isClosing`
     before taking that mutex, so a reopen that saw it clear is ordered before the destroy's final
-    directory removal; `doPurge`'s own `remove_all` of an emptied directory runs earlier with
-    `isClosing` still clear, and a directory recreated in that window is removed again by the
-    destroy). An all-segment purge that actually empties the registered set also advances a store
+    directory removal; `doPurge`'s own removal of an emptied store's files, which keeps `txn.purged`
+    and the directory, runs earlier with `isClosing` still clear, and anything written there in that
+    window is removed again by the destroy). An all-segment purge that actually empties the registered set also advances a store
     generation, clears the old commit-correlation ring, closes and resets the state stream, and
     resets the last-written position under the existing `dataSetsMutex -> flushedStateMutex` order.
     A flush callback captures that generation with its correlation scan and checks it after taking
@@ -1683,7 +1685,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     persists `txn.purged`, raised to the largest key of every segment it is about to delete,
     durably before its first unlink. A store reports the watermark as known only when every
     deletion in its history was recorded that way, so a store an older release created stays
-    unknown. See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark).
+    unknown until a caller's baseline (`setPurgeBaseline()`) covers what it deleted before the record
+    began, accepted only while the record's `tracked` flag proves every later deletion was recorded.
+    See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark) and
+    [purge baseline](src/binding/transaction_log/DESIGN.md#purge-baseline).
 
 36. **A transaction's log batch is staged only while it is Pending**: from `Committing` on, the
     commit owns `logEntryBatch` and `committedPosition` — its lane writes the batch, frees it, and
