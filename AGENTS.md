@@ -1495,7 +1495,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `DBImpl` mutex (`pthread lock: Invalid argument` on macOS, rocksdb-js#1066). Covered by
     `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` runs after the lock
     is released and before `OpenDB()` returns, so the fixture can assert the exact closables count
-    before destroy and its destroy lands in that window.
+    before destroy and its destroy lands in that window. Reverting the declaration order aborts the
+    fixture on macOS; glibc usually locks the freed mutex without faulting, so Linux CI alone would
+    not catch it.
 
 29. **A user shared buffer lives as long as its column family is open, never as long as some view
     of it**: `getUserSharedBuffer` used to erase the map entry once the last external `ArrayBuffer`

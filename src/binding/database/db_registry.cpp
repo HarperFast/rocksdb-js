@@ -622,7 +622,8 @@ void DBRegistry::OpenDB(
 	const auto deadline = std::chrono::steady_clock::now() +
 		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
 
-	// Declared before the lock so it runs after the lock is released.
+	// Test seam: holds a successful open after the lock is released, where a
+	// foreign close can claim the descriptor before OpenDB() returns.
 	struct OpenAttachDelay {
 		bool attached = false;
 		~OpenAttachDelay() {
@@ -635,9 +636,9 @@ void DBRegistry::OpenDB(
 
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
 
-	// Declared after the lock so it is destroyed before the lock is released.
-	// Once released, a foreign close can free the RocksDB database, and the
-	// last reference to a column family must not outlive it.
+	// Must be declared after the lock: once the lock is released, a foreign
+	// close can free the RocksDB database, and the last reference to a column
+	// family must not outlive it.
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
 	// A secondary workspace belongs to exactly one secondary instance (RocksDB
