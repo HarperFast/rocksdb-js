@@ -610,7 +610,6 @@ void DBRegistry::OpenDB(
 		throw rocksdb_js::DBException("Internal error: a secondary open must set readOnly");
 	}
 
-	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 	std::string name = options.name.empty() ? "default" : options.name;
 
 	// The single identity for this open: the registry key, the workspace scan
@@ -623,7 +622,23 @@ void DBRegistry::OpenDB(
 	const auto deadline = std::chrono::steady_clock::now() +
 		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
 
+	// Declared before the lock so it runs after the lock is released.
+	struct OpenAttachDelay {
+		bool attached = false;
+		~OpenAttachDelay() {
+			const int delayMs = openAttachDelayMsFlag().load(std::memory_order_relaxed);
+			if (attached && delayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+			}
+		}
+	} openAttachDelay;
+
 	std::unique_lock<std::mutex> lock(instance->databasesMutex);
+
+	// Declared after the lock so it is destroyed before the lock is released.
+	// Once released, a foreign close can free the RocksDB database, and the
+	// last reference to a column family must not outlive it.
+	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>> columns;
 
 	// A secondary workspace belongs to exactly one secondary instance (RocksDB
 	// does not enforce this itself — see db_descriptor.h::secondaryLockToken).
@@ -1138,6 +1153,7 @@ void DBRegistry::OpenDB(
 
 	DEBUG_LOG("%p DBRegistry::OpenDB Attached DBHandle %p for \"%s\" (ref count = %ld)\n",
 		instance, handle.get(), path.c_str(), entry.descriptor.use_count());
+	openAttachDelay.attached = true;
 }
 
 /**
