@@ -1034,6 +1034,30 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * `DB::SyncWAL` on the calling thread; returns without syncing on a read-only
+ * database. The operation guard is held for the whole sync, so close waits.
+ *
+ * @example
+ * ```typescript
+ * const db = new NativeDatabase();
+ * db.syncWalSync();
+ * ```
+ */
+napi_value Database::SyncWalSync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	if ((*dbHandle)->descriptor->readOnly) {
+		NAPI_RETURN_UNDEFINED();
+	}
+
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*dbHandle)->descriptor->syncWal(), "WAL sync failed");
+
+	NAPI_RETURN_UNDEFINED();
+}
+
+/**
  * `DB::SyncWAL` on the libuv threadpool; resolves without syncing on a
  * read-only database.
  *
@@ -3129,6 +3153,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "syncWal", nullptr, SyncWal, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "syncWalSync", nullptr, SyncWalSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },

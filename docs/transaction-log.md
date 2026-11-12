@@ -216,7 +216,9 @@ await db.transaction((txn) => {
 - Downgrading to a release without this rule after a store's last file was purged is unsafe: older
   releases restart an empty store at sequence 1, below the flushed position, so a replay from
   `txn.state` skips the new writes and retention treats them as flushed. Remove the store's
-  `txn.state` and `txn.purged` before downgrading.
+  `txn.state` and `txn.purged` before downgrading. After upgrading again the store starts a new
+  record, so its purge watermark is unknown until it is given a baseline that also covers what the
+  removed record did.
 
 ### Purge Watermark
 
@@ -237,12 +239,18 @@ themselves did, and they are gone.
   for the next run. A deployment whose files take longer than that to read raises the budget. A file whose keys cannot be
   proven because it is corrupt is still deleted, and the watermark becomes unknown.
 - The record is reported as known only when every file deletion in the store's history was recorded
-  this way. A store created before this release has no record and reports unknown permanently, as
-  does a store whose files an older release deleted after the record was written (detected when a
-  sequence after the record's is missing), or whose record cannot be read. Files deleted outside
-  rocksdb-js cannot be detected in general.
+  this way. A store whose files an older release deleted after the record was written (detected
+  when a sequence after the record's is missing), or whose record cannot be read, reports unknown
+  permanently. Files deleted outside rocksdb-js cannot be detected in general.
+- A store created before 2.14 has no record. The first writable open starts one at its oldest
+  surviving file and records every deletion from then on; it stays unknown until the application
+  supplies a bound on what was deleted earlier with `log.setPurgeBaseline()`. That is refused once
+  a deletion since the record began went unrecorded, for a hole in the files at the first open, and
+  for a record 2.14.0 wrote, since it cannot say why it is unknown.
 - `purgeLogs({ destroy: true })` marks the record unknown before it deletes anything, and leaves the
-  store open, with its files, if it cannot. A log recreated under the same name starts a new history.
+  store open, with its files, if it cannot. A log recreated under the same name after the destroy
+  finishes starts a new history; one kept open by a bound transaction, or recreated while the destroy
+  runs, keeps the unknown record until a later destroy.
 - Backups capture the record with the files they copy, so a restored store keeps its watermark.
 
 ### Error Handling
