@@ -1,4 +1,5 @@
 import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.ts';
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -146,5 +147,51 @@ export async function terminateWorker(worker: Worker): Promise<void> {
 
 	await new Promise<void>((resolve) => {
 		worker.on('exit', () => resolve());
+	});
+}
+
+const nodeExecutable =
+	process.env.NODE_BINARY ??
+	(process.versions.bun || process.versions.deno
+		? (process.env.npm_node_execpath ?? 'node')
+		: process.execPath);
+
+/**
+ * Runs a forked fixture, resolving on a clean exit or, with `killsItself`, only when it SIGKILLed
+ * itself after printing `ready`.
+ */
+export function runFixture(
+	fixture: string,
+	dbPath: string,
+	{ env, killsItself = false }: { env?: NodeJS.ProcessEnv; killsItself?: boolean } = {}
+): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(nodeExecutable, [fixture, dbPath], { env: { ...process.env, ...env } });
+		let output = '';
+		child.stdout.on('data', (chunk) => (output += chunk));
+		child.stderr.on('data', (chunk) => (output += chunk));
+		// Under the callers' 20 s test timeout; the rejection waits for the child to exit, so a caller's
+		// cleanup does not remove the database under it.
+		let timedOut = false;
+		const timeout = setTimeout(() => {
+			timedOut = true;
+			child.kill('SIGKILL');
+		}, 15_000);
+		child.on('error', reject);
+		child.on('close', (code, signal) => {
+			clearTimeout(timeout);
+			if (timedOut) {
+				reject(new Error(`fixture timed out\n${output}`));
+				return;
+			}
+			// Windows maps a self-kill to TerminateProcess(h, 1).
+			const killed =
+				signal === 'SIGKILL' || code === 137 || (process.platform === 'win32' && code === 1);
+			if (killsItself ? killed && output.includes('ready') : code === 0 && signal === null) {
+				resolve();
+			} else {
+				reject(new Error(`fixture exited (code=${code} signal=${signal}): ${output}`));
+			}
+		});
 	});
 }
