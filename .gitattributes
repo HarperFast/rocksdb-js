@@ -1,0 +1,2 @@
+# pnpm refuses to pack a bin script with CRLF line endings
+bin/*.mjs text eol=lf
