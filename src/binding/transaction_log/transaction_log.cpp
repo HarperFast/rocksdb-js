@@ -6,6 +6,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include <cmath>
 #include <stdlib.h>
 #include <fcntl.h>
 
@@ -649,11 +650,7 @@ napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info info) {
-	NAPI_METHOD();
-	UNWRAP_TRANSACTION_LOG_HANDLE("GetPurgeWatermark");
-
-	auto watermark = (*txnLogHandle)->getPurgeWatermark();
+static napi_value createPurgeWatermark(napi_env env, const TransactionLogStore::PurgeWatermark& watermark) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
 	napi_value known;
@@ -663,6 +660,51 @@ napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info in
 		SET_STAT(result, "purgedThrough", watermark.purgedThrough);
 	}
 	return result;
+}
+
+napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetPurgeWatermark");
+	return createPurgeWatermark(env, (*txnLogHandle)->getPurgeWatermark());
+}
+
+/**
+ * Makes an unknown purge watermark known at a baseline the caller vouches for, when the log can prove
+ * every deletion since its record began was recorded.
+ *
+ * @example
+ * ```typescript
+ * const log = db.useLog('foo');
+ * const watermark = log.setPurgeBaseline(boundOfDeletionsBeforeTheRecord);
+ * ```
+ */
+napi_value TransactionLog::SetPurgeBaseline(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_LOG_HANDLE("SetPurgeBaseline");
+	THROW_IF_READONLY(*txnLogHandle, "");
+
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
+	double baseline = 0;
+	if (type == napi_number) {
+		NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &baseline));
+	}
+	if (type != napi_number || !std::isfinite(baseline) || baseline < 0) {
+		::napi_throw_type_error(env, nullptr, "Purge baseline must be a finite number at or above 0");
+		return nullptr;
+	}
+
+	TransactionLogStore::PurgeWatermark watermark;
+	try {
+		watermark = (*txnLogHandle)->setPurgeBaseline(baseline);
+	} catch (const rocksdb_js::DBException& e) {
+		::napi_throw_error(env, e.code(), e.what());
+		return nullptr;
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+	return createPurgeWatermark(env, watermark);
 }
 
 /**
@@ -677,6 +719,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },
 		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getPurgeWatermark", nullptr, GetPurgeWatermark, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setPurgeBaseline", nullptr, SetPurgeBaseline, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findExactStart", nullptr, FindExactStart, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_segmentRemovals", nullptr, SegmentRemovals, nullptr, nullptr, nullptr, napi_default, nullptr },

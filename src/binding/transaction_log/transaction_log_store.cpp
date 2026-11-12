@@ -742,7 +742,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 		// segment, and its keys cannot be proven.
 		purgeRecordCapture = this->purgeRecordSnapshot();
 		if (omittedMalformed) {
-			purgeRecordCapture.known = false;
+			purgeRecordCapture.loseCoverage();
 		}
 		break;
 	}
@@ -761,7 +761,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 			double maxKey;
 			if (seq != current) {
 				if (seq > purgeRecordCapture.throughSequence || !file->knownMaxEntryKey(maxKey)) {
-					purgeRecordCapture.known = false;
+					purgeRecordCapture.loseCoverage();
 				} else if (maxKey > purgeRecordCapture.watermark) {
 					purgeRecordCapture.watermark = maxKey;
 				}
@@ -774,7 +774,7 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 			// The file was purged out from under us between the snapshot and now;
 			// skip it (a rotated file that's gone contributes nothing to restore).
 			// The record captured with it would vouch for a history this backup no longer holds.
-			purgeRecordCapture.known = false;
+			purgeRecordCapture.loseCoverage();
 			continue;
 		}
 		entries.push_back({
@@ -1067,6 +1067,7 @@ bool TransactionLogStore::writePurgeRecord(TransactionLogPurgeRecord& record) {
 		record.throughSequence = std::max(record.throughSequence, onDisk.throughSequence);
 		if (!retry) {
 			record.known = record.known && onDisk.known;
+			record.tracked = record.tracked && onDisk.tracked;
 		}
 	}
 	bool written =
@@ -1103,11 +1104,22 @@ void TransactionLogStore::loadPurgeRecord() {
 	bool otherSlotDamaged = false;
 	auto state = readTransactionLogPurgeRecord(this->path, record, &otherSlotDamaged);
 	uint32_t currentSequence = this->currentSequenceNumber.load(std::memory_order_relaxed);
-	bool recordKnown = state == TransactionLogPurgeRecordState::Valid && record.known && !this->discoveryIncomplete;
+	// A store an older release created: its record begins at the oldest surviving segment, and only
+	// a caller can vouch for what was deleted before that (setPurgeBaseline()). A read-only open
+	// writes no record, so it waits for a writer's before vouching for anything.
+	bool legacy = !this->readOnly && state == TransactionLogPurgeRecordState::Absent && !this->discoveryIncomplete;
+	if (legacy) {
+		auto oldest = this->sequenceFiles.begin();
+		record.tracked = true;
+		record.throughSequence = (oldest != this->sequenceFiles.end() && oldest->first < currentSequence
+			? oldest->first : currentSequence) - 1;
+	}
+	bool recordTracked = (state == TransactionLogPurgeRecordState::Valid || legacy) && record.tracked &&
+		!this->discoveryIncomplete;
 	// A purge that chose the current segment recorded it at T and may have stopped before the unlink.
 	// Move the writer past it, as for a segment txn.state names, so no key lands in a sequence the
 	// record already covers.
-	if (recordKnown && currentSequence == record.throughSequence &&
+	if (recordTracked && currentSequence == record.throughSequence &&
 		this->sequenceFiles.contains(currentSequence) && this->nextSequenceNumber == currentSequence + 1) {
 		if (!this->readOnly) {
 			this->retireCurrentSequenceLocked();
@@ -1117,7 +1129,7 @@ void TransactionLogStore::loadPurgeRecord() {
 	// Every sequence after the record's and before the writer's next one must still be on disk;
 	// one that is missing was deleted without being recorded (an older release's retention). A
 	// writer sequence at or below the record's means the sequence space was reused.
-	bool accounted = recordKnown && record.throughSequence < currentSequence;
+	bool accounted = recordTracked && record.throughSequence < currentSequence;
 	if (accounted) {
 		uint64_t expected = static_cast<uint64_t>(record.throughSequence) + 1;
 		for (auto it = this->sequenceFiles.upper_bound(record.throughSequence);
@@ -1130,8 +1142,9 @@ void TransactionLogStore::loadPurgeRecord() {
 		accounted = expected == currentSequence;
 	}
 
-	TransactionLogPurgeRecord loaded = state == TransactionLogPurgeRecordState::Valid ? record : TransactionLogPurgeRecord{};
-	loaded.known = accounted;
+	TransactionLogPurgeRecord loaded = state == TransactionLogPurgeRecordState::Valid || legacy ? record : TransactionLogPurgeRecord{};
+	loaded.known = record.known && accounted;
+	loaded.tracked = accounted;
 	this->purgeRecord = loaded;
 	if (this->readOnly) {
 		this->purgeHistoryAccountedAtLoad = accounted;
@@ -1143,7 +1156,8 @@ void TransactionLogStore::loadPurgeRecord() {
 	bool conclusive = !this->discoveryIncomplete && state != TransactionLogPurgeRecordState::Unreadable;
 	// A damaged slot is a write that stopped before its sync, so no purge followed it; rewriting it
 	// keeps read-only opens, which distrust a damaged slot, from reporting unknown until the next purge.
-	if (conclusive && (state != TransactionLogPurgeRecordState::Valid || record.known != accounted || otherSlotDamaged)) {
+	if (conclusive && (state != TransactionLogPurgeRecordState::Valid || record.known != loaded.known ||
+		record.tracked != loaded.tracked || otherSlotDamaged)) {
 		// Recording the verdict lets a read-only open, which cannot see what this open saw, report it.
 		loaded.generation++;
 		if (this->writePurgeRecord(loaded)) {
@@ -1155,6 +1169,7 @@ void TransactionLogStore::loadPurgeRecord() {
 void TransactionLogStore::initializeNewPurgeRecord() {
 	TransactionLogPurgeRecord record;
 	record.known = true;
+	record.tracked = true;
 	record.generation = 1;
 	// Best effort: a record that was never written makes a later open report unknown, never too low.
 	if (!this->writePurgeRecord(record)) {
@@ -1178,10 +1193,11 @@ bool TransactionLogStore::invalidatePurgeRecord() {
 		return false;
 	}
 	TransactionLogPurgeRecord record = this->purgeRecordSnapshot();
-	record.known = false;
-	// An absent or corrupt record already reads as unknown. A valid one is rewritten even when it reads
-	// unknown: after a failed sync, a read proves nothing about what is durable.
-	if (state == TransactionLogPurgeRecordState::Valid) {
+	record.loseCoverage();
+	// A corrupt record already reads as unknown, but an absent one reads as a store that predates the
+	// record and can be given a baseline, so it is written too. A valid one is rewritten even when it
+	// reads unknown: after a failed sync, a read proves nothing about what is durable.
+	if (state != TransactionLogPurgeRecordState::Corrupt) {
 		record.generation++;
 		if (!this->writePurgeRecord(record)) {
 			return false;
@@ -1205,7 +1221,9 @@ TransactionLogPurgeRecord TransactionLogStore::purgeRecordSnapshot() {
 		}
 		// A damaged other slot may have held a newer record whose purge already ran, and a writer
 		// mid-write looks the same, so both read as unknown.
-		record.known = record.known && this->purgeHistoryAccountedAtLoad && record.generation >= seen && !otherSlotDamaged;
+		bool trusted = this->purgeHistoryAccountedAtLoad && record.generation >= seen && !otherSlotDamaged;
+		record.known = record.known && trusted;
+		record.tracked = record.tracked && trusted;
 		return record;
 	}
 	std::lock_guard<std::mutex> lock(this->purgeRecordMutex);
@@ -1214,6 +1232,34 @@ TransactionLogPurgeRecord TransactionLogStore::purgeRecordSnapshot() {
 
 TransactionLogStore::PurgeWatermark TransactionLogStore::getPurgeWatermark() {
 	auto record = this->purgeRecordSnapshot();
+	PurgeWatermark watermark;
+	watermark.known = record.known;
+	watermark.purgedThrough = record.known ? record.watermark : 0;
+	return watermark;
+}
+
+TransactionLogStore::PurgeWatermark TransactionLogStore::setPurgeBaseline(double baseline) {
+	// The locks a purge publishes under, so no deletion lands between the read and the write.
+	std::lock_guard<std::mutex> lock(this->writeMutex);
+	std::lock_guard<std::mutex> dataSetsLock(this->dataSetsMutex);
+	// A close sets this before taking writeMutex, so a store that passed here closes after the write.
+	if (this->isClosing.load(std::memory_order_relaxed)) {
+		throw rocksdb_js::DBException("Transaction log store is closed");
+	}
+	TransactionLogPurgeRecord record = this->purgeRecordSnapshot();
+	if (!record.known && record.tracked) {
+		record.known = true;
+		record.watermark = std::max(record.watermark, baseline);
+		// Above the disk's generation, so writePurgeRecord() does not AND `known` with the disk's.
+		record.generation++;
+		// One slot holds the flag and the value, so a torn write leaves the previous, unknown record.
+		if (!this->writePurgeRecord(record)) {
+			throw rocksdb_js::DBException("Transaction log purge watermark " +
+				(this->displayPath / TRANSACTION_LOG_PURGE_RECORD_NAME).string() + " could not be written");
+		}
+		std::lock_guard<std::mutex> recordLock(this->purgeRecordMutex);
+		this->purgeRecord = record;
+	}
 	PurgeWatermark watermark;
 	watermark.known = record.known;
 	watermark.purgedThrough = record.known ? record.watermark : 0;
@@ -1333,7 +1379,7 @@ void TransactionLogStore::doPurge(
 					if (logFile->knownMaxEntryKey(maxKey)) {
 						raiseWatermark(maxKey);
 					} else {
-						nextRecord.known = false;
+						nextRecord.loseCoverage();
 					}
 					sequenceNumbersToRemove.push_back(sequenceNumber);
 					continue;
@@ -1430,7 +1476,7 @@ void TransactionLogStore::doPurge(
 		} else {
 			// A segment whose keys cannot be proven still goes, so corruption does not stall
 			// retention, but nothing can bound what it held.
-			nextRecord.known = false;
+			nextRecord.loseCoverage();
 		}
 		candidates.emplace_back(sequenceNumber, logFile);
 	}
@@ -1547,8 +1593,11 @@ void TransactionLogStore::doPurge(
 		*this->lastCommittedPosition = { 0, next != this->sequenceFiles.end() ? next->first : currentSequence };
 	}
 
-	// if all log files have been removed, clean up the empty directory
-	// only try to remove if we actually removed at least one file from this store
+	// If all log files have been removed, clean up what is left but the record (only after removing
+	// at least one file). The store can survive this destroy while a transaction is still bound, and
+	// an absent record would read as a store that predates it. The registry removes the directory
+	// when this destroy also closes the store; a store that survives keeps its unknown record until
+	// a later destroy.
 	if (all && this->sequenceFiles.empty() && !sequenceNumbersToRemove.empty()) {
 		// The live store can survive this destroy when a transaction is still
 		// bound. Invalidate both the correlation ring and callbacks that already
@@ -1573,7 +1622,7 @@ void TransactionLogStore::doPurge(
 		try {
 			if (std::filesystem::exists(this->path)) {
 				DEBUG_LOG("%p TransactionLogStore::purge Removing log store directory: %s\n", this, this->path.string().c_str());
-				std::filesystem::remove_all(this->path);
+				removeTransactionLogStoreDirectory(this->path, /*keepRecord=*/true);
 				DEBUG_LOG("%p TransactionLogStore::purge Removed log store directory: %s\n", this, this->path.string().c_str());
 			}
 		} catch (const std::filesystem::filesystem_error& e) {

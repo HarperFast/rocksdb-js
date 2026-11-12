@@ -26,9 +26,14 @@
   "module": "./dist/index.mjs",
   "exports": {
     ".": {
-      "types": "./dist/index.d.js",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     }
   },
   "scripts": {
@@ -57,6 +62,7 @@
     "test:bun": "cross-env CI=1 bun --bun --config=bunfig.toml ./node_modules/vitest/vitest.mjs --reporter=verbose",
     "test:deno": "cross-env CI=1 deno run --allow-all --sloppy-imports --v8-flags=--expose-gc ./node_modules/vitest/vitest.mjs",
     "test:stress": "cross-env CI=1 node --expose-gc ./node_modules/vitest/vitest.mjs --reporter=verbose --config=vitest-stress.config.ts",
+    "test:package": "node scripts/test-package.mjs",
     "test:native": "node scripts/native-test/run.mjs",
     "type-check": "tsc --noEmit"
   },
@@ -75,8 +81,8 @@
     "lefthook": "2.2.2",
     "lmdb": "3.5.9",
     "node-gyp": "13.1.0",
-    "oxfmt": "0.77.0",
-    "oxlint": "1.92.0",
+    "oxfmt": "0.78.0",
+    "oxlint": "1.93.0",
     "prebuildify": "6.0.1",
     "semver": "7.8.6",
     "tar": "7.5.22",

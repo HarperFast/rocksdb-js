@@ -86,6 +86,9 @@ struct TransactionLogHandle final : Closable {
 	/** Unknown when the store was released or is closing; never resolves a replacement store. */
 	TransactionLogStore::PurgeWatermark getPurgeWatermark();
 
+	/** Unknown when the store was released (the store throws once it is closing); never resolves a replacement store. */
+	TransactionLogStore::PurgeWatermark setPurgeBaseline(double baseline);
+
 	/**
 	 * Closes the transaction log handle.
 	 */

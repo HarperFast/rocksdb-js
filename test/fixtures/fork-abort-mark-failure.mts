@@ -1,7 +1,8 @@
 import { RocksDatabase, Transaction } from '../../src/index.ts';
 
-// Run with ROCKSDB_JS_ABORT_MARK_FAILURE=2: the abort's marker sync fails, and so does the retry
-// the next append makes first, so that append is refused; the append after it retries successfully.
+// Run with ROCKSDB_JS_ABORT_MARK_FAILURE=3: the abort's marker sync fails, and so do the retries the
+// next two appends (one async, one sync) make first, so both are refused; the append after them
+// retries successfully.
 const dbPath = process.argv[2];
 const fail = (message: string): never => {
 	throw new Error(message);
@@ -33,15 +34,32 @@ try {
 		fail('expected one marker failure');
 	}
 
+	const expectRefused = (err: { code?: string; message?: string; hasLog?: boolean }) => {
+		if (
+			err?.code !== 'ERR_TRANSACTION_LOG_WRITE' ||
+			err.hasLog !== false ||
+			!/refuses appends/.test(String(err.message))
+		) {
+			fail(`unexpected error ${err?.code} ${err?.message} hasLog=${err?.hasLog}`);
+		}
+	};
 	const refused = db.transaction(async (next) => {
 		log.addEntry(Buffer.from('refused'), next.id);
 		await next.put('b', 'refused');
 	});
 	await refused.then(
 		() => fail('append should be refused while the cancellation is unresolved'),
-		(err) =>
-			/refuses appends/.test(String(err?.message)) || fail(`unexpected error ${err?.message}`)
+		expectRefused
 	);
+	try {
+		db.transactionSync((next) => {
+			log.addEntry(Buffer.from('refused sync'), next.id);
+			next.putSync('b', 'refused sync');
+		});
+		fail('sync append should be refused while the cancellation is unresolved');
+	} catch (err) {
+		expectRefused(err as { code?: string });
+	}
 
 	await db.transaction(async (next) => {
 		log.addEntry(Buffer.from('kept'), next.id);
@@ -53,7 +71,7 @@ try {
 		fail(`readers saw ${JSON.stringify(entries)}`);
 	}
 	const totals = log.getStats().totals;
-	if (totals.abortsMarked !== 1 || totals.abortMarkFailures !== 2) {
+	if (totals.abortsMarked !== 1 || totals.abortMarkFailures !== 3) {
 		fail(`unexpected totals ${JSON.stringify(totals)}`);
 	}
 } finally {

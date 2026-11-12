@@ -122,6 +122,14 @@ TransactionLogStore::PurgeWatermark TransactionLogHandle::getPurgeWatermark() {
 	return store->getPurgeWatermark();
 }
 
+TransactionLogStore::PurgeWatermark TransactionLogHandle::setPurgeBaseline(double baseline) {
+	auto store = this->store.lock();
+	if (!store) {
+		return {};
+	}
+	return store->setPurgeBaseline(baseline);
+}
+
 std::weak_ptr<LogPosition> TransactionLogHandle::getLastCommittedPosition() {
 	auto store = this->store.lock();
 	if (store) return store->getLastCommittedPosition();

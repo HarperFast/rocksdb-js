@@ -2827,6 +2827,9 @@ rocksdb::Status DBDescriptor::syncWal() {
 		DEBUG_LOG("%p DBDescriptor::syncWal Skipping WAL sync for readonly database\n", this);
 		return rocksdb::Status::OK();
 	}
+	if (testConsumeSyncWalFailure()) {
+		return rocksdb::Status::IOError("Injected WAL sync failure");
+	}
 	return this->db->SyncWAL();
 }
 

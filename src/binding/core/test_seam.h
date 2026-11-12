@@ -183,6 +183,22 @@ inline bool testConsumeAbortMarkFailure() {
 	return false;
 }
 
+// A count, like abortMarkFailureFlag(): WAL syncs to fail with an injected I/O error.
+inline std::atomic<int>& syncWalFailureFlag() {
+	static std::atomic<int> pending{0};
+	return pending;
+}
+
+inline bool testConsumeSyncWalFailure() {
+	int cur = syncWalFailureFlag().load(std::memory_order_relaxed);
+	while (cur > 0) {
+		if (syncWalFailureFlag().compare_exchange_weak(cur, cur - 1, std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 inline std::atomic<bool>& prelogConflictCheckDisabled() {
 	static std::atomic<bool> disabled{ false };
 	return disabled;
@@ -212,6 +228,8 @@ inline void initializeTestSeams() {
 		}
 		value = ::getenv("ROCKSDB_JS_ABORT_MARK_FAILURE");
 		abortMarkFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
+		value = ::getenv("ROCKSDB_JS_SYNC_WAL_FAILURE");
+		syncWalFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		iteratorNextDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS"), std::memory_order_relaxed
 		);

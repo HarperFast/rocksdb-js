@@ -72,7 +72,9 @@ TEST(TransactionLogFlushedState, DestructivePurgeInvalidatesOldFlushCorrelations
 	ASSERT_TRUE(std::filesystem::exists(statePath));
 
 	store->purge(nullptr, /*all=*/true, /*before=*/0);
-	ASSERT_FALSE(std::filesystem::exists(storePath));
+	// Only the purge record outlives a destroy's own purge; the registry removes it with the directory.
+	ASSERT_FALSE(std::filesystem::exists(statePath));
+	ASSERT_TRUE(std::filesystem::exists(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME));
 
 	// The same RocksDB flush watermark must not republish a position from the
 	// segment generation that destroy just removed.

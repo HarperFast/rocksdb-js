@@ -372,7 +372,7 @@ TransactionLogStoreValidation validateTransactionLogStore(
 		if (readTransactionLogPurgeRecord(path, record) != TransactionLogPurgeRecordState::Valid) {
 			store.warnings.push_back(std::string(TRANSACTION_LOG_PURGE_RECORD_NAME) +
 				" holds no valid record; the log's purge watermark reads as unknown");
-		} else if (record.known) {
+		} else if (record.tracked) {
 			uint64_t expected = static_cast<uint64_t>(record.throughSequence) + 1;
 			for (const auto& file : store.files) {
 				if (file.sequenceNumber <= record.throughSequence) {
@@ -381,7 +381,9 @@ TransactionLogStoreValidation validateTransactionLogStore(
 				if (file.sequenceNumber != expected) {
 					store.warnings.push_back("Log files " + std::to_string(expected) + ".." +
 						std::to_string(file.sequenceNumber - 1) + " were deleted without updating " +
-						TRANSACTION_LOG_PURGE_RECORD_NAME + "; the log's purge watermark reads as unknown");
+						TRANSACTION_LOG_PURGE_RECORD_NAME + (record.known
+							? "; the log's purge watermark reads as unknown"
+							: "; the log can no longer be given a purge baseline"));
 					break;
 				}
 				++expected;
