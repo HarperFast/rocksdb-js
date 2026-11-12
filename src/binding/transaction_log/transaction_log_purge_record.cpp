@@ -5,8 +5,10 @@
 #include <cstring>
 #include <fstream>
 #include <system_error>
+#include <vector>
 #include "core/encoding.h"
 #include "core/platform.h"
+#include "transaction_log_file.h"
 
 namespace rocksdb_js {
 
@@ -15,6 +17,9 @@ namespace {
 constexpr uint32_t PURGE_RECORD_TOKEN = 0x544C5057; // "TLPW"
 constexpr uint8_t PURGE_RECORD_VERSION = 1;
 constexpr uint8_t PURGE_RECORD_KNOWN_FLAG = 0x01;
+// Written only without KNOWN, which implies it, so a known record stays readable by 2.14.0; that
+// release rejects any other flag bit and so reads a tracked-only record as unknown.
+constexpr uint8_t PURGE_RECORD_TRACKED_FLAG = 0x02;
 constexpr uint32_t PURGE_RECORD_CHECKED_BYTES = TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE - 4;
 
 std::atomic<uint64_t> purgeRecordTempSequence = 0;
@@ -77,9 +82,15 @@ bool createRecordFile(
 		std::filesystem::remove(temp, ignored);
 		return false;
 	}
-	// A filesystem without directory sync forfeits only the record's name, which reads as absent
-	// (unknown) if lost.
-	return syncDirectory(storePath, /*allowUnsupported=*/true);
+	// A name that cannot be made durable is removed, so the next write creates it again instead of
+	// overwriting a slot whose file a crash can still lose: an absent record reads as a store that
+	// predates the record. A filesystem without directory sync forfeits the name.
+	if (!syncDirectory(storePath, /*allowUnsupported=*/true)) {
+		std::error_code ignored;
+		std::filesystem::remove(file, ignored);
+		return false;
+	}
+	return true;
 }
 
 } // namespace
@@ -88,7 +99,7 @@ void encodeTransactionLogPurgeRecordSlot(char* slot, const TransactionLogPurgeRe
 	std::memset(slot, 0, TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE);
 	writeUint32BE(slot, PURGE_RECORD_TOKEN);
 	writeUint8(slot + 4, PURGE_RECORD_VERSION);
-	writeUint8(slot + 5, record.known ? PURGE_RECORD_KNOWN_FLAG : 0);
+	writeUint8(slot + 5, record.known ? PURGE_RECORD_KNOWN_FLAG : record.tracked ? PURGE_RECORD_TRACKED_FLAG : 0);
 	writeUint64BE(slot + 8, record.generation);
 	writeUint32BE(slot + 16, record.throughSequence);
 	writeDoubleBE(slot + 20, record.watermark);
@@ -99,7 +110,8 @@ bool decodeTransactionLogPurgeRecordSlot(const char* slot, TransactionLogPurgeRe
 	if (readUint32BE(slot) != PURGE_RECORD_TOKEN ||
 		readUint32BE(slot + PURGE_RECORD_CHECKED_BYTES) != fnv1a(slot, PURGE_RECORD_CHECKED_BYTES) ||
 		readUint8(slot + 4) != PURGE_RECORD_VERSION ||
-		(readUint8(slot + 5) & ~PURGE_RECORD_KNOWN_FLAG) != 0 ||
+		(readUint8(slot + 5) != 0 && readUint8(slot + 5) != PURGE_RECORD_KNOWN_FLAG &&
+			readUint8(slot + 5) != PURGE_RECORD_TRACKED_FLAG) ||
 		readUint8(slot + 6) != 0 || readUint8(slot + 7) != 0) {
 		return false;
 	}
@@ -109,7 +121,8 @@ bool decodeTransactionLogPurgeRecordSlot(const char* slot, TransactionLogPurgeRe
 	if (generation == 0 || std::isnan(watermark) || watermark < 0) {
 		return false;
 	}
-	record.known = (readUint8(slot + 5) & PURGE_RECORD_KNOWN_FLAG) != 0;
+	record.known = readUint8(slot + 5) == PURGE_RECORD_KNOWN_FLAG;
+	record.tracked = readUint8(slot + 5) != 0;
 	record.generation = generation;
 	record.throughSequence = readUint32BE(slot + 16);
 	record.watermark = watermark;
@@ -195,6 +208,47 @@ bool writeTransactionLogPurgeRecord(
 		return overwriteSlot(file, record.generation, slot);
 	} catch (...) {
 		return false;
+	}
+}
+
+void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath, bool keepRecord) {
+	if (!std::filesystem::exists(storePath)) {
+		return;
+	}
+	// A store directory that is a link (a symlink, or a junction on Windows) can point at a directory
+	// holding files the store never wrote, so only the store's own files are removed there, and then
+	// the link.
+	bool link = std::filesystem::symlink_status(storePath).type() != std::filesystem::file_type::directory;
+	std::vector<std::filesystem::path> others;
+	for (const auto& entry : std::filesystem::directory_iterator(storePath)) {
+		auto name = entry.path().filename().string();
+		if (name == TRANSACTION_LOG_PURGE_RECORD_NAME) {
+			continue;
+		}
+		uint32_t sequence = 0;
+		if (link && (entry.symlink_status().type() != std::filesystem::file_type::regular ||
+			(!parseTransactionLogSegmentName(name, sequence) && name != "txn.state" &&
+				name.rfind(TRANSACTION_LOG_PURGE_RECORD_NAME ".tmp-", 0) != 0))) {
+			continue;
+		}
+		others.push_back(entry.path());
+	}
+	for (const auto& other : others) {
+		std::filesystem::remove_all(other);
+	}
+	if (keepRecord) {
+		return;
+	}
+	std::filesystem::remove(storePath / TRANSACTION_LOG_PURGE_RECORD_NAME);
+	std::error_code rmdirError;
+	std::filesystem::remove(storePath, rmdirError);
+	if (rmdirError) {
+		// Something appeared after the sweep (a concurrent open, a delete-pending file on Windows), so
+		// the directory outlives its record: put back an unknown one, best effort.
+		TransactionLogPurgeRecord unknown;
+		unknown.generation = 1;
+		writeTransactionLogPurgeRecord(storePath, unknown);
+		throw std::filesystem::filesystem_error("Failed to remove transaction log store directory", storePath, rmdirError);
 	}
 }
 

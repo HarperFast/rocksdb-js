@@ -419,6 +419,7 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
 	// Refused on an older transaction's write intent before writing the batch: nothing was logged.
 	bool refusedBeforeLog = false;
+	const char* errorCode = nullptr;
 
 	TransactionCommitState(
 		napi_env env,
@@ -641,10 +642,12 @@ static void executeLogWork(TransactionCommitState* state) {
 			} catch (const std::exception& e) {
 				DEBUG_LOG("%p Transaction::Commit ERROR: writeBatch failed for transaction %llu: %s\n", txnHandle.get(), (unsigned long long)txnHandle->id, e.what());
 				state->status = rocksdb::Status::Aborted(e.what());
+				state->errorCode = "ERR_TRANSACTION_LOG_WRITE";
 			}
 		} else {
 			DEBUG_LOG("%p Transaction::Commit ERROR: Log store not found for transaction %llu\n", txnHandle.get(), (unsigned long long)txnHandle->id);
 			state->status = rocksdb::Status::Aborted("Log store not found for transaction");
+			state->errorCode = "ERR_LOG_STORE_NOT_FOUND";
 		}
 	}
 }
@@ -800,6 +803,36 @@ static void executeCommitWork(TransactionCommitState* state) {
 
 // forward declaration; defined after completeCommitWork
 static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* context, void* data);
+
+/** The one place a commit error is built, so the async and sync paths cannot report it differently. */
+static void createCommitError(
+	napi_env env,
+	const TransactionHandle* txnHandle,
+	const rocksdb::Status& status,
+	const char* errorCode,
+	bool attemptLogged,
+	bool refusedBeforeLog,
+	napi_value& error
+) {
+	if (errorCode) {
+		const char* message = status.getState();
+		rocksdb_js::createJSError(env, errorCode, message ? message : status.ToString().c_str(), error);
+	} else {
+		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
+	}
+	// #668: writeBatch is skipped on an IsBusy/TryAgain retry once the WAL batch is durable
+	// (committedPosition set), so this attempt may not have logged. Fall back to committedPosition
+	// so the retry heuristic still treats the transaction as logged.
+	napi_value hasLogValue;
+	bool hasLog = attemptLogged || (txnHandle && txnHandle->committedPosition.logSequenceNumber > 0);
+	if (::napi_get_boolean(env, hasLog, &hasLogValue) == napi_ok) {
+		::napi_set_named_property(env, error, "hasLog", hasLogValue);
+	}
+	napi_value refusedValue;
+	if (refusedBeforeLog && ::napi_get_boolean(env, true, &refusedValue) == napi_ok) {
+		::napi_set_named_property(env, error, "refusedBeforeLog", refusedValue);
+	}
+}
 
 /**
  * Completes the commit on the JS thread: resolves/rejects the commit promise,
@@ -988,21 +1021,8 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 			state->handle->close();
 		}
 		napi_value error;
-		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, state->status, "Transaction commit failed");
-		napi_value hasLogValue;
-		// #668: writeBatch is skipped on an IsBusy/TryAgain retry once the WAL batch is durable
-		// (committedPosition set), so state->hasLog is false this attempt. Fall back to
-		// committedPosition so the retry heuristic still treats this as logged.
-		bool hasLog = state->hasLog ||
-			(state->handle && state->handle->committedPosition.logSequenceNumber > 0);
-		napi_status status = ::napi_get_boolean(env, hasLog, &hasLogValue);
-		if (status == napi_ok) {
-			::napi_set_named_property(env, error, "hasLog", hasLogValue);
-		}
-		napi_value refusedValue;
-		if (state->refusedBeforeLog && ::napi_get_boolean(env, true, &refusedValue) == napi_ok) {
-			::napi_set_named_property(env, error, "refusedBeforeLog", refusedValue);
-		}
+		createCommitError(env, state->handle.get(), state->status, state->errorCode,
+			state->hasLog, state->refusedBeforeLog, error);
 		state->callReject(error);
 	}
 }
@@ -1355,11 +1375,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 				}
 			}
 			napi_value error;
-			ROCKSDB_CREATE_ERROR_LIKE_VOID(error, admission, "Transaction commit failed");
-			napi_value hasLogValue;
-			NAPI_STATUS_THROWS(::napi_get_boolean(env,
-				(*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
-			NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
+			createCommitError(env, txnHandle->get(), admission, nullptr, false, false, error);
 			NAPI_STATUS_THROWS(::napi_throw(env, error));
 			return nullptr;
 		}
@@ -1380,22 +1396,29 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		DEBUG_LOG("%p Transaction::CommitSync Committing log entries for transaction %llu\n",
 			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
 		store = (*txnHandle)->boundLogStore.lock();
+		rocksdb::Status logStatus;
+		const char* logErrorCode = nullptr;
 		if (store) {
-			hasLog = true;
 			try {
 				writeLogBatch(**txnHandle, *store);
+				(*txnHandle)->logEntryBatch.reset();
+				hasLog = true;
 			} catch (const std::exception& e) {
-				(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
-				claim.release(descriptor.get());
-				NAPI_THROW_JS_ERROR("ERR_TRANSACTION_LOG_WRITE", e.what());
+				logStatus = rocksdb::Status::Aborted(e.what());
+				logErrorCode = "ERR_TRANSACTION_LOG_WRITE";
 			}
-			// free the batch after writing to avoid memory leak
-			(*txnHandle)->logEntryBatch.reset();
 		} else {
 			DEBUG_LOG("%p Transaction::CommitSync ERROR: Log store not found for transaction %llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
+			logStatus = rocksdb::Status::Aborted("Log store not found for transaction");
+			logErrorCode = "ERR_LOG_STORE_NOT_FOUND";
+		}
+		if (logErrorCode) {
 			(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 			claim.release(descriptor.get());
-			NAPI_THROW_JS_ERROR("ERR_LOG_STORE_NOT_FOUND", "Log store not found for transaction");
+			napi_value error;
+			createCommitError(env, txnHandle->get(), logStatus, logErrorCode, false, false, error);
+			NAPI_STATUS_THROWS(::napi_throw(env, error));
+			return nullptr;
 		}
 	}
 
@@ -1452,18 +1475,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		}
 		(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 		napi_value error;
-		ROCKSDB_CREATE_ERROR_LIKE_VOID(error, status, "Transaction commit failed");
-		napi_value hasLogValue;
-		// #668: writeBatch is skipped on an IsBusy/TryAgain retry (WAL already durable), so fall
-		// back to committedPosition so the caller keeps treating this as a logged txn.
-		NAPI_STATUS_THROWS(::napi_get_boolean(env,
-			hasLog || (*txnHandle)->committedPosition.logSequenceNumber > 0, &hasLogValue));
-		NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "hasLog", hasLogValue));
-		if (refusedBeforeLog) {
-			napi_value refused;
-			NAPI_STATUS_THROWS(::napi_get_boolean(env, true, &refused));
-			NAPI_STATUS_THROWS(::napi_set_named_property(env, error, "refusedBeforeLog", refused));
-		}
+		createCommitError(env, txnHandle->get(), status, nullptr, hasLog, refusedBeforeLog, error);
 		NAPI_STATUS_THROWS(::napi_throw(env, error));
 	}
 
