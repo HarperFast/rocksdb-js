@@ -91,8 +91,6 @@ try {
 				module: 'nodenext',
 				moduleResolution: 'nodenext',
 				noEmit: true,
-				// dependency @harperfast/extended-iterable ships no CJS typings
-				skipLibCheck: true,
 				strict: true,
 				target: 'es2022',
 			},
