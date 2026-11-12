@@ -381,9 +381,7 @@ TransactionLogStoreValidation validateTransactionLogStore(
 				if (file.sequenceNumber != expected) {
 					store.warnings.push_back("Log files " + std::to_string(expected) + ".." +
 						std::to_string(file.sequenceNumber - 1) + " were deleted without updating " +
-						TRANSACTION_LOG_PURGE_RECORD_NAME + (record.known
-							? "; the log's purge watermark reads as unknown"
-							: "; the log can no longer be given a purge baseline"));
+						TRANSACTION_LOG_PURGE_RECORD_NAME + (record.known ? "; the log's purge watermark reads as unknown" : "; the log can no longer be given a purge baseline"));
 					break;
 				}
 				++expected;

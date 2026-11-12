@@ -1112,7 +1112,9 @@ void TransactionLogStore::loadPurgeRecord() {
 		auto oldest = this->sequenceFiles.begin();
 		record.tracked = true;
 		record.throughSequence = (oldest != this->sequenceFiles.end() && oldest->first < currentSequence
-			? oldest->first : currentSequence) - 1;
+										 ? oldest->first
+										 : currentSequence) -
+			1;
 	}
 	bool recordTracked = (state == TransactionLogPurgeRecordState::Valid || legacy) && record.tracked &&
 		!this->discoveryIncomplete;
@@ -1156,8 +1158,7 @@ void TransactionLogStore::loadPurgeRecord() {
 	bool conclusive = !this->discoveryIncomplete && state != TransactionLogPurgeRecordState::Unreadable;
 	// A damaged slot is a write that stopped before its sync, so no purge followed it; rewriting it
 	// keeps read-only opens, which distrust a damaged slot, from reporting unknown until the next purge.
-	if (conclusive && (state != TransactionLogPurgeRecordState::Valid || record.known != loaded.known ||
-		record.tracked != loaded.tracked || otherSlotDamaged)) {
+	if (conclusive && (state != TransactionLogPurgeRecordState::Valid || record.known != loaded.known || record.tracked != loaded.tracked || otherSlotDamaged)) {
 		// Recording the verdict lets a read-only open, which cannot see what this open saw, report it.
 		loaded.generation++;
 		if (this->writePurgeRecord(loaded)) {

@@ -185,7 +185,7 @@ inline bool testConsumeAbortMarkFailure() {
 
 // A count, like abortMarkFailureFlag(): WAL syncs to fail with an injected I/O error.
 inline std::atomic<int>& syncWalFailureFlag() {
-	static std::atomic<int> pending{0};
+	static std::atomic<int> pending{ 0 };
 	return pending;
 }
 

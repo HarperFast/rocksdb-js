@@ -99,7 +99,8 @@ void encodeTransactionLogPurgeRecordSlot(char* slot, const TransactionLogPurgeRe
 	std::memset(slot, 0, TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE);
 	writeUint32BE(slot, PURGE_RECORD_TOKEN);
 	writeUint8(slot + 4, PURGE_RECORD_VERSION);
-	writeUint8(slot + 5, record.known ? PURGE_RECORD_KNOWN_FLAG : record.tracked ? PURGE_RECORD_TRACKED_FLAG : 0);
+	writeUint8(slot + 5, record.known ? PURGE_RECORD_KNOWN_FLAG : record.tracked ? PURGE_RECORD_TRACKED_FLAG
+																				 : 0);
 	writeUint64BE(slot + 8, record.generation);
 	writeUint32BE(slot + 16, record.throughSequence);
 	writeDoubleBE(slot + 20, record.watermark);
@@ -229,9 +230,7 @@ void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath, 
 			continue;
 		}
 		uint32_t sequence = 0;
-		if (link && (entry.symlink_status().type() != std::filesystem::file_type::regular ||
-			(!parseTransactionLogSegmentName(name, sequence) && name != "txn.state" &&
-				name.rfind(TRANSACTION_LOG_PURGE_RECORD_NAME ".tmp-", 0) != 0))) {
+		if (link && (entry.symlink_status().type() != std::filesystem::file_type::regular || (!parseTransactionLogSegmentName(name, sequence) && name != "txn.state" && name.rfind(TRANSACTION_LOG_PURGE_RECORD_NAME ".tmp-", 0) != 0))) {
 			continue;
 		}
 		others.push_back(entry.path());

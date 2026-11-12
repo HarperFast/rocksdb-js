@@ -1118,7 +1118,9 @@ TEST_F(PurgeWatermarkTest, BackupOfATrackedStoreMissingASegmentIsNotTracked) {
 	for (const auto& entry : store->snapshotForBackup(nullptr, false)) {
 		if (entry.relativeName == TRANSACTION_LOG_PURGE_RECORD_NAME) {
 			ASSERT_EQ(rocksdb_js::decodeTransactionLogPurgeRecordImage(
-				entry.inlineContents.data(), entry.inlineContents.size(), captured), TransactionLogPurgeRecordState::Valid);
+						  entry.inlineContents.data(), entry.inlineContents.size(), captured
+					  ),
+				TransactionLogPurgeRecordState::Valid);
 			found = true;
 		}
 	}
