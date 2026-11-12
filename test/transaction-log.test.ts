@@ -3154,13 +3154,14 @@ describe('Transaction Log', () => {
 				log.addEntry(Buffer.from('pending'), pending.id);
 				try {
 					expect(db.purgeLogs({ destroy: true, name: 'foo' })).toEqual([logFile]);
-					expect(existsSync(logDirectory)).toBe(false);
+					// The surviving store keeps only its unknown purge record.
+					expect(readdirSync(logDirectory)).toEqual(['txn.purged']);
 
 					// A later unrelated flush used to replay the old correlation ring and
 					// recreate txn.state with the deleted segment's sequence.
 					db.putSync('unrelated', true);
 					db.flushSync();
-					expect(existsSync(logDirectory)).toBe(false);
+					expect(readdirSync(logDirectory)).toEqual(['txn.purged']);
 				} finally {
 					pending.abort();
 				}

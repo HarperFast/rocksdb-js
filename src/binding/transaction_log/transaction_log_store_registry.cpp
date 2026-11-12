@@ -713,8 +713,11 @@ std::vector<TransactionLogStoreRegistry::PurgedLogFile> TransactionLogStoreRegis
 		}
 	}
 
-	// Phase 3: Remove closed stores from the registry while holding the lock
-	std::vector<std::shared_ptr<TransactionLogStore>> storesActuallyRemoved;
+	// Phase 3: Remove closed stores from the registry and delete their directories under the lock. A
+	// useLog() between the two would build a store over the directory the removal then deletes, and
+	// that store's next write would recreate it without a record, which reads as a store that predates
+	// the record. The purge already removed every flushed segment, so this unlinks the record and the
+	// unflushed segments the purge skipped.
 	if (destroy) {
 		std::lock_guard<std::mutex> storeLock(entry->storesMutex);
 		for (auto& store : storesToPurge) {
@@ -722,23 +725,19 @@ std::vector<TransactionLogStoreRegistry::PurgedLogFile> TransactionLogStoreRegis
 				continue;
 			}
 			auto storeIt = entry->stores.find(store->name);
-			if (storeIt != entry->stores.end() && storeIt->second.get() == store.get()) {
-				entry->stores.erase(storeIt);
-				storesActuallyRemoved.push_back(store);
+			if (storeIt == entry->stores.end() || storeIt->second.get() != store.get()) {
+				continue;
 			}
-		}
-	}
-
-	// Phase 4: Delete directories outside the lock
-	for (auto& store : storesActuallyRemoved) {
-		try {
-			std::filesystem::remove_all(store->path);
-		} catch (const std::filesystem::filesystem_error& e) {
-			DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to remove log directory %s: %s\n",
-				instance.get(), store->path.string().c_str(), e.what());
-		} catch (...) {
-			DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Unknown error removing log directory %s\n",
-				instance.get(), store->path.string().c_str());
+			entry->stores.erase(storeIt);
+			try {
+				removeTransactionLogStoreDirectory(store->path);
+			} catch (const std::filesystem::filesystem_error& e) {
+				DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Failed to remove log directory %s: %s\n",
+					instance.get(), store->path.string().c_str(), e.what());
+			} catch (...) {
+				DEBUG_LOG("%p TransactionLogStoreRegistry::PurgeStores Unknown error removing log directory %s\n",
+					instance.get(), store->path.string().c_str());
+			}
 		}
 	}
 
