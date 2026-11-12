@@ -111,12 +111,12 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 
 				result = await cli([dbPath, 'put', 'd', '4', '--yes']);
 				expect(result.code).toBe(1);
-				expect(result.stderr).toMatch(/already open by another process/);
+				expect(result.stderr).toContain('RocksDB is already open by another process');
 
 				const backupDir = tempDBPath();
 				result = await cli([dbPath, 'backups', backupDir, 'backup']);
 				expect(result.code).toBe(1);
-				expect(result.stderr).toMatch(/already open by another process/);
+				expect(result.stderr).toContain('RocksDB is already open by another process');
 				result = await cli([dbPath, 'backups', backupDir, 'backup', '--readonly']);
 				expect(result.code).toBe(0);
 
@@ -360,7 +360,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				writer.putSync('a', 'live');
 				result = await cli([dbPath, 'backups', backupDir, 'restore', '1', '--yes']);
 				expect(result.code).toBe(1);
-				expect(result.stderr).toContain('already open by another process');
+				expect(result.stderr).toContain('RocksDB is already open by another process');
 				expect(writer.getSync('a')).toBe('live');
 			} finally {
 				writer.close();

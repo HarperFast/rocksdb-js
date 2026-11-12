@@ -1221,17 +1221,11 @@ function versionString() {
 	return `rocksdb.js CLI v${versions['rocksdb-js']} (RocksDB v${versions.rocksdb})`;
 }
 
-function isLockError(error) {
-	return /While lock file|lock hold by current process|Resource temporarily unavailable/i.test(
-		error?.message ?? ''
-	);
-}
-
 async function openOrExplain(ifMissing) {
 	try {
 		await openDatabases(argv.column, ifMissing);
 	} catch (error) {
-		if (!isLockError(error)) throw error;
+		if (error?.code !== 'ERR_DATABASE_LOCKED') throw error;
 		throw new CLIError(
 			interactive
 				? `RocksDB is already open by another process; rerun with --readonly:\n  rocksdb-js --readonly ${dbPath}`

@@ -524,6 +524,7 @@ console.log(db.name); // 'users'
 ### `db.open(): RocksDatabase`
 
 Opens the database at the given path. This must be called before performing any data operations.
+A writable open of a database another process holds open throws with code `ERR_DATABASE_LOCKED`.
 
 ```typescript
 import { RocksDatabase } from '@harperfast/rocksdb-js';
