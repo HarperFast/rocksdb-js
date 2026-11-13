@@ -29,6 +29,19 @@ bool isMissingSstOpenRace(
 	const std::filesystem::path& databasePath = {}
 );
 
+/**
+ * Classifies a failed writable open as another holder of the database's `LOCK`
+ * file. RocksDB has no status subcode for this, and the wording differs per
+ * platform: POSIX reports a failed `fcntl` lock ("While lock file: …/LOCK:
+ * Resource temporarily unavailable"), a second in-process holder reports "lock
+ * hold by current process", and Windows reports a sharing violation on
+ * creating the file ("Failed to create lock file: …/LOCK: The process cannot
+ * access the file because it is being used by another process."). A LOCK that
+ * cannot be opened or created for another reason (permissions, a read-only
+ * volume) is not contention and is not classified.
+ */
+bool isDatabaseLockedStatus(const rocksdb::Status& status);
+
 } // namespace rocksdb_js
 
 #endif

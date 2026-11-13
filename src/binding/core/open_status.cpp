@@ -121,4 +121,18 @@ bool isMissingSstOpenRace(
 	return false;
 }
 
+bool isDatabaseLockedStatus(const rocksdb::Status& status) {
+	if (!status.IsIOError()) {
+		return false;
+	}
+	const std::string message = status.ToString();
+	if (!namesFileWithExtension(message, "/LOCK") && !namesFileWithExtension(message, "\\LOCK")) {
+		return false;
+	}
+	return message.find("While lock file") != std::string::npos ||
+		message.find("lock hold by current process") != std::string::npos ||
+		(message.find("Failed to create lock file") != std::string::npos &&
+			message.find("being used by another process") != std::string::npos);
+}
+
 } // namespace rocksdb_js

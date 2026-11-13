@@ -98,11 +98,14 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 		it('resolves a nested confirmation prompt whose answer is buffered in the same write', async () => {
 			const dbPath = generateDBPath();
 			try {
-				const { code, stdout } = await runCLI(dbPath, 'y\nput a 1\nclear\ny\nget a\nexit\n');
+				const { code, stdout, stderr } = await runCLI(
+					dbPath,
+					'y\nput a 1\nclear\ny\nget a\nexit\n'
+				);
 				expect(code).toBe(0);
 				expect(stdout).toContain('Are you sure you want to clear all data?');
 				expect(stdout).toContain('Cleared');
-				expect(stdout).toContain('Key not found');
+				expect(stderr).toContain('Key not found');
 
 				const db = RocksDatabase.open(dbPath, { readOnly: true });
 				try {
@@ -159,9 +162,9 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 		it('exits non-zero rather than reinterpret queued input as CLI commands when "repl" is refused', async () => {
 			const dbPath = generateDBPath();
 			try {
-				const { code, stdout } = await runCLI(dbPath, 'y\nput a 1\nrepl\nclear\ny\n');
+				const { code, stdout, stderr } = await runCLI(dbPath, 'y\nput a 1\nrepl\nclear\ny\n');
 				expect(code).toBe(1);
-				expect(stdout).toContain('needs an interactive terminal');
+				expect(stderr).toContain('needs an interactive terminal');
 				expect(stdout).not.toContain('Cleared');
 
 				const db = RocksDatabase.open(dbPath, { readOnly: true });
@@ -182,9 +185,9 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				// No trailing "\n": "put b 2" sits in readline's internal buffer, unemitted.
 				writeFileSync(scriptPath, 'y\nput a 1\nrepl\nput b 2');
 
-				const { code, stdout } = await runCLIFromFile(dbPath, scriptPath);
+				const { code, stderr } = await runCLIFromFile(dbPath, scriptPath);
 				expect(code).toBe(1);
-				expect(stdout).toContain('needs an interactive terminal');
+				expect(stderr).toContain('needs an interactive terminal');
 
 				const db = RocksDatabase.open(dbPath, { readOnly: true });
 				try {

@@ -51,6 +51,17 @@ struct PersistedCompression {
 	rocksdb::CompressionOptions compressionOpts;
 };
 
+// RocksDB words lock contention differently per platform, so callers get a
+// stable code instead of having to match its message.
+static void throwIfDatabaseLocked(const rocksdb::Status& status) {
+	if (rocksdb_js::isDatabaseLockedStatus(status)) {
+		throw rocksdb_js::DBException(
+			"ERR_DATABASE_LOCKED",
+			"Database is already open by another process (" + status.ToString() + ")"
+		);
+	}
+}
+
 // Applies a compression algorithm (and optional level) to both the SST block
 // compression and the blob-file compression of the given column family options.
 static void applyCompression(
@@ -1816,6 +1827,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		rocksdb::Status status = rocksdb::TransactionDB::Open(dbOptions, txndbOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open pessimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
+			throwIfDatabaseLocked(status);
 			throw rocksdb_js::DBException(status.ToString());
 		}
 		DEBUG_LOG("DBDescriptor::open Opened pessimistic transaction db for \"%s\"\n", path.c_str());
@@ -1831,6 +1843,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		rocksdb::Status status = rocksdb::OptimisticTransactionDB::Open(dbOptions, occOptions, identityPath, cfDescriptors, &cfHandles, &rdb);
 		if (!status.ok()) {
 			DEBUG_LOG("DBDescriptor::open Failed to open optimistic transaction db for \"%s\": %s\n", path.c_str(), status.ToString().c_str());
+			throwIfDatabaseLocked(status);
 			throw rocksdb_js::DBException(status.ToString());
 		}
 		DEBUG_LOG("DBDescriptor::open Opened optimistic transaction db for \"%s\"\n", path.c_str());
