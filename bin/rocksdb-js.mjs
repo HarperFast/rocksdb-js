@@ -148,6 +148,7 @@ const COMMANDS = [
 		summary: 'Set the value of a key',
 		access: 'write',
 		creates: true,
+		emptyValueAllowed: true,
 		run: putCommand,
 		print: ({ key }) => console.log(`Stored ${hl(key)}`),
 	},
@@ -1165,7 +1166,12 @@ function assertAllowed(def, access) {
 
 function assertUsage(def, args) {
 	const required = def.usage?.match(/<[^>]+>/g)?.length ?? 0;
-	if (args.length < required) {
+	// A blank required argument (an unset shell variable) must never reach a default:
+	// `purge-logs ""` would name every log store. Only put's value may be empty.
+	const blank = args
+		.slice(0, required)
+		.some((arg, i) => !arg.trim() && !(def.emptyValueAllowed && i === required - 1));
+	if (args.length < required || blank) {
 		throw new CLIError(`Usage: ${commandSignature(def.name, def.usage)}`, 2);
 	}
 	def.validate?.(args);
@@ -1312,9 +1318,15 @@ async function main() {
 		return;
 	}
 
-	// An empty name must not fall through to the default column family.
-	if (argv.column !== undefined && !argv.column.trim()) {
-		reportError(new CLIError('Usage: --column needs a column family name'));
+	// An explicitly empty path or column must not fall through to the default.
+	const blankOption =
+		dbArg !== undefined && !dbArg.trim()
+			? 'Usage: the database path must not be empty (omit it to use the current directory)'
+			: argv.column !== undefined && !argv.column.trim()
+				? 'Usage: --column needs a column family name'
+				: undefined;
+	if (blankOption) {
+		reportError(new CLIError(blankOption));
 		process.exitCode = 2;
 		return;
 	}

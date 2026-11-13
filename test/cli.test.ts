@@ -278,6 +278,28 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result).toMatchObject({ code: 0, stdout: 'one\n' });
 		});
 
+		it('rejects blank paths and required arguments instead of falling back to a default', async () => {
+			const dbPath = tempDBPath();
+			seed(dbPath, { a: 'one' });
+
+			for (const args of [['', 'clear', '--yes'], [' ', 'clear', '--yes'], ['']]) {
+				const result = await cli(args, { cwd: dbPath });
+				expect(result.code).toBe(2);
+				expect(result.stderr).toContain('database path must not be empty');
+			}
+			for (const args of [
+				['purge-logs', '', '--yes'],
+				['drop', ' '],
+				['remove', ''],
+				['get', ''],
+			]) {
+				const result = await cli([dbPath, ...args]);
+				expect(result.code).toBe(2);
+				expect(result.stderr).toContain('Usage:');
+			}
+			expect((await cli(['get', 'a'], { cwd: dbPath })).stdout).toBe('one\n');
+		});
+
 		it('selects a column family with --column', async () => {
 			const dbPath = tempDBPath();
 			seed(dbPath, { a: 'default-a' });
