@@ -3,7 +3,7 @@
  * one read per key, by batch size, with the block cache warm or cold.
  *
  *   node benchmark/multi-get.mts <dir> [--api sync|async] [--cache hot|cold] [--keys 1000000]
- *     [--batches 1,2,4,16,64,256] [--reps 7] [--keys-per-sample 20000] [--encoding msgpack|binary]
+ *     [--batches 1,2,4,8,16,64,256] [--reps 7] [--keys-per-sample 20000] [--encoding msgpack|binary]
  *     [--transaction]
  *
  * `--api sync` compares a `getSync()` loop with `getManySync()`; `--api async` compares
@@ -25,7 +25,7 @@ const { positionals, values: args } = parseArgs({
 	options: {
 		cache: { type: 'string', default: 'hot' },
 		keys: { type: 'string', default: '1000000' },
-		batches: { type: 'string', default: '1,2,4,16,64,256' },
+		batches: { type: 'string', default: '1,2,4,8,16,64,256' },
 		reps: { type: 'string', default: '7' },
 		'keys-per-sample': { type: 'string', default: '20000' },
 		encoding: { type: 'string', default: 'msgpack' },

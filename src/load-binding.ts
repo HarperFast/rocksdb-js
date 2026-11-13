@@ -605,7 +605,9 @@ export type NativeDatabase = {
 	// Reads `count` keys, encoded back to back in `keys` and ending at `keyEnds[i]`. Resolves (or,
 	// for getManySync, returns) a buffer holding one int32 value length per key, -1 when missing,
 	// then the values back to back; getManySync returns NOT_IN_MEMORY_CACHE_FLAG instead when
-	// ONLY_IF_IN_MEMORY_CACHE_FLAG is set and a key is not in memory.
+	// ONLY_IF_IN_MEMORY_CACHE_FLAG is set and a key is not in memory. Like getSync, getManySync
+	// writes a result that fits into the default value buffer and returns its length, unless
+	// ALWAYS_CREATE_NEW_BUFFER_FLAG is set.
 	getMany(
 		keys: Buffer,
 		keyEnds: Int32Array,

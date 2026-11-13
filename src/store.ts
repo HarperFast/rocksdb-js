@@ -32,6 +32,7 @@ import {
 } from './load-binding.ts';
 import { type MaybePromise, parseDuration, when } from './util.ts';
 import { ExtendedIterable } from '@harperfast/extended-iterable';
+import { Encoder as MsgpackEncoder } from 'msgpackr';
 
 const {
 	ONLY_IF_IN_MEMORY_CACHE_FLAG,
@@ -1229,15 +1230,18 @@ export class Store {
 	}
 
 	/**
-	 * Reads several keys with one RocksDB `MultiGet`. Returns the raw values in key order, with
+	 * Reads several keys with one RocksDB `MultiGet`. Returns the values in key order, with
 	 * `undefined` for a missing key, synchronously when every key is in memory and otherwise as one
-	 * promise for the batch. A batch of one takes the single-key path, which costs less.
+	 * promise for the batch. With `decode` and a value decoder, a result that fits is read through
+	 * the shared value buffer and decoded, as `get()` does; otherwise each value is a view of one new
+	 * buffer for the batch. A batch of one takes the single-key path, which costs less.
 	 */
 	getMany(
 		context: StoreContext,
 		keys: Key[],
-		options?: DBITransactional
-	): MaybePromise<(Buffer | undefined)[]> {
+		options?: DBITransactional,
+		decode = false
+	): MaybePromise<any[]> {
 		if (keys.length === 1) {
 			return when(this.get(context, keys[0], true, options), (value) => [value]);
 		}
@@ -1245,16 +1249,22 @@ export class Store {
 		if (count === 0) {
 			return [];
 		}
+		const decodingStore =
+			decode && typeof this.decoder?.decode === 'function' && this.encoding !== 'binary'
+				? this
+				: undefined;
 		const txnId = this.getTxnId(options);
 		const result = context.getManySync(
 			MULTI_GET_KEYS,
 			MULTI_GET_KEY_ENDS,
 			count,
-			ONLY_IF_IN_MEMORY_CACHE_FLAG,
+			decodingStore
+				? ONLY_IF_IN_MEMORY_CACHE_FLAG
+				: ONLY_IF_IN_MEMORY_CACHE_FLAG | ALWAYS_CREATE_NEW_BUFFER_FLAG,
 			txnId
 		);
 		if (result !== NOT_IN_MEMORY_CACHE_FLAG) {
-			return unpackValues(result as Buffer, count);
+			return readValues(decodingStore, result, count);
 		}
 		return new Promise((resolve, reject) => {
 			// Native copies the keys before returning, so the shared batch is free for the next call.
@@ -1262,7 +1272,7 @@ export class Store {
 				MULTI_GET_KEYS,
 				MULTI_GET_KEY_ENDS,
 				count,
-				resolveUnpacked(resolve, count),
+				resolveValues(decodingStore, count, resolve, reject),
 				reject,
 				txnId
 			);
@@ -1272,8 +1282,9 @@ export class Store {
 	getManySync(
 		context: StoreContext,
 		keys: Key[],
-		options?: DBITransactional
-	): (Buffer | undefined)[] {
+		options?: DBITransactional,
+		decode = false
+	): any[] {
 		if (keys.length === 1) {
 			return [this.getSync(context, keys[0], true, options)];
 		}
@@ -1281,14 +1292,18 @@ export class Store {
 		if (count === 0) {
 			return [];
 		}
+		const decodingStore =
+			decode && typeof this.decoder?.decode === 'function' && this.encoding !== 'binary'
+				? this
+				: undefined;
 		const result = context.getManySync(
 			MULTI_GET_KEYS,
 			MULTI_GET_KEY_ENDS,
 			count,
-			0,
+			decodingStore ? 0 : ALWAYS_CREATE_NEW_BUFFER_FLAG,
 			this.getTxnId(options)
 		);
-		return unpackValues(result as Buffer, count);
+		return readValues(decodingStore, result, count);
 	}
 
 	encodeKeyBatch(keys: Key[]): number {
@@ -1585,27 +1600,61 @@ function copyEncodedKey(encoded: BufferWithDataView, appendSuccessorByte: boolea
 	return copy;
 }
 
+const VALUE_BUFFER_INT32 = new Int32Array(
+	VALUE_BUFFER.buffer,
+	VALUE_BUFFER.byteOffset,
+	VALUE_BUFFER.length >> 2
+);
+let sharedBatchMark = 0;
+
 /**
- * Splits a native `getMany` result into one view per key. The buffer starts with one int32 value
- * length per key (-1 for a missing key), then the values back to back. The views share that buffer,
- * which is new for every batch, so they stay valid after later reads.
+ * Reads a native `getMany` result: either its length in the shared value buffer or a new buffer.
+ * It starts with one int32 value length per key (-1 for a missing key), then the values back to
+ * back. With a `store`, each value is decoded; otherwise it is a view of the new buffer, which stays
+ * valid after later reads.
  */
-function unpackValues(packed: Buffer, count: number): (Buffer | undefined)[] {
-	const header = count * 4;
-	const lengths =
-		packed.byteOffset % 4 === 0
+function readValues(store: Store | undefined, result: Buffer | number, count: number): any[] {
+	const shared = typeof result === 'number';
+	const packed = shared ? VALUE_BUFFER : (result as BufferWithDataView);
+	const lengths = shared
+		? VALUE_BUFFER_INT32
+		: packed.byteOffset % 4 === 0
 			? new Int32Array(packed.buffer, packed.byteOffset, count)
-			: new Int32Array(packed.buffer.slice(packed.byteOffset, packed.byteOffset + header));
-	const values: (Buffer | undefined)[] = [];
-	let offset = header;
+			: new Int32Array(packed.buffer.slice(packed.byteOffset, packed.byteOffset + count * 4));
+	// Every read that returns the shared value buffer sets its `end`, so a decoder that reads the
+	// database while values are still undecoded in that buffer changes this mark.
+	const mark = shared ? (VALUE_BUFFER.end = --sharedBatchMark) : 0;
+	const decoder = store?.decoder;
+	// msgpackr honors `start`, so its values need no view; other decoders may not.
+	const decodeInPlace =
+		store?.decoderCopies === true && (decoder?.constructor as unknown) === MsgpackEncoder;
+	const values: any[] = [];
+	let offset = count * 4;
 	for (let i = 0; i < count; i++) {
 		const length = lengths[i];
 		if (length < 0) {
 			values.push(undefined);
-		} else {
-			values.push(packed.subarray(offset, offset + length));
-			offset += length;
+			continue;
 		}
+		const end = offset + length;
+		if (decodeInPlace && length > 0) {
+			values.push(decoder!.decode!(packed, { start: offset, end }));
+		} else {
+			const value = packed.subarray(offset, end);
+			// A decoder that keeps a view gets a copy, so it cannot retain the batch or the shared
+			// buffer.
+			values.push(
+				decoder
+					? store!.decodeValue(
+							(store!.decoderCopies ? value : Buffer.from(value)) as BufferWithDataView
+						)
+					: value
+			);
+		}
+		if (shared && VALUE_BUFFER.end !== mark) {
+			throw new Error('A value decoder read the database while getMany() was decoding a batch');
+		}
+		offset = end;
 	}
 	return values;
 }
@@ -1615,11 +1664,19 @@ function unpackValues(packed: Buffer, count: number): (Buffer | undefined)[] {
  * callback's scope cannot retain the `NativeTransaction` that queued the read: like `get()`, a
  * pending read must not keep an otherwise dropped transaction from being collected and closed.
  */
-function resolveUnpacked(
-	resolve: (values: (Buffer | undefined)[]) => void,
-	count: number
+function resolveValues(
+	store: Store | undefined,
+	count: number,
+	resolve: (values: any[]) => void,
+	reject: (error: unknown) => void
 ): (packed: Buffer) => void {
-	return (packed) => resolve(unpackValues(packed, count));
+	return (packed) => {
+		try {
+			resolve(readValues(store, packed, count));
+		} catch (error) {
+			reject(error);
+		}
+	};
 }
 
 /**

@@ -390,18 +390,11 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 			// get() can decode from the shared value buffer instead of a fresh one.
 			return when(this.get(keys[0], options as GetOptions & T), (value) => [value]);
 		}
-		const store = this.store;
-		if (!store.isOpen()) {
+		if (!this.store.isOpen()) {
 			return Promise.reject(new Error('Database not open'));
 		}
-		// No closure in this method may reference `this` or `options` (which can hold the
-		// transaction): closures share one scope, so the decode callback would keep a dropped
-		// transaction's wrapper reachable until a cold read settles, blocking its orphan cleanup.
 		try {
-			const values = store.getMany(this._context, keys, options as DBITransactional);
-			return values instanceof Promise
-				? values.then((resolved) => decodeMany(store, resolved))
-				: decodeMany(store, values);
+			return this.store.getMany(this._context, keys, options as DBITransactional, true);
 		} catch (error) {
 			return Promise.reject(error);
 		}
@@ -436,7 +429,10 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		if (keys.length === 1) {
 			return [this.getSync(keys[0], options as GetOptions & T)];
 		}
-		return decodeMany(this.store, this.getManyBinarySync(keys, options));
+		if (!this.store.isOpen()) {
+			throw new Error('Database not open');
+		}
+		return this.store.getManySync(this._context, keys, options as DBITransactional, true);
 	}
 
 	/**
@@ -585,20 +581,4 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 	useLog(name: string | number): TransactionLog {
 		return this.store.useLog(this._context, name);
 	}
-}
-
-function decodeMany(store: Store, values: (Buffer | undefined)[]): any[] {
-	if (store.encoding === 'binary' || !store.decoder) {
-		return values;
-	}
-	for (let i = 0; i < values.length; i++) {
-		const value = values[i];
-		if (value !== undefined) {
-			// A decoder retaining a view must not keep the other values in the batch alive.
-			values[i] = store.decodeValue(
-				(store.decoderCopies ? value : Buffer.from(value)) as BufferWithDataView
-			);
-		}
-	}
-	return values;
 }

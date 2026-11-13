@@ -15,6 +15,7 @@
 namespace rocksdb_js {
 
 struct ColumnFamilyDescriptor;
+struct DBHandle;
 
 /**
  * One `MultiGet` call's keys and results. The sync path points `keys` into the caller's JS buffer;
@@ -63,11 +64,19 @@ bool readMultiGetKeys(
 );
 
 /**
- * Returns a sync `MultiGet` result as a new buffer in `MultiGetBatch::writeResult()`'s layout, or
+ * Returns a sync `MultiGet` result in `MultiGetBatch::writeResult()`'s layout, or
  * `NOT_IN_MEMORY_CACHE_FLAG` if any key could not be read from memory (a `kBlockCacheTier` read).
+ * Like `getSync()`, a result that fits is written into `handle`'s default value buffer and its
+ * length returned, unless `flags` has `ALWAYS_CREATE_NEW_BUFFER_FLAG`; otherwise it is a new buffer.
  * Throws if any key's read failed.
  */
-napi_value multiGetSyncResult(napi_env env, const char* errorMsg, const MultiGetBatch& batch);
+napi_value multiGetSyncResult(
+	napi_env env,
+	const char* errorMsg,
+	const MultiGetBatch& batch,
+	int32_t flags,
+	const DBHandle& handle
+);
 
 /**
  * State for the async `getMany()` work, for both `DBHandle` and `TransactionHandle`.

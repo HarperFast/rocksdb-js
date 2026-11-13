@@ -1587,7 +1587,7 @@ napi_value Transaction::GetManySync(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	return multiGetSyncResult(env, "Get many failed", batch);
+	return multiGetSyncResult(env, "Get many failed", batch, flags, *txnDbHandle);
 }
 
 /**

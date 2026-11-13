@@ -136,7 +136,13 @@ bool readMultiGetKeys(
 	return true;
 }
 
-napi_value multiGetSyncResult(napi_env env, const char* errorMsg, const MultiGetBatch& batch) {
+napi_value multiGetSyncResult(
+	napi_env env,
+	const char* errorMsg,
+	const MultiGetBatch& batch,
+	int32_t flags,
+	const DBHandle& handle
+) {
 	napi_value result;
 	size_t resultSize = 0;
 	const size_t failed = batch.findFailure(resultSize);
@@ -152,6 +158,12 @@ napi_value multiGetSyncResult(napi_env env, const char* errorMsg, const MultiGet
 	if (resultSize > MAX_RESULT_SIZE) {
 		::napi_throw_range_error(env, nullptr, "Get many failed: values exceed 2 GiB");
 		return nullptr;
+	}
+	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && handle.defaultValueBufferPtr != nullptr &&
+			resultSize <= handle.defaultValueBufferLength) {
+		batch.writeResult(handle.defaultValueBufferPtr);
+		NAPI_STATUS_THROWS(::napi_create_int32(env, static_cast<int32_t>(resultSize), &result));
+		return result;
 	}
 	void* data = nullptr;
 	NAPI_STATUS_THROWS(::napi_create_buffer(env, resultSize, &data, &result));
@@ -236,7 +248,7 @@ napi_value Database::GetManySync(napi_env env, napi_callback_info info) {
 		);
 	}
 
-	return multiGetSyncResult(env, "Get many failed", batch);
+	return multiGetSyncResult(env, "Get many failed", batch, flags, **dbHandle);
 }
 
 /**

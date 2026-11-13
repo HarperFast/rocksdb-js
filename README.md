@@ -980,11 +980,14 @@ its own uncommitted writes, so the result is exactly what calling `get()` for ea
 [Verification Table](#verification-table).
 
 Batching saves the per-key binding call (and, on a cache miss, the per-key async work) and lets
-RocksDB share work across the lookups. It also allocates a result buffer and a view per found key,
-where decoded `get()` can reuse the shared value buffer. Small batches, especially 2–4 cached keys,
-may cost more than individual reads; a batch of one takes the single-key path. Benchmark your
-workload with `benchmark/multi-get.mts` before choosing a batch size. See
-[batch-read measurements and cost accounting](docs/performance/multi-get.md).
+RocksDB share work across the lookups. Like `get()`, a cached batch whose values fit the 64 KiB
+shared value buffer is decoded from it, without allocating. In our measurements a batch of two cost
+about the same per key as `getSync()`, and larger batches cost less; a batch of one takes the
+single-key path. See [batch-read measurements and cost accounting](docs/performance/multi-get.md),
+and benchmark your own workload with `benchmark/multi-get.mts`.
+
+A custom value decoder must not read the database while it decodes: the rest of the batch is still
+in the shared buffer that read would overwrite, so `getMany()` throws if one does.
 
 ### `db.getManySync(keys: Key[], options?: { transaction?: Transaction }): any[]`
 

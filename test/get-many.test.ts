@@ -1,4 +1,5 @@
 import { RocksDatabase } from '../src/database.ts';
+import { VALUE_BUFFER } from '../src/store.ts';
 import type { Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawnSync } from 'node:child_process';
@@ -126,6 +127,7 @@ describe('getMany()', () => {
 			},
 			async ({ db }) => {
 				await db.put('small', Buffer.alloc(16, 1));
+				await db.put('other', Buffer.alloc(16, 3));
 				await db.put('large', Buffer.alloc(100_000, 2));
 				await db.flush();
 				db.close();
@@ -141,8 +143,61 @@ describe('getMany()', () => {
 					expect(values[0].buffer).not.toBe(values[1].buffer);
 					expect(values[0].buffer.byteLength).toBeLessThan(100_000);
 				}
+				// This batch fits the shared value buffer, which the next read overwrites.
+				const shared = db.getManySync(['small', 'other']);
+				db.getSync('other');
+				expect(shared).toEqual([Buffer.from([1]), Buffer.from([3])]);
 			}
 		));
+
+	it('decodes a batch that fits from the shared value buffer, as get() does', () =>
+		dbRunner(async ({ db }) => {
+			await db.put('a', 'first');
+			await db.put('b', 'second');
+			await db.put('large', 'v'.repeat(70_000));
+			const decoder = db.store.decoder!;
+			const sources: ArrayBufferLike[] = [];
+			db.store.decoder = {
+				decode(buffer, options) {
+					sources.push(buffer.buffer);
+					return decoder.decode!(buffer, options);
+				},
+			};
+			try {
+				expect(db.getManySync(['a', 'b'])).toEqual(['first', 'second']);
+				expect(sources).toEqual([VALUE_BUFFER.buffer, VALUE_BUFFER.buffer]);
+				sources.length = 0;
+				expect(db.getManySync(['a', 'large'])).toEqual(['first', 'v'.repeat(70_000)]);
+				expect(sources[0]).not.toBe(VALUE_BUFFER.buffer);
+			} finally {
+				db.store.decoder = decoder;
+			}
+		}));
+
+	it('rejects a batch whose decoder reads the database before the batch is decoded', () =>
+		dbRunner(async ({ db }) => {
+			await db.put('a', 'first');
+			await db.put('b', 'second');
+			const decoder = db.store.decoder!;
+			let reading = false;
+			db.store.decoder = {
+				decode(buffer, options) {
+					const value = decoder.decode!(buffer, options);
+					if (!reading) {
+						reading = true;
+						db.getSync('b');
+						reading = false;
+					}
+					return value;
+				},
+			};
+			try {
+				expect(() => db.getManySync(['a', 'b'])).toThrow('decoder read the database');
+				await expect(db.getMany(['a', 'b'])).rejects.toThrow('decoder read the database');
+			} finally {
+				db.store.decoder = decoder;
+			}
+		}));
 
 	it('returns decoded values in key order, with undefined for missing and duplicate keys', () =>
 		dbRunner(async ({ db }) => {
@@ -209,6 +264,18 @@ describe('getMany()', () => {
 			expect(db.store.decodeValue(sync[2] as any)).toBe('second');
 			expect(db.store.decodeValue(async[0] as any)).toBe('second');
 			expect(db.store.decodeValue(async[1] as any)).toBe('first');
+		}));
+
+	it('returns values of a binary-encoded database that stay valid after later reads', () =>
+		dbRunner({ dbOptions: [{ encoding: 'binary' }] }, async ({ db }) => {
+			await db.put('a', Buffer.from('first'));
+			await db.put('b', Buffer.from('second'));
+			const sync = db.getManySync(['a', 'b']);
+			const cached = await db.getMany(['b', 'a']);
+			db.getSync('b');
+			db.getManySync(['b', 'a']);
+			expect(sync).toEqual([Buffer.from('first'), Buffer.from('second')]);
+			expect(cached).toEqual([Buffer.from('second'), Buffer.from('first')]);
 		}));
 
 	it('reads large batches, keys and values', () =>
