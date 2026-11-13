@@ -44,6 +44,6 @@ describe('runChild()', () => {
 	it('rejects when the command cannot be spawned', async () => {
 		await expect(
 			runChild(join(__dirname, 'fixtures', 'does-not-exist'), [], { deadlineMs: 20_000 })
-		).rejects.toThrow(/ENOENT/);
+		).rejects.toMatchObject({ code: 'ENOENT' });
 	});
 });

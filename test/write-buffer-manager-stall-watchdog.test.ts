@@ -87,7 +87,7 @@ describe('inTempDir()', () => {
 					dir = dirname(dbPath);
 					return runChild(join(dir, 'does-not-exist'), [], { deadlineMs: 100 });
 				})
-			).rejects.toThrow(/ENOENT/);
+			).rejects.toMatchObject({ code: 'ENOENT' });
 			expect(existsSync(dir!)).toBe(keepFiles);
 		} finally {
 			vi.unstubAllEnvs();
