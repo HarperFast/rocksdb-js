@@ -1260,7 +1260,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     defense in depth only: the claim protocol below applies under both policies and is the only
     protection for pessimistic commits. The rule
     now (`core/column_family_lifetime.h`, GoogleTest-covered): a commit **claims** every family
-    its batch names once, at admission in `executeLogWork`/`CommitSync` **before** the
+    its batch names once, at admission in `executeLogWork` (both commit paths) **before** the
     transaction-log write (`ColumnFamilyCommitClaim`, RAII so a log-write failure, N-API/queue
     failure, cancellation or teardown releases it), and releases right after `txn->Commit()`
     returns; a drop **retires** the generation under `columnsMutex` (`DBDescriptor::retireColumnFamily`:
