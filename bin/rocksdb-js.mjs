@@ -1128,16 +1128,15 @@ async function emitResult(def, result) {
 		if (result?.[Symbol.asyncIterator]) {
 			let first = true;
 			stdout.write('[');
-			try {
-				for await (const item of result) {
-					if (!stdout.write(`${first ? '' : ','}\n${JSON.stringify(item, toJSON)}`)) {
-						await once(stdout, 'drain');
-					}
-					first = false;
+			for await (const item of result) {
+				if (!stdout.write(`${first ? '' : ','}\n${JSON.stringify(item, toJSON)}`)) {
+					await once(stdout, 'drain');
 				}
-			} finally {
-				stdout.write(first ? ']\n' : '\n]\n');
+				first = false;
 			}
+			// Closed only on success: a scan that fails partway leaves the array open, so a
+			// JSON consumer fails instead of accepting a truncated result as complete.
+			stdout.write(first ? ']\n' : '\n]\n');
 		} else {
 			writeJSON(stdout, result ?? null);
 		}
@@ -1233,10 +1232,13 @@ async function openOrExplain(ifMissing) {
 		await openDatabases(argv.column, ifMissing);
 	} catch (error) {
 		if (error?.code !== 'ERR_DATABASE_LOCKED') throw error;
-		throw new CLIError(
-			interactive
-				? `RocksDB is already open by another process; rerun with --readonly:\n  rocksdb-js --readonly ${dbPath}`
-				: 'RocksDB is already open by another process'
+		throw Object.assign(
+			new CLIError(
+				interactive
+					? `RocksDB is already open by another process; rerun with --readonly:\n  rocksdb-js --readonly ${dbPath}`
+					: 'RocksDB is already open by another process'
+			),
+			{ code: error.code }
 		);
 	}
 }

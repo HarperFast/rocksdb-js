@@ -51,8 +51,6 @@ struct PersistedCompression {
 	rocksdb::CompressionOptions compressionOpts;
 };
 
-// Applies a compression algorithm (and optional level) to both the SST block
-// compression and the blob-file compression of the given column family options.
 // RocksDB words lock contention differently per platform, so callers get a
 // stable code instead of having to match its message.
 static void throwIfDatabaseLocked(const rocksdb::Status& status) {
@@ -64,6 +62,8 @@ static void throwIfDatabaseLocked(const rocksdb::Status& status) {
 	}
 }
 
+// Applies a compression algorithm (and optional level) to both the SST block
+// compression and the blob-file compression of the given column family options.
 static void applyCompression(
 	rocksdb::ColumnFamilyOptions& cfOptions,
 	rocksdb::CompressionType compression,

@@ -132,6 +132,12 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				expect(result.code).toBe(1);
 				expect(result.stderr).toContain('RocksDB is already open by another process');
 
+				result = await cli([dbPath, 'put', 'd', '4', '--yes', '--json']);
+				expect(JSON.parse(result.stderr)).toEqual({
+					error: 'RocksDB is already open by another process',
+					code: 'ERR_DATABASE_LOCKED',
+				});
+
 				const backupDir = tempDBPath();
 				result = await cli([dbPath, 'backups', backupDir, 'backup']);
 				expect(result.code).toBe(1);
