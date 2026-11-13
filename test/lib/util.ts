@@ -1,4 +1,4 @@
-import { RocksDatabase, type RocksDatabaseOptions } from '../../src/index.ts';
+import { getRegistryStatus, RocksDatabase, type RocksDatabaseOptions } from '../../src/index.ts';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, rmSync } from 'node:fs';
@@ -103,6 +103,17 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
 			// C++ destructors may be deferred past the first gc cycle on some Node versions)
 			globalThis.gc();
 			await delay(50);
+		}
+
+		// A database still registered here is a handle the test left open, such as a `use()` view.
+		// Removing its directory would fail its eventual close-time flush, so keep it and fail.
+		for (const entry of getRegistryStatus()) {
+			if (dbPaths.delete(entry.path) && !closeFailed) {
+				closeFailed = true;
+				closeError = new Error(
+					`Database still registered after the test closed its databases: ${JSON.stringify(entry)}`
+				);
+			}
 		}
 
 		if (!process.env.KEEP_FILES) {

@@ -54,6 +54,7 @@ describe('Column Family Views (use)', () => {
 
 			// The view auto-created the column family.
 			expect(db.columns).toEqual(['default', 'events']);
+			events.close();
 		}));
 
 	it('should cache views by name', () =>
@@ -61,6 +62,7 @@ describe('Column Family Views (use)', () => {
 			const a = db.use('events');
 			const b = db.use('events');
 			expect(a).toBe(b);
+			a.close();
 		}));
 
 	it('should return this for the database own column family', () =>
@@ -129,6 +131,7 @@ describe('Column Family Views (use)', () => {
 			expect(events.store.encoder).not.toBe(db.store.encoder);
 			expect(events.store.encoder?.name).toBe('events');
 			expect(db.store.encoder?.name).toBe('default');
+			events.close();
 		}));
 
 	it('should reject deriving a view from a pre-built encoder instance', () => {
@@ -242,6 +245,7 @@ describe('Column Family Views (use)', () => {
 			expect(reopened).not.toBe(events);
 			expect(reopened.isOpen()).toBe(true);
 			expect(reopened.get('k')).toBe('v');
+			reopened.close();
 		}));
 
 	it('should reject an invalid column family name', () =>
@@ -258,6 +262,7 @@ describe('Column Family Views (use)', () => {
 			expect(events.isOpen()).toBe(true);
 			await events.put('foo', 'bar');
 			expect(events.get('foo')).toBe('bar');
+			events.close();
 		}));
 
 	it('should yield a valid view when the parent is discarded', async () => {
@@ -285,5 +290,6 @@ describe('Column Family Views (use)', () => {
 			});
 			expect(db.get('t')).toBe('default-txn');
 			expect(events.get('t')).toBe('events-txn');
+			events.close();
 		}));
 });
