@@ -1312,6 +1312,13 @@ async function main() {
 		return;
 	}
 
+	// An empty name must not fall through to the default column family.
+	if (argv.column !== undefined && !argv.column.trim()) {
+		reportError(new CLIError('Usage: --column needs a column family name'));
+		process.exitCode = 2;
+		return;
+	}
+
 	const oneShotOptions = ['column', 'json', 'yes'].filter((name) => argv[name] !== undefined);
 	if (interactive && oneShotOptions.length > 0) {
 		const flags = oneShotOptions.map((name) => `--${name}`).join(', ');

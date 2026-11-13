@@ -286,6 +286,18 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect((await cli([dbPath, '-c', 'users', 'get', 'a'])).stdout).toBe('users-a\n');
 			expect((await cli([dbPath, 'get', 'a'])).stdout).toBe('default-a\n');
 
+			for (const args of [
+				['-c', '', 'clear', '--yes'],
+				['--column=', 'clear', '--yes'],
+				['--column', ' ', 'clear', '--yes'],
+				['-c', ''],
+			]) {
+				const empty = await cli([dbPath, ...args]);
+				expect(empty.code).toBe(2);
+				expect(empty.stderr).toContain('--column needs a column family name');
+			}
+			expect((await cli([dbPath, 'get', 'a'])).stdout).toBe('default-a\n');
+
 			const result = await cli([dbPath, '--column', 'nope', 'count']);
 			expect(result.code).toBe(1);
 			expect(result.stderr).toContain('Column family "nope" does not exist');
