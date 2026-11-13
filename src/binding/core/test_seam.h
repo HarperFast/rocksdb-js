@@ -125,8 +125,9 @@ inline std::atomic<bool>& closeFailureAfterCancelFlag() {
 	return pending;
 }
 
-// Delays DBHandle::open() after the registry has returned. A handle must
-// already be adopted and attached while this delay is observable.
+// Delays DBRegistry::OpenDB() after it releases databasesMutex. A handle must
+// already be adopted and attached, and OpenDB() must hold no reference it took
+// under the lock, while this delay is observable.
 inline std::atomic<int>& openAttachDelayMsFlag() {
 	static std::atomic<int> delayMs{0};
 	return delayMs;

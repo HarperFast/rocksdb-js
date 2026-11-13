@@ -326,8 +326,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `initializeTestSeams()` — it is read on whichever thread drives teardown, so it must be set in
   the environment that starts the process
 - `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` - Test-only: delay after `DBRegistry::OpenDB()` has atomically
-  adopted and attached a handle, but before the native open returns to JavaScript (proves a forced
-  destroy cannot claim the descriptor during the former return/adopt/attach gap). Snapshotted in
+  adopted and attached a handle and released `databasesMutex`, but before it returns (proves a forced
+  destroy cannot claim the descriptor during the former return/adopt/attach gap, and that nothing
+  `OpenDB()` took under the lock outlives it; see invariant 28). Snapshotted in
   `initializeTestSeams()` so every open avoids a `getenv()` call
 - `ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS` / `ROCKSDB_JS_COUNT_DELAY_MS` - Test-only: per-row delays in
   `DBIterator::Next()` and `DBIteratorHandle::countRemaining()`. Both are read **once** in
@@ -1492,9 +1493,16 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `DBHandleParams` and attaching in `Database::Open()` left a gap where teardown could reset
     `descriptor->db` while the invisible handle retained a `ColumnFamilyHandle`; destroying that
     column handle after its DB is a native use-after-free. No handle shared-pointer field may be read
-    after the registry lock drops, because a foreign sweep may immediately reset it. Covered by
-    `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` widens the point
-    after atomic publication so the fixture can assert the exact closables count before destroy.
+    after the registry lock drops, because a foreign sweep may immediately reset it. The same holds for
+    `OpenDB()`'s own locals: every `ColumnFamilyDescriptor` reference it takes under the lock (the
+    `columns` copy) is declared after the lock so it is released first. Declared before it, the copy
+    was the last reference once a foreign close freed the database, and destroying it locked the freed
+    `DBImpl` mutex (`pthread lock: Invalid argument` on macOS, rocksdb-js#1066). Covered by
+    `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` runs after the lock
+    is released and before `OpenDB()` returns, so the fixture can assert the exact closables count
+    before destroy and its destroy lands in that window. Reverting the declaration order aborts the
+    fixture on macOS; glibc usually locks the freed mutex without faulting, so Linux CI alone would
+    not catch it.
 
 29. **A user shared buffer lives as long as its column family is open, never as long as some view
     of it**: `getUserSharedBuffer` used to erase the map entry once the last external `ArrayBuffer`
