@@ -2,6 +2,9 @@ import { spawn } from 'node:child_process';
 
 type ChildOutput = { stdout: string; stderr: string };
 
+// Only this rejection leaves the child potentially holding resources open.
+export class ChildCloseTimeoutError extends Error {}
+
 export type ChildResult = ChildOutput & {
 	code: number | null;
 	pid: number;
@@ -59,8 +62,8 @@ export function runChild(
 			child.kill('SIGKILL');
 			closeTimer = setTimeout(() => {
 				settle(
-					new Error(
-						`Child ${child.pid} did not close within ${closeTimeoutMs}ms of SIGKILL\nstderr:\n${output.stderr}`,
+					new ChildCloseTimeoutError(
+						`Child ${child.pid} did not close within ${closeTimeoutMs}ms of SIGKILL\ntimedOut=${timedOut}\nstdout:\n${output.stdout}\nstderr:\n${output.stderr}`,
 						{ cause: childError }
 					)
 				);
@@ -90,7 +93,7 @@ export function runChild(
 			}
 		});
 		child.on('close', (code, signal) => {
-			settle(undefined, { ...output, code, pid: child.pid!, signal, timedOut });
+			settle(childError, { ...output, code, pid: child.pid!, signal, timedOut });
 		});
 	});
 }

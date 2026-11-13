@@ -1,9 +1,9 @@
-import { type ChildResult, runChild } from './lib/child-process.ts';
+import { ChildCloseTimeoutError, type ChildResult, runChild } from './lib/child-process.ts';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { dirname, join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 
 // A real stall blocks the writer, so a parent process owns the deadline and kills the child.
 
@@ -40,19 +40,61 @@ function runExitChild(dbPath: string, listenerOrder: 'before' | 'after'): Promis
 	});
 }
 
-// Removes the directory only after the child has closed: if runChild rejects,
-// the child may still hold it, and a cleanup error would hide the rejection.
+// A close timeout leaves the child potentially holding the directory open.
 async function inTempDir(
 	prefix: string,
 	run: (dbPath: string) => Promise<ChildResult>
 ): Promise<ChildResult> {
 	const dir = mkdtempSync(join(tmpdir(), prefix));
-	const result = await run(join(dir, 'db'));
-	if (!process.env.KEEP_FILES) {
-		rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+	let childMayBeRunning = false;
+	try {
+		return await run(join(dir, 'db'));
+	} catch (error) {
+		childMayBeRunning = error instanceof ChildCloseTimeoutError;
+		throw error;
+	} finally {
+		if (!childMayBeRunning && !process.env.KEEP_FILES) {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+		}
 	}
-	return result;
 }
+
+describe('inTempDir()', () => {
+	it('retains the directory when the child may still be running', async () => {
+		let dir: string | undefined;
+		const error = new ChildCloseTimeoutError('child did not close');
+		vi.stubEnv('KEEP_FILES', '');
+		try {
+			await expect(
+				inTempDir('rocksdb-wbm-close-error-', async (dbPath) => {
+					dir = dirname(dbPath);
+					throw error;
+				})
+			).rejects.toBe(error);
+			expect(existsSync(dir!)).toBe(true);
+		} finally {
+			vi.unstubAllEnvs();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it.each([false, true])('cleans up a failed spawn unless KEEP_FILES=%s', async (keepFiles) => {
+		let dir: string | undefined;
+		vi.stubEnv('KEEP_FILES', keepFiles ? '1' : '');
+		try {
+			await expect(
+				inTempDir('rocksdb-wbm-spawn-error-', (dbPath) => {
+					dir = dirname(dbPath);
+					return runChild(join(dir, 'does-not-exist'), [], { deadlineMs: 100 });
+				})
+			).rejects.toThrow(/ENOENT/);
+			expect(existsSync(dir!)).toBe(keepFiles);
+		} finally {
+			vi.unstubAllEnvs();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 describe('WriteBufferManager stall watchdog', () => {
 	it.each(['before', 'after'] as const)(
