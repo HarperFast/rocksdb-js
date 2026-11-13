@@ -5,9 +5,11 @@ no longer allocates per batch. With that, `getManySync()` of two cached keys cos
 about the same per key as `getSync()` (within ±2%), and batches of 4–64 cost 8–22%
 less. Before the change, two cached keys cost 9–13% more than two `getSync()` calls.
 
-One case is still slower: a cold `getMany()` in a transaction, with 6–8 keys, cost
-10–12% more per key than `Promise.all()` over `get()`. Non-transactional cold
-batches of that size are at parity. See [cold transaction batches](#cold-transaction-batches).
+Two cases are still slower. A custom value decoder decodes through one view per
+value, so two cached keys cost 6% more per key than `getSync()`; four cost 7% less.
+A cold `getMany()` in a transaction, with 6–8 keys, cost 10–12% more per key than
+`Promise.all()` over `get()`; non-transactional cold batches of that size are at
+parity. See [cold transaction batches](#cold-transaction-batches).
 
 ## Work per batch
 
@@ -59,47 +61,54 @@ single-key arm. "Before" is the batch path without the shared buffer: a packed
 buffer per batch, decoded through one view per value. It was measured in the same
 run, through `getManyBinary*()` plus `decodeValue()`, which is what the old decoded
 path did. A one-key batch takes the single-key path in both versions. The binary
-row uses `encoding: 'binary'`, whose batch path did not change. The transaction rows
+row uses `encoding: 'binary'`, whose batch path did not change. The custom-decoder row
+wraps the msgpack decoder in a plain object, so values take the view path a decoder
+other than the built-in one gets; it was a separate run. The transaction rows
 use one optimistic transaction with snapshots enabled and no staged writes. Hot async
 timings include `await` and `Promise.all` overhead.
 
-| Mode                    | Keys | Single key |      Before |       After |
-| ----------------------- | ---: | ---------: | ----------: | ----------: |
-| Hot, sync, decoded      |    2 |       1680 | 1891 (+13%) |  1694 (+1%) |
-|                         |    4 |       1653 |  1645 (−0%) |  1517 (−8%) |
-|                         |    8 |       1704 | 1527 (−10%) | 1407 (−17%) |
-|                         |   16 |       1660 | 1444 (−13%) | 1391 (−16%) |
-|                         |   64 |       1639 | 1410 (−14%) | 1349 (−18%) |
-| Hot, sync, binary       |    2 |       1416 |  1386 (−2%) |  1364 (−4%) |
-|                         |    4 |       1381 | 1140 (−17%) | 1153 (−16%) |
-|                         |    8 |       1361 | 1004 (−26%) | 1013 (−26%) |
-|                         |   16 |       1360 | 1025 (−25%) | 1045 (−23%) |
-|                         |   64 |       1419 |  959 (−32%) |  960 (−32%) |
-| Cold, sync, decoded     |    2 |       2673 | 2949 (+10%) |  2678 (+0%) |
-|                         |    4 |       2659 |  2541 (−4%) | 2346 (−12%) |
-|                         |    8 |       2660 | 2330 (−12%) | 2229 (−16%) |
-|                         |   16 |       2658 | 2215 (−17%) | 2100 (−21%) |
-|                         |   64 |       2639 | 2157 (−18%) | 2062 (−22%) |
-| Hot, async, decoded     |    2 |       1940 |  2045 (+5%) |  1841 (−5%) |
-|                         |    4 |       1926 | 1739 (−10%) | 1622 (−16%) |
-|                         |    8 |       1959 | 1585 (−19%) | 1508 (−23%) |
-|                         |   16 |       1897 | 1538 (−19%) | 1441 (−24%) |
-|                         |   64 |       1900 | 1491 (−22%) | 1391 (−27%) |
-| Cold, async, decoded    |    2 |       8785 | 7663 (−13%) | 7600 (−13%) |
-|                         |    4 |       6941 | 5364 (−23%) | 5427 (−22%) |
-|                         |    8 |       4239 |  4271 (+1%) |  4223 (−0%) |
-|                         |   16 |       4080 |  3718 (−9%) | 3532 (−13%) |
-|                         |   64 |       3877 | 2912 (−25%) | 2834 (−27%) |
-| Hot transaction, sync   |    2 |       1835 |  2005 (+9%) |  1798 (−2%) |
-|                         |    4 |       1834 |  1712 (−7%) | 1571 (−14%) |
-|                         |    8 |       1771 | 1592 (−10%) | 1480 (−16%) |
-|                         |   16 |       1775 | 1533 (−14%) | 1411 (−21%) |
-|                         |   64 |       1772 | 1460 (−18%) | 1420 (−20%) |
-| Cold transaction, async |    2 |       9004 |  8853 (−2%) |  8678 (−4%) |
-|                         |    4 |       6902 | 6099 (−12%) | 6084 (−12%) |
-|                         |    8 |       4260 | 4714 (+11%) | 4709 (+11%) |
-|                         |   16 |       4181 |  4143 (−1%) |  4104 (−2%) |
-|                         |   64 |       3995 | 3415 (−15%) | 3357 (−16%) |
+| Mode                      | Keys | Single key |      Before |       After |
+| ------------------------- | ---: | ---------: | ----------: | ----------: |
+| Hot, sync, decoded        |    2 |       1680 | 1891 (+13%) |  1694 (+1%) |
+|                           |    4 |       1653 |  1645 (−0%) |  1517 (−8%) |
+|                           |    8 |       1704 | 1527 (−10%) | 1407 (−17%) |
+|                           |   16 |       1660 | 1444 (−13%) | 1391 (−16%) |
+|                           |   64 |       1639 | 1410 (−14%) | 1349 (−18%) |
+| Hot, sync, custom decoder |    2 |       1711 | 1928 (+13%) |  1818 (+6%) |
+|                           |    4 |       1704 |  1672 (−2%) |  1577 (−7%) |
+|                           |    8 |       1687 |  1562 (−7%) | 1511 (−10%) |
+|                           |   16 |       1686 | 1468 (−13%) | 1430 (−15%) |
+|                           |   64 |       1686 | 1424 (−16%) | 1390 (−18%) |
+| Hot, sync, binary         |    2 |       1416 |  1386 (−2%) |  1364 (−4%) |
+|                           |    4 |       1381 | 1140 (−17%) | 1153 (−16%) |
+|                           |    8 |       1361 | 1004 (−26%) | 1013 (−26%) |
+|                           |   16 |       1360 | 1025 (−25%) | 1045 (−23%) |
+|                           |   64 |       1419 |  959 (−32%) |  960 (−32%) |
+| Cold, sync, decoded       |    2 |       2673 | 2949 (+10%) |  2678 (+0%) |
+|                           |    4 |       2659 |  2541 (−4%) | 2346 (−12%) |
+|                           |    8 |       2660 | 2330 (−12%) | 2229 (−16%) |
+|                           |   16 |       2658 | 2215 (−17%) | 2100 (−21%) |
+|                           |   64 |       2639 | 2157 (−18%) | 2062 (−22%) |
+| Hot, async, decoded       |    2 |       1940 |  2045 (+5%) |  1841 (−5%) |
+|                           |    4 |       1926 | 1739 (−10%) | 1622 (−16%) |
+|                           |    8 |       1959 | 1585 (−19%) | 1508 (−23%) |
+|                           |   16 |       1897 | 1538 (−19%) | 1441 (−24%) |
+|                           |   64 |       1900 | 1491 (−22%) | 1391 (−27%) |
+| Cold, async, decoded      |    2 |       8785 | 7663 (−13%) | 7600 (−13%) |
+|                           |    4 |       6941 | 5364 (−23%) | 5427 (−22%) |
+|                           |    8 |       4239 |  4271 (+1%) |  4223 (−0%) |
+|                           |   16 |       4080 |  3718 (−9%) | 3532 (−13%) |
+|                           |   64 |       3877 | 2912 (−25%) | 2834 (−27%) |
+| Hot transaction, sync     |    2 |       1835 |  2005 (+9%) |  1798 (−2%) |
+|                           |    4 |       1834 |  1712 (−7%) | 1571 (−14%) |
+|                           |    8 |       1771 | 1592 (−10%) | 1480 (−16%) |
+|                           |   16 |       1775 | 1533 (−14%) | 1411 (−21%) |
+|                           |   64 |       1772 | 1460 (−18%) | 1420 (−20%) |
+| Cold transaction, async   |    2 |       9004 |  8853 (−2%) |  8678 (−4%) |
+|                           |    4 |       6902 | 6099 (−12%) | 6084 (−12%) |
+|                           |    8 |       4260 | 4714 (+11%) | 4709 (+11%) |
+|                           |   16 |       4181 |  4143 (−1%) |  4104 (−2%) |
+|                           |   64 |       3995 | 3415 (−15%) | 3357 (−16%) |
 
 ### Cold transaction batches
 
