@@ -19,8 +19,12 @@ class DBSettings final {
 private:
 	DBSettings(); // private constructor
 
+	// Guarded by blockCacheMutex: config() resizes the cache while a first open on another thread
+	// may create it. A leaf lock, taken under writeBufferManagerMutex by config() and
+	// getWriteBufferManager().
 	size_t blockCacheSize;
 	std::shared_ptr<rocksdb::Cache> blockCache;
+	std::mutex blockCacheMutex;
 	// Atomic because config() and open() can run on different worker_threads.
 	std::atomic<uint32_t> occLockBucketCount;
 	std::atomic<bool> occValidateSerial;
@@ -98,10 +102,6 @@ public:
 	static DBSettings& getInstance() {
 		static DBSettings instance;
 		return instance;
-	}
-
-	size_t getBlockCacheSize() const {
-		return blockCacheSize;
 	}
 
 	std::shared_ptr<rocksdb::Cache> getBlockCache();

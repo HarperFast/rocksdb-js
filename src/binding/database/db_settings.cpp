@@ -34,6 +34,28 @@ uint64_t generateSeed() {
 }
 
 /**
+ * Throws `error`, extended with the reason when restoring `previous` fails too: the live manager then
+ * runs a policy the settings do not record, which the caller must not mistake for "nothing changed".
+ * Caller holds `writeBufferManagerMutex`.
+ */
+void throwAfterRestoringFlushPolicy(
+	napi_env env,
+	rocksdb::WriteBufferManager& manager,
+	rocksdb::WriteBufferFlushPolicy previous,
+	std::string error
+) {
+	try {
+		manager.SetFlushPolicy(previous);
+	} catch (const std::exception& e) {
+		error += "; restoring the previous writeBufferManagerFlushPolicy also failed: ";
+		error += e.what();
+	} catch (...) {
+		error += "; restoring the previous writeBufferManagerFlushPolicy also failed";
+	}
+	::napi_throw_error(env, nullptr, error.c_str());
+}
+
+/**
  * RocksDB publishes the new policy before starting the cross-DB sorter thread, so a failed start
  * restores the previous one; leaving it would also make a retry of the same value a no-op that
  * never starts the sorter. Caller holds `writeBufferManagerMutex`.
@@ -48,12 +70,7 @@ bool setLiveFlushPolicy(
 		manager.SetFlushPolicy(policy);
 		return true;
 	} catch (const std::exception& e) {
-		try {
-			manager.SetFlushPolicy(previous);
-		} catch (...) {
-			// Config() has no outer handler; the original failure is the one to report.
-		}
-		::napi_throw_error(env, nullptr, e.what());
+		throwAfterRestoringFlushPolicy(env, manager, previous, e.what());
 		return false;
 	}
 }
@@ -185,6 +202,7 @@ DBSettings::DBSettings():
  * ```
  */
 std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
+	std::lock_guard<std::mutex> lock(blockCacheMutex);
 	if (blockCacheSize == 0) {
 		return nullptr;
 	}
@@ -391,13 +409,10 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			}
 			if (frozen) {
 				if (updateLivePolicy) {
-					try {
-						manager->SetFlushPolicy(previousPolicy);
-					} catch (...) {
-						// The rejection is the error to report.
-					}
+					throwAfterRestoringFlushPolicy(env, *manager, previousPolicy, verificationTableFrozen);
+				} else {
+					::napi_throw_error(env, nullptr, verificationTableFrozen);
 				}
-				::napi_throw_error(env, nullptr, verificationTableFrozen);
 				return nullptr;
 			}
 		}
@@ -405,6 +420,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		// Before the WBM size and costToCache become visible: a first open may construct the manager
 		// as soon as this mutex is released, and with costToCache it charges this cache.
 		if (blockCacheSize) {
+			std::lock_guard<std::mutex> cacheLock(settings.blockCacheMutex);
 			settings.blockCacheSize = static_cast<size_t>(*blockCacheSize);
 			if (settings.blockCache) {
 				settings.blockCache->SetCapacity(*blockCacheSize);
