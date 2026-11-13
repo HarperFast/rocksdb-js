@@ -1419,12 +1419,6 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-/**
- * The per-env cleanup hooks below run on a dying worker's thread while other
- * workers close their handles on the same descriptors. A skipped purge that
- * nothing retries keeps the descriptor and its open RocksDB registered until
- * process exit.
- */
 void DBRegistry::ForEachDescriptor(const std::function<void(DBDescriptor&)>& fn) {
 	if (!instance) {
 		return;
@@ -1448,13 +1442,25 @@ void DBRegistry::ForEachDescriptor(const std::function<void(DBDescriptor&)>& fn)
 		delayMs > 0 && !descriptors.empty()) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 	}
+}
 
-	std::vector<DBKey> keys;
-	keys.reserve(descriptors.size());
-	for (const auto& descriptor : descriptors) {
-		keys.push_back(descriptorKey(*descriptor));
+void DBRegistry::PurgeUnreferenced() {
+	if (!instance) {
+		return;
 	}
-	descriptors.clear();
+
+	// Keys only: copying a descriptor out would itself pin it.
+	std::vector<DBKey> keys;
+	{
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		keys.reserve(instance->databases.size());
+		for (const auto& [key, entry] : instance->databases) {
+			if (entry.descriptor) {
+				keys.push_back(key);
+			}
+		}
+	}
+
 	for (const auto& key : keys) {
 		PurgeIfUnreferenced(key);
 	}

@@ -25,7 +25,13 @@ await new Promise<void>((resolve, reject) => {
 	worker.once('message', () => resolve());
 	worker.once('error', reject);
 });
-await delay(100);
+// With the worker's handle closed, only the registry and `db` reference the descriptor until the
+// worker's cleanup hook snapshots it.
+const deadline = Date.now() + 10_000;
+while ((getRegistryStatus().find((entry) => entry.path === path)?.refCount ?? 0) <= 2) {
+	if (Date.now() > deadline) throw new Error('The worker cleanup hook never pinned the descriptor');
+	await delay(5);
+}
 db.close();
 const code = await exited;
 if (code !== 0) throw new Error(`Worker exited with code ${code}`);

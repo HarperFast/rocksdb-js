@@ -517,9 +517,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    racing close skip the purge (`use_count > 1`), so their state destructors re-run
    `PurgeIfUnreferenced` after releasing the ref — without that retry the skipped purge is permanent
    and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). The per-env cleanup hooks
-   snapshot every descriptor the same way while other workers close theirs, so
-   `DBRegistry::ForEachDescriptor` retries each purge after releasing the snapshot; the leak it fixed
-   surfaced as a failed exit-time flush of a test directory removed in the meantime. Once `beginClose()` wins,
+   pin every descriptor the same way (`DBRegistry::ForEachDescriptor`) while other workers close
+   theirs, so the hook ends with `DBRegistry::PurgeUnreferenced()` once its last pinning step has released
+   them (HarperFast/rocksdb-js#1074). Once `beginClose()` wins,
    `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
    path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
    immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer

@@ -1,11 +1,19 @@
 import { getRegistryStatus, RocksDatabase, type RocksDatabaseOptions } from '../../src/index.ts';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Worker } from 'node:worker_threads';
+
+function resolveIdentity(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return resolve(path);
+	}
+}
 
 export function generateDBPath(): string {
 	const testDir = join(tmpdir(), 'rocksdb-js-tests');
@@ -105,14 +113,18 @@ export async function dbRunner(options: TestOptions | TestFn, test?: TestFn): Pr
 			await delay(50);
 		}
 
-		// A database still registered here is a handle the test left open, such as a `use()` view.
-		// Removing its directory would fail its eventual close-time flush, so keep it and fail.
-		for (const entry of getRegistryStatus()) {
-			if (dbPaths.delete(entry.path) && !closeFailed) {
-				closeFailed = true;
-				closeError = new Error(
-					`Database still registered after the test closed its databases: ${JSON.stringify(entry)}`
-				);
+		// A handle the test left open (a `use()` view, say) keeps its database registered; removing
+		// the directory would fail that database's eventual flush, so keep it and fail the test.
+		const registered = new Set(getRegistryStatus().map((entry) => resolveIdentity(entry.path)));
+		for (const dbPath of dbPaths) {
+			if (registered.has(resolveIdentity(dbPath))) {
+				dbPaths.delete(dbPath);
+				if (!closeFailed) {
+					closeFailed = true;
+					closeError = new Error(
+						`Database still open after the test closed its databases: ${dbPath}`
+					);
+				}
 			}
 		}
 

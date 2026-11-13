@@ -523,6 +523,9 @@ NAPI_MODULE_INIT() {
 		// And this env's queued unlock callbacks: a lock another env holds would
 		// otherwise call them after Node freed their tsfns (rocksdb-js#848).
 		rocksdb_js::DBRegistry::ReleaseLockCallbacksByEnv(dyingEnv);
+		// The steps above pinned every descriptor; a last-handle close on another
+		// thread that landed meanwhile skipped its purge.
+		rocksdb_js::DBRegistry::PurgeUnreferenced();
 
 		int32_t newRefCount = --moduleRefCount;
 		if (newRefCount == 0) {
