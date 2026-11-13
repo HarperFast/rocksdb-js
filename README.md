@@ -949,8 +949,11 @@ its own uncommitted writes, so the result is exactly what calling `get()` for ea
 [Verification Table](#verification-table).
 
 Batching saves the per-key binding call (and, on a cache miss, the per-key async work) and lets
-RocksDB share work across the lookups, so it pays off from a handful of keys up; a batch of one
-takes the single-key path. `benchmark/multi-get.mts` compares the two on your own data.
+RocksDB share work across the lookups. It also allocates a result buffer and a view per found key,
+where decoded `get()` can reuse the shared value buffer. Small batches, especially 2–4 cached keys,
+may cost more than individual reads; a batch of one takes the single-key path. Benchmark your
+workload with `benchmark/multi-get.mts` before choosing a batch size. See
+[batch-read measurements and cost accounting](docs/performance/multi-get.md).
 
 ### `db.getManySync(keys: Key[], options?: { transaction?: Transaction }): any[]`
 

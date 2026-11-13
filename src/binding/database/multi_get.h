@@ -73,7 +73,7 @@ napi_value multiGetSyncResult(napi_env env, const char* errorMsg, const MultiGet
  * State for the async `getMany()` work, for both `DBHandle` and `TransactionHandle`.
  */
 template<typename T>
-struct AsyncMultiGetState final : BaseAsyncState<T> {
+struct AsyncMultiGetState : BaseAsyncState<T> {
 	AsyncMultiGetState(napi_env env, T handle, const rocksdb::ReadOptions& readOptions) :
 		BaseAsyncState<T>(env, handle),
 		readOptions(readOptions) {}

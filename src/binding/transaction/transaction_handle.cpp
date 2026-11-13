@@ -889,9 +889,14 @@ rocksdb::Status TransactionHandle::multiGetSync(
 	return rocksdb::Status::OK();
 }
 
-/**
- * Has no block-cache attempt of its own: `Store.getMany()` makes it first through `getManySync()`.
- */
+struct AsyncTransactionMultiGetState final : AsyncMultiGetState<std::shared_ptr<TransactionHandle>> {
+	using AsyncMultiGetState::AsyncMultiGetState;
+	std::shared_ptr<const rocksdb::Snapshot> snapshot;
+	rocksdb::DB* readDb = nullptr;
+	MultiGetBatch misses;
+	std::vector<size_t> missingIndices;
+};
+
 napi_value TransactionHandle::multiGet(
 	napi_env env,
 	const std::vector<rocksdb::Slice>& keys,
@@ -928,7 +933,7 @@ napi_value TransactionHandle::multiGet(
 	napi_value name;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, "transaction.getMany", NAPI_AUTO_LENGTH, &name));
 
-	auto state = new AsyncMultiGetState<std::shared_ptr<TransactionHandle>>(env, this->shared_from_this(), readOptions);
+	auto state = new AsyncTransactionMultiGetState(env, this->shared_from_this(), readOptions);
 	// Until the transaction registration is transferred below, setup failures must delete this
 	// state without unregistering work it does not own.
 	state->completed.store(true);
@@ -938,6 +943,37 @@ napi_value TransactionHandle::multiGet(
 		return nullptr;
 	}
 	state->readColumnDescriptor = std::move(readColumnDescriptor);
+	state->readDb = dbHandle->descriptor->db.get();
+	if (this->snapshotSet) {
+		state->snapshot = this->txn->GetTimestampedSnapshot();
+		state->readOptions.snapshot = state->snapshot.get();
+	}
+	// Capture staged writes/deletes and cache hits on the owning thread. Only unresolved keys
+	// reach the worker, which must never touch txn: writes, commits and retries can mutate it.
+	readOptions.read_tier = rocksdb::kBlockCacheTier;
+	this->txn->MultiGet(
+		readOptions,
+		state->readColumnDescriptor->column.get(),
+		state->batch.size(),
+		state->batch.keys.data(),
+		state->batch.values.get(),
+		state->batch.statuses.get()
+	);
+	try {
+		for (size_t i = 0; i < state->batch.size(); i++) {
+			if (state->batch.statuses[i].IsIncomplete()) {
+				state->misses.keys.push_back(state->batch.keys[i]);
+				state->missingIndices.push_back(i);
+			}
+		}
+	} catch (const std::bad_alloc&) {
+		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
+		return nullptr;
+	}
+	if (!state->misses.allocateResults()) {
+		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
+		return nullptr;
+	}
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -946,7 +982,7 @@ napi_value TransactionHandle::multiGet(
 		nullptr,
 		name,
 		[](napi_env doNotUse, void* data) { // execute
-			auto state = reinterpret_cast<AsyncMultiGetState<std::shared_ptr<TransactionHandle>>*>(data);
+			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
 			const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
 			if (getDelayMs > 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
@@ -955,22 +991,29 @@ napi_value TransactionHandle::multiGet(
 				state->status = rocksdb::Status::Aborted("Database closed during transaction get many operation");
 				state->batch.values.reset();
 			} else {
-				state->handle->txn->MultiGet(
+				state->readDb->MultiGet(
 					state->readOptions,
 					state->readColumnDescriptor->column.get(),
-					state->batch.size(),
-					state->batch.keys.data(),
-					state->batch.values.get(),
-					state->batch.statuses.get()
+					state->misses.size(),
+					state->misses.keys.data(),
+					state->misses.values.get(),
+					state->misses.statuses.get()
 				);
+				for (size_t i = 0; i < state->misses.size(); i++) {
+					const size_t index = state->missingIndices[i];
+					state->batch.values[index] = std::move(state->misses.values[i]);
+					state->batch.statuses[index] = std::move(state->misses.statuses[i]);
+				}
 				finishMultiGet(state->status, state->batch, state->result);
 			}
+			state->misses.values.reset();
+			state->snapshot.reset();
 			state->readColumnDescriptor.reset();
 			state->signalExecuteCompleted();
 			state->handle->closeOrphanIfUnused();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
-			auto state = reinterpret_cast<AsyncMultiGetState<std::shared_ptr<TransactionHandle>>*>(data);
+			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
 			state->deleteAsyncWork();
 			if (status != napi_cancelled) {
 				resolveMultiGetResult(env, "Transaction get many failed", state);

@@ -3,7 +3,8 @@
  * one read per key, by batch size, with the block cache warm or cold.
  *
  *   node benchmark/multi-get.mts <dir> [--api sync|async] [--cache hot|cold] [--keys 1000000]
- *     [--batches 1,4,16,64,256] [--reps 7] [--keys-per-sample 20000] [--encoding msgpack|binary]
+ *     [--batches 1,2,4,16,64,256] [--reps 7] [--keys-per-sample 20000] [--encoding msgpack|binary]
+ *     [--transaction]
  *
  * `--api sync` compares a `getSync()` loop with `getManySync()`; `--api async` compares
  * `Promise.all()` over `get()` with `getMany()`.
@@ -15,7 +16,7 @@
  * shuffled order within every repetition, so machine noise lands on both; each line reports the
  * median nanoseconds per key across `--reps`.
  */
-import { RocksDatabase } from '../src/index.ts';
+import { RocksDatabase, Transaction } from '../src/index.ts';
 import { existsSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 
@@ -24,11 +25,12 @@ const { positionals, values: args } = parseArgs({
 	options: {
 		cache: { type: 'string', default: 'hot' },
 		keys: { type: 'string', default: '1000000' },
-		batches: { type: 'string', default: '1,4,16,64,256' },
+		batches: { type: 'string', default: '1,2,4,16,64,256' },
 		reps: { type: 'string', default: '7' },
 		'keys-per-sample': { type: 'string', default: '20000' },
 		encoding: { type: 'string', default: 'msgpack' },
 		api: { type: 'string', default: 'sync' },
+		transaction: { type: 'boolean', default: false },
 	},
 });
 const [dir] = positionals;
@@ -78,6 +80,8 @@ if (!cold) {
 		db.getSync(keyFor(i));
 	}
 }
+const txn = args.transaction ? new Transaction(db.store) : undefined;
+const reader = txn ?? db;
 
 function batchFor(size: number): string[] {
 	return Array.from({ length: size }, () => keyFor(Math.floor(random() * keyCount)));
@@ -94,12 +98,12 @@ const arms: Record<string, (batches: string[][]) => void | Promise<void>> = asyn
 	? {
 			async get(batches) {
 				for (const batch of batches) {
-					count(await Promise.all(batch.map((key) => db.get(key))));
+					count(await Promise.all(batch.map((key) => reader.get(key))));
 				}
 			},
 			async getMany(batches) {
 				for (const batch of batches) {
-					count(await db.getMany(batch));
+					count(await reader.getMany(batch));
 				}
 			},
 		}
@@ -107,13 +111,13 @@ const arms: Record<string, (batches: string[][]) => void | Promise<void>> = asyn
 			getSync(batches) {
 				for (const batch of batches) {
 					for (const key of batch) {
-						if (db.getSync(key) !== undefined) sink++;
+						if (reader.getSync(key) !== undefined) sink++;
 					}
 				}
 			},
 			getManySync(batches) {
 				for (const batch of batches) {
-					count(db.getManySync(batch));
+					count(reader.getManySync(batch));
 				}
 			},
 		};
@@ -125,7 +129,7 @@ const median = (values: number[]) => {
 };
 
 const samples = new Map<string, number[]>();
-for (let rep = 0; rep < reps; rep++) {
+for (let rep = -1; rep < reps; rep++) {
 	for (const size of batchSizes) {
 		const batchCount = Math.max(1, Math.floor(keysPerSample / size));
 		const order = random() < 0.5 ? [singleArm, manyArm] : [manyArm, singleArm];
@@ -135,6 +139,7 @@ for (let rep = 0; rep < reps; rep++) {
 			const start = process.hrtime.bigint();
 			await arms[arm](batches);
 			const elapsed = Number(process.hrtime.bigint() - start);
+			if (rep < 0) continue;
 			const id = `${size}:${arm}`;
 			const list = samples.get(id) ?? [];
 			list.push(elapsed / (batchCount * size));
@@ -144,7 +149,7 @@ for (let rep = 0; rep < reps; rep++) {
 }
 
 console.log(
-	`cache=${args.cache} api=${args.api} encoding=${encoding} keys=${keyCount} reps=${reps} sink=${sink}`
+	`cache=${args.cache} api=${args.api} encoding=${encoding} transaction=${args.transaction} keys=${keyCount} reps=${reps} sink=${sink}`
 );
 console.log(`| batch | ${singleArm} ns/key | ${manyArm} ns/key | change |`);
 console.log('| ---: | ---: | ---: | ---: |');
@@ -156,4 +161,5 @@ for (const size of batchSizes) {
 		`| ${size} | ${single.toFixed(0)} | ${many.toFixed(0)} | ${change >= 0 ? '+' : ''}${change.toFixed(0)}% |`
 	);
 }
+txn?.abort();
 db.close();

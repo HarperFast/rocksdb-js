@@ -1,7 +1,9 @@
 import { RocksDatabase } from '../src/database.ts';
 import type { Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
+import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -45,6 +47,103 @@ function closeAndRemove({
 }
 
 describe('getMany()', () => {
+	for (const mode of [
+		'optimistic',
+		'pessimistic',
+		'no-snapshot',
+		'reset',
+		'commit',
+		'commit-sync',
+	]) {
+		for (const route of ['direct', 'routed']) {
+			it(`preserves a pending ${route} batch across transaction mutation (${mode})`, () => {
+				const path = generateDBPath();
+				try {
+					const result = spawnSync(
+						process.execPath,
+						[
+							fileURLToPath(
+								new URL('./fixtures/transaction-get-many-mutation.mts', import.meta.url)
+							),
+							path,
+							mode,
+							route,
+						],
+						{
+							env: { ...process.env, ROCKSDB_JS_TXN_GET_DELAY_MS: '200' },
+							encoding: 'utf8',
+							timeout: 15_000,
+						}
+					);
+					expect(result.error).toBeUndefined();
+					expect(result.status, result.stderr).toBe(0);
+				} finally {
+					rmSync(path, { recursive: true, force: true });
+				}
+			});
+		}
+	}
+
+	it('rejects decoding errors for cached and cold batches', () =>
+		dbRunner(async ({ db }) => {
+			await db.put('a', 'value');
+			await db.put('b', 'value');
+			const decoder = db.store.decoder;
+			db.store.decoder = {
+				decode() {
+					throw new Error('decode failed');
+				},
+			};
+			try {
+				await expect(db.getMany(['a', 'b'])).rejects.toThrow('decode failed');
+				expect(() => db.getManySync(['a', 'b'])).toThrow('decode failed');
+				await db.flush();
+				db.close();
+				db.open();
+				db.store.decoder = {
+					decode() {
+						throw new Error('decode failed');
+					},
+				};
+				await expect(db.getMany(['a', 'b'])).rejects.toThrow('decode failed');
+			} finally {
+				db.store.decoder = decoder;
+			}
+		}));
+
+	it('isolates values retained by a decoder that needs stable buffers', () =>
+		dbRunner(
+			{
+				dbOptions: [
+					{
+						encoder: { encode: (value: Buffer) => value, copyBuffers: true },
+						decoder: {
+							needsStableBuffer: true,
+							decode: (value: Buffer) => value.subarray(0, 1),
+						},
+					},
+				],
+			},
+			async ({ db }) => {
+				await db.put('small', Buffer.alloc(16, 1));
+				await db.put('large', Buffer.alloc(100_000, 2));
+				await db.flush();
+				db.close();
+				db.open();
+				const cold = db.getMany(['small', 'large']);
+				expect(cold).toBeInstanceOf(Promise);
+				for (const values of [
+					await cold,
+					db.getManySync(['small', 'large']),
+					await db.getMany(['small', 'large']),
+				]) {
+					expect(values[0]).toEqual(Buffer.from([1]));
+					expect(values[0].buffer).not.toBe(values[1].buffer);
+					expect(values[0].buffer.byteLength).toBeLessThan(100_000);
+				}
+			}
+		));
+
 	it('returns decoded values in key order, with undefined for missing and duplicate keys', () =>
 		dbRunner(async ({ db }) => {
 			await db.put('a', { x: 1 });

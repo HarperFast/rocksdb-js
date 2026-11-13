@@ -397,15 +397,14 @@ export class DBI<T extends DBITransactional | unknown = unknown> {
 		// No closure in this method may reference `this` or `options` (which can hold the
 		// transaction): closures share one scope, so the decode callback would keep a dropped
 		// transaction's wrapper reachable until a cold read settles, blocking its orphan cleanup.
-		let values: MaybePromise<(Buffer | undefined)[]>;
 		try {
-			values = store.getMany(this._context, keys, options as DBITransactional);
+			const values = store.getMany(this._context, keys, options as DBITransactional);
+			return values instanceof Promise
+				? values.then((resolved) => decodeMany(store, resolved))
+				: decodeMany(store, values);
 		} catch (error) {
 			return Promise.reject(error);
 		}
-		return values instanceof Promise
-			? values.then((resolved) => decodeMany(store, resolved))
-			: decodeMany(store, values);
 	}
 
 	/**
@@ -595,7 +594,10 @@ function decodeMany(store: Store, values: (Buffer | undefined)[]): any[] {
 	for (let i = 0; i < values.length; i++) {
 		const value = values[i];
 		if (value !== undefined) {
-			values[i] = store.decodeValue(value as BufferWithDataView);
+			// A decoder retaining a view must not keep the other values in the batch alive.
+			values[i] = store.decodeValue(
+				(store.decoderCopies ? value : Buffer.from(value)) as BufferWithDataView
+			);
 		}
 	}
 	return values;
