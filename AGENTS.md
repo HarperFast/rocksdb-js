@@ -398,6 +398,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - **GoogleTest** (`test/native/*.cc`): C++ unit tests; `pnpm test:native` /
   `pnpm coverage:native` (lcov on Unix)
 - `test/lib/util.ts` contains Vitest utilities
+- **`*ForTesting` setters are process-global and must go through `testSwitches`** in
+  `src/binding/binding.cpp`, whose entries carry the default restore. Vitest runs many test files in
+  one process, so `test/setup.ts` calls `resetTestSwitchesForTesting()` before each file; a setter
+  exported outside the table would leak into later files. `test/test-switches.test.ts` fails until a
+  new setter is in the table and in its argument list. Read-only `is*ForTesting` probes are exempt.
 - Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
 - **`deps/gtest.gyp` must keep C++ exceptions on for gtest's own TUs.** node's `common.gypi`
   disables them for every target (`ExceptionHandling: 0` / `-fno-exceptions`) and

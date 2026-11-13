@@ -1166,6 +1166,12 @@ export const iteratorPoolStats: () => { created: number; reused: number } =
 export const iteratorPoolEnabled: boolean = binding.iteratorPoolEnabled;
 
 /**
+ * Test-only: restores every process-global `*ForTesting` switch to its default and returns the
+ * names of those that were not at it. `test/setup.ts` runs it before each Vitest file.
+ */
+export const resetTestSwitchesForTesting: () => string[] = binding.resetTestSwitchesForTesting;
+
+/**
  * Test-only: force the next `count` transaction commits to fail with TryAgain (rolled back, so
  * no data is committed), reproducing a stranded-snapshot conflict deterministically. Pass 0 to
  * disarm. Used by the ERR_TRY_AGAIN retry regression test.
