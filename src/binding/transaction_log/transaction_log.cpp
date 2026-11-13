@@ -6,8 +6,14 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include <cmath>
 #include <stdlib.h>
 #include <fcntl.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #define UNWRAP_TRANSACTION_LOG_HANDLE(fnName) \
 	std::shared_ptr<TransactionLogHandle>* txnLogHandle = nullptr; \
@@ -79,7 +85,103 @@ napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/** `node_api_noenv_finalize`: unlike `napi_finalize` it takes no env, since it can run on any thread. */
+using NoEnvFinalize = void(NAPI_CDECL*)(void* data, void* hint);
+using CreateExternalSharedArrayBuffer = napi_status(NAPI_CDECL*)(
+	napi_env env,
+	void* external_data,
+	size_t byte_length,
+	NoEnvFinalize finalize_cb,
+	void* finalize_hint,
+	napi_value* result);
+
+void NAPI_CDECL releaseSharedMemoryMap(void* data, void* hint) {
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile SharedArrayBuffer released memoryMapHandle=%p\n", hint);
+	delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
+}
+
+/**
+ * Pins this addon in memory. A shared backing store can outlive the env that created it (another
+ * thread can hold it), and Node unloads a worker's addons when the worker exits, which would leave
+ * the backing store's deleter pointing at unmapped code.
+ */
+bool pinAddon() {
+#ifdef _WIN32
+	HMODULE module = nullptr;
+	return ::GetModuleHandleExW(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+		reinterpret_cast<LPCWSTR>(&pinAddon),
+		&module) != 0;
+#else
+	Dl_info info;
+	if (::dladdr(reinterpret_cast<void*>(&pinAddon), &info) == 0 || info.dli_fname == nullptr) {
+		return false;
+	}
+	return ::dlopen(info.dli_fname, RTLD_LAZY | RTLD_NOLOAD | RTLD_NODELETE) != nullptr;
+#endif
+}
+
+/**
+ * `node_api_create_external_sharedarraybuffer` is experimental N-API, so it is looked up at runtime
+ * rather than linked: a missing import fails the Windows DLL load, and aborts on first call elsewhere.
+ */
+CreateExternalSharedArrayBuffer resolveCreateExternalSharedArrayBuffer() {
+	static const CreateExternalSharedArrayBuffer fn = []() -> CreateExternalSharedArrayBuffer {
+		constexpr const char* name = "node_api_create_external_sharedarraybuffer";
+#ifdef _WIN32
+		CreateExternalSharedArrayBuffer found = nullptr;
+		for (const wchar_t* host : { static_cast<const wchar_t*>(nullptr), L"libnode.dll", L"node.dll" }) {
+			HMODULE module = ::GetModuleHandleW(host);
+			if (module && (found = reinterpret_cast<CreateExternalSharedArrayBuffer>(::GetProcAddress(module, name)))) {
+				break;
+			}
+		}
+#else
+		auto found = reinterpret_cast<CreateExternalSharedArrayBuffer>(::dlsym(RTLD_DEFAULT, name));
+#endif
+		return found && pinAddon() ? found : nullptr;
+	}();
+	return fn;
+}
+
+napi_status createMemoryMapBuffer(
+	napi_env env,
+	std::shared_ptr<MemoryMap>* memoryMapHandle,
+	napi_value* result
+) {
+	MemoryMap* memoryMap = memoryMapHandle->get();
+	auto createShared = resolveCreateExternalSharedArrayBuffer();
+	napi_value sharedArrayBuffer;
+	if (createShared && createShared(
+			env,
+			memoryMap->map,
+			memoryMap->fileSize,
+			releaseSharedMemoryMap,
+			memoryMapHandle,
+			&sharedArrayBuffer) == napi_ok) {
+		napi_value global, bufferClass, from;
+		NAPI_STATUS_RETURN(::napi_get_global(env, &global));
+		NAPI_STATUS_RETURN(::napi_get_named_property(env, global, "Buffer", &bufferClass));
+		NAPI_STATUS_RETURN(::napi_get_named_property(env, bufferClass, "from", &from));
+		return ::napi_call_function(env, bufferClass, from, 1, &sharedArrayBuffer, result);
+	}
+	return ::napi_create_external_buffer(
+		env,
+		memoryMap->fileSize,
+		memoryMap->map,
+		[](napi_env env, void* data, void* hint) {
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint);
+			delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
+		},
+		memoryMapHandle,
+		result);
+}
+
 } // namespace
+
+bool TransactionLog::SupportsSharedMemoryMaps() {
+	return resolveCreateExternalSharedArrayBuffer() != nullptr;
+}
 
 /**
  * Constructor for the `NativeTransactionLog` class.
@@ -375,29 +477,18 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// Transfer ownership to the external buffer: this heap shared_ptr is held
-	// until finalize. For a frozen log the log file keeps only a weak handle, so
+	// Transfer ownership to the mapping buffer: this heap shared_ptr is held
+	// until its backing store is released. For a frozen log the log file keeps only a weak handle, so
 	// this (plus any still-live buffer for the same file) is the sole owner — the
 	// mapping is unmapped when JS GCs the buffer.
 	auto* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
 
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_external_buffer(
-		env,  // env
-		memoryMap->fileSize, // length
-		memoryMap->map, // data
-		[](napi_env env, void* data, void* hint) { // finalize_cb
-			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint);
-			auto* memoryMap = static_cast<std::shared_ptr<MemoryMap>*>(hint);
-			delete memoryMap;
-		},
-		memoryMapHandle, // finalize_hint
-		&result // [out] result
-	));
+	NAPI_STATUS_THROWS(createMemoryMapBuffer(env, memoryMapHandle, &result));
 	NAPI_STATUS_THROWS(::napi_type_tag_object(env, result, &READABLE_EXTENT_BUFFER_TAG));
 
 	// A separate shared handle keeps an extracted getter safe after the buffer's
-	// external-memory finalizer has released its own mapping reference.
+	// finalizer has released its own mapping reference.
 	auto readableExtentHandle = std::make_unique<std::shared_ptr<MemoryMap>>(memoryMap);
 	napi_value readableExtentExternal;
 	NAPI_STATUS_THROWS(::napi_create_external(
@@ -420,7 +511,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		sizeof(readableExtentProperties) / sizeof(napi_property_descriptor),
 		readableExtentProperties));
 
-	// at this point, the transaction log file and the external buffer have a ref to the memory map
+	// at this point, the transaction log file and the mapping buffer have a ref to the memory map
 
 	return result;
 }
@@ -645,11 +736,7 @@ napi_value TransactionLog::GetStats(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info info) {
-	NAPI_METHOD();
-	UNWRAP_TRANSACTION_LOG_HANDLE("GetPurgeWatermark");
-
-	auto watermark = (*txnLogHandle)->getPurgeWatermark();
+static napi_value createPurgeWatermark(napi_env env, const TransactionLogStore::PurgeWatermark& watermark) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
 	napi_value known;
@@ -659,6 +746,51 @@ napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info in
 		SET_STAT(result, "purgedThrough", watermark.purgedThrough);
 	}
 	return result;
+}
+
+napi_value TransactionLog::GetPurgeWatermark(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_TRANSACTION_LOG_HANDLE("GetPurgeWatermark");
+	return createPurgeWatermark(env, (*txnLogHandle)->getPurgeWatermark());
+}
+
+/**
+ * Makes an unknown purge watermark known at a baseline the caller vouches for, when the log can prove
+ * every deletion since its record began was recorded.
+ *
+ * @example
+ * ```typescript
+ * const log = db.useLog('foo');
+ * const watermark = log.setPurgeBaseline(boundOfDeletionsBeforeTheRecord);
+ * ```
+ */
+napi_value TransactionLog::SetPurgeBaseline(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	UNWRAP_TRANSACTION_LOG_HANDLE("SetPurgeBaseline");
+	THROW_IF_READONLY(*txnLogHandle, "");
+
+	napi_valuetype type;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[0], &type));
+	double baseline = 0;
+	if (type == napi_number) {
+		NAPI_STATUS_THROWS(::napi_get_value_double(env, argv[0], &baseline));
+	}
+	if (type != napi_number || !std::isfinite(baseline) || baseline < 0) {
+		::napi_throw_type_error(env, nullptr, "Purge baseline must be a finite number at or above 0");
+		return nullptr;
+	}
+
+	TransactionLogStore::PurgeWatermark watermark;
+	try {
+		watermark = (*txnLogHandle)->setPurgeBaseline(baseline);
+	} catch (const rocksdb_js::DBException& e) {
+		::napi_throw_error(env, e.code(), e.what());
+		return nullptr;
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
+	return createPurgeWatermark(env, watermark);
 }
 
 /**
@@ -673,6 +805,7 @@ void TransactionLog::Init(napi_env env, napi_value exports) {
 		{ "name", nullptr, nullptr, GetName, nullptr, nullptr, napi_default, nullptr },
 		{ "getStats", nullptr, GetStats, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getPurgeWatermark", nullptr, GetPurgeWatermark, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "setPurgeBaseline", nullptr, SetPurgeBaseline, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findPosition", nullptr, FindPosition, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_findExactStart", nullptr, FindExactStart, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "_segmentRemovals", nullptr, SegmentRemovals, nullptr, nullptr, nullptr, napi_default, nullptr },

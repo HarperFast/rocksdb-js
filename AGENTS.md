@@ -256,6 +256,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   write, `always` runs it on every attempt instead of retries alone. Write-intent refusal has no such
   switch; it is the `transactionLogWriteIntents` option. Snapshotted in `initializeTestSeams()`; tests
   use the equivalent `*ForTesting` binding functions
+- `ROCKSDB_JS_SYNC_WAL_FAILURE` - Test-only: number of WAL syncs (`syncWal()`, `syncWalSync()`) to
+  fail with an injected I/O error (a **count**). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_ABORT_MARK_FAILURE` - Test-only: number of abort-marker writes to fail with an
   injected error (a **count**). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_PARK_TIMEOUT_MS` - Bounded wait (default `5000`) before a
@@ -324,8 +326,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `initializeTestSeams()` — it is read on whichever thread drives teardown, so it must be set in
   the environment that starts the process
 - `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` - Test-only: delay after `DBRegistry::OpenDB()` has atomically
-  adopted and attached a handle, but before the native open returns to JavaScript (proves a forced
-  destroy cannot claim the descriptor during the former return/adopt/attach gap). Snapshotted in
+  adopted and attached a handle and released `databasesMutex`, but before it returns (proves a forced
+  destroy cannot claim the descriptor during the former return/adopt/attach gap, and that nothing
+  `OpenDB()` took under the lock outlives it; see invariant 28). Snapshotted in
   `initializeTestSeams()` so every open avoids a `getenv()` call
 - `ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS` / `ROCKSDB_JS_COUNT_DELAY_MS` - Test-only: per-row delays in
   `DBIterator::Next()` and `DBIteratorHandle::countRemaining()`. Both are read **once** in
@@ -396,6 +399,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - **GoogleTest** (`test/native/*.cc`): C++ unit tests; `pnpm test:native` /
   `pnpm coverage:native` (lcov on Unix)
 - `test/lib/util.ts` contains Vitest utilities
+- **`*ForTesting` setters are process-global and must go through `testSwitches`** in
+  `src/binding/binding.cpp`, whose entries carry the default restore. Vitest runs many test files in
+  one process, so `test/setup.ts` calls `resetTestSwitchesForTesting()` before each file; a setter
+  exported outside the table would leak into later files. `test/test-switches.test.ts` fails until a
+  new setter is in the table and in its argument list. Read-only `is*ForTesting` probes are exempt.
 - Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
 - **`deps/gtest.gyp` must keep C++ exceptions on for gtest's own TUs.** node's `common.gypi`
   disables them for every target (`ExceptionHandling: 0` / `-fno-exceptions`) and
@@ -1258,7 +1266,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     defense in depth only: the claim protocol below applies under both policies and is the only
     protection for pessimistic commits. The rule
     now (`core/column_family_lifetime.h`, GoogleTest-covered): a commit **claims** every family
-    its batch names once, at admission in `executeLogWork`/`CommitSync` **before** the
+    its batch names once, at admission in `executeLogWork` (both commit paths) **before** the
     transaction-log write (`ColumnFamilyCommitClaim`, RAII so a log-write failure, N-API/queue
     failure, cancellation or teardown releases it), and releases right after `txn->Commit()`
     returns; a drop **retires** the generation under `columnsMutex` (`DBDescriptor::retireColumnFamily`:
@@ -1485,9 +1493,16 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `DBHandleParams` and attaching in `Database::Open()` left a gap where teardown could reset
     `descriptor->db` while the invisible handle retained a `ColumnFamilyHandle`; destroying that
     column handle after its DB is a native use-after-free. No handle shared-pointer field may be read
-    after the registry lock drops, because a foreign sweep may immediately reset it. Covered by
-    `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` widens the point
-    after atomic publication so the fixture can assert the exact closables count before destroy.
+    after the registry lock drops, because a foreign sweep may immediately reset it. The same holds for
+    `OpenDB()`'s own locals: every `ColumnFamilyDescriptor` reference it takes under the lock (the
+    `columns` copy) is declared after the lock so it is released first. Declared before it, the copy
+    was the last reference once a foreign close freed the database, and destroying it locked the freed
+    `DBImpl` mutex (`pthread lock: Invalid argument` on macOS, rocksdb-js#1066). Covered by
+    `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` runs after the lock
+    is released and before `OpenDB()` returns, so the fixture can assert the exact closables count
+    before destroy and its destroy lands in that window. Reverting the declaration order aborts the
+    fixture on macOS; glibc usually locks the freed mutex without faulting, so Linux CI alone would
+    not catch it.
 
 29. **A user shared buffer lives as long as its column family is open, never as long as some view
     of it**: `getUserSharedBuffer` used to erase the map entry once the last external `ArrayBuffer`
@@ -1598,9 +1613,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     recreates the directory the way `getLogFile()` does and re-checks `isClosing` under
     `flushedStateMutex`, so a concurrent destroy cannot be resurrected (`doClose()` sets `isClosing`
     before taking that mutex, so a reopen that saw it clear is ordered before the destroy's final
-    directory removal; `doPurge`'s own `remove_all` of an emptied directory runs earlier with
-    `isClosing` still clear, and a directory recreated in that window is removed again by the
-    destroy). An all-segment purge that actually empties the registered set also advances a store
+    directory removal; `doPurge`'s own removal of an emptied store's files, which keeps `txn.purged`
+    and the directory, runs earlier with `isClosing` still clear, and anything written there in that
+    window is removed again by the destroy). An all-segment purge that actually empties the registered set also advances a store
     generation, clears the old commit-correlation ring, closes and resets the state stream, and
     resets the last-written position under the existing `dataSetsMutex -> flushedStateMutex` order.
     A flush callback captures that generation with its correlation scan and checks it after taking
@@ -1678,7 +1693,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     persists `txn.purged`, raised to the largest key of every segment it is about to delete,
     durably before its first unlink. A store reports the watermark as known only when every
     deletion in its history was recorded that way, so a store an older release created stays
-    unknown. See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark).
+    unknown until a caller's baseline (`setPurgeBaseline()`) covers what it deleted before the record
+    began, accepted only while the record's `tracked` flag proves every later deletion was recorded.
+    See [purge watermark](src/binding/transaction_log/DESIGN.md#purge-watermark) and
+    [purge baseline](src/binding/transaction_log/DESIGN.md#purge-baseline).
 
 36. **A transaction's log batch is staged only while it is Pending**: from `Committing` on, the
     commit owns `logEntryBatch` and `committedPosition` — its lane writes the batch, frees it, and

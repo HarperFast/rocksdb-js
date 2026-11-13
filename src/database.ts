@@ -608,6 +608,20 @@ export class RocksDatabase extends DBI<DBITransactional> {
 	}
 
 	/**
+	 * {@link syncWal} on the calling thread, for code that must make earlier writes durable before
+	 * its next step and cannot await. It blocks the event loop for one fsync of each live WAL file
+	 * holding unsynced writes, after any WAL sync already running on another thread. It does not
+	 * wait for a write stall, a flush or a compaction, and has no timeout: a failing or saturated
+	 * disk holds it for as long as that fsync takes. Writes made with `disableWAL` are not covered.
+	 * Throws when the sync fails or the database is closed or closing.
+	 *
+	 * On a read-only database it returns without syncing.
+	 */
+	syncWalSync(): void {
+		this.store.db.syncWalSync();
+	}
+
+	/**
 	 * Returns the most recent {@link BackgroundError} observed on this database, or
 	 * `null` when none has occurred. The `'error'` event is the push counterpart;
 	 * this is the pull equivalent for on-demand checks (e.g. a health probe) and

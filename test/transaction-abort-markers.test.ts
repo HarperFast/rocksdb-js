@@ -3,6 +3,7 @@ import {
 	constants,
 	disablePrelogConflictCheckForTesting,
 	lockWakeCallbackCount,
+	resetTestSwitchesForTesting,
 	setPrelogConflictCheckRetriesOnlyForTesting,
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
@@ -36,8 +37,7 @@ const readEntries = (db: RocksDatabase, name = 'foo') =>
 describe('transaction-log abort markers', () => {
 	afterEach(() => {
 		RocksDatabase.config({ transactionLogAbortMarkers: false, transactionLogWriteIntents: false });
-		disablePrelogConflictCheckForTesting(false);
-		setPrelogConflictCheckRetriesOnlyForTesting(true);
+		resetTestSwitchesForTesting();
 	});
 
 	it.each([
@@ -715,7 +715,7 @@ describe('transaction-log abort markers', () => {
 
 	it('fails closed when a marker cannot be written, and resolves on a later retry', async () => {
 		const result = await runFixture('fork-abort-mark-failure.mts', {
-			ROCKSDB_JS_ABORT_MARK_FAILURE: '2',
+			ROCKSDB_JS_ABORT_MARK_FAILURE: '3',
 		});
 		expect(result).toEqual({ code: 0, signal: null, stderr: '' });
 	});

@@ -84,7 +84,7 @@ describe('Stress Transaction Log Memory Map', () => {
 				await Promise.all(readersDone);
 
 				// Tear down every worker. Terminating the reader envs runs their
-				// external-buffer finalizers (unmapping any maps they still held), so
+				// mapping-buffer finalizers (unmapping any maps they still held), so
 				// the only mappings that can survive are ones a TransactionLogFile is
 				// retaining with a strong reference.
 				await Promise.all([writer, ...readers].map((w) => w.terminate()));

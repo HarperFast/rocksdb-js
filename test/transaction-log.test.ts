@@ -10,6 +10,7 @@ import {
 	coolTransactionLogs,
 	type TransactionLog,
 	transactionLogMapCount,
+	supportsSharedTransactionLogMaps,
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
 import { withResolvers } from '../src/util.ts';
@@ -3154,13 +3155,14 @@ describe('Transaction Log', () => {
 				log.addEntry(Buffer.from('pending'), pending.id);
 				try {
 					expect(db.purgeLogs({ destroy: true, name: 'foo' })).toEqual([logFile]);
-					expect(existsSync(logDirectory)).toBe(false);
+					// The surviving store keeps only its unknown purge record.
+					expect(readdirSync(logDirectory)).toEqual(['txn.purged']);
 
 					// A later unrelated flush used to replay the old correlation ring and
 					// recreate txn.state with the deleted segment's sequence.
 					db.putSync('unrelated', true);
 					db.flushSync();
-					expect(existsSync(logDirectory)).toBe(false);
+					expect(readdirSync(logDirectory)).toEqual(['txn.purged']);
 				} finally {
 					pending.abort();
 				}
@@ -5054,6 +5056,34 @@ describe('Transaction Log', () => {
 				await delay(20);
 			}
 		};
+
+		it('exposes a mapping through a SharedArrayBuffer-backed Buffer where the runtime supports it', () =>
+			dbRunner(async ({ db }) => {
+				const log = db.useLog('foo');
+				const value = Buffer.alloc(10, 'a');
+				await db.transaction(async (txn) => {
+					log.addEntry(value, txn.id);
+				});
+				const shared = supportsSharedTransactionLogMaps();
+				const [major, minor] = process.versions.node.split('.').map(Number);
+				const nodeExportsApi =
+					(major === 24 && minor >= 16) || (major === 26 && minor >= 1) || major >= 27;
+				if (nodeExportsApi && !('bun' in process.versions) && !('Deno' in globalThis)) {
+					expect(shared).toBe(true);
+				}
+				const externalBefore = process.memoryUsage().external;
+				const buffer = log._getMemoryMapOfFile(1)!;
+				expect(Buffer.isBuffer(buffer)).toBe(true);
+				expect(buffer.buffer instanceof SharedArrayBuffer).toBe(shared);
+				expect(buffer.subarray(0, 4).toString()).toBe('WOOF');
+				expect(buffer.readableExtent).toBe(
+					TRANSACTION_LOG_FILE_HEADER_SIZE + TRANSACTION_LOG_ENTRY_HEADER_SIZE + value.length
+				);
+				// V8 leaves shared backing stores out of external memory; Bun's JavaScriptCore counts them.
+				if (shared && !('bun' in process.versions)) {
+					expect(process.memoryUsage().external - externalBefore).toBeLessThan(buffer.length);
+				}
+			}));
 
 		// POSIX-only: the weak-for-frozen optimization applies when a frozen file
 		// is mapped. On Windows getMemoryMap retains the map strongly regardless

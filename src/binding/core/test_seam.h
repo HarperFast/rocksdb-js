@@ -125,8 +125,9 @@ inline std::atomic<bool>& closeFailureAfterCancelFlag() {
 	return pending;
 }
 
-// Delays DBHandle::open() after the registry has returned. A handle must
-// already be adopted and attached while this delay is observable.
+// Delays DBRegistry::OpenDB() after it releases databasesMutex. A handle must
+// already be adopted and attached, and OpenDB() must hold no reference it took
+// under the lock, while this delay is observable.
 inline std::atomic<int>& openAttachDelayMsFlag() {
 	static std::atomic<int> delayMs{0};
 	return delayMs;
@@ -183,12 +184,40 @@ inline bool testConsumeAbortMarkFailure() {
 	return false;
 }
 
+// A count, like abortMarkFailureFlag(): WAL syncs to fail with an injected I/O error.
+inline std::atomic<int>& syncWalFailureFlag() {
+	static std::atomic<int> pending{0};
+	return pending;
+}
+
+inline bool testConsumeSyncWalFailure() {
+	int cur = syncWalFailureFlag().load(std::memory_order_relaxed);
+	while (cur > 0) {
+		if (syncWalFailureFlag().compare_exchange_weak(cur, cur - 1, std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 inline std::atomic<bool>& prelogConflictCheckDisabled() {
 	static std::atomic<bool> disabled{false};
 	return disabled;
 }
 
 inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
+	static std::atomic<bool> retriesOnly{true};
+	return retriesOnly;
+}
+
+// The values ROCKSDB_JS_PRELOG_CHECK selected at module load, which resetting the test switches
+// restores instead of the compiled-in defaults.
+inline std::atomic<bool>& prelogConflictCheckDisabledDefault() {
+	static std::atomic<bool> disabled{false};
+	return disabled;
+}
+
+inline std::atomic<bool>& prelogConflictCheckRetriesOnlyDefault() {
 	static std::atomic<bool> retriesOnly{true};
 	return retriesOnly;
 }
@@ -206,12 +235,18 @@ inline void initializeTestSeams() {
 		closeFailureAfterCancelFlag().store(value && ::atoi(value) > 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_PRELOG_CHECK");
 		if (value && ::strcmp(value, "off") == 0) {
-			prelogConflictCheckDisabled().store(true, std::memory_order_relaxed);
+			prelogConflictCheckDisabledDefault().store(true, std::memory_order_relaxed);
 		} else if (value && ::strcmp(value, "always") == 0) {
-			prelogConflictCheckRetriesOnly().store(false, std::memory_order_relaxed);
+			prelogConflictCheckRetriesOnlyDefault().store(false, std::memory_order_relaxed);
 		}
+		prelogConflictCheckDisabled().store(
+			prelogConflictCheckDisabledDefault().load(std::memory_order_relaxed), std::memory_order_relaxed);
+		prelogConflictCheckRetriesOnly().store(
+			prelogConflictCheckRetriesOnlyDefault().load(std::memory_order_relaxed), std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_ABORT_MARK_FAILURE");
 		abortMarkFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
+		value = ::getenv("ROCKSDB_JS_SYNC_WAL_FAILURE");
+		syncWalFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		iteratorNextDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS"), std::memory_order_relaxed);
 		countScanDelayMsFlag().store(
