@@ -8,7 +8,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <type_traits>
 #include <utility>
 #include "database/db_registry.h"
 #include "database/db_stats.h"
@@ -76,20 +75,10 @@ bool setLiveFlushPolicy(
 }
 
 /**
- * Reads an optional `config()` field: absent, null and undefined leave `out` empty. A value of the
- * wrong type throws `typeError`, or is ignored when none is given. Returns false with an exception
- * pending, including one thrown by a getter.
+ * Gets a `config()` field, leaving `value` null when it is absent, null or undefined. Returns false
+ * with an exception pending, including one thrown by a getter.
  */
-template <typename T>
-bool readField(
-	napi_env env,
-	napi_value params,
-	const char* name,
-	std::optional<T>& out,
-	const char* typeError = nullptr
-) {
-	napi_value value;
-	napi_valuetype type;
+bool getField(napi_env env, napi_value params, const char* name, napi_value& value, napi_valuetype& type) {
 	napi_status status = ::napi_get_named_property(env, params, name, &value);
 	if (status == napi_ok) {
 		status = ::napi_typeof(env, value, &type);
@@ -104,14 +93,35 @@ bool readField(
 		return false;
 	}
 	if (type == napi_undefined || type == napi_null) {
+		value = nullptr;
+	}
+	return true;
+}
+
+/**
+ * Reads an optional `config()` field: absent, null and undefined leave `out` empty. A value of the
+ * wrong type throws `typeError`, or is ignored when none is given. Returns false with an exception
+ * pending.
+ */
+template <typename T>
+bool readField(
+	napi_env env,
+	napi_value params,
+	const char* name,
+	std::optional<T>& out,
+	const char* typeError = nullptr
+) {
+	napi_value value;
+	napi_valuetype type;
+	if (!getField(env, params, name, value, type)) {
+		return false;
+	}
+	if (!value) {
 		return true;
 	}
 	T result;
-	// getValue() also accepts a Buffer for a string.
-	const bool typeMatches = (!std::is_same_v<T, std::string> || type == napi_string) &&
-		getValue(env, value, result) == napi_ok;
-	if (typeMatches) {
-		out = std::move(result);
+	if (getValue(env, value, result) == napi_ok) {
+		out = result;
 	} else if (typeError) {
 		::napi_throw_type_error(env, nullptr, typeError);
 		return false;
@@ -129,16 +139,28 @@ bool readEnumField(
 	const char* typeError,
 	const char* rangeError
 ) {
-	std::optional<std::string> text;
-	if (!readField(env, params, name, text, typeError)) {
+	napi_value value;
+	napi_valuetype type;
+	if (!getField(env, params, name, value, type)) {
 		return false;
 	}
-	if (!text) {
+	if (!value) {
 		return true;
 	}
-	for (const auto& [key, value] : values) {
-		if (*text == key) {
-			out = value;
+	if (type != napi_string) {
+		::napi_throw_type_error(env, nullptr, typeError);
+		return false;
+	}
+	// Fixed-size, so an arbitrarily long string allocates nothing; a truncated one matches no name.
+	char text[32];
+	size_t length = 0;
+	if (::napi_get_value_string_utf8(env, value, text, sizeof(text), &length) != napi_ok) {
+		::napi_throw_type_error(env, nullptr, typeError);
+		return false;
+	}
+	for (const auto& [key, option] : values) {
+		if (std::string_view(text, length) == key) {
+			out = option;
 			return true;
 		}
 	}

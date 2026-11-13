@@ -38,7 +38,6 @@ if (mode === 'beforeOpen') {
 		writeBufferManagerSize: 8 * MiB,
 		verificationTableEntries: -1,
 	});
-	// A getter that throws on the last field read.
 	result.getterRejected = rejectedWith({
 		blockCacheSize: 1 * MiB,
 		writeBufferManagerSize: 8 * MiB,

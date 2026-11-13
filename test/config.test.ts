@@ -42,7 +42,6 @@ describe('config()', () => {
 			enabled: false,
 			flushPolicy: 'oldest',
 		});
-		// RocksDB's 32 MiB default, not the 1 MiB the rejected calls asked for.
 		expect(result.blockCacheCapacity).toBe(32 * MiB);
 		expect(result.afterOpen.enabled).toBe(false);
 	}, 90_000);
