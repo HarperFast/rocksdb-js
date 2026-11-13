@@ -415,6 +415,12 @@ napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value SupportsSharedTransactionLogMaps(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, TransactionLog::SupportsSharedMemoryMaps(), &result));
+	return result;
+}
+
 /**
  * Returns the number of coordinated-retry wake callbacks registered on
  * verification-table locks across the process. Used by tests to verify that a
@@ -660,6 +666,11 @@ NAPI_MODULE_INIT() {
 	napi_value transactionLogMapCountFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapCount", NAPI_AUTO_LENGTH, TransactionLogMapCount, nullptr, &transactionLogMapCountFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapCount", transactionLogMapCountFn));
+
+	// supportsSharedTransactionLogMaps function (test/diagnostics)
+	napi_value supportsSharedTransactionLogMapsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "supportsSharedTransactionLogMaps", NAPI_AUTO_LENGTH, SupportsSharedTransactionLogMaps, nullptr, &supportsSharedTransactionLogMapsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "supportsSharedTransactionLogMaps", supportsSharedTransactionLogMapsFn));
 
 	// lockWakeCallbackCount function (test/diagnostics)
 	napi_value lockWakeCallbackCountFn;
