@@ -38,6 +38,24 @@ describe('maxRetries bounds total attempts', () => {
 			expect(attempts).toBe(3);
 		}));
 
+	it.each([1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+		'rejects non-integer maxRetries %s in both helpers',
+		(maxRetries) =>
+			dbRunner(async ({ db }) => {
+				let runs = 0;
+				await expect(db.transaction(() => void runs++, { maxRetries })).rejects.toThrow(RangeError);
+				expect(() => db.transactionSync(() => void runs++, { maxRetries })).toThrow(RangeError);
+				expect(runs).toBe(0);
+			})
+	);
+
+	it('rejects a non-number maxRetries in both helpers', () =>
+		dbRunner(async ({ db }) => {
+			const maxRetries = '3' as unknown as number;
+			await expect(db.transaction(() => {}, { maxRetries })).rejects.toThrow(TypeError);
+			expect(() => db.transactionSync(() => {}, { maxRetries })).toThrow(TypeError);
+		}));
+
 	it('treats maxRetries: 0 as a single attempt in both helpers', () =>
 		dbRunner(async ({ db }) => {
 			let runs = 0;
