@@ -283,7 +283,10 @@ db.setCompression({ algorithm: 'zstd', level: 19 });
 
 ### `db.config(options)`
 
-Sets global database settings.
+Sets global database settings. Every field is validated before any is applied, so a call rejected
+for an invalid or unchangeable value changes no setting. Enabling `writeBufferManagerAllowStall` on
+a live WriteBufferManager first closes idle pooled iterators; if that fails, the call throws after
+its other settings are applied and the manager is left not stalling.
 
 - `options: object`
   - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks.
