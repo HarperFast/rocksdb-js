@@ -315,9 +315,9 @@ napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-napi_value TransactionLogMapsShared(napi_env env, napi_callback_info info) {
+napi_value SupportsSharedTransactionLogMaps(napi_env env, napi_callback_info info) {
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, TransactionLog::UsesSharedMemoryMaps(), &result));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, TransactionLog::SupportsSharedMemoryMaps(), &result));
 	return result;
 }
 
@@ -604,10 +604,10 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapCount", NAPI_AUTO_LENGTH, TransactionLogMapCount, nullptr, &transactionLogMapCountFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapCount", transactionLogMapCountFn));
 
-	// transactionLogMapsShared function (test/diagnostics)
-	napi_value transactionLogMapsSharedFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapsShared", NAPI_AUTO_LENGTH, TransactionLogMapsShared, nullptr, &transactionLogMapsSharedFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapsShared", transactionLogMapsSharedFn));
+	// supportsSharedTransactionLogMaps function (test/diagnostics)
+	napi_value supportsSharedTransactionLogMapsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "supportsSharedTransactionLogMaps", NAPI_AUTO_LENGTH, SupportsSharedTransactionLogMaps, nullptr, &supportsSharedTransactionLogMapsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "supportsSharedTransactionLogMaps", supportsSharedTransactionLogMapsFn));
 
 	// lockWakeCallbackCount function (test/diagnostics)
 	napi_value lockWakeCallbackCountFn;

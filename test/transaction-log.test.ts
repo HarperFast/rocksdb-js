@@ -10,7 +10,7 @@ import {
 	coolTransactionLogs,
 	type TransactionLog,
 	transactionLogMapCount,
-	transactionLogMapsShared,
+	supportsSharedTransactionLogMaps,
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
 import { withResolvers } from '../src/util.ts';
@@ -4863,7 +4863,7 @@ describe('Transaction Log', () => {
 				await db.transaction(async (txn) => {
 					log.addEntry(value, txn.id);
 				});
-				const shared = transactionLogMapsShared();
+				const shared = supportsSharedTransactionLogMaps();
 				const [major, minor] = process.versions.node.split('.').map(Number);
 				const nodeExportsApi =
 					(major === 24 && minor >= 16) || (major === 26 && minor >= 1) || major >= 27;

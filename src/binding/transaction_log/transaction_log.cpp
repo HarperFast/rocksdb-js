@@ -152,7 +152,7 @@ napi_status createMemoryMapBuffer(
 
 } // namespace
 
-bool TransactionLog::UsesSharedMemoryMaps() {
+bool TransactionLog::SupportsSharedMemoryMaps() {
 	return resolveCreateExternalSharedArrayBuffer() != nullptr;
 }
 

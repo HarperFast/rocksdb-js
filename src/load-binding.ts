@@ -140,8 +140,8 @@ export type NativeTransaction = {
 };
 
 /**
- * A transaction-log memory map. Where `transactionLogMapsShared()` is true its `buffer` is a
- * SharedArrayBuffer: cloning it shares the read-only mapping, and Node 27+ `Blob` rejects it.
+ * A transaction-log memory map. Where `supportsSharedTransactionLogMaps()` is true its `buffer` is
+ * normally a SharedArrayBuffer: cloning it shares the read-only mapping, and Node 27+ `Blob` rejects it.
  */
 export type LogBuffer = Buffer & {
 	dataView: DataView;
@@ -1093,10 +1093,12 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
 /**
- * Whether transaction-log memory maps are SharedArrayBuffer-backed on this runtime. Internal — used
- * by tests.
+ * Whether this runtime can back transaction-log memory maps with a SharedArrayBuffer: the shared
+ * buffer API is exported and the addon could be pinned. An individual mapping can still fall back to
+ * an external buffer if creating its shared buffer fails. Internal — used by tests.
  */
-export const transactionLogMapsShared: () => boolean = binding.transactionLogMapsShared;
+export const supportsSharedTransactionLogMaps: () => boolean =
+	binding.supportsSharedTransactionLogMaps;
 
 /**
  * Number of coordinated-retry wake callbacks registered on verification-table
