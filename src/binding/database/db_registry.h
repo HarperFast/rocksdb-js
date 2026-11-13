@@ -2,6 +2,7 @@
 #define __DB_REGISTRY_H__
 
 #include <condition_variable>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -160,6 +161,14 @@ private:
 	 * `Teardown()` is its terminal owner, not a destructor (invariant 26).
 	 */
 	static DBRegistry* instance;
+
+	/**
+	 * Runs `fn` on every registered descriptor outside `databasesMutex`, then
+	 * retries each one's purge. The snapshot pins every descriptor, so another
+	 * env's last-handle close racing it sees `use_count() > 1` and skips its
+	 * purge; nothing else retries it.
+	 */
+	static void ForEachDescriptor(const std::function<void(DBDescriptor&)>& fn);
 
 public:
 	static CloseResult CloseDB(const std::shared_ptr<DBHandle> handle);

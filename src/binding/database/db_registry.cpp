@@ -1420,15 +1420,12 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 }
 
 /**
- * Close each descriptor's transactions owned by handles created on the given
- * env. Called from the module env-cleanup hook, on the dying env's own thread,
- * before Node frees the env — so a worker that exits with a pending
- * transaction does not leak it into the process-global descriptor for a later
- * Shutdown to walk with a dangling env (HarperFast/rocksdb-js#741). Mirrors
- * RemoveListenersByEnv: snapshot descriptors under databasesMutex, close
- * outside the lock.
+ * The per-env cleanup hooks below run on a dying worker's thread while other
+ * workers close their handles on the same descriptors. A skipped purge that
+ * nothing retries keeps the descriptor and its open RocksDB registered until
+ * process exit.
  */
-void DBRegistry::CloseTransactionsByEnv(napi_env env) {
+void DBRegistry::ForEachDescriptor(const std::function<void(DBDescriptor&)>& fn) {
 	if (!instance) {
 		return;
 	}
@@ -1445,8 +1442,35 @@ void DBRegistry::CloseTransactionsByEnv(napi_env env) {
 	}
 
 	for (auto& descriptor : descriptors) {
-		descriptor->closeTransactionsByEnv(env);
+		fn(*descriptor);
 	}
+	if (const int delayMs = envCleanupPinDelayMsFlag().load(std::memory_order_relaxed);
+		delayMs > 0 && !descriptors.empty()) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+	}
+
+	std::vector<DBKey> keys;
+	keys.reserve(descriptors.size());
+	for (const auto& descriptor : descriptors) {
+		keys.push_back(descriptorKey(*descriptor));
+	}
+	descriptors.clear();
+	for (const auto& key : keys) {
+		PurgeIfUnreferenced(key);
+	}
+}
+
+/**
+ * Close each descriptor's transactions owned by handles created on the given
+ * env. Called from the module env-cleanup hook, on the dying env's own thread,
+ * before Node frees the env — so a worker that exits with a pending
+ * transaction does not leak it into the process-global descriptor for a later
+ * Shutdown to walk with a dangling env (HarperFast/rocksdb-js#741). Mirrors
+ * RemoveListenersByEnv: snapshot descriptors under databasesMutex, close
+ * outside the lock.
+ */
+void DBRegistry::CloseTransactionsByEnv(napi_env env) {
+	ForEachDescriptor([env](DBDescriptor& descriptor) { descriptor.closeTransactionsByEnv(env); });
 }
 
 void DBRegistry::CloseIdlePooledIterators() {
@@ -1481,24 +1505,7 @@ void DBRegistry::CloseIdlePooledIterators() {
  * databasesMutex -> events.mutex ordering.
  */
 void DBRegistry::RemoveListenersByEnv(napi_env env) {
-	if (!instance) {
-		return;
-	}
-
-	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
-	{
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		descriptors.reserve(instance->databases.size());
-		for (auto& [_key, entry] : instance->databases) {
-			if (entry.descriptor) {
-				descriptors.push_back(entry.descriptor);
-			}
-		}
-	}
-
-	for (auto& descriptor : descriptors) {
-		descriptor->removeListenersByEnv(env);
-	}
+	ForEachDescriptor([env](DBDescriptor& descriptor) { descriptor.removeListenersByEnv(env); });
 }
 
 /**
@@ -1510,24 +1517,7 @@ void DBRegistry::RemoveListenersByEnv(napi_env env) {
  * takes the descriptor registry mutex, then the completion mutex).
  */
 void DBRegistry::ReleaseCommitCompletionsByEnv(napi_env env) {
-	if (!instance) {
-		return;
-	}
-
-	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
-	{
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		descriptors.reserve(instance->databases.size());
-		for (auto& [_key, entry] : instance->databases) {
-			if (entry.descriptor) {
-				descriptors.push_back(entry.descriptor);
-			}
-		}
-	}
-
-	for (auto& descriptor : descriptors) {
-		descriptor->releaseCommitCompletionsByEnv(env);
-	}
+	ForEachDescriptor([env](DBDescriptor& descriptor) { descriptor.releaseCommitCompletionsByEnv(env); });
 }
 
 /**
@@ -1539,24 +1529,7 @@ void DBRegistry::ReleaseCommitCompletionsByEnv(napi_env env) {
  * invariant 18). Mirrors RemoveListenersByEnv.
  */
 void DBRegistry::ReleaseLogRefsByEnv(napi_env env) {
-	if (!instance) {
-		return;
-	}
-
-	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
-	{
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		descriptors.reserve(instance->databases.size());
-		for (auto& [_key, entry] : instance->databases) {
-			if (entry.descriptor) {
-				descriptors.push_back(entry.descriptor);
-			}
-		}
-	}
-
-	for (auto& descriptor : descriptors) {
-		descriptor->releaseLogRefsByEnv(env);
-	}
+	ForEachDescriptor([env](DBDescriptor& descriptor) { descriptor.releaseLogRefsByEnv(env); });
 }
 
 /**
@@ -1591,24 +1564,7 @@ void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
  * descriptor's locks (rocksdb-js#848). Mirrors ReleaseParkTimeoutsByEnv.
  */
 void DBRegistry::ReleaseLockCallbacksByEnv(napi_env env) {
-	if (!instance) {
-		return;
-	}
-
-	std::vector<std::shared_ptr<DBDescriptor>> descriptors;
-	{
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		descriptors.reserve(instance->databases.size());
-		for (auto& [_key, entry] : instance->databases) {
-			if (entry.descriptor) {
-				descriptors.push_back(entry.descriptor);
-			}
-		}
-	}
-
-	for (auto& descriptor : descriptors) {
-		descriptor->releaseLockCallbacksByEnv(env);
-	}
+	ForEachDescriptor([env](DBDescriptor& descriptor) { descriptor.releaseLockCallbacksByEnv(env); });
 }
 
 /**
