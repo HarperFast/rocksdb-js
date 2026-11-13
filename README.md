@@ -2356,6 +2356,15 @@ figures and process memory usage:
   it from disk on the next access. Mapped log data therefore lives in the page cache and cannot
   exhaust memory the way heap allocations can; a full scan of a log larger than RAM will simply
   cycle pages through the cache.
+- **Views are backed by a `SharedArrayBuffer` where the runtime supports it** (Node 24.16+, 26.1+
+  and 27+). V8 counts an external `ArrayBuffer` toward its
+  external-memory limit, and from Node 27 holding more than about twice the heap limit in them
+  forces a full GC on every new one; a shared backing store is not counted. Three things follow:
+  `entry.data.buffer instanceof ArrayBuffer` is false and Node 27's `Blob` rejects it;
+  `structuredClone`/`postMessage` of entry data share the read-only map rather than copying it, so
+  writing to such a clone faults the process (copy with `Buffer.from(entry.data)` first); and a
+  dropped view is unmapped only when ordinary allocation triggers a garbage collection, so an idle
+  worker can keep mappings, including purged files, until it next allocates.
 
 OS-specific differences:
 

@@ -139,6 +139,10 @@ export type NativeTransaction = {
 	useLog(name: string | number, jsDatabase: NativeDatabase): TransactionLog;
 };
 
+/**
+ * A transaction-log memory map. Where `supportsSharedTransactionLogMaps()` is true its `buffer` is
+ * normally a SharedArrayBuffer: cloning it shares the read-only mapping, and Node 27+ `Blob` rejects it.
+ */
 export type LogBuffer = Buffer & {
 	dataView: DataView;
 	logId: number;
@@ -1139,10 +1143,18 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
 
 /**
  * Number of live transaction-log memory maps across the process. Internal —
- * used by tests to verify that releasing a frozen log's external buffer unmaps
+ * used by tests to verify that releasing a frozen log's mapping buffer unmaps
  * the underlying mapping rather than leaving it retained.
  */
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
+
+/**
+ * Whether this runtime can back transaction-log memory maps with a SharedArrayBuffer: the shared
+ * buffer API is exported and the addon could be pinned. An individual mapping can still fall back to
+ * an external buffer if creating its shared buffer fails. Internal — used by tests.
+ */
+export const supportsSharedTransactionLogMaps: () => boolean =
+	binding.supportsSharedTransactionLogMaps;
 
 /**
  * Number of coordinated-retry wake callbacks registered on verification-table
@@ -1164,6 +1176,12 @@ export const iteratorPoolStats: () => { created: number; reused: number } =
  * `ROCKSDB_JS_ITERATOR_POOL=0`). Internal.
  */
 export const iteratorPoolEnabled: boolean = binding.iteratorPoolEnabled;
+
+/**
+ * Test-only: restores every process-global `*ForTesting` switch to its default and returns the
+ * names of those that were not at it. `test/setup.ts` runs it before each Vitest file.
+ */
+export const resetTestSwitchesForTesting: () => string[] = binding.resetTestSwitchesForTesting;
 
 /**
  * Test-only: force the next `count` transaction commits to fail with TryAgain (rolled back, so
