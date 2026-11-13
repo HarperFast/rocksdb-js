@@ -371,7 +371,12 @@ describe('getMany()', () => {
 				(values) => values.length,
 				(error: Error) => error.message
 			);
-			expect([50, 'Database closed during get many operation']).toContain(outcome);
+			// Either the read finished before the close, or the worker saw the close and aborted.
+			if (typeof outcome === 'number') {
+				expect(outcome).toBe(50);
+			} else {
+				expect(outcome).toMatch(/Database closed during get many operation/);
+			}
 		} finally {
 			closeAndRemove(seeded);
 		}
