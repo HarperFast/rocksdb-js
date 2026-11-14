@@ -151,6 +151,13 @@ inline std::atomic<int>& closeRetryDelayMsFlag() {
 	return delayMs;
 }
 
+// Holds an env-cleanup hook's registry snapshot, so a last-handle close on another thread lands
+// while it pins the descriptor.
+inline std::atomic<int>& envCleanupPinDelayMsFlag() {
+	static std::atomic<int> delayMs{0};
+	return delayMs;
+}
+
 // Per-column-family delay inside registryStatus()'s column walk, so a foreign
 // destroy()/shutdown() clearing `DBDescriptor::columns` lands in the middle of
 // it. Without the columnsMutex snapshot that walk is a use-after-free on the
@@ -275,6 +282,8 @@ inline void initializeTestSeams() {
 			testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS"), std::memory_order_relaxed);
 		registryStatusColumnsDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS"), std::memory_order_relaxed);
+		envCleanupPinDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS"), std::memory_order_relaxed);
 		clearDeleteDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_CLEAR_DELAY_MS"), std::memory_order_relaxed);
 	});

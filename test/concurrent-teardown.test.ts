@@ -1,6 +1,8 @@
-import { generateDBPath } from './lib/util.ts';
+import { getRegistryStatus } from '../src/index.ts';
+import { generateDBPath, runFixture } from './lib/util.ts';
 import { createWorkerBootstrapScript } from './lib/worker-bootstrap.ts';
 import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
 
@@ -47,6 +49,9 @@ describe('Concurrent cross-thread teardown', () => {
 			);
 
 			expect(exitCodes).toEqual(Array.from({ length: WORKERS }, () => 0));
+			// A descriptor left registered stays open until process exit, whose final flush fails once
+			// the directory below is gone.
+			expect(getRegistryStatus().filter((entry) => entry.path === path)).toEqual([]);
 			// Best-effort temp cleanup. On Windows the DB files can briefly stay
 			// locked right after the workers exit, so retry and never fail the
 			// test on a cleanup EBUSY — the teardown under test already passed.
@@ -57,4 +62,15 @@ describe('Concurrent cross-thread teardown', () => {
 			}
 		}
 	}, 60_000);
+
+	it('purges a descriptor whose last handle closed while a dying env pinned it', async () => {
+		const path = generateDBPath();
+		try {
+			await runFixture(join(__dirname, 'fixtures', 'fork-env-cleanup-purge.mts'), path, {
+				env: { ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS: '500' },
+			});
+		} finally {
+			rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
 });

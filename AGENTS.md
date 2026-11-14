@@ -373,6 +373,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `registryStatus()`'s column walk, so a concurrent `dropSync()` or close-time `columns.clear()`
   lands in the middle of it (`test/fixtures/fork-registry-status-column-race.mts`). Snapshotted in
   `initializeTestSeams()` like the seams above
+- `ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS` - Test-only: delay while a per-env cleanup hook's registry
+  snapshot pins every descriptor, so another thread's last-handle close skips its purge
+  (`test/fixtures/fork-env-cleanup-purge.mts`). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS` / `ROCKSDB_JS_TXN_CLOSE_DELAY_MS` - Test-only delays inside
   iterator construction and transaction close. Both are snapshotted in `initializeTestSeams()`, so
   they must be set in the environment that starts the process rather than through an in-process
@@ -513,7 +516,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    their own `shared_ptr` for the duration of a copy (backup, backup stream, checkpoint) make a
    racing close skip the purge (`use_count > 1`), so their state destructors re-run
    `PurgeIfUnreferenced` after releasing the ref — without that retry the skipped purge is permanent
-   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). Once `beginClose()` wins,
+   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). The per-env cleanup hooks
+   pin every descriptor the same way (`DBRegistry::ForEachDescriptor`) while other workers close
+   theirs, so the hook ends with `DBRegistry::PurgeUnreferenced()` once its last pinning step has released
+   them (HarperFast/rocksdb-js#1074). Once `beginClose()` wins,
    `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
    path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
    immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
