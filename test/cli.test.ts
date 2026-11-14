@@ -1,6 +1,7 @@
 import { RocksDatabase } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
-import { spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -43,6 +44,8 @@ function cli(args: string[], options: { cwd?: string; input?: string } = {}): Pr
 }
 
 const tempPaths: string[] = [];
+// Children a test spawns itself; reaped before their databases are removed.
+const liveChildren = new Set<ChildProcess>();
 
 function tempDBPath(): string {
 	const path = generateDBPath();
@@ -62,7 +65,15 @@ function seed(dbPath: string, entries: Record<string, unknown>, name?: string) {
 describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.bun))(
 	'CLI one-shot commands',
 	() => {
-		afterEach(() => {
+		afterEach(async () => {
+			for (const child of liveChildren) {
+				if (child.exitCode === null && child.signalCode === null) {
+					const closed = once(child, 'close');
+					child.kill('SIGKILL');
+					await closed;
+				}
+			}
+			liveChildren.clear();
 			for (const path of tempPaths) rmSync(path, { force: true, recursive: true, maxRetries: 3 });
 			tempPaths.length = 0;
 		});
@@ -325,6 +336,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				env: { ...process.env, NO_COLOR: '1' },
 				stdio: ['ignore', 'pipe', 'pipe'],
 			});
+			liveChildren.add(child);
 			let stderr = '';
 			child.stderr.on('data', (chunk) => {
 				stderr += chunk.toString();
