@@ -494,7 +494,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.code).toBe(2);
 		});
 
-		it('does not purge aged transaction logs when opening for a restore', async () => {
+		it('does not purge aged transaction logs when opening for a backup or restore', async () => {
 			const dbPath = tempDBPath();
 			const backupDir = tempDBPath();
 			const db = RocksDatabase.open(dbPath, { transactionLogMaxSize: 400 });
@@ -509,11 +509,13 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			} finally {
 				db.close();
 			}
-			expect((await cli([dbPath, 'backups', backupDir, 'backup'])).code).toBe(0);
 			const segment = join(dbPath, 'transaction_logs', 'events', '1.txnlog');
 			expect(existsSync(join(dbPath, 'transaction_logs', 'events', '2.txnlog'))).toBe(true);
 			const aged = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
 			utimesSync(segment, aged, aged);
+
+			expect((await cli([dbPath, 'backups', backupDir, 'backup'])).code).toBe(0);
+			expect(existsSync(segment)).toBe(true);
 
 			const result = await cli([dbPath, 'backups', backupDir, 'restore', '1']);
 			expect(result.code).toBe(1);

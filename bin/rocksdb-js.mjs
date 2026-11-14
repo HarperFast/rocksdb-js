@@ -37,12 +37,12 @@ const COMMANDS = [
 		locks: ([, subcommand]) => subcommand === 'backup',
 		opens: ([, subcommand]) =>
 			subcommand === 'backup' || (subcommand === 'restore' && !isEmptyPath(dbPath)),
-		// A restore opens the database only for its lock, so that open must not purge aged
-		// transaction-log segments before the restore is confirmed. '0ms' disables retention
-		// (a numeric 0 reads as unset), and with it the age threshold must be 0 or a log write
-		// never returns (#1079).
+		// Backup and restore open the database only for its lock, so that open must not purge
+		// aged transaction-log segments: a backup would miss them, and a declined restore would
+		// lose them. '0ms' disables retention (a numeric 0 reads as unset), and with it the age
+		// threshold must be 0 or a log write never returns (#1079).
 		openOptions: ([, subcommand]) =>
-			subcommand === 'restore'
+			subcommand === 'backup' || subcommand === 'restore'
 				? { transactionLogRetention: '0ms', transactionLogMaxAgeThreshold: 0 }
 				: undefined,
 		validate: validateBackupsArgs,
