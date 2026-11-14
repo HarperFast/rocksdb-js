@@ -330,7 +330,16 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				stderr += chunk.toString();
 			});
 			child.stdout.once('data', () => child.stdout.destroy());
-			const code = await new Promise((resolve) => child.on('close', resolve));
+			const code = await new Promise((resolve, reject) => {
+				const timer = setTimeout(() => {
+					child.kill('SIGKILL');
+					reject(new Error(`CLI timed out after stdout closed\n${stderr}`));
+				}, CLI_TIMEOUT_MS);
+				child.on('close', (exitCode) => {
+					clearTimeout(timer);
+					resolve(exitCode);
+				});
+			});
 			expect(stderr).toBe('');
 			expect(code).toBe(0);
 		});
@@ -513,7 +522,6 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.stderr).toContain('Pass --yes to confirm');
 			expect(existsSync(segment)).toBe(true);
 
-			// Any other read-write open still applies the default retention.
 			expect((await cli([dbPath, 'put', 'x', 'y'])).code).toBe(0);
 			expect(existsSync(segment)).toBe(false);
 		});

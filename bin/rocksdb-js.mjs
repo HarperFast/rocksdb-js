@@ -38,10 +38,13 @@ const COMMANDS = [
 		opens: ([, subcommand]) =>
 			subcommand === 'backup' || (subcommand === 'restore' && !isEmptyPath(dbPath)),
 		// A restore opens the database only for its lock, so that open must not purge aged
-		// transaction-log segments before the restore is confirmed. '0ms' disables retention;
-		// a numeric 0 is read as unset and falls back to the default.
+		// transaction-log segments before the restore is confirmed. '0ms' disables retention
+		// (a numeric 0 reads as unset), and with it the age threshold must be 0 or a log write
+		// never returns (#1079).
 		openOptions: ([, subcommand]) =>
-			subcommand === 'restore' ? { transactionLogRetention: '0ms' } : undefined,
+			subcommand === 'restore'
+				? { transactionLogRetention: '0ms', transactionLogMaxAgeThreshold: 0 }
+				: undefined,
 		validate: validateBackupsArgs,
 		run: backupsCommand,
 		print: printBackupsResult,
@@ -1034,9 +1037,7 @@ async function putCommand([key, ...valueParts]) {
 	return { key, value };
 }
 
-// Values are read with the range. A value that cannot be decoded ends that range, so the
-// failed row is found by key and read with get() to report it in place, and the scan
-// resumes after it.
+// An undecodable value throws out of the range without its key; get() reports it on its row.
 async function* queryCommand([start, end]) {
 	let unreadable = 0;
 	let lastKey;
@@ -1061,7 +1062,6 @@ async function* queryCommand([start, end]) {
 					yield { key, error: String(readError) };
 					continue;
 				}
-				// The row reads on its own, so the range itself failed.
 				throw error;
 			}
 			if (step.done) break;
@@ -1292,7 +1292,6 @@ async function runOnce() {
 		await openOrExplain(def.creates ? 'create' : 'error', def.openOptions?.(commandArgs));
 	}
 	const result = await runCommand(def, commandArgs);
-	// A command that reports a failed check in its result rather than throwing.
 	if (def.failed?.(result)) process.exitCode = 1;
 }
 
