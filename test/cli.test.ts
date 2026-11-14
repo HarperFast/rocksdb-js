@@ -323,6 +323,8 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 		});
 
 		it('exits 0 when stdout closes mid-query', { timeout: 2 * CLI_TIMEOUT_MS }, async () => {
+			// The child's deadline is what is left of the test's, so it fires first.
+			const deadline = Date.now() + 2 * CLI_TIMEOUT_MS - 1000;
 			const dbPath = tempDBPath();
 			const db = RocksDatabase.open(dbPath);
 			try {
@@ -345,7 +347,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			const timer = setTimeout(() => {
 				timedOut = true;
 				child.kill('SIGKILL');
-			}, CLI_TIMEOUT_MS);
+			}, deadline - Date.now());
 			const code = await new Promise((resolve) => child.on('close', resolve));
 			clearTimeout(timer);
 			expect(timedOut, `CLI timed out after stdout closed\n${stderr}`).toBe(false);
