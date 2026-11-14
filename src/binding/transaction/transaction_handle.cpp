@@ -924,6 +924,11 @@ napi_value TransactionHandle::multiGet(
 		return nullptr;
 	}
 	auto readColumnDescriptor = dbHandle->columnDescriptor;
+	rocksdb::DB* readDb = dbHandle->descriptor ? dbHandle->descriptor->db.get() : nullptr;
+	if (!readDb) {
+		::napi_throw_error(env, nullptr, "Database closed during transaction get many operation");
+		return nullptr;
+	}
 
 	rocksdb::ReadOptions readOptions;
 	if (this->snapshotSet) {
@@ -943,7 +948,7 @@ napi_value TransactionHandle::multiGet(
 		return nullptr;
 	}
 	state->readColumnDescriptor = std::move(readColumnDescriptor);
-	state->readDb = dbHandle->descriptor->db.get();
+	state->readDb = readDb;
 	if (this->snapshotSet) {
 		state->snapshot = this->txn->GetTimestampedSnapshot();
 		state->readOptions.snapshot = state->snapshot.get();

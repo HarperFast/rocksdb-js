@@ -1622,8 +1622,12 @@ function readValues(store: Store | undefined, result: Buffer | number, count: nu
 			? new Int32Array(packed.buffer, packed.byteOffset, count)
 			: new Int32Array(packed.buffer.slice(packed.byteOffset, packed.byteOffset + count * 4));
 	// Every read that returns the shared value buffer sets its `end`, so a decoder that reads the
-	// database while values are still undecoded in that buffer changes this mark.
-	const mark = shared ? (VALUE_BUFFER.end = --sharedBatchMark) : 0;
+	// database while values are still undecoded in that buffer changes this mark. It is negative, so
+	// no value length equals it, and wraps to stay a small integer.
+	const mark = shared
+		? (VALUE_BUFFER.end = sharedBatchMark =
+				sharedBatchMark > -0x40000000 ? sharedBatchMark - 1 : -1)
+		: 0;
 	const decoder = store?.decoder;
 	// msgpackr honors `start`, so its values need no view; other decoders may not.
 	const decodeInPlace =
