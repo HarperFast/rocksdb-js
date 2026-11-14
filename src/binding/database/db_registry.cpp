@@ -1567,7 +1567,7 @@ void DBRegistry::ReleaseParkTimeoutsByEnv(napi_env env) {
 
 /**
  * Env-cleanup hook: drop every unlock callback a dying env queued on any
- * descriptor's locks (rocksdb-js#848). Mirrors ReleaseParkTimeoutsByEnv.
+ * descriptor's locks (rocksdb-js#848).
  */
 void DBRegistry::ReleaseLockCallbacksByEnv(napi_env env) {
 	ForEachDescriptor([env](DBDescriptor& descriptor) { descriptor.releaseLockCallbacksByEnv(env); });

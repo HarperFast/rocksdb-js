@@ -33,6 +33,10 @@ while ((getRegistryStatus().find((entry) => entry.path === path)?.refCount ?? 0)
 	await delay(5);
 }
 db.close();
+// The hook releases its pin between steps; a close that landed in that gap purged itself.
+if (!getRegistryStatus().some((entry) => entry.path === path)) {
+	throw new Error('The close did not overlap the cleanup hook pin');
+}
 const code = await exited;
 if (code !== 0) throw new Error(`Worker exited with code ${code}`);
 
