@@ -330,16 +330,14 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				stderr += chunk.toString();
 			});
 			child.stdout.once('data', () => child.stdout.destroy());
-			const code = await new Promise((resolve, reject) => {
-				const timer = setTimeout(() => {
-					child.kill('SIGKILL');
-					reject(new Error(`CLI timed out after stdout closed\n${stderr}`));
-				}, CLI_TIMEOUT_MS);
-				child.on('close', (exitCode) => {
-					clearTimeout(timer);
-					resolve(exitCode);
-				});
-			});
+			let timedOut = false;
+			const timer = setTimeout(() => {
+				timedOut = true;
+				child.kill('SIGKILL');
+			}, CLI_TIMEOUT_MS);
+			const code = await new Promise((resolve) => child.on('close', resolve));
+			clearTimeout(timer);
+			expect(timedOut, `CLI timed out after stdout closed\n${stderr}`).toBe(false);
 			expect(stderr).toBe('');
 			expect(code).toBe(0);
 		});

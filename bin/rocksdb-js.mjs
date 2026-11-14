@@ -1210,8 +1210,8 @@ async function runCommand(def, args) {
 	assertUsage(def, args);
 	assertAllowed(def, resolveAccess(def, args));
 	const result = await def.run(args);
+	if (!interactive && def.failed?.(result)) process.exitCode = 1;
 	await emitResult(def, result);
-	return result;
 }
 
 function printHelp(log = console.log) {
@@ -1291,8 +1291,7 @@ async function runOnce() {
 		if (!(await ensureDatabaseExists(Boolean(def.creates)))) throw new CLIError('Cancelled');
 		await openOrExplain(def.creates ? 'create' : 'error', def.openOptions?.(commandArgs));
 	}
-	const result = await runCommand(def, commandArgs);
-	if (def.failed?.(result)) process.exitCode = 1;
+	await runCommand(def, commandArgs);
 }
 
 async function runREPL() {
