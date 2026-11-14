@@ -169,28 +169,36 @@ TEST(OpenStatus, MissingSstInsideOddDirectoryIsTheRace) {
 
 TEST(OpenStatus, PosixLockContentionIsLocked) {
 	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
-		"While lock file: /data/db/LOCK", "Resource temporarily unavailable")));
+		"While lock file: /data/db/LOCK", "Resource temporarily unavailable"
+	)));
 	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
 		"lock hold by current process, acquire time 1 acquiring thread 2: /data/db/LOCK",
-		"No locks available")));
+		"No locks available"
+	)));
 }
 
 TEST(OpenStatus, WindowsSharingViolationIsLocked) {
 	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
 		"Failed to create lock file: C:\\tmp\\testdb-1/LOCK",
-		"The process cannot access the file because it is being used by another process.\r\n")));
+		"The process cannot access the file because it is being used by another process.\r\n"
+	)));
 	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
 		"Failed to create lock file: C:\\tmp\\testdb-1\\LOCK",
-		"The process cannot access the file because it is being used by another process.")));
+		"The process cannot access the file because it is being used by another process."
+	)));
 }
 
 TEST(OpenStatus, OtherLockFileFailuresAreNotLocked) {
 	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::IOError(
-		"While open a file for lock: /data/db/LOCK", "Permission denied")));
+		"While open a file for lock: /data/db/LOCK", "Permission denied"
+	)));
 	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::IOError(
-		"Failed to create lock file: C:\\tmp\\testdb-1/LOCK", "Access is denied.")));
+		"Failed to create lock file: C:\\tmp\\testdb-1/LOCK", "Access is denied."
+	)));
 	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::Corruption(
-		"While lock file: /data/db/LOCK", "Resource temporarily unavailable")));
+		"While lock file: /data/db/LOCK", "Resource temporarily unavailable"
+	)));
 	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::IOError(
-		"While lock file: /data/LOCKS/db", "Resource temporarily unavailable")));
+		"While lock file: /data/LOCKS/db", "Resource temporarily unavailable"
+	)));
 }

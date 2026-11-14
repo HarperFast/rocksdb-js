@@ -160,7 +160,7 @@ napi_value multiGetSyncResult(
 		return nullptr;
 	}
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) && handle.defaultValueBufferPtr != nullptr &&
-			resultSize <= handle.defaultValueBufferLength) {
+		resultSize <= handle.defaultValueBufferLength) {
 		batch.writeResult(handle.defaultValueBufferPtr);
 		NAPI_STATUS_THROWS(::napi_create_int32(env, static_cast<int32_t>(resultSize), &result));
 		return result;

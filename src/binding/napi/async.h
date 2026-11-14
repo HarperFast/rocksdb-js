@@ -244,13 +244,12 @@ struct AsyncWorkHandle {
  * references and async work. Set `state->completed` while this owns a state that holds no async
  * work registration, so the destructor does not release one; `release()` once the work is queued.
  */
-template<typename State>
+template <typename State>
 struct PendingAsyncState {
 	napi_env env;
 	State* state;
 
-	PendingAsyncState(napi_env env, State* state)
-		: env(env), state(state) {}
+	PendingAsyncState(napi_env env, State* state) : env(env), state(state) {}
 
 	~PendingAsyncState() {
 		if (!this->state) return;

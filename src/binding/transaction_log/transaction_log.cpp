@@ -95,7 +95,8 @@ using CreateExternalSharedArrayBuffer = napi_status(NAPI_CDECL*)(
 	size_t byte_length,
 	NoEnvFinalize finalize_cb,
 	void* finalize_hint,
-	napi_value* result);
+	napi_value* result
+);
 
 void NAPI_CDECL releaseSharedMemoryMap(void* data, void* hint) {
 	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile SharedArrayBuffer released memoryMapHandle=%p\n", hint);
@@ -111,9 +112,10 @@ bool pinAddon() {
 #ifdef _WIN32
 	HMODULE module = nullptr;
 	return ::GetModuleHandleExW(
-		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-		reinterpret_cast<LPCWSTR>(&pinAddon),
-		&module) != 0;
+			   GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+			   reinterpret_cast<LPCWSTR>(&pinAddon),
+			   &module
+		   ) != 0;
 #else
 	Dl_info info;
 	if (::dladdr(reinterpret_cast<void*>(&pinAddon), &info) == 0 || info.dli_fname == nullptr) {
@@ -154,13 +156,7 @@ napi_status createMemoryMapBuffer(
 	MemoryMap* memoryMap = memoryMapHandle->get();
 	auto createShared = resolveCreateExternalSharedArrayBuffer();
 	napi_value sharedArrayBuffer;
-	if (createShared && createShared(
-			env,
-			memoryMap->map,
-			memoryMap->fileSize,
-			releaseSharedMemoryMap,
-			memoryMapHandle,
-			&sharedArrayBuffer) == napi_ok) {
+	if (createShared && createShared(env, memoryMap->map, memoryMap->fileSize, releaseSharedMemoryMap, memoryMapHandle, &sharedArrayBuffer) == napi_ok) {
 		napi_value global, bufferClass, from;
 		NAPI_STATUS_RETURN(::napi_get_global(env, &global));
 		NAPI_STATUS_RETURN(::napi_get_named_property(env, global, "Buffer", &bufferClass));
@@ -176,7 +172,8 @@ napi_status createMemoryMapBuffer(
 			delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
 		},
 		memoryMapHandle,
-		result);
+		result
+	);
 }
 
 } // namespace

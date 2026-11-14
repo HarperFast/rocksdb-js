@@ -240,39 +240,39 @@ struct TestSwitch {
 };
 
 static const TestSwitch testSwitches[] = {
-	{"forceTryAgainForTesting", ForceTryAgainForTesting, []() {
-		return forceTryAgainCounter().exchange(0, std::memory_order_relaxed) != 0;
-	}},
-	{"disablePrelogConflictCheckForTesting", DisablePrelogConflictCheckForTesting, []() {
-		const bool initial = prelogConflictCheckDisabledDefault().load(std::memory_order_relaxed);
-		return prelogConflictCheckDisabled().exchange(initial, std::memory_order_relaxed) != initial;
-	}},
-	{"setPrelogConflictCheckRetriesOnlyForTesting", SetPrelogConflictCheckRetriesOnlyForTesting, []() {
-		const bool initial = prelogConflictCheckRetriesOnlyDefault().load(std::memory_order_relaxed);
-		return prelogConflictCheckRetriesOnly().exchange(initial, std::memory_order_relaxed) != initial;
-	}},
-	{"forceDropFailureForTesting", ForceDropFailureForTesting, []() {
-		return forceDropFailureMode().exchange(0, std::memory_order_relaxed) != 0;
-	}},
-	{"setTransactionStagingDelayForTesting", SetTransactionStagingDelayForTesting, []() {
-		const bool changed = transactionStagingDelayCountdown().load(std::memory_order_relaxed) != 0 ||
-			transactionStagingDelayMs().load(std::memory_order_relaxed) != 0 ||
-			transactionStagingDelayActive().load(std::memory_order_acquire);
-		setTransactionStagingDelayForTesting(0, 0);
-		return changed;
-	}},
-	{"setTransactionCommitAdmissionDelayForTesting", SetTransactionCommitAdmissionDelayForTesting, []() {
-		const bool changed = transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) != 0 ||
-			transactionCommitAdmissionDelayActive().load(std::memory_order_acquire);
-		setTransactionCommitAdmissionDelayForTesting(0);
-		return changed;
-	}},
-	{"setWriteBufferManagerJoinDelayForTesting", SetWriteBufferManagerJoinDelayForTesting, []() {
-		const bool changed = writeBufferManagerJoinDelayCountdown().load(std::memory_order_relaxed) != 0 ||
-			writeBufferManagerJoinDelayMs().load(std::memory_order_relaxed) != 0;
-		setWriteBufferManagerJoinDelayForTesting(0, 0);
-		return changed;
-	}},
+	{ "forceTryAgainForTesting", ForceTryAgainForTesting, []() {
+		 return forceTryAgainCounter().exchange(0, std::memory_order_relaxed) != 0;
+	 } },
+	{ "disablePrelogConflictCheckForTesting", DisablePrelogConflictCheckForTesting, []() {
+		 const bool initial = prelogConflictCheckDisabledDefault().load(std::memory_order_relaxed);
+		 return prelogConflictCheckDisabled().exchange(initial, std::memory_order_relaxed) != initial;
+	 } },
+	{ "setPrelogConflictCheckRetriesOnlyForTesting", SetPrelogConflictCheckRetriesOnlyForTesting, []() {
+		 const bool initial = prelogConflictCheckRetriesOnlyDefault().load(std::memory_order_relaxed);
+		 return prelogConflictCheckRetriesOnly().exchange(initial, std::memory_order_relaxed) != initial;
+	 } },
+	{ "forceDropFailureForTesting", ForceDropFailureForTesting, []() {
+		 return forceDropFailureMode().exchange(0, std::memory_order_relaxed) != 0;
+	 } },
+	{ "setTransactionStagingDelayForTesting", SetTransactionStagingDelayForTesting, []() {
+		 const bool changed = transactionStagingDelayCountdown().load(std::memory_order_relaxed) != 0 ||
+			 transactionStagingDelayMs().load(std::memory_order_relaxed) != 0 ||
+			 transactionStagingDelayActive().load(std::memory_order_acquire);
+		 setTransactionStagingDelayForTesting(0, 0);
+		 return changed;
+	 } },
+	{ "setTransactionCommitAdmissionDelayForTesting", SetTransactionCommitAdmissionDelayForTesting, []() {
+		 const bool changed = transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) != 0 ||
+			 transactionCommitAdmissionDelayActive().load(std::memory_order_acquire);
+		 setTransactionCommitAdmissionDelayForTesting(0);
+		 return changed;
+	 } },
+	{ "setWriteBufferManagerJoinDelayForTesting", SetWriteBufferManagerJoinDelayForTesting, []() {
+		 const bool changed = writeBufferManagerJoinDelayCountdown().load(std::memory_order_relaxed) != 0 ||
+			 writeBufferManagerJoinDelayMs().load(std::memory_order_relaxed) != 0;
+		 setWriteBufferManagerJoinDelayForTesting(0, 0);
+		 return changed;
+	 } },
 };
 
 napi_value ResetTestSwitchesForTesting(napi_env env, napi_callback_info info) {

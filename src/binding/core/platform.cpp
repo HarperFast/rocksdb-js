@@ -306,8 +306,7 @@ int syncDescriptor(int fd, bool dataOnly) {
 		result = ::fcntl(fd, F_FULLFSYNC);
 		// Only an unsupported F_FULLFSYNC falls back: after an I/O error the pages may already be
 		// clean, so a following fsync would report success for lost data.
-		if (result < 0 && (errno == ENOTSUP || errno == EOPNOTSUPP || errno == EINVAL ||
-			errno == ENOTTY)) {
+		if (result < 0 && (errno == ENOTSUP || errno == EOPNOTSUPP || errno == EINVAL || errno == ENOTTY)) {
 			result = ::fsync(fd);
 		}
 #else
