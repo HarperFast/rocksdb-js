@@ -60,7 +60,8 @@ if (!isMainThread) {
 		const goAt = performance.now();
 		worker.postMessage('go');
 		await until(() => transactionLogMapCount() === before + 1, 'the worker to map segment 1');
-		// The worker's delay starts after it receives 'go', so this proves terminate() lands inside it.
+		// The worker's delay starts after it receives 'go', so terminate() lands inside it unless this
+		// thread stalls for half the delay between the check and the call.
 		if (performance.now() - goAt > delayMs / 2) fail('too slow to terminate inside the delay');
 		await worker.terminate();
 		if (messages.includes('buffer')) fail('terminate() landed after the buffer was created');

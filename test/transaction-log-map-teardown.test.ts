@@ -25,7 +25,7 @@ describe.skipIf(process.platform === 'win32')('Transaction log mapping buffers',
 				],
 				{
 					encoding: 'utf8',
-					env: { ...process.env, ROCKSDB_JS_MEMORY_MAP_BUFFER_DELAY_MS: '1000' },
+					env: { ...process.env, ROCKSDB_JS_MEMORY_MAP_BUFFER_DELAY_MS: '3000' },
 					timeout: 60_000,
 				}
 			);
