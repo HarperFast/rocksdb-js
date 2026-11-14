@@ -397,6 +397,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   family's files and before it returns (`test/fixtures/fork-pooled-iterator-clear-race.mts`).
   Snapshotted in `initializeTestSeams()`, so it must be set in the environment that starts the
   process
+- `ROCKSDB_JS_MEMORY_MAP_BUFFER_DELAY_MS` - Test-only: delay inside a transaction log's
+  `_getMemoryMapOfFile()` after it takes its mapping reference and before it creates the JS buffer, so
+  a worker `terminate()` makes that create fail (`test/fixtures/fork-memory-map-buffer-terminate.mts`).
+  Snapshotted in `initializeTestSeams()`, so it must be set in the environment that starts the
+  process
 - `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` - How long `open()` of a column-family name whose
   previous generation is still awaiting its physical drop waits before throwing
   (default `30000`). The open polls in 20 ms slices; the bound covers the full

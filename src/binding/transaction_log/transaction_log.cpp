@@ -3,10 +3,14 @@
 #include "transaction_log/transaction_log.h"
 #include "transaction_log_handle.h"
 #include "napi/macros.h"
+#include "core/finalize_hint.h"
 #include "core/platform.h"
+#include "core/test_seam.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include <chrono>
 #include <cmath>
+#include <thread>
 #include <stdlib.h>
 #include <fcntl.h>
 #ifdef _WIN32
@@ -98,9 +102,21 @@ using CreateExternalSharedArrayBuffer = napi_status(NAPI_CDECL*)(
 	napi_value* result
 );
 
+using MemoryMapHint = SharedFinalizeHint<MemoryMap>;
+
+template <typename T>
+napi_status settleFinalizeHint(SharedFinalizeHint<T>* hint, napi_status createStatus) {
+	if (createStatus == napi_ok) {
+		hint->created();
+	} else {
+		hint->failed();
+	}
+	return createStatus;
+}
+
 void NAPI_CDECL releaseSharedMemoryMap(void* data, void* hint) {
-	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile SharedArrayBuffer released memoryMapHandle=%p\n", hint);
-	delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
+	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile SharedArrayBuffer released hint=%p\n", hint);
+	MemoryMapHint::finalize(hint);
 }
 
 /**
@@ -150,30 +166,24 @@ CreateExternalSharedArrayBuffer resolveCreateExternalSharedArrayBuffer() {
 
 napi_status createMemoryMapBuffer(
 	napi_env env,
-	std::shared_ptr<MemoryMap>* memoryMapHandle,
+	const std::shared_ptr<MemoryMap>& memoryMap,
 	napi_value* result
 ) {
-	MemoryMap* memoryMap = memoryMapHandle->get();
-	auto createShared = resolveCreateExternalSharedArrayBuffer();
-	napi_value sharedArrayBuffer;
-	if (createShared && createShared(env, memoryMap->map, memoryMap->fileSize, releaseSharedMemoryMap, memoryMapHandle, &sharedArrayBuffer) == napi_ok) {
-		napi_value global, bufferClass, from;
-		NAPI_STATUS_RETURN(::napi_get_global(env, &global));
-		NAPI_STATUS_RETURN(::napi_get_named_property(env, global, "Buffer", &bufferClass));
-		NAPI_STATUS_RETURN(::napi_get_named_property(env, bufferClass, "from", &from));
-		return ::napi_call_function(env, bufferClass, from, 1, &sharedArrayBuffer, result);
+	if (auto createShared = resolveCreateExternalSharedArrayBuffer()) {
+		auto* hint = new MemoryMapHint(memoryMap);
+		napi_value sharedArrayBuffer;
+		if (settleFinalizeHint(hint, createShared(env, memoryMap->map, memoryMap->fileSize, releaseSharedMemoryMap, hint, &sharedArrayBuffer)) == napi_ok) {
+			napi_value global, bufferClass, from;
+			NAPI_STATUS_RETURN(::napi_get_global(env, &global));
+			NAPI_STATUS_RETURN(::napi_get_named_property(env, global, "Buffer", &bufferClass));
+			NAPI_STATUS_RETURN(::napi_get_named_property(env, bufferClass, "from", &from));
+			return ::napi_call_function(env, bufferClass, from, 1, &sharedArrayBuffer, result);
+		}
 	}
-	return ::napi_create_external_buffer(
-		env,
-		memoryMap->fileSize,
-		memoryMap->map,
-		[](napi_env env, void* data, void* hint) {
-			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd memoryMapHandle=%p\n", hint);
-			delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
-		},
-		memoryMapHandle,
-		result
-	);
+	auto* hint = new MemoryMapHint(memoryMap);
+	return settleFinalizeHint(hint, ::napi_create_external_buffer(env, memoryMap->fileSize, memoryMap->map, [](napi_env env, void* data, void* hint) {
+			DEBUG_LOG("TransactionLog::GetMemoryMapOfFile External buffer GC'd hint=%p\n", hint);
+			MemoryMapHint::finalize(hint); }, hint, result));
 }
 
 } // namespace
@@ -423,10 +433,6 @@ napi_value TransactionLog::NextLogId(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-struct PositionHandle {
-	std::shared_ptr<LogPosition> position;
-};
-
 /**
  * Return a buffer with the status of the sequenced log file.
  */
@@ -440,18 +446,8 @@ napi_value TransactionLog::GetLastCommittedPosition(napi_env env, napi_callback_
 	}
 
 	napi_value result;
-	PositionHandle* positionHandle = new PositionHandle{ lastCommittedPosition };
-	NAPI_STATUS_THROWS(::napi_create_external_buffer(
-		env,
-		LOG_POSITION_SIZE, // length
-		(void*)positionHandle->position.get(), // data
-		[](napi_env env, void* data, void* hint) {
-			PositionHandle* positionHandle = static_cast<PositionHandle*>(hint);
-			delete positionHandle;
-		},
-		positionHandle, // finalize_hint
-		&result // [out] result
-	));
+	auto* hint = new SharedFinalizeHint<LogPosition>(lastCommittedPosition);
+	NAPI_STATUS_THROWS(settleFinalizeHint(hint, ::napi_create_external_buffer(env, LOG_POSITION_SIZE, hint->get(), [](napi_env env, void* data, void* hint) { SharedFinalizeHint<LogPosition>::finalize(hint); }, hint, &result)));
 	return result;
 }
 
@@ -476,14 +472,15 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 		NAPI_RETURN_UNDEFINED();
 	}
 
-	// Transfer ownership to the mapping buffer: this heap shared_ptr is held
-	// until its backing store is released. For a frozen log the log file keeps only a weak handle, so
-	// this (plus any still-live buffer for the same file) is the sole owner — the
-	// mapping is unmapped when JS GCs the buffer.
-	auto* memoryMapHandle = new std::shared_ptr<MemoryMap>(memoryMap);
+	if (int delayMs = memoryMapBufferDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+	}
 
+	// The mapping buffer's finalize hint holds a reference until its backing store is released. For a
+	// frozen log the log file keeps only a weak handle, so the buffers are the sole owners and the
+	// mapping is unmapped when JS GCs the last of them.
 	napi_value result;
-	NAPI_STATUS_THROWS(createMemoryMapBuffer(env, memoryMapHandle, &result));
+	NAPI_STATUS_THROWS(createMemoryMapBuffer(env, memoryMap, &result));
 	NAPI_STATUS_THROWS(::napi_type_tag_object(env, result, &READABLE_EXTENT_BUFFER_TAG));
 
 	// A separate shared handle keeps an extracted getter safe after the buffer's
