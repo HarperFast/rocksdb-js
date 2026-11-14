@@ -1,5 +1,5 @@
+import { runChild } from './lib/child-process.ts';
 import { generateDBPath } from './lib/util.ts';
-import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -15,6 +15,11 @@ const COMMIT_THREAD_MODES: Array<{ label: string; mode: string | undefined }> = 
 
 const retry = process.versions.deno && process.platform === 'darwin' ? 1 : 0;
 
+const TEST_TIMEOUT_MS = 120_000;
+// Below the test timeout, so a hung child is killed and reaped and the failure
+// carries its stderr rather than a bare Vitest timeout.
+const CHILD_BUDGET_MS = 90_000;
+
 /**
  * Runs the repro fixture in a child process so a native abort (SIGABRT/SIGSEGV)
  * from an async-commit completion racing worker-env teardown surfaces as a
@@ -29,44 +34,29 @@ async function expectSurvives(
 		? 1
 		: 2
 ): Promise<void> {
-	for (let i = 0; i < iterations; i++) {
-		const { code, signal } = await spawnRepro(generateDBPath(), commitThreadMode);
-		expect(signal, `iteration=${i}`).toBeNull();
-		expect(code, `iteration=${i}`).toBe(0);
+	// Widen the commit-thread completion window via the test seam so the
+	// completion-vs-teardown race reproduces deterministically; natural
+	// timing only surfaces it at production scale.
+	const env: NodeJS.ProcessEnv = { ...process.env, ROCKSDB_JS_COMMIT_DELAY_MS: '25' };
+	if (commitThreadMode === undefined) {
+		delete env.ROCKSDB_JS_COMMIT_THREAD;
+	} else {
+		env.ROCKSDB_JS_COMMIT_THREAD = commitThreadMode;
 	}
-}
+	const budgetEnd = performance.now() + CHILD_BUDGET_MS;
 
-function spawnRepro(
-	dbPath: string,
-	commitThreadMode: string | undefined
-): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-	return new Promise((resolve, reject) => {
-		const args = [fixturePath, dbPath];
-
-		// Widen the commit-thread completion window via the test seam so the
-		// completion-vs-teardown race reproduces deterministically; natural
-		// timing only surfaces it at production scale.
-		const env: NodeJS.ProcessEnv = { ...process.env, ROCKSDB_JS_COMMIT_DELAY_MS: '25' };
-		if (commitThreadMode === undefined) {
-			delete env.ROCKSDB_JS_COMMIT_THREAD;
-		} else {
-			env.ROCKSDB_JS_COMMIT_THREAD = commitThreadMode;
-		}
-		const child = spawn(process.execPath, args, { env });
-
-		let stderr = '';
-		child.stderr?.on('data', (chunk) => {
-			stderr += chunk.toString();
-		});
-
-		child.on('close', (code, signal) => {
-			if (code !== 0 || signal) {
-				console.error(`Repro child stderr:\n${stderr}`);
-			}
-			resolve({ code, signal });
-		});
-		child.on('error', reject);
-	});
+	for (let i = 0; i < iterations; i++) {
+		const deadlineMs = Math.max(0, Math.floor(budgetEnd - performance.now()));
+		const { code, signal, stderr, timedOut } = await runChild(
+			process.execPath,
+			[fixturePath, generateDBPath()],
+			{ deadlineMs, env }
+		);
+		const context = `ROCKSDB_JS_COMMIT_THREAD=${commitThreadMode ?? 'default'} iteration=${i}\nRepro child stderr:\n${stderr}`;
+		expect(timedOut, `repro child did not exit within ${deadlineMs}ms; ${context}`).toBe(false);
+		expect(signal, context).toBeNull();
+		expect(code, context).toBe(0);
+	}
 }
 
 describe('Async commit completion vs. worker env teardown', () => {
@@ -76,7 +66,7 @@ describe('Async commit completion vs. worker env teardown', () => {
 			// The single retry is limited to the pre-existing Deno/macOS crash in #746.
 			retry,
 			// Worker spawn/teardown dominates wall time and is slow on macOS/Windows.
-			timeout: 120_000,
+			timeout: TEST_TIMEOUT_MS,
 		},
 		({ mode }) => expectSurvives(mode)
 	);

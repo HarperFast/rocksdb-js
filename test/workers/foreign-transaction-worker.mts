@@ -29,6 +29,10 @@ async function attemptAll(
 	return {
 		get: await attemptAsync((resolve, reject) => native.get(Buffer.from('k'), resolve, reject, id)),
 		getSync: attempt(() => db.getSync('k', { transaction })),
+		getMany: await attemptAsync((resolve, reject) =>
+			native.getMany(Buffer.from('kk2'), Int32Array.of(1, 3), 2, resolve, reject, id)
+		),
+		getManySync: attempt(() => db.getManySync(['k', 'k2'], { transaction })),
 		getCount: attempt(() => db.getKeysCount({ transaction })),
 		putSync: attempt(() => db.putSync('foreign', 'x', { transaction })),
 		removeSync: attempt(() => db.removeSync('k', { transaction })),

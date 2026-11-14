@@ -336,8 +336,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `initializeTestSeams()` — it is read on whichever thread drives teardown, so it must be set in
   the environment that starts the process
 - `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` - Test-only: delay after `DBRegistry::OpenDB()` has atomically
-  adopted and attached a handle, but before the native open returns to JavaScript (proves a forced
-  destroy cannot claim the descriptor during the former return/adopt/attach gap). Snapshotted in
+  adopted and attached a handle and released `databasesMutex`, but before it returns (proves a forced
+  destroy cannot claim the descriptor during the former return/adopt/attach gap, and that nothing
+  `OpenDB()` took under the lock outlives it; see invariant 28). Snapshotted in
   `initializeTestSeams()` so every open avoids a `getenv()` call
 - `ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS` / `ROCKSDB_JS_COUNT_DELAY_MS` - Test-only: per-row delays in
   `DBIterator::Next()` and `DBIteratorHandle::countRemaining()`. Both are read **once** in
@@ -382,6 +383,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `registryStatus()`'s column walk, so a concurrent `dropSync()` or close-time `columns.clear()`
   lands in the middle of it (`test/fixtures/fork-registry-status-column-race.mts`). Snapshotted in
   `initializeTestSeams()` like the seams above
+- `ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS` - Test-only: delay while a per-env cleanup hook's registry
+  snapshot pins every descriptor, so another thread's last-handle close skips its purge
+  (`test/fixtures/fork-env-cleanup-purge.mts`). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS` / `ROCKSDB_JS_TXN_CLOSE_DELAY_MS` - Test-only delays inside
   iterator construction and transaction close. Both are snapshotted in `initializeTestSeams()`, so
   they must be set in the environment that starts the process rather than through an in-process
@@ -408,6 +412,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - **GoogleTest** (`test/native/*.cc`): C++ unit tests; `pnpm test:native` /
   `pnpm coverage:native` (lcov on Unix)
 - `test/lib/util.ts` contains Vitest utilities
+- **`*ForTesting` setters are process-global and must go through `testSwitches`** in
+  `src/binding/binding.cpp`, whose entries carry the default restore. Vitest runs many test files in
+  one process, so `test/setup.ts` calls `resetTestSwitchesForTesting()` before each file; a setter
+  exported outside the table would leak into later files. `test/test-switches.test.ts` fails until a
+  new setter is in the table and in its argument list. Read-only `is*ForTesting` probes are exempt.
 - Coverage: TypeScript in `coverage/`; native GTest in `coverage/native/`
 - **`deps/gtest.gyp` must keep C++ exceptions on for gtest's own TUs.** node's `common.gypi`
   disables them for every target (`ExceptionHandling: 0` / `-fno-exceptions`) and
@@ -517,7 +526,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    their own `shared_ptr` for the duration of a copy (backup, backup stream, checkpoint) make a
    racing close skip the purge (`use_count > 1`), so their state destructors re-run
    `PurgeIfUnreferenced` after releasing the ref — without that retry the skipped purge is permanent
-   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). Once `beginClose()` wins,
+   and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). The per-env cleanup hooks
+   pin every descriptor the same way (`DBRegistry::ForEachDescriptor`) while other workers close
+   theirs, so the hook ends with `DBRegistry::PurgeUnreferenced()` once its last pinning step has released
+   them (HarperFast/rocksdb-js#1074). Once `beginClose()` wins,
    `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
    path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
    immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
@@ -1270,7 +1282,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     defense in depth only: the claim protocol below applies under both policies and is the only
     protection for pessimistic commits. The rule
     now (`core/column_family_lifetime.h`, GoogleTest-covered): a commit **claims** every family
-    its batch names once, at admission in `executeLogWork`/`CommitSync` **before** the
+    its batch names once, at admission in `executeLogWork` (both commit paths) **before** the
     transaction-log write (`ColumnFamilyCommitClaim`, RAII so a log-write failure, N-API/queue
     failure, cancellation or teardown releases it), and releases right after `txn->Commit()`
     returns; a drop **retires** the generation under `columnsMutex` (`DBDescriptor::retireColumnFamily`:
@@ -1497,9 +1509,16 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `DBHandleParams` and attaching in `Database::Open()` left a gap where teardown could reset
     `descriptor->db` while the invisible handle retained a `ColumnFamilyHandle`; destroying that
     column handle after its DB is a native use-after-free. No handle shared-pointer field may be read
-    after the registry lock drops, because a foreign sweep may immediately reset it. Covered by
-    `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` widens the point
-    after atomic publication so the fixture can assert the exact closables count before destroy.
+    after the registry lock drops, because a foreign sweep may immediately reset it. The same holds for
+    `OpenDB()`'s own locals: every `ColumnFamilyDescriptor` reference it takes under the lock (the
+    `columns` copy) is declared after the lock so it is released first. Declared before it, the copy
+    was the last reference once a foreign close freed the database, and destroying it locked the freed
+    `DBImpl` mutex (`pthread lock: Invalid argument` on macOS, rocksdb-js#1066). Covered by
+    `test/fixtures/fork-open-attach-destroy.mts`; `ROCKSDB_JS_OPEN_ATTACH_DELAY_MS` runs after the lock
+    is released and before `OpenDB()` returns, so the fixture can assert the exact closables count
+    before destroy and its destroy lands in that window. Reverting the declaration order aborts the
+    fixture on macOS; glibc usually locks the freed mutex without faulting, so Linux CI alone would
+    not catch it.
 
 29. **A user shared buffer lives as long as its column family is open, never as long as some view
     of it**: `getUserSharedBuffer` used to erase the map entry once the last external `ArrayBuffer`

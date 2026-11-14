@@ -57,36 +57,24 @@ extern "C" int ROCKSDB_JS_MADVISE(void*, size_t, int);
 
 namespace rocksdb_js {
 
-static std::atomic<uint64_t> appendBoundaryTempSequence{ 0 };
+static std::atomic<uint64_t> appendBoundaryTempSequence{0};
 
 static void syncAppendBoundaryMarkerDirectory(const std::filesystem::path& directory) {
-	int directoryFd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-	if (directoryFd < 0) {
-		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Failed to open transaction log append-boundary directory for sync: " +
-			directory.string()
-		);
-	}
-	int syncResult = ::fsync(directoryFd);
-	int syncError = errno;
-	::close(directoryFd);
-	if (syncResult != 0 && syncError != EINVAL && syncError != ENOTSUP &&
-		syncError != EOPNOTSUPP) {
+	if (!rocksdb_js::syncDirectory(directory, /*allowUnsupported=*/true)) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
 			"Failed to sync transaction log append-boundary directory: " +
-			directory.string()
-		);
+			directory.string());
 	}
 }
 
 TransactionLogFile::TransactionLogFile(
 	const std::filesystem::path& p,
 	const uint32_t seq,
-	bool appendBoundaryMarkerEnabled
-) :
+	bool appendBoundaryMarkerEnabled) :
 	path(p),
 	sequenceNumber(seq),
-	appendBoundaryMarkerEnabled(appendBoundaryMarkerEnabled) {}
+	appendBoundaryMarkerEnabled(appendBoundaryMarkerEnabled)
+{}
 
 void TransactionLogFile::ensureAppendBoundaryMarker() {
 	auto markerPath = transactionLogAppendBoundaryMarkerPath(this->path);
@@ -113,14 +101,12 @@ void TransactionLogFile::ensureAppendBoundaryMarker() {
 		if (!std::filesystem::remove(markerPath, removeError) || removeError) {
 			throw rocksdb_js::TransactionLogAppendBoundaryException(
 				"Failed to remove stale transaction log append-boundary marker: " +
-				markerPath.string()
-			);
+				markerPath.string());
 		}
 	}
 	if (existsError) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Failed to inspect transaction log append-boundary marker: " + markerPath.string()
-		);
+			"Failed to inspect transaction log append-boundary marker: " + markerPath.string());
 	}
 
 	auto markerDirectory = markerPath.parent_path();
@@ -135,8 +121,7 @@ void TransactionLogFile::ensureAppendBoundaryMarker() {
 	if (markerFd < 0) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
 			"Failed to create temporary transaction log append-boundary marker: " +
-			tempMarkerPath.string()
-		);
+			tempMarkerPath.string());
 	}
 
 	char bytes[TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE];
@@ -145,15 +130,15 @@ void TransactionLogFile::ensureAppendBoundaryMarker() {
 	writeUint32BE(bytes + 8, UINT32_MAX);
 	ssize_t written = ::pwrite(markerFd, bytes, sizeof(bytes), 0);
 	int writeError = errno;
-	bool synced = written == static_cast<ssize_t>(sizeof(bytes)) && ::fsync(markerFd) == 0;
+	bool synced = written == static_cast<ssize_t>(sizeof(bytes)) &&
+		rocksdb_js::syncDescriptor(markerFd, false) == 0;
 	int syncError = errno;
 	::close(markerFd);
 	if (!synced) {
 		std::filesystem::remove(tempMarkerPath);
 		errno = written == static_cast<ssize_t>(sizeof(bytes)) ? syncError : writeError;
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Failed to initialize transaction log append-boundary marker: " + markerPath.string()
-		);
+			"Failed to initialize transaction log append-boundary marker: " + markerPath.string());
 	}
 
 	if (::link(tempMarkerPath.c_str(), markerPath.c_str()) != 0) {
@@ -161,13 +146,11 @@ void TransactionLogFile::ensureAppendBoundaryMarker() {
 		std::filesystem::remove(tempMarkerPath);
 		if (publishError == EEXIST) {
 			this->retiredAppendBoundary.store(
-				readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed
-			);
+				readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
 			return;
 		}
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Failed to publish transaction log append-boundary marker: " + markerPath.string()
-		);
+			"Failed to publish transaction log append-boundary marker: " + markerPath.string());
 	}
 	std::filesystem::remove(tempMarkerPath);
 
@@ -194,8 +177,7 @@ void TransactionLogFile::writeAppendBoundaryMarker(uint32_t boundary) {
 	int markerFd = ::open(markerPath.c_str(), O_WRONLY | O_CLOEXEC);
 	if (markerFd < 0) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Failed to open transaction log append-boundary marker: " + markerPath.string()
-		);
+			"Failed to open transaction log append-boundary marker: " + markerPath.string());
 	}
 	char bytes[TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_SIZE];
 	writeUint32BE(bytes, TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN);
@@ -203,14 +185,14 @@ void TransactionLogFile::writeAppendBoundaryMarker(uint32_t boundary) {
 	writeUint32BE(bytes + 8, ~boundary);
 	ssize_t written = ::pwrite(markerFd, bytes, sizeof(bytes), 0);
 	int writeError = errno;
-	bool synced = written == static_cast<ssize_t>(sizeof(bytes)) && ::fsync(markerFd) == 0;
+	bool synced = written == static_cast<ssize_t>(sizeof(bytes)) &&
+		rocksdb_js::syncDescriptor(markerFd, false) == 0;
 	int syncError = errno;
 	::close(markerFd);
 	if (!synced) {
 		errno = written == static_cast<ssize_t>(sizeof(bytes)) ? syncError : writeError;
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Failed to persist transaction log append boundary: " + markerPath.string()
-		);
+			"Failed to persist transaction log append boundary: " + markerPath.string());
 	}
 }
 
@@ -249,20 +231,6 @@ struct CloseOnExit {
 	}
 };
 
-int syncDescriptor(int fd) {
-	int result;
-	do {
-		// macOS doesn't have fdatasync, use fsync instead
-		// fdatasync is faster on Linux as it doesn't sync metadata
-#ifdef __APPLE__
-		result = ::fsync(fd);
-#else
-		result = ::fdatasync(fd);
-#endif
-	} while (result < 0 && errno == EINTR);
-	return result;
-}
-
 } // namespace
 
 void TransactionLogFile::flushSyncHeld() {
@@ -286,13 +254,12 @@ void TransactionLogFile::flushSyncHeld() {
 		if (duplicate < 0) {
 			int error = errno;
 			throw rocksdb_js::DBException(
-				"Failed to open file for sync: " + this->path.string() + ": " + std::string(::strerror(error))
-			);
+				"Failed to open file for sync: " + this->path.string() + ": " + std::string(::strerror(error)));
 		}
 	} else {
 		return;
 	}
-	CloseOnExit closeDuplicate{ duplicate };
+	CloseOnExit closeDuplicate{duplicate};
 	int fdToFlush = duplicate >= 0 ? duplicate : this->fd;
 	if (duplicate >= 0) {
 		lock.unlock();
@@ -319,14 +286,13 @@ void TransactionLogFile::flushSyncHeld() {
 	}
 #endif
 
-	if (syncDescriptor(fdToFlush) < 0) {
+	if (rocksdb_js::syncDescriptor(fdToFlush, /*dataOnly=*/true) < 0) {
 		int error = errno;
 		recordFailure();
 		DEBUG_LOG("%p TransactionLogFile::flush ERROR: sync failed: %s (errno=%d)\n",
 			this, ::strerror(error), error);
 		throw rocksdb_js::DBException(
-			"Failed to flush file: " + this->path.string() + ": " + std::string(::strerror(error))
-		);
+			"Failed to flush file: " + this->path.string() + ": " + std::string(::strerror(error)));
 	}
 
 	// Update the last flushed size after successful sync
@@ -345,10 +311,9 @@ void TransactionLogFile::writeAbortMarkerLocked(uint32_t offset, uint32_t extent
 	if (markFd < 0) {
 		int error = errno;
 		throw rocksdb_js::DBException(
-			"Failed to open " + this->path.string() + " for an abort marker: " + std::string(::strerror(error))
-		);
+			"Failed to open " + this->path.string() + " for an abort marker: " + std::string(::strerror(error)));
 	}
-	CloseOnExit closeMarkFd{ markFd };
+	CloseOnExit closeMarkFd{markFd};
 	char header[TRANSACTION_LOG_ENTRY_HEADER_SIZE];
 	ssize_t bytesRead;
 	do {
@@ -367,8 +332,7 @@ void TransactionLogFile::writeAbortMarkerLocked(uint32_t offset, uint32_t extent
 	if (written != 1) {
 		int error = written < 0 ? errno : EIO;
 		throw rocksdb_js::DBException(
-			"Failed to write an abort marker to " + this->path.string() + ": " + std::string(::strerror(error))
-		);
+			"Failed to write an abort marker to " + this->path.string() + ": " + std::string(::strerror(error)));
 	}
 }
 
@@ -463,7 +427,7 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMapLocked(uint32_t fileS
 
 	std::shared_ptr<MemoryMap> map = this->memoryMap ? this->memoryMap : this->frozenMapCache.lock();
 	if (!(map && map->map && map->mapSize >= size &&
-			(this->readerCapacity > 0 || map->mapSize >= fileSize))) {
+		(this->readerCapacity > 0 || map->mapSize >= fileSize))) {
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 		// On POSIX, mmap(fd, maxFileSize) over a small file causes SIGBUS on
 		// pages entirely beyond the file. We first create an anonymous
@@ -743,12 +707,11 @@ bool TransactionLogFile::truncateFile(uint32_t newSize) {
 	}
 	// Persist the size change so a second crash can't resurrect the dropped
 	// tail. fsync (not fdatasync) because the metadata size must be durable.
-	if (::fsync(this->fd) != 0) {
+	if (rocksdb_js::syncDescriptor(this->fd, false) != 0) {
 		DEBUG_LOG("%p TransactionLogFile::truncateFile fsync after ftruncate failed: %s (errno=%d)\n",
 			this, ::strerror(errno), errno);
 		throw rocksdb_js::DBException(
-			"Failed to sync transaction log truncation: " + this->path.string()
-		);
+			"Failed to sync transaction log truncation: " + this->path.string());
 	}
 #if TRANSACTION_LOG_ENABLE_ANONYMOUS_OVERLAY
 	// The overlay can no longer extend past the new EOF; lower the bookkeeping so a

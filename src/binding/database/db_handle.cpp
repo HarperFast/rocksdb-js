@@ -455,11 +455,6 @@ void DBHandle::open(const std::string& path, const DBOptions& options) {
 	// OpenDB() under `databasesMutex` (invariant 28) -- reading one back here
 	// would be exactly the post-lock dereference that invariant forbids.
 	DBRegistry::OpenDB(this->shared_from_this(), path, options);
-
-	const int openAttachDelayMs = openAttachDelayMsFlag().load(std::memory_order_relaxed);
-	if (openAttachDelayMs > 0) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(openAttachDelayMs));
-	}
 }
 
 /**

@@ -126,6 +126,21 @@ export type NativeTransaction = {
 	): number;
 	getCount(options?: RangeOptions): number;
 	getSync(keyLengthOrKeyBuffer: number | Buffer): Buffer | number | undefined;
+	getMany(
+		keys: Buffer,
+		keyEnds: Int32Array,
+		count: number,
+		resolve: (result: Buffer) => void,
+		reject: (err: Error) => void,
+		txnIdIgnored?: number
+	): void;
+	getManySync(
+		keys: Buffer,
+		keyEnds: Int32Array,
+		count: number,
+		flags: number,
+		txnIdIgnored?: number
+	): Buffer | number;
 	getTimestamp(): number;
 	lastConflictKind(): number;
 	logWritten(): boolean;
@@ -139,6 +154,10 @@ export type NativeTransaction = {
 	useLog(name: string | number, jsDatabase: NativeDatabase): TransactionLog;
 };
 
+/**
+ * A transaction-log memory map. Where `supportsSharedTransactionLogMaps()` is true its `buffer` is
+ * normally a SharedArrayBuffer: cloning it shares the read-only mapping, and Node 27+ `Blob` rejects it.
+ */
 export type LogBuffer = Buffer & {
 	dataView: DataView;
 	logId: number;
@@ -583,6 +602,27 @@ export type NativeDatabase = {
 		txnId?: number,
 		expectedVersion?: number
 	): Buffer;
+	// Reads `count` keys, encoded back to back in `keys` and ending at `keyEnds[i]`. Resolves (or,
+	// for getManySync, returns) a buffer holding one int32 value length per key, -1 when missing,
+	// then the values back to back; getManySync returns NOT_IN_MEMORY_CACHE_FLAG instead when
+	// ONLY_IF_IN_MEMORY_CACHE_FLAG is set and a key is not in memory. Like getSync, getManySync
+	// writes a result that fits into the default value buffer and returns its length, unless
+	// ALWAYS_CREATE_NEW_BUFFER_FLAG is set.
+	getMany(
+		keys: Buffer,
+		keyEnds: Int32Array,
+		count: number,
+		resolve: ResolveCallback<Buffer>,
+		reject: RejectCallback,
+		txnId?: number
+	): void;
+	getManySync(
+		keys: Buffer,
+		keyEnds: Int32Array,
+		count: number,
+		flags: number,
+		txnId?: number
+	): Buffer | number;
 	getUserSharedBuffer(
 		key: BufferWithDataView,
 		defaultBuffer: ArrayBuffer,
@@ -1139,10 +1179,18 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
 
 /**
  * Number of live transaction-log memory maps across the process. Internal —
- * used by tests to verify that releasing a frozen log's external buffer unmaps
+ * used by tests to verify that releasing a frozen log's mapping buffer unmaps
  * the underlying mapping rather than leaving it retained.
  */
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
+
+/**
+ * Whether this runtime can back transaction-log memory maps with a SharedArrayBuffer: the shared
+ * buffer API is exported and the addon could be pinned. An individual mapping can still fall back to
+ * an external buffer if creating its shared buffer fails. Internal — used by tests.
+ */
+export const supportsSharedTransactionLogMaps: () => boolean =
+	binding.supportsSharedTransactionLogMaps;
 
 /**
  * Number of coordinated-retry wake callbacks registered on verification-table
@@ -1164,6 +1212,12 @@ export const iteratorPoolStats: () => { created: number; reused: number } =
  * `ROCKSDB_JS_ITERATOR_POOL=0`). Internal.
  */
 export const iteratorPoolEnabled: boolean = binding.iteratorPoolEnabled;
+
+/**
+ * Test-only: restores every process-global `*ForTesting` switch to its default and returns the
+ * names of those that were not at it. `test/setup.ts` runs it before each Vitest file.
+ */
+export const resetTestSwitchesForTesting: () => string[] = binding.resetTestSwitchesForTesting;
 
 /**
  * Test-only: force the next `count` transaction commits to fail with TryAgain (rolled back, so

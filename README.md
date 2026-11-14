@@ -283,7 +283,10 @@ db.setCompression({ algorithm: 'zstd', level: 19 });
 
 ### `db.config(options)`
 
-Sets global database settings.
+Sets global database settings. Every field is validated before any is applied, so a call rejected
+for an invalid or unchangeable value changes no setting. Enabling `writeBufferManagerAllowStall` on
+a live WriteBufferManager first closes idle pooled iterators; if that fails, the call throws after
+its other settings are applied and the manager is left not stalling.
 
 - `options: object`
   - `blockCacheSize: number` The amount of memory in bytes to use to cache uncompressed blocks.
@@ -524,6 +527,7 @@ console.log(db.name); // 'users'
 ### `db.open(): RocksDatabase`
 
 Opens the database at the given path. This must be called before performing any data operations.
+A writable open of a database another process holds open throws with code `ERR_DATABASE_LOCKED`.
 
 ```typescript
 import { RocksDatabase } from '@harperfast/rocksdb-js';
@@ -963,6 +967,51 @@ if (result === constants.FRESH_VERSION_FLAG) {
 Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
 the `expectedVersion` option is used.
 
+### `db.getMany(keys: Key[], options?: { transaction?: Transaction }): MaybePromise<any[]>`
+
+Retrieves the values for several keys with one RocksDB `MultiGet`, in key order, with `undefined`
+for a key that does not exist. Duplicate keys are allowed. Like `get()`, it returns synchronously
+when every key is in the memtable or block cache; otherwise it returns one promise for the whole
+batch, read on a single worker thread.
+
+```typescript
+const [product, variant, missing] = await db.getMany(['product:1', 'variant:7', 'nope']);
+```
+
+Passing a `transaction` (or calling `txn.getMany()`) reads through the transaction's snapshot and
+its own uncommitted writes, so the result is exactly what calling `get()` for each key would return.
+`getMany()` does not take `GetOptions`: it does not consult or populate the
+[Verification Table](#verification-table).
+
+Batching saves the per-key binding call (and, on a cache miss, the per-key async work) and lets
+RocksDB share work across the lookups. Like `get()`, a cached batch whose values fit the 64 KiB
+shared value buffer is decoded from it, without allocating. In our measurements, with the default
+msgpack encoding, a batch of two cost about the same per key as `getSync()` (6% more with a custom
+decoder) and larger batches cost less; a batch of one takes the single-key path. See [batch-read measurements and cost accounting](docs/performance/multi-get.md),
+and benchmark your own workload with `benchmark/multi-get.mts`.
+
+A custom value decoder must not read the database while it decodes: the rest of the batch is still
+in the shared buffer that read would overwrite, so `getMany()` throws if one does.
+
+### `db.getManySync(keys: Key[], options?: { transaction?: Transaction }): any[]`
+
+Synchronous version of `getMany()`.
+
+### `db.getManyBinary(keys: Key[], options?: { transaction?: Transaction }): MaybePromise<(Buffer | undefined)[]>`
+
+Like `getMany()`, but returns the raw value buffers without decoding. The buffers of one batch share
+a single allocation and stay valid after later reads.
+
+### `db.getManyBinarySync(keys: Key[], options?: { transaction?: Transaction }): (Buffer | undefined)[]`
+
+Synchronous version of `getManyBinary()`: reads every key on the calling thread, including any not
+in the memtable or block cache, and returns the raw value buffers in key order, with `undefined` for
+a key that does not exist.
+
+```typescript
+const [product, variant] = db.getManyBinarySync(['product:1', 'variant:7']);
+```
+
 ### `db.getEstimatedKeyCount(): number`
 
 Retrieves the estimated number of keys in the database. This is an alias for
@@ -1353,7 +1402,7 @@ returned from the transaction call.
 The `txn` parameter is a `Transaction`. See the [Transaction](#class-transaction) section for more
 details.
 
-The `attempt` parameter is the number of times the transaction has been retried.
+The `attempt` parameter is the 1-based attempt number (`1` for the first run).
 
 ### `TransactionOptions`
 
@@ -1364,7 +1413,8 @@ The `attempt` parameter is the number of times the transaction has been retried.
   Requires the column family to be opened with `verificationTable: true`. See
   [Verification Table](#verification-table). Defaults to `false`.
 - `disableSnapshot?: boolean` Whether to disable snapshots. Defaults to `false`.
-- `maxRetries?: number` The maximum number of times to retry the transaction. Defaults to `3`.
+- `maxRetries?: number` The maximum number of attempts, including the first (integer, minimum `1`), for both `transaction()` and
+  `transactionSync()`. Defaults to `3`.
 - `retryOnBusy?: boolean` Whether to retry the transaction if the commit fails with `IsBusy`.
   Defaults to `true` when the transaction wrote a transaction-log batch or was refused before
   writing one (`refusedBeforeLog`), otherwise `false`. With `false`, `db.transaction()` also
@@ -2356,6 +2406,15 @@ figures and process memory usage:
   it from disk on the next access. Mapped log data therefore lives in the page cache and cannot
   exhaust memory the way heap allocations can; a full scan of a log larger than RAM will simply
   cycle pages through the cache.
+- **Views are backed by a `SharedArrayBuffer` where the runtime supports it** (Node 24.16+, 26.1+
+  and 27+). V8 counts an external `ArrayBuffer` toward its
+  external-memory limit, and from Node 27 holding more than about twice the heap limit in them
+  forces a full GC on every new one; a shared backing store is not counted. Three things follow:
+  `entry.data.buffer instanceof ArrayBuffer` is false and Node 27's `Blob` rejects it;
+  `structuredClone`/`postMessage` of entry data share the read-only map rather than copying it, so
+  writing to such a clone faults the process (copy with `Buffer.from(entry.data)` first); and a
+  dropped view is unmapped only when ordinary allocation triggers a garbage collection, so an idle
+  worker can keep mappings, including purged files, until it next allocates.
 
 OS-specific differences:
 
@@ -3357,43 +3416,90 @@ Extends `RangeOptions`.
 
 ## CLI
 
-The `rocksdb-js` CLI is a command line interface for interacting with RocksDB databases.
+The `rocksdb-js` CLI is a command line interface for interacting with RocksDB databases. With no
+command it starts an interactive REPL; with a command it runs that one command and exits.
 
 ```bash
-rocksdb-js [dbpath]
+rocksdb-js [dbpath] [options]                   # interactive REPL
+rocksdb-js [dbpath] <command> [args...] [options] # run one command and exit
 ```
+
+`dbpath` defaults to the current directory. If the first argument is a command name, the current
+directory is used, so `rocksdb-js count` counts the keys of the database in the current directory;
+address a database directory that shares a command's name as `./<name>`. Put `--` before arguments
+that start with `-` (for example `rocksdb-js ./data get -- -1`).
 
 Options:
 
-- `-h, --help` Show this help message
-- `-r, --readonly` Open the database in read-only mode
+- `-c, --column <name>` Column family to use (default: `default`)
+- `-h, --help` Show the help message
+- `--json` Print results as JSON to stdout, and errors as `{ "error": "..." }` to stderr
+- `-r, --readonly` Open the database in read-only mode (REPL or command)
 - `-v, --version` Show the version information
+- `-y, --yes` Answer "yes" to confirmation prompts
 
-Available commands:
+`-c`, `--json` and `-y` only apply to a one-shot command. Given without a command, the CLI prints
+`Error: specify a command` and the help text to stderr and exits `2` instead of starting the REPL.
 
-- `backups <dir> [subcommand]` Manage database backups; with no subcommand or `ls`/`list`, lists the backups in
-  `<dir>`. Subcommands: `backup` (create a backup of the open database), `restore <backup-id>`
-  (restore into the open database after confirmation; unavailable in read-only mode),
-  `verify <backup-id>` (checksum verification, including the backup's transaction log snapshot),
-  `delete <backup-id>`, and `purge <keep-count>` (delete all but the newest backups). `delete` and
-  `purge` report the recovered disk space.
+A one-shot command:
+
+- prints its result to stdout and errors to stderr;
+- exits `0` on success, `1` on failure (including `get` of a missing key, a `query` row that cannot be
+  read, and `verify-logs` finding an invalid store), and `2` on a usage error;
+- opens the database read-only when the command only reads, and read-write only for commands that
+  write. A read-only open does not need the lock held by another process that has the database open,
+  but it is a point-in-time read: if that process compacts while the command runs, the command can
+  fail and should be retried. To follow a live writer, use a secondary instance
+  (the `secondaryPath` open option);
+- creates a missing database or column family only for `put`, and asks first. It also asks before
+  destructive work (`clear`, `purge-logs`, `backups ... restore`, dropping `default`). When stdin is
+  not a terminal there is nobody to ask, so pass `--yes`;
+- opens the database read-write for `backups <dir> backup` and `restore`, so they are refused while
+  another process has it open (pass `--readonly` to take a point-in-time backup anyway). Restore
+  holds that open through the confirmation and closes it just before restoring. Restoring into a
+  missing or empty directory needs no open; a database that no longer opens must be removed before
+  restoring over it.
+
+```bash
+rocksdb-js ./data count
+rocksdb-js ./data get user:1 --json
+rocksdb-js ./data -c users query a m --json | jq '.[].key'
+rocksdb-js ./data verify-logs || echo "transaction logs are invalid"
+rocksdb-js ./data backups ./backups backup
+rocksdb-js ./data clear --yes
+```
+
+`--json` results are the command's data: `get` prints the value, `query` an array of `{ key, value }`
+(streamed, so large ranges are not buffered), `columns` an array of names, `count` `{ count }`, and
+the other commands an object describing what they did. Binary data is hex encoded.
+
+The REPL and one-shot mode share one command table. Available commands:
+
+- `backups <dir> [subcommand] [arg]` Manage database backups; with no subcommand or `ls`/`list`,
+  lists the backups in `<dir>`. Subcommands: `backup` (create a backup of the open database),
+  `restore <backup-id>` (restore into the database after confirmation; unavailable in read-only
+  mode), `verify <backup-id>` (checksum verification, including the backup's transaction log
+  snapshot), `delete <backup-id>`, and `purge <keep-count>` (delete all but the newest backups).
+  `delete` and `purge` report the recovered disk space. `list`, `verify`, `delete` and `purge` only
+  need the backup directory, not a database.
 - `clear` Clear all data in the current column family
 - `columns` List column families
 - `compact` Compact the current column family
 - `count` Count the number of keys in the current column family
 - `drop <column>` Permanently drop a column family
-- `exit` Exit the REPL
+- `exit` Exit the REPL (REPL only)
 - `get <key>` Get the value of a key
-- `help` Show this help message
+- `help` Show the help message
 - `log [name] [file] [entry]` List the transaction log store names and log store files
 - `prop <key>` Get a RocksDB property (try "rocksdb.stats")
 - `purge-logs <name>` Purge transaction log files older than 3 days
 - `put <key> <value>` Set the value of a key
 - `query [start] [end]` Query a range of keys
 - `remove <key>` Delete a key
-- `repl` Open a JS sub-REPL; "db" refers to the current column family
+- `repl` Open a JS sub-REPL; "db" refers to the current column family (REPL only)
 - `stats` Show the statistics for the current column family
-- `use [column]` Create a new column family or switch to an existing one
+- `use [column]` Create a new column family or switch to an existing one (REPL only; use `--column`
+  in one-shot mode)
 - `verify-logs [name]` Validate the transaction log store files (all stores if no name)
 
 ## Development

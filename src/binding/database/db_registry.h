@@ -2,6 +2,7 @@
 #define __DB_REGISTRY_H__
 
 #include <condition_variable>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -160,6 +161,13 @@ private:
 	 */
 	static DBRegistry* instance;
 
+	/**
+	 * Runs `fn` on every registered descriptor outside `databasesMutex`. The
+	 * snapshot pins them, so another env's last-handle close racing it skips its
+	 * purge: the env-cleanup hook must call `PurgeUnreferenced()` afterward.
+	 */
+	static void ForEachDescriptor(const std::function<void(DBDescriptor&)>& fn);
+
 public:
 	static CloseResult CloseDB(const std::shared_ptr<DBHandle> handle);
 
@@ -199,6 +207,12 @@ public:
 	);
 	static void PurgeAll();
 	static CloseResult PurgeIfUnreferenced(const DBKey& key);
+	/**
+	 * Retries the purge of every registered descriptor. The env-cleanup hook
+	 * runs it after its last `*ByEnv` step, once nothing it snapshotted is
+	 * pinned.
+	 */
+	static void PurgeUnreferenced();
 	static napi_value RegistryStatus(napi_env env, napi_callback_info info);
 	static void CloseTransactionsByEnv(napi_env env);
 

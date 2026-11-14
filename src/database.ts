@@ -66,7 +66,7 @@ export interface RocksDatabaseOptions extends StoreOptions {
 
 export interface TransactionOptions extends NativeTransactionOptions {
 	/**
-	 * The maximum number of times to retry the transaction.
+	 * The maximum number of attempts, including the first. Values below 1 are treated as 1; non-integers throw a `RangeError`.
 	 *
 	 * @default 3
 	 */
@@ -87,6 +87,19 @@ export type RocksDBStats = StatsDefault | StatsAll;
 // Mirrors the native `backgroundErrorSeverityName` (core/background_error) so
 // setLastError can derive a severityName from a bare severity.
 const BACKGROUND_ERROR_SEVERITY_NAMES = ['none', 'soft', 'hard', 'fatal', 'unrecoverable'];
+function resolveMaxRetries(value: number | undefined): number {
+	if (value === undefined) {
+		return 3;
+	}
+	if (typeof value !== 'number') {
+		throw new TypeError('maxRetries must be a number');
+	}
+	if (!Number.isInteger(value)) {
+		throw new RangeError('maxRetries must be an integer');
+	}
+	return Math.max(1, value);
+}
+
 function backgroundErrorSeverityName(severity: number): string {
 	return BACKGROUND_ERROR_SEVERITY_NAMES[severity] ?? 'unknown';
 }
@@ -1145,7 +1158,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		if (store.decoder?.readKey && !store.decoder.decode) {
 			store.decoder.decode = (buffer: BufferWithDataView): any => {
 				if (store.decoder?.readKey) {
-					return store.decoder.readKey(buffer, 0, buffer.end);
+					// Only the shared value buffer carries `end`; a buffer of its own (getBinary(),
+					// getMany()) is exactly the value.
+					return store.decoder.readKey(buffer, 0, buffer.end ?? buffer.length);
 				}
 				return buffer;
 			};
@@ -1205,7 +1220,7 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			throw new TypeError('Callback must be a function');
 		}
 
-		const maxRetries = options?.maxRetries ?? 3;
+		const maxRetries = resolveMaxRetries(options?.maxRetries);
 		// A coordinated retry waits for the conflict to clear only to retry; with retries off, fail now.
 		const txn = new Transaction(
 			this.store,
@@ -1286,14 +1301,14 @@ export class RocksDatabase extends DBI<DBITransactional> {
 			throw new TypeError('Callback must be a function');
 		}
 
-		const maxRetries = options?.maxRetries ?? 3;
+		const maxRetries = resolveMaxRetries(options?.maxRetries);
 
 		const isRetryable = (err: Error | unknown, attempt: number) => {
 			if (
 				!(
 					err instanceof TransactionRetryableError &&
 					(options?.retryOnBusy ?? (err.hasLog || err.refusedBeforeLog)) &&
-					attempt <= maxRetries
+					attempt < maxRetries
 				)
 			) {
 				return false;

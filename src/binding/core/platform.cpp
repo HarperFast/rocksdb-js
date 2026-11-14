@@ -297,6 +297,27 @@ bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs) {
 		static_cast<double>(budgetMs) * BUDGET_PRESSURE_FRACTION;
 }
 
+#ifndef _WIN32
+int syncDescriptor(int fd, bool dataOnly) {
+	int result;
+	do {
+#ifdef __APPLE__
+		(void)dataOnly;
+		result = ::fcntl(fd, F_FULLFSYNC);
+		// Only an unsupported F_FULLFSYNC falls back: after an I/O error the pages may already be
+		// clean, so a following fsync would report success for lost data.
+		if (result < 0 && (errno == ENOTSUP || errno == EOPNOTSUPP || errno == EINVAL ||
+			errno == ENOTTY)) {
+			result = ::fsync(fd);
+		}
+#else
+		result = dataOnly ? ::fdatasync(fd) : ::fsync(fd);
+#endif
+	} while (result < 0 && errno == EINTR);
+	return result;
+}
+#endif
+
 bool syncFile(const std::filesystem::path& path) {
 #ifdef _WIN32
 	// FlushFileBuffers requires GENERIC_WRITE access.
@@ -320,7 +341,7 @@ bool syncFile(const std::filesystem::path& path) {
 	if (fd < 0) {
 		return false;
 	}
-	int rc = ::fsync(fd);
+	int rc = syncDescriptor(fd, /*dataOnly=*/false);
 	::close(fd);
 	return rc == 0;
 #endif
@@ -332,7 +353,7 @@ bool syncDirectory(const std::filesystem::path& path, bool allowUnsupported) {
 	if (fd < 0) {
 		return false;
 	}
-	int rc = ::fsync(fd);
+	int rc = syncDescriptor(fd, /*dataOnly=*/false);
 	int syncErrno = errno;
 	::close(fd);
 	if (rc != 0 && !(allowUnsupported && (syncErrno == EINVAL || syncErrno == ENOTSUP || syncErrno == EOPNOTSUPP))) {

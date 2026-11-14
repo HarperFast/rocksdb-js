@@ -19,7 +19,7 @@ console.log(`${runtime} (${machine}) rocksdb-js/${version} RocksDB/${rocksdbVers
 
 const isAlternateRuntime = !!(process.versions.bun || process.versions.deno);
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
 	test: {
 		allowOnly: true,
 		benchmark: { include: ['benchmark/**/*.bench.ts'], reporters: ['verbose'] },
@@ -39,9 +39,11 @@ export default defineConfig({
 		// Deno's node:worker_threads compat is flaky when native-backed tests run
 		// concurrently in the same fork; sequential execution avoids V8 HandleScope crashes.
 		sequence: isAlternateRuntime ? { concurrent: false } : undefined,
+		// Benchmarks load the built dist, not src.
+		setupFiles: mode === 'benchmark' ? [] : ['./test/setup.ts'],
 		reporters: ['verbose'],
 		silent: false,
 		testTimeout: 30000,
 		watch: false,
 	},
-});
+}));

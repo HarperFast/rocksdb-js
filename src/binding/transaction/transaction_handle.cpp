@@ -8,6 +8,7 @@
 #include "iterator/db_iterator_handle.h"
 #include "transaction/transaction_handle.h"
 #include "core/test_seam.h"
+#include "database/multi_get.h"
 #include "napi/macros.h"
 
 namespace rocksdb_js {
@@ -32,7 +33,8 @@ struct ScopedAsyncWorkRegistration {
 	AsyncWorkHandle* handle;
 	bool admitted;
 
-	explicit ScopedAsyncWorkRegistration(AsyncWorkHandle* handle) : handle(handle), admitted(false) {
+	explicit ScopedAsyncWorkRegistration(AsyncWorkHandle* handle)
+		: handle(handle), admitted(false) {
 		if (this->handle) {
 			this->admitted = this->handle->registerAsyncWork();
 		}
@@ -56,35 +58,6 @@ struct ScopedAsyncWorkRegistration {
 	}
 };
 
-template <typename State>
-struct PendingAsyncState {
-	napi_env env;
-	State* state;
-
-	PendingAsyncState(napi_env env, State* state) : env(env), state(state) {}
-
-	~PendingAsyncState() {
-		if (!this->state) return;
-		if (this->state->resolveRef) {
-			::napi_delete_reference(this->env, this->state->resolveRef);
-			this->state->resolveRef = nullptr;
-		}
-		if (this->state->rejectRef) {
-			::napi_delete_reference(this->env, this->state->rejectRef);
-			this->state->rejectRef = nullptr;
-		}
-		this->state->deleteAsyncWork();
-		delete this->state;
-	}
-
-	void release() {
-		this->state = nullptr;
-	}
-
-	PendingAsyncState(const PendingAsyncState&) = delete;
-	PendingAsyncState& operator=(const PendingAsyncState&) = delete;
-};
-
 inline void delayTransactionStagingForTesting() {
 	const int timeoutMs = consumeTransactionStagingDelayForTesting();
 	if (timeoutMs <= 0) {
@@ -93,7 +66,8 @@ inline void delayTransactionStagingForTesting() {
 	transactionStagingDelayActive().store(true, std::memory_order_release);
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
 	while (transactionStagingDelayActive().load(std::memory_order_acquire) &&
-		std::chrono::steady_clock::now() < deadline) {
+		std::chrono::steady_clock::now() < deadline
+	) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 	transactionStagingDelayActive().store(false, std::memory_order_release);
@@ -245,7 +219,7 @@ void TransactionHandle::addLogEntry(std::unique_ptr<TransactionLogEntry> entry) 
 	// write-once here too so a stray re-stage from any caller cannot corrupt the watermark.
 	if (this->committedPosition.logSequenceNumber > 0) {
 		DEBUG_LOG("%p TransactionHandle::addLogEntry Skipping re-stage on retry for transaction %llu "
-				  "(WAL already written at seq %u)\n",
+			"(WAL already written at seq %u)\n",
 			this, (unsigned long long)this->id, this->committedPosition.logSequenceNumber);
 		return;
 	}
@@ -449,7 +423,9 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 			// A stalling WriteBufferManager can block a synchronous write on the JS
 			// thread until memory is released, and the per-macrotask trim that
 			// releases idle iterators' pinned memtables runs on that same thread.
-			const bool poolable = this->snapshotSet && !this->disableSnapshot && !(targetHandle->descriptor->attachedWriteBufferManager && DBSettings::getInstance().getWriteBufferManagerAllowStall());
+			const bool poolable = this->snapshotSet && !this->disableSnapshot
+				&& !(targetHandle->descriptor->attachedWriteBufferManager
+					&& DBSettings::getInstance().getWriteBufferManagerAllowStall());
 			if (poolable) {
 				for (auto& slot : this->idleIterators) {
 					if (slot && slot->dbHandle == targetHandle && slot->boundsMatch(options)) {
@@ -530,7 +506,9 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 	checkOrphan = false;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-		if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending || (iterator->writeBufferManagerAttached && DBSettings::getInstance().getWriteBufferManagerAllowStall())) {
+		if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending
+			|| (iterator->writeBufferManagerAttached && DBSettings::getInstance().getWriteBufferManagerAllowStall())
+		) {
 			return false;
 		}
 		auto registered = this->activeIterators.find(iterator);
@@ -701,7 +679,7 @@ void TransactionHandle::close() {
  */
 napi_value TransactionHandle::get(
 	napi_env env,
-	std::string& key,
+	std::string &key,
 	napi_value resolve,
 	napi_value reject,
 	std::shared_ptr<DBHandle> dbHandleOverride,
@@ -791,7 +769,7 @@ napi_value TransactionHandle::get(
 		name,      // async_resource_name
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
-			const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
+	const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
 			if (getDelayMs > 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
 			}
@@ -880,6 +858,183 @@ rocksdb::Status TransactionHandle::getSync(
 
 	// TODO: should this be GetForUpdate?
 	return this->txn->Get(readOptions, column, key, &result);
+}
+
+rocksdb::Status TransactionHandle::multiGetSync(
+	MultiGetBatch& batch,
+	rocksdb::ReadOptions& readOptions,
+	std::shared_ptr<DBHandle> dbHandleOverride
+) {
+	if (!this->txn) {
+		return rocksdb::Status::Aborted("Transaction is closed");
+	}
+	if (this->state.load() != TransactionState::Pending) {
+		return rocksdb::Status::Aborted("Transaction is not in pending state");
+	}
+
+	this->ensureSnapshot();
+	if (this->snapshotSet) {
+		readOptions.snapshot = this->txn->GetSnapshot();
+	}
+
+	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	this->txn->MultiGet(
+		readOptions,
+		dbHandle->getColumnFamilyHandle(),
+		batch.size(),
+		batch.keys.data(),
+		batch.values.get(),
+		batch.statuses.get()
+	);
+	return rocksdb::Status::OK();
+}
+
+struct AsyncTransactionMultiGetState final : AsyncMultiGetState<std::shared_ptr<TransactionHandle>> {
+	using AsyncMultiGetState::AsyncMultiGetState;
+	std::shared_ptr<const rocksdb::Snapshot> snapshot;
+	rocksdb::DB* readDb = nullptr;
+	MultiGetBatch misses;
+	std::vector<size_t> missingIndices;
+};
+
+napi_value TransactionHandle::multiGet(
+	napi_env env,
+	const std::vector<rocksdb::Slice>& keys,
+	napi_value resolve,
+	napi_value reject,
+	std::shared_ptr<DBHandle> dbHandle
+) {
+	ScopedAsyncWorkRegistration transactionRegistration(this);
+	if (!transactionRegistration.ok() || this->isCancelled() || !this->txn) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+	if (this->state.load() != TransactionState::Pending) {
+		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
+		return nullptr;
+	}
+
+	this->ensureSnapshot();
+
+	// Registered while its column descriptor is copied, so a concurrent close cannot reset it between
+	// the caller's open check and the pin.
+	ScopedAsyncWorkRegistration targetHandleRegistration(dbHandle.get());
+	if (!targetHandleRegistration.ok() || dbHandle->isCancelled() || !dbHandle->columnDescriptor) {
+		::napi_throw_error(env, nullptr, "Database closed during transaction get many operation");
+		return nullptr;
+	}
+	auto readColumnDescriptor = dbHandle->columnDescriptor;
+	rocksdb::DB* readDb = dbHandle->descriptor ? dbHandle->descriptor->db.get() : nullptr;
+	if (!readDb) {
+		::napi_throw_error(env, nullptr, "Database closed during transaction get many operation");
+		return nullptr;
+	}
+
+	rocksdb::ReadOptions readOptions;
+	if (this->snapshotSet) {
+		readOptions.snapshot = this->txn->GetSnapshot();
+	}
+
+	napi_value name;
+	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, "transaction.getMany", NAPI_AUTO_LENGTH, &name));
+
+	auto state = new AsyncTransactionMultiGetState(env, this->shared_from_this(), readOptions);
+	// Until the transaction registration is transferred below, setup failures must delete this
+	// state without unregistering work it does not own.
+	state->completed.store(true);
+	PendingAsyncState pendingState(env, state);
+	if (!state->batch.copyKeys(keys) || !state->batch.allocateResults()) {
+		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
+		return nullptr;
+	}
+	state->readColumnDescriptor = std::move(readColumnDescriptor);
+	state->readDb = readDb;
+	if (this->snapshotSet) {
+		state->snapshot = this->txn->GetTimestampedSnapshot();
+		state->readOptions.snapshot = state->snapshot.get();
+	}
+	// Capture staged writes/deletes and cache hits on the owning thread. Only unresolved keys
+	// reach the worker, which must never touch txn: writes, commits and retries can mutate it.
+	readOptions.read_tier = rocksdb::kBlockCacheTier;
+	this->txn->MultiGet(
+		readOptions,
+		state->readColumnDescriptor->column.get(),
+		state->batch.size(),
+		state->batch.keys.data(),
+		state->batch.values.get(),
+		state->batch.statuses.get()
+	);
+	try {
+		for (size_t i = 0; i < state->batch.size(); i++) {
+			if (state->batch.statuses[i].IsIncomplete()) {
+				state->misses.keys.push_back(state->batch.keys[i]);
+				state->missingIndices.push_back(i);
+			}
+		}
+	} catch (const std::bad_alloc&) {
+		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
+		return nullptr;
+	}
+	if (!state->misses.allocateResults()) {
+		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
+		return nullptr;
+	}
+	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
+	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
+
+	NAPI_STATUS_THROWS(::napi_create_async_work(
+		env,
+		nullptr,
+		name,
+		[](napi_env doNotUse, void* data) { // execute
+			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
+			const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
+			if (getDelayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
+			}
+			if (!state->handle || state->handle->isCancelled()) {
+				state->status = rocksdb::Status::Aborted("Database closed during transaction get many operation");
+				state->batch.values.reset();
+			} else {
+				state->readDb->MultiGet(
+					state->readOptions,
+					state->readColumnDescriptor->column.get(),
+					state->misses.size(),
+					state->misses.keys.data(),
+					state->misses.values.get(),
+					state->misses.statuses.get()
+				);
+				for (size_t i = 0; i < state->misses.size(); i++) {
+					const size_t index = state->missingIndices[i];
+					state->batch.values[index] = std::move(state->misses.values[i]);
+					state->batch.statuses[index] = std::move(state->misses.statuses[i]);
+				}
+				finishMultiGet(state->status, state->batch, state->result);
+			}
+			state->misses.values.reset();
+			state->snapshot.reset();
+			state->readColumnDescriptor.reset();
+			state->signalExecuteCompleted();
+			state->handle->closeOrphanIfUnused();
+		},
+		[](napi_env env, napi_status status, void* data) { // complete
+			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
+			state->deleteAsyncWork();
+			if (status != napi_cancelled) {
+				resolveMultiGetResult(env, "Transaction get many failed", state);
+			}
+			delete state;
+		},
+		state,
+		&state->asyncWork
+	));
+
+	state->completed.store(false);
+	transactionRegistration.release();
+	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	pendingState.release();
+
+	NAPI_RETURN_UNDEFINED();
 }
 
 void TransactionHandle::ensureSnapshot() {

@@ -4,6 +4,7 @@ import { Transaction } from '../src/transaction.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -35,6 +36,14 @@ const forceGC: (() => void) | undefined =
 		: typeof (globalThis as { Bun?: { gc?: (sync: boolean) => void } }).Bun?.gc === 'function'
 			? () => (globalThis as unknown as { Bun: { gc: (sync: boolean) => void } }).Bun.gc(true)
 			: undefined;
+
+async function collectUntil(done: () => boolean, timeoutMs = 2000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!done() && Date.now() < deadline) {
+		forceGC!();
+		await delay(10);
+	}
+}
 
 const RANGE_OPTIONS: Record<string, unknown>[] = [
 	{},
@@ -554,26 +563,52 @@ describe.skipIf(!iteratorPoolEnabled)('Transaction iterator pool', () => {
 			})
 	);
 
-	it.skipIf(!forceGC)('closes a dropped transaction that only holds idle pooled iterators', () =>
-		dbRunner(async ({ db, dbPath }) => {
-			db.putSync('a', 'a');
-			const baseline = status(dbPath);
-			(() => {
-				const txn = new Transaction(db.store);
-				for (let i = 0; i < 3; i++) {
-					expect(txn.getRange().asArray.length).toBe(1);
+	// Bun's collector also scans the native stack conservatively, so a stale slot can keep a dropped
+	// wrapper reachable across every forced GC (#983); V8's is precise.
+	it.skipIf(!forceGC)(
+		'closes a dropped transaction that only holds idle pooled iterators',
+		(context) =>
+			dbRunner(async ({ db, dbPath }) => {
+				db.putSync('a', 'a');
+				const baseline = status(dbPath);
+				const dropped = 8;
+				let collected = 0;
+				const registry = new FinalizationRegistry<undefined>(() => {
+					collected++;
+				});
+				const drop = () => {
+					const txn = new Transaction(db.store);
+					registry.register(txn._context, undefined);
+					for (let i = 0; i < 3; i++) {
+						expect(txn.getRange().asArray.length).toBe(1);
+					}
+				};
+				for (let i = 0; i < dropped; i++) {
+					drop();
 				}
-			})();
-			expect(status(dbPath).transactions).toBe(baseline.transactions + 1);
-			for (let i = 0; i < 20 && status(dbPath).transactions !== baseline.transactions; i++) {
-				forceGC!();
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
-			expect(status(dbPath)).toMatchObject({
-				closables: baseline.closables,
-				transactions: baseline.transactions,
-			});
-		})
+				const open = () => status(dbPath).transactions - baseline.transactions;
+				expect(open()).toBe(dropped);
+				await collectUntil(() => open() === 0);
+				const { closables, transactions } = status(dbPath);
+				expect(closables - baseline.closables, 'untrimmed pooled iterators').toBe(
+					transactions - baseline.transactions
+				);
+				if (!process.versions.bun || open() === 0) {
+					expect(open()).toBe(0);
+					return;
+				}
+				// A wrapper's native finalizer and its registry callback are separate tasks.
+				await collectUntil(() => open() === dropped - collected, 500);
+				const retained = open();
+				expect(
+					retained,
+					'transactions left open after their wrapper was collected'
+				).toBeLessThanOrEqual(dropped - collected);
+				if (retained > 0) {
+					await context.annotate(`${retained} of ${dropped} dropped wrappers stayed reachable`);
+				}
+				context.skip(retained === dropped, 'every dropped wrapper stayed reachable');
+			})
 	);
 });
 

@@ -240,6 +240,41 @@ struct AsyncWorkHandle {
 };
 
 /**
+ * Owns a not-yet-queued `state` during N-API setup: an early return deletes it with its promise
+ * references and async work. Set `state->completed` while this owns a state that holds no async
+ * work registration, so the destructor does not release one; `release()` once the work is queued.
+ */
+template<typename State>
+struct PendingAsyncState {
+	napi_env env;
+	State* state;
+
+	PendingAsyncState(napi_env env, State* state)
+		: env(env), state(state) {}
+
+	~PendingAsyncState() {
+		if (!this->state) return;
+		if (this->state->resolveRef) {
+			::napi_delete_reference(this->env, this->state->resolveRef);
+			this->state->resolveRef = nullptr;
+		}
+		if (this->state->rejectRef) {
+			::napi_delete_reference(this->env, this->state->rejectRef);
+			this->state->rejectRef = nullptr;
+		}
+		this->state->deleteAsyncWork();
+		delete this->state;
+	}
+
+	void release() {
+		this->state = nullptr;
+	}
+
+	PendingAsyncState(const PendingAsyncState&) = delete;
+	PendingAsyncState& operator=(const PendingAsyncState&) = delete;
+};
+
+/**
  * Admits `state`'s async work onto `handle`. On success, returns true and the
  * caller proceeds to `napi_queue_async_work()` as usual. On refusal
  * (cancellation already published by a concurrent close), tears down the

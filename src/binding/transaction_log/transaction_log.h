@@ -26,6 +26,8 @@ struct TransactionLog final {
 	static napi_value GetPurgeWatermark(napi_env env, napi_callback_info info);
 	static napi_value SetPurgeBaseline(napi_env env, napi_callback_info info);
 
+	static bool SupportsSharedMemoryMaps();
+
 	static void Init(napi_env env, napi_value exports);
 };
 

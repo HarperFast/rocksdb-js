@@ -77,6 +77,7 @@
 				'src/binding/database/db_registry.cpp',
 				'src/binding/database/db_stats.cpp',
 				'src/binding/database/db_settings.cpp',
+				'src/binding/database/multi_get.cpp',
 				'src/binding/iterator/db_iterator.cpp',
 				'src/binding/iterator/db_iterator_handle.cpp',
 				'src/binding/transaction/transaction_handle.cpp',

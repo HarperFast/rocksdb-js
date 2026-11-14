@@ -112,6 +112,15 @@ constexpr double BUDGET_PRESSURE_FRACTION = 0.75;
 /** True when `elapsedMs` used at least BUDGET_PRESSURE_FRACTION of `budgetMs`. */
 bool budgetNearlyExhausted(uint64_t elapsedMs, uint64_t budgetMs);
 
+#ifndef _WIN32
+/**
+ * Flushes `fd` to stable storage. macOS uses `F_FULLFSYNC` (plain `fsync` leaves data in the drive
+ * cache), falling back to `fsync` only where it is unsupported; elsewhere `dataOnly` picks
+ * `fdatasync`. Returns 0, or -1 with errno set.
+ */
+int syncDescriptor(int fd, bool dataOnly);
+#endif
+
 /**
  * Flushes an existing file's data and metadata to stable storage by path.
  * Returns false when the file cannot be opened or the sync fails.

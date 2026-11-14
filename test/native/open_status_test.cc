@@ -6,6 +6,7 @@
 #include "core/open_status.h"
 #include "rocksdb/status.h"
 
+using rocksdb_js::isDatabaseLockedStatus;
 using rocksdb_js::isMissingSstOpenRace;
 
 // The Corruption-coded shape observed in the wild (HarperFast/rocksdb-js#812):
@@ -164,4 +165,32 @@ TEST(OpenStatus, MissingSstInsideOddDirectoryIsTheRace) {
 		"No such file or directory"
 	);
 	EXPECT_TRUE(isMissingSstOpenRace(status));
+}
+
+TEST(OpenStatus, PosixLockContentionIsLocked) {
+	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
+		"While lock file: /data/db/LOCK", "Resource temporarily unavailable")));
+	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
+		"lock hold by current process, acquire time 1 acquiring thread 2: /data/db/LOCK",
+		"No locks available")));
+}
+
+TEST(OpenStatus, WindowsSharingViolationIsLocked) {
+	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
+		"Failed to create lock file: C:\\tmp\\testdb-1/LOCK",
+		"The process cannot access the file because it is being used by another process.\r\n")));
+	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
+		"Failed to create lock file: C:\\tmp\\testdb-1\\LOCK",
+		"The process cannot access the file because it is being used by another process.")));
+}
+
+TEST(OpenStatus, OtherLockFileFailuresAreNotLocked) {
+	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::IOError(
+		"While open a file for lock: /data/db/LOCK", "Permission denied")));
+	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::IOError(
+		"Failed to create lock file: C:\\tmp\\testdb-1/LOCK", "Access is denied.")));
+	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::Corruption(
+		"While lock file: /data/db/LOCK", "Resource temporarily unavailable")));
+	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::IOError(
+		"While lock file: /data/LOCKS/db", "Resource temporarily unavailable")));
 }

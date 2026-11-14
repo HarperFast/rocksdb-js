@@ -3,6 +3,7 @@ import {
 	constants,
 	disablePrelogConflictCheckForTesting,
 	lockWakeCallbackCount,
+	resetTestSwitchesForTesting,
 	setPrelogConflictCheckRetriesOnlyForTesting,
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
@@ -36,8 +37,7 @@ const readEntries = (db: RocksDatabase, name = 'foo') =>
 describe('transaction-log abort markers', () => {
 	afterEach(() => {
 		RocksDatabase.config({ transactionLogAbortMarkers: false, transactionLogWriteIntents: false });
-		disablePrelogConflictCheckForTesting(false);
-		setPrelogConflictCheckRetriesOnlyForTesting(true);
+		resetTestSwitchesForTesting();
 	});
 
 	it.each([
@@ -477,7 +477,7 @@ describe('transaction-log abort markers', () => {
 					{ maxRetries: 2 }
 				)
 			).toThrow(expect.objectContaining({ refusedBeforeLog: true }));
-			expect(attempts).toBe(3);
+			expect(attempts).toBe(2);
 			blocker.abort();
 			expect(readEntries(db)).toEqual(['sync']);
 		}));

@@ -1,8 +1,9 @@
-import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { ChildCloseTimeoutError, type ChildResult, runChild } from './lib/child-process.ts';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { dirname, join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 
 // A real stall blocks the writer, so a parent process owns the deadline and kills the child.
 
@@ -11,110 +12,100 @@ const exitFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-exit.mts'
 const disabledFixturePath = join(__dirname, 'fixtures', 'fork-wbm-watchdog-disabled.mts');
 const WARN_MS = 2000;
 
-type ChildResult = { stdout: string; stderr: string; timedOut: boolean };
+const childEnv = { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: String(WARN_MS) };
 
 function runStallChild(
 	dbPath: string,
 	deadlineMs: number,
 	shutdownWhenStalled = false
 ): Promise<ChildResult> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(
-			process.execPath,
-			[fixturePath, dbPath, ...(shutdownWhenStalled ? ['shutdown'] : [])],
-			{
-				env: { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: String(WARN_MS) },
-			}
-		);
-		let stdout = '';
-		let stderr = '';
-		let timedOut = false;
-		let settled = false;
+	return runChild(
+		process.execPath,
+		[fixturePath, dbPath, ...(shutdownWhenStalled ? ['shutdown'] : [])],
+		{
+			deadlineMs,
+			env: childEnv,
+			stopWhen: ({ stdout, stderr }) =>
+				shutdownWhenStalled
+					? stderr.includes('WriteBufferManager write stall active for')
+					: /^(STALLED|NEVER_STALLED|CLEARED)\r?$/m.test(stdout),
+		}
+	);
+}
 
-		const finish = () => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			clearTimeout(deadline);
-			child.kill('SIGKILL');
-			resolve({ stdout, stderr, timedOut });
-		};
-
-		const deadline = setTimeout(() => {
-			timedOut = true;
-			finish();
-		}, deadlineMs);
-
-		child.stdout?.on('data', (chunk) => {
-			stdout += chunk.toString();
-			if (!shutdownWhenStalled && /^(STALLED|NEVER_STALLED|CLEARED)\r?$/m.test(stdout)) {
-				finish();
-			}
-		});
-		child.stderr?.on('data', (chunk) => {
-			stderr += chunk.toString();
-			if (shutdownWhenStalled && stderr.includes('WriteBufferManager write stall active for')) {
-				finish();
-			}
-		});
-		child.on('error', (error) => {
-			clearTimeout(deadline);
-			reject(error);
-		});
-		child.on('close', finish);
+function runExitChild(dbPath: string, listenerOrder: 'before' | 'after'): Promise<ChildResult> {
+	return runChild(process.execPath, [exitFixturePath, dbPath, listenerOrder], {
+		deadlineMs: 15_000,
+		env: childEnv,
 	});
 }
 
-function runExitChild(
-	dbPath: string,
-	listenerOrder: 'before' | 'after'
-): Promise<{
-	code: number | null;
-	signal: NodeJS.Signals | null;
-	timedOut: boolean;
-	stderr: string;
-}> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [exitFixturePath, dbPath, listenerOrder], {
-			env: { ...process.env, ROCKSDB_JS_WBM_STALL_WARN_MS: String(WARN_MS) },
-		});
-		let stderr = '';
-		let timedOut = false;
-		const deadline = setTimeout(() => {
-			timedOut = true;
-			child.kill('SIGKILL');
-		}, 15_000);
-
-		child.stderr?.on('data', (chunk) => {
-			stderr += chunk.toString();
-		});
-		child.on('error', (error) => {
-			clearTimeout(deadline);
-			reject(error);
-		});
-		child.on('close', (code, signal) => {
-			clearTimeout(deadline);
-			resolve({ code, signal, timedOut, stderr });
-		});
-	});
+// A close timeout leaves the child potentially holding the directory open.
+async function inTempDir(
+	prefix: string,
+	run: (dbPath: string) => Promise<ChildResult>
+): Promise<ChildResult> {
+	const dir = mkdtempSync(join(tmpdir(), prefix));
+	let childMayBeRunning = false;
+	try {
+		return await run(join(dir, 'db'));
+	} catch (error) {
+		childMayBeRunning = error instanceof ChildCloseTimeoutError;
+		throw error;
+	} finally {
+		if (!childMayBeRunning && !process.env.KEEP_FILES) {
+			rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+		}
+	}
 }
+
+describe('inTempDir()', () => {
+	it('retains the directory when the child may still be running', async () => {
+		let dir: string | undefined;
+		const error = new ChildCloseTimeoutError('child did not close');
+		vi.stubEnv('KEEP_FILES', '');
+		try {
+			await expect(
+				inTempDir('rocksdb-wbm-close-error-', async (dbPath) => {
+					dir = dirname(dbPath);
+					throw error;
+				})
+			).rejects.toBe(error);
+			expect(existsSync(dir!)).toBe(true);
+		} finally {
+			vi.unstubAllEnvs();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it.each([false, true])('cleans up a failed spawn unless KEEP_FILES=%s', async (keepFiles) => {
+		let dir: string | undefined;
+		vi.stubEnv('KEEP_FILES', keepFiles ? '1' : '');
+		try {
+			await expect(
+				inTempDir('rocksdb-wbm-spawn-error-', (dbPath) => {
+					dir = dirname(dbPath);
+					return runChild(join(dir, 'does-not-exist'), [], { deadlineMs: 100 });
+				})
+			).rejects.toMatchObject({ code: 'ENOENT' });
+			expect(existsSync(dir!)).toBe(keepFiles);
+		} finally {
+			vi.unstubAllEnvs();
+			if (dir) rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
 
 describe('WriteBufferManager stall watchdog', () => {
 	it.each(['before', 'after'] as const)(
 		'exits cleanly when the global listener is registered %s watchdog construction',
 		async (listenerOrder) => {
-			const dir = mkdtempSync(join(tmpdir(), 'rocksdb-wbm-exit-'));
-			try {
-				const result = await runExitChild(join(dir, 'db'), listenerOrder);
-				expect(result.timedOut, result.stderr).toBe(false);
-				expect(result.signal, result.stderr).toBeNull();
-				expect(result.code, result.stderr).toBe(0);
-			} finally {
-				if (!process.env.KEEP_FILES) {
-					rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
-				}
-			}
+			const result = await inTempDir('rocksdb-wbm-exit-', (dbPath) =>
+				runExitChild(dbPath, listenerOrder)
+			);
+			expect(result.timedOut, result.stderr).toBe(false);
+			expect(result.signal, result.stderr).toBeNull();
+			expect(result.code, result.stderr).toBe(0);
 		}
 	);
 
@@ -141,18 +132,9 @@ describe('WriteBufferManager stall watchdog', () => {
 	});
 
 	it('reports a sustained stall exactly once, and both read surfaces see it', async () => {
-		const dir = mkdtempSync(join(tmpdir(), 'rocksdb-wbm-stall-'));
-		let result: ChildResult;
-		try {
-			result = await runStallChild(join(dir, 'db'), 120_000);
-		} finally {
-			if (!process.env.KEEP_FILES) {
-				// The child was SIGKILLed a moment ago; on Windows its handles can
-				// outlive it briefly, and an EPERM thrown here would mask the real
-				// assertion result.
-				rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
-			}
-		}
+		const result = await inTempDir('rocksdb-wbm-stall-', (dbPath) =>
+			runStallChild(dbPath, 120_000)
+		);
 
 		expect(result.timedOut, `child never finished:\n${result.stderr}`).toBe(false);
 		expect(result.stdout.split(/\r?\n/), `child stderr:\n${result.stderr}`).toContain('STALLED');
@@ -207,15 +189,9 @@ describe('WriteBufferManager stall watchdog', () => {
 	}, 150_000);
 
 	it('keeps reporting while shutdown waits for a stalled writer', async () => {
-		const dir = mkdtempSync(join(tmpdir(), 'rocksdb-wbm-stall-shutdown-'));
-		let result: ChildResult;
-		try {
-			result = await runStallChild(join(dir, 'db'), 60_000, true);
-		} finally {
-			if (!process.env.KEEP_FILES) {
-				rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
-			}
-		}
+		const result = await inTempDir('rocksdb-wbm-stall-shutdown-', (dbPath) =>
+			runStallChild(dbPath, 60_000, true)
+		);
 
 		expect(result.timedOut, `child never warned:\n${result.stderr}`).toBe(false);
 		expect(result.stdout).toContain('SHUTTING_DOWN');

@@ -29,15 +29,24 @@ Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASa
 `max_free_fill_size` faults on the unfixed code) and `test/fixtures/fork-abort-get-destroy.mts`
 (segfaults without the guard or the owning-descriptor pin, no sanitizer needed).
 
-Other owning-thread mutations still run while an admitted get may be inside `txn->Get()`: commit
-(`Clear()` after the write), `putSync`/`removeSync` (batch append), and `resetTransaction()`
-(deletes and recreates `txn` on a coordinated retry). Draining in each would block `putSync` on
-unrelated disk reads; the candidate fix is for the worker to read through the database with a
-pinned transaction snapshot. That the key is absent from the batch when the worker is queued is
-established by the caller: the async get's only caller, `Store.get()`, reaches it after a
-cache-tier `getSync()` in the same synchronous turn, which consulted the batch and did not resolve
-the key. The async get's setup does not consult the batch; its worker's `txn->Get()` still does,
-which is the race above.
+Other owning-thread mutations still run while an admitted get may be inside `txn->Get()`:
+commit (`Clear()` after the write),
+`putSync`/`removeSync` (batch append), and `resetTransaction()` (deletes and recreates `txn` on a
+coordinated retry). Draining in each would block `putSync` on unrelated disk reads; the candidate
+fix is for the worker to read through the database with a pinned transaction snapshot. That the key
+is absent from the batch when the worker is queued is established by the caller: the async get's
+only caller, `Store.get()`, reaches it after a cache-tier `getSync()` in the same synchronous turn,
+which consulted the batch and did not resolve the key. The async single-key setup does not consult
+the batch; its worker's `txn->Get()` still does, which is the race above.
+
+`TransactionHandle::multiGet()` captures staged writes, deletes and cache hits on the owning thread
+with a cache-tier `MultiGet`, retaining their `PinnableSlice`s and a shared transaction snapshot
+(`GetTimestampedSnapshot()`). Its worker reads only unresolved keys through `DB::MultiGet`, so it
+never accesses a transaction that a write, commit or retry may mutate or reset. The shared snapshot
+survives a reset. With snapshots disabled, unresolved keys read the database's current state.
+Values, the snapshot and the column descriptor are released before signaling execute completion,
+so teardown cannot destroy their database first. The existing transaction async registration still
+lets abort and orphan cleanup cancel and drain the read.
 
 # Write-intent refusal
 
@@ -61,6 +70,6 @@ It runs off RocksDB's write thread without the DB mutex, as RocksDB's own parall
 
 The old completion did a check-then-store (`if (state == Committing) state = Pending`). A `close()` that landed between the two set `Aborted` and deleted `txn`, and the store then put the handle back to `Pending`. That leaves a `Pending` handle with no transaction, which `commit()`/`commitSync()` would admit again (HarperFast/rocksdb-js#769). `Commit`/`CommitSync` take `Pending` → `Committing` with a compare-exchange for the same reason, and reject as already aborted when it fails.
 
-Reads are relaxed. They gate operations on the owning thread and order no data, and `state` is read on every get, put and remove, where a `seq_cst` access would add a barrier. A check that must not run past a concurrent abort needs a `transition()`, not a `load()`. The cell does not stop `close()` from deleting `txn` under a `commitSync()` or an idle `abort()` on the owning thread: that is the admission and drain work tracked by HarperFast/rocksdb-js#784.
+Reads are relaxed. They gate operations on the owning thread and order no data, and `state` is read on every get, put and remove, where a `seq_cst` access would add a barrier. A check that must not run past a concurrent abort needs a `transition()`, not a `load()`. The cell does not stop `close()` from deleting `txn` under an idle `abort()` on the owning thread: that is the admission and drain work tracked by HarperFast/rocksdb-js#784. A `commitSync()` registers with the transaction's async-work drain, as an async commit does, so a foreign `close()` waits for it; and it holds a descriptor operation through its own `close()` of the committed handle, because that `close()` leaves the closables before deleting `txn`, after which `finishClose()`'s sweep would no longer wait for it (`test/fixtures/fork-commit-sync-shutdown.mts`).
 
 See [lifecycle cost accounting](../../../docs/performance/transaction-state.md) for per-path CAS counts and the reproducible state-only measurement.
