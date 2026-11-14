@@ -27,6 +27,7 @@ struct DBDescriptor;
 struct DBHandle;
 struct DBIteratorHandle;
 struct DBIteratorOptions;
+struct MultiGetBatch;
 struct TransactionLogStore;
 
 /**
@@ -544,6 +545,28 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		rocksdb::PinnableSlice& result,
 		rocksdb::ReadOptions& readOptions,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
+
+	/**
+	 * Reads `batch` through the transaction (its snapshot and its own uncommitted writes) with one
+	 * `MultiGet`. The returned status covers the transaction itself; each key's is in `batch`.
+	 */
+	rocksdb::Status multiGetSync(
+		MultiGetBatch& batch,
+		rocksdb::ReadOptions& readOptions,
+		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
+	);
+
+	/**
+	 * Queues an async `MultiGet` of `keys` through the transaction, reading `dbHandle`'s column
+	 * family; see `Database::GetMany`.
+	 */
+	napi_value multiGet(
+		napi_env env,
+		const std::vector<rocksdb::Slice>& keys,
+		napi_value resolve,
+		napi_value reject,
+		std::shared_ptr<DBHandle> dbHandle
 	);
 
 	/**

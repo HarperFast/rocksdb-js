@@ -15,6 +15,7 @@
 #include "database/db_registry.h"
 #include "iterator/db_iterator.h"
 #include "database/db_settings.h"
+#include "database/multi_get.h"
 #include "napi/macros.h"
 #include "transaction/transaction.h"
 #include "transaction/transaction_handle.h"
@@ -1502,6 +1503,94 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 }
 
 /**
+ * Asynchronously reads a batch of keys through the transaction with one `MultiGet`; see
+ * `Database::GetMany` for the arguments and the resolved buffer.
+ *
+ * @example
+ * ```typescript
+ * txn.getMany(keysBuffer, keyEnds, count, resolve, reject);
+ * ```
+ */
+napi_value Transaction::GetMany(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(5);
+	UNWRAP_TRANSACTION_HANDLE("GetMany");
+	// A copy, not a reference: a forced teardown can reset `dbHandle` from another thread. Passing
+	// it to multiGet() as the target registers async work on it before its column is read.
+	std::shared_ptr<DBHandle> txnDbHandle = (*txnHandle)->dbHandle;
+	if (!txnDbHandle) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+	if (!txnDbHandle->descriptor) {
+		::napi_throw_error(env, nullptr, "Get many failed: Database not open");
+		return nullptr;
+	}
+	OperationGuard operationGuard(txnDbHandle->descriptor);
+	if (txnDbHandle->descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Get many failed: Database is closing");
+		return nullptr;
+	}
+	std::vector<rocksdb::Slice> keys;
+	if (!readMultiGetKeys(env, argv[0], argv[1], argv[2], keys)) {
+		return nullptr;
+	}
+	return (*txnHandle)->multiGet(env, keys, argv[3], argv[4], txnDbHandle);
+}
+
+/**
+ * Synchronously reads a batch of keys through the transaction with one `MultiGet`; see
+ * `Database::GetManySync` for the arguments and the return value.
+ *
+ * @example
+ * ```typescript
+ * const result = txn.getManySync(keysBuffer, keyEnds, count, flags);
+ * ```
+ */
+napi_value Transaction::GetManySync(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(4);
+	UNWRAP_TRANSACTION_HANDLE("GetManySync");
+	// A copy, not a reference: a forced teardown can reset `dbHandle` from another thread.
+	std::shared_ptr<DBHandle> txnDbHandle = (*txnHandle)->dbHandle;
+	if (!txnDbHandle) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
+	if (!txnDbHandle->descriptor) {
+		::napi_throw_error(env, nullptr, "Get many failed: Database not open");
+		return nullptr;
+	}
+	OperationGuard operationGuard(txnDbHandle->descriptor);
+	if (txnDbHandle->descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Get many failed: Database is closing");
+		return nullptr;
+	}
+
+	MultiGetBatch batch;
+	if (!readMultiGetKeys(env, argv[0], argv[1], argv[2], batch.keys)) {
+		return nullptr;
+	}
+	int32_t flags;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[3], &flags));
+
+	rocksdb::ReadOptions readOptions;
+	if (flags & ONLY_IF_IN_MEMORY_CACHE_FLAG) {
+		readOptions.read_tier = rocksdb::kBlockCacheTier;
+	}
+	if (!batch.allocateResults()) {
+		::napi_throw_error(env, nullptr, "Get many failed: out of memory");
+		return nullptr;
+	}
+	rocksdb::Status status = (*txnHandle)->multiGetSync(batch, readOptions, txnDbHandle);
+	if (!status.ok()) {
+		ROCKSDB_STATUS_CREATE_NAPI_ERROR(status, "Get many failed");
+		::napi_throw(env, error);
+		return nullptr;
+	}
+
+	return multiGetSyncResult(env, "Get many failed", batch, flags, *txnDbHandle);
+}
+
+/**
  * Synchronously gets a value through the transaction. The first argument, that specifies the key, can be a buffer or a number
  * indicating the length of the key that was written to the shared buffer.
  *
@@ -1524,6 +1613,11 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(4);
 	UNWRAP_TRANSACTION_HANDLE("GetSync");
+	// close() (after commit or abort) resets the handle; the wrapper outlives it.
+	if (!(*txnHandle)->dbHandle) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
+	}
 	rocksdb::Slice keySlice;
 	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer")) {
 		return nullptr;
@@ -1942,6 +2036,8 @@ void Transaction::Init(napi_env env, napi_value exports) {
 		{ "commitSync", nullptr, CommitSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getMany", nullptr, GetMany, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getManySync", nullptr, GetManySync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getTimestamp", nullptr, GetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "logWritten", nullptr, LogWritten, nullptr, nullptr, nullptr, napi_default, nullptr },
