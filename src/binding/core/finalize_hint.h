@@ -13,9 +13,10 @@ namespace rocksdb_js {
  *
  * A failed create may already have run the finalizer, may run it later, or may never have registered
  * it: Node's `NAPI_PREAMBLE` refuses before taking ownership, while `node::Buffer::New` runs the
- * finalizer on some of its own failures. The status does not say which, so the creator and the
- * finalizer each hold a reference, and `failed()` releases `value` itself. When the finalizer was
- * never registered, only this block leaks. Use a new hint for every create attempt.
+ * finalizer on some of its own failures. The status does not say which, so the creator (`created()`
+ * or `failed()`) and the finalizer each hold a reference. A failed create never returns its value
+ * to JS, so `failed()` releases `value` at once; when the finalizer was never registered, only this
+ * block leaks. Use a new hint for every create attempt.
  */
 template <typename T>
 class SharedFinalizeHint final {
@@ -27,16 +28,14 @@ public:
 
 	T* get() const noexcept { return value.get(); }
 
-	/** The create succeeded; the finalizer now owns `value`. */
 	void created() noexcept { release(); }
 
-	/** The create failed; the returned value is unreachable from JS, so `value` can go now. */
 	void failed() noexcept {
 		value.reset();
 		release();
 	}
 
-	/** Body of the N-API finalizer; safe on any thread. */
+	/** Safe on any thread: a `SharedArrayBuffer` deleter runs where its last reference drops. */
 	static void finalize(void* hint) noexcept {
 		static_cast<SharedFinalizeHint*>(hint)->release();
 	}

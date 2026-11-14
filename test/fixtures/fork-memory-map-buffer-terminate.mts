@@ -27,6 +27,8 @@ if (!isMainThread) {
 	parentPort!.postMessage('ready');
 } else {
 	const dbPath = process.argv[2];
+	const delayMs = Number(process.env.ROCKSDB_JS_MEMORY_MAP_BUFFER_DELAY_MS);
+	if (!(delayMs > 0)) fail('run with ROCKSDB_JS_MEMORY_MAP_BUFFER_DELAY_MS');
 	const gc = globalThis.gc ?? fail('run with --expose-gc');
 	const until = async (condition: () => boolean, what: string): Promise<void> => {
 		const deadline = performance.now() + 5000;
@@ -55,8 +57,11 @@ if (!isMainThread) {
 		await delay(50);
 		const before = transactionLogMapCount();
 
+		const goAt = performance.now();
 		worker.postMessage('go');
 		await until(() => transactionLogMapCount() === before + 1, 'the worker to map segment 1');
+		// The worker's delay starts after it receives 'go', so this proves terminate() lands inside it.
+		if (performance.now() - goAt > delayMs / 2) fail('too slow to terminate inside the delay');
 		await worker.terminate();
 		if (messages.includes('buffer')) fail('terminate() landed after the buffer was created');
 

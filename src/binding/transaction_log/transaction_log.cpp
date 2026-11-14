@@ -173,6 +173,7 @@ napi_status createMemoryMapBuffer(
 		auto* hint = new MemoryMapHint(memoryMap);
 		napi_value sharedArrayBuffer;
 		if (settleFinalizeHint(hint, createShared(env, memoryMap->map, memoryMap->fileSize, releaseSharedMemoryMap, hint, &sharedArrayBuffer)) == napi_ok) {
+			// The SharedArrayBuffer owns the mapping now; if wrapping it fails, GC releases it.
 			napi_value global, bufferClass, from;
 			NAPI_STATUS_RETURN(::napi_get_global(env, &global));
 			NAPI_STATUS_RETURN(::napi_get_named_property(env, global, "Buffer", &bufferClass));
