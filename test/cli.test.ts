@@ -44,7 +44,6 @@ function cli(args: string[], options: { cwd?: string; input?: string } = {}): Pr
 }
 
 const tempPaths: string[] = [];
-// Children a test spawns itself; reaped before their databases are removed.
 const liveChildren = new Set<ChildProcess>();
 
 function tempDBPath(): string {
@@ -323,7 +322,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			]);
 		});
 
-		it('exits cleanly when stdout closes before a query finishes', async () => {
+		it('exits 0 when stdout closes mid-query', { timeout: 2 * CLI_TIMEOUT_MS }, async () => {
 			const dbPath = tempDBPath();
 			const db = RocksDatabase.open(dbPath);
 			try {

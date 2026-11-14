@@ -1056,6 +1056,8 @@ async function* queryCommand([start, end]) {
 					await currentDB.get(key);
 				} catch (readError) {
 					unreadable++;
+					// Set now: an EPIPE exit later in the scan reads it.
+					if (!interactive) process.exitCode = 1;
 					lastKey = key;
 					rows.return();
 					rows = currentDB.getRange({ start: key, exclusiveStart: true, end })[Symbol.iterator]();
@@ -1071,9 +1073,8 @@ async function* queryCommand([start, end]) {
 	} finally {
 		rows.return();
 	}
-	if (unreadable > 0 && !interactive) {
-		process.exitCode = 1;
-		if (argv.json) reportError(new CLIError(`${unreadable} row(s) could not be read`));
+	if (unreadable > 0 && !interactive && argv.json) {
+		reportError(new CLIError(`${unreadable} row(s) could not be read`));
 	}
 }
 
