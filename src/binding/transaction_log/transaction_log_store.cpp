@@ -53,7 +53,8 @@ static std::chrono::milliseconds purgeScanBudget() {
 	static const std::chrono::milliseconds budget(parseDurationMs(
 		::getenv("ROCKSDB_JS_PURGE_SCAN_MS"),
 		/*defaultMs=*/2000,
-		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL));
+		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL
+	));
 	return budget;
 }
 
@@ -87,8 +88,7 @@ TransactionLogStore::TransactionLogStore(
 	displayPath(path),
 	maxFileSize(maxFileSize > 0 ? maxFileSize : DEFAULT_TRANSACTION_LOG_MAX_SIZE),
 	retentionMs(retentionMs),
-	maxAgeThreshold(maxAgeThreshold)
-{
+	maxAgeThreshold(maxAgeThreshold) {
 	DEBUG_LOG("%p TransactionLogStore::TransactionLogStore Opening transaction log store \"%s\"\n", this, this->name.c_str());
 	lastCommittedPosition = std::make_shared<LogPosition>();
 	uncommittedTransactionPositions.reserve(16);
@@ -111,7 +111,7 @@ void TransactionLogStore::doClose() {
 
 	DEBUG_LOG("%p TransactionLogStore::close Closing transaction log store \"%s\"\n", this, this->name.c_str());
 
-	for (auto it = this->sequenceFiles.begin(); it != this->sequenceFiles.end(); ) {
+	for (auto it = this->sequenceFiles.begin(); it != this->sequenceFiles.end();) {
 		auto logFile = it->second;
 		logFilesToClose.push_back(logFile);
 		it = this->sequenceFiles.erase(it);
@@ -304,9 +304,8 @@ std::shared_ptr<MemoryMap> TransactionLogStore::getMemoryMap(uint32_t logSequenc
 	// bump, so this isCurrent value cannot go stale mid-call (a frozen file can
 	// never be re-pinned as current here).
 	bool isCurrent = this->currentSequenceNumber.load(std::memory_order_relaxed) == logSequenceNumber;
-	return logFile->getMemoryMap(isCurrent ?
-		maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
-		logFile->size.load(std::memory_order_relaxed), // otherwise it is frozen, use the file size
+	return logFile->getMemoryMap(isCurrent ? maxFileSize : // if it is the most current log, it will be growing so we need to allocate the max size
+			logFile->size.load(std::memory_order_relaxed), // otherwise it is frozen, use the file size
 		isCurrent);
 }
 
@@ -579,7 +578,8 @@ TransactionLogStore::DurableKeyScan TransactionLogStore::scanLargestDurableKey(
 	}
 
 	result.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::steady_clock::now() - scanStarted);
+		std::chrono::steady_clock::now() - scanStarted
+	);
 	return result;
 }
 
@@ -625,7 +625,8 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 }
 
 std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
-	const std::function<bool()>& abandon, bool waitForUnresolved) {
+	const std::function<bool()>& abandon, bool waitForUnresolved
+) {
 	// Capture txn.state (the flushed-position side file) FIRST, and inline its
 	// bytes. Reading it before the log-file sizes guarantees its recorded flushed
 	// position is <= the sizes we capture next (sizes only grow), so a restored
@@ -931,7 +932,8 @@ void TransactionLogStore::collectStats(TransactionLogStoreStats& out) {
 
 	if (hasOldest) {
 		out.oldestFileAgeMs = static_cast<double>(
-			std::chrono::duration_cast<std::chrono::milliseconds>(now - oldestWriteTime).count());
+			std::chrono::duration_cast<std::chrono::milliseconds>(now - oldestWriteTime).count()
+		);
 	}
 }
 
@@ -1110,7 +1112,9 @@ void TransactionLogStore::loadPurgeRecord() {
 		auto oldest = this->sequenceFiles.begin();
 		record.tracked = true;
 		record.throughSequence = (oldest != this->sequenceFiles.end() && oldest->first < currentSequence
-			? oldest->first : currentSequence) - 1;
+										 ? oldest->first
+										 : currentSequence) -
+			1;
 	}
 	bool recordTracked = (state == TransactionLogPurgeRecordState::Valid || legacy) && record.tracked &&
 		!this->discoveryIncomplete;
@@ -1154,8 +1158,7 @@ void TransactionLogStore::loadPurgeRecord() {
 	bool conclusive = !this->discoveryIncomplete && state != TransactionLogPurgeRecordState::Unreadable;
 	// A damaged slot is a write that stopped before its sync, so no purge followed it; rewriting it
 	// keeps read-only opens, which distrust a damaged slot, from reporting unknown until the next purge.
-	if (conclusive && (state != TransactionLogPurgeRecordState::Valid || record.known != loaded.known ||
-		record.tracked != loaded.tracked || otherSlotDamaged)) {
+	if (conclusive && (state != TransactionLogPurgeRecordState::Valid || record.known != loaded.known || record.tracked != loaded.tracked || otherSlotDamaged)) {
 		// Recording the verdict lets a read-only open, which cannot see what this open saw, report it.
 		loaded.generation++;
 		if (this->writePurgeRecord(loaded)) {
@@ -1336,7 +1339,9 @@ void TransactionLogStore::doPurge(
 	// record that a purge scan ran and when (observability only)
 	this->purgeRuns.fetch_add(1, std::memory_order_relaxed);
 	auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::system_clock::now().time_since_epoch()).count();
+		std::chrono::system_clock::now().time_since_epoch()
+	)
+					 .count();
 	this->lastPurgeMs.store(static_cast<double>(nowMs), std::memory_order_relaxed);
 
 	// collect sequence numbers to remove to avoid modifying map during iteration
@@ -1449,7 +1454,7 @@ void TransactionLogStore::doPurge(
 		double maxKey = 0;
 		// Destroy ends the history, so once it is unknown there is nothing to read the files for.
 		auto resolution = all && !nextRecord.known ? MaxKeyResolution::Unknowable
-			: this->resolveMaxKey(logFile, scanDeadline, maxKey);
+												   : this->resolveMaxKey(logFile, scanDeadline, maxKey);
 		bool deferred = resolution == MaxKeyResolution::OutOfTime || resolution == MaxKeyResolution::ReadFailed;
 		if (resolution == MaxKeyResolution::Resolved) {
 			raiseWatermark(maxKey);
@@ -1459,8 +1464,8 @@ void TransactionLogStore::doPurge(
 				std::ostringstream msg;
 				msg << "Transaction log segment " << (this->displayPath / logFile->path.filename()).string()
 					<< (resolution == MaxKeyResolution::OutOfTime
-						? " could not be read within ROCKSDB_JS_PURGE_SCAN_MS"
-						: " could not be read")
+							   ? " could not be read within ROCKSDB_JS_PURGE_SCAN_MS"
+							   : " could not be read")
 					<< " to record its largest key before purging it; retention keeps it and the segments after it"
 					<< " until a later purge can.";
 				DEBUG_LOG("%p TransactionLogStore::purge WARNING: %s\n", this, msg.str().c_str());
@@ -1646,7 +1651,8 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 
 	uint32_t retiredBoundary = readTransactionLogAppendBoundaryMarker(path);
 	auto logFile = std::make_shared<TransactionLogFile>(
-		path, sequenceNumber, retiredBoundary > 0);
+		path, sequenceNumber, retiredBoundary > 0
+	);
 	logFile->readOnly = this->readOnly;
 	if (retiredBoundary > 0) {
 		logFile->retiredAppendBoundary.store(retiredBoundary, std::memory_order_relaxed);
@@ -1657,7 +1663,8 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 			logFile->open(this->latestTimestamp);
 		} catch (const std::exception& e) {
 			throw TransactionLogAppendBoundaryException(
-				"Failed to open retired transaction log segment " + path.string() + ": " + e.what());
+				"Failed to open retired transaction log segment " + path.string() + ": " + e.what()
+			);
 		}
 		logFile->close();
 	}
@@ -1670,7 +1677,8 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 	try {
 		logFile->fileLastWriteTime.store(
 			convertFileTimeToSystemTime(std::filesystem::last_write_time(path)),
-			std::memory_order_relaxed);
+			std::memory_order_relaxed
+		);
 	} catch (...) {
 		// file missing or racing a concurrent remove; keep the constructor's
 		// "now" seed
@@ -1701,7 +1709,8 @@ bool TransactionLogStore::registerLogFile(const std::filesystem::path& path, con
 }
 
 void TransactionLogStore::writeBatch(
-	TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry, bool cancellable) {
+	TransactionLogEntryBatch& batch, LogPosition& logPosition, LogPosition* firstEntry, bool cancellable
+) {
 	if (firstEntry) {
 		*firstEntry = LogPosition(0, 0);
 	}
@@ -1894,7 +1903,7 @@ void TransactionLogStore::commitFinished(const LogPosition position, const std::
 	int index = 0;
 	// iterate through the array breaking once at the first set bit, but don't iterate past the end of the array (hence -1)
 	for (; index < RECENTLY_COMMITTED_POSITIONS_SIZE - 1; index++) {
-	    if ((count >> index) & 1) break; // will break 50% of the time at each iteration
+		if ((count >> index) & 1) break; // will break 50% of the time at each iteration
 	}
 	// record in the array
 	this->recentlyCommittedSequencePositions[index] = sequencePosition;
@@ -1914,7 +1923,6 @@ void TransactionLogStore::commitAborted(const LogPosition position) {
 		: this->uncommittedTransactionPositions.front();
 	*this->lastCommittedPosition = fullyCommittedPosition;
 }
-
 
 void TransactionLogStore::markAndSync(LogPosition firstEntry, double timestamp) {
 	std::shared_ptr<TransactionLogFile> logFile;
@@ -2044,7 +2052,8 @@ void TransactionLogStore::eraseCancellable(LogPosition position) {
 }
 
 void TransactionLogStore::waitForResolution(
-	std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved, const std::function<bool()>& abandon) {
+	std::unique_lock<std::mutex>& lock, const std::vector<LogPosition>& unresolved, const std::function<bool()>& abandon
+) {
 	if (unresolved.empty()) {
 		return;
 	}
@@ -2073,8 +2082,9 @@ void TransactionLogStore::waitForResolution(
 		}
 		if (std::chrono::steady_clock::now() >= deadline) {
 			throw DBException("Transaction log store \"" + this->name + "\" still has a batch that has neither committed nor "
-				"been aborted after " + std::to_string(backupUnresolvedWaitMs()) + " ms; the backup is refused rather than "
-				"capture a batch a restore could replay");
+																		"been aborted after " +
+				std::to_string(backupUnresolvedWaitMs()) + " ms; the backup is refused rather than "
+														   "capture a batch a restore could replay");
 		}
 		this->positionReleased.wait_for(lock, std::chrono::milliseconds(50));
 	}
@@ -2082,9 +2092,7 @@ void TransactionLogStore::waitForResolution(
 
 bool operator>(const LogPosition a, const LogPosition b) {
 	// as noted in the header, 64-bit comparison on little-endian machines seems like it would be an optimization
-	return a.logSequenceNumber == b.logSequenceNumber ?
-		a.positionInLogFile > b.positionInLogFile :
-		a.logSequenceNumber > b.logSequenceNumber;
+	return a.logSequenceNumber == b.logSequenceNumber ? a.positionInLogFile > b.positionInLogFile : a.logSequenceNumber > b.logSequenceNumber;
 };
 
 /**
@@ -2378,8 +2386,8 @@ std::shared_ptr<TransactionLogStore> TransactionLogStore::load(
 		if (stateExists || stateError) {
 			throw rocksdb_js::DBException("Transaction log flushed-state file " +
 				(path / "txn.state").string() + " could not be read, and no log segment remains to "
-				"recover the store's sequence from. If the file is empty or damaged, remove it "
-				"(and nothing else) to restart the store's sequence.");
+												"recover the store's sequence from. If the file is empty or damaged, remove it "
+												"(and nothing else) to restart the store's sequence.");
 		}
 	}
 

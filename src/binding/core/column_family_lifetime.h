@@ -8,9 +8,9 @@ namespace rocksdb_js {
 
 /** Lifetime protocol for one column-family generation; see AGENTS.md invariant 24. */
 struct ColumnFamilyLifetime final {
-	std::atomic<bool> retired{false};
-	std::atomic<uint32_t> admitted{0};
-	std::atomic<bool> reclaimClaimed{false};
+	std::atomic<bool> retired{ false };
+	std::atomic<uint32_t> admitted{ 0 };
+	std::atomic<bool> reclaimClaimed{ false };
 
 	/**
 	 * Commit admission. On `false` the claim has already been undone; the

@@ -92,9 +92,7 @@ extern "C" ssize_t rocksdb_js_mock_writev(int fd, const struct iovec* iov, int i
 // ---------------------------------------------------------------------------
 
 struct WriteBatchToFileTestAccessor {
-	static int64_t call(rocksdb_js::TransactionLogFile& f, iovec* iovecs, int iovcnt,
-		int64_t* bytesLanded = nullptr)
-	{
+	static int64_t call(rocksdb_js::TransactionLogFile& f, iovec* iovecs, int iovcnt, int64_t* bytesLanded = nullptr) {
 		int64_t sink = 0;
 		return f.writeBatchToFile(iovecs, iovcnt, bytesLanded ? *bytesLanded : sink);
 	}
@@ -128,10 +126,8 @@ static std::vector<char> readAll(int fd) {
 // Builds a vector of iovecs pointing at contiguous memory regions.
 // Returns both the iovecs and the backing buffers (kept alive by the caller).
 static void makeIovecs(
-	int count, size_t chunkSize,
-	std::vector<std::vector<char>>& buffers,
-	std::vector<iovec>& iovecs)
-{
+	int count, size_t chunkSize, std::vector<std::vector<char>>& buffers, std::vector<iovec>& iovecs
+) {
 	buffers.reserve(count);
 	iovecs.reserve(count);
 	for (int i = 0; i < count; ++i) {
@@ -327,7 +323,8 @@ rocksdb_js::TransactionLogEntryBatch makeBatch(double timestamp, std::initialize
 	rocksdb_js::TransactionLogEntryBatch batch(timestamp);
 	for (const char* payload : payloads) {
 		batch.addEntry(std::make_unique<rocksdb_js::TransactionLogEntry>(
-			nullptr, const_cast<char*>(payload), static_cast<uint32_t>(std::strlen(payload))));
+			nullptr, const_cast<char*>(payload), static_cast<uint32_t>(std::strlen(payload))
+		));
 	}
 	return batch;
 }
@@ -427,7 +424,8 @@ TEST_F(AppendBoundary, FailedPartialAppendImmediatelyRotatesTheStore) {
 
 	{
 		rocksdb_js::TransactionLogStore store(
-			"store-rotation", storePath, 0, std::chrono::milliseconds(0), 0);
+			"store-rotation", storePath, 0, std::chrono::milliseconds(0), 0
+		);
 		rocksdb_js::LogPosition firstPosition;
 		auto first = makeBatch(1001.0, { "first-entry" });
 		store.writeBatch(first, firstPosition);
@@ -456,13 +454,16 @@ TEST_F(AppendBoundary, FailedPartialAppendImmediatelyRotatesTheStore) {
 
 		auto firstImage = readWholeFile(firstPath);
 		auto firstScan = rocksdb_js::scanTransactionLogForRecovery(
-			firstImage.data(), static_cast<uint32_t>(firstImage.size()));
+			firstImage.data(), static_cast<uint32_t>(firstImage.size())
+		);
 		EXPECT_EQ(firstScan.kind, rocksdb_js::RecoveryScan::Kind::TruncateTail);
 		EXPECT_EQ(firstScan.validEnd, committedSize);
 
 		auto nextImage = readWholeFile(storePath / "2.txnlog");
 		EXPECT_EQ(rocksdb_js::countTransactionLogEntries(
-			nextImage.data(), static_cast<uint32_t>(nextImage.size())), 1u);
+					  nextImage.data(), static_cast<uint32_t>(nextImage.size())
+				  ),
+			1u);
 
 		auto snapshot = store.snapshotForBackup();
 		auto retiredEntry = std::find_if(snapshot.begin(), snapshot.end(),
@@ -477,7 +478,8 @@ TEST_F(AppendBoundary, FailedPartialAppendImmediatelyRotatesTheStore) {
 	// The marker makes the retirement authoritative after restart: the orphaned
 	// physical tail is neither validated nor exposed as part of the log.
 	auto reopened = rocksdb_js::TransactionLogStore::load(
-		storePath, 0, std::chrono::milliseconds(0), 0);
+		storePath, 0, std::chrono::milliseconds(0), 0
+	);
 	ASSERT_NE(reopened, nullptr);
 	EXPECT_EQ(reopened->currentSequenceNumber.load(std::memory_order_relaxed), 2u);
 	EXPECT_EQ(reopened->getLogFileSize(1), committedSize);
@@ -492,8 +494,10 @@ TEST_F(AppendBoundary, FailedPartialAppendImmediatelyRotatesTheStore) {
 	}
 	EXPECT_THROW(
 		rocksdb_js::TransactionLogStore::load(
-			storePath, 0, std::chrono::milliseconds(0), 0),
-		rocksdb_js::TransactionLogAppendBoundaryException);
+			storePath, 0, std::chrono::milliseconds(0), 0
+		),
+		rocksdb_js::TransactionLogAppendBoundaryException
+	);
 
 	std::filesystem::remove_all(storePath);
 	std::filesystem::remove_all(markerPath.parent_path());
@@ -504,7 +508,7 @@ TEST_F(AppendBoundary, FailedPartialAppendImmediatelyRotatesTheStore) {
 // impossible extent must retire the file untouched instead. Driven here through
 // the POSIX build because the branch lives in the shared caller.
 class UnerasableExtent : public AppendBoundary,
-	public ::testing::WithParamInterface<std::pair<const char*, int64_t>> {};
+						 public ::testing::WithParamInterface<std::pair<const char*, int64_t>> {};
 
 TEST_P(UnerasableExtent, RetiresTheFileWithoutErasing) {
 	const auto [name, forcedBytesLanded] = GetParam();
@@ -537,13 +541,10 @@ TEST_P(UnerasableExtent, RetiresTheFileWithoutErasing) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-	AppendBoundary, UnerasableExtent,
-	::testing::Values(
-		std::make_pair("unknown-extent", static_cast<int64_t>(TRANSACTION_LOG_BYTES_LANDED_UNKNOWN)),
-		std::make_pair("over-reported-extent", static_cast<int64_t>(1 << 20))),
-	[](const ::testing::TestParamInfo<std::pair<const char*, int64_t>>& info) {
+	AppendBoundary, UnerasableExtent, ::testing::Values(std::make_pair("unknown-extent", static_cast<int64_t>(TRANSACTION_LOG_BYTES_LANDED_UNKNOWN)), std::make_pair("over-reported-extent", static_cast<int64_t>(1 << 20))), [](const ::testing::TestParamInfo<std::pair<const char*, int64_t>>& info) {
 		return std::string(info.param.first == std::string("unknown-extent") ? "Unknown" : "OverReported");
-	});
+	}
+);
 
 // A header write that lands short must take the file with it: a size in
 // (0, HEADER_SIZE) fails open()'s "too small" check on every future open, and
@@ -566,7 +567,8 @@ TEST_F(AppendBoundary, ShortHeaderWriteDiscardsTheFileInsteadOfBrickingIt) {
 	EXPECT_EQ(file_->size.load(), static_cast<uint32_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
 	EXPECT_EQ(
 		std::filesystem::file_size(path_),
-		static_cast<uintmax_t>(TRANSACTION_LOG_FILE_HEADER_SIZE));
+		static_cast<uintmax_t>(TRANSACTION_LOG_FILE_HEADER_SIZE)
+	);
 }
 
 TEST_F(AppendBoundary, AppendThatWritesNothingLeavesTheFileUntouched) {
@@ -689,7 +691,8 @@ TEST_F(AppendBoundary, ZeroByteFirstAppendCanRotateAnExposedEmptySegment) {
 	}
 	std::filesystem::remove_all(storePath);
 	std::filesystem::remove_all(
-		rocksdb_js::transactionLogAppendBoundaryMarkerPath(storePath / "1.txnlog").parent_path());
+		rocksdb_js::transactionLogAppendBoundaryMarkerPath(storePath / "1.txnlog").parent_path()
+	);
 }
 
 TEST_F(AppendBoundary, LazyAppendOpenFailureClosesTheRejectedFile) {

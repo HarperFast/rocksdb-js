@@ -104,7 +104,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 * `test/fixtures/fork-compact-cancel-{sync,async,close,destroy}.mts` does
 	 * and does not pin down: AGENTS.md invariant 6.
 	 */
-	std::atomic<bool> compactCancelRequested{false};
+	std::atomic<bool> compactCancelRequested{ false };
 
 	void cancelBlockingWork() override { this->compactCancelRequested.store(true); }
 

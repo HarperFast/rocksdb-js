@@ -91,8 +91,7 @@ struct TransactionLogStoreRegistryEntry final {
 
 	TransactionLogStoreRegistryEntry() = default;
 
-	TransactionLogStoreRegistryEntry(const TransactionLogStoreConfig& cfg)
-		: config(cfg), refCount(1) {}
+	TransactionLogStoreRegistryEntry(const TransactionLogStoreConfig& cfg) : config(cfg), refCount(1) {}
 };
 
 /**
@@ -203,7 +202,8 @@ public:
 	 * throws when the scan cannot establish a complete, plausible floor.
 	 */
 	static void SeedTimestampFloor(
-		const std::string& dbPath, const std::string& logName, bool callerReadOnly);
+		const std::string& dbPath, const std::string& logName, bool callerReadOnly
+	);
 
 	/**
 	 * The `timestampFloorLog` already resolved for this physical path, or empty

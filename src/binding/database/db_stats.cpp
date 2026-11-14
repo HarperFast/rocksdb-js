@@ -185,7 +185,7 @@ void DBStats::joinWriteBufferManagerWatchdog(bool allowRearm, uint64_t shutdownG
 			}
 			self->watchdogCv.notify_all();
 		}
-	} retireGuard{this, allowRearm};
+	} retireGuard{ this, allowRearm };
 
 	if (toJoin.joinable()) {
 		toJoin.join();
@@ -217,7 +217,7 @@ void DBStats::runWriteBufferManagerWatchdog() {
 					return this->watchdogStopRequested || !this->watchdogArmed ||
 						this->watchdogGeneration.load(std::memory_order_relaxed) != activeGeneration;
 				}
-		)) {
+			)) {
 			continue;
 		}
 		lock.unlock();
@@ -268,7 +268,7 @@ void DBStats::sampleWriteBufferManagerStall(
 		writeBufferManager, report.columnFamilies, report.maxWriteBufferSizeToMaintain
 	);
 	for (int attempt = 1; !report.inventoryAvailable && attempt < WBM_STALL_INVENTORY_COLLECT_ATTEMPTS;
-		 attempt++) {
+		attempt++) {
 		if (this->writeBufferManagerWatchdogStopping.load(std::memory_order_relaxed) ||
 			this->watchdogGeneration.load(std::memory_order_relaxed) != generation) {
 			return;
@@ -355,8 +355,8 @@ napi_value DBStats::GetWriteBufferManagerStats(napi_env env, napi_callback_info 
 	NAPI_STATUS_THROWS(setBoolProperty(env, result, "costToCache", stats.costToCache));
 	const char* flushPolicy =
 		stats.flushPolicy == rocksdb::WriteBufferFlushPolicy::kFlushLargestAcrossDBs ? "largestAcrossDBs"
-		: stats.flushPolicy == rocksdb::WriteBufferFlushPolicy::kFlushLargest ? "largest"
-		: "oldest";
+		: stats.flushPolicy == rocksdb::WriteBufferFlushPolicy::kFlushLargest        ? "largest"
+																					 : "oldest";
 	napi_value flushPolicyValue;
 	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, flushPolicy, NAPI_AUTO_LENGTH, &flushPolicyValue));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "flushPolicy", flushPolicyValue));

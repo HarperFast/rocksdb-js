@@ -99,7 +99,8 @@ void encodeTransactionLogPurgeRecordSlot(char* slot, const TransactionLogPurgeRe
 	std::memset(slot, 0, TRANSACTION_LOG_PURGE_RECORD_SLOT_SIZE);
 	writeUint32BE(slot, PURGE_RECORD_TOKEN);
 	writeUint8(slot + 4, PURGE_RECORD_VERSION);
-	writeUint8(slot + 5, record.known ? PURGE_RECORD_KNOWN_FLAG : record.tracked ? PURGE_RECORD_TRACKED_FLAG : 0);
+	writeUint8(slot + 5, record.known ? PURGE_RECORD_KNOWN_FLAG : record.tracked ? PURGE_RECORD_TRACKED_FLAG
+																				 : 0);
 	writeUint64BE(slot + 8, record.generation);
 	writeUint32BE(slot + 16, record.throughSequence);
 	writeDoubleBE(slot + 20, record.watermark);
@@ -130,7 +131,8 @@ bool decodeTransactionLogPurgeRecordSlot(const char* slot, TransactionLogPurgeRe
 }
 
 TransactionLogPurgeRecordState decodeTransactionLogPurgeRecordImage(
-	const char* data, size_t size, TransactionLogPurgeRecord& record, bool* otherSlotDamaged) {
+	const char* data, size_t size, TransactionLogPurgeRecord& record, bool* otherSlotDamaged
+) {
 	TransactionLogPurgeRecord slots[2];
 	bool valid[2] = { false, false };
 	bool zero[2] = { true, true };
@@ -164,7 +166,8 @@ std::string encodeTransactionLogPurgeRecordImage(const TransactionLogPurgeRecord
 }
 
 TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
-	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged) noexcept {
+	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged
+) noexcept {
 	try {
 		auto file = storePath / TRANSACTION_LOG_PURGE_RECORD_NAME;
 		std::error_code statusError;
@@ -192,7 +195,8 @@ TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
 }
 
 bool writeTransactionLogPurgeRecord(
-	const std::filesystem::path& storePath, const TransactionLogPurgeRecord& record) noexcept {
+	const std::filesystem::path& storePath, const TransactionLogPurgeRecord& record
+) noexcept {
 	try {
 		auto file = storePath / TRANSACTION_LOG_PURGE_RECORD_NAME;
 		std::error_code existsError;
@@ -226,9 +230,7 @@ void removeTransactionLogStoreDirectory(const std::filesystem::path& storePath, 
 			continue;
 		}
 		uint32_t sequence = 0;
-		if (link && (entry.symlink_status().type() != std::filesystem::file_type::regular ||
-			(!parseTransactionLogSegmentName(name, sequence) && name != "txn.state" &&
-				name.rfind(TRANSACTION_LOG_PURGE_RECORD_NAME ".tmp-", 0) != 0))) {
+		if (link && (entry.symlink_status().type() != std::filesystem::file_type::regular || (!parseTransactionLogSegmentName(name, sequence) && name != "txn.state" && name.rfind(TRANSACTION_LOG_PURGE_RECORD_NAME ".tmp-", 0) != 0))) {
 			continue;
 		}
 		others.push_back(entry.path());

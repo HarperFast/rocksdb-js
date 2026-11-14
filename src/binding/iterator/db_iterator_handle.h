@@ -133,7 +133,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	// Raw, and only dereferenced by `closeIfOpen` while the RocksDB iterator is
 	// still open: the descriptor's close sweep must close this attached handle,
 	// under `iteratorMutex`, before the descriptor can be destroyed.
-	std::atomic<DBDescriptor*> attachedDescriptor{nullptr};
+	std::atomic<DBDescriptor*> attachedDescriptor{ nullptr };
 
 	// The transaction's `iteratorEpoch` when this handle was last lent out.
 	uint64_t lentEpoch = 0;

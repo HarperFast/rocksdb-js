@@ -93,9 +93,9 @@ TEST(WriteStallDebounce, EmitRunsUnderTheLockAndNeverOverlaps) {
 	// interleave and reorder. Hammer one CF from many threads and assert the emit
 	// callback is never entered concurrently.
 	WriteStallDebounce d;
-	std::atomic<int> concurrentlyInEmit{0};
-	std::atomic<bool> overlapSeen{false};
-	std::atomic<int> emitCount{0};
+	std::atomic<int> concurrentlyInEmit{ 0 };
+	std::atomic<bool> overlapSeen{ false };
+	std::atomic<int> emitCount{ 0 };
 	auto emit = [&]() {
 		if (concurrentlyInEmit.fetch_add(1, std::memory_order_acq_rel) != 0) {
 			overlapSeen.store(true);

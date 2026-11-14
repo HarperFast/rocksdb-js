@@ -72,8 +72,7 @@ void setTxnlogSummaryStatsOnObject(
 /**
  * Creates a new DBHandle.
  */
-DBHandle::DBHandle(napi_env env, napi_ref exportsRef)
-	: descriptor(nullptr), env(env), ownerThreadId(std::this_thread::get_id()), exportsRef(exportsRef) {}
+DBHandle::DBHandle(napi_env env, napi_ref exportsRef) : descriptor(nullptr), env(env), ownerThreadId(std::this_thread::get_id()), exportsRef(exportsRef) {}
 
 /**
  * Close the DBHandle and destroy it.

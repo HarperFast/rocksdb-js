@@ -64,8 +64,7 @@ DBIteratorOptions::DBIteratorOptions() :
 	exclusiveStart(false),
 	reverse(false),
 	values(true),
-	needsStableValueBuffer(false)
-{}
+	needsStableValueBuffer(false) {}
 
 void DBIteratorOptions::setReadOptionDefaults() {
 	this->readOptions.adaptive_readahead = true;
@@ -135,10 +134,10 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[4], &endKeyEnd));
 
 	DBIteratorOptions itOptions;
-	itOptions.reverse                = (flags & ITERATOR_REVERSE_FLAG) != 0;
-	itOptions.inclusiveEnd           = (flags & ITERATOR_INCLUSIVE_END_FLAG) != 0;
-	itOptions.exclusiveStart         = (flags & ITERATOR_EXCLUSIVE_START_FLAG) != 0;
-	itOptions.values                 = (flags & ITERATOR_INCLUDE_VALUES_FLAG) != 0;
+	itOptions.reverse = (flags & ITERATOR_REVERSE_FLAG) != 0;
+	itOptions.inclusiveEnd = (flags & ITERATOR_INCLUSIVE_END_FLAG) != 0;
+	itOptions.exclusiveStart = (flags & ITERATOR_EXCLUSIVE_START_FLAG) != 0;
+	itOptions.values = (flags & ITERATOR_INCLUDE_VALUES_FLAG) != 0;
 	itOptions.needsStableValueBuffer = (flags & ITERATOR_NEEDS_STABLE_VALUE_BUFFER_FLAG) != 0;
 
 	itOptions.setReadOptionDefaults();
@@ -386,9 +385,7 @@ napi_value DBIterator::Next(napi_env env, napi_callback_info info) {
 static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 	if (!wrap->handle) {
 		auto txnHandle = wrap->exhaustedIn.lock();
-		if (txnHandle && !txnHandle->closed.load()
-			&& txnHandle->iteratorEpoch.load(std::memory_order_relaxed) == wrap->exhaustedEpoch
-		) {
+		if (txnHandle && !txnHandle->closed.load() && txnHandle->iteratorEpoch.load(std::memory_order_relaxed) == wrap->exhaustedEpoch) {
 			napi_value result;
 			NAPI_STATUS_THROWS(::napi_create_uint32(env, ITERATOR_RESULT_DONE, &result));
 			return result;
@@ -458,9 +455,7 @@ static napi_value nextImpl(napi_env env, IteratorWrap* wrap) {
 
 	if (it->values) {
 		valueSlice = it->iterator->value();
-		valueFitsInShared = !it->needsStableValueBuffer
-			&& valueBuffer != nullptr
-			&& valueSlice.size() <= valueBufferLength;
+		valueFitsInShared = !it->needsStableValueBuffer && valueBuffer != nullptr && valueSlice.size() <= valueBufferLength;
 	}
 
 	if (keyFitsInShared && valueFitsInShared) {

@@ -63,10 +63,10 @@ struct IntentAge {
  * version stores a different value unless the tags also collide.
  */
 
-constexpr uint64_t VT_TAG_BIT     = 1ULL << 63;             // 1 = not a version
+constexpr uint64_t VT_TAG_BIT = 1ULL << 63;             // 1 = not a version
 constexpr uint64_t VT_SETTLED_BIT = 1ULL << 62;             // among tagged: 1 = settled-empty
-constexpr uint64_t VT_GEN_MASK    = 0x3FFFULL << 48;        // bits 61..48: 14-bit lock generation
-constexpr uint64_t VT_PTR_MASK    = (1ULL << 48) - 1;       // bits 47..0:  48-bit pointer
+constexpr uint64_t VT_GEN_MASK = 0x3FFFULL << 48;        // bits 61..48: 14-bit lock generation
+constexpr uint64_t VT_PTR_MASK = (1ULL << 48) - 1;       // bits 47..0:  48-bit pointer
 constexpr uint64_t VT_SETTLED_GEN_MASK = (1ULL << 62) - 1;  // bits 61..0:  62-bit settle generation
 
 // Value-header contract, extending the 8-byte big-endian version at offset 0 that
@@ -89,16 +89,14 @@ constexpr uint32_t VERSION_NOT_UNIQUE_FLAG = 0x10000;
 // A real version: bit 63 clear and nonzero.
 inline bool vtIsVersion(uint64_t v) { return v != 0 && (v & VT_TAG_BIT) == 0; }
 // A lock: tagged with the settled bit clear.
-inline bool vtIsLock(uint64_t v)    { return (v & VT_TAG_BIT) != 0 && (v & VT_SETTLED_BIT) == 0; }
+inline bool vtIsLock(uint64_t v) { return (v & VT_TAG_BIT) != 0 && (v & VT_SETTLED_BIT) == 0; }
 // A settled-empty marker: tagged with the settled bit set (carries a generation).
 inline bool vtIsSettled(uint64_t v) { return (v & VT_TAG_BIT) != 0 && (v & VT_SETTLED_BIT) != 0; }
 
 // LockTracker slot encoding helpers.
 // x86-64 canonical user-space pointers fit in 48 bits.
 inline uint64_t vtEncodeLock(LockTracker* p, uint16_t gen) {
-	return VT_TAG_BIT
-	     | (static_cast<uint64_t>(gen & 0x3FFF) << 48)
-	     | (reinterpret_cast<uintptr_t>(p) & VT_PTR_MASK);
+	return VT_TAG_BIT | (static_cast<uint64_t>(gen & 0x3FFF) << 48) | (reinterpret_cast<uintptr_t>(p) & VT_PTR_MASK);
 }
 inline LockTracker* vtDecodeLock(uint64_t v) {
 	return reinterpret_cast<LockTracker*>(v & VT_PTR_MASK);
@@ -149,8 +147,8 @@ struct LockTracker {
 	 * them in place; nothing else modifies it.
 	 */
 	struct WakeList {
-		std::mutex                       mutex;
-		bool                             drained{false};
+		std::mutex mutex;
+		bool drained{ false };
 		std::list<std::function<void()>> callbacks;
 	};
 
@@ -164,8 +162,7 @@ struct LockTracker {
 	class WakeRegistration {
 	public:
 		WakeRegistration() = default;
-		WakeRegistration(std::shared_ptr<WakeList> list, std::list<std::function<void()>>::iterator it)
-			: list(std::move(list)), it(it) {}
+		WakeRegistration(std::shared_ptr<WakeList> list, std::list<std::function<void()>>::iterator it) : list(std::move(list)), it(it) {}
 		WakeRegistration(WakeRegistration&& other) noexcept
 			: list(std::move(other.list)), it(std::exchange(other.it, {})) {}
 		WakeRegistration& operator=(WakeRegistration&& other) noexcept {
@@ -195,8 +192,8 @@ struct LockTracker {
 		std::list<std::function<void()>>::iterator it{};
 	};
 
-	std::atomic<uint32_t> refcount{1};  // 1 for the slot reference + 1 per holder
-	std::atomic<uint32_t> holders{0};   // count of active intent registrations
+	std::atomic<uint32_t> refcount{ 1 };  // 1 for the slot reference + 1 per holder
+	std::atomic<uint32_t> holders{ 0 };   // count of active intent registrations
 
 	/**
 	 * Live holders' ages, for write-intent refusal (writerMutex_). Allocated by the first aged
@@ -219,16 +216,15 @@ struct LockTracker {
 		uint32_t unrecordedIntents = 0;
 	};
 	std::unique_ptr<HolderAges> ages;
-	uint16_t              generation;   // immutable after install; matches slot encoding
-	size_t                slotIndex;    // index in VT slots_ array (for cancelForDB)
-	uint64_t              dbId;         // per-open epoch of the owning DB (DBDescriptor::vtEpoch)
+	uint16_t generation;   // immutable after install; matches slot encoding
+	size_t slotIndex;    // index in VT slots_ array (for cancelForDB)
+	uint64_t dbId;         // per-open epoch of the owning DB (DBDescriptor::vtEpoch)
 
-	bool                      woken{false};
-	std::mutex                wakeCallbacksMutex;  // guards woken and wakeList
+	bool woken{ false };
+	std::mutex wakeCallbacksMutex;  // guards woken and wakeList
 	std::shared_ptr<WakeList> wakeList;
 
-	LockTracker(size_t idx, uint16_t gen, uint64_t dbId)
-		: refcount(1), holders(0), generation(gen), slotIndex(idx), dbId(dbId) {}
+	LockTracker(size_t idx, uint16_t gen, uint64_t dbId) : refcount(1), holders(0), generation(gen), slotIndex(idx), dbId(dbId) {}
 
 	/**
 	 * Registers a callback to be invoked when wake() is called. If wake() was

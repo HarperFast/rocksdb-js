@@ -43,7 +43,7 @@ struct TransactionLogStore;
  * up front, so recording one can never fail after its count was taken
  * (invariant 24).
  */
-template<typename T, size_t N>
+template <typename T, size_t N>
 struct InlineVector final {
 	static constexpr size_t inlineCapacity = N;
 	T inlineSlots[N];
@@ -80,7 +80,7 @@ struct InlineVector final {
 		this->count--;
 	}
 
-	template<typename Fn>
+	template <typename Fn>
 	void forEach(Fn&& fn) const {
 		const size_t inlineCount = this->count < N ? this->count : N;
 		for (size_t i = 0; i < inlineCount; i++) {
@@ -146,7 +146,7 @@ struct ColumnFamilySet final {
 	void add(const std::shared_ptr<ColumnFamilyDescriptor>& column);
 	void removeLast(ColumnFamilyDescriptor* column);
 
-	template<typename Fn>
+	template <typename Fn>
 	void forEach(Fn&& fn) const {
 		this->entries.forEach(std::forward<Fn>(fn));
 	}
@@ -229,7 +229,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * only the relaxed `state` gate. No other env can stage into `txn`: every
 	 * by-id lookup rejects it (`ownerEnv`).
 	 */
-	std::atomic<bool> writesAbandoned{false};
+	std::atomic<bool> writesAbandoned{ false };
 	static_assert(std::atomic<bool>::is_always_lock_free);
 
 	/**
@@ -273,13 +273,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * double-free through ~OptimisticTransaction → ~PointLockTracker
 	 * (HarperFast/harper#1370, close-vs-commit variant).
 	 */
-	std::atomic<bool> closed{false};
+	std::atomic<bool> closed{ false };
 
 	/**
 	 * Set when the JS `NativeTransaction` wrapper is garbage collected: no JS code can reach this
 	 * handle again, so the only possible remaining owner is an in-flight commit.
 	 */
-	std::atomic<bool> wrapperCollected{false};
+	std::atomic<bool> wrapperCollected{ false };
 
 	/**
 	 * Transaction-backed iterators whose RocksDB iterator still depends on txn.
@@ -287,7 +287,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * explicit commit/abort close those iterators before RocksDB mutates or
 	 * destroys txn without creating an ownership cycle.
 	 */
-	std::atomic<uint32_t> activeIteratorCount{0};
+	std::atomic<uint32_t> activeIteratorCount{ 0 };
 	std::mutex iteratorsMutex;
 	std::unordered_map<DBIteratorHandle*, std::weak_ptr<DBIteratorHandle>> activeIterators;
 
@@ -313,7 +313,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * its handle back to the pool keeps reporting done while this is unchanged,
 	 * and "not initialized" afterwards, as a closed iterator always has.
 	 */
-	std::atomic<uint64_t> iteratorEpoch{0};
+	std::atomic<uint64_t> iteratorEpoch{ 0 };
 
 	/**
 	 * A batch of log entries to write to the transaction log. It can only be
@@ -369,7 +369,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	// Released: the position was released without a marker (markers off, or the batch has no
 	// recorded first entry). Resolved: marked and synced.
-	enum class Cancellation : uint8_t { None, Released, Resolved, Failed };
+	enum class Cancellation : uint8_t {
+		None,
+		Released,
+		Resolved,
+		Failed
+	};
 	/** Outcome of marking the logged batch aborted. Set by close(), which may run on another thread. */
 	std::atomic<Cancellation> cancellation = Cancellation::None;
 
@@ -617,7 +622,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	);
 };
 
-enum class TransactionLookup { Found, NotFound, WrongEnv };
+enum class TransactionLookup {
+	Found,
+	NotFound,
+	WrongEnv
+};
 
 /**
  * Resolves a transaction by id for a call made from `env`. Every lookup by id

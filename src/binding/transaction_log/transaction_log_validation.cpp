@@ -163,19 +163,19 @@ TransactionLogFileValidation validateTransactionLogImage(
 		if (!std::isfinite(timestamp) || timestamp < MIN_VALID_TIMESTAMP) {
 			addEntryAnomaly(result, anomalyCount,
 				"Entry " + std::to_string(result.entryCount + 1) + " at offset " + offsetHex(pos) +
-				": timestamp " + std::to_string(timestamp) +
-				" predates 2026-01-27 (possible corruption)");
+					": timestamp " + std::to_string(timestamp) +
+					" predates 2026-01-27 (possible corruption)");
 		}
 		if ((flags & ~VALID_FLAGS_MASK) != 0) {
 			addEntryAnomaly(result, anomalyCount,
 				"Entry " + std::to_string(result.entryCount + 1) + " at offset " + offsetHex(pos) +
-				": flags " + offsetHex(flags) + " contains undefined bits");
+					": flags " + offsetHex(flags) + " contains undefined bits");
 		}
 		bool startsTransaction = previousEndedTransaction || timestamp != previousTimestamp;
 		if ((flags & TRANSACTION_LOG_ENTRY_ABORTED_FLAG) != 0 && !startsTransaction) {
 			addEntryAnomaly(result, anomalyCount,
 				"Entry " + std::to_string(result.entryCount + 1) + " at offset " + offsetHex(pos) +
-				": abort flag on an entry that does not start a transaction");
+					": abort flag on an entry that does not start a transaction");
 		}
 		previousEndedTransaction = (flags & TRANSACTION_LOG_ENTRY_LAST_FLAG) != 0;
 		previousTimestamp = timestamp;
@@ -266,7 +266,8 @@ TransactionLogStoreValidation validateTransactionLogStore(
 			if (readableSize > size) {
 				fileValidation.result.errors.push_back(
 					"Persisted append boundary " + std::to_string(readableSize) +
-					" exceeds physical file size " + std::to_string(size));
+					" exceeds physical file size " + std::to_string(size)
+				);
 				readableSize = 0;
 			}
 			if (fileValidation.result.errors.empty()) {
@@ -307,10 +308,7 @@ TransactionLogStoreValidation validateTransactionLogStore(
 		uint32_t prev = store.files[i - 1].sequenceNumber;
 		uint32_t next = store.files[i].sequenceNumber;
 		if (next != prev + 1) {
-			(strict ? store.errors : store.warnings).push_back(
-				"Gap in log file sequence: " + std::to_string(prev + 1) +
-				(next - prev == 2 ? "" : ".." + std::to_string(next - 1)) + " missing"
-			);
+			(strict ? store.errors : store.warnings).push_back("Gap in log file sequence: " + std::to_string(prev + 1) + (next - prev == 2 ? "" : ".." + std::to_string(next - 1)) + " missing");
 		}
 	}
 
@@ -351,11 +349,7 @@ TransactionLogStoreValidation validateTransactionLogStore(
 						// A backup snapshot captures txn.state before enumerating the log
 						// files, so its flushed sequence always exists in the snapshot —
 						// beyond-newest there means the newest file is missing (strict).
-						(strict ? store.errors : store.warnings).push_back(
-							"txn.state flushed position references sequence " +
-							std::to_string(flushedSequence) + ", newer than the newest log file (" +
-							std::to_string(newestSequence) + ")"
-						);
+						(strict ? store.errors : store.warnings).push_back("txn.state flushed position references sequence " + std::to_string(flushedSequence) + ", newer than the newest log file (" + std::to_string(newestSequence) + ")");
 					} else {
 						auto it = std::find_if(store.files.begin(), store.files.end(),
 							[flushedSequence](const TransactionLogStoreFileValidation& f) {
@@ -365,11 +359,7 @@ TransactionLogStoreValidation validateTransactionLogStore(
 							// same snapshot-ordering argument as beyond-newest above: files
 							// can only have grown after txn.state was captured, so a file
 							// shorter than its flushed offset means missing data (strict)
-							(strict ? store.errors : store.warnings).push_back(
-								"txn.state flushed offset " + std::to_string(flushedOffset) +
-								" exceeds the size of " + it->file + " (" + std::to_string(it->size) +
-								" bytes)"
-							);
+							(strict ? store.errors : store.warnings).push_back("txn.state flushed offset " + std::to_string(flushedOffset) + " exceeds the size of " + it->file + " (" + std::to_string(it->size) + " bytes)");
 						}
 					}
 				}
@@ -391,9 +381,7 @@ TransactionLogStoreValidation validateTransactionLogStore(
 				if (file.sequenceNumber != expected) {
 					store.warnings.push_back("Log files " + std::to_string(expected) + ".." +
 						std::to_string(file.sequenceNumber - 1) + " were deleted without updating " +
-						TRANSACTION_LOG_PURGE_RECORD_NAME + (record.known
-							? "; the log's purge watermark reads as unknown"
-							: "; the log can no longer be given a purge baseline"));
+						TRANSACTION_LOG_PURGE_RECORD_NAME + (record.known ? "; the log's purge watermark reads as unknown" : "; the log can no longer be given a purge baseline"));
 					break;
 				}
 				++expected;

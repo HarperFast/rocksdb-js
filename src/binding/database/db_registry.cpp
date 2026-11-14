@@ -39,7 +39,7 @@ struct ClosingDescriptor final {
 
 void emitCloseFailure(const std::string& path, const std::string& error) {
 	if (!error.empty() && GlobalEvents::hasListeners()) {
-		emitGlobalEvent("database:closeFailed", ListenerData::fromStrings({path, error}));
+		emitGlobalEvent("database:closeFailed", ListenerData::fromStrings({ path, error }));
 	}
 }
 
@@ -49,7 +49,8 @@ void emitCloseFailures(const std::vector<ClosingDescriptor>& descriptors) {
 		// rule registryStatus() follows, so a listener can match the event's path
 		// against the path it opened.
 		emitCloseFailure(
-			closing.descriptor ? closing.descriptor->path : closing.key.path, closing.closeError);
+			closing.descriptor ? closing.descriptor->path : closing.key.path, closing.closeError
+		);
 	}
 }
 
@@ -245,10 +246,11 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 	claimed.emplace_back(key, descriptor, condition);
 	// The close error is reported through CloseResult, not thrown.
 	closeClaimedDescriptors(
-		claimed, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex);
+		claimed, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex
+	);
 	const std::string& closeError = claimed.front().closeError;
 	const bool quarantined = !closeError.empty() && !claimed.front().closed;
-	return CloseResult{closeError, quarantined};
+	return CloseResult{ closeError, quarantined };
 }
 
 /**
@@ -280,9 +282,7 @@ namespace {
  */
 class DestroyPathGuard final {
 public:
-	DestroyPathGuard(std::mutex& mutex, std::condition_variable& condition,
-		std::unordered_set<std::string>& destroyingPaths, const std::string& path)
-		: mutex(mutex), condition(condition), destroyingPaths(destroyingPaths), path(path) {}
+	DestroyPathGuard(std::mutex& mutex, std::condition_variable& condition, std::unordered_set<std::string>& destroyingPaths, const std::string& path) : mutex(mutex), condition(condition), destroyingPaths(destroyingPaths), path(path) {}
 
 	~DestroyPathGuard() {
 		{
@@ -333,8 +333,8 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	{
 		std::unique_lock<std::mutex> lock(instance->databasesMutex);
 		if (!instance->lifecycleCondition.wait_until(lock, std::chrono::steady_clock::now() + waitBudget, [&]() {
-			return instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
-		})) {
+				return instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
+			})) {
 			throw rocksdb_js::DBException("Timed out waiting to destroy database \"" + path + "\": another lifecycle operation is still in progress");
 		}
 		instance->destroyingPaths.insert(identityPath);
@@ -371,7 +371,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 				if (key.path != identityPath || !entry.descriptor) {
 					continue;
 				}
-				ClosingDescriptor closing{key, entry.descriptor, entry.condition};
+				ClosingDescriptor closing{ key, entry.descriptor, entry.condition };
 				if (!entry.closeError.empty() && !entry.closeRetrying) {
 					entry.closeRetrying = true;
 					claimed.push_back(std::move(closing));
@@ -407,7 +407,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		// exits mid-close.
 		std::exception_ptr closeError = closeClaimedDescriptors(
 			claimed,
-			ClaimedCloseOptions{.destroying = true, .failOnCompletedWithError = false},
+			ClaimedCloseOptions{ .destroying = true, .failOnCompletedWithError = false },
 			instance->databases,
 			instance->databasesMutex
 		);
@@ -419,11 +419,11 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			std::unique_lock<std::mutex> lock(instance->databasesMutex);
 			const auto drainDeadline = std::chrono::steady_clock::now() + waitBudget;
 			if (!closing.condition->wait_until(lock, drainDeadline, [&]() {
-				auto entry = instance->databases.find(closing.key);
-				return entry == instance->databases.end() ||
-					entry->second.descriptor != closing.descriptor ||
-					(!entry->second.closeError.empty() && !entry->second.closeRetrying);
-			})) {
+					auto entry = instance->databases.find(closing.key);
+					return entry == instance->databases.end() ||
+						entry->second.descriptor != closing.descriptor ||
+						(!entry->second.closeError.empty() && !entry->second.closeRetrying);
+				})) {
 				throw rocksdb_js::DBException("Timed out waiting to destroy database \"" + path + "\": an open descriptor is still closing");
 			}
 		}
@@ -467,7 +467,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 		// non-destructive) can clear it.
 		{
 			std::lock_guard<std::mutex> lock(instance->databasesMutex);
-			DBRegistryEntry& tombstone = instance->databases[DBKey{identityPath, false, ""}];
+			DBRegistryEntry& tombstone = instance->databases[DBKey{ identityPath, false, "" }];
 			tombstone.closeError = destroyError;
 			if (tombstone.reportedPath.empty()) {
 				tombstone.reportedPath = reportedPath;
@@ -485,7 +485,7 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	std::vector<std::shared_ptr<std::condition_variable>> staleConditions;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		for (auto it = instance->databases.begin(); it != instance->databases.end(); ) {
+		for (auto it = instance->databases.begin(); it != instance->databases.end();) {
 			if (it->first.path == identityPath) {
 				staleConditions.push_back(it->second.condition);
 				it = instance->databases.erase(it);
@@ -690,15 +690,15 @@ void DBRegistry::OpenDB(
 		std::ostringstream msg;
 		msg << "Database \"" << path << "\" is already open"
 			<< (resolved.empty()
-				? " without a timestampFloorLog"
-				: " with timestampFloorLog \"" + resolved + "\"")
+					   ? " without a timestampFloorLog"
+					   : " with timestampFloorLog \"" + resolved + "\"")
 			<< "; cannot open it with timestampFloorLog \"" << options.timestampFloorLog
 			<< "\" because the monotonic timestamp floor was not seeded from it. Close every "
 			   "handle for this path, then reopen with timestampFloorLog.";
 		throw rocksdb_js::DBException(msg.str());
 	};
 
-	DBKey key{identityPath, options.readOnly, options.secondaryPath};
+	DBKey key{ identityPath, options.readOnly, options.secondaryPath };
 	auto entryIterator = instance->databases.end();
 	// Armed on the first wait for a reclaiming generation, so time spent
 	// waiting for a closing database on this path does not count against it.
@@ -729,9 +729,9 @@ void DBRegistry::OpenDB(
 			if (instance->destroyingPaths.find(identityPath) != instance->destroyingPaths.end()) {
 				DEBUG_LOG("%p DBRegistry::OpenDB Database \"%s\" is being destroyed, waiting\n", instance, path.c_str());
 				if (!instance->lifecycleCondition.wait_until(lock, deadline, [&]() {
-					return instance->exitFenced ||
-						instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
-				})) {
+						return instance->exitFenced ||
+							instance->destroyingPaths.find(identityPath) == instance->destroyingPaths.end();
+					})) {
 					throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": destruction is still in progress");
 				}
 				continue;
@@ -765,8 +765,7 @@ void DBRegistry::OpenDB(
 			for (const auto& [existingKey, existingEntry] : instance->databases) {
 				if (existingKey.path == identityPath && existingEntry.descriptor &&
 					existingEntry.descriptor->isClosing() &&
-					(existingEntry.closeError.empty() || existingEntry.closeRetrying)
-				) {
+					(existingEntry.closeError.empty() || existingEntry.closeRetrying)) {
 					pathClosingKey = existingKey;
 					pathClosingCondition = existingEntry.condition;
 					break;
@@ -774,12 +773,12 @@ void DBRegistry::OpenDB(
 			}
 			if (pathClosingCondition) {
 				if (!pathClosingCondition->wait_until(lock, deadline, [&]() {
-					auto found = instance->databases.find(pathClosingKey);
-					return instance->exitFenced || found == instance->databases.end() ||
-						found->second.condition != pathClosingCondition ||
-						!found->second.descriptor || !found->second.descriptor->isClosing() ||
-						(!found->second.closeError.empty() && !found->second.closeRetrying);
-				})) {
+						auto found = instance->databases.find(pathClosingKey);
+						return instance->exitFenced || found == instance->databases.end() ||
+							found->second.condition != pathClosingCondition ||
+							!found->second.descriptor || !found->second.descriptor->isClosing() ||
+							(!found->second.closeError.empty() && !found->second.closeRetrying);
+					})) {
 					throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": another instance on this path is still closing");
 				}
 				continue;
@@ -793,16 +792,15 @@ void DBRegistry::OpenDB(
 			// for a descriptor that stopped retrying instead of one mid-retry.
 			for (const auto& [existingKey, existingEntry] : instance->databases) {
 				if (existingKey.path == identityPath &&
-					!existingEntry.closeError.empty() && !existingEntry.closeRetrying
-				) {
+					!existingEntry.closeError.empty() && !existingEntry.closeRetrying) {
 					const bool destroyCleanupFailed = !existingEntry.descriptor;
 					throw rocksdb_js::DBException(
 						"Cannot open database \"" + path + "\": previous " +
 						(destroyCleanupFailed ? "destroy cleanup" : "close") + " failed: " +
 						existingEntry.closeError +
 						(destroyCleanupFailed
-							? ". Call destroy() to retry cleanup"
-							: ". Call shutdown() to retry close, or destroy() to delete the database")
+								? ". Call destroy() to retry cleanup"
+								: ". Call shutdown() to retry close, or destroy() to delete the database")
 					);
 				}
 			}
@@ -823,10 +821,10 @@ void DBRegistry::OpenDB(
 			}
 			if (retryCondition) {
 				if (!retryCondition->wait_until(lock, deadline, [&]() {
-					auto found = instance->databases.find(retryKey);
-					return instance->exitFenced || found == instance->databases.end() ||
-						found->second.condition != retryCondition || !found->second.closeRetrying;
-				})) {
+						auto found = instance->databases.find(retryKey);
+						return instance->exitFenced || found == instance->databases.end() ||
+							found->second.condition != retryCondition || !found->second.closeRetrying;
+					})) {
 					throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": close retry is still in progress");
 				}
 				continue;
@@ -854,11 +852,11 @@ void DBRegistry::OpenDB(
 			// instead of immediately re-entering the quarantine check above.
 			std::shared_ptr<std::condition_variable> condition = current.condition;
 			if (!condition->wait_until(lock, deadline, [&]() {
-				auto found = instance->databases.find(key);
-				return instance->exitFenced || found == instance->databases.end() ||
-					!found->second.descriptor || !found->second.descriptor->isClosing() ||
-					!found->second.closeError.empty();
-			})) {
+					auto found = instance->databases.find(key);
+					return instance->exitFenced || found == instance->databases.end() ||
+						!found->second.descriptor || !found->second.descriptor->isClosing() ||
+						!found->second.closeError.empty();
+				})) {
 				throw rocksdb_js::DBException("Timed out opening database \"" + path + "\": the previous instance is still closing");
 			}
 		}
@@ -893,8 +891,7 @@ void DBRegistry::OpenDB(
 				// size_t: on a 32-bit build narrowing would truncate a >4GB request and
 				// could falsely compare equal (skipping a real conflict).
 				if (options.maxLogFileSizeExplicit &&
-					static_cast<uint64_t>(current.max_log_file_size) != options.maxLogFileSize
-				) {
+					static_cast<uint64_t>(current.max_log_file_size) != options.maxLogFileSize) {
 					throw rocksdb_js::DBException(
 						"Database \"" + path + "\" is already open with maxLogFileSize " +
 						std::to_string(current.max_log_file_size) + " bytes; cannot reopen it with " +
@@ -902,8 +899,7 @@ void DBRegistry::OpenDB(
 					);
 				}
 				if (options.infoLogLevel.has_value() &&
-					static_cast<int>(current.info_log_level) != static_cast<int>(*options.infoLogLevel)
-				) {
+					static_cast<int>(current.info_log_level) != static_cast<int>(*options.infoLogLevel)) {
 					throw rocksdb_js::DBException(
 						"Database \"" + path + "\" is already open with infoLogLevel " +
 						std::to_string(static_cast<int>(current.info_log_level)) + "; cannot reopen it with " +
@@ -944,7 +940,7 @@ void DBRegistry::OpenDB(
 				if (std::chrono::steady_clock::now() >= *reclaimDeadline) {
 					throw rocksdb_js::DBException(
 						"Column family \"" + name + "\" is still being reclaimed after a drop (a commit admitted "
-						"before the drop has not released it); retry the open"
+													"before the drop has not released it); retry the open"
 					);
 				}
 				// The condition is pinned because the wait releases `databasesMutex`.
@@ -1072,8 +1068,8 @@ void DBRegistry::OpenDB(
 			throw rocksdb_js::DBException(
 				"ERR_VERIFICATION_TABLE_CONFLICT",
 				"Column family \"" + columnDescriptor->name + "\" is open with verificationTable through " +
-				std::to_string(verifying) + " handle(s) in this process; open it with verificationTable: true or " +
-				"leave the option unset, or close those handles first"
+					std::to_string(verifying) + " handle(s) in this process; open it with verificationTable: true or " +
+					"leave the option unset, or close those handles first"
 			);
 		}
 	}
@@ -1087,8 +1083,8 @@ void DBRegistry::OpenDB(
 			throw rocksdb_js::DBException(
 				"ERR_VERIFICATION_TABLE_CONFLICT",
 				"Column family \"" + columnDescriptor->name + "\" is already open without verificationTable through " +
-				std::to_string(nonVerifying) + " handle(s) in this process; first close those handles and let pending " +
-				"transactions and operations finish, then retry opening with verificationTable: true"
+					std::to_string(nonVerifying) + " handle(s) in this process; first close those handles and let pending " +
+					"transactions and operations finish, then retry opening with verificationTable: true"
 			);
 		}
 		const uint64_t watermark = columnDescriptor->nonVerifyingTransactionWatermark.load();
@@ -1112,8 +1108,8 @@ void DBRegistry::OpenDB(
 				throw rocksdb_js::DBException(
 					"ERR_VERIFICATION_TABLE_CONFLICT",
 					"Column family \"" + columnDescriptor->name + "\" was open without verificationTable and a " +
-					"transaction or operation that may have written through it is still running; retry the open " +
-					"once it finishes"
+						"transaction or operation that may have written through it is still running; retry the open " +
+						"once it finishes"
 				);
 			}
 			// A non-participating handle can seed a slot (populateVersion) that
@@ -1203,7 +1199,8 @@ void DBRegistry::PurgeAll() {
 		}
 
 		closeError = closeClaimedDescriptors(
-			descriptorsToClose, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex);
+			descriptorsToClose, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex
+		);
 		if (closeError) {
 			std::rethrow_exception(closeError);
 		}
@@ -1251,8 +1248,8 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			DBDescriptor* descriptor = entry.descriptor.get();
 			RegistryStatusEntry statusEntry;
 			statusEntry.reportedPath = descriptor ? descriptor->path
-				: !entry.reportedPath.empty() ? entry.reportedPath
-				: key.path;
+				: !entry.reportedPath.empty()     ? entry.reportedPath
+												  : key.path;
 			statusEntry.closeError = entry.closeError;
 			statusEntry.closeRetrying = entry.closeRetrying;
 			if (descriptor) {
@@ -1279,7 +1276,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 						}
 						std::lock_guard<std::mutex> buffersLock(columnDescriptor->userSharedBuffersMutex);
 						statusEntry.columnSummaries.push_back(
-							ColumnSummary{name, static_cast<uint32_t>(columnDescriptor->userSharedBuffers.size())}
+							ColumnSummary{ name, static_cast<uint32_t>(columnDescriptor->userSharedBuffers.size()) }
 						);
 					}
 				}
@@ -1293,10 +1290,8 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 						if (!txnHandle) {
 							continue;
 						}
-						statusEntry.txnSummaries.push_back({
-							txnId,
-							std::chrono::duration<double, std::milli>(now - txnHandle->createdAt).count()
-						});
+						statusEntry.txnSummaries.push_back({ txnId,
+							std::chrono::duration<double, std::milli>(now - txnHandle->createdAt).count() });
 					}
 					statusEntry.closables = static_cast<uint32_t>(descriptor->closables.size());
 				}
@@ -1324,7 +1319,8 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 			// descriptor, so fall back to the spelling its last descriptor was
 			// opened with, and only then to the key's resolved identity.
 			NAPI_STATUS_THROWS(::napi_create_string_utf8(
-				env, entry.reportedPath.c_str(), entry.reportedPath.size(), &pathValue));
+				env, entry.reportedPath.c_str(), entry.reportedPath.size(), &pathValue
+			));
 			NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "path", pathValue));
 			if (!entry.closeError.empty()) {
 				napi_value closeErrorValue;
@@ -1347,7 +1343,7 @@ napi_value DBRegistry::RegistryStatus(napi_env env, napi_callback_info info) {
 				NAPI_STATUS_THROWS(::napi_set_named_property(env, database, "destroyCleanupPending", pending));
 				napi_value zero;
 				NAPI_STATUS_THROWS(::napi_create_uint32(env, 0, &zero));
-				for (const char* property : {"refCount", "transactions", "closables", "locks", "listenerCallbacks"}) {
+				for (const char* property : { "refCount", "transactions", "closables", "locks", "listenerCallbacks" }) {
 					NAPI_STATUS_THROWS(::napi_set_named_property(env, database, property, zero));
 				}
 				napi_value columnFamilies;
@@ -1613,7 +1609,7 @@ void DBRegistry::Shutdown() {
 						// here rather than re-throwing the same error forever.
 						continue;
 					}
-					ClosingDescriptor closing{key, entry.descriptor, entry.condition};
+					ClosingDescriptor closing{ key, entry.descriptor, entry.condition };
 					if (!entry.closeError.empty() && !entry.closeRetrying) {
 						entry.closeRetrying = true;
 						descriptorsToClose.push_back(std::move(closing));
@@ -1626,17 +1622,18 @@ void DBRegistry::Shutdown() {
 			}
 
 			std::exception_ptr closeError = closeClaimedDescriptors(
-				descriptorsToClose, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex);
+				descriptorsToClose, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex
+			);
 
 			for (const auto& closing : descriptorsToWaitFor) {
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
 				const auto drainDeadline = std::chrono::steady_clock::now() + waitBudget;
 				if (!closing.condition->wait_until(lock, drainDeadline, [&]() {
-					auto entry = instance->databases.find(closing.key);
-					return entry == instance->databases.end() ||
-						entry->second.descriptor != closing.descriptor ||
-						(!entry->second.closeError.empty() && !entry->second.closeRetrying);
-				})) {
+						auto entry = instance->databases.find(closing.key);
+						return entry == instance->databases.end() ||
+							entry->second.descriptor != closing.descriptor ||
+							(!entry->second.closeError.empty() && !entry->second.closeRetrying);
+					})) {
 					throw rocksdb_js::DBException("Timed out waiting for database close to finish during shutdown");
 				}
 			}
@@ -1645,8 +1642,8 @@ void DBRegistry::Shutdown() {
 				std::unique_lock<std::mutex> lock(instance->databasesMutex);
 				const auto destroyDeadline = std::chrono::steady_clock::now() + waitBudget;
 				if (!instance->lifecycleCondition.wait_until(lock, destroyDeadline, [&]() {
-					return instance->destroyingPaths.empty();
-				})) {
+						return instance->destroyingPaths.empty();
+					})) {
 					throw rocksdb_js::DBException("Timed out waiting for database destruction to finish during shutdown");
 				}
 				if (closeError) std::rethrow_exception(closeError);

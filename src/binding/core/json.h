@@ -23,13 +23,13 @@ inline void appendJsonString(std::string& out, std::string_view s) {
 	for (char ch : s) {
 		const unsigned char c = static_cast<unsigned char>(ch);
 		switch (c) {
-			case '"':  out += "\\\""; break;
+			case '"': out += "\\\""; break;
 			case '\\': out += "\\\\"; break;
-			case '\b': out += "\\b";  break;
-			case '\f': out += "\\f";  break;
-			case '\n': out += "\\n";  break;
-			case '\r': out += "\\r";  break;
-			case '\t': out += "\\t";  break;
+			case '\b': out += "\\b"; break;
+			case '\f': out += "\\f"; break;
+			case '\n': out += "\\n"; break;
+			case '\r': out += "\\r"; break;
+			case '\t': out += "\\t"; break;
 			default:
 				if (c < 0x20) {
 					char buf[7];

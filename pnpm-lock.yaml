@@ -27,6 +27,9 @@ importers:
       '@vitest/coverage-v8':
         specifier: 4.1.11
         version: 4.1.11(vitest@4.1.11)
+      '@wasm-fmt/clang-format':
+        specifier: 23.1.1
+        version: 23.1.1
       cross-env:
         specifier: 10.1.0
         version: 10.1.0
@@ -1073,6 +1076,11 @@ packages:
 
   '@vitest/utils@4.1.11':
     resolution: {integrity: sha512-zTCVGpyFsGWBhllOyKlTw/vnr6D9qxsfSDyfbyZmTyjHw5N/VuvzHpHoQjm2ZJzn4RJgx5w4r7V0er69CmLgPQ==}
+
+  '@wasm-fmt/clang-format@23.1.1':
+    resolution: {integrity: sha512-SPA6H8DI/MOJAr0CfpbFBoqI5sfrimu3SlovuAAy36mq9vs9TOkS48lpUsNaPLeZzeQVEGe+pfbJHXKxiroP/g==}
+    engines: {node: '>=16.17.0'}
+    hasBin: true
 
   '@yuku-toolchain/darwin-arm64@0.27.0':
     resolution: {integrity: sha512-A3v83rNyHWlnJeeMBsWggZ+RZDP2BEMHIiMk+j23LqtVch24MXwg8veflkQgZ2GtCtZOxcG+NkztnsSUS4rWEQ==}
@@ -2405,6 +2413,8 @@ snapshots:
       '@vitest/pretty-format': 4.1.11
       convert-source-map: 2.0.0
       tinyrainbow: 3.2.0
+
+  '@wasm-fmt/clang-format@23.1.1': {}
 
   '@yuku-toolchain/darwin-arm64@0.27.0':
     optional: true

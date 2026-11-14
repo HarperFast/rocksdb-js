@@ -191,7 +191,7 @@ void storeIfSet(std::atomic<A>& target, const std::optional<T>& value) {
 /**
  * The constructor for the DBSettings class.
  */
-DBSettings::DBSettings():
+DBSettings::DBSettings() :
 	blockCacheSize(32 * 1024 * 1024), // 32MB (RocksDB default)
 	blockCache(nullptr),
 	occLockBucketCount(1 << 16),
@@ -209,8 +209,7 @@ DBSettings::DBSettings():
 	lifecycleWaitSeconds(30),
 	verificationTableEntries(128 * 1024), // 128K slots = 1 MB at 8 bytes per slot
 	verificationTableSeed(generateSeed()),
-	verificationTable(nullptr)
-{}
+	verificationTable(nullptr) {}
 
 /**
  * Get the LRU block cache instance if the block cache size is greater than 0
@@ -364,17 +363,12 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		!readField(env, params, "writeBufferManagerCostToCache", costToCache) ||
 		!readField(env, params, "writeBufferManagerAllowStall", allowStall) ||
 		!readEnumField(env, params, "writeBufferManagerFlushPolicy", {
-				{ "oldest", rocksdb::WriteBufferFlushPolicy::kFlushOldest },
-				{ "largest", rocksdb::WriteBufferFlushPolicy::kFlushLargest },
-				{ "largestAcrossDBs", rocksdb::WriteBufferFlushPolicy::kFlushLargestAcrossDBs },
-			},
-			flushPolicy,
-			"writeBufferManagerFlushPolicy must be a string",
-			"writeBufferManagerFlushPolicy must be 'oldest', 'largest' or 'largestAcrossDBs'") ||
-		!readField(env, params, "verificationTableEntries", vtEntries) ||
-		!checkRange(env, !vtEntries || *vtEntries >= 0,
-			"Verification table entries must be a positive integer or 0 to disable verification")
-	) {
+																		 { "oldest", rocksdb::WriteBufferFlushPolicy::kFlushOldest },
+																		 { "largest", rocksdb::WriteBufferFlushPolicy::kFlushLargest },
+																		 { "largestAcrossDBs", rocksdb::WriteBufferFlushPolicy::kFlushLargestAcrossDBs },
+																	 },
+			flushPolicy, "writeBufferManagerFlushPolicy must be a string", "writeBufferManagerFlushPolicy must be 'oldest', 'largest' or 'largestAcrossDBs'") ||
+		!readField(env, params, "verificationTableEntries", vtEntries) || !checkRange(env, !vtEntries || *vtEntries >= 0, "Verification table entries must be a positive integer or 0 to disable verification")) {
 		return nullptr;
 	}
 
@@ -404,16 +398,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 		const bool updateLivePolicy = manager && (allowStall || flushPolicy);
 		const rocksdb::WriteBufferFlushPolicy previousPolicy =
 			manager ? manager->flush_policy() : rocksdb::WriteBufferFlushPolicy::kFlushOldest;
-		if (updateLivePolicy && !setLiveFlushPolicy(
-			env,
-			*manager,
-			DBSettings::resolveWriteBufferManagerFlushPolicy(
-				flushPolicy
-					? static_cast<int>(*flushPolicy)
-					: settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed),
-				allowStall.value_or(settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed))
-			)
-		)) {
+		if (updateLivePolicy && !setLiveFlushPolicy(env, *manager, DBSettings::resolveWriteBufferManagerFlushPolicy(flushPolicy ? static_cast<int>(*flushPolicy) : settings.writeBufferManagerFlushPolicy.load(std::memory_order_relaxed), allowStall.value_or(settings.writeBufferManagerAllowStall.load(std::memory_order_relaxed))))) {
 			return nullptr;
 		}
 

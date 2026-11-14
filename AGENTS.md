@@ -29,15 +29,25 @@ GitHub Copilot, and other AI coding assistants when working with code in this re
 ### Code Quality
 
 - `pnpm check` - Run type-check, lint, and format checking
-- `pnpm fmt` - Format code with oxfmt
-- `pnpm fmt:check` - Check code formatting with oxfmt
+- `pnpm fmt` - Format code with oxfmt, then C/C++ with clang-format
+- `pnpm fmt:check` - Check code formatting with oxfmt, then C/C++ with clang-format
+- `pnpm fmt:cpp` / `pnpm fmt:cpp:check` - The clang-format half alone
 - `pnpm lint` - Code linting with oxlint
 - `pnpm type-check` - TypeScript type checking only
 
 **Run `pnpm fmt` before every commit** (or `pnpm check` to also type-check and lint) — CI runs
 `pnpm fmt:check` and fails the build on unformatted code. Note the scope: oxfmt formats TS/JS/JSON
-**and Markdown**, but **not C++**, so a stray indent under `src/binding/**` passes `fmt:check`
-untouched and must be checked by hand. Markdown is checked, which includes the ordered list of
+**and Markdown**; C/C++ under `src/binding/`, `test/native/` and `benchmark/` is formatted by
+`scripts/clang-format.ts` using `.clang-format`. That script runs the pinned
+`@wasm-fmt/clang-format` WebAssembly build, not a system `clang-format`, so the same input formats
+identically on every platform (line endings follow the file, so a CRLF checkout stays CRLF); a
+locally installed `clang-format` (or an editor's) is a different version and may disagree, so treat
+`pnpm fmt` as authoritative. `.clang-format` keeps `ColumnLimit: 0` (author line breaks stand) and
+`SortIncludes`/`SortUsingDeclarations: Never`, so formatting only moves whitespace and never
+reorders headers that can depend on macros defined before them. A bulk reformat commit belongs in
+`.git-blame-ignore-revs` (enable locally with `git config blame.ignoreRevsFile
+.git-blame-ignore-revs`) and must reach `main` through a merge commit, since squash and rebase
+merges rewrite the SHA that file names. Markdown is checked, which includes the ordered list of
 invariants below: a branch that adds an invariant while `main` adds another **renumbers cleanly in
 git and still fails `fmt:check` on the merge ref**, because both sides claim the same number. Rebase
 onto `main` and renumber before pushing rather than reading the red check as unrelated;

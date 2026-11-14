@@ -50,6 +50,8 @@ TEST(Json, AppendPreservesExistingOutput) {
 
 TEST(Json, EscapeCombination) {
 	// Mix of all escape categories in one input.
-	const std::string input = std::string("a\"b\\c\nd\x01" "e", 9);
+	const std::string input = std::string("a\"b\\c\nd\x01"
+										  "e",
+		9);
 	EXPECT_EQ(jsonString(input), "\"a\\\"b\\\\c\\nd\\u0001e\"");
 }

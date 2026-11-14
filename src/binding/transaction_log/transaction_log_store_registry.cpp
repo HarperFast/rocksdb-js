@@ -97,8 +97,8 @@ void TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(const std::stri
 		if (store->readOnly) {
 			throw rocksdb_js::DBException(
 				"Cannot open \"" + dbPath + "\" for writing: its transaction logs are open read-only in "
-				"this process (loaded without tail recovery, which appends must not skip). Close the "
-				"read-only or secondary handle first, or open the writable handle before it."
+											"this process (loaded without tail recovery, which appends must not skip). Close the "
+											"read-only or secondary handle first, or open the writable handle before it."
 			);
 		}
 	}
@@ -227,7 +227,8 @@ std::chrono::milliseconds timestampFloorScanBudget() {
 	static const std::chrono::milliseconds budget(parseDurationMs(
 		::getenv("ROCKSDB_JS_TIMESTAMP_FLOOR_SCAN_MS"),
 		/*defaultMs=*/2000,
-		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL));
+		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL
+	));
 	return budget;
 }
 
@@ -236,14 +237,16 @@ bool directoryIsNonEmpty(const std::filesystem::path& path) {
 	if (!std::filesystem::exists(path, error)) {
 		if (error) {
 			throw rocksdb_js::DBException(
-				"Cannot inspect transaction log directory " + path.string() + ": " + error.message());
+				"Cannot inspect transaction log directory " + path.string() + ": " + error.message()
+			);
 		}
 		return false;
 	}
 	if (!std::filesystem::is_directory(path, error)) {
 		if (error) {
 			throw rocksdb_js::DBException(
-				"Cannot inspect transaction log directory " + path.string() + ": " + error.message());
+				"Cannot inspect transaction log directory " + path.string() + ": " + error.message()
+			);
 		}
 		throw rocksdb_js::DBException("Transaction log path " + path.string() + " is not a directory");
 	}
@@ -251,7 +254,8 @@ bool directoryIsNonEmpty(const std::filesystem::path& path) {
 	std::filesystem::directory_iterator iterator(path, error);
 	if (error) {
 		throw rocksdb_js::DBException(
-			"Cannot inspect transaction log directory " + path.string() + ": " + error.message());
+			"Cannot inspect transaction log directory " + path.string() + ": " + error.message()
+		);
 	}
 	return iterator != std::filesystem::directory_iterator();
 }
@@ -307,7 +311,8 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 			throw rocksdb_js::DBException(
 				"Cannot seed timestampFloorLog from a first read-only or secondary open for \"" +
 				logName + "\". Open the writable primary with timestampFloorLog first, or omit "
-				"timestampFloorLog from the read-only/secondary open.");
+						  "timestampFloorLog from the read-only/secondary open."
+			);
 		}
 		if (!alreadyResolved) {
 			std::lock_guard<std::mutex> storeLock(entry->storesMutex);
@@ -359,7 +364,8 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 
 	const double plausibleBound = std::min(
 		getWallClockTimestamp() + MAX_CLOCK_FLOOR_SKEW_MS,
-		std::nextafter(MAX_TIMESTAMP_MS, 0.0));
+		std::nextafter(MAX_TIMESTAMP_MS, 0.0)
+	);
 	auto scan = store->scanLargestDurableKey(plausibleBound, timestampFloorScanBudget());
 
 	if (scan.refusedKey > 0) {
@@ -396,7 +402,8 @@ void TransactionLogStoreRegistry::SeedTimestampFloor(
 				"a segment ends without proof that nothing durable follows — its framing breaks"
 				" partway through, or bytes past its last entry are neither a complete frame this"
 				" walk could read nor zero padding. A query resyncs past such a frame and can still"
-				" return the entries after it, so this walk cannot treat them as absent");
+				" return the entries after it, so this walk cannot treat them as absent"
+			);
 		}
 		if (scan.discoveryIncomplete) {
 			std::ostringstream detail;
@@ -515,9 +522,9 @@ std::shared_ptr<TransactionLogStore> TransactionLogStoreRegistry::ResolveStore(
 			if (!callerReadOnly && storeIt->second->readOnly) {
 				throw rocksdb_js::DBException(
 					"Transaction log \"" + name + "\" for \"" + dbPath + "\" is open read-only in this "
-					"process (loaded without tail recovery, which appends must not skip). It becomes "
-					"writable only after every handle for this database in this process closes and a "
-					"writable handle reopens it."
+																		 "process (loaded without tail recovery, which appends must not skip). It becomes "
+																		 "writable only after every handle for this database in this process closes and a "
+																		 "writable handle reopens it."
 				);
 			}
 			DEBUG_LOG("%p TransactionLogStoreRegistry::ResolveStore Found store \"%s\" for \"%s\"\n",
@@ -705,8 +712,9 @@ std::vector<TransactionLogStoreRegistry::PurgedLogFile> TransactionLogStoreRegis
 			continue;
 		}
 		store->purge([&](const std::filesystem::path& filePath, uint32_t entryCount) -> void {
-			removed.push_back(PurgedLogFile{filePath.string(), entryCount});
-		}, destroy, before, includeEntryCounts);
+			removed.push_back(PurgedLogFile{ filePath.string(), entryCount });
+		},
+			destroy, before, includeEntryCounts);
 
 		if (destroy) {
 			store->tryClose();

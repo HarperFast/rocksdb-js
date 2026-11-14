@@ -49,7 +49,8 @@ rocksdb::Status collectTransactionLogBackupEntries(
  * otherwise vouch for a history the backup no longer holds. A store's record follows its segments.
  */
 std::string backupInlineContents(
-	const NamedTransactionLogBackupEntry& named, const std::set<std::string>& storesMissingSegments);
+	const NamedTransactionLogBackupEntry& named, const std::set<std::string>& storesMissingSegments
+);
 
 /**
  * Prefix of the staging directory a snapshot is copied into before being

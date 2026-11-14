@@ -77,7 +77,7 @@ std::unique_ptr<TransactionLogFile> openSegment(const std::filesystem::path& pat
 
 TEST(TransactionLogAbortMarker, ChangesOnlyTheAbortBitOfTheFirstEntry) {
 	auto storePath = uniqueStorePath();
-	RemoveOnExit cleanup{storePath.parent_path()};
+	RemoveOnExit cleanup{ storePath.parent_path() };
 	auto path = writeSegment(storePath);
 	std::string before = readBytes(path);
 	{
@@ -98,7 +98,7 @@ TEST(TransactionLogAbortMarker, ChangesOnlyTheAbortBitOfTheFirstEntry) {
 
 TEST(TransactionLogAbortMarker, RefusesAnAddressThatDoesNotStartItsBatchWithoutWriting) {
 	auto storePath = uniqueStorePath();
-	RemoveOnExit cleanup{storePath.parent_path()};
+	RemoveOnExit cleanup{ storePath.parent_path() };
 	auto path = writeSegment(storePath);
 	std::string before = readBytes(path);
 	{
@@ -115,7 +115,7 @@ TEST(TransactionLogAbortMarker, RefusesAnAddressThatDoesNotStartItsBatchWithoutW
 
 TEST(TransactionLogAbortMarker, ARetryAfterAFailedSyncWritesTheMarkerAgain) {
 	auto storePath = uniqueStorePath();
-	RemoveOnExit cleanup{storePath.parent_path()};
+	RemoveOnExit cleanup{ storePath.parent_path() };
 	auto path = writeSegment(storePath);
 	auto file = openSegment(path);
 	std::atomic<int> syncs = 0;
@@ -142,7 +142,7 @@ TEST(TransactionLogAbortMarker, ARetryAfterAFailedSyncWritesTheMarkerAgain) {
 
 TEST(TransactionLogAbortMarker, AFailedSyncFailsEveryMarkerWrittenBeforeIt) {
 	auto storePath = uniqueStorePath();
-	RemoveOnExit cleanup{storePath.parent_path()};
+	RemoveOnExit cleanup{ storePath.parent_path() };
 	auto path = writeSegment(storePath);
 	auto file = openSegment(path);
 	bool failNext = true;
@@ -174,7 +174,7 @@ TEST(TransactionLogAbortMarker, AFailedSyncFailsEveryMarkerWrittenBeforeIt) {
 
 TEST(TransactionLogAbortMarker, ConcurrentAbortsShareOneSync) {
 	auto storePath = uniqueStorePath();
-	RemoveOnExit cleanup{storePath.parent_path()};
+	RemoveOnExit cleanup{ storePath.parent_path() };
 	auto path = writeSegment(storePath);
 	auto file = openSegment(path);
 	std::atomic<int> syncs = 0;
@@ -214,7 +214,7 @@ TEST(TransactionLogAbortMarker, ConcurrentAbortsShareOneSync) {
 
 TEST(TransactionLogAbortMarker, FlushSyncsAMarkerThatDidNotGrowTheFileEvenAfterClose) {
 	auto storePath = uniqueStorePath();
-	RemoveOnExit cleanup{storePath.parent_path()};
+	RemoveOnExit cleanup{ storePath.parent_path() };
 	auto path = writeSegment(storePath);
 	auto file = openSegment(path);
 	std::atomic<int> syncs = 0;
@@ -233,7 +233,7 @@ TEST(TransactionLogAbortMarker, FlushSyncsAMarkerThatDidNotGrowTheFileEvenAfterC
 
 TEST(TransactionLogAbortMarker, AFailedCancellationRefusesAppendsUntilARetryMarksIt) {
 	auto storePath = uniqueStorePath();
-	RemoveOnExit cleanup{storePath.parent_path()};
+	RemoveOnExit cleanup{ storePath.parent_path() };
 	std::filesystem::create_directories(storePath);
 	TransactionLogStore store("store", storePath, 0, std::chrono::milliseconds(0), 0);
 	writeBatch(store, T1, { "kept" });

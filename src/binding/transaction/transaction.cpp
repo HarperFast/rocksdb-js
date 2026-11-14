@@ -483,8 +483,7 @@ struct PendingTransactionCommitState final {
 	std::unique_ptr<TransactionCommitState> state;
 	bool asyncWorkRegistered = false;
 
-	PendingTransactionCommitState(napi_env env, std::unique_ptr<TransactionCommitState> state)
-		: env(env), state(std::move(state)) {}
+	PendingTransactionCommitState(napi_env env, std::unique_ptr<TransactionCommitState> state) : env(env), state(std::move(state)) {}
 
 	~PendingTransactionCommitState() {
 		if (!this->state) {
@@ -860,8 +859,7 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 	if (
 		state->status.IsBusy() &&
 		state->handle &&
-		state->handle->coordinatedRetry
-	) {
+		state->handle->coordinatedRetry) {
 		// Coordinated-retry path: signal RETRY_NOW to JS instead of
 		// rejecting. The native layer may park on an active VT lock
 		// before firing the resolve, so JS retries only after the
@@ -884,7 +882,9 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		if (state->handle->parkDeadline > 0) {
 			double remaining = state->handle->parkDeadline -
 				static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
-					std::chrono::system_clock::now().time_since_epoch()).count());
+					std::chrono::system_clock::now().time_since_epoch()
+				)
+						.count());
 			timeoutMs = remaining < 1 ? 0 : static_cast<unsigned>(std::min<double>(timeoutMs, remaining));
 		}
 		// Past the deadline nothing parks: RETRY_NOW resolves at once, so the caller can give up.
@@ -908,7 +908,7 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 				return;
 			}
 
-			auto* ctx = new RetryNowContext{state->resolveRef, state->rejectRef};
+			auto* ctx = new RetryNowContext{ state->resolveRef, state->rejectRef };
 			state->resolveRef = nullptr;
 			state->rejectRef = nullptr;
 			napi_threadsafe_function tsfn;
@@ -1070,7 +1070,11 @@ static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* co
  *   thread handoff per commit) and no faster under concurrency; selectable
  *   for evaluation on real workloads.
  */
-enum class CommitThreadMode { Legacy, SingleLane, TwoLane };
+enum class CommitThreadMode {
+	Legacy,
+	SingleLane,
+	TwoLane
+};
 
 static CommitThreadMode commitThreadMode() {
 	static const CommitThreadMode mode = []() {
@@ -1719,8 +1723,8 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	}
 
 	if (!(flags & ALWAYS_CREATE_NEW_BUFFER_FLAG) &&
-			(*txnHandle)->dbHandle->defaultValueBufferPtr != nullptr &&
-			value.size() <= (*txnHandle)->dbHandle->defaultValueBufferLength) {
+		(*txnHandle)->dbHandle->defaultValueBufferPtr != nullptr &&
+		value.size() <= (*txnHandle)->dbHandle->defaultValueBufferLength) {
 		// if it fits in the default value buffer, copy the data and just return the length
 		::memcpy((*txnHandle)->dbHandle->defaultValueBufferPtr, value.data(), value.size());
 		NAPI_STATUS_THROWS(::napi_create_int32(env, value.size(), &result));
@@ -1895,7 +1899,8 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 			NAPI_RETURN_UNDEFINED();
 		}
 		NAPI_THROW_JS_ERROR(
-			"ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction already has staged writes or log entries");
+			"ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction already has staged writes or log entries"
+		);
 	}
 
 	if (type == napi_undefined) {

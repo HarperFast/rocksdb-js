@@ -366,7 +366,8 @@ struct FileDeletionGuard {
 int64_t fileTimeToEpochSeconds(std::filesystem::file_time_type ft) {
 	return std::chrono::duration_cast<std::chrono::seconds>(
 		convertFileTimeToSystemTime(ft).time_since_epoch()
-	).count();
+	)
+		.count();
 }
 
 /**
@@ -499,7 +500,8 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 	if (state->backupTransactionLogs) {
 		std::vector<NamedTransactionLogBackupEntry> entries;
 		s = collectTransactionLogBackupEntries(
-					state->descriptor.get(), entries, [state]() { return state->handle && state->handle->isCancelled(); });
+			state->descriptor.get(), entries, [state]() { return state->handle && state->handle->isCancelled(); }
+		);
 		if (!s.ok()) {
 			return s;
 		}
@@ -580,8 +582,7 @@ void backupStreamComplete(napi_env env, napi_status status, void* data) {
 	auto* state = static_cast<AsyncBackupStreamState*>(data);
 	state->deleteAsyncWork();
 	if (status == napi_cancelled &&
-		--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()
-	) {
+		--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
 		state->descriptor->operationsInFlight.notify_all();
 	}
 

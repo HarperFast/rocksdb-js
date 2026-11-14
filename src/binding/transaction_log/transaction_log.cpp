@@ -67,7 +67,8 @@ napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_get_cb_info(env, info, &argc, nullptr, &jsThis, nullptr));
 	bool isReadableExtentBuffer = false;
 	napi_status tagStatus = ::napi_check_object_type_tag(
-		env, jsThis, &READABLE_EXTENT_BUFFER_TAG, &isReadableExtentBuffer);
+		env, jsThis, &READABLE_EXTENT_BUFFER_TAG, &isReadableExtentBuffer
+	);
 	if (tagStatus != napi_ok || !isReadableExtentBuffer) {
 		::napi_throw_type_error(env, nullptr, "readableExtent getter called on an incompatible receiver");
 		return nullptr;
@@ -81,7 +82,8 @@ napi_value GetReadableExtent(napi_env env, napi_callback_info info) {
 	NAPI_STATUS_THROWS(::napi_create_uint32(
 		env,
 		(*memoryMapHandle)->readableExtent.load(std::memory_order_acquire),
-		&result));
+		&result
+	));
 	return result;
 }
 
@@ -93,7 +95,8 @@ using CreateExternalSharedArrayBuffer = napi_status(NAPI_CDECL*)(
 	size_t byte_length,
 	NoEnvFinalize finalize_cb,
 	void* finalize_hint,
-	napi_value* result);
+	napi_value* result
+);
 
 void NAPI_CDECL releaseSharedMemoryMap(void* data, void* hint) {
 	DEBUG_LOG("TransactionLog::GetMemoryMapOfFile SharedArrayBuffer released memoryMapHandle=%p\n", hint);
@@ -109,9 +112,10 @@ bool pinAddon() {
 #ifdef _WIN32
 	HMODULE module = nullptr;
 	return ::GetModuleHandleExW(
-		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-		reinterpret_cast<LPCWSTR>(&pinAddon),
-		&module) != 0;
+			   GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+			   reinterpret_cast<LPCWSTR>(&pinAddon),
+			   &module
+		   ) != 0;
 #else
 	Dl_info info;
 	if (::dladdr(reinterpret_cast<void*>(&pinAddon), &info) == 0 || info.dli_fname == nullptr) {
@@ -152,13 +156,7 @@ napi_status createMemoryMapBuffer(
 	MemoryMap* memoryMap = memoryMapHandle->get();
 	auto createShared = resolveCreateExternalSharedArrayBuffer();
 	napi_value sharedArrayBuffer;
-	if (createShared && createShared(
-			env,
-			memoryMap->map,
-			memoryMap->fileSize,
-			releaseSharedMemoryMap,
-			memoryMapHandle,
-			&sharedArrayBuffer) == napi_ok) {
+	if (createShared && createShared(env, memoryMap->map, memoryMap->fileSize, releaseSharedMemoryMap, memoryMapHandle, &sharedArrayBuffer) == napi_ok) {
 		napi_value global, bufferClass, from;
 		NAPI_STATUS_RETURN(::napi_get_global(env, &global));
 		NAPI_STATUS_RETURN(::napi_get_named_property(env, global, "Buffer", &bufferClass));
@@ -174,7 +172,8 @@ napi_status createMemoryMapBuffer(
 			delete static_cast<std::shared_ptr<MemoryMap>*>(hint);
 		},
 		memoryMapHandle,
-		result);
+		result
+	);
 }
 
 } // namespace
@@ -396,7 +395,7 @@ napi_value TransactionLog::GetLogFileSize(napi_env env, napi_callback_info info)
 		return nullptr;
 	}
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_create_double(env, (double) fileSize, &result));
+	NAPI_STATUS_THROWS(::napi_create_double(env, (double)fileSize, &result));
 	return result;
 }
 
@@ -498,7 +497,8 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 			delete static_cast<std::shared_ptr<MemoryMap>*>(data);
 		},
 		nullptr,
-		&readableExtentExternal));
+		&readableExtentExternal
+	));
 	readableExtentHandle.release();
 	napi_property_descriptor readableExtentProperties[] = {
 		{ READABLE_EXTENT_HANDLE, nullptr, nullptr, nullptr,
@@ -509,7 +509,8 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	NAPI_STATUS_THROWS(::napi_define_properties(
 		env, result,
 		sizeof(readableExtentProperties) / sizeof(napi_property_descriptor),
-		readableExtentProperties));
+		readableExtentProperties
+	));
 
 	// at this point, the transaction log file and the mapping buffer have a ref to the memory map
 

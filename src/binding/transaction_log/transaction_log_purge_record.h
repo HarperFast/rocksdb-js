@@ -59,13 +59,15 @@ bool decodeTransactionLogPurgeRecordSlot(const char* slot, TransactionLogPurgeRe
  * reports that the other slot is neither valid nor zero, so a newer record may have been lost.
  */
 TransactionLogPurgeRecordState decodeTransactionLogPurgeRecordImage(
-	const char* data, size_t size, TransactionLogPurgeRecord& record, bool* otherSlotDamaged = nullptr);
+	const char* data, size_t size, TransactionLogPurgeRecord& record, bool* otherSlotDamaged = nullptr
+);
 
 /** A whole file image holding `record` in its slot and a zeroed other slot. */
 std::string encodeTransactionLogPurgeRecordImage(const TransactionLogPurgeRecord& record);
 
 TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
-	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged = nullptr) noexcept;
+	const std::filesystem::path& storePath, TransactionLogPurgeRecord& record, bool* otherSlotDamaged = nullptr
+) noexcept;
 
 /**
  * Durably writes `record` into the slot its generation selects, leaving the other slot (the previous
@@ -73,7 +75,8 @@ TransactionLogPurgeRecordState readTransactionLogPurgeRecord(
  * having made nothing durable that a caller may rely on, when any write or sync fails.
  */
 bool writeTransactionLogPurgeRecord(
-	const std::filesystem::path& storePath, const TransactionLogPurgeRecord& record) noexcept;
+	const std::filesystem::path& storePath, const TransactionLogPurgeRecord& record
+) noexcept;
 
 /**
  * `remove_all(storePath)`, except that the record goes last: a deletion that stops part-way leaves

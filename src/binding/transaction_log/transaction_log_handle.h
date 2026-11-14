@@ -93,7 +93,6 @@ struct TransactionLogHandle final : Closable {
 	 * Closes the transaction log handle.
 	 */
 	void close();
-
 };
 
 } // namespace rocksdb_js

@@ -20,14 +20,14 @@ inline int testDelayMs(const char* envName) {
 // Snapshot native fault flags once; mutating process.env while native workers
 // can read it is unsafe, and process.env deletion does not update MSVC's CRT.
 inline std::atomic<bool>& closeFailureFlag() {
-	static std::atomic<bool> pending{false};
+	static std::atomic<bool> pending{ false };
 	return pending;
 }
 
 // Snapshotted for the same reason as closeFailureFlag(): a fault flag must not
 // be re-read from the environment on a native thread.
 inline std::atomic<bool>& destroyFailureFlag() {
-	static std::atomic<bool> pending{false};
+	static std::atomic<bool> pending{ false };
 	return pending;
 }
 
@@ -36,7 +36,7 @@ inline std::atomic<bool>& destroyFailureFlag() {
 // close-time flush to fail more than once. `=1` behaves exactly as the previous
 // boolean did.
 inline std::atomic<int>& closeFlushFailureFlag() {
-	static std::atomic<int> pending{0};
+	static std::atomic<int> pending{ 0 };
 	return pending;
 }
 
@@ -44,51 +44,51 @@ inline std::atomic<int>& closeFlushFailureFlag() {
 // rather than read per call: a getenv() scan per row is a measurable share of
 // the per-row cost for a seam that is unset in production.
 inline std::atomic<int>& iteratorNextDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 inline std::atomic<bool>& transactionCommitExecuteDelayActive() {
-	static std::atomic<bool> active{false};
+	static std::atomic<bool> active{ false };
 	return active;
 }
 
 inline std::atomic<int>& transactionCommitAdmissionDelayMs() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // Per-row delay for DBIteratorHandle::countRemaining(), snapshotted for the
 // same reason.
 inline std::atomic<int>& countScanDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // Iterator construction can be frequent, so its test-only delay must not
 // scan the environment on every constructor call.
 inline std::atomic<int>& iteratorSetupDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // Transaction close can run on any teardown thread; snapshot this seam before
 // native work begins rather than reading process environment there.
 inline std::atomic<int>& txnCloseDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // Transactional reads execute on a libuv worker, so their test delay cannot
 // read the process environment concurrently with JavaScript.
 inline std::atomic<int>& txnGetDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // Commit execution can run on a worker or the dedicated commit thread.
 inline std::atomic<int>& commitExecuteDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
@@ -99,7 +99,7 @@ inline std::atomic<int>& commitExecuteDelayMsFlag() {
 // Snapshotted here rather than read per call so the production path (unset)
 // costs one relaxed load.
 inline std::atomic<int>& compactCancelDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
@@ -107,21 +107,21 @@ inline std::atomic<int>& compactCancelDelayMsFlag() {
 // only while this is non-zero, so a fixture gets a long automatic compaction
 // that RocksDB can still abort per key.
 inline std::atomic<int>& compactionKeyDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // Delays TransactionLogEventListener::OnFlushCompleted, which runs on a RocksDB
 // flush thread after Flush() may already have returned.
 inline std::atomic<int>& flushCompletedDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // One-shot close failure injected after finishClose() has cancelled background
 // work, so a retry has to complete without flushing again.
 inline std::atomic<bool>& closeFailureAfterCancelFlag() {
-	static std::atomic<bool> pending{false};
+	static std::atomic<bool> pending{ false };
 	return pending;
 }
 
@@ -129,7 +129,7 @@ inline std::atomic<bool>& closeFailureAfterCancelFlag() {
 // already be adopted and attached, and OpenDB() must hold no reference it took
 // under the lock, while this delay is observable.
 inline std::atomic<int>& openAttachDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
@@ -137,24 +137,24 @@ inline std::atomic<int>& openAttachDelayMsFlag() {
 // thread drives teardown, so they are snapshotted for the same reason as the
 // fault flags above rather than read through ::getenv there.
 inline std::atomic<int>& backupDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 inline std::atomic<int>& destroyDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 inline std::atomic<int>& closeRetryDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // Holds an env-cleanup hook's registry snapshot, so a last-handle close on another thread lands
 // while it pins the descriptor.
 inline std::atomic<int>& envCleanupPinDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
@@ -163,21 +163,21 @@ inline std::atomic<int>& envCleanupPinDelayMsFlag() {
 // it. Without the columnsMutex snapshot that walk is a use-after-free on the
 // freed map node's key.
 inline std::atomic<int>& registryStatusColumnsDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // Delays DBHandle::clear() after it deletes the family's files and before it
 // returns. clear() runs on a libuv worker for the async API.
 inline std::atomic<int>& clearDeleteDelayMsFlag() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 // Number of transaction-log abort-marker syncs to fail after the marker is written (a count). Read
 // on the commit and teardown threads that write markers, so snapshotted like the fault flags above.
 inline std::atomic<int>& abortMarkFailureFlag() {
-	static std::atomic<int> pending{0};
+	static std::atomic<int> pending{ 0 };
 	return pending;
 }
 
@@ -193,7 +193,7 @@ inline bool testConsumeAbortMarkFailure() {
 
 // A count, like abortMarkFailureFlag(): WAL syncs to fail with an injected I/O error.
 inline std::atomic<int>& syncWalFailureFlag() {
-	static std::atomic<int> pending{0};
+	static std::atomic<int> pending{ 0 };
 	return pending;
 }
 
@@ -208,24 +208,24 @@ inline bool testConsumeSyncWalFailure() {
 }
 
 inline std::atomic<bool>& prelogConflictCheckDisabled() {
-	static std::atomic<bool> disabled{false};
+	static std::atomic<bool> disabled{ false };
 	return disabled;
 }
 
 inline std::atomic<bool>& prelogConflictCheckRetriesOnly() {
-	static std::atomic<bool> retriesOnly{true};
+	static std::atomic<bool> retriesOnly{ true };
 	return retriesOnly;
 }
 
 // The values ROCKSDB_JS_PRELOG_CHECK selected at module load, which resetting the test switches
 // restores instead of the compiled-in defaults.
 inline std::atomic<bool>& prelogConflictCheckDisabledDefault() {
-	static std::atomic<bool> disabled{false};
+	static std::atomic<bool> disabled{ false };
 	return disabled;
 }
 
 inline std::atomic<bool>& prelogConflictCheckRetriesOnlyDefault() {
-	static std::atomic<bool> retriesOnly{true};
+	static std::atomic<bool> retriesOnly{ true };
 	return retriesOnly;
 }
 
@@ -247,45 +247,63 @@ inline void initializeTestSeams() {
 			prelogConflictCheckRetriesOnlyDefault().store(false, std::memory_order_relaxed);
 		}
 		prelogConflictCheckDisabled().store(
-			prelogConflictCheckDisabledDefault().load(std::memory_order_relaxed), std::memory_order_relaxed);
+			prelogConflictCheckDisabledDefault().load(std::memory_order_relaxed), std::memory_order_relaxed
+		);
 		prelogConflictCheckRetriesOnly().store(
-			prelogConflictCheckRetriesOnlyDefault().load(std::memory_order_relaxed), std::memory_order_relaxed);
+			prelogConflictCheckRetriesOnlyDefault().load(std::memory_order_relaxed), std::memory_order_relaxed
+		);
 		value = ::getenv("ROCKSDB_JS_ABORT_MARK_FAILURE");
 		abortMarkFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		value = ::getenv("ROCKSDB_JS_SYNC_WAL_FAILURE");
 		syncWalFailureFlag().store(value ? ::atoi(value) : 0, std::memory_order_relaxed);
 		iteratorNextDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_ITERATOR_NEXT_DELAY_MS"), std::memory_order_relaxed
+		);
 		countScanDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_COUNT_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_COUNT_DELAY_MS"), std::memory_order_relaxed
+		);
 		iteratorSetupDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS"), std::memory_order_relaxed
+		);
 		txnCloseDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_TXN_CLOSE_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_TXN_CLOSE_DELAY_MS"), std::memory_order_relaxed
+		);
 		txnGetDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_TXN_GET_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_TXN_GET_DELAY_MS"), std::memory_order_relaxed
+		);
 		commitExecuteDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"), std::memory_order_relaxed
+		);
 		compactCancelDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed
+		);
 		compactionKeyDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_COMPACTION_KEY_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_COMPACTION_KEY_DELAY_MS"), std::memory_order_relaxed
+		);
 		flushCompletedDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS"), std::memory_order_relaxed
+		);
 		openAttachDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_OPEN_ATTACH_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_OPEN_ATTACH_DELAY_MS"), std::memory_order_relaxed
+		);
 		backupDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_BACKUP_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_BACKUP_DELAY_MS"), std::memory_order_relaxed
+		);
 		destroyDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_DESTROY_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_DESTROY_DELAY_MS"), std::memory_order_relaxed
+		);
 		closeRetryDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_CLOSE_RETRY_DELAY_MS"), std::memory_order_relaxed
+		);
 		registryStatusColumnsDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_REGISTRY_STATUS_COLUMNS_DELAY_MS"), std::memory_order_relaxed
+		);
 		envCleanupPinDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS"), std::memory_order_relaxed
+		);
 		clearDeleteDelayMsFlag().store(
-			testDelayMs("ROCKSDB_JS_CLEAR_DELAY_MS"), std::memory_order_relaxed);
+			testDelayMs("ROCKSDB_JS_CLEAR_DELAY_MS"), std::memory_order_relaxed
+		);
 	});
 }
 
@@ -308,7 +326,7 @@ inline bool testConsumeCloseFlushFailure() {
 }
 
 inline std::atomic<bool>& transactionCommitAdmissionDelayActive() {
-	static std::atomic<bool> active{false};
+	static std::atomic<bool> active{ false };
 	return active;
 }
 
@@ -329,7 +347,7 @@ inline void setTransactionCommitAdmissionDelayForTesting(int delayMs) {
 // pool runs tests in worker_threads, whose process.env writes never reach ::getenv). Process-
 // global and shared across worker threads that load this .node in the same process; 0 = inert.
 inline std::atomic<int>& forceTryAgainCounter() {
-	static std::atomic<int> counter{0};
+	static std::atomic<int> counter{ 0 };
 	return counter;
 }
 
@@ -350,7 +368,7 @@ inline bool testForceTryAgain() {
 // then report failure (the retry must resolve as "already dropped"). Set from JS via
 // `forceDropFailureForTesting(mode)`; process-global like forceTryAgainCounter().
 inline std::atomic<int>& forceDropFailureMode() {
-	static std::atomic<int> mode{0};
+	static std::atomic<int> mode{ 0 };
 	return mode;
 }
 
@@ -361,17 +379,17 @@ inline int testForceDropFailureMode() {
 // Parks one selected transactional Put/Delete after its advisory retirement
 // precheck so another worker can physically drop the generation first.
 inline std::atomic<int>& transactionStagingDelayCountdown() {
-	static std::atomic<int> countdown{0};
+	static std::atomic<int> countdown{ 0 };
 	return countdown;
 }
 
 inline std::atomic<int>& transactionStagingDelayMs() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 
 inline std::atomic<bool>& transactionStagingDelayActive() {
-	static std::atomic<bool> active{false};
+	static std::atomic<bool> active{ false };
 	return active;
 }
 
@@ -396,12 +414,12 @@ inline int consumeTransactionStagingDelayForTesting() {
 }
 
 inline std::atomic<int>& writeBufferManagerJoinDelayCountdown() {
-	static std::atomic<int> countdown{0};
+	static std::atomic<int> countdown{ 0 };
 	return countdown;
 }
 
 inline std::atomic<int>& writeBufferManagerJoinDelayMs() {
-	static std::atomic<int> delayMs{0};
+	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
 

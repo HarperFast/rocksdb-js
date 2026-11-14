@@ -1,11 +1,32 @@
+# `pnpm fmt` applies this with the pinned @wasm-fmt/clang-format; other clang-format versions may disagree.
+AccessModifierOffset: -4
 AlignAfterOpenBracket: false
 AlignEscapedNewlines: DontAlign
+AlignOperands: DontAlign
+AlignTrailingComments:
+  Kind: Leave
 AllowAllArgumentsOnNextLine: true
-BinPackArguments: false
+AllowShortBlocksOnASingleLine: Always
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortEnumsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+BinPackArguments: true
 BinPackParameters: OnePerLine
 BreakBeforeCloseBracketFunction: true
+BreakConstructorInitializers: AfterColon
 ColumnLimit: 0
+Cpp11BracedListStyle: false
+EmptyLineBeforeAccessModifier: Leave
+FixNamespaceComments: false
+IndentCaseLabels: true
+IndentPPDirectives: Leave
 IndentWidth: 4
+InsertNewlineAtEOF: true
 PointerAlignment: Left
+ReflowComments: Never
+SortIncludes: Never
+SortUsingDeclarations: Never
 TabWidth: 4
-UseTab: Always
+# Always is not idempotent: tab-aligned trailing comments and ternaries shift on a second pass.
+UseTab: ForContinuationAndIndentation

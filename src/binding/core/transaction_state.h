@@ -44,7 +44,7 @@ public:
 	}
 
 private:
-	std::atomic<TransactionState> state{TransactionState::Pending};
+	std::atomic<TransactionState> state{ TransactionState::Pending };
 };
 
 } // namespace rocksdb_js

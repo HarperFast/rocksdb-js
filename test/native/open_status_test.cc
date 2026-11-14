@@ -15,7 +15,8 @@ TEST(OpenStatus, CorruptionWrappingMissingSstIsTheRace) {
 	rocksdb::Status status = rocksdb::Status::Corruption(
 		"IO error: No such file or directory: While open a file for random read: "
 		"/data/db/000046.sst: No such file or directory",
-		"The file /data/db/MANIFEST-000005 may be corrupted");
+		"The file /data/db/MANIFEST-000005 may be corrupted"
+	);
 	EXPECT_TRUE(isMissingSstOpenRace(status));
 }
 
@@ -23,28 +24,29 @@ TEST(OpenStatus, CorruptionWrappingMissingSstIsTheRace) {
 TEST(OpenStatus, IOErrorNamingMissingSstIsTheRace) {
 	rocksdb::Status status = rocksdb::Status::IOError(
 		"While open a file for random read: /data/db/000046.sst",
-		"No such file or directory");
+		"No such file or directory"
+	);
 	EXPECT_TRUE(isMissingSstOpenRace(status));
 }
 
 TEST(OpenStatus, PathNotFoundSubcodeNamingSstIsTheRace) {
 	rocksdb::Status status = rocksdb::Status::PathNotFound(
-		"While open a file for random read: /data/db/000046.sst");
+		"While open a file for random read: /data/db/000046.sst"
+	);
 	EXPECT_TRUE(isMissingSstOpenRace(status));
 }
 
 TEST(OpenStatus, WindowsNotFoundTextNamingSstIsTheRace) {
 	rocksdb::Status status = rocksdb::Status::IOError(
 		"While open a file for random read: C:\\data\\db\\000046.sst",
-		"The system cannot find the file specified.");
+		"The system cannot find the file specified."
+	);
 	EXPECT_TRUE(isMissingSstOpenRace(status));
 }
 
 TEST(OpenStatus, LocalizedCorruptionUsesNamedFileAbsence) {
 	auto root = std::filesystem::temp_directory_path() /
-		("rocksdb-js-open-status-" + std::to_string(
-			std::chrono::steady_clock::now().time_since_epoch().count()
-		));
+		("rocksdb-js-open-status-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
 	std::filesystem::create_directories(root);
 	rocksdb::Status status = rocksdb::Status::Corruption(
 		"E/A-Fehler: Datei nicht gefunden: /data/db/000046.sst",
@@ -62,9 +64,7 @@ TEST(OpenStatus, LocalizedCorruptionUsesNamedFileAbsence) {
 
 TEST(OpenStatus, LocalizedCorruptionRequiresNumberedRocksFilename) {
 	auto root = std::filesystem::temp_directory_path() /
-		("rocksdb-js-open-status-" + std::to_string(
-			std::chrono::steady_clock::now().time_since_epoch().count()
-		));
+		("rocksdb-js-open-status-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
 	std::filesystem::create_directories(root);
 	rocksdb::Status status = rocksdb::Status::Corruption(
 		"E/A-Fehler: Datei nicht gefunden: /data/db/archive123.sst"
@@ -80,7 +80,8 @@ TEST(OpenStatus, LocalizedCorruptionRequiresNumberedRocksFilename) {
 TEST(OpenStatus, CrlfTerminatedFilenameIsTheRace) {
 	rocksdb::Status status = rocksdb::Status::IOError(
 		"While open a file for random read: C:\\data\\db\\000046.sst\r\n"
-		"The system cannot find the file specified.\r\n");
+		"The system cannot find the file specified.\r\n"
+	);
 	EXPECT_TRUE(isMissingSstOpenRace(status));
 }
 
@@ -88,7 +89,8 @@ TEST(OpenStatus, CrlfTerminatedFilenameIsTheRace) {
 // signal; it must keep failing as corruption.
 TEST(OpenStatus, ChecksumMismatchInSstIsNotTheRace) {
 	rocksdb::Status status = rocksdb::Status::Corruption(
-		"block checksum mismatch: stored = 123, computed = 456 in /data/db/000046.sst offset 0 size 4096");
+		"block checksum mismatch: stored = 123, computed = 456 in /data/db/000046.sst offset 0 size 4096"
+	);
 	EXPECT_FALSE(isMissingSstOpenRace(status));
 }
 
@@ -96,7 +98,8 @@ TEST(OpenStatus, ChecksumMismatchInSstIsNotTheRace) {
 // corruption.
 TEST(OpenStatus, CorruptManifestIsNotTheRace) {
 	rocksdb::Status status = rocksdb::Status::Corruption(
-		"CURRENT points to /data/db/MANIFEST-000005", "checksum mismatch");
+		"CURRENT points to /data/db/MANIFEST-000005", "checksum mismatch"
+	);
 	EXPECT_FALSE(isMissingSstOpenRace(status));
 }
 
@@ -104,7 +107,8 @@ TEST(OpenStatus, CorruptManifestIsNotTheRace) {
 TEST(OpenStatus, MissingCurrentFileIsNotTheRace) {
 	rocksdb::Status status = rocksdb::Status::PathNotFound(
 		"While opening a file for sequentially read: /data/db/CURRENT",
-		"No such file or directory");
+		"No such file or directory"
+	);
 	EXPECT_FALSE(isMissingSstOpenRace(status));
 }
 
@@ -113,7 +117,8 @@ TEST(OpenStatus, MissingCurrentFileIsNotTheRace) {
 TEST(OpenStatus, IOErrorNamingMissingBlobIsTheRace) {
 	rocksdb::Status status = rocksdb::Status::IOError(
 		"While open a file for random read: /data/db/000926.blob",
-		"No such file or directory");
+		"No such file or directory"
+	);
 	EXPECT_TRUE(isMissingSstOpenRace(status));
 }
 
@@ -122,7 +127,8 @@ TEST(OpenStatus, IOErrorNamingMissingBlobIsTheRace) {
 TEST(OpenStatus, IOErrorNamingMissingWalIsTheRace) {
 	rocksdb::Status status = rocksdb::Status::IOError(
 		"While stat a file for size: /data/db/000053.log",
-		"No such file or directory");
+		"No such file or directory"
+	);
 	EXPECT_TRUE(isMissingSstOpenRace(status));
 }
 
@@ -142,11 +148,13 @@ TEST(OpenStatus, OkIsNotTheRace) {
 TEST(OpenStatus, DirectoryNamedLikeExtensionIsNotTheRace) {
 	rocksdb::Status status = rocksdb::Status::PathNotFound(
 		"While opening a file for sequentially read: /data/exports.sst/CURRENT",
-		"No such file or directory");
+		"No such file or directory"
+	);
 	EXPECT_FALSE(isMissingSstOpenRace(status));
 	status = rocksdb::Status::IOError(
 		"While open a file for random read: /data/archive.log/MANIFEST-000005",
-		"No such file or directory");
+		"No such file or directory"
+	);
 	EXPECT_FALSE(isMissingSstOpenRace(status));
 }
 
@@ -154,34 +162,43 @@ TEST(OpenStatus, DirectoryNamedLikeExtensionIsNotTheRace) {
 TEST(OpenStatus, MissingSstInsideOddDirectoryIsTheRace) {
 	rocksdb::Status status = rocksdb::Status::IOError(
 		"While open a file for random read: /data/archive.log/000046.sst",
-		"No such file or directory");
+		"No such file or directory"
+	);
 	EXPECT_TRUE(isMissingSstOpenRace(status));
 }
 
 TEST(OpenStatus, PosixLockContentionIsLocked) {
 	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
-		"While lock file: /data/db/LOCK", "Resource temporarily unavailable")));
+		"While lock file: /data/db/LOCK", "Resource temporarily unavailable"
+	)));
 	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
 		"lock hold by current process, acquire time 1 acquiring thread 2: /data/db/LOCK",
-		"No locks available")));
+		"No locks available"
+	)));
 }
 
 TEST(OpenStatus, WindowsSharingViolationIsLocked) {
 	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
 		"Failed to create lock file: C:\\tmp\\testdb-1/LOCK",
-		"The process cannot access the file because it is being used by another process.\r\n")));
+		"The process cannot access the file because it is being used by another process.\r\n"
+	)));
 	EXPECT_TRUE(isDatabaseLockedStatus(rocksdb::Status::IOError(
 		"Failed to create lock file: C:\\tmp\\testdb-1\\LOCK",
-		"The process cannot access the file because it is being used by another process.")));
+		"The process cannot access the file because it is being used by another process."
+	)));
 }
 
 TEST(OpenStatus, OtherLockFileFailuresAreNotLocked) {
 	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::IOError(
-		"While open a file for lock: /data/db/LOCK", "Permission denied")));
+		"While open a file for lock: /data/db/LOCK", "Permission denied"
+	)));
 	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::IOError(
-		"Failed to create lock file: C:\\tmp\\testdb-1/LOCK", "Access is denied.")));
+		"Failed to create lock file: C:\\tmp\\testdb-1/LOCK", "Access is denied."
+	)));
 	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::Corruption(
-		"While lock file: /data/db/LOCK", "Resource temporarily unavailable")));
+		"While lock file: /data/db/LOCK", "Resource temporarily unavailable"
+	)));
 	EXPECT_FALSE(isDatabaseLockedStatus(rocksdb::Status::IOError(
-		"While lock file: /data/LOCKS/db", "Resource temporarily unavailable")));
+		"While lock file: /data/LOCKS/db", "Resource temporarily unavailable"
+	)));
 }

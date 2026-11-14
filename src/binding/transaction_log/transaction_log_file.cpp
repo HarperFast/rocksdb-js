@@ -31,7 +31,8 @@ std::chrono::milliseconds transactionLogRecoveryScanBudget() {
 	static const std::chrono::milliseconds budget(parseDurationMs(
 		::getenv("ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS"),
 		/*defaultMs=*/2000,
-		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL));
+		/*maxMs=*/24ULL * 60ULL * 60ULL * 1000ULL
+	));
 	return budget;
 }
 
@@ -40,8 +41,7 @@ std::chrono::milliseconds transactionLogRecoveryScanBudget() {
 bool parseTransactionLogSegmentName(const std::string& filename, uint32_t& sequenceNumber) {
 	constexpr std::string_view extension = ".txnlog";
 	if (filename.size() <= extension.size() ||
-		filename.compare(filename.size() - extension.size(), extension.size(), extension) != 0
-	) {
+		filename.compare(filename.size() - extension.size(), extension.size(), extension) != 0) {
 		return false;
 	}
 	const char* first = filename.data();
@@ -52,8 +52,7 @@ bool parseTransactionLogSegmentName(const std::string& filename, uint32_t& seque
 	uint64_t parsed = 0;
 	auto [stop, error] = std::from_chars(first, last, parsed);
 	if (stop != last || error != std::errc() || parsed == 0 ||
-		parsed > std::numeric_limits<uint32_t>::max()
-	) {
+		parsed > std::numeric_limits<uint32_t>::max()) {
 		return false;
 	}
 	sequenceNumber = static_cast<uint32_t>(parsed);
@@ -61,7 +60,8 @@ bool parseTransactionLogSegmentName(const std::string& filename, uint32_t& seque
 }
 
 std::filesystem::path transactionLogAppendBoundaryMarkerPath(
-	const std::filesystem::path& logPath) {
+	const std::filesystem::path& logPath
+) {
 	auto storePath = logPath.parent_path();
 	auto markerRoot = storePath.parent_path() / ".append-boundaries" / storePath.filename();
 	return markerRoot / (logPath.filename().string() + ".boundary");
@@ -93,7 +93,8 @@ uint32_t readTransactionLogAppendBoundaryMarker(const std::filesystem::path& log
 	if (!std::filesystem::exists(markerPath, existsError)) {
 		if (existsError) {
 			throw rocksdb_js::TransactionLogAppendBoundaryException(
-				"Failed to inspect transaction log append-boundary marker: " + markerPath.string());
+				"Failed to inspect transaction log append-boundary marker: " + markerPath.string()
+			);
 		}
 		return 0;
 	}
@@ -103,7 +104,8 @@ uint32_t readTransactionLogAppendBoundaryMarker(const std::filesystem::path& log
 	marker.read(bytes, sizeof(bytes));
 	if (!marker || marker.peek() != std::ifstream::traits_type::eof()) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Invalid transaction log append-boundary marker: " + markerPath.string());
+			"Invalid transaction log append-boundary marker: " + markerPath.string()
+		);
 	}
 	uint32_t token = readUint32BE(bytes);
 	uint32_t boundary = readUint32BE(bytes + 4);
@@ -111,23 +113,25 @@ uint32_t readTransactionLogAppendBoundaryMarker(const std::filesystem::path& log
 	if (token != TRANSACTION_LOG_APPEND_BOUNDARY_MARKER_TOKEN ||
 		boundaryComplement != ~boundary) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Corrupt transaction log append-boundary marker: " + markerPath.string());
+			"Corrupt transaction log append-boundary marker: " + markerPath.string()
+		);
 	}
 	if (boundary != 0 && boundary < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
 			"Invalid transaction log append boundary " + std::to_string(boundary) +
-			" for " + logPath.string());
+			" for " + logPath.string()
+		);
 	}
 	return boundary;
 }
 
-std::atomic<bool> TransactionLogFile::madvColdUnsupported{false};
+std::atomic<bool> TransactionLogFile::madvColdUnsupported{ false };
 
-std::atomic<int64_t> MemoryMap::liveCount{0};
+std::atomic<int64_t> MemoryMap::liveCount{ 0 };
 
 #ifdef ROCKSDB_JS_NATIVE_TESTS
-std::atomic<int64_t> TransactionLogFile::forcedBytesLandedForTests{INT64_MIN};
-std::atomic<bool> TransactionLogFile::forceMapFailureForTests{false};
+std::atomic<int64_t> TransactionLogFile::forcedBytesLandedForTests{ INT64_MIN };
+std::atomic<bool> TransactionLogFile::forceMapFailureForTests{ false };
 
 void TransactionLogFile::resetAdviseColdSupportForTests() {
 	madvColdUnsupported.store(false, std::memory_order_relaxed);
@@ -198,7 +202,7 @@ std::chrono::system_clock::time_point TransactionLogFile::getLastWriteTime() {
 void TransactionLogFile::open(const double latestTimestamp) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	try {
-		(void) this->openLocked(latestTimestamp);
+		(void)this->openLocked(latestTimestamp);
 	} catch (...) {
 		// A rejected file must not keep its handle — or, on Windows, the mapping
 		// openFile()'s index scan created — or retain an unvalidated extent that a
@@ -237,7 +241,8 @@ bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfM
 	uint32_t retiredBoundary = this->retiredAppendBoundary.load(std::memory_order_relaxed);
 	if (retiredBoundary > physicalExtent) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Transaction log append boundary exceeds physical extent: " + this->path.string());
+			"Transaction log append boundary exceeds physical extent: " + this->path.string()
+		);
 	}
 
 	// Cache the file's effective last-write time now, once, so writeBatch can
@@ -257,7 +262,8 @@ bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfM
 	if (this->size == 0 && this->readOnly) {
 		// nothing readable, and initializing the header is the writer's job
 		throw rocksdb_js::TransactionLogFormatException(
-			"File is too small to be a valid transaction log file: " + this->path.string());
+			"File is too small to be a valid transaction log file: " + this->path.string()
+		);
 	}
 	if (this->size == 0) {
 		// file is empty, initialize it
@@ -313,7 +319,8 @@ bool TransactionLogFile::openLocked(const double latestTimestamp, bool createIfM
 				throw rocksdb_js::TransactionLogVersionException(unsupportedVersionMessage(this->path, version));
 			}
 			throw rocksdb_js::TransactionLogFormatException(
-				"Invalid transaction log file version " + std::to_string(version) + ": " + this->path.string());
+				"Invalid transaction log file version " + std::to_string(version) + ": " + this->path.string()
+			);
 		}
 		this->version = version;
 
@@ -342,7 +349,8 @@ void TransactionLogFile::loadAppendBoundaryMarkerReadOnly() {
 	// fails closed on a stat error, so it needs no exists() gate.
 	try {
 		this->retiredAppendBoundary.store(
-			readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed);
+			readTransactionLogAppendBoundaryMarker(this->path), std::memory_order_relaxed
+		);
 	} catch (const TransactionLogAppendBoundaryException&) {
 		// A marker whose segment is gone belongs to a generation this reader
 		// cannot see; anything else is a marker it must not read past.
@@ -359,17 +367,20 @@ void TransactionLogFile::persistAppendBoundaryRetirement() {
 		// process (invariant 19). A reader has nothing to retire — it never
 		// appends — so reaching here is a caller bug, not a recoverable state.
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Cannot retire a read-only transaction log segment: " + this->path.string());
+			"Cannot retire a read-only transaction log segment: " + this->path.string()
+		);
 	}
 	if (!this->appendBoundaryMarkerEnabled) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
 			"Cannot persist append-boundary retirement for unmanaged transaction log: " +
-			this->path.string());
+			this->path.string()
+		);
 	}
 	uint32_t boundary = this->size.load(std::memory_order_relaxed);
 	if (boundary < TRANSACTION_LOG_FILE_HEADER_SIZE) {
 		throw rocksdb_js::TransactionLogAppendBoundaryException(
-			"Cannot persist invalid transaction log append boundary for: " + this->path.string());
+			"Cannot persist invalid transaction log append boundary for: " + this->path.string()
+		);
 	}
 	this->writeAppendBoundaryMarker(boundary);
 	this->retiredAppendBoundary.store(boundary, std::memory_order_relaxed);
@@ -450,7 +461,8 @@ TransactionLogFile::MaxEntryScan TransactionLogFile::scanMaxEntryTimestamp(
 		this->path,
 		this->retiredAppendBoundary.load(std::memory_order_relaxed),
 		plausibleBound,
-		deadline);
+		deadline
+	);
 
 	MaxEntryScan result;
 	result.maxTimestamp = scan.maxTimestamp;
@@ -499,7 +511,8 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 	try {
 		scan = this->scanRecoveryLocked(
 			std::numeric_limits<double>::infinity(),
-			std::chrono::steady_clock::now() + transactionLogRecoveryScanBudget());
+			std::chrono::steady_clock::now() + transactionLogRecoveryScanBudget()
+		);
 	} catch (const DBException& error) {
 		throw DBException(std::string(error.what()) + ": " + this->path.string());
 	}
@@ -517,7 +530,8 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 				if (!this->truncateFile(scan.validEnd)) {
 					throw DBException(
 						"Failed to durably normalize zero-padded transaction log before append: " +
-						this->path.string());
+						this->path.string()
+					);
 				}
 				this->size.store(scan.validEnd, std::memory_order_relaxed);
 				if (this->lastFlushedSize > scan.validEnd) {
@@ -538,12 +552,15 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 			char marker[sizeof(double)];
 			if (!this->readBytes(scan.validEnd, marker, sizeof(marker))) {
 				throw DBException(
-					"Failed to reread transaction-log recovery break: " + this->path.string());
+					"Failed to reread transaction-log recovery break: " + this->path.string()
+				);
 			}
 			if (readDoubleBE(marker) == 0) {
 				throw DBException(
 					"Cannot prove that bytes after a transaction-log end marker are zero; "
-					"refusing writable open before append: " + this->path.string());
+					"refusing writable open before append: " +
+					this->path.string()
+				);
 			}
 			// Leave the file intact: entries are still framed after the break, so
 			// truncating would discard committed/replicated transactions. Surface
@@ -557,7 +574,7 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 				<< " has a framing break at offset " << std::hex << scan.validEnd << std::dec
 				<< " with " << (fileSize - scan.validEnd)
 				<< " byte(s) of further data; leaving it intact to avoid discarding committed entries. "
-					"Reads past this point will fail until the file is repaired.";
+				   "Reads past this point will fail until the file is repaired.";
 			DEBUG_LOG("%p TransactionLogFile::recoverTail WARNING: %s\n", this, msg.str().c_str());
 			emitGlobalEvent("log.warn", ListenerData::fromStrings({ msg.str() }));
 
@@ -569,7 +586,8 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 				"Timed out proving transaction-log recovery before append "
 				"(ROCKSDB_JS_TRANSACTION_LOG_RECOVERY_SCAN_MS=" +
 				std::to_string(transactionLogRecoveryScanBudget().count()) + "ms): " +
-				this->path.string());
+				this->path.string()
+			);
 
 		case RecoveryScan::Kind::TruncateTail:
 			if (scan.validEnd >= fileSize) {
@@ -640,7 +658,8 @@ void TransactionLogFile::recoverTail(uint32_t protectedPosition) {
 }
 
 uint32_t TransactionLogFile::unclosedTransactionBoundary(
-	const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition) {
+	const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition
+) {
 	uint32_t boundary = scan.lastCompleteTransactionEnd;
 	if (entriesEnd <= boundary) {
 		return entriesEnd; // the file ends on a transaction boundary
@@ -682,7 +701,8 @@ uint32_t TransactionLogFile::unclosedTransactionBoundary(
 }
 
 void TransactionLogFile::discardUnclosedTransaction(
-	const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition) {
+	const RecoveryScan& scan, uint32_t entriesEnd, uint32_t protectedPosition
+) {
 	uint32_t boundary = this->unclosedTransactionBoundary(scan, entriesEnd, protectedPosition);
 	if (boundary >= entriesEnd) {
 		return;
@@ -799,8 +819,7 @@ uint32_t TransactionLogFile::countEntries() const {
 	}
 }
 
-uint32_t TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize,
-	double latestTimestamp) {
+uint32_t TransactionLogFile::writeEntries(TransactionLogEntryBatch& batch, const uint32_t maxFileSize, double latestTimestamp) {
 	std::lock_guard<std::mutex> fileLock(this->fileMutex);
 	if (!this->isOpen()) {
 		try {
@@ -849,7 +868,8 @@ uint32_t TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, con
 		DEBUG_LOG("%p TransactionLogFile::writeEntriesV1 Append boundary lost, refusing write: %s\n",
 			this, this->path.string().c_str());
 		throw rocksdb_js::DBException(
-			"Transaction log segment has a retired append boundary: " + this->path.string());
+			"Transaction log segment has a retired append boundary: " + this->path.string()
+		);
 	}
 
 	uint64_t totalSizeToWrite = 0;
@@ -900,7 +920,7 @@ uint32_t TransactionLogFile::writeEntriesV1(TransactionLogEntryBatch& batch, con
 		}
 
 		// add the entry data to the iovecs
-		iovecs[iovecsIndex++] = {data, entry->size};
+		iovecs[iovecsIndex++] = { data, entry->size };
 		attemptedBytes += entry->size;
 
 		++batch.currentEntryIndex;
@@ -970,7 +990,8 @@ std::shared_ptr<MemoryMap> TransactionLogFile::getMemoryMap(uint32_t fileSize, b
 	auto map = this->getMemoryMapLocked(fileSize, isCurrent);
 	if (map) {
 		this->readerCapacity = this->readerCapacity > 0
-			? std::min(this->readerCapacity, map->fileSize) : map->fileSize;
+			? std::min(this->readerCapacity, map->fileSize)
+			: map->fileSize;
 	}
 	return map;
 }
@@ -1004,7 +1025,8 @@ void TransactionLogFile::publishReadableExtentLocked() {
  *         header timestamp, or 0xFFFFFFFF if it follows every entry in this log file
  */
 uint32_t TransactionLogFile::findPositionByTimestamp(
-	double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld, TimestampSpan* span) {
+	double timestamp, uint32_t mapSize, bool isCurrent, bool fileMutexHeld, TimestampSpan* span
+) {
 	DEBUG_LOG("%p TransactionLogFile::findPositionByTimestamp Finding position for timestamp=%f, mapSize=%u\n", this, timestamp, mapSize);
 
 	// getMemoryMapLocked() (re)assigns this->memoryMap and so must run under
@@ -1045,7 +1067,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 	std::unique_lock<std::mutex> indexLock(this->indexMutex);
 
 	// we use our memory maps for fast access to the data
-	char* mappedFile = (char*) memoryMap->map;
+	char* mappedFile = (char*)memoryMap->map;
 	// We begin by indexing the file, so we can use fast ordered std::map access O(log n). We only need to index the file
 	// that hasn't been indexed yet, so we start at the last indexed position. Note that there may be a slight benefit
 	// to using an ordered vector with binary search for faster lookups, but std::map is simpler for now is very close in performance
@@ -1066,7 +1088,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 		// back into the header itself.
 		if (TRANSACTION_LOG_FILE_TIMESTAMP_POSITION == this->lastIndexedPosition) {
 			// specifically record the log file timestamp as the first entry with a position of zero
-			positionByTimestampIndex.insert({readDoubleBE(mappedFile + this->lastIndexedPosition), 0});
+			positionByTimestampIndex.insert({ readDoubleBE(mappedFile + this->lastIndexedPosition), 0 });
 			this->lastIndexedPosition = TRANSACTION_LOG_FILE_HEADER_SIZE; // move to the first transaction entry
 			continue;
 		}
@@ -1117,7 +1139,8 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 			// A chain landing on the end of a short map lands on an arbitrary cut, not on the
 			// end of the data, so only the frame-run signal is trustworthy there.
 			uint32_t resume = findFramingResumeOffset(
-				mappedFile, searchable, this->lastIndexedPosition + 1, searchedWholeExtent);
+				mappedFile, searchable, this->lastIndexedPosition + 1, searchedWholeExtent
+			);
 			if (resume != 0) {
 				this->lastIndexedPosition = resume;
 				this->resyncSearchedExtent = 0;
@@ -1147,7 +1170,7 @@ uint32_t TransactionLogFile::findPositionByTimestamp(
 		uint32_t entryEnd = this->lastIndexedPosition + TRANSACTION_LOG_ENTRY_HEADER_SIZE + entryLength;
 		if (entryTimestamp > runningMaximum) {
 			// insert with a hint to go at the end (constant time?)
-			positionByTimestampIndex.insert(positionByTimestampIndex.end(), {entryTimestamp, this->lastIndexedPosition});
+			positionByTimestampIndex.insert(positionByTimestampIndex.end(), { entryTimestamp, this->lastIndexedPosition });
 		} else if (entryTimestamp < runningMaximum) {
 			// Entries equal to the maximum (the rest of a batch) need no record: the next maximum
 			// key's position already bounds them.
@@ -1254,7 +1277,8 @@ uint64_t TransactionLogFile::markEntryAborted(uint32_t offset, double expectedTi
 }
 
 void TransactionLogFile::checkAbortMarkerHeader(
-	const char* header, uint32_t offset, uint32_t extent, double expectedTimestamp) {
+	const char* header, uint32_t offset, uint32_t extent, double expectedTimestamp
+) {
 	double timestamp = readDoubleBE(header);
 	uint32_t length = readUint32BE(header + 8);
 	if (timestamp != expectedTimestamp ||

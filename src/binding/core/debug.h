@@ -12,39 +12,46 @@ void debugLog(const bool showTimestamp, const char* msg, ...);
 
 #ifdef DEBUG
 	#define DEBUG_LOG(msg, ...) \
-		rocksdb_js::debugLog(true, msg, ##__VA_ARGS__)
+	rocksdb_js::debugLog(true, msg, ##__VA_ARGS__)
 	#define DEBUG_LOG_KEY(key) \
-		do { \
-			bool isPrintable = true; \
-			for (size_t i = 0; i < key.size() && isPrintable; i++) { \
-				unsigned char c = key.data()[i]; \
-				isPrintable = (c >= 32 && c <= 126); \
+	do { \
+		bool isPrintable = true; \
+		for (size_t i = 0; i < key.size() && isPrintable; i++) { \
+			unsigned char c = key.data()[i]; \
+			isPrintable = (c >= 32 && c <= 126); \
+		} \
+		if (isPrintable && key.size() > 0) { \
+			::fprintf(stderr, " \"%.*s\"", (int)key.size(), key.data()); \
+		} else { \
+			for (size_t i = 0; i < key.size(); i++) { \
+				::fprintf(stderr, " %02x", (unsigned char)key.data()[i]); \
 			} \
-			if (isPrintable && key.size() > 0) { \
-				::fprintf(stderr, " \"%.*s\"", (int)key.size(), key.data()); \
-			} else { \
-				for (size_t i = 0; i < key.size(); i++) { \
-					::fprintf(stderr, " %02x", (unsigned char)key.data()[i]); \
-				} \
-			} \
-		} while (0)
+		} \
+	} while (0)
 	#define DEBUG_LOG_KEY_LN(key) \
-		do { \
-			DEBUG_LOG_KEY(key); \
-			::fprintf(stderr, "\n"); \
-		} while (0)
+	do { \
+		DEBUG_LOG_KEY(key); \
+		::fprintf(stderr, "\n"); \
+	} while (0)
 	#define DEBUG_LOG_MSG(msg, ...) \
-		rocksdb_js::debugLog(false, msg, ##__VA_ARGS__)
+	rocksdb_js::debugLog(false, msg, ##__VA_ARGS__)
 #else
 	// Release macros keep their arguments referenced but never evaluate them, so a
 	// variable used only for logging (e.g. a caught exception) is not reported as
 	// unused (MSVC C4101).
 	#define DEBUG_LOG(msg, ...) \
-		do { if (false) { rocksdb_js::debugLog(true, msg, ##__VA_ARGS__); } } while (0)
-	#define DEBUG_LOG_KEY(key) do { if (false) { (void)(key); } } while (0)
+	do { \
+		if (false) { rocksdb_js::debugLog(true, msg, ##__VA_ARGS__); } \
+	} while (0)
+	#define DEBUG_LOG_KEY(key) \
+	do { \
+		if (false) { (void)(key); } \
+	} while (0)
 	#define DEBUG_LOG_KEY_LN(key) DEBUG_LOG_KEY(key)
 	#define DEBUG_LOG_MSG(msg, ...) \
-		do { if (false) { rocksdb_js::debugLog(false, msg, ##__VA_ARGS__); } } while (0)
+	do { \
+		if (false) { rocksdb_js::debugLog(false, msg, ##__VA_ARGS__); } \
+	} while (0)
 #endif
 
 #endif

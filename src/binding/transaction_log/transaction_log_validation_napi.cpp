@@ -146,7 +146,8 @@ napi_value ValidateTransactionLog(napi_env env, napi_callback_info info) {
 					napi_value message;
 					napi_value error;
 					NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(
-						env, state->errorMessage.c_str(), state->errorMessage.size(), &message));
+						env, state->errorMessage.c_str(), state->errorMessage.size(), &message
+					));
 					NAPI_STATUS_THROWS_VOID(::napi_create_error(env, nullptr, message, &error));
 					state->callReject(error);
 				}
@@ -167,7 +168,8 @@ napi_value ValidateTransactionLog(napi_env env, napi_callback_info info) {
 void initTransactionLogValidationExports(napi_env env, napi_value exports) {
 	napi_value fn;
 	NAPI_STATUS_THROWS_VOID(::napi_create_function(
-		env, "validateTransactionLog", NAPI_AUTO_LENGTH, ValidateTransactionLog, nullptr, &fn));
+		env, "validateTransactionLog", NAPI_AUTO_LENGTH, ValidateTransactionLog, nullptr, &fn
+	));
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "validateTransactionLog", fn));
 }
 
