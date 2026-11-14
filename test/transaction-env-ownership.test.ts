@@ -10,6 +10,8 @@ type Results = { foreign: Record<string, Outcome>; local: Record<string, Outcome
 const ENTRY_POINTS = [
 	'get',
 	'getSync',
+	'getMany',
+	'getManySync',
 	'getCount',
 	'putSync',
 	'removeSync',

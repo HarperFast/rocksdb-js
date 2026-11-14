@@ -967,6 +967,51 @@ if (result === constants.FRESH_VERSION_FLAG) {
 Synchronous version of `get()`. Like `get()`, this can return the `FRESH_VERSION_FLAG` sentinel when
 the `expectedVersion` option is used.
 
+### `db.getMany(keys: Key[], options?: { transaction?: Transaction }): MaybePromise<any[]>`
+
+Retrieves the values for several keys with one RocksDB `MultiGet`, in key order, with `undefined`
+for a key that does not exist. Duplicate keys are allowed. Like `get()`, it returns synchronously
+when every key is in the memtable or block cache; otherwise it returns one promise for the whole
+batch, read on a single worker thread.
+
+```typescript
+const [product, variant, missing] = await db.getMany(['product:1', 'variant:7', 'nope']);
+```
+
+Passing a `transaction` (or calling `txn.getMany()`) reads through the transaction's snapshot and
+its own uncommitted writes, so the result is exactly what calling `get()` for each key would return.
+`getMany()` does not take `GetOptions`: it does not consult or populate the
+[Verification Table](#verification-table).
+
+Batching saves the per-key binding call (and, on a cache miss, the per-key async work) and lets
+RocksDB share work across the lookups. Like `get()`, a cached batch whose values fit the 64 KiB
+shared value buffer is decoded from it, without allocating. In our measurements, with the default
+msgpack encoding, a batch of two cost about the same per key as `getSync()` (6% more with a custom
+decoder) and larger batches cost less; a batch of one takes the single-key path. See [batch-read measurements and cost accounting](docs/performance/multi-get.md),
+and benchmark your own workload with `benchmark/multi-get.mts`.
+
+A custom value decoder must not read the database while it decodes: the rest of the batch is still
+in the shared buffer that read would overwrite, so `getMany()` throws if one does.
+
+### `db.getManySync(keys: Key[], options?: { transaction?: Transaction }): any[]`
+
+Synchronous version of `getMany()`.
+
+### `db.getManyBinary(keys: Key[], options?: { transaction?: Transaction }): MaybePromise<(Buffer | undefined)[]>`
+
+Like `getMany()`, but returns the raw value buffers without decoding. The buffers of one batch share
+a single allocation and stay valid after later reads.
+
+### `db.getManyBinarySync(keys: Key[], options?: { transaction?: Transaction }): (Buffer | undefined)[]`
+
+Synchronous version of `getManyBinary()`: reads every key on the calling thread, including any not
+in the memtable or block cache, and returns the raw value buffers in key order, with `undefined` for
+a key that does not exist.
+
+```typescript
+const [product, variant] = db.getManyBinarySync(['product:1', 'variant:7']);
+```
+
 ### `db.getEstimatedKeyCount(): number`
 
 Retrieves the estimated number of keys in the database. This is an alias for

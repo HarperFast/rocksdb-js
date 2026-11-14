@@ -29,15 +29,24 @@ Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASa
 `max_free_fill_size` faults on the unfixed code) and `test/fixtures/fork-abort-get-destroy.mts`
 (segfaults without the guard or the owning-descriptor pin, no sanitizer needed).
 
-Other owning-thread mutations still run while an admitted get may be inside `txn->Get()`: commit
-(`Clear()` after the write), `putSync`/`removeSync` (batch append), and `resetTransaction()`
-(deletes and recreates `txn` on a coordinated retry). Draining in each would block `putSync` on
-unrelated disk reads; the candidate fix is for the worker to read through the database with a
-pinned transaction snapshot. That the key is absent from the batch when the worker is queued is
-established by the caller: the async get's only caller, `Store.get()`, reaches it after a
-cache-tier `getSync()` in the same synchronous turn, which consulted the batch and did not resolve
-the key. The async get's setup does not consult the batch; its worker's `txn->Get()` still does,
-which is the race above.
+Other owning-thread mutations still run while an admitted get may be inside `txn->Get()`:
+commit (`Clear()` after the write),
+`putSync`/`removeSync` (batch append), and `resetTransaction()` (deletes and recreates `txn` on a
+coordinated retry). Draining in each would block `putSync` on unrelated disk reads; the candidate
+fix is for the worker to read through the database with a pinned transaction snapshot. That the key
+is absent from the batch when the worker is queued is established by the caller: the async get's
+only caller, `Store.get()`, reaches it after a cache-tier `getSync()` in the same synchronous turn,
+which consulted the batch and did not resolve the key. The async single-key setup does not consult
+the batch; its worker's `txn->Get()` still does, which is the race above.
+
+`TransactionHandle::multiGet()` captures staged writes, deletes and cache hits on the owning thread
+with a cache-tier `MultiGet`, retaining their `PinnableSlice`s and a shared transaction snapshot
+(`GetTimestampedSnapshot()`). Its worker reads only unresolved keys through `DB::MultiGet`, so it
+never accesses a transaction that a write, commit or retry may mutate or reset. The shared snapshot
+survives a reset. With snapshots disabled, unresolved keys read the database's current state.
+Values, the snapshot and the column descriptor are released before signaling execute completion,
+so teardown cannot destroy their database first. The existing transaction async registration still
+lets abort and orphan cleanup cancel and drain the read.
 
 # Write-intent refusal
 

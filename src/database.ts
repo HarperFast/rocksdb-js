@@ -1158,7 +1158,9 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		if (store.decoder?.readKey && !store.decoder.decode) {
 			store.decoder.decode = (buffer: BufferWithDataView): any => {
 				if (store.decoder?.readKey) {
-					return store.decoder.readKey(buffer, 0, buffer.end);
+					// Only the shared value buffer carries `end`; a buffer of its own (getBinary(),
+					// getMany()) is exactly the value.
+					return store.decoder.readKey(buffer, 0, buffer.end ?? buffer.length);
 				}
 				return buffer;
 			};
