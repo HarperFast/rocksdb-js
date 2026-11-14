@@ -6,3 +6,6 @@
 
 # chore(fmt): apply clang-format to C/C++ changed on main since the reformat (#317)
 ceb019f730ba50a3f4fc284642d2e49b3bed1c90
+
+# chore(fmt): apply clang-format to C/C++ changed on main since the last merge (#317)
+e21fa42d61656b123163adaf9a886f29af99b0e8
