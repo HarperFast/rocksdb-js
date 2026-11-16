@@ -174,6 +174,13 @@ inline std::atomic<int>& clearDeleteDelayMsFlag() {
 	return delayMs;
 }
 
+// Delays TransactionLog::GetMemoryMapOfFile() after it takes its mapping reference and before it
+// creates the JS buffer, so a worker terminate() lands in between and the create fails.
+inline std::atomic<int>& memoryMapBufferDelayMsFlag() {
+	static std::atomic<int> delayMs{ 0 };
+	return delayMs;
+}
+
 // Number of transaction-log abort-marker syncs to fail after the marker is written (a count). Read
 // on the commit and teardown threads that write markers, so snapshotted like the fault flags above.
 inline std::atomic<int>& abortMarkFailureFlag() {
@@ -303,6 +310,9 @@ inline void initializeTestSeams() {
 		);
 		clearDeleteDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_CLEAR_DELAY_MS"), std::memory_order_relaxed
+		);
+		memoryMapBufferDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_MEMORY_MAP_BUFFER_DELAY_MS"), std::memory_order_relaxed
 		);
 	});
 }
