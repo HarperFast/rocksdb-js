@@ -156,6 +156,22 @@ if (!isMainThread) {
 			throw new Error(`Restart would replay ${replayed.length} flushed entries`);
 		reopened.close();
 		report({ mode });
+	} else if (mode === 'listenerPin') {
+		// Close the last handle while a background flush is inside its (delayed)
+		// OnFlushCompleted. The listener must not hold a descriptor reference
+		// there: the close would see it, skip its purge, and leave the database
+		// open with no handles.
+		const db = RocksDatabase.open(path, { writeBufferSize: 64 * 1024 });
+		const value = 'x'.repeat(1024);
+		for (let i = 0; i < 256; i++) db.putSync(`key-${i}`, value);
+		await delay(200);
+		if ((db.getDBIntProperty('rocksdb.num-running-flushes') ?? 0) < 1)
+			throw new Error('No flush is inside the delayed listener; this case proves nothing');
+		db.close();
+		await delay(2_000);
+		const left = getRegistryStatus().filter((entry) => entry.path === path);
+		if (left.length) throw new Error(`Closed database left registered: ${JSON.stringify(left)}`);
+		report({ mode });
 	} else if (mode === 'destroyStalled') {
 		// Hold the database in a write stall behind the slowed compaction, then
 		// destroy it with deletion failing (ROCKSDB_JS_DESTROY_FAILURE): the

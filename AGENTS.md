@@ -356,10 +356,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   compaction runs (`test/fixtures/fork-close-compaction.mts`). RocksDB still checks for shutdown
   between keys, so the compaction stays abortable. The filter is installed only while this is set.
   Snapshotted in `initializeTestSeams()`
-- `ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS` - Test-only: delay at the top of
-  `TransactionLogEventListener::OnFlushCompleted`, on the RocksDB flush thread, so a close can start
-  while a flush's transaction-log position update is still pending. Snapshotted in
-  `initializeTestSeams()`
+- `ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS` - Test-only: delay in
+  `TransactionLogEventListener::OnFlushCompleted`, after its descriptor lookup, on the RocksDB flush
+  thread, so a close can start while a flush's transaction-log position update is still pending.
+  Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_CLOSE_FAILURE_AFTER_CANCEL` - Test-only: a one-shot close failure (a **flag**) injected
   right after `finishClose()` cancels background work, so the `shutdown()` retry must finish without
   flushing again. Snapshotted in `initializeTestSeams()`
@@ -534,7 +534,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). The per-env cleanup hooks
    pin every descriptor the same way (`DBRegistry::ForEachDescriptor`) while other workers close
    theirs, so the hook ends with `DBRegistry::PurgeUnreferenced()` once its last pinning step has released
-   them (HarperFast/rocksdb-js#1074). Once `beginClose()` wins,
+   them (HarperFast/rocksdb-js#1074). A pin that cannot retry must not be taken at all: the RocksDB
+   event listener runs on flush and write threads that `finishClose()` waits for, so its callbacks
+   reach the descriptor through `DBEventListenerState`'s raw pointer under that state's mutex, which
+   `~DBDescriptor` detaches first. A `weak_ptr::lock()` there skipped the last-handle purge whenever
+   a close landed inside a flush callback, leaving the database open with no handles until exit
+   (`listenerPin` in `test/fixtures/fork-close-compaction.mts`). Once `beginClose()` wins,
    `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
    path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
    immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
