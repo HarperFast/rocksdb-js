@@ -9,13 +9,13 @@ importers:
   .:
     dependencies:
       '@harperfast/extended-iterable':
-        specifier: ^1.0.3
+        specifier: ^1.0.5
         version: 1.0.5
       msgpackr:
-        specifier: ^2.0.6
+        specifier: ^2.1.4
         version: 2.1.4
       ordered-binary:
-        specifier: ^1.6.1
+        specifier: ^1.6.3
         version: 1.6.3
     devDependencies:
       '@rollup/plugin-replace':
