@@ -1,7 +1,8 @@
 import { RocksDatabase } from '../src/index.ts';
 import { generateDBPath } from './lib/util.ts';
-import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { type ChildProcess, spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -43,6 +44,7 @@ function cli(args: string[], options: { cwd?: string; input?: string } = {}): Pr
 }
 
 const tempPaths: string[] = [];
+const liveChildren = new Set<ChildProcess>();
 
 function tempDBPath(): string {
 	const path = generateDBPath();
@@ -62,7 +64,15 @@ function seed(dbPath: string, entries: Record<string, unknown>, name?: string) {
 describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.bun))(
 	'CLI one-shot commands',
 	() => {
-		afterEach(() => {
+		afterEach(async () => {
+			for (const child of liveChildren) {
+				if (child.exitCode === null && child.signalCode === null) {
+					const closed = once(child, 'close');
+					child.kill('SIGKILL');
+					await closed;
+				}
+			}
+			liveChildren.clear();
 			for (const path of tempPaths) rmSync(path, { force: true, recursive: true, maxRetries: 3 });
 			tempPaths.length = 0;
 		});
@@ -277,6 +287,74 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(JSON.parse(result.stderr).error).toBe('1 row(s) could not be read');
 		});
 
+		it('reports unreadable first, adjacent and last rows of a query in place', async () => {
+			const dbPath = tempDBPath();
+			seed(dbPath, { b: 'two', e: 'five' });
+			const raw = RocksDatabase.open(dbPath, { encoding: 'binary' });
+			try {
+				for (const key of ['a', 'c', 'd', 'f']) raw.putSync(key, Buffer.from([0xd9, 0x05]));
+			} finally {
+				raw.close();
+			}
+
+			let result = await cli([dbPath, 'query', '--json']);
+			expect(result.code).toBe(1);
+			const rows = JSON.parse(result.stdout);
+			expect(rows.map((row: { key: string }) => row.key)).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+			expect(rows.map((row: { error?: string }) => row.error === undefined)).toEqual([
+				false,
+				true,
+				false,
+				false,
+				true,
+				false,
+			]);
+			expect(rows[1].value).toBe('two');
+			expect(rows[4].value).toBe('five');
+			expect(JSON.parse(result.stderr).error).toBe('4 row(s) could not be read');
+
+			result = await cli([dbPath, 'query', 'b', 'e', '--json']);
+			expect(result.code).toBe(1);
+			expect(JSON.parse(result.stdout).map((row: { key: string }) => row.key)).toEqual([
+				'b',
+				'c',
+				'd',
+			]);
+		});
+
+		it('exits 0 when stdout closes mid-query', { timeout: 2 * CLI_TIMEOUT_MS }, async () => {
+			// The child's deadline is what is left of the test's, so it fires first.
+			const deadline = Date.now() + 2 * CLI_TIMEOUT_MS - 1000;
+			const dbPath = tempDBPath();
+			const db = RocksDatabase.open(dbPath);
+			try {
+				for (let i = 0; i < 20_000; i++) db.putSync(`key${i}`, 'x'.repeat(100));
+			} finally {
+				db.close();
+			}
+
+			const child = spawn(process.execPath, [cliPath, dbPath, 'query'], {
+				env: { ...process.env, NO_COLOR: '1' },
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+			liveChildren.add(child);
+			let stderr = '';
+			child.stderr.on('data', (chunk) => {
+				stderr += chunk.toString();
+			});
+			child.stdout.once('data', () => child.stdout.destroy());
+			let timedOut = false;
+			const timer = setTimeout(() => {
+				timedOut = true;
+				child.kill('SIGKILL');
+			}, deadline - Date.now());
+			const code = await new Promise((resolve) => child.on('close', resolve));
+			clearTimeout(timer);
+			expect(timedOut, `CLI timed out after stdout closed\n${stderr}`).toBe(false);
+			expect(stderr).toBe('');
+			expect(code).toBe(0);
+		});
+
 		it('uses the current directory when the first argument is a command', async () => {
 			const dbPath = tempDBPath();
 			seed(dbPath, { a: 'one' });
@@ -427,6 +505,38 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 
 			result = await cli([dbPath, 'backups', backupDir, 'restore', '1', '--readonly', '--yes']);
 			expect(result.code).toBe(2);
+		});
+
+		it('does not purge aged transaction logs when opening for a backup or restore', async () => {
+			const dbPath = tempDBPath();
+			const backupDir = tempDBPath();
+			const db = RocksDatabase.open(dbPath, { transactionLogMaxSize: 400 });
+			try {
+				const log = db.useLog('events');
+				for (let i = 0; i < 4; i++) {
+					await db.transaction(async (txn) => {
+						log.addEntry(Buffer.alloc(200, i), txn.id);
+						db.putSync(`k${i}`, i, { transaction: txn });
+					});
+				}
+			} finally {
+				db.close();
+			}
+			const segment = join(dbPath, 'transaction_logs', 'events', '1.txnlog');
+			expect(existsSync(join(dbPath, 'transaction_logs', 'events', '2.txnlog'))).toBe(true);
+			const aged = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+			utimesSync(segment, aged, aged);
+
+			expect((await cli([dbPath, 'backups', backupDir, 'backup'])).code).toBe(0);
+			expect(existsSync(segment)).toBe(true);
+
+			const result = await cli([dbPath, 'backups', backupDir, 'restore', '1']);
+			expect(result.code).toBe(1);
+			expect(result.stderr).toContain('Pass --yes to confirm');
+			expect(existsSync(segment)).toBe(true);
+
+			expect((await cli([dbPath, 'put', 'x', 'y'])).code).toBe(0);
+			expect(existsSync(segment)).toBe(false);
 		});
 	}
 );

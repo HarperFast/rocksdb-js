@@ -37,6 +37,14 @@ const COMMANDS = [
 		locks: ([, subcommand]) => subcommand === 'backup',
 		opens: ([, subcommand]) =>
 			subcommand === 'backup' || (subcommand === 'restore' && !isEmptyPath(dbPath)),
+		// Backup and restore open the database only for its lock, so that open must not purge
+		// aged transaction-log segments: a backup would miss them, and a declined restore would
+		// lose them. '0ms' disables retention (a numeric 0 reads as unset), and with it the age
+		// threshold must be 0 or a log write never returns (#1079).
+		openOptions: ([, subcommand]) =>
+			subcommand === 'backup' || subcommand === 'restore'
+				? { transactionLogRetention: '0ms', transactionLogMaxAgeThreshold: 0 }
+				: undefined,
 		validate: validateBackupsArgs,
 		run: backupsCommand,
 		print: printBackupsResult,
@@ -202,6 +210,7 @@ const COMMANDS = [
 		access: 'read',
 		run: verifyLogsCommand,
 		print: printVerifyLogsResult,
+		failed: (result) => !result.valid,
 	},
 ];
 
@@ -602,8 +611,8 @@ function closeAllDatabases() {
 	currentDB = null;
 }
 
-async function openDatabases(column, ifMissing) {
-	currentDB = RocksDatabase.open(dbPath, openOptions());
+async function openDatabases(column, ifMissing, extra) {
+	currentDB = RocksDatabase.open(dbPath, openOptions(extra));
 	dbs[currentDB.name] = currentDB;
 	if (!column || column === currentDB.name) return;
 	if (!currentDB.columns.includes(column)) {
@@ -613,7 +622,7 @@ async function openDatabases(column, ifMissing) {
 		}
 		await confirmOrCancel(`Create new column ${hl(column)}?`);
 	}
-	dbs[column] = RocksDatabase.open(dbPath, openOptions({ name: column }));
+	dbs[column] = RocksDatabase.open(dbPath, openOptions({ ...extra, name: column }));
 	currentDB = dbs[column];
 }
 
@@ -979,7 +988,6 @@ async function verifyLogsCommand([name]) {
 		stores.push({ name: storeName, ...result, elapsedMs });
 	}
 	const invalidStores = stores.filter((store) => !store.valid).length;
-	if (invalidStores > 0 && !interactive) process.exitCode = 1;
 	return { valid: invalidStores === 0, invalidStores, stores };
 }
 
@@ -1029,21 +1037,44 @@ async function putCommand([key, ...valueParts]) {
 	return { key, value };
 }
 
-// Each value is read with its own get() so one undecodable value is reported in place
-// rather than aborting the whole range.
+// An undecodable value throws out of the range without its key; get() reports it on its row.
 async function* queryCommand([start, end]) {
 	let unreadable = 0;
-	for await (const { key } of currentDB.getRange({ start, end, values: false })) {
-		try {
-			yield { key, value: await currentDB.get(key) };
-		} catch (error) {
-			unreadable++;
-			yield { key, error: String(error) };
+	let lastKey;
+	let rows = currentDB.getRange({ start, end })[Symbol.iterator]();
+	try {
+		while (true) {
+			let step;
+			try {
+				step = rows.next();
+			} catch (error) {
+				const resume =
+					lastKey === undefined ? { start, end } : { start: lastKey, exclusiveStart: true, end };
+				const [key] = currentDB.getKeys({ ...resume, limit: 1 });
+				if (key === undefined) throw error;
+				try {
+					await currentDB.get(key);
+				} catch (readError) {
+					unreadable++;
+					// Set now: an EPIPE exit later in the scan reads it.
+					if (!interactive) process.exitCode = 1;
+					lastKey = key;
+					rows.return();
+					rows = currentDB.getRange({ start: key, exclusiveStart: true, end })[Symbol.iterator]();
+					yield { key, error: String(readError) };
+					continue;
+				}
+				throw error;
+			}
+			if (step.done) break;
+			lastKey = step.value.key;
+			yield step.value;
 		}
+	} finally {
+		rows.return();
 	}
-	if (unreadable > 0 && !interactive) {
-		process.exitCode = 1;
-		if (argv.json) reportError(new CLIError(`${unreadable} row(s) could not be read`));
+	if (unreadable > 0 && !interactive && argv.json) {
+		reportError(new CLIError(`${unreadable} row(s) could not be read`));
 	}
 }
 
@@ -1179,7 +1210,9 @@ function assertUsage(def, args) {
 async function runCommand(def, args) {
 	assertUsage(def, args);
 	assertAllowed(def, resolveAccess(def, args));
-	await emitResult(def, await def.run(args));
+	const result = await def.run(args);
+	if (!interactive && def.failed?.(result)) process.exitCode = 1;
+	await emitResult(def, result);
 }
 
 function printHelp(log = console.log) {
@@ -1227,9 +1260,9 @@ function versionString() {
 	return `rocksdb.js CLI v${versions['rocksdb-js']} (RocksDB v${versions.rocksdb})`;
 }
 
-async function openOrExplain(ifMissing) {
+async function openOrExplain(ifMissing, extra) {
 	try {
-		await openDatabases(argv.column, ifMissing);
+		await openDatabases(argv.column, ifMissing, extra);
 	} catch (error) {
 		if (error?.code !== 'ERR_DATABASE_LOCKED') throw error;
 		throw Object.assign(
@@ -1257,7 +1290,7 @@ async function runOnce() {
 	if (def.opens ? def.opens(commandArgs) : access !== 'none') {
 		openReadOnly = argv.readonly || (access === 'read' && !def.locks?.(commandArgs));
 		if (!(await ensureDatabaseExists(Boolean(def.creates)))) throw new CLIError('Cancelled');
-		await openOrExplain(def.creates ? 'create' : 'error');
+		await openOrExplain(def.creates ? 'create' : 'error', def.openOptions?.(commandArgs));
 	}
 	await runCommand(def, commandArgs);
 }
@@ -1303,7 +1336,14 @@ async function main() {
 	// `rocksdb-js db query | head` closes the pipe early; that is not a failure.
 	stdout.on('error', (error) => {
 		if (error.code !== 'EPIPE') throw error;
-		process.exit(process.exitCode ?? 0);
+		let exitCode = process.exitCode ?? 0;
+		try {
+			closeAllDatabases();
+		} catch (closeError) {
+			reportError(closeError);
+			exitCode = 1;
+		}
+		process.exit(exitCode);
 	});
 
 	if (argv.help) {
