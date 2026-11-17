@@ -123,6 +123,12 @@ inline std::atomic<int>& flushCompletedDelayMsFlag() {
 	return delayMs;
 }
 
+// A count because different flush jobs can be delayed concurrently.
+inline std::atomic<int>& flushCompletedDelayActive() {
+	static std::atomic<int> active{ 0 };
+	return active;
+}
+
 // One-shot close failure injected after finishClose() has cancelled background
 // work, so a retry has to complete without flushing again.
 inline std::atomic<bool>& closeFailureAfterCancelFlag() {

@@ -195,6 +195,17 @@ napi_value IsTransactionCloseDelayedForTesting(napi_env env, napi_callback_info 
 	return result;
 }
 
+napi_value IsFlushCompletedDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(
+		env,
+		flushCompletedDelayActive().load(std::memory_order_acquire) > 0,
+		&result
+	));
+	return result;
+}
+
 napi_value IsTransactionCommitExecuteDelayedForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	napi_value result;
@@ -655,6 +666,10 @@ NAPI_MODULE_INIT() {
 		"isTransactionCloseDelayedForTesting",
 		isTransactionCloseDelayedFn
 	));
+
+	napi_value isFlushCompletedDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "isFlushCompletedDelayedForTesting", NAPI_AUTO_LENGTH, IsFlushCompletedDelayedForTesting, nullptr, &isFlushCompletedDelayedFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isFlushCompletedDelayedForTesting", isFlushCompletedDelayedFn));
 
 	napi_value isCommitAdmissionDelayedFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCommitAdmissionDelayedForTesting", NAPI_AUTO_LENGTH, IsTransactionCommitAdmissionDelayedForTesting, nullptr, &isCommitAdmissionDelayedFn));

@@ -1262,6 +1262,10 @@ export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
 export const isTransactionCloseDelayedForTesting: () => boolean =
 	binding.isTransactionCloseDelayedForTesting;
 
+/** Reports whether a flush callback is delayed after its descriptor lookup. */
+export const isFlushCompletedDelayedForTesting: () => boolean =
+	binding.isFlushCompletedDelayedForTesting;
+
 export const setTransactionCommitAdmissionDelayForTesting: (delayMs: number) => void =
 	binding.setTransactionCommitAdmissionDelayForTesting;
 
