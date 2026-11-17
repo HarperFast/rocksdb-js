@@ -2,6 +2,7 @@
 #define __DB_HANDLE_H__
 
 #include <atomic>
+#include <cassert>
 #include <memory>
 #include <vector>
 #include <utility>
@@ -33,9 +34,28 @@ struct DBDescriptor;
  */
 struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_from_this<DBHandle> {
 	/**
-	 * The RocksDB database descriptor
+	 * The RocksDB database descriptor. Assigned and reset only on `ownerThreadId`; a foreign
+	 * `close()` leaves it set.
 	 */
 	std::shared_ptr<DBDescriptor> descriptor;
+
+	/**
+	 * `descriptor`, for a caller that relies on the owner-thread rule above to read it without
+	 * holding anything that stops `close()` from resetting it.
+	 */
+	const std::shared_ptr<DBDescriptor>& ownerDescriptor() const {
+		this->assertOwnerThread();
+		return this->descriptor;
+	}
+
+	/**
+	 * Debug builds only. Nothing defines `NDEBUG`, so a bare `assert` would abort release builds too.
+	 */
+	void assertOwnerThread() const {
+#ifdef DEBUG
+		assert(std::this_thread::get_id() == this->ownerThreadId && "DBHandle::descriptor used off its owner thread");
+#endif
+	}
 
 	// Accessed only by this handle's env thread; reset on reopen, never from
 	// cross-env close. The registry owns TSFN release independently of this cache.
