@@ -113,6 +113,7 @@ describe('Destroy', () => {
 		const cwd = `${dbPath}-cwd`;
 		mkdirSync(cwd, { recursive: true });
 		writeFileSync(join(cwd, 'sentinel.txt'), 'keep me');
+		let childMayBeRunning = false;
 		try {
 			const { code, stdout, stderr, timedOut } = await runChild(
 				process.execPath,
@@ -123,8 +124,13 @@ describe('Destroy', () => {
 			expect(timedOut, output).toBe(false);
 			expect(code, output).toBe(0);
 			expect(existsSync(join(cwd, 'sentinel.txt'))).toBe(true);
+		} catch (error) {
+			childMayBeRunning = error instanceof ChildCloseTimeoutError;
+			throw error;
 		} finally {
-			rmSync(cwd, { force: true, recursive: true });
+			if (!childMayBeRunning) {
+				rmSync(cwd, { force: true, recursive: true });
+			}
 		}
 	});
 
