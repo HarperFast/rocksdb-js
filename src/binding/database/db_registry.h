@@ -266,8 +266,9 @@ public:
 
 /**
  * Drops an async operation's descriptor pin, then retries the registry purge that pin may have
- * made a racing close skip (HarperFast/rocksdb-js#672). When copying the key throws, the pin is
- * dropped without the retry, since the callers are destructors and completions that must not throw.
+ * made a racing close skip (HarperFast/rocksdb-js#672). The callers are destructors and completions,
+ * so when copying the key throws, the pin is dropped without the retry and the database stays open
+ * until shutdown.
  */
 inline void releaseDescriptorPin(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
 	if (!descriptor) {

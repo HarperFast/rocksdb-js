@@ -166,7 +166,7 @@ static napi_value queueBackupWork(
 	NAPI_STATUS_THROWS(::napi_create_async_work(env, nullptr, name, execute, complete, state, &state->asyncWork));
 
 	pending.release();
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	bool admitted = false;
 	if (registerWork && state->handle) {
 		if (!admitAsyncWorkOrReject(env, state->handle.get(), state, "Database is closing")) {
@@ -403,8 +403,7 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		std::move(createOptions),
 		std::move(appMetadata)
 	);
-	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pending(env, state);
 	state->backupTransactionLogs = backupTransactionLogs;
 	state->checkDiskSpace = checkDiskSpace;

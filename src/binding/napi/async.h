@@ -74,7 +74,6 @@ struct BaseAsyncState {
 		}
 	}
 
-	// Both references are kept until the call, so a failure before it can still reject.
 	void callResolve(napi_value result = nullptr) {
 		if (this->resolveRef == nullptr) {
 			DEBUG_LOG("%p BaseAsyncState::callResolve resolveRef is null\n", this);

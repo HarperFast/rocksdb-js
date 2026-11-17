@@ -83,8 +83,7 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 	));
 
 	auto state = new AsyncClearState(env, *dbHandle, failureMsg);
-	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pending(env, state);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
@@ -133,9 +132,8 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 	));
 
 	// Register the async work with the database handle
-	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
 	pending.release();
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();
 	}
@@ -343,8 +341,7 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	}
 
 	auto state = new AsyncCompactState(env, *dbHandle);
-	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pending(env, state);
 	state->startKey = std::move(startKey);
 	state->endKey = std::move(endKey);
@@ -417,9 +414,8 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
 	pending.release();
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();
 	}
@@ -1009,8 +1005,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	));
 
 	auto state = new AsyncFlushState(env, *dbHandle, allowWriteStall);
-	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pending(env, state);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
@@ -1056,9 +1051,8 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
 	pending.release();
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();
 	}
@@ -1296,8 +1290,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	));
 
 	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key));
-	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pending(env, state);
 	state->vtSlot = vtSlot;
 	state->vtObserved = vtObserved;
@@ -1356,9 +1349,8 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	// performs at the end of the execute handler. Without it the count goes negative,
 	// so close() does not wait for this read and the worker dereferences a descriptor
 	// that close() has already reset.
-	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
 	pending.release();
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		napi_value returnStatus;
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));

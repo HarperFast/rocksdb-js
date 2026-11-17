@@ -121,8 +121,7 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		descriptor,
 		std::move(targetPath)
 	);
-	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pending(env, state);
 
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
@@ -195,9 +194,8 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
-	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
 	pending.release();
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();
 	}

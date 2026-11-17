@@ -681,7 +681,7 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 
 	auto state = new AsyncBackupStreamState(env, *dbHandle, descriptor, flushBeforeBackup);
 	// Owns the state until the tsfn shares it; rejectAndCleanup() below takes over from there.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pending(env, state);
 	state->backupTransactionLogs = backupTransactionLogs;
 
@@ -768,7 +768,7 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 		rejectAndCleanup(false, "Database is closing");
 		NAPI_RETURN_UNDEFINED();
 	}
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 
 	if (::napi_queue_async_work(env, state->asyncWork) != napi_ok) {
 		rejectAndCleanup(true, "Failed to queue backup stream work");

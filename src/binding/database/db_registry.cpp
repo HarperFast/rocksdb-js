@@ -216,8 +216,11 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 		return CloseResult{};
 	}
 
-	std::shared_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<std::condition_variable> condition;
+	// Allocated before beginClose() publishes the claim: an allocation failure after it would leave
+	// a close that nobody runs, so every OpenDB() for the path would wait on it forever.
+	std::vector<ClosingDescriptor> claimed;
+	claimed.emplace_back(key, nullptr, nullptr);
+	ClosingDescriptor& claim = claimed.front();
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		auto entryIterator = instance->databases.find(key);
@@ -226,24 +229,22 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance, key.path.c_str(), entry.descriptor.use_count());
 			if (entry.descriptor && entry.descriptor.use_count() <= 1 && entry.descriptor->beginClose()) {
 				DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance, key.path.c_str());
-				descriptor = entry.descriptor;
-				condition = entry.condition;
+				claim.descriptor = entry.descriptor;
+				claim.condition = entry.condition;
 			}
 		} else {
 			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced DBDescriptor not found! \"%s\"\n", instance, key.path.c_str());
 		}
 	}
 
-	if (!descriptor) {
+	if (!claim.descriptor) {
 		return CloseResult{};
 	}
 
 	// We claimed the close under the lock via beginClose(); run the actual
-	// teardown now. The local copy keeps the descriptor alive throughout.
+	// teardown now. The claim's copy keeps the descriptor alive throughout.
 	// Only the entry we claimed is erased -- a brand-new descriptor cannot
 	// appear because OpenDB blocks until the helper notifies.
-	std::vector<ClosingDescriptor> claimed;
-	claimed.emplace_back(key, descriptor, condition);
 	// The close error is reported through CloseResult, not thrown.
 	closeClaimedDescriptors(
 		claimed, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex

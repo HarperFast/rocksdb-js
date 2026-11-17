@@ -450,7 +450,6 @@ inline int consumeWriteBufferManagerJoinDelayForTesting() {
 	return 0;
 }
 
-// Stages `forceAsyncExceptionForTesting(stage, count)` makes throw std::bad_alloc.
 enum class AsyncExceptionStage : int {
 	None = 0,
 	State = 1,

@@ -1,8 +1,5 @@
 // Usage: node fork-async-exception.mts <dir> <stage> [op]
-// Makes one call of every async operation (or only `op`) throw std::bad_alloc at `stage` (1 = state
-// allocation, 2 = execute, 3 = complete), retries it, then closes every database. Prints one JSON
-// array of { op, code, message } for the rejections. Run in a child because an exception that
-// escapes kills the process, and a registration it strands makes close() wait forever.
+// Prints the { op, code, message } of each rejection as one JSON array.
 import { backups, RocksDatabase, validateTransactionLogStore } from '../../src/index.ts';
 import { forceAsyncExceptionForTesting } from '../../src/load-binding.ts';
 import { mkdirSync } from 'node:fs';
