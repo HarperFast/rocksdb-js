@@ -1,4 +1,4 @@
-// A worker flips every open-time config() setting between two sets while this thread opens fresh
+// A worker flips open-time config() settings between two sets while this thread opens fresh
 // databases; each database must capture one set whole.
 import { RocksDatabase } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
@@ -12,8 +12,6 @@ if (!basePath) {
 	process.exit(1);
 }
 const openCount = Number(openCountArg ?? 20);
-// Keeps opening past openCount until both sets have been seen, so a slow worker cannot leave the
-// run with only one.
 const maxOpens = openCount * 10;
 mkdirSync(basePath, { recursive: true });
 

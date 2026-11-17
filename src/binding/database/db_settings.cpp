@@ -242,7 +242,7 @@ std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
  * because RocksDB stores a `shared_ptr<WriteBufferManager>` inside each open
  * database; swapping the instance would orphan any already-open DB. Changes
  * to `buffer_size` use `SetBufferSize()` which is the supported runtime
- * update path. A size of 0 attaches no manager.
+ * update path.
  */
 OpenSettings DBSettings::snapshotForOpen(bool needBlockCache) {
 	OpenSettings snapshot;
