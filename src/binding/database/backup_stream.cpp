@@ -129,11 +129,15 @@ struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> 
 	// Our descriptor ref can be the reason a concurrent close skipped its
 	// registry purge (use_count() > 1), so on release we must retry the purge or
 	// the registry entry — and the open RocksDB — would linger forever.
-	void releaseDescriptor() {
+	void releaseDescriptor() noexcept {
 		if (this->descriptor) {
-			DBKey key = descriptorKey(*this->descriptor);
-			this->descriptor.reset();
-			DBRegistry::PurgeIfUnreferenced(key);
+			try {
+				DBKey key = descriptorKey(*this->descriptor);
+				this->descriptor.reset();
+				DBRegistry::PurgeIfUnreferenced(key);
+			} catch (...) {
+				this->descriptor.reset();
+			}
 		}
 	}
 
@@ -566,7 +570,7 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 
 void backupStreamExecute(napi_env, void* data) {
 	auto* state = static_cast<AsyncBackupStreamState*>(data);
-	rocksdb::Status s = doBackupStream(state);
+	runAsyncExecute(state, [state] { state->status = doBackupStream(state); });
 
 	// Release the in-flight claim (the worker owns it once the work was queued).
 	// Wake a finishClose() that may be waiting before it tears down the DB.
@@ -574,7 +578,6 @@ void backupStreamExecute(napi_env, void* data) {
 		state->descriptor->operationsInFlight.notify_all();
 	}
 
-	state->status = s;
 	state->signalExecuteCompleted();
 }
 
@@ -600,15 +603,17 @@ void backupStreamComplete(napi_env env, napi_status status, void* data) {
 	// so pending JS acknowledgements no longer need the descriptor pin.
 	state->releaseDescriptor();
 	if (status != napi_cancelled) {
-		if (state->status.ok()) {
-			napi_value undefined;
-			NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
-			state->callResolve(undefined);
-		} else {
-			napi_value error;
-			rocksdb_js::createRocksDBError(env, state->status, "Backup stream failed", error);
-			state->callReject(error);
-		}
+		runAsyncComplete(env, state, [env, state] {
+			if (state->status.ok()) {
+				napi_value undefined;
+				NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+				state->callResolve(undefined);
+			} else {
+				napi_value error;
+				rocksdb_js::createRocksDBError(env, state->status, "Backup stream failed", error);
+				state->callReject(error);
+			}
+		});
 	}
 
 	// Release the complete callback's ref. If a teardown abort left an emit
@@ -683,6 +688,9 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 	}
 
 	auto state = new AsyncBackupStreamState(env, *dbHandle, descriptor, flushBeforeBackup);
+	// Owns the state, which holds only its constructor's reference, until the tsfn shares it.
+	state->completed.store(true);
+	PendingAsyncState pending(env, state);
 	state->backupTransactionLogs = backupTransactionLogs;
 
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
@@ -712,6 +720,8 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 	// The tsfn now owns a reference (dropped in tsfnFinalize). Safe to take only
 	// after successful creation — on failure the finalize callback never runs.
 	state->acquire();
+	pending.release();
+	state->completed.store(false);
 
 	NAPI_STATUS_THROWS(::napi_create_async_work(
 		env,

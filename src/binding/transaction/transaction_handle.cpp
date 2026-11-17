@@ -15,48 +15,6 @@ namespace rocksdb_js {
 
 namespace {
 
-/**
- * Keeps a target DBHandle open while a transaction resolves and pins that
- * handle's column descriptor. This bridges the gap between the caller's open
- * check and the transaction's async-work registration without making the
- * worker access a concurrently closing DBHandle.
- *
- * Admission can be refused if `handle`'s cancellation was already published
- * (a concurrent close); `admitted` tracks that so the destructor only
- * unregisters a claim it actually holds — unregistering an admission that
- * never succeeded would underflow the target's active-work count and could
- * make a later close() stop waiting while real work is still outstanding.
- * Callers must check `ok()` after construction and treat a false result the
- * same as the target already being closed.
- */
-struct ScopedAsyncWorkRegistration {
-	AsyncWorkHandle* handle;
-	bool admitted;
-
-	explicit ScopedAsyncWorkRegistration(AsyncWorkHandle* handle) : handle(handle), admitted(false) {
-		if (this->handle) {
-			this->admitted = this->handle->registerAsyncWork();
-		}
-	}
-
-	~ScopedAsyncWorkRegistration() {
-		if (this->handle && this->admitted) {
-			this->handle->unregisterAsyncWork();
-		}
-	}
-
-	ScopedAsyncWorkRegistration(const ScopedAsyncWorkRegistration&) = delete;
-	ScopedAsyncWorkRegistration& operator=(const ScopedAsyncWorkRegistration&) = delete;
-
-	bool ok() const {
-		return !this->handle || this->admitted;
-	}
-
-	void release() {
-		this->handle = nullptr;
-	}
-};
-
 inline void delayTransactionStagingForTesting() {
 	const int timeoutMs = consumeTransactionStagingDelayForTesting();
 	if (timeoutMs <= 0) {
@@ -770,17 +728,19 @@ napi_value TransactionHandle::get(
 			if (!state->handle || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
 			} else {
-				state->status = state->handle->txn->Get(
-					state->readOptions,
-					state->readColumnDescriptor->column.get(),
-					state->key,
-					&state->value
-				);
-				// While the database and the caller's column family are still pinned — the completion
-				// runs after teardown may have released both.
-				if (state->status.ok() && state->vtSlot) {
-					vtCheckAsyncGet(state, state->readDb, state->readColumnDescriptor->column.get());
-				}
+				runAsyncExecute(state, [state] {
+					state->status = state->handle->txn->Get(
+						state->readOptions,
+						state->readColumnDescriptor->column.get(),
+						state->key,
+						&state->value
+					);
+					// While the database and the caller's column family are still pinned — the completion
+					// runs after teardown may have released both.
+					if (state->status.ok() && state->vtSlot) {
+						vtCheckAsyncGet(state, state->readDb, state->readColumnDescriptor->column.get());
+					}
+				});
 			}
 			state->readColumnDescriptor.reset();
 			// signal that execute handler is complete
@@ -792,7 +752,7 @@ napi_value TransactionHandle::get(
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
-				resolveGetResult(env, "Transaction get failed", state);
+				runAsyncComplete(env, state, [env, state] { resolveGetResult(env, "Transaction get failed", state); });
 			}
 
 			delete state;
@@ -990,20 +950,23 @@ napi_value TransactionHandle::multiGet(
 				state->status = rocksdb::Status::Aborted("Database closed during transaction get many operation");
 				state->batch.values.reset();
 			} else {
-				state->readDb->MultiGet(
-					state->readOptions,
-					state->readColumnDescriptor->column.get(),
-					state->misses.size(),
-					state->misses.keys.data(),
-					state->misses.values.get(),
-					state->misses.statuses.get()
-				);
-				for (size_t i = 0; i < state->misses.size(); i++) {
-					const size_t index = state->missingIndices[i];
-					state->batch.values[index] = std::move(state->misses.values[i]);
-					state->batch.statuses[index] = std::move(state->misses.statuses[i]);
-				}
-				finishMultiGet(state->status, state->batch, state->result);
+				runAsyncExecute(state, [state] {
+					state->readDb->MultiGet(
+						state->readOptions,
+						state->readColumnDescriptor->column.get(),
+						state->misses.size(),
+						state->misses.keys.data(),
+						state->misses.values.get(),
+						state->misses.statuses.get()
+					);
+					for (size_t i = 0; i < state->misses.size(); i++) {
+						const size_t index = state->missingIndices[i];
+						state->batch.values[index] = std::move(state->misses.values[i]);
+						state->batch.statuses[index] = std::move(state->misses.statuses[i]);
+					}
+					finishMultiGet(state->status, state->batch, state->result);
+				});
+				state->batch.values.reset();
 			}
 			state->misses.values.reset();
 			state->snapshot.reset();
@@ -1015,7 +978,7 @@ napi_value TransactionHandle::multiGet(
 			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
 			state->deleteAsyncWork();
 			if (status != napi_cancelled) {
-				resolveMultiGetResult(env, "Transaction get many failed", state);
+				runAsyncComplete(env, state, [env, state] { resolveMultiGetResult(env, "Transaction get many failed", state); });
 			}
 			delete state;
 		},

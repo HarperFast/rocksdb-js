@@ -172,19 +172,20 @@ napi_value multiGetSyncResult(
 }
 
 void finishMultiGet(rocksdb::Status& status, MultiGetBatch& batch, std::string& result) noexcept {
-	size_t resultSize = 0;
-	const size_t failed = batch.findFailure(resultSize);
-	if (failed < batch.size()) {
-		status = batch.statuses[failed];
-	} else if (resultSize > MAX_RESULT_SIZE) {
-		status = rocksdb::Status::InvalidArgument("values exceed 2 GiB");
-	} else {
-		try {
+	// Copying a failed status allocates its message too, and building one here could throw again.
+	try {
+		size_t resultSize = 0;
+		const size_t failed = batch.findFailure(resultSize);
+		if (failed < batch.size()) {
+			status = batch.statuses[failed];
+		} else if (resultSize > MAX_RESULT_SIZE) {
+			status = rocksdb::Status::InvalidArgument("values exceed 2 GiB");
+		} else {
 			result.resize(resultSize);
 			batch.writeResult(result.data());
-		} catch (const std::bad_alloc&) {
-			status = rocksdb::Status::MemoryLimit("could not allocate the result");
 		}
+	} catch (...) {
+		status = rocksdb::Status::MemoryLimit();
 	}
 	batch.values.reset();
 }
@@ -312,15 +313,18 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 				state->status = rocksdb::Status::Aborted("Database closed during get many operation");
 				state->batch.values.reset();
 			} else {
-				state->handle->descriptor->db->MultiGet(
-					state->readOptions,
-					state->handle->getColumnFamilyHandle(),
-					state->batch.size(),
-					state->batch.keys.data(),
-					state->batch.values.get(),
-					state->batch.statuses.get()
-				);
-				finishMultiGet(state->status, state->batch, state->result);
+				runAsyncExecute(state, [state] {
+					state->handle->descriptor->db->MultiGet(
+						state->readOptions,
+						state->handle->getColumnFamilyHandle(),
+						state->batch.size(),
+						state->batch.keys.data(),
+						state->batch.values.get(),
+						state->batch.statuses.get()
+					);
+					finishMultiGet(state->status, state->batch, state->result);
+				});
+				state->batch.values.reset();
 			}
 			state->signalExecuteCompleted();
 		},
@@ -328,7 +332,7 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 			auto state = reinterpret_cast<AsyncMultiGetState<std::shared_ptr<DBHandle>>*>(data);
 			state->deleteAsyncWork();
 			if (status != napi_cancelled) {
-				resolveMultiGetResult(env, "Get many failed", state);
+				runAsyncComplete(env, state, [env, state] { resolveMultiGetResult(env, "Get many failed", state); });
 			}
 			delete state;
 		},

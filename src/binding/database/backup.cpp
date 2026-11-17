@@ -61,11 +61,15 @@ struct AsyncBackupState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	// Our descriptor ref can be the reason a concurrent close skipped its
 	// registry purge (use_count() > 1), so on release we must retry the purge or
 	// the registry entry — and the open RocksDB — would linger forever.
-	void releaseDescriptor() {
+	void releaseDescriptor() noexcept {
 		if (this->descriptor) {
-			DBKey key = descriptorKey(*this->descriptor);
-			this->descriptor.reset();
-			DBRegistry::PurgeIfUnreferenced(key);
+			try {
+				DBKey key = descriptorKey(*this->descriptor);
+				this->descriptor.reset();
+				DBRegistry::PurgeIfUnreferenced(key);
+			} catch (...) {
+				this->descriptor.reset();
+			}
 		}
 	}
 
@@ -146,8 +150,7 @@ struct AsyncBackupOpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 
 /**
  * Wires up the resolve/reject references, creates and queues the async work.
- * Returns `undefined`. On the rare N-API failure path the state leaks, matching
- * the behavior of the existing async methods (e.g. `Database::Flush`).
+ * Returns `undefined`. `pending` owns the state until admission takes it over.
  */
 template <typename State>
 static napi_value queueBackupWork(
@@ -155,12 +158,13 @@ static napi_value queueBackupWork(
 	const char* resourceName,
 	napi_value resolve,
 	napi_value reject,
-	State* state,
+	PendingAsyncState<State>& pending,
 	napi_async_execute_callback execute,
 	napi_async_complete_callback complete,
 	bool registerWork,
 	bool* queued = nullptr
 ) {
+	State* state = pending.state;
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -169,6 +173,8 @@ static napi_value queueBackupWork(
 
 	NAPI_STATUS_THROWS(::napi_create_async_work(env, nullptr, name, execute, complete, state, &state->asyncWork));
 
+	pending.release();
+	state->completed.store(false);
 	bool admitted = false;
 	if (registerWork && state->handle) {
 		if (!admitAsyncWorkOrReject(env, state->handle.get(), state, "Database is closing")) {
@@ -276,6 +282,12 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 	if (lockToken == 0) {
 		return rocksdb::Status::Busy("Backup directory is locked: " + backupDir);
 	}
+	struct LockRelease {
+		uint32_t token;
+		~LockRelease() {
+			releaseFileLock(this->token);
+		}
+	} lockRelease{ lockToken };
 
 	// Holding the exclusive directory lock means no other writer can be
 	// mid-snapshot, so any transaction-log staging directory found here was left
@@ -285,8 +297,9 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		removeStaleTransactionLogStaging(std::filesystem::path(backupDir) / "transaction_logs");
 	}
 
-	rocksdb::BackupEngine* engine = nullptr;
-	rocksdb::Status status = rocksdb::BackupEngine::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
+	rocksdb::BackupEngine* rawEngine = nullptr;
+	rocksdb::Status status = rocksdb::BackupEngine::Open(state->engineOptions, rocksdb::Env::Default(), &rawEngine);
+	std::unique_ptr<rocksdb::BackupEngine> engine(rawEngine);
 	if (status.ok()) {
 		status = engine->CreateNewBackupWithMetadata(
 			state->createOptions,
@@ -305,18 +318,20 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		// silently yields no transaction logs. The rollback is best-effort — the
 		// snapshot's failure status is what rejects the call.
 		if (status.ok() && state->backupTransactionLogs) {
-			std::filesystem::path logsDir =
-				std::filesystem::path(backupDir) / "transaction_logs" / std::to_string(state->backupId);
-			status = backupTransactionLogsToDir(state->descriptor.get(), logsDir, state->engineOptions.sync,
-				[state]() { return state->handle && state->handle->isCancelled(); });
+			try {
+				std::filesystem::path logsDir =
+					std::filesystem::path(backupDir) / "transaction_logs" / std::to_string(state->backupId);
+				status = backupTransactionLogsToDir(state->descriptor.get(), logsDir, state->engineOptions.sync,
+					[state]() { return state->handle && state->handle->isCancelled(); });
+			} catch (...) {
+				engine->DeleteBackup(state->backupId).PermitUncheckedError();
+				throw;
+			}
 			if (!status.ok()) {
 				engine->DeleteBackup(state->backupId).PermitUncheckedError();
 			}
 		}
 	}
-	delete engine;
-
-	releaseFileLock(lockToken);
 	return status;
 }
 
@@ -394,6 +409,9 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		std::move(createOptions),
 		std::move(appMetadata)
 	);
+	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
+	state->completed.store(true);
+	PendingAsyncState pending(env, state);
 	state->backupTransactionLogs = backupTransactionLogs;
 	state->checkDiskSpace = checkDiskSpace;
 
@@ -402,10 +420,10 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 		"database.backup",
 		resolve,
 		reject,
-		state,
+		pending,
 		[](napi_env, void* data) { // execute
 			auto state = reinterpret_cast<AsyncBackupState*>(data);
-			state->status = runCreateBackup(state);
+			runAsyncExecute(state, [state] { state->status = runCreateBackup(state); });
 			if (--state->descriptor->operationsInFlight == 0 && state->descriptor->isClosing()) {
 				state->descriptor->operationsInFlight.notify_all();
 			}
@@ -425,15 +443,17 @@ napi_value Database::Backup(napi_env env, napi_callback_info info) {
 			// immediate registryStatus() / shutdown() cannot observe stale state.
 			state->releaseDescriptor();
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					napi_value result;
-					NAPI_STATUS_THROWS_VOID(::napi_create_uint32(env, state->backupId, &result));
-					state->callResolve(result);
-				} else {
-					napi_value error;
-					rocksdb_js::createRocksDBError(env, state->status, "Backup failed", error);
-					state->callReject(error);
-				}
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value result;
+						NAPI_STATUS_THROWS_VOID(::napi_create_uint32(env, state->backupId, &result));
+						state->callResolve(result);
+					} else {
+						napi_value error;
+						rocksdb_js::createRocksDBError(env, state->status, "Backup failed", error);
+						state->callReject(error);
+					}
+				});
 			}
 			delete state;
 		},
@@ -487,6 +507,7 @@ static napi_value BackupRestore(napi_env env, napi_callback_info info) {
 	}
 
 	auto state = new AsyncRestoreState(env, std::move(backupDir), std::move(dbDir), std::move(walDir));
+	PendingAsyncState pending(env, state);
 	state->restoreOptions = restoreOptions;
 	state->hasBackupId = hasBackupId;
 	state->backupId = backupId;
@@ -496,35 +517,39 @@ static napi_value BackupRestore(napi_env env, napi_callback_info info) {
 		"database.backupRestore",
 		resolve,
 		reject,
-		state,
+		pending,
 		[](napi_env, void* data) { // execute
 			auto state = reinterpret_cast<AsyncRestoreState*>(data);
-			rocksdb::BackupEngineReadOnly* engine = nullptr;
-			rocksdb::IOStatus s = rocksdb::BackupEngineReadOnly::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
-			if (s.ok()) {
-				if (state->hasBackupId) {
-					s = engine->RestoreDBFromBackup(state->restoreOptions, state->backupId, state->dbDir, state->walDir);
-				} else {
-					s = engine->RestoreDBFromLatestBackup(state->restoreOptions, state->dbDir, state->walDir);
+			runAsyncExecute(state, [state] {
+				rocksdb::BackupEngineReadOnly* rawEngine = nullptr;
+				rocksdb::IOStatus s = rocksdb::BackupEngineReadOnly::Open(state->engineOptions, rocksdb::Env::Default(), &rawEngine);
+				std::unique_ptr<rocksdb::BackupEngineReadOnly> engine(rawEngine);
+				if (s.ok()) {
+					if (state->hasBackupId) {
+						s = engine->RestoreDBFromBackup(state->restoreOptions, state->backupId, state->dbDir, state->walDir);
+					} else {
+						s = engine->RestoreDBFromLatestBackup(state->restoreOptions, state->dbDir, state->walDir);
+					}
 				}
-			}
-			delete engine;
-			state->status = s;
+				state->status = s;
+			});
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncRestoreState*>(data);
 			state->deleteAsyncWork();
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					napi_value undefined;
-					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
-					state->callResolve(undefined);
-				} else {
-					napi_value error;
-					rocksdb_js::createRocksDBError(env, state->status, "Restore failed", error);
-					state->callReject(error);
-				}
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value undefined;
+						NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+						state->callResolve(undefined);
+					} else {
+						napi_value error;
+						rocksdb_js::createRocksDBError(env, state->status, "Restore failed", error);
+						state->callReject(error);
+					}
+				});
 			}
 			delete state;
 		},
@@ -547,60 +572,65 @@ static napi_value BackupList(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[2], backupDir, "Backup directory must be a string");
 
 	auto state = new AsyncBackupListState(env, std::move(backupDir));
+	PendingAsyncState pending(env, state);
 
 	return queueBackupWork(
 		env,
 		"database.backupList",
 		resolve,
 		reject,
-		state,
+		pending,
 		[](napi_env, void* data) { // execute
 			auto state = reinterpret_cast<AsyncBackupListState*>(data);
-			rocksdb::BackupEngineReadOnly* engine = nullptr;
-			rocksdb::IOStatus s = rocksdb::BackupEngineReadOnly::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
-			if (s.ok()) {
-				engine->GetBackupInfo(&state->backups);
-			}
-			delete engine;
-			state->status = s;
+			runAsyncExecute(state, [state] {
+				rocksdb::BackupEngineReadOnly* rawEngine = nullptr;
+				rocksdb::IOStatus s = rocksdb::BackupEngineReadOnly::Open(state->engineOptions, rocksdb::Env::Default(), &rawEngine);
+				std::unique_ptr<rocksdb::BackupEngineReadOnly> engine(rawEngine);
+				if (s.ok()) {
+					engine->GetBackupInfo(&state->backups);
+				}
+				state->status = s;
+			});
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncBackupListState*>(data);
 			state->deleteAsyncWork();
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					napi_value array;
-					NAPI_STATUS_THROWS_VOID(::napi_create_array_with_length(env, state->backups.size(), &array));
-					for (size_t i = 0; i < state->backups.size(); ++i) {
-						const rocksdb::BackupInfo& backup = state->backups[i];
-						napi_value obj;
-						NAPI_STATUS_THROWS_VOID(::napi_create_object(env, &obj));
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value array;
+						NAPI_STATUS_THROWS_VOID(::napi_create_array_with_length(env, state->backups.size(), &array));
+						for (size_t i = 0; i < state->backups.size(); ++i) {
+							const rocksdb::BackupInfo& backup = state->backups[i];
+							napi_value obj;
+							NAPI_STATUS_THROWS_VOID(::napi_create_object(env, &obj));
 
-						napi_value value;
-						NAPI_STATUS_THROWS_VOID(::napi_create_uint32(env, backup.backup_id, &value));
-						NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "backupId", value));
+							napi_value value;
+							NAPI_STATUS_THROWS_VOID(::napi_create_uint32(env, backup.backup_id, &value));
+							NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "backupId", value));
 
-						NAPI_STATUS_THROWS_VOID(::napi_create_int64(env, backup.timestamp, &value));
-						NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "timestamp", value));
+							NAPI_STATUS_THROWS_VOID(::napi_create_int64(env, backup.timestamp, &value));
+							NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "timestamp", value));
 
-						NAPI_STATUS_THROWS_VOID(::napi_create_int64(env, static_cast<int64_t>(backup.size), &value));
-						NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "size", value));
+							NAPI_STATUS_THROWS_VOID(::napi_create_int64(env, static_cast<int64_t>(backup.size), &value));
+							NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "size", value));
 
-						NAPI_STATUS_THROWS_VOID(::napi_create_uint32(env, backup.number_files, &value));
-						NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "numberFiles", value));
+							NAPI_STATUS_THROWS_VOID(::napi_create_uint32(env, backup.number_files, &value));
+							NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "numberFiles", value));
 
-						NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, backup.app_metadata.c_str(), backup.app_metadata.size(), &value));
-						NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "appMetadata", value));
+							NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(env, backup.app_metadata.c_str(), backup.app_metadata.size(), &value));
+							NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, obj, "appMetadata", value));
 
-						NAPI_STATUS_THROWS_VOID(::napi_set_element(env, array, i, obj));
+							NAPI_STATUS_THROWS_VOID(::napi_set_element(env, array, i, obj));
+						}
+						state->callResolve(array);
+					} else {
+						napi_value error;
+						rocksdb_js::createRocksDBError(env, state->status, "List backups failed", error);
+						state->callReject(error);
 					}
-					state->callResolve(array);
-				} else {
-					napi_value error;
-					rocksdb_js::createRocksDBError(env, state->status, "List backups failed", error);
-					state->callReject(error);
-				}
+				});
 			}
 			delete state;
 		},
@@ -611,56 +641,60 @@ static napi_value BackupList(napi_env env, napi_callback_info info) {
 /**
  * Shared implementation for `backupDelete`, `backupPurge`, and `backupVerify`.
  */
-static napi_value queueBackupOp(napi_env env, AsyncBackupOpState* state, napi_value resolve, napi_value reject) {
+static napi_value queueBackupOp(napi_env env, PendingAsyncState<AsyncBackupOpState>& pending, napi_value resolve, napi_value reject) {
 	return queueBackupWork(
 		env,
 		"database.backupOp",
 		resolve,
 		reject,
-		state,
+		pending,
 		[](napi_env, void* data) { // execute
 			auto state = reinterpret_cast<AsyncBackupOpState*>(data);
-			if (state->op == AsyncBackupOpState::Op::Verify) {
-				// Read-only verification.
-				rocksdb::BackupEngineReadOnly* engine = nullptr;
-				rocksdb::Status s = rocksdb::BackupEngineReadOnly::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
-				if (s.ok()) {
-					s = engine->VerifyBackup(state->arg, state->verifyWithChecksum);
-				}
-				if (s.ok() && state->verifyTables) {
-					s = verifyBackupTables(engine, state->arg, state->backupDir);
-				}
-				delete engine;
-				state->status = s;
-			} else {
-				// Delete/Purge require a writable engine.
-				rocksdb::BackupEngine* engine = nullptr;
-				rocksdb::IOStatus s = rocksdb::BackupEngine::Open(state->engineOptions, rocksdb::Env::Default(), &engine);
-				if (s.ok()) {
-					if (state->op == AsyncBackupOpState::Op::Delete) {
-						s = engine->DeleteBackup(state->arg);
-					} else {
-						s = engine->PurgeOldBackups(state->arg);
+			runAsyncExecute(state, [state] {
+				if (state->op == AsyncBackupOpState::Op::Verify) {
+					// Read-only verification.
+					rocksdb::BackupEngineReadOnly* rawEngine = nullptr;
+					rocksdb::Status s = rocksdb::BackupEngineReadOnly::Open(state->engineOptions, rocksdb::Env::Default(), &rawEngine);
+					std::unique_ptr<rocksdb::BackupEngineReadOnly> engine(rawEngine);
+					if (s.ok()) {
+						s = engine->VerifyBackup(state->arg, state->verifyWithChecksum);
 					}
+					if (s.ok() && state->verifyTables) {
+						s = verifyBackupTables(engine.get(), state->arg, state->backupDir);
+					}
+					state->status = s;
+				} else {
+					// Delete/Purge require a writable engine.
+					rocksdb::BackupEngine* rawEngine = nullptr;
+					rocksdb::IOStatus s = rocksdb::BackupEngine::Open(state->engineOptions, rocksdb::Env::Default(), &rawEngine);
+					std::unique_ptr<rocksdb::BackupEngine> engine(rawEngine);
+					if (s.ok()) {
+						if (state->op == AsyncBackupOpState::Op::Delete) {
+							s = engine->DeleteBackup(state->arg);
+						} else {
+							s = engine->PurgeOldBackups(state->arg);
+						}
+					}
+					state->status = s;
 				}
-				delete engine;
-				state->status = s;
-			}
+			});
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncBackupOpState*>(data);
 			state->deleteAsyncWork();
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					napi_value undefined;
-					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
-					state->callResolve(undefined);
-				} else {
-					napi_value error;
-					rocksdb_js::createRocksDBError(env, state->status, "Backup operation failed", error);
-					state->callReject(error);
-				}
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value undefined;
+						NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+						state->callResolve(undefined);
+					} else {
+						napi_value error;
+						rocksdb_js::createRocksDBError(env, state->status, "Backup operation failed", error);
+						state->callReject(error);
+					}
+				});
 			}
 			delete state;
 		},
@@ -681,9 +715,10 @@ static napi_value BackupDelete(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[2], backupDir, "Backup directory must be a string");
 
 	auto state = new AsyncBackupOpState(env, AsyncBackupOpState::Op::Delete, std::move(backupDir));
+	PendingAsyncState pending(env, state);
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &state->arg));
 
-	return queueBackupOp(env, state, resolve, reject);
+	return queueBackupOp(env, pending, resolve, reject);
 }
 
 /**
@@ -698,9 +733,10 @@ static napi_value BackupPurge(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[2], backupDir, "Backup directory must be a string");
 
 	auto state = new AsyncBackupOpState(env, AsyncBackupOpState::Op::Purge, std::move(backupDir));
+	PendingAsyncState pending(env, state);
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &state->arg));
 
-	return queueBackupOp(env, state, resolve, reject);
+	return queueBackupOp(env, pending, resolve, reject);
 }
 
 /**
@@ -716,6 +752,7 @@ static napi_value BackupVerify(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[2], backupDir, "Backup directory must be a string");
 
 	auto state = new AsyncBackupOpState(env, AsyncBackupOpState::Op::Verify, std::move(backupDir));
+	PendingAsyncState pending(env, state);
 	NAPI_STATUS_THROWS(::napi_get_value_uint32(env, argv[3], &state->arg));
 
 	napi_valuetype checksumType;
@@ -729,7 +766,7 @@ static napi_value BackupVerify(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[5], &state->verifyTables));
 	}
 
-	return queueBackupOp(env, state, resolve, reject);
+	return queueBackupOp(env, pending, resolve, reject);
 }
 
 void initBackupExports(napi_env env, napi_value exports) {
@@ -737,11 +774,11 @@ void initBackupExports(napi_env env, napi_value exports) {
 		const char* name;
 		napi_callback fn;
 	} functions[] = {
-		{ "backupRestore", BackupRestore },
-		{ "backupList", BackupList },
-		{ "backupDelete", BackupDelete },
-		{ "backupPurge", BackupPurge },
-		{ "backupVerify", BackupVerify },
+		{ "backupRestore", guardAsyncEntry<BackupRestore> },
+		{ "backupList", guardAsyncEntry<BackupList> },
+		{ "backupDelete", guardAsyncEntry<BackupDelete> },
+		{ "backupPurge", guardAsyncEntry<BackupPurge> },
+		{ "backupVerify", guardAsyncEntry<BackupVerify> },
 	};
 
 	for (const auto& function : functions) {

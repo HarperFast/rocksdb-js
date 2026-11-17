@@ -83,6 +83,9 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 	));
 
 	auto state = new AsyncClearState(env, *dbHandle, failureMsg);
+	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
+	state->completed.store(true);
+	PendingAsyncState pending(env, state);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -96,9 +99,11 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during clear operation");
 			} else {
-				// awaited by DBHandle::close()'s async-work drain, so the token
-				// that drain arms is the one that can cancel it
-				state->status = state->handle->clear(&state->handle->compactCancelRequested);
+				runAsyncExecute(state, [state] {
+					// awaited by DBHandle::close()'s async-work drain, so the token
+					// that drain arms is the one that can cancel it
+					state->status = state->handle->clear(&state->handle->compactCancelRequested);
+				});
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -109,17 +114,16 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
-				napi_value global;
-				NAPI_STATUS_THROWS_VOID(::napi_get_global(env, &global));
-
-				if (state->status.ok()) {
-					napi_value undefined;
-					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
-					state->callResolve(undefined);
-				} else {
-					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, state->failureMsg);
-					state->callReject(error);
-				}
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value undefined;
+						NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+						state->callResolve(undefined);
+					} else {
+						ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, state->failureMsg);
+						state->callReject(error);
+					}
+				});
 			}
 
 			delete state;
@@ -129,6 +133,9 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 	));
 
 	// Register the async work with the database handle
+	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
+	pending.release();
+	state->completed.store(false);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();
 	}
@@ -336,6 +343,9 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	}
 
 	auto state = new AsyncCompactState(env, *dbHandle);
+	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
+	state->completed.store(true);
+	PendingAsyncState pending(env, state);
 	state->startKey = std::move(startKey);
 	state->endKey = std::move(endKey);
 	state->hasStart = hasStart;
@@ -363,20 +373,22 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during compact operation");
 			} else {
-				rocksdb::Slice startSlice(state->startKey);
-				rocksdb::Slice endSlice(state->endKey);
-				rocksdb::Slice* startPtr = state->hasStart ? &startSlice : nullptr;
-				rocksdb::Slice* endPtr = state->hasEnd ? &endSlice : nullptr;
-				state->status = state->handle->descriptor->compactRange(
-					state->handle->columnDescriptor->column.get(),
-					startPtr,
-					endPtr,
-					state->bottommost,
-					// awaited by DBHandle::close()'s async-work drain; the
-					// descriptor token is not armed until beginClose(), which a
-					// self-close does not reach until after that drain returns
-					&state->handle->compactCancelRequested
-				);
+				runAsyncExecute(state, [state] {
+					rocksdb::Slice startSlice(state->startKey);
+					rocksdb::Slice endSlice(state->endKey);
+					rocksdb::Slice* startPtr = state->hasStart ? &startSlice : nullptr;
+					rocksdb::Slice* endPtr = state->hasEnd ? &endSlice : nullptr;
+					state->status = state->handle->descriptor->compactRange(
+						state->handle->columnDescriptor->column.get(),
+						startPtr,
+						endPtr,
+						state->bottommost,
+						// awaited by DBHandle::close()'s async-work drain; the
+						// descriptor token is not armed until beginClose(), which a
+						// self-close does not reach until after that drain returns
+						&state->handle->compactCancelRequested
+					);
+				});
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -387,14 +399,16 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					napi_value undefined;
-					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
-					state->callResolve(undefined);
-				} else {
-					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Compact failed");
-					state->callReject(error);
-				}
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value undefined;
+						NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+						state->callResolve(undefined);
+					} else {
+						ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Compact failed");
+						state->callReject(error);
+					}
+				});
 			}
 
 			delete state;
@@ -403,6 +417,9 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
+	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
+	pending.release();
+	state->completed.store(false);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();
 	}
@@ -520,9 +537,13 @@ struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	~AsyncCatchUpState() override {
 		this->releaseInFlight();
 		if (this->descriptor) {
-			DBKey key = descriptorKey(*this->descriptor);
-			this->descriptor.reset();
-			DBRegistry::PurgeIfUnreferenced(key);
+			try {
+				DBKey key = descriptorKey(*this->descriptor);
+				this->descriptor.reset();
+				DBRegistry::PurgeIfUnreferenced(key);
+			} catch (...) {
+				this->descriptor.reset();
+			}
 		}
 	}
 };
@@ -622,12 +643,16 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 	// close()'s drain would then report "nothing in flight" while a worker is
 	// still running. Refusal means a concurrent self-close published
 	// cancellation between the isClosing() check above and here; the claim's
-	// destructor releases the in-flight count since handedOff stays false.
-	if (!(*dbHandle)->registerAsyncWork()) {
+	// destructor releases the in-flight count since handedOff stays false. The
+	// registration stays scoped until the state owns it, so a failed allocation
+	// releases it too.
+	ScopedAsyncWorkRegistration registration(dbHandle->get());
+	if (!registration.ok()) {
 		::napi_throw_error(env, nullptr, "Database is closing");
 		NAPI_RETURN_UNDEFINED();
 	}
 	auto owned = std::make_unique<AsyncCatchUpState>(env, *dbHandle, descriptor);
+	registration.release();
 	handedOff = true;
 	AsyncCatchUpState* state = owned.get();
 
@@ -667,7 +692,7 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 			if (!state->handle || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during catch-up operation");
 			} else {
-				state->status = state->descriptor->catchUpWithPrimary();
+				runAsyncExecute(state, [state] { state->status = state->descriptor->catchUpWithPrimary(); });
 			}
 			state->releaseInFlight();
 			state->signalExecuteCompleted();
@@ -678,14 +703,16 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					napi_value undefined;
-					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
-					state->callResolve(undefined);
-				} else {
-					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Catch up with primary failed");
-					state->callReject(error);
-				}
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value undefined;
+						NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+						state->callResolve(undefined);
+					} else {
+						ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Catch up with primary failed");
+						state->callReject(error);
+					}
+				});
 			}
 
 			delete state;
@@ -984,6 +1011,9 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	));
 
 	auto state = new AsyncFlushState(env, *dbHandle, allowWriteStall);
+	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
+	state->completed.store(true);
+	PendingAsyncState pending(env, state);
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
 
@@ -997,7 +1027,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during flush operation");
 			} else {
-				state->status = state->handle->descriptor->flush(state->allowWriteStall);
+				runAsyncExecute(state, [state] { state->status = state->handle->descriptor->flush(state->allowWriteStall); });
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -1008,14 +1038,16 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					napi_value undefined;
-					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
-					state->callResolve(undefined);
-				} else {
-					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Flush failed");
-					state->callReject(error);
-				}
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value undefined;
+						NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+						state->callResolve(undefined);
+					} else {
+						ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "Flush failed");
+						state->callReject(error);
+					}
+				});
 			}
 
 			delete state;
@@ -1024,6 +1056,9 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
+	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
+	pending.release();
+	state->completed.store(false);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();
 	}
@@ -1096,11 +1131,13 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 	// Same setup discipline as CatchUpWithPrimary: the registration precedes the
 	// allocation because ~BaseAsyncState unregisters unconditionally, and the
 	// state is owned until the work is queued so a failed N-API step frees it.
-	if (!(*dbHandle)->registerAsyncWork()) {
+	ScopedAsyncWorkRegistration registration(dbHandle->get());
+	if (!registration.ok()) {
 		::napi_throw_error(env, nullptr, "Database is closing");
 		NAPI_RETURN_UNDEFINED();
 	}
 	auto owned = std::make_unique<BaseAsyncState<std::shared_ptr<DBHandle>>>(env, *dbHandle);
+	registration.release();
 	auto state = owned.get();
 
 	// ~BaseAsyncState drops the resolve/reject refs without deleting them (the
@@ -1134,7 +1171,7 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during WAL sync");
 			} else {
-				state->status = state->handle->descriptor->syncWal();
+				runAsyncExecute(state, [state] { state->status = state->handle->descriptor->syncWal(); });
 			}
 			state->signalExecuteCompleted();
 		},
@@ -1144,14 +1181,16 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					napi_value undefined;
-					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
-					state->callResolve(undefined);
-				} else {
-					ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "WAL sync failed");
-					state->callReject(error);
-				}
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value undefined;
+						NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+						state->callResolve(undefined);
+					} else {
+						ROCKSDB_STATUS_CREATE_NAPI_ERROR_VOID(state->status, "WAL sync failed");
+						state->callReject(error);
+					}
+				});
 			}
 
 			delete state;
@@ -1255,6 +1294,9 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	));
 
 	auto state = new AsyncGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions, std::move(key));
+	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
+	state->completed.store(true);
+	PendingAsyncState pending(env, state);
 	state->vtSlot = vtSlot;
 	state->vtObserved = vtObserved;
 	state->hasExpectedVersion = hasExpectedVersion;
@@ -1274,19 +1316,21 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
 				state->status = rocksdb::Status::Aborted("Database closed during get operation");
 			} else {
-				state->status = state->handle->descriptor->db->Get(
-					state->readOptions,
-					state->handle->getColumnFamilyHandle(),
-					state->key,
-					&state->value
-				);
-				if (state->status.ok() && state->vtSlot) {
-					vtCheckAsyncGet(
-						state,
-						state->handle->descriptor->db.get(),
-						state->handle->getColumnFamilyHandle()
+				runAsyncExecute(state, [state] {
+					state->status = state->handle->descriptor->db->Get(
+						state->readOptions,
+						state->handle->getColumnFamilyHandle(),
+						state->key,
+						&state->value
 					);
-				}
+					if (state->status.ok() && state->vtSlot) {
+						vtCheckAsyncGet(
+							state,
+							state->handle->descriptor->db.get(),
+							state->handle->getColumnFamilyHandle()
+						);
+					}
+				});
 			}
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -1297,7 +1341,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
-				resolveGetResult(env, "Get failed", state);
+				runAsyncComplete(env, state, [env, state] { resolveGetResult(env, "Get failed", state); });
 			}
 
 			delete state;
@@ -1310,6 +1354,9 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	// performs at the end of the execute handler. Without it the count goes negative,
 	// so close() does not wait for this read and the worker dereferences a descriptor
 	// that close() has already reset.
+	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
+	pending.release();
+	state->completed.store(false);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		napi_value returnStatus;
 		NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
@@ -3125,27 +3172,27 @@ napi_value Database::WithLock(napi_env env, napi_callback_info info) {
 void Database::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "addListener", nullptr, AddListener, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "backup", nullptr, Backup, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "backupStream", nullptr, BackupStream, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "catchUpWithPrimary", nullptr, CatchUpWithPrimary, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "backup", nullptr, guardAsyncEntry<Backup>, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "backupStream", nullptr, guardAsyncEntry<BackupStream>, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "catchUpWithPrimary", nullptr, guardAsyncEntry<CatchUpWithPrimary>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "catchUpWithPrimarySync", nullptr, CatchUpWithPrimarySync, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "clear", nullptr, Clear, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "clear", nullptr, guardAsyncEntry<Clear>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "clearSync", nullptr, ClearSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "closing", nullptr, nullptr, IsClosing, nullptr, nullptr, napi_default, nullptr },
 		{ "columns", nullptr, nullptr, Columns, nullptr, nullptr, napi_default, nullptr },
-		{ "compact", nullptr, Compact, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "compact", nullptr, guardAsyncEntry<Compact>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "compactSync", nullptr, CompactSync, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "createCheckpoint", nullptr, CreateCheckpoint, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "createCheckpoint", nullptr, guardAsyncEntry<CreateCheckpoint>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "destroy", nullptr, Destroy, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "drop", nullptr, Drop, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "dropSync", nullptr, DropSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "estimateCount", nullptr, EstimateCount, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "flush", nullptr, Flush, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "flush", nullptr, guardAsyncEntry<Flush>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "flushSync", nullptr, FlushSync, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "syncWal", nullptr, SyncWal, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "syncWal", nullptr, guardAsyncEntry<SyncWal>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "syncWalSync", nullptr, SyncWalSync, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "get", nullptr, guardAsyncEntry<Get>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setLastError", nullptr, SetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -3153,7 +3200,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "getDBIntProperty", nullptr, GetDBIntProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getDBProperty", nullptr, GetDBProperty, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLogOptions", nullptr, GetLogOptions, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "getMany", nullptr, GetMany, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getMany", nullptr, guardAsyncEntry<GetMany>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getManySync", nullptr, GetManySync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getMonotonicTimestamp", nullptr, GetMonotonicTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getOldestSnapshotTimestamp", nullptr, GetOldestSnapshotTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },
