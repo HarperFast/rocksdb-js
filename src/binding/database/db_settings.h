@@ -106,6 +106,12 @@ public:
 
 	std::shared_ptr<rocksdb::Cache> getBlockCache();
 
+	/** The shared block cache if it has been created, without creating it. */
+	std::shared_ptr<rocksdb::Cache> peekBlockCache() {
+		std::lock_guard<std::mutex> lock(blockCacheMutex);
+		return blockCache;
+	}
+
 	uint32_t getOccLockBucketCount() const {
 		return occLockBucketCount.load(std::memory_order_relaxed);
 	}
