@@ -1224,7 +1224,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     Three constraints on that thread, each of which has a failure mode:
     - **Lock order is `databasesMutex -> writeBufferManagerMutex -> watchdogMutex`**, because
       `DBRegistry::OpenDB` holds `databasesMutex` across `DBDescriptor::open`, which calls
-      `getWriteBufferManager()`. The watchdog drops `watchdogMutex` before every sample and only
+      `DBSettings::snapshotForOpen()`. The watchdog drops `watchdogMutex` before every sample and only
       try-locks the registry and column inventories, so there is no cycle. `ensure` and `disable`
       only arm or park it because they run under higher-order locks and its stderr write may block;
       joining is `DBStats::joinWriteBufferManagerWatchdog()`'s final-teardown job alone. `DBStats::Init()`
