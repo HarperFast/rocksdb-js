@@ -836,9 +836,8 @@ static void closeSettledHandle(TransactionCommitState* state, bool operationHeld
 		state->handle->close();
 		return;
 	}
-	std::shared_ptr<DBDescriptor> descriptor = state->descriptor.lock();
-	OperationGuard operation(descriptor);
-	if (descriptor && !descriptor->isClosing()) {
+	OperationGuard operation(state->descriptor.lock());
+	if (operation.descriptor && !operation.descriptor->isClosing()) {
 		state->handle->close();
 	}
 }
@@ -1063,7 +1062,6 @@ static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* co
 		// Still close the txn handle so it is removed from the descriptor's
 		// transactions map and the native RocksDB transaction is destroyed —
 		// the descriptor may be shared with (and outlive us on) other envs.
-		// close() is napi-free, so it is safe here.
 		closeSettledHandle(state, /*operationHeld=*/false);
 	}
 

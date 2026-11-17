@@ -1258,7 +1258,7 @@ export const isTransactionStagingDelayedForTesting: () => boolean =
 export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
 	binding.isTransactionCommitExecuteDelayedForTesting;
 
-/** Reports whether a transaction is parked at the `ROCKSDB_JS_TXN_CLOSE_DELAY_MS` seam in its close(). */
+/** Reports whether a transaction is parked in close() at the test seam. */
 export const isTransactionCloseDelayedForTesting: () => boolean =
 	binding.isTransactionCloseDelayedForTesting;
 
