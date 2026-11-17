@@ -294,7 +294,7 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 	rocksdb::ReadOptions readOptions;
 	auto state = new AsyncMultiGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions);
 	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pendingState(env, state);
 	if (!state->batch.copyKeys(keys) || !state->batch.allocateResults()) {
 		::napi_throw_error(env, nullptr, "Get many failed: out of memory");
@@ -342,7 +342,7 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 
 	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
 	pendingState.release();
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	// Balances the unregisterAsyncWork() in signalExecuteCompleted(), so close() waits for this read.
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();

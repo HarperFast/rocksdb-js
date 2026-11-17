@@ -216,28 +216,29 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 		return CloseResult{};
 	}
 
-	// Allocated before beginClose() publishes the claim: an allocation failure after it would leave
-	// a close that nobody runs, so every OpenDB() for the path would wait on it forever.
 	std::vector<ClosingDescriptor> claimed;
-	claimed.emplace_back(key, nullptr, nullptr);
-	ClosingDescriptor& claim = claimed.front();
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		auto entryIterator = instance->databases.find(key);
 		if (entryIterator != instance->databases.end()) {
 			DBRegistryEntry& entry = entryIterator->second;
 			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance, key.path.c_str(), entry.descriptor.use_count());
-			if (entry.descriptor && entry.descriptor.use_count() <= 1 && entry.descriptor->beginClose()) {
-				DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance, key.path.c_str());
-				claim.descriptor = entry.descriptor;
-				claim.condition = entry.condition;
+			if (entry.descriptor && entry.descriptor.use_count() <= 1) {
+				// Allocated before beginClose() publishes the claim: a failure after it would leave a
+				// close that nobody runs, and every OpenDB() for the path would wait on it.
+				claimed.emplace_back(key, nullptr, nullptr);
+				if (entry.descriptor->beginClose()) {
+					DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance, key.path.c_str());
+					claimed.front().descriptor = entry.descriptor;
+					claimed.front().condition = entry.condition;
+				}
 			}
 		} else {
 			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced DBDescriptor not found! \"%s\"\n", instance, key.path.c_str());
 		}
 	}
 
-	if (!claim.descriptor) {
+	if (claimed.empty() || !claimed.front().descriptor) {
 		return CloseResult{};
 	}
 

@@ -699,7 +699,7 @@ napi_value TransactionHandle::get(
 	);
 	// Until the transaction registration is transferred below, setup failures
 	// must delete this state without unregistering work it does not own.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pendingState(env, state);
 	// Resolve and pin the caller's column family on the JS thread. The worker
 	// releases this descriptor before signaling completion so the native column
@@ -765,7 +765,7 @@ napi_value TransactionHandle::get(
 	// If queueing fails, PendingAsyncState deletes the state, whose base
 	// destructor releases the registration and whose derived members release the
 	// column descriptor first.
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	transactionRegistration.release();
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 	pendingState.release();
@@ -895,7 +895,7 @@ napi_value TransactionHandle::multiGet(
 	auto state = new AsyncTransactionMultiGetState(env, this->shared_from_this(), readOptions);
 	// Until the transaction registration is transferred below, setup failures must delete this
 	// state without unregistering work it does not own.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pendingState(env, state);
 	if (!state->batch.copyKeys(keys) || !state->batch.allocateResults()) {
 		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
@@ -986,7 +986,7 @@ napi_value TransactionHandle::multiGet(
 		&state->asyncWork
 	));
 
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	transactionRegistration.release();
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 	pendingState.release();

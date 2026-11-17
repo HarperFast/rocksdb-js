@@ -194,9 +194,7 @@ void rejectAsyncState(napi_env env, State* state, const char* code, const char* 
 	}
 	napi_value error = nullptr;
 	bool pending = false;
-	if (::napi_is_exception_pending(env, &pending) == napi_ok && pending) {
-		::napi_get_and_clear_last_exception(env, &error);
-	} else {
+	if (::napi_is_exception_pending(env, &pending) != napi_ok || !pending) {
 		napi_value codeValue = nullptr;
 		napi_value messageValue;
 		if (code != nullptr && ::napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &codeValue) != napi_ok) {
@@ -207,13 +205,18 @@ void rejectAsyncState(napi_env env, State* state, const char* code, const char* 
 			error = nullptr;
 		}
 	}
+	if (error == nullptr && ::napi_get_and_clear_last_exception(env, &error) != napi_ok) {
+		::napi_get_undefined(env, &error);
+	}
 	napi_value global;
 	napi_value reject;
+	// Without a call the references are kept rather than dropped, so nothing claims the promise
+	// settled.
 	if (error != nullptr && ::napi_get_global(env, &global) == napi_ok &&
-		::napi_get_reference_value(env, state->rejectRef, &reject) == napi_ok) {
-		::napi_call_function(env, global, reject, 1, &error, nullptr);
+		::napi_get_reference_value(env, state->rejectRef, &reject) == napi_ok &&
+		::napi_call_function(env, global, reject, 1, &error, nullptr) == napi_ok) {
+		state->deleteCallbackRefs();
 	}
-	state->deleteCallbackRefs();
 }
 
 /**
