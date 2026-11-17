@@ -1,4 +1,5 @@
 import { RocksDatabase, getRegistryStatus, shutdown } from '../../src/index.ts';
+import { isFlushCompletedDelayedForTesting } from '../../src/load-binding.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 
@@ -164,9 +165,12 @@ if (!isMainThread) {
 		const db = RocksDatabase.open(path, { writeBufferSize: 64 * 1024 });
 		const value = 'x'.repeat(1024);
 		for (let i = 0; i < 256; i++) db.putSync(`key-${i}`, value);
-		await delay(200);
-		if ((db.getDBIntProperty('rocksdb.num-running-flushes') ?? 0) < 1)
-			throw new Error('No flush is inside the delayed listener; this case proves nothing');
+		const deadline = performance.now() + 10_000;
+		while (!isFlushCompletedDelayedForTesting()) {
+			if (performance.now() > deadline)
+				throw new Error('No flush entered the delayed listener; this case proves nothing');
+			await delay(10);
+		}
 		db.close();
 		await delay(2_000);
 		const left = getRegistryStatus().filter((entry) => entry.path === path);

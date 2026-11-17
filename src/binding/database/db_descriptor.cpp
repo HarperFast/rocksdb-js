@@ -425,7 +425,9 @@ public:
 		}
 		// After the lookup, so a close can land where a held descriptor reference would have been.
 		if (const int delayMs = flushCompletedDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+			flushCompletedDelayActive().fetch_add(1, std::memory_order_release);
 			std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+			flushCompletedDelayActive().fetch_sub(1, std::memory_order_release);
 		}
 
 		rocksdb::SequenceNumber flushedSequence = flush_info.largest_seqno;
