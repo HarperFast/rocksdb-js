@@ -75,8 +75,6 @@ describe('commitSync() shares the async commit sequence', () => {
 		}
 	);
 
-	// The admission pause precedes registration, so a foreign shutdown() lands before commitSync()
-	// registers with the transaction or holds a descriptor operation.
 	it.each([
 		['refuses a transaction a foreign shutdown() closed', {}],
 		[

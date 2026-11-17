@@ -39,10 +39,6 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 */
 	std::shared_ptr<DBDescriptor> descriptor;
 
-	/**
-	 * `descriptor`, for a caller that relies on the owner-thread rule above to read it without
-	 * holding anything that stops `close()` from resetting it.
-	 */
 	const std::shared_ptr<DBDescriptor>& ownerDescriptor() const {
 		this->assertOwnerThread();
 		return this->descriptor;

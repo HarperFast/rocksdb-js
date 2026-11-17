@@ -415,7 +415,7 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
 	DBDescriptor* operationDescriptor = nullptr;
 	bool descriptorOperationActive = false;
-	// A coordinated-retry Busy parks on savedSlots; commitSync() throws ERR_BUSY and captures none.
+	// False for commitSync(), which throws ERR_BUSY rather than parking.
 	const bool parksOnBusy;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
@@ -431,13 +431,15 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	) :
 		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
 		hasLog(false),
-		descriptor(handle && handle->dbHandle ? handle->dbHandle->ownerDescriptor() : nullptr),
-		parksOnBusy(canPark && handle && handle->coordinatedRetry),
-		parkTimeouts(
-			this->parksOnBusy && handle->dbHandle && handle->dbHandle->ownerDescriptor()
-				? handle->dbHandle->ownerDescriptor()->parkTimeouts
-				: std::shared_ptr<ParkTimeoutRegistry>()
-		) {}
+		parksOnBusy(canPark && handle && handle->coordinatedRetry) {
+		if (handle && handle->dbHandle) {
+			const std::shared_ptr<DBDescriptor>& owner = handle->dbHandle->ownerDescriptor();
+			this->descriptor = owner;
+			if (owner && this->parksOnBusy) {
+				this->parkTimeouts = owner->parkTimeouts;
+			}
+		}
+	}
 
 	void registerDescriptorOperation(std::shared_ptr<DBDescriptor> descriptor) {
 		this->libuvDescriptor = std::move(descriptor);
@@ -1109,8 +1111,8 @@ static unsigned commitDelayMs() {
 }
 
 /**
- * Test seam: a one-shot pause after `Pending` -> `Committing`, before the commit registers with the
- * transaction or the descriptor, so a foreign closer can land there. Noop in production.
+ * Test seam: a one-shot pause before the commit registers anywhere, so a foreign closer can land in
+ * that window.
  */
 static void pauseBeforeCommitAdmission() {
 	if (transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) <= 0) {
