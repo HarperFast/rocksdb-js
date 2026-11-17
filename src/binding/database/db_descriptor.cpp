@@ -297,11 +297,15 @@ struct JobTracker final {
  * Shared state between the RocksDB `EventListener` and the `DBDescriptor`,
  * created BEFORE `DB::Open` so background callbacks fired during open have a
  * valid, race-free target even though the descriptor does not exist yet
- * (HarperFast/rocksdb-js#754). The descriptor pointer is published under
- * `mutex_` once construction succeeds, and every read takes the same lock — so
- * there is no data race on the `weak_ptr`. (The previous design bound a shared
- * `weak_ptr` object after open while background threads called `lock()` on that
- * same object concurrently, which is undefined behavior.)
+ * (HarperFast/rocksdb-js#754). The descriptor is published under `mutex_` once
+ * construction succeeds and detached under it as the first step of
+ * `~DBDescriptor`, and every callback uses it only while holding that lock.
+ *
+ * Callbacks must not take a `shared_ptr<DBDescriptor>`: a last-handle close
+ * that observes the extra reference skips its purge (`use_count() > 1`), and a
+ * RocksDB background thread cannot retry it, because `finishClose()` waits for
+ * that thread. The skipped purge left the database open with no handles until
+ * `shutdown()` or process exit.
  *
  * A background error that latches before the descriptor is attached is stashed
  * as `pendingError_` (the same JSON form `setLastError` stores) and transferred
@@ -309,48 +313,64 @@ struct JobTracker final {
  * `getLastError()` / the `'error'` event instead of being silently dropped.
  */
 struct DBEventListenerState final {
-	// Flush callbacks: the attached descriptor, or null before attach / after close.
-	std::shared_ptr<DBDescriptor> lockDescriptor() {
+	// Flush callbacks: copy the identity path out rather than hold the lock
+	// across transaction-log store I/O. False before attach / after detach.
+	bool attachedIdentityPath(std::string& identityPath) {
 		std::lock_guard<std::mutex> lock(this->mutex_);
-		return this->descriptor_.lock();
+		if (!this->descriptor_) {
+			return false;
+		}
+		identityPath = this->descriptor_->identityPath;
+		return true;
+	}
+
+	// emitWriteStall only enqueues to JS, so it runs under the lock.
+	void emitWriteStall(
+		const std::string& columnFamily,
+		rocksdb::WriteStallCondition previous,
+		rocksdb::WriteStallCondition current
+	) {
+		std::lock_guard<std::mutex> lock(this->mutex_);
+		if (this->descriptor_) {
+			this->descriptor_->emitWriteStall(columnFamily, previous, current);
+		}
 	}
 
 	// OnBackgroundError: route the serialized error to the descriptor when it is
 	// attached, else stash it for transfer on publish. Touches no N-API and never
 	// blocks, so it is safe on a RocksDB background thread.
 	void recordBackgroundError(std::string json) {
-		std::shared_ptr<DBDescriptor> desc;
-		{
-			std::lock_guard<std::mutex> lock(this->mutex_);
-			desc = this->descriptor_.lock();
-			if (!desc) {
-				this->pendingError_ = std::move(json);
-				return;
-			}
+		std::lock_guard<std::mutex> lock(this->mutex_);
+		if (!this->descriptor_) {
+			this->pendingError_ = std::move(json);
+			return;
 		}
-		// setLastError stores + emits; call it outside our lock.
-		desc->setLastError(std::move(json));
+		this->descriptor_->setLastError(std::move(json));
 	}
 
 	// Publish the descriptor once open succeeds and flush any error captured
 	// during open. A concurrent recordBackgroundError therefore either stashes
 	// (observed before publish, drained here) or routes straight to the
 	// descriptor (after) — never lost.
-	void publishDescriptor(std::shared_ptr<DBDescriptor> descriptor) {
-		std::string pending;
-		{
-			std::lock_guard<std::mutex> lock(this->mutex_);
-			this->descriptor_ = descriptor;
+	void publishDescriptor(DBDescriptor* descriptor) {
+		std::lock_guard<std::mutex> lock(this->mutex_);
+		this->descriptor_ = descriptor;
+		if (!this->pendingError_.empty()) {
+			std::string pending;
 			pending.swap(this->pendingError_);
-		}
-		if (!pending.empty()) {
 			descriptor->setLastError(std::move(pending));
 		}
 	}
 
+	// Waits out any callback using the descriptor.
+	void detach() {
+		std::lock_guard<std::mutex> lock(this->mutex_);
+		this->descriptor_ = nullptr;
+	}
+
 private:
 	std::mutex mutex_;
-	std::weak_ptr<DBDescriptor> descriptor_;
+	DBDescriptor* descriptor_ = nullptr;
 	std::string pendingError_;
 };
 
@@ -363,8 +383,8 @@ public:
 	TransactionLogEventListener(std::shared_ptr<DBEventListenerState> state) : state(std::move(state)) {}
 
 	void OnFlushBegin(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
-		auto desc = this->state->lockDescriptor();
-		if (!desc) {
+		std::string identityPath;
+		if (!this->state->attachedIdentityPath(identityPath)) {
 			return;
 		}
 		// RocksDB can run flushes concurrently across background threads, so guard
@@ -385,10 +405,10 @@ public:
 			tracker.flushedSequence = flushedSequence;
 			this->jobTrackers[flush_info.job_id] = tracker;
 			DEBUG_LOG("%p TransactionLogEventListener::OnFlushBegin flushedSequence=%llu\n",
-				desc.get(), (unsigned long long)flushedSequence);
+				this, (unsigned long long)flushedSequence);
 
 			// Get stores from the registry
-			auto stores = TransactionLogStoreRegistry::GetStores(desc->identityPath);
+			auto stores = TransactionLogStoreRegistry::GetStores(identityPath);
 			for (auto& store : stores) {
 				store->databaseFlushBegin(flushedSequence);
 			}
@@ -399,17 +419,20 @@ public:
 	}
 
 	void OnFlushCompleted(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
-		if (const int delayMs = flushCompletedDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-		}
-		auto desc = this->state->lockDescriptor();
-		if (!desc) {
+		std::string identityPath;
+		if (!this->state->attachedIdentityPath(identityPath)) {
 			return;
+		}
+		// After the lookup, so a close can land where a held descriptor reference would have been.
+		if (const int delayMs = flushCompletedDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+			flushCompletedDelayActive().fetch_add(1, std::memory_order_release);
+			std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+			flushCompletedDelayActive().fetch_sub(1, std::memory_order_release);
 		}
 
 		rocksdb::SequenceNumber flushedSequence = flush_info.largest_seqno;
 		DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted cf name=%s job id=%u flushedSequence=%llu\n",
-			desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)flushedSequence);
+			this, flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)flushedSequence);
 
 		// Guard the shared jobTrackers map — see OnFlushBegin.
 		std::lock_guard<std::mutex> jobLock(this->jobTrackersMutex);
@@ -417,7 +440,7 @@ public:
 		auto it = this->jobTrackers.find(flush_info.job_id);
 		if (it == this->jobTrackers.end()) {
 			DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted unable to find job id=%d\n",
-				desc.get(), flush_info.job_id);
+				this, flush_info.job_id);
 		} else {
 			// we find the highest sequence number; this represents the overall sequence
 			// number for the flush job
@@ -428,10 +451,10 @@ public:
 			if (--it->second.columnFamilyCount == 0) {
 				// The last CF flush has completed for the job, now signal that the database flush is done
 				DEBUG_LOG("%p TransactionLogEventListener::OnFlushCompleted job completed name=%s job id=%d flushedSequence=%llu\n",
-					desc.get(), flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)it->second.flushedSequence);
+					this, flush_info.cf_name.c_str(), flush_info.job_id, (unsigned long long)it->second.flushedSequence);
 
 				// Get stores from the registry
-				auto stores = TransactionLogStoreRegistry::GetStores(desc->identityPath);
+				auto stores = TransactionLogStoreRegistry::GetStores(identityPath);
 				for (auto& store : stores) {
 					store->databaseFlushed(it->second.flushedSequence);
 				}
@@ -474,16 +497,12 @@ public:
 	// thread; emitWriteStall touches no napi (async emit) and debounces, so this
 	// is cheap and non-blocking, same discipline as OnBackgroundError.
 	void OnStallConditionsChanged(const rocksdb::WriteStallInfo& info) override {
-		auto desc = this->state->lockDescriptor();
-		if (!desc) {
-			return;
-		}
 		// Runs on a RocksDB background thread; an exception unwinding into RocksDB
 		// is undefined behavior. A dropped stall notification is acceptable, so
 		// contain anything the emit path throws (e.g. a bad_alloc from the payload
 		// allocation) rather than let it escape.
 		try {
-			desc->emitWriteStall(info.cf_name, info.condition.prev, info.condition.cur);
+			this->state->emitWriteStall(info.cf_name, info.condition.prev, info.condition.cur);
 		} catch (...) {
 		}
 	}
@@ -536,6 +555,10 @@ DBDescriptor::DBDescriptor(
  */
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
+	// First, so no listener callback reaches this descriptor once it is being destroyed.
+	if (this->eventListenerState) {
+		this->eventListenerState->detach();
+	}
 	this->transactionRegistryLink->detach();
 	try {
 		this->close();
@@ -1900,7 +1923,8 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	// Publish the descriptor into the shared listener state (guarded), so flush
 	// callbacks can reach it and any background error captured during open is
 	// transferred to it now.
-	listenerState->publishDescriptor(descriptor);
+	descriptor->eventListenerState = listenerState;
+	listenerState->publishDescriptor(descriptor.get());
 
 	// Register with the transaction log store registry
 	TransactionLogStoreConfig logConfig;

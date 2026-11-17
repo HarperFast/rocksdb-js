@@ -194,6 +194,8 @@ private:
 	bool stopped = false;
 };
 
+struct DBEventListenerState;
+
 /**
  * How a transaction leaves the registry it was added to without holding a
  * `shared_ptr<DBDescriptor>`, which would make a racing last-handle close skip
@@ -320,6 +322,13 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * not draw on the budget and must not appear in a stall report explaining it.
 	 */
 	rocksdb::WriteBufferManager* const attachedWriteBufferManager;
+
+	/**
+	 * Shared with this database's RocksDB event listener, which reaches the
+	 * descriptor through it without holding a reference; detached in the
+	 * destructor.
+	 */
+	std::shared_ptr<DBEventListenerState> eventListenerState;
 
 	/**
 	 * Map of column family name to column family handle.
