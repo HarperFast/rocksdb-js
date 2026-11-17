@@ -188,6 +188,13 @@ napi_value IsTransactionStagingDelayedForTesting(napi_env env, napi_callback_inf
 	return result;
 }
 
+napi_value IsTransactionCloseDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, txnCloseDelayActive().load(std::memory_order_acquire), &result));
+	return result;
+}
+
 napi_value IsTransactionCommitExecuteDelayedForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	napi_value result;
@@ -631,6 +638,22 @@ NAPI_MODULE_INIT() {
 		exports,
 		"isTransactionCommitExecuteDelayedForTesting",
 		isTransactionCommitExecuteDelayedFn
+	));
+
+	napi_value isTransactionCloseDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"isTransactionCloseDelayedForTesting",
+		NAPI_AUTO_LENGTH,
+		IsTransactionCloseDelayedForTesting,
+		nullptr,
+		&isTransactionCloseDelayedFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"isTransactionCloseDelayedForTesting",
+		isTransactionCloseDelayedFn
 	));
 
 	napi_value isCommitAdmissionDelayedFn;

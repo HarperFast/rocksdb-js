@@ -601,7 +601,9 @@ void TransactionHandle::close() {
 	// Noop in production.
 	const int closeDelayMs = txnCloseDelayMsFlag().load(std::memory_order_relaxed);
 	if (closeDelayMs > 0) {
+		txnCloseDelayActive().store(true, std::memory_order_release);
 		std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
+		txnCloseDelayActive().store(false, std::memory_order_release);
 	}
 
 	// Only now that no native work can be running: settle the final state. A commit completion

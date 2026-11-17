@@ -826,14 +826,33 @@ static void createCommitError(napi_env env, const TransactionCommitState& state,
 }
 
 /**
- * Runs no JavaScript, so commitSync() can call it while still holding its descriptor operation; the
- * caller builds the error for a failed commit afterwards with createCommitError().
+ * close() leaves the closables before it deletes `txn`, so a caller that no longer holds its
+ * descriptor operation takes a fresh one: otherwise a foreign finishClose() could pass its drain,
+ * find nothing to sweep, and destroy the database first. Once the descriptor is closing, its sweep
+ * owns the close; an expired descriptor has already run it.
  */
-static bool settleCommit(TransactionCommitState* state) {
+static void closeSettledHandle(TransactionCommitState* state, bool operationHeld) {
+	if (operationHeld) {
+		state->handle->close();
+		return;
+	}
+	std::shared_ptr<DBDescriptor> descriptor = state->descriptor.lock();
+	OperationGuard operation(descriptor);
+	if (descriptor && !descriptor->isClosing()) {
+		state->handle->close();
+	}
+}
+
+/**
+ * Runs no JavaScript, so commitSync() can call it while still holding its descriptor operation; the
+ * caller builds the error for a failed commit afterwards with createCommitError(). Every other caller
+ * runs after its operation was released and passes `operationHeld = false`.
+ */
+static bool settleCommit(TransactionCommitState* state, bool operationHeld = true) {
 	if (state->status.ok()) {
 		if (state->handle) {
 			DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%llu)\n", state->handle.get(), (unsigned long long)state->handle->id);
-			state->handle->close();
+			closeSettledHandle(state, operationHeld);
 		}
 		return true;
 	}
@@ -844,7 +863,7 @@ static bool settleCommit(TransactionCommitState* state) {
 	// A failed commit is deliberately left open for the caller to retry or abort; there is no
 	// caller left, so release it here rather than leaving it registered forever.
 	if (state->handle && state->handle->wrapperCollected.load()) {
-		state->handle->close();
+		closeSettledHandle(state, operationHeld);
 	}
 	return false;
 }
@@ -872,7 +891,7 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 
 		// Nobody is left to act on RETRY_NOW — the resolve below fires into a dropped promise chain.
 		if (state->handle->wrapperCollected.load()) {
-			state->handle->close();
+			closeSettledHandle(state, /*operationHeld=*/false);
 		}
 
 		bool parked = false;
@@ -1018,7 +1037,7 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 		return;
 	}
 
-	if (settleCommit(state)) {
+	if (settleCommit(state, /*operationHeld=*/false)) {
 		state->callResolve();
 	} else {
 		napi_value error;
@@ -1034,27 +1053,23 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
  */
 static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* context, void* data) {
 	TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
-	std::shared_ptr<DBDescriptor> descriptor;
+	std::shared_ptr<DBDescriptor> descriptor = state->descriptor.lock();
 
 	// env is nullptr when the env is tearing down; nothing left to resolve and
 	// the descriptor's per-env tsfn is being released — do not touch napi.
 	if (env != nullptr) {
-		descriptor = state->descriptor.lock();
 		completeCommitWork(env, state);
 		state->completion->finish(env);
 	} else if (state->handle) {
 		// Still close the txn handle so it is removed from the descriptor's
 		// transactions map and the native RocksDB transaction is destroyed —
 		// the descriptor may be shared with (and outlive us on) other envs.
-		// close() is cross-thread safe: it skips its napi_delete_reference
-		// off the owning thread.
-		state->handle->close();
+		// close() is napi-free, so it is safe here.
+		closeSettledHandle(state, /*operationHeld=*/false);
 	}
 
 	delete state;
-	if (env != nullptr) {
-		purgeAfterCommit(std::move(descriptor));
-	}
+	purgeAfterCommit(std::move(descriptor));
 }
 
 /**
@@ -1220,6 +1235,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					// the shared descriptor doesn't retain the transaction, then
 					// drop the state.
 					DEBUG_LOG("%p Transaction::Commit commit thread: env gone, dropping completion\n", state);
+					// finishClose() joins this lane before its sweep, so this close() needs no operation.
 					if (state->handle) {
 						state->handle->close();
 					}

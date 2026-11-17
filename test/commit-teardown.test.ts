@@ -71,3 +71,30 @@ describe('Async commit completion vs. worker env teardown', () => {
 		({ mode }) => expectSurvives(mode)
 	);
 });
+
+describe('Async commit completion vs. foreign shutdown()', () => {
+	it.skipIf(!!process.versions.deno).each([...COMMIT_THREAD_MODES, { label: '0', mode: '0' }])(
+		"holds shutdown() until the completion's close() finishes (ROCKSDB_JS_COMMIT_THREAD=$label)",
+		{ timeout: 30_000 },
+		async ({ mode }) => {
+			// Holds the completion's close() open after it leaves the closables.
+			const env: NodeJS.ProcessEnv = { ...process.env, ROCKSDB_JS_TXN_CLOSE_DELAY_MS: '1000' };
+			if (mode === undefined) {
+				delete env.ROCKSDB_JS_COMMIT_THREAD;
+			} else {
+				env.ROCKSDB_JS_COMMIT_THREAD = mode;
+			}
+			const { code, signal, stderr, timedOut } = await runChild(
+				process.execPath,
+				[join(__dirname, 'fixtures', 'fork-commit-async-shutdown.mts'), generateDBPath()],
+				{ deadlineMs: 20_000, env }
+			);
+			expect({ code, signal, stderr, timedOut }).toEqual({
+				code: 0,
+				signal: null,
+				stderr: '',
+				timedOut: false,
+			});
+		}
+	);
+});

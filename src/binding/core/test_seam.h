@@ -79,6 +79,11 @@ inline std::atomic<int>& txnCloseDelayMsFlag() {
 	return delayMs;
 }
 
+inline std::atomic<bool>& txnCloseDelayActive() {
+	static std::atomic<bool> active{ false };
+	return active;
+}
+
 // Transactional reads execute on a libuv worker, so their test delay cannot
 // read the process environment concurrently with JavaScript.
 inline std::atomic<int>& txnGetDelayMsFlag() {
