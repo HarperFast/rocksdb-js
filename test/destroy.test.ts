@@ -1,4 +1,5 @@
 import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
+import { type ChildResult, ChildCloseTimeoutError, runChild } from './lib/child-process.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -45,64 +46,46 @@ const nodeExecutable =
 		? (process.env.npm_node_execpath ?? 'node')
 		: process.execPath);
 
-function runDestroyFixture(
+async function runDestroyFixture(
 	fixture: string,
 	dbPath: string,
 	env?: NodeJS.ProcessEnv,
 	args: string[] = [],
 	afterExit?: () => void
 ): Promise<void> {
-	return new Promise((resolve, reject) => {
+	let result: ChildResult;
+	try {
 		// These fixtures depend on Node's type stripping, GC flag, and worker semantics.
-		const child = spawn(nodeExecutable, ['--expose-gc', fixture, dbPath, ...args], {
+		result = await runChild(nodeExecutable, ['--expose-gc', fixture, dbPath, ...args], {
+			deadlineMs: 10_000,
 			env: { ...process.env, ...env },
+			// Deadline plus close wait must stay under the 15s test timeouts.
+			closeTimeoutMs: 3_000,
 		});
-		let stderr = '';
-		child.stderr.on('data', (chunk) => {
-			stderr += chunk.toString();
-		});
-		const timeout = setTimeout(() => {
-			child.kill();
-			reject(new Error(`Destroy fixture timed out\n${stderr}`));
-		}, 10_000);
-		child.on('error', (error) => {
-			clearTimeout(timeout);
-			reject(new Error(`Unable to run lifecycle fixture with Node (${nodeExecutable}): ${error}`));
-		});
-		child.on('close', (code, signal) => {
-			clearTimeout(timeout);
-			let passed = code === 0 && signal === null;
-			let afterExitError: unknown;
-			if (passed && afterExit) {
-				try {
-					afterExit();
-				} catch (error) {
-					passed = false;
-					afterExitError = error;
-				}
-			}
-			// The child owns dbPath, and several fixtures deliberately end with a
-			// live or quarantined database, so nothing else removes it. Keep it
-			// on failure (and under KEEP_FILES) so the state is inspectable.
-			if (passed && !process.env.KEEP_FILES) {
-				// This runs after the Promise executor returned, so a throw here
-				// (Windows EBUSY past maxRetries) would be an uncaught exception
-				// that kills the worker rather than a failed test.
-				try {
-					rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
-				} catch {
-					// leftover directory only; the fixture itself passed
-				}
-			}
-			if (passed) {
-				resolve();
-			} else if (afterExitError) {
-				reject(afterExitError);
-			} else {
-				reject(new Error(`Destroy fixture failed (code=${code}, signal=${signal})\n${stderr}`));
-			}
-		});
-	});
+	} catch (error) {
+		if (error instanceof ChildCloseTimeoutError) {
+			throw error;
+		}
+		throw new Error(`Unable to run lifecycle fixture with Node (${nodeExecutable}): ${error}`);
+	}
+	const { code, signal, stderr, timedOut } = result;
+	if (timedOut) {
+		throw new Error(`Destroy fixture timed out\n${stderr}`);
+	}
+	if (code !== 0 || signal !== null) {
+		throw new Error(`Destroy fixture failed (code=${code}, signal=${signal})\n${stderr}`);
+	}
+	afterExit?.();
+	// The child owns dbPath, and several fixtures deliberately end with a
+	// live or quarantined database, so nothing else removes it. Keep it
+	// on failure (and under KEEP_FILES) so the state is inspectable.
+	if (!process.env.KEEP_FILES) {
+		try {
+			rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+		} catch {
+			// leftover directory only; the fixture itself passed
+		}
+	}
 }
 
 describe('Destroy', () => {
