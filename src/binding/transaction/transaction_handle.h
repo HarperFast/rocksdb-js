@@ -190,6 +190,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	const std::weak_ptr<DBDescriptor> owningDescriptor;
 
 	/**
+	 * How close() leaves the registry without pinning the descriptor.
+	 */
+	const std::shared_ptr<TransactionRegistryLink> registryLink;
+
+	/**
 	 * The environment that created this transaction. A RocksDB transaction is
 	 * not thread-safe, so every by-id lookup rejects any other environment
 	 * (`lookupOwnedTransaction`). Immutable, unlike `dbHandle`, which close()

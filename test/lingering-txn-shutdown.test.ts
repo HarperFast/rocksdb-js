@@ -9,7 +9,7 @@ const fixturePath = join(import.meta.dirname, 'fixtures', 'fork-lingering-txn-sh
  * Repro for HarperFast/rocksdb-js#741's precondition: worker envs that exit
  * with PENDING transactions leak their TransactionHandle into the shared
  * DBDescriptor (the JS finalizer only drops the JS-side shared_ptr; only
- * commit/abort call transactionRemove), and the leaked handle's weak napi
+ * TransactionHandle::close() removes it from the registry), and the leaked handle's weak napi
  * refs + env pointer outlive the env. Teardown of such an env crashes in
  * Node's second-pass napi finalizer drain (EnqueueFinalizer lambda touching
  * freed env state during Environment::RunCleanup).
@@ -120,7 +120,7 @@ describe('pending transactions leaked by dead worker envs', () => {
 	// The differentiating condition, isolated: identical topology and
 	// NativeTransaction lifecycle as the pending repro above — ten sequential
 	// workers each creating a transaction and exiting — except these COMMIT, so
-	// transactionRemove() takes each one out of the registry before its env
+	// close() takes each one out of the registry before its env
 	// dies. Nothing lingers, so this stays green on main as well as here.
 	it('control: committed transactions survive the same worker churn', async () => {
 		const { code, signal } = await new Promise<{

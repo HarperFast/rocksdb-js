@@ -536,6 +536,7 @@ DBDescriptor::DBDescriptor(
  */
 DBDescriptor::~DBDescriptor() {
 	DEBUG_LOG("%p DBDescriptor::~DBDescriptor Closing \"%s\"\n", this, this->path.c_str());
+	this->transactionRegistryLink->detach();
 	try {
 		this->close();
 	} catch (const std::exception& error) {
@@ -1940,14 +1941,13 @@ std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint64_t id) {
 /**
  * Removes a transaction from the registry.
  */
-void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandle) {
-	std::lock_guard<std::mutex> lock(this->txnsMutex);
+void DBDescriptor::transactionRemoveLocked(const std::shared_ptr<TransactionHandle>& txnHandle) {
 	this->closables.erase(txnHandle.get());
 
 	auto it = this->transactions.find(txnHandle->id);
 	if (it != this->transactions.end()) {
 		if (it->second != txnHandle) {
-			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %llu mismatch! expected %p, got %p\n", this, (unsigned long long)txnHandle->id, it->second.get(), txnHandle.get());
+			DEBUG_LOG("%p DBDescriptor::transactionRemoveLocked txnId %llu mismatch! expected %p, got %p\n", this, (unsigned long long)txnHandle->id, it->second.get(), txnHandle.get());
 		}
 		this->transactions.erase(it);
 	}
@@ -1968,8 +1968,8 @@ void DBDescriptor::collectTransactions(std::vector<std::shared_ptr<TransactionHa
  * DBHandle::close().
  */
 void DBDescriptor::closeTransactionsByEnv(napi_env env) {
-	// Collect matches under the mutex, close outside it: close() calls
-	// transactionRemove(), which re-takes txnsMutex, and may block in
+	// Collect matches under the mutex, close outside it: close() leaves the
+	// registry, which re-takes txnsMutex, and may block in
 	// waitForAsyncWorkCompletion() draining an execute still running on the
 	// commit thread.
 	std::vector<std::shared_ptr<TransactionHandle>> toClose;
@@ -1985,14 +1985,19 @@ void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 	for (auto& txnHandle : toClose) {
 		DEBUG_LOG("%p DBDescriptor::closeTransactionsByEnv closing transaction %llu (env=%p)\n", this, (unsigned long long)txnHandle->id, env);
 		txnHandle->close();
-		// close() can only self-remove while it can still reach this descriptor
-		// through its DBHandle, and a handle closed earlier by the user has
-		// already reset that pointer — so for exactly the case this reap exists
-		// to catch, the registry entry (a strong ref to the handle, and through
-		// it the DBHandle) would otherwise outlive the env for the life of the
-		// process. Removing here is idempotent when close() already did it.
-		this->transactionRemove(txnHandle);
 	}
+}
+
+void TransactionRegistryLink::remove(const std::shared_ptr<TransactionHandle>& txnHandle) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	if (this->descriptor) {
+		this->descriptor->transactionRemoveLocked(txnHandle);
+	}
+}
+
+void TransactionRegistryLink::detach() {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	this->descriptor = nullptr;
 }
 
 /**

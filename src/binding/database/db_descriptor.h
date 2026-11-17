@@ -195,6 +195,26 @@ private:
 };
 
 /**
+ * How a transaction leaves the registry it was added to without holding a
+ * `shared_ptr<DBDescriptor>`, which would make a racing last-handle close skip
+ * its purge (`use_count() > 1`). `TransactionHandle::close()` cannot retry that
+ * purge: it runs on commit-lane and libuv threads that `finishClose()` joins or
+ * waits for. `mutex` is the descriptor's `txnsMutex`, so removal takes no extra
+ * lock; `~DBDescriptor` clears `descriptor` under it before anything else.
+ */
+struct TransactionRegistryLink final {
+	explicit TransactionRegistryLink(DBDescriptor* descriptor) : descriptor(descriptor) {}
+
+	void remove(const std::shared_ptr<TransactionHandle>& txnHandle);
+	void detach();
+
+	std::mutex mutex;
+
+private:
+	DBDescriptor* descriptor;
+};
+
+/**
  * Descriptor for a RocksDB database, its column families, and any in-flight
  * transactions. The DBRegistry uses this to track active databases and reuse
  * RocksDB instances.
@@ -378,11 +398,17 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::atomic<uint64_t> nextTransactionId{ 1 };
 
 	/**
+	 * Lets transactions remove themselves after their DBHandle has closed.
+	 */
+	const std::shared_ptr<TransactionRegistryLink> transactionRegistryLink =
+		std::make_shared<TransactionRegistryLink>(this);
+
+	/**
 	 * Mutex to protect the transactions map and closables set. When both are
 	 * held, DBRegistry::databasesMutex precedes txnsMutex; no txnsMutex holder
 	 * acquires the registry mutex.
 	 */
-	std::mutex txnsMutex;
+	std::mutex& txnsMutex = transactionRegistryLink->mutex;
 
 	/**
 	 * Set of closables to be closed when the descriptor is closed.
@@ -773,7 +799,7 @@ public:
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
 	std::shared_ptr<TransactionHandle> transactionGet(uint64_t id);
-	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
+	void transactionRemoveLocked(const std::shared_ptr<TransactionHandle>& txnHandle);
 	uint64_t transactionGetNextId();
 
 	/**

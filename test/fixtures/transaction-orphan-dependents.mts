@@ -11,13 +11,14 @@ if (
 		mode !== 'async-get-many' &&
 		mode !== 'async-get-decoded' &&
 		mode !== 'async-get-many-decoded' &&
+		mode !== 'async-get-handle-closed' &&
 		mode !== 'iterator' &&
 		mode !== 'routed-iterator') ||
 	!dbPath ||
 	!globalThis.gc
 ) {
 	console.error(
-		'Usage: node --expose-gc transaction-orphan-dependents.mts <async-get[-many][-decoded]|iterator|routed-iterator> <dbPath>'
+		'Usage: node --expose-gc transaction-orphan-dependents.mts <async-get[-many][-decoded]|async-get-handle-closed|iterator|routed-iterator> <dbPath>'
 	);
 	process.exit(1);
 }
@@ -78,6 +79,29 @@ async function testDelayedAsyncGet(
 	await waitForTransactionClose();
 }
 
+// The orphan's close runs on the libuv worker once the delayed read finishes, after the handle that
+// created the transaction has closed; another handle keeps the database open.
+async function testAsyncGetAfterHandleClose(db: RocksDatabase): Promise<void> {
+	await db.put('key', 'value');
+	await db.flush();
+	db.close();
+	db.open();
+	const owner = RocksDatabase.open(dbPath);
+
+	const pendingRead = (() => {
+		const txn = new Transaction(owner.store);
+		return txn.getBinary('key');
+	})();
+	assert.ok(pendingRead instanceof Promise, 'expected a cold-cache async read');
+	assert.equal(transactionCount(), 1);
+
+	await forceCollection();
+	owner.close();
+	await assert.rejects(pendingRead, /Database closed during transaction get operation/);
+	assert.ok(registryStatus().some((entry) => entry.path === dbPath));
+	await waitForTransactionClose();
+}
+
 async function testLiveIterator(db: RocksDatabase, routed: boolean): Promise<void> {
 	for (const key of ['a', 'b', 'c']) {
 		await db.put(key, `value-${key}`);
@@ -101,7 +125,9 @@ async function testLiveIterator(db: RocksDatabase, routed: boolean): Promise<voi
 
 const db = RocksDatabase.open(dbPath);
 try {
-	if (mode.startsWith('async-get')) {
+	if (mode === 'async-get-handle-closed') {
+		await testAsyncGetAfterHandleClose(db);
+	} else if (mode.startsWith('async-get')) {
 		await testDelayedAsyncGet(db, mode.startsWith('async-get-many'), mode.endsWith('-decoded'));
 	} else {
 		await testLiveIterator(db, mode === 'routed-iterator');
