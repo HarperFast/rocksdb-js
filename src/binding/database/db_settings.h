@@ -20,6 +20,11 @@ struct OpenSettings final {
 	uint32_t commitThreads = 1;
 };
 
+struct ColumnFamilySettings final {
+	std::shared_ptr<rocksdb::Cache> blockCache;
+	size_t writeBufferManagerBudget = 0;
+};
+
 /**
  * Stores the global settings for RocksDB databases as well as various global
  * state.
@@ -123,6 +128,15 @@ public:
 	 * on first use.
 	 */
 	OpenSettings snapshotForOpen(bool needBlockCache);
+
+	/**
+	 * The live block cache and `attached`'s budget for a column family added to an open database,
+	 * read under the same lock for the same reason as `snapshotForOpen()`.
+	 */
+	ColumnFamilySettings snapshotForColumnFamily(
+		bool needBlockCache,
+		const rocksdb::WriteBufferManager* attached
+	);
 
 	bool getTransactionLogAbortMarkers() const {
 		return transactionLogAbortMarkers.load(std::memory_order_relaxed);

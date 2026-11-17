@@ -94,7 +94,7 @@ describe('config()', () => {
 			expect(result.mixed).toEqual([]);
 			expect(result.seen.A).toBeGreaterThan(0);
 			expect(result.seen.B).toBeGreaterThan(0);
-			expect(result.seen.A + result.seen.B).toBe(openCount);
+			expect(result.seen.A + result.seen.B).toBe(result.opens);
 		} finally {
 			if (!process.env.KEEP_FILES) {
 				rmSync(basePath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });

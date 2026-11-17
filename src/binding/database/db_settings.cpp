@@ -255,7 +255,7 @@ OpenSettings DBSettings::snapshotForOpen(bool needBlockCache) {
 		if (!writeBufferManager) {
 			std::shared_ptr<rocksdb::Cache> cache;
 			if (writeBufferManagerCostToCache.load(std::memory_order_relaxed)) {
-				cache = needBlockCache ? snapshot.blockCache : getBlockCache(); // null when disabled
+				cache = needBlockCache ? snapshot.blockCache : getBlockCache();
 			}
 			writeBufferManager = std::make_shared<rocksdb::WriteBufferManager>(
 				size,
@@ -274,6 +274,21 @@ OpenSettings DBSettings::snapshotForOpen(bool needBlockCache) {
 	snapshot.occLockBucketCount = occLockBucketCount;
 	snapshot.occValidateSerial = occValidateSerial;
 	snapshot.commitThreads = commitThreads;
+	return snapshot;
+}
+
+ColumnFamilySettings DBSettings::snapshotForColumnFamily(
+	bool needBlockCache,
+	const rocksdb::WriteBufferManager* attached
+) {
+	ColumnFamilySettings snapshot;
+	std::lock_guard<std::mutex> lock(writeBufferManagerMutex);
+	if (needBlockCache) {
+		snapshot.blockCache = getBlockCache();
+	}
+	if (attached) {
+		snapshot.writeBufferManagerBudget = attached->buffer_size();
+	}
 	return snapshot;
 }
 

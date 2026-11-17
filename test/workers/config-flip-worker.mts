@@ -10,14 +10,17 @@ const { control, settingsA, settingsB } = workerData as {
 
 let flips = 0;
 try {
-	Atomics.store(control, 1, 1);
-	Atomics.notify(control, 1);
-	while (Atomics.load(control, 0) === 0) {
+	do {
 		RocksDatabase.config(settingsB as any);
 		RocksDatabase.config(settingsA as any);
-		flips++;
-	}
+		if (++flips === 1) {
+			Atomics.store(control, 1, 1);
+			Atomics.notify(control, 1);
+		}
+	} while (Atomics.load(control, 0) === 0);
 	parentPort.postMessage({ flips });
 } catch (error) {
+	Atomics.store(control, 1, 1);
+	Atomics.notify(control, 1);
 	parentPort.postMessage({ error: error instanceof Error ? error.message : String(error) });
 }

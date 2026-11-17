@@ -46,8 +46,10 @@ arena block), the OCC options and `commitThreads` when it opens. It reads all of
 that call or none of it (#1070). Reading any of them separately later in `DBDescriptor::open` lets
 an open that spans a `config()` combine two calls; the OCC and commit-thread fields therefore have
 no getter outside the snapshot. The snapshot lock is released before `DB::Open`, so `config()` never
-waits for open I/O. A column family added to an already-open database still reads the live cache
-and its database's live manager budget. `test/fixtures/fork-config-open-snapshot.mts` covers it.
+waits for open I/O. A column family added to an already-open database reads the live cache and its
+database's manager budget together through `snapshotForColumnFamily()`.
+`test/fixtures/fork-config-open-snapshot.mts` flips the cache, manager budget, `occValidation` and
+`commitThreads`; it cannot observe `occLockBuckets`.
 
 # Commit threads: concurrent RocksDB commits per database
 
