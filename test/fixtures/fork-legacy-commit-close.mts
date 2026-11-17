@@ -79,8 +79,6 @@ if (mode === 'worker') {
 	process.exit(0);
 }
 
-// Another handle keeps the database open, so the commit completion's close() must remove the
-// transaction from a live registry after its own handle has closed.
 const survivor = mode === 'survivor' ? RocksDatabase.open(dbPath) : undefined;
 const db = RocksDatabase.open(dbPath);
 const txn = new Transaction(db.store);

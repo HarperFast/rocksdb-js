@@ -79,8 +79,7 @@ async function testDelayedAsyncGet(
 	await waitForTransactionClose();
 }
 
-// The orphan's close runs on the libuv worker once the delayed read finishes, after the handle that
-// created the transaction has closed; another handle keeps the database open.
+// The orphan's close runs on the libuv worker once the delayed read finishes.
 async function testAsyncGetAfterHandleClose(db: RocksDatabase): Promise<void> {
 	await db.put('key', 'value');
 	await db.flush();
