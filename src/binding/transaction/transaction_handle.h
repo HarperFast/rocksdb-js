@@ -341,7 +341,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	ColumnFamilySet touchedColumnFamilies;
 
-	/** Released only with the RocksDB transaction (core/DESIGN.md, participation). */
+	/** Held until the RocksDB transaction is deleted; a failed first stage returns its count (core/DESIGN.md, participation). */
 	NonVerifyingWriterSet nonVerifyingWriters;
 
 	/**
