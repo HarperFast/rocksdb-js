@@ -840,7 +840,6 @@ static void closeSettledHandle(TransactionCommitState* state, bool operationHeld
 	if (!descriptor) {
 		return;
 	}
-	// If close() throws, the state's destructor releases the operation.
 	state->registerDescriptorOperation(descriptor);
 	if (!descriptor->isClosing()) {
 		state->handle->close();
