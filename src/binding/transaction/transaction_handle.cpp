@@ -571,6 +571,7 @@ void TransactionHandle::close() {
 	}
 	this->closeIterators();
 
+	// Keeps this alive through close() once the registry's reference is gone.
 	// Empty in ~TransactionHandle, which can run under txnsMutex; the registry
 	// held no reference then anyway.
 	const std::shared_ptr<TransactionHandle> self = this->weak_from_this().lock();

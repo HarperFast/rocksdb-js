@@ -397,9 +397,6 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	std::atomic<uint64_t> nextTransactionId{ 1 };
 
-	/**
-	 * Lets transactions remove themselves after their DBHandle has closed.
-	 */
 	const std::shared_ptr<TransactionRegistryLink> transactionRegistryLink =
 		std::make_shared<TransactionRegistryLink>(this);
 
@@ -804,11 +801,11 @@ public:
 
 	/**
 	 * Closes every registered transaction created on `env` (`ownerEnv`), from
-	 * that env's module cleanup hook. Pending transactions are only
-	 * removed from the registry by commit/abort, so a worker env that dies with
-	 * one still open leaks the TransactionHandle — holding a live RocksDB
+	 * that env's module cleanup hook. A pending transaction leaves the registry
+	 * only when it is closed, so a worker env that dies with one still open
+	 * would leak the TransactionHandle — holding a live RocksDB
 	 * transaction/snapshot — into this process-global descriptor, and the last
-	 * env's Shutdown later walks it with a dangling env
+	 * env's Shutdown would later walk it with a dangling env
 	 * (HarperFast/rocksdb-js#741).
 	 *
 	 * Deliberately env-scoped, NOT part of DBHandle::close(): a user-called

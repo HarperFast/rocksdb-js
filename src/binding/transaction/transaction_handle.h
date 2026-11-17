@@ -190,7 +190,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	const std::weak_ptr<DBDescriptor> owningDescriptor;
 
 	/**
-	 * How close() leaves the registry without pinning the descriptor.
+	 * How close() leaves the registry: unlike `owningDescriptor`, it never pins
+	 * the descriptor.
 	 */
 	const std::shared_ptr<TransactionRegistryLink> registryLink;
 
