@@ -1145,6 +1145,38 @@ struct UserSharedBufferFinalizeData final {
 /**
  * Contains the column family handle and map of user shared buffers.
  */
+/**
+ * Open transactions holding a write staged through a non-participating handle
+ * on one column family (AGENTS invariant 39). Its own allocation, freed by the
+ * last of the family and those transactions: a transaction must not keep the
+ * family's descriptor, and with it a RocksDB column-family handle, alive past
+ * the database. The count doubles as the reference count, so a writer costs one
+ * atomic update to hold and one to release.
+ */
+class NonVerifyingWriterCount final {
+	std::atomic<uint32_t> references{ 1 };
+
+public:
+	NonVerifyingWriterCount() = default;
+	NonVerifyingWriterCount(const NonVerifyingWriterCount&) = delete;
+	NonVerifyingWriterCount& operator=(const NonVerifyingWriterCount&) = delete;
+
+	/** Valid only through the owning family, which holds one reference. */
+	uint32_t writers() const {
+		return this->references.load() - 1;
+	}
+
+	void acquire() {
+		this->references.fetch_add(1);
+	}
+
+	void release() noexcept {
+		if (this->references.fetch_sub(1) == 1) {
+			delete this;
+		}
+	}
+};
+
 struct ColumnFamilyDescriptor final {
 	/**
 	 * The column family handle.
@@ -1222,14 +1254,7 @@ struct ColumnFamilyDescriptor final {
 
 	std::atomic<uint32_t> nonVerifyingHandles{ 0 };
 
-	/**
-	 * Open transactions holding a write staged through a non-participating
-	 * handle on this family (`TransactionHandle::nonVerifyingWriters`). Its own
-	 * allocation, so a transaction can hold it without keeping this descriptor
-	 * (and its RocksDB column-family handle) alive past the database.
-	 */
-	const std::shared_ptr<std::atomic<uint32_t>> nonVerifyingWriters =
-		std::make_shared<std::atomic<uint32_t>>(0);
+	NonVerifyingWriterCount* const nonVerifyingWriters = new NonVerifyingWriterCount();
 
 	/**
 	 * Set once a non-participating handle detaches; such a handle may have
@@ -1246,6 +1271,7 @@ struct ColumnFamilyDescriptor final {
 
 	~ColumnFamilyDescriptor() {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);
+		this->nonVerifyingWriters->release();
 	}
 };
 

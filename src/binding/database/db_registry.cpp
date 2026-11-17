@@ -1073,12 +1073,9 @@ void DBRegistry::OpenDB(
 			);
 		}
 	}
-	// A write staged through a non-participating handle holds no write intent,
-	// so switching on while one may still commit would let a slot seeded now
-	// survive it. Staging through a handle is sequenced before that handle's
-	// close() on its owner thread, so once the handle count reads 0 the writer
-	// count covers every such write. Read them in this order; DBHandle::close()
-	// and TransactionHandle::putSync() write them in the other.
+	// A write staged through a non-participating handle holds no write intent.
+	// Handles before writers: staging precedes its handle's close() on the
+	// owner thread (core/DESIGN.md, participation).
 	if (options.verificationTable && !columnDescriptor->verificationTable) {
 		const uint32_t nonVerifying = columnDescriptor->nonVerifyingHandles.load();
 		if (nonVerifying > 0) {
@@ -1089,7 +1086,7 @@ void DBRegistry::OpenDB(
 					"transactions that wrote through them finish, then retry opening with verificationTable: true"
 			);
 		}
-		const uint32_t writers = columnDescriptor->nonVerifyingWriters->load();
+		const uint32_t writers = columnDescriptor->nonVerifyingWriters->writers();
 		if (writers > 0) {
 			throw rocksdb_js::DBException(
 				"ERR_VERIFICATION_TABLE_CONFLICT",

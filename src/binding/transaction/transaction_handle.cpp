@@ -1095,16 +1095,55 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
 	return rocksdb::Status::OK();
 }
 
-rocksdb::Status TransactionHandle::noteNonVerifyingWrite(const DBHandle& dbHandle) noexcept {
+bool NonVerifyingWriterSet::contains(NonVerifyingWriterCount* counter) {
+	if (counter == this->last) {
+		return true;
+	}
+	bool found = false;
+	this->counters.forEach([&](NonVerifyingWriterCount* entry) {
+		if (entry == counter) found = true;
+	});
+	if (found) {
+		this->last = counter;
+	}
+	return found;
+}
+
+void NonVerifyingWriterSet::add(NonVerifyingWriterCount* counter) {
+	this->counters.add(counter);
+	counter->acquire();
+	this->last = counter;
+}
+
+void NonVerifyingWriterSet::removeLast(NonVerifyingWriterCount* counter) noexcept {
+	if (this->counters.size() == 0 || this->counters.back() != counter) {
+		return;
+	}
+	this->counters.popBack();
+	this->last = this->counters.size() == 0 ? nullptr : this->counters.back();
+	counter->release();
+}
+
+void NonVerifyingWriterSet::release() noexcept {
+	this->counters.forEach([](NonVerifyingWriterCount* entry) {
+		entry->release();
+	});
+	this->counters.clear();
+	this->last = nullptr;
+}
+
+rocksdb::Status TransactionHandle::noteNonVerifyingWrite(const DBHandle& dbHandle, bool& added) noexcept {
+	added = false;
 	if (dbHandle.enableVerificationTable) {
 		return rocksdb::Status::OK();
 	}
-	const auto& counter = dbHandle.columnDescriptor->nonVerifyingWriters;
-	if (this->nonVerifyingWriters.contains(counter.get())) {
+	NonVerifyingWriterCount* counter = dbHandle.columnDescriptor->nonVerifyingWriters;
+	if (this->nonVerifyingWriters.contains(counter)) {
 		return rocksdb::Status::OK();
 	}
 	try {
 		this->nonVerifyingWriters.add(counter);
+		added = true;
 	} catch (...) {
 		return rocksdb::Status::MemoryLimit();
 	}
@@ -1139,7 +1178,8 @@ rocksdb::Status TransactionHandle::putSync(
 	if (!touched.ok()) {
 		return touched;
 	}
-	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle);
+	bool addedWriter = false;
+	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle, addedWriter);
 	if (!counted.ok()) {
 		if (addedTouch) {
 			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
@@ -1152,6 +1192,9 @@ rocksdb::Status TransactionHandle::putSync(
 	if (!status.ok()) {
 		if (addedTouch) {
 			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (addedWriter) {
+			this->nonVerifyingWriters.removeLast(dbHandle->columnDescriptor->nonVerifyingWriters);
 		}
 		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
 			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);
@@ -1197,7 +1240,8 @@ rocksdb::Status TransactionHandle::removeSync(
 	if (!touched.ok()) {
 		return touched;
 	}
-	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle);
+	bool addedWriter = false;
+	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle, addedWriter);
 	if (!counted.ok()) {
 		if (addedTouch) {
 			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
@@ -1210,6 +1254,9 @@ rocksdb::Status TransactionHandle::removeSync(
 	if (!status.ok()) {
 		if (addedTouch) {
 			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (addedWriter) {
+			this->nonVerifyingWriters.removeLast(dbHandle->columnDescriptor->nonVerifyingWriters);
 		}
 		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
 			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);

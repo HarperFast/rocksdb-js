@@ -1177,7 +1177,7 @@ describe('Verification Table', () => {
 				const dbPath = generateDBPath();
 				const env: NodeJS.ProcessEnv = {
 					...process.env,
-					ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '2000',
+					ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '3000',
 				};
 				if (commitThread === undefined) {
 					delete env.ROCKSDB_JS_COMMIT_THREAD;
