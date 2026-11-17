@@ -411,7 +411,7 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	bool hasLog;
 	std::shared_ptr<DBDescriptor::CommitCompletion> completion;
 	ColumnFamilyCommitClaim claim;
-	// Async commits only: their completion reads it.
+	// Set and read by async commits only.
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
 	DBDescriptor* operationDescriptor = nullptr;

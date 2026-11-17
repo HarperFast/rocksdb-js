@@ -49,7 +49,6 @@ if (isMainThread) {
 				: [{ code: 'ERR_TRANSACTION_CLOSING', message: 'Transaction is closing' }]
 		);
 		if (closeFails) {
-			// The retry finishes the quarantined close, sweeping the still-pending transaction.
 			shutdown();
 		}
 	} finally {
