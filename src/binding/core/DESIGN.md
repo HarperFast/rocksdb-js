@@ -92,8 +92,9 @@ agree across every handle on a column family once any of them participates.
   commit still running, including one whose env teardown already removed the transaction from the
   registry, therefore keeps the count. Staging through a handle is sequenced before that handle's
   `close()` on its owner thread, so `OpenDB` reads the handle count first and the writer count
-  second. The counter is its own allocation: holding the `ColumnFamilyDescriptor` instead would let
-  a transaction outliving its database destroy the column-family handle after it. Activity on other
+  second. The count (`NonVerifyingWriterCount`) is its own allocation and doubles as its reference
+  count: holding the `ColumnFamilyDescriptor` instead would let a transaction outliving its database
+  destroy the column-family handle after it. Activity on other
   column families never blocks the switch. Once a non-participating handle has detached
   (`nonVerifyingHandleDetached`), the switch also settles every slot, since that handle could seed a
   slot (`populateVersion()`) that its own writes left stale.

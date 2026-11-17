@@ -1143,15 +1143,9 @@ struct UserSharedBufferFinalizeData final {
 };
 
 /**
- * Contains the column family handle and map of user shared buffers.
- */
-/**
  * Open transactions holding a write staged through a non-participating handle
- * on one column family (AGENTS invariant 39). Its own allocation, freed by the
- * last of the family and those transactions: a transaction must not keep the
- * family's descriptor, and with it a RocksDB column-family handle, alive past
- * the database. The count doubles as the reference count, so a writer costs one
- * atomic update to hold and one to release.
+ * on one column family, plus one reference for the family itself; freed by the
+ * last of them (core/DESIGN.md, participation).
  */
 class NonVerifyingWriterCount final {
 	std::atomic<uint32_t> references{ 1 };
@@ -1177,6 +1171,9 @@ public:
 	}
 };
 
+/**
+ * Contains the column family handle and map of user shared buffers.
+ */
 struct ColumnFamilyDescriptor final {
 	/**
 	 * The column family handle.

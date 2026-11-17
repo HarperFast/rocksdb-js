@@ -162,10 +162,6 @@ struct ColumnFamilySet final {
 	}
 };
 
-/**
- * The `ColumnFamilyDescriptor::nonVerifyingWriters` counts a transaction holds,
- * one per family it staged a write to through a non-participating handle.
- */
 struct NonVerifyingWriterSet final {
 	InlineVector<NonVerifyingWriterCount*, 2> counters;
 	NonVerifyingWriterCount* last = nullptr;
@@ -345,10 +341,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	ColumnFamilySet touchedColumnFamilies;
 
-	/**
-	 * Families staged through a non-participating handle, default included;
-	 * released only with the RocksDB transaction (core/DESIGN.md, participation).
-	 */
+	/** Released only with the RocksDB transaction (core/DESIGN.md, participation). */
 	NonVerifyingWriterSet nonVerifyingWriters;
 
 	/**

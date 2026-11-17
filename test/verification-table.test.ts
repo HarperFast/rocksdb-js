@@ -1239,7 +1239,7 @@ describe('Verification Table', () => {
 				['two-lane', '2'],
 				['legacy', '0'],
 			])(
-				'rejects opting in while a staged commit outlives its env teardown (%s)',
+				'rejects opting in while a worker’s staged commit runs through its env teardown (%s)',
 				(_label, commitThread) => runScenario('worker-teardown', commitThread),
 				30000
 			);
