@@ -1171,6 +1171,37 @@ describe('Verification Table', () => {
 			}
 		);
 
+		// Waits out the pessimistic lock timeout (10s) for the failing write.
+		it(
+			'does not count a transaction whose only write through a closed handle failed',
+			{ timeout: 30_000 },
+			async () => {
+				const path = generateDBPath();
+				const keepAlive = new RocksDatabase(path, { pessimistic: true }).open();
+				const plain = new RocksDatabase(path, { ...plainOptions, pessimistic: true }).open();
+				const cached = new RocksDatabase(path, { ...cachedOptions, pessimistic: true });
+				const holder = new Transaction(keepAlive.store);
+				const failed = new Transaction(keepAlive.store);
+				try {
+					const key = Buffer.from('locked');
+					plain.putSync(key, makeValue(1.5e12), { transaction: holder });
+					expect(() => plain.putSync(key, makeValue(1.6e12), { transaction: failed })).toThrow();
+					plain.close();
+					expect(() => cached.open()).toThrow(
+						expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
+					);
+					holder.abort();
+					cached.open();
+					expect(cached.isOpen()).toBe(true);
+				} finally {
+					failed.abort();
+					cached.close();
+					plain.close();
+					keepAlive.close();
+				}
+			}
+		);
+
 		describe('with a commit in flight', () => {
 			const fixturePath = join(__dirname, 'fixtures', 'fork-vt-optin-inflight.mts');
 			function runScenario(scenario: string, commitThread?: string): void {
