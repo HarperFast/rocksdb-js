@@ -833,26 +833,19 @@ static void createCommitError(napi_env env, const TransactionCommitState& state,
  * commit thread never takes a reference that could make a racing last-handle close skip its purge.
  */
 static void closeSettledHandle(TransactionCommitState* state, bool operationHeld, DBDescriptor* descriptor) {
-	if (operationHeld) {
+	if (operationHeld || state->descriptorOperationActive) {
 		state->handle->close();
 		return;
 	}
 	if (!descriptor) {
 		return;
 	}
-	struct Operation final {
-		DBDescriptor* descriptor;
-		~Operation() {
-			if (--this->descriptor->operationsInFlight == 0 && this->descriptor->isClosing()) {
-				this->descriptor->operationsInFlight.notify_all();
-			}
-		}
-	};
-	++descriptor->operationsInFlight;
-	Operation operation{ descriptor };
+	// If close() throws, the state's destructor releases the operation.
+	state->registerDescriptorOperation(descriptor);
 	if (!descriptor->isClosing()) {
 		state->handle->close();
 	}
+	state->releaseDescriptorOperation();
 }
 
 /**
@@ -1233,8 +1226,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 
 			// Commit-lane stage: RocksDB commit, then marshal the completion
 			// back to the originating env.
-			auto commitStage = [descriptorOwner, state]() {
+			auto commitStage = [state]() {
 				executeCommitWork(state);
+				DBDescriptor* descriptor = state->operationDescriptor;
 				state->releaseDescriptorOperation();
 				if (unsigned delay = commitDelayMs()) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(delay));
@@ -1248,7 +1242,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 					// May run inline on the JS thread when no commit thread could start, so finishClose()
 					// is not guaranteed to have joined it.
 					if (state->handle) {
-						closeSettledHandle(state, /*operationHeld=*/false, descriptorOwner);
+						closeSettledHandle(state, /*operationHeld=*/false, descriptor);
 					}
 					delete state;
 				}
