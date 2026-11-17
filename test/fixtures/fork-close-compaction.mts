@@ -1,4 +1,5 @@
 import { RocksDatabase, getRegistryStatus, shutdown } from '../../src/index.ts';
+import { isFlushCompletedDelayedForTesting } from '../../src/load-binding.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 
@@ -155,6 +156,25 @@ if (!isMainThread) {
 		if (replayed.length !== 0)
 			throw new Error(`Restart would replay ${replayed.length} flushed entries`);
 		reopened.close();
+		report({ mode });
+	} else if (mode === 'listenerPin') {
+		// Close the last handle while a background flush is inside its (delayed)
+		// OnFlushCompleted. The listener must not hold a descriptor reference
+		// there: the close would see it, skip its purge, and leave the database
+		// open with no handles.
+		const db = RocksDatabase.open(path, { writeBufferSize: 64 * 1024 });
+		const value = 'x'.repeat(1024);
+		for (let i = 0; i < 256; i++) db.putSync(`key-${i}`, value);
+		const deadline = performance.now() + 10_000;
+		while (!isFlushCompletedDelayedForTesting()) {
+			if (performance.now() > deadline)
+				throw new Error('No flush entered the delayed listener; this case proves nothing');
+			await delay(10);
+		}
+		db.close();
+		await delay(2_000);
+		const left = getRegistryStatus().filter((entry) => entry.path === path);
+		if (left.length) throw new Error(`Closed database left registered: ${JSON.stringify(left)}`);
 		report({ mode });
 	} else if (mode === 'destroyStalled') {
 		// Hold the database in a write stall behind the slowed compaction, then

@@ -117,6 +117,15 @@ describe('Close during background compaction', () => {
 	);
 
 	it(
+		'closing the last handle during a flush listener callback purges the database',
+		() =>
+			withPath(async (dbPath) => {
+				await runFixture(dbPath, 'listenerPin', { ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS: '1000' });
+			}),
+		30_000
+	);
+
+	it(
 		'destroy() flushes a stalled database without waiting out the stall',
 		() =>
 			withPath(async (dbPath) => {
