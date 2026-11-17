@@ -85,12 +85,17 @@ agree across every handle on a column family once any of them participates.
 - **Opting in fails while a non-participating writer may exist.** A write staged without the option
   holds no write intent, so a slot seeded after the switch would survive its commit. The open is
   refused with `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle is attached
-  (`nonVerifyingHandles`). After one has detached, it is also refused while a transaction that
-  existed when it detached is still open (ids up to `nonVerifyingTransactionWatermark`; a closed
-  one can stay registered after its own handle closes),
-  since that transaction may hold a write staged through it, or while any descriptor operation is in
-  flight: env teardown removes a transaction from the registry before its admitted commit finishes,
-  and that commit still holds `operationsInFlight`. The switch then settles every slot, since that
-  handle could seed a slot (`populateVersion()`) that its own writes left stale.
+  (`nonVerifyingHandles`), or while a transaction still holds a write staged through one on this
+  column family (`nonVerifyingWriters`). Each transaction counts once per family
+  (`TransactionHandle::nonVerifyingWriters`, default family included) and releases only when its
+  RocksDB transaction is deleted: `resetTransaction()`, or `close()` after its async-work drain. A
+  commit still running, including one whose env teardown already removed the transaction from the
+  registry, therefore keeps the count. Staging through a handle is sequenced before that handle's
+  `close()` on its owner thread, so `OpenDB` reads the handle count first and the writer count
+  second. The counter is its own allocation: holding the `ColumnFamilyDescriptor` instead would let
+  a transaction outliving its database destroy the column-family handle after it. Activity on other
+  column families never blocks the switch. Once a non-participating handle has detached
+  (`nonVerifyingHandleDetached`), the switch also settles every slot, since that handle could seed a
+  slot (`populateVersion()`) that its own writes left stale.
 
 `test/verification-table.test.ts` (`participation is per column family`) covers both.

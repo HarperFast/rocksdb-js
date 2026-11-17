@@ -105,6 +105,7 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 
 	this->logEntryBatch.reset();
 	this->touchedColumnFamilies.clear();
+	this->nonVerifyingWriters.release();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 	if (this->lockedVTSlots.empty()) {
 		// held intents are released with the setting they were taken under
@@ -653,6 +654,7 @@ void TransactionHandle::close() {
 	delete this->txn;
 	this->txn = nullptr;
 	this->touchedColumnFamilies.clear();
+	this->nonVerifyingWriters.release();
 
 	// Note: close() is deliberately napi-free. The transaction holds no napi
 	// refs (the JS database is passed to UseLog by the TS layer per-call), so
@@ -1093,6 +1095,22 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
 	return rocksdb::Status::OK();
 }
 
+rocksdb::Status TransactionHandle::noteNonVerifyingWrite(const DBHandle& dbHandle) noexcept {
+	if (dbHandle.enableVerificationTable) {
+		return rocksdb::Status::OK();
+	}
+	const auto& counter = dbHandle.columnDescriptor->nonVerifyingWriters;
+	if (this->nonVerifyingWriters.contains(counter.get())) {
+		return rocksdb::Status::OK();
+	}
+	try {
+		this->nonVerifyingWriters.add(counter);
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit();
+	}
+	return rocksdb::Status::OK();
+}
+
 /**
  * Put a value using the specified database handle.
  */
@@ -1120,6 +1138,13 @@ rocksdb::Status TransactionHandle::putSync(
 	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
 	if (!touched.ok()) {
 		return touched;
+	}
+	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle);
+	if (!counted.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		return counted;
 	}
 	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
@@ -1171,6 +1196,13 @@ rocksdb::Status TransactionHandle::removeSync(
 	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
 	if (!touched.ok()) {
 		return touched;
+	}
+	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle);
+	if (!counted.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		return counted;
 	}
 	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();

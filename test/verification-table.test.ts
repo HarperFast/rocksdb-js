@@ -5,6 +5,7 @@ import { dbRunner, generateDBPath } from './lib/util.ts';
 import { spawnSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
 
 const { POPULATE_VERSION_FLAG, FRESH_VERSION_FLAG, VERSION_NOT_UNIQUE_FLAG } = constants;
@@ -996,6 +997,221 @@ describe('Verification Table', () => {
 				cached.close();
 				keepAlive.close();
 			}
+		});
+
+		it('allows opting in while an older transaction writes only to other column families', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const other = new RocksDatabase(path, { name: 'other', encoding: false }).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			const txn = new Transaction(keepAlive.store);
+			try {
+				keepAlive.putSync(Buffer.from('default'), makeValue(1.5e12), { transaction: txn });
+				other.putSync(Buffer.from('other'), makeValue(1.5e12), { transaction: txn });
+				plain.close();
+				cached.open();
+				expect(cached.isOpen()).toBe(true);
+			} finally {
+				txn.abort();
+				cached.close();
+				plain.close();
+				other.close();
+				keepAlive.close();
+			}
+		});
+
+		it('rejects opting in until a transaction holding a delete staged through a closed handle commits', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			try {
+				const key = Buffer.from('deleted-before-close');
+				await plain.put(key, makeValue(1.5e12));
+				plain.populateVersion(key, 1.5e12);
+				const txn = new Transaction(keepAlive.store);
+				plain.removeSync(key, { transaction: txn });
+				plain.close();
+				expect(() => cached.open()).toThrow(
+					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
+				);
+				await txn.commit();
+				cached.open();
+				expectStale(cached, key, 1.5e12);
+			} finally {
+				cached.close();
+				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it('rejects opting in the default column family while a transaction holds a write staged through a closed handle', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path, { name: 'other' }).open();
+			const plain = new RocksDatabase(path, { encoding: false }).open();
+			const cached = new RocksDatabase(path, { encoding: false, verificationTable: true });
+			try {
+				const txn = new Transaction(keepAlive.store);
+				plain.putSync(Buffer.from('default'), makeValue(1.5e12), { transaction: txn });
+				plain.close();
+				expect(() => cached.open()).toThrow(
+					expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
+				);
+				txn.abort();
+				cached.open();
+				expect(cached.isOpen()).toBe(true);
+			} finally {
+				cached.close();
+				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it('counts each transaction once per column family however many writes it stages', async () => {
+			const conflict = expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' });
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const extras = ['x1', 'x2', 'x3'].map((name) =>
+				new RocksDatabase(path, { name, encoding: false }).open()
+			);
+			const cached = new RocksDatabase(path, cachedOptions);
+			try {
+				const first = new Transaction(keepAlive.store);
+				const second = new Transaction(keepAlive.store);
+				// The extra families spill the transaction's set past its inline slots.
+				for (const db of extras) {
+					db.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: first });
+				}
+				for (let i = 0; i < 3; i++) {
+					plain.putSync(Buffer.from(`k${i}`), makeValue(1.5e12), { transaction: first });
+					plain.removeSync(Buffer.from(`k${i}`), { transaction: first });
+				}
+				plain.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: second });
+				plain.close();
+				expect(() => cached.open()).toThrow(conflict);
+				first.abort();
+				expect(() => cached.open()).toThrow(conflict);
+				second.abort();
+				cached.open();
+				expect(cached.isOpen()).toBe(true);
+			} finally {
+				cached.close();
+				plain.close();
+				for (const db of extras) db.close();
+				keepAlive.close();
+			}
+		});
+
+		it('releases a conflicted transaction’s count when its batch is reset and counts it again on restaging', async () => {
+			const conflict = expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' });
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			try {
+				const key = Buffer.from('conflicted');
+				const txn = new Transaction(keepAlive.store);
+				plain.putSync(key, makeValue(1.5e12), { transaction: txn });
+				plain.putSync(key, makeValue(1.6e12));
+				await expect(txn.commit()).rejects.toMatchObject({ code: 'ERR_BUSY' });
+				plain.putSync(key, makeValue(1.7e12), { transaction: txn });
+				plain.close();
+				expect(() => cached.open()).toThrow(conflict);
+
+				const retried = new Transaction(keepAlive.store);
+				const reopened = new RocksDatabase(path, plainOptions).open();
+				reopened.putSync(key, makeValue(1.8e12), { transaction: retried });
+				reopened.putSync(key, makeValue(1.9e12));
+				reopened.close();
+				await expect(retried.commit()).rejects.toMatchObject({ code: 'ERR_BUSY' });
+				txn.abort();
+				cached.open();
+				expect(cached.isOpen()).toBe(true);
+				retried.abort();
+			} finally {
+				cached.close();
+				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it.skipIf(typeof globalThis.gc !== 'function')(
+			'allows opting in once a dropped transaction that staged through a closed handle is collected',
+			async () => {
+				const path = generateDBPath();
+				const keepAlive = new RocksDatabase(path).open();
+				const plain = new RocksDatabase(path, plainOptions).open();
+				const cached = new RocksDatabase(path, cachedOptions);
+				try {
+					(() => {
+						const txn = new Transaction(keepAlive.store);
+						plain.putSync(Buffer.from('dropped'), makeValue(1.5e12), { transaction: txn });
+					})();
+					plain.close();
+					expect(() => cached.open()).toThrow(
+						expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' })
+					);
+					const deadline = Date.now() + 5000;
+					while (!cached.isOpen()) {
+						globalThis.gc!();
+						await delay(20);
+						try {
+							cached.open();
+						} catch (error) {
+							if (Date.now() > deadline) throw error;
+						}
+					}
+				} finally {
+					cached.close();
+					plain.close();
+					keepAlive.close();
+				}
+			}
+		);
+
+		describe('with a commit in flight', () => {
+			const fixturePath = join(__dirname, 'fixtures', 'fork-vt-optin-inflight.mts');
+			function runScenario(scenario: string, commitThread?: string): void {
+				const dbPath = generateDBPath();
+				const env: NodeJS.ProcessEnv = {
+					...process.env,
+					ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '2000',
+				};
+				if (commitThread === undefined) {
+					delete env.ROCKSDB_JS_COMMIT_THREAD;
+				} else {
+					env.ROCKSDB_JS_COMMIT_THREAD = commitThread;
+				}
+				try {
+					const child = spawnSync(process.execPath, [fixturePath, scenario, dbPath], {
+						encoding: 'utf8',
+						env,
+						timeout: 25000,
+					});
+					expect(child.error, child.stderr).toBeUndefined();
+					expect(child.status, child.stderr).toBe(0);
+					expect(child.stdout.trim()).toBe('ok');
+				} finally {
+					if (!process.env.KEEP_FILES) {
+						rmSync(dbPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+					}
+				}
+			}
+
+			it('allows opting in while the commit is on another column family', () =>
+				runScenario('unrelated-commit'));
+
+			it.each([
+				['commit threads', undefined],
+				['two-lane', '2'],
+				['legacy', '0'],
+			])(
+				'rejects opting in while a staged commit outlives its env teardown (%s)',
+				(_label, commitThread) => runScenario('worker-teardown', commitThread),
+				30000
+			);
 		});
 	});
 

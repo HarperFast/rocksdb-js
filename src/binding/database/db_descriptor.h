@@ -1223,10 +1223,19 @@ struct ColumnFamilyDescriptor final {
 	std::atomic<uint32_t> nonVerifyingHandles{ 0 };
 
 	/**
-	 * Highest transaction id that may hold a write staged through a detached
-	 * non-participating handle; 0 until one detaches.
+	 * Open transactions holding a write staged through a non-participating
+	 * handle on this family (`TransactionHandle::nonVerifyingWriters`). Its own
+	 * allocation, so a transaction can hold it without keeping this descriptor
+	 * (and its RocksDB column-family handle) alive past the database.
 	 */
-	std::atomic<uint64_t> nonVerifyingTransactionWatermark{ 0 };
+	const std::shared_ptr<std::atomic<uint32_t>> nonVerifyingWriters =
+		std::make_shared<std::atomic<uint32_t>>(0);
+
+	/**
+	 * Set once a non-participating handle detaches; such a handle may have
+	 * seeded a slot its own writes left stale, so an opt-in settles them.
+	 */
+	std::atomic<bool> nonVerifyingHandleDetached{ false };
 
 	ColumnFamilyDescriptor(
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,

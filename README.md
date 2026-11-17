@@ -2341,9 +2341,9 @@ every handle on the database closes, or until the column family is opened with a
 it participates, that explicit `false` throws `ERR_VERIFICATION_TABLE_CONFLICT`. Opening with
 `verificationTable: true` throws `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle
 is open on that column family: one opened before any opt-in, or with an explicit `false`. After
-such a handle closes, the same error is thrown while a transaction that existed before it closed
-is still pending, or while another operation on the database is running; retry the open once they
-finish.
+such a handle closes, the same error is thrown while a transaction that wrote to that column family
+through such a handle has not yet committed or aborted; retry the open once it finishes.
+Transactions and operations on other column families do not block it.
 
 ### `db.verifyVersion(key: Key, version: number): boolean`
 

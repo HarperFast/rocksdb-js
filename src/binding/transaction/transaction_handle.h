@@ -162,6 +162,46 @@ struct ColumnFamilySet final {
 };
 
 /**
+ * The per-family `ColumnFamilyDescriptor::nonVerifyingWriters` counts a
+ * transaction holds, one per family it staged a write to through a handle that
+ * does not participate in the verification table (AGENTS invariant 39).
+ */
+struct NonVerifyingWriterSet final {
+	InlineVector<std::shared_ptr<std::atomic<uint32_t>>, 2> counters;
+	std::atomic<uint32_t>* last = nullptr;
+
+	bool contains(std::atomic<uint32_t>* counter) {
+		if (counter == this->last) {
+			return true;
+		}
+		bool found = false;
+		this->counters.forEach([&](const std::shared_ptr<std::atomic<uint32_t>>& entry) {
+			if (entry.get() == counter) found = true;
+		});
+		if (found) {
+			this->last = counter;
+		}
+		return found;
+	}
+
+	/** Counts only once recorded, so an allocation failure leaves no count behind. */
+	void add(const std::shared_ptr<std::atomic<uint32_t>>& counter) {
+		this->counters.add(counter);
+		counter->fetch_add(1);
+		this->last = counter.get();
+	}
+
+	/** Only once the RocksDB transaction holding the writes is gone. */
+	void release() noexcept {
+		this->counters.forEach([](const std::shared_ptr<std::atomic<uint32_t>>& entry) {
+			entry->fetch_sub(1);
+		});
+		this->counters.clear();
+		this->last = nullptr;
+	}
+};
+
+/**
  * A handle to a RocksDB transaction. This is used to keep the transaction
  * alive until the transaction is committed or aborted.
  *
@@ -329,6 +369,14 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * `close()`.
 	 */
 	ColumnFamilySet touchedColumnFamilies;
+
+	/**
+	 * Families this transaction staged a write to through a non-participating
+	 * handle, default family included. Released with the RocksDB transaction
+	 * (`resetTransaction()`, `close()` after its drain), so a commit still
+	 * running keeps refusing that family's verification-table opt-in.
+	 */
+	NonVerifyingWriterSet nonVerifyingWriters;
 
 	/**
 	 * VT slots locked by this transaction. Parallel to heldTrackers.
@@ -604,6 +652,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		const std::shared_ptr<ColumnFamilyDescriptor>& column,
 		bool& added
 	);
+
+	rocksdb::Status noteNonVerifyingWrite(const DBHandle& dbHandle) noexcept;
 
 	/** Abandons before fallible cleanup so a failure still refuses commit. */
 	rocksdb::Status abandonForDroppedColumnFamily(
