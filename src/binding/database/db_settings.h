@@ -124,8 +124,7 @@ public:
 
 	/**
 	 * Every setting a new descriptor fixes at open, taken under the lock `config()` applies under,
-	 * so one open cannot combine two `config()` calls. Creates the shared manager and block cache
-	 * on first use.
+	 * so one open cannot combine two `config()` calls.
 	 */
 	OpenSettings snapshotForOpen(bool needBlockCache);
 

@@ -1,5 +1,3 @@
-// A worker flips open-time config() settings between two sets while this thread opens fresh
-// databases; each database must capture one set whole.
 import { RocksDatabase } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { mkdirSync } from 'node:fs';
