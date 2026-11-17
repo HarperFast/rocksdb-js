@@ -411,11 +411,11 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	bool hasLog;
 	std::shared_ptr<DBDescriptor::CommitCompletion> completion;
 	ColumnFamilyCommitClaim claim;
+	// Async commits only: their completion reads it.
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
 	DBDescriptor* operationDescriptor = nullptr;
 	bool descriptorOperationActive = false;
-	// False for commitSync(), which throws ERR_BUSY rather than parking.
 	const bool parksOnBusy;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
@@ -427,12 +427,12 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	TransactionCommitState(
 		napi_env env,
 		const std::shared_ptr<TransactionHandle>& handle,
-		bool canPark
+		bool async
 	) :
 		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
 		hasLog(false),
-		parksOnBusy(canPark && handle && handle->coordinatedRetry) {
-		if (handle && handle->dbHandle) {
+		parksOnBusy(async && handle && handle->coordinatedRetry) {
+		if (async && handle && handle->dbHandle) {
 			const std::shared_ptr<DBDescriptor>& owner = handle->dbHandle->ownerDescriptor();
 			this->descriptor = owner;
 			if (owner && this->parksOnBusy) {
@@ -1165,7 +1165,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	std::shared_ptr<DBDescriptor> descriptor;
 	auto stateOwner = PendingTransactionCommitState(
 		env,
-		std::make_unique<TransactionCommitState>(env, *txnHandle, /*canPark=*/true)
+		std::make_unique<TransactionCommitState>(env, *txnHandle, /*async=*/true)
 	);
 	TransactionCommitState* state = stateOwner.get();
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
@@ -1378,7 +1378,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_CLOSING", "Transaction is closing");
 	}
-	TransactionCommitState state(env, *txnHandle, /*canPark=*/false);
+	TransactionCommitState state(env, *txnHandle, /*async=*/false);
 	bool committed;
 	{
 		// Held through settleCommit(): its close() leaves the closables before deleting `txn`, so a

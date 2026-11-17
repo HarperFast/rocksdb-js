@@ -10,9 +10,8 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
-// A worker's commitSync() pauses before admission while this thread runs shutdown(). Without
-// ROCKSDB_JS_CLOSE_FAILURE, shutdown() closes the transaction, so its registration is refused. With
-// it, the injected close failure leaves the descriptor closing before the transaction is reached.
+// ROCKSDB_JS_CLOSE_FAILURE stops shutdown() before it closes the transaction, leaving only the
+// descriptor closing.
 if (isMainThread) {
 	const [path] = process.argv.slice(2);
 	assert(path);
