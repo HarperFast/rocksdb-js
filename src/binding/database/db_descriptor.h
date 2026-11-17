@@ -46,7 +46,7 @@ struct UserSharedBufferFinalizeData;
  * `attachedWriteBufferManager` must be the manager the database this column family belongs to
  * holds (null when none), never the current `DBSettings` value — see
  * `resolveMaxWriteBufferSizeToMaintain` for why they diverge. `writeBufferManagerBudget` is that
- * manager's budget (0 when none), and `blockCache` the cache to use unless `options.noBlockCache`.
+ * manager's budget, captured with it.
  */
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,

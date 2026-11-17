@@ -28,7 +28,6 @@ const settingsB = {
 	occValidation: 'serial',
 	commitThreads: 3,
 } as const;
-// The arena block size is derived from the manager's budget (budget / 2048).
 const expectedA = {
 	sharedBlockCache: false,
 	writeBufferManager: true,

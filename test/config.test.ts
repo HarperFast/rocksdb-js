@@ -92,6 +92,8 @@ describe('config()', () => {
 			const result = JSON.parse(line![1]);
 			expect(result.flips).toBeGreaterThan(0);
 			expect(result.mixed).toEqual([]);
+			expect(result.seen.A).toBeGreaterThan(0);
+			expect(result.seen.B).toBeGreaterThan(0);
 			expect(result.seen.A + result.seen.B).toBe(openCount);
 		} finally {
 			if (!process.env.KEEP_FILES) {

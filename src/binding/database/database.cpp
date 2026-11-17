@@ -1482,10 +1482,6 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 	return result;
 }
 
-/**
- * Test-only: the process-wide `config()` settings this database's descriptor captured when it was
- * first opened.
- */
 napi_value Database::GetOpenSettingsForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	UNWRAP_DB_HANDLE_AND_OPEN();

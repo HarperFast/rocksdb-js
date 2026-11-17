@@ -234,9 +234,6 @@ std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
 }
 
 /**
- * Captures every setting a new descriptor fixes at open in one critical section with `Config()`'s
- * apply phase, lazily creating the shared manager and block cache.
- *
  * The manager is constructed once and reused across all databases opened in
  * this process. When `costToCache` is enabled, memtable memory is charged
  * against the shared block cache, so both subsystems draw from a single pool.
@@ -258,7 +255,7 @@ OpenSettings DBSettings::snapshotForOpen(bool needBlockCache) {
 		if (!writeBufferManager) {
 			std::shared_ptr<rocksdb::Cache> cache;
 			if (writeBufferManagerCostToCache.load(std::memory_order_relaxed)) {
-				cache = getBlockCache(); // may be nullptr if block cache is disabled
+				cache = needBlockCache ? snapshot.blockCache : getBlockCache(); // null when disabled
 			}
 			writeBufferManager = std::make_shared<rocksdb::WriteBufferManager>(
 				size,
@@ -447,7 +444,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			// place (SetBufferSize is atomic). RocksDB asserts new_size > 0,
 			// so when "disabling" via size=0 we leave the existing manager
 			// alone — already-open DBs keep their reference, and subsequent
-			// opens skip the manager entirely (see getWriteBufferManager).
+			// opens skip the manager entirely (see snapshotForOpen).
 			// Runtime size=0 is a "no new attachments" signal, not a teardown.
 			if (*wbmSize > 0 && manager) {
 				manager->SetBufferSize(static_cast<size_t>(*wbmSize));
@@ -471,7 +468,6 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			}
 		}
 
-		// Inside this block so a first open's snapshotForOpen() sees all of this call or none of it.
 		if (occLockBuckets) {
 			settings.occLockBucketCount = static_cast<uint32_t>(*occLockBuckets);
 		}

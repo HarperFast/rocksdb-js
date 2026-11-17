@@ -14,7 +14,6 @@ namespace rocksdb_js {
 struct OpenSettings final {
 	std::shared_ptr<rocksdb::Cache> blockCache;
 	std::shared_ptr<rocksdb::WriteBufferManager> writeBufferManager;
-	// The manager's budget when captured; 0 without a manager.
 	size_t writeBufferManagerBudget = 0;
 	uint32_t occLockBucketCount = 0;
 	bool occValidateSerial = false;
@@ -113,7 +112,6 @@ public:
 
 	std::shared_ptr<rocksdb::Cache> getBlockCache();
 
-	/** The shared block cache if it has been created, without creating it. */
 	std::shared_ptr<rocksdb::Cache> peekBlockCache() {
 		std::lock_guard<std::mutex> lock(blockCacheMutex);
 		return blockCache;
