@@ -87,8 +87,9 @@ agree across every handle on a column family once any of them participates.
   refused with `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle is attached
   (`nonVerifyingHandles`), or while a transaction still holds a write staged through one on this
   column family (`nonVerifyingWriters`). Each transaction counts once per family
-  (`TransactionHandle::nonVerifyingWriters`, default family included) and releases only when its
-  RocksDB transaction is deleted: `resetTransaction()`, or `close()` after its async-work drain. A
+  (`TransactionHandle::nonVerifyingWriters`, default family included) and, once a write is staged,
+  releases only when its RocksDB transaction is deleted (a first write that fails gives its count
+  straight back): `resetTransaction()`, or `close()` after its async-work drain. A
   commit still running, including one whose env teardown already removed the transaction from the
   registry, therefore keeps the count. Staging through a handle is sequenced before that handle's
   `close()` on its owner thread, so `OpenDB` reads the handle count first and the writer count

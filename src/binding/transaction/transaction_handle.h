@@ -163,7 +163,7 @@ struct ColumnFamilySet final {
 };
 
 struct NonVerifyingWriterSet final {
-	InlineVector<NonVerifyingWriterCount*, 2> counters;
+	InlineVector<NonVerifyingWriterCount*, 4> counters;
 	NonVerifyingWriterCount* last = nullptr;
 
 	bool contains(NonVerifyingWriterCount* counter);

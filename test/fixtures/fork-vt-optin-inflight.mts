@@ -37,7 +37,6 @@ if (scenario === 'unrelated-commit') {
 	cached.open();
 	await committing;
 } else if (scenario === 'worker-teardown') {
-	// Env teardown removes the transaction from the registry, then waits out its commit.
 	plain.close();
 	const worker = new Worker(
 		createWorkerBootstrapScript('./test/workers/vt-optin-commit-worker.mts'),

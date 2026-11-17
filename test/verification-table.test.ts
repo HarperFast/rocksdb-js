@@ -1237,10 +1237,17 @@ describe('Verification Table', () => {
 			it.each([
 				['commit threads', undefined],
 				['two-lane', '2'],
-				['legacy', '0'],
 			])(
 				'rejects opting in while a worker’s staged commit runs through its env teardown (%s)',
 				(_label, commitThread) => runScenario('worker-teardown', commitThread),
+				30000
+			);
+
+			// A legacy commit finishes before env cleanup reaps its transaction, so this only covers
+			// termination requested while the commit runs.
+			it(
+				'rejects opting in while a legacy commit runs as its worker terminates',
+				() => runScenario('worker-teardown', '0'),
 				30000
 			);
 		});

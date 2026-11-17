@@ -1142,11 +1142,7 @@ struct UserSharedBufferFinalizeData final {
 	) : key(k), dbHandle(d), sharedData(std::move(data)), listener(std::move(listener)) {}
 };
 
-/**
- * Open transactions holding a write staged through a non-participating handle
- * on one column family, plus one reference for the family itself; freed by the
- * last of them (core/DESIGN.md, participation).
- */
+/** Writers plus one reference for the family; see core/DESIGN.md, participation. */
 class NonVerifyingWriterCount final {
 	std::atomic<uint32_t> references{ 1 };
 
