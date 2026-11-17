@@ -1,4 +1,5 @@
 import { RocksDatabase } from '../src/index.ts';
+import { runChild } from './lib/child-process.ts';
 import { generateDBPath } from './lib/util.ts';
 import { type ChildProcess, spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -12,35 +13,22 @@ const CLI_TIMEOUT_MS = 20_000;
 
 type CLIResult = { code: number | null; stdout: string; stderr: string };
 
-function cli(args: string[], options: { cwd?: string; input?: string } = {}): Promise<CLIResult> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [cliPath, ...args], {
-			cwd: options.cwd,
-			env: { ...process.env, NO_COLOR: '1' },
-			stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-		});
-		let stdout = '';
-		let stderr = '';
-		const timer = setTimeout(() => {
-			child.kill('SIGKILL');
-			reject(new Error(`CLI timed out: ${args.join(' ')}\n${stdout}\n${stderr}`));
-		}, CLI_TIMEOUT_MS);
-		child.stdout?.on('data', (chunk) => {
-			stdout += chunk.toString();
-		});
-		child.stderr?.on('data', (chunk) => {
-			stderr += chunk.toString();
-		});
-		if (options.input !== undefined) child.stdin?.end(options.input);
-		child.on('error', (err) => {
-			clearTimeout(timer);
-			reject(err);
-		});
-		child.on('close', (code) => {
-			clearTimeout(timer);
-			resolve({ code, stdout, stderr });
-		});
+async function cli(
+	args: string[],
+	options: { cwd?: string; input?: string } = {}
+): Promise<CLIResult> {
+	const { code, stdout, stderr, timedOut } = await runChild(process.execPath, [cliPath, ...args], {
+		deadlineMs: CLI_TIMEOUT_MS,
+		cwd: options.cwd,
+		env: { ...process.env, NO_COLOR: '1' },
+		input: options.input,
+		// Deadline plus close wait must stay under the 30s test timeout.
+		closeTimeoutMs: 5_000,
 	});
+	if (timedOut) {
+		throw new Error(`CLI timed out: ${args.join(' ')}\n${stdout}\n${stderr}`);
+	}
+	return { code, stdout, stderr };
 }
 
 const tempPaths: string[] = [];

@@ -1,7 +1,6 @@
 import { RocksDatabase, registryStatus, shutdown } from '../src/index.ts';
 import { type ChildResult, ChildCloseTimeoutError, runChild } from './lib/child-process.ts';
 import { dbRunner, generateDBPath } from './lib/util.ts';
-import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -115,20 +114,13 @@ describe('Destroy', () => {
 		mkdirSync(cwd, { recursive: true });
 		writeFileSync(join(cwd, 'sentinel.txt'), 'keep me');
 		try {
-			const { code, output } = await new Promise<{ code: number | null; output: string }>(
-				(resolve, reject) => {
-					const child = spawn(
-						process.execPath,
-						[join(__dirname, 'fixtures', 'fork-destroy-unopened.mts'), dbPath],
-						{ cwd }
-					);
-					let output = '';
-					child.stdout.on('data', (chunk) => (output += chunk));
-					child.stderr.on('data', (chunk) => (output += chunk));
-					child.on('close', (code) => resolve({ code, output }));
-					child.on('error', reject);
-				}
+			const { code, stdout, stderr, timedOut } = await runChild(
+				process.execPath,
+				[join(__dirname, 'fixtures', 'fork-destroy-unopened.mts'), dbPath],
+				{ deadlineMs: 10_000, cwd, closeTimeoutMs: 3_000 }
 			);
+			const output = stdout + stderr;
+			expect(timedOut, output).toBe(false);
 			expect(code, output).toBe(0);
 			expect(existsSync(join(cwd, 'sentinel.txt'))).toBe(true);
 		} finally {
