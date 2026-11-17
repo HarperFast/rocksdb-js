@@ -19,8 +19,13 @@ while (!isTransactionCloseDelayedForTesting()) {
 	Atomics.wait(sleepCell, 0, 0, 2);
 }
 try {
+	const closeDelayedAtShutdown = isTransactionCloseDelayedForTesting();
 	shutdown();
-	port.postMessage({ shutdown: true, closeStillDelayed: isTransactionCloseDelayedForTesting() });
+	port.postMessage({
+		shutdown: true,
+		closeDelayedAtShutdown,
+		closeStillDelayed: isTransactionCloseDelayedForTesting(),
+	});
 } catch (error) {
 	port.postMessage({ error: error instanceof Error ? error.message : String(error) });
 }

@@ -229,7 +229,9 @@ is still alive. The operation releases only after the transaction's
 async-work registration is cleared — legacy from its libuv execute thread, the
 lane modes at the end of the commit stage. This makes direct shutdown wait for
 the native commit rather than destroy RocksDB after the transaction handle's
-bounded drain expires. The recheck is not redundant with
+bounded drain expires. The JS completion that later closes the committed handle takes a fresh
+operation for that `close()` (`closeSettledHandle`), because `close()` leaves the closables before
+deleting the RocksDB transaction; on a closing descriptor it leaves the handle to the sweep. The recheck is not redundant with
 `commitCompletionsClosed`, which `finishClose()` sets only after it has passed
 the drain gate and stopped both lanes; a commit that registered its completion
 just before that would otherwise reach `CommitWorker::enqueue` on a stopped

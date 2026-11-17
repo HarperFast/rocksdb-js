@@ -826,10 +826,10 @@ static void createCommitError(napi_env env, const TransactionCommitState& state,
 }
 
 /**
- * close() leaves the closables before it deletes `txn`, so a caller that no longer holds its
- * descriptor operation takes a fresh one: otherwise a foreign finishClose() could pass its drain,
- * find nothing to sweep, and destroy the database first. Once the descriptor is closing, its sweep
- * owns the close; an expired descriptor has already run it.
+ * close() leaves the closables before it deletes `txn`, so unless the caller holds a descriptor
+ * operation, a fresh one is taken: otherwise a foreign finishClose() could pass its drain, find
+ * nothing to sweep, and destroy the database first. Once the descriptor is closing, its sweep owns
+ * the close; an expired descriptor has already run it.
  */
 static void closeSettledHandle(TransactionCommitState* state, bool operationHeld) {
 	if (operationHeld) {
@@ -845,10 +845,9 @@ static void closeSettledHandle(TransactionCommitState* state, bool operationHeld
 
 /**
  * Runs no JavaScript, so commitSync() can call it while still holding its descriptor operation; the
- * caller builds the error for a failed commit afterwards with createCommitError(). Every other caller
- * runs after its operation was released and passes `operationHeld = false`.
+ * caller builds the error for a failed commit afterwards with createCommitError().
  */
-static bool settleCommit(TransactionCommitState* state, bool operationHeld = true) {
+static bool settleCommit(TransactionCommitState* state, bool operationHeld) {
 	if (state->status.ok()) {
 		if (state->handle) {
 			DEBUG_LOG("%p Transaction::Commit Complete closing (txnId=%llu)\n", state->handle.get(), (unsigned long long)state->handle->id);
@@ -1394,7 +1393,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			executeCommitWork(&state);
 		}
 		// Never parks: the holder of a coordinated-retry conflict may need this event loop.
-		committed = settleCommit(&state);
+		committed = settleCommit(&state, /*operationHeld=*/true);
 	}
 	if (!committed) {
 		napi_value error;

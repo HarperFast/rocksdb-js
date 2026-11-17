@@ -34,8 +34,6 @@ if (!ready.ready) fail(`worker failed to initialize: ${JSON.stringify(ready)}`);
 
 const txn = new Transaction(db.store);
 txn.putSync('k', 'committed');
-// The completion closes the committed handle on this thread, inside the close delay the worker's
-// shutdown() lands in.
 try {
 	await txn.commit();
 } catch (error) {
@@ -46,6 +44,8 @@ try {
 
 const result = await nextMessage();
 if (!result.shutdown) fail(`shutdown failed: ${JSON.stringify(result)}`);
+if (!result.closeDelayedAtShutdown)
+	fail('shutdown() started after the close delay; nothing was tested');
 if (result.closeStillDelayed) {
 	fail("shutdown() returned while the commit completion's close() was still running");
 }

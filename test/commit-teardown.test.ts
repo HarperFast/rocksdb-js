@@ -77,7 +77,6 @@ describe('Async commit completion vs. foreign shutdown()', () => {
 		"holds shutdown() until the completion's close() finishes (ROCKSDB_JS_COMMIT_THREAD=$label)",
 		{ timeout: 30_000 },
 		async ({ mode }) => {
-			// Holds the completion's close() open after it leaves the closables.
 			const env: NodeJS.ProcessEnv = { ...process.env, ROCKSDB_JS_TXN_CLOSE_DELAY_MS: '1000' };
 			if (mode === undefined) {
 				delete env.ROCKSDB_JS_COMMIT_THREAD;
