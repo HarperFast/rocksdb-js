@@ -62,15 +62,7 @@ struct AsyncBackupState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 	// registry purge (use_count() > 1), so on release we must retry the purge or
 	// the registry entry — and the open RocksDB — would linger forever.
 	void releaseDescriptor() noexcept {
-		if (this->descriptor) {
-			try {
-				DBKey key = descriptorKey(*this->descriptor);
-				this->descriptor.reset();
-				DBRegistry::PurgeIfUnreferenced(key);
-			} catch (...) {
-				this->descriptor.reset();
-			}
-		}
+		releaseDescriptorPin(this->descriptor);
 	}
 
 	~AsyncBackupState() override {
@@ -276,6 +268,8 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 		// paths before tryAcquireFileLock's own UTF-8 → wide conversion. "/" is a
 		// valid separator on every platform.
 		lockToken = tryAcquireFileLock(backupDir + "/" + BACKUP_LOCK_FILENAME);
+	} catch (const std::bad_alloc&) {
+		throw;
 	} catch (const std::exception& e) {
 		return rocksdb::Status::IOError(e.what());
 	}

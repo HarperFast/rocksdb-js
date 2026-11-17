@@ -96,15 +96,15 @@ static napi_value doClear(napi_env env, napi_callback_info info, const char* fai
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncClearState*>(data);
 			// check if database is still open before proceeding
-			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during clear operation");
-			} else {
-				runAsyncExecute(state, [state] {
+			runAsyncExecute(state, [state] {
+				if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during clear operation");
+				} else {
 					// awaited by DBHandle::close()'s async-work drain, so the token
 					// that drain arms is the one that can cancel it
 					state->status = state->handle->clear(&state->handle->compactCancelRequested);
-				});
-			}
+				}
+			});
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
 		},
@@ -370,10 +370,10 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncCompactState*>(data);
 			// check if database is still open before proceeding
-			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during compact operation");
-			} else {
-				runAsyncExecute(state, [state] {
+			runAsyncExecute(state, [state] {
+				if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during compact operation");
+				} else {
 					rocksdb::Slice startSlice(state->startKey);
 					rocksdb::Slice endSlice(state->endKey);
 					rocksdb::Slice* startPtr = state->hasStart ? &startSlice : nullptr;
@@ -388,8 +388,8 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 						// self-close does not reach until after that drain returns
 						&state->handle->compactCancelRequested
 					);
-				});
-			}
+				}
+			});
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
 		},
@@ -536,15 +536,7 @@ struct AsyncCatchUpState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 
 	~AsyncCatchUpState() override {
 		this->releaseInFlight();
-		if (this->descriptor) {
-			try {
-				DBKey key = descriptorKey(*this->descriptor);
-				this->descriptor.reset();
-				DBRegistry::PurgeIfUnreferenced(key);
-			} catch (...) {
-				this->descriptor.reset();
-			}
-		}
+		releaseDescriptorPin(this->descriptor);
 	}
 };
 
@@ -689,11 +681,13 @@ napi_value Database::CatchUpWithPrimary(napi_env env, napi_callback_info info) {
 			// close() resets it on the JS thread (AGENTS invariant 9; same
 			// discipline as CreateCheckpoint). state->descriptor is this
 			// worker's own strong pin and stays valid regardless.
-			if (!state->handle || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during catch-up operation");
-			} else {
-				runAsyncExecute(state, [state] { state->status = state->descriptor->catchUpWithPrimary(); });
-			}
+			runAsyncExecute(state, [state] {
+				if (!state->handle || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during catch-up operation");
+				} else {
+					state->status = state->descriptor->catchUpWithPrimary();
+				}
+			});
 			state->releaseInFlight();
 			state->signalExecuteCompleted();
 		},
@@ -863,13 +857,17 @@ static rocksdb::Status dropColumnFamily(DBHandle& dbHandle) noexcept {
  * await db.drop();
  * ```
  */
+static napi_value dropDefault(napi_env env, napi_callback_info info) {
+	return doClear(env, info, "Drop failed");
+}
+
 napi_value Database::Drop(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
 
 	if ((*dbHandle)->getColumnFamilyName() == "default") {
-		return doClear(env, info, "Drop failed");
+		return guardAsyncEntry<dropDefault>(env, info);
 	}
 
 	napi_value resolve = argv[0];
@@ -1024,11 +1022,13 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncFlushState*>(data);
 			// check if database is still open before proceeding
-			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during flush operation");
-			} else {
-				runAsyncExecute(state, [state] { state->status = state->handle->descriptor->flush(state->allowWriteStall); });
-			}
+			runAsyncExecute(state, [state] {
+				if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during flush operation");
+				} else {
+					state->status = state->handle->descriptor->flush(state->allowWriteStall);
+				}
+			});
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
 		},
@@ -1168,11 +1168,13 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 		name,
 		[](napi_env doNotUse, void* data) {
 			auto state = reinterpret_cast<BaseAsyncState<std::shared_ptr<DBHandle>>*>(data);
-			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during WAL sync");
-			} else {
-				runAsyncExecute(state, [state] { state->status = state->handle->descriptor->syncWal(); });
-			}
+			runAsyncExecute(state, [state] {
+				if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during WAL sync");
+				} else {
+					state->status = state->handle->descriptor->syncWal();
+				}
+			});
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) {
@@ -1313,10 +1315,10 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<DBHandle>>*>(data);
 			// check if database is still open before proceeding
-			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during get operation");
-			} else {
-				runAsyncExecute(state, [state] {
+			runAsyncExecute(state, [state] {
+				if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during get operation");
+				} else {
 					state->status = state->handle->descriptor->db->Get(
 						state->readOptions,
 						state->handle->getColumnFamilyHandle(),
@@ -1330,8 +1332,8 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 							state->handle->getColumnFamilyHandle()
 						);
 					}
-				});
-			}
+				}
+			});
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
 		},

@@ -725,10 +725,10 @@ napi_value TransactionHandle::get(
 			if (getDelayMs > 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
 			}
-			if (!state->handle || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
-			} else {
-				runAsyncExecute(state, [state] {
+			runAsyncExecute(state, [state] {
+				if (!state->handle || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
+				} else {
 					state->status = state->handle->txn->Get(
 						state->readOptions,
 						state->readColumnDescriptor->column.get(),
@@ -740,8 +740,8 @@ napi_value TransactionHandle::get(
 					if (state->status.ok() && state->vtSlot) {
 						vtCheckAsyncGet(state, state->readDb, state->readColumnDescriptor->column.get());
 					}
-				});
-			}
+				}
+			});
 			state->readColumnDescriptor.reset();
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -946,11 +946,11 @@ napi_value TransactionHandle::multiGet(
 			if (getDelayMs > 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
 			}
-			if (!state->handle || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during transaction get many operation");
-				state->batch.values.reset();
-			} else {
-				runAsyncExecute(state, [state] {
+			runAsyncExecute(state, [state] {
+				if (!state->handle || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during transaction get many operation");
+					state->batch.values.reset();
+				} else {
 					state->readDb->MultiGet(
 						state->readOptions,
 						state->readColumnDescriptor->column.get(),
@@ -965,9 +965,9 @@ napi_value TransactionHandle::multiGet(
 						state->batch.statuses[index] = std::move(state->misses.statuses[i]);
 					}
 					finishMultiGet(state->status, state->batch, state->result);
-				});
-				state->batch.values.reset();
-			}
+				}
+			});
+			state->batch.values.reset();
 			state->misses.values.reset();
 			state->snapshot.reset();
 			state->readColumnDescriptor.reset();

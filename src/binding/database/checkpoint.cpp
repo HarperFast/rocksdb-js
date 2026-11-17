@@ -48,15 +48,7 @@ struct AsyncCheckpointState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		targetPath(std::move(targetPath)) {}
 
 	void releaseDescriptor() noexcept {
-		if (this->descriptor) {
-			try {
-				DBKey key = descriptorKey(*this->descriptor);
-				this->descriptor.reset();
-				DBRegistry::PurgeIfUnreferenced(key);
-			} catch (...) {
-				this->descriptor.reset();
-			}
-		}
+		releaseDescriptorPin(this->descriptor);
 	}
 
 	~AsyncCheckpointState() override {
@@ -151,10 +143,10 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 			// so the database stays valid even if close() runs concurrently.
 			// isCancelled() lets us skip starting a checkpoint once close() has been
 			// requested.
-			if (!state->handle || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during checkpoint operation");
-			} else {
-				runAsyncExecute(state, [state] {
+			runAsyncExecute(state, [state] {
+				if (!state->handle || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during checkpoint operation");
+				} else {
 					rocksdb::Checkpoint* checkpoint = nullptr;
 					rocksdb::Status s = rocksdb::Checkpoint::Create(state->descriptor->db.get(), &checkpoint);
 					if (s.ok()) {
@@ -165,8 +157,8 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 						s = checkpoint->CreateCheckpoint(state->targetPath);
 					}
 					state->status = s;
-				});
-			}
+				}
+			});
 			// Release the in-flight claim made on the JS thread (the worker owns
 			// this decrement once the work was queued). Wake any finishClose()
 			// waiting for this copy before it tears down descriptor->db. Mirrors

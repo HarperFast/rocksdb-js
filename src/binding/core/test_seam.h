@@ -450,10 +450,9 @@ inline int consumeWriteBufferManagerJoinDelayForTesting() {
 	return 0;
 }
 
-// Async-work stages `forceAsyncExceptionForTesting(stage, count)` can make throw std::bad_alloc.
+// Stages `forceAsyncExceptionForTesting(stage, count)` makes throw std::bad_alloc.
 enum class AsyncExceptionStage : int {
 	None = 0,
-	// The `new` of a heap-allocated async state.
 	State = 1,
 	Execute = 2,
 	Complete = 3
@@ -471,11 +470,11 @@ inline std::atomic<int>& asyncExceptionCount() {
 
 inline void setAsyncExceptionForTesting(int stage, int count) {
 	asyncExceptionCount().store(count, std::memory_order_relaxed);
-	asyncExceptionStage().store(stage, std::memory_order_release);
+	asyncExceptionStage().store(stage, std::memory_order_relaxed);
 }
 
 inline bool consumeAsyncExceptionForTesting(AsyncExceptionStage stage) {
-	if (asyncExceptionStage().load(std::memory_order_acquire) != static_cast<int>(stage)) {
+	if (asyncExceptionStage().load(std::memory_order_relaxed) != static_cast<int>(stage)) {
 		return false;
 	}
 	int remaining = asyncExceptionCount().load(std::memory_order_relaxed);

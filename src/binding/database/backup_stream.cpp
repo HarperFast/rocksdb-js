@@ -130,15 +130,7 @@ struct AsyncBackupStreamState final : BaseAsyncState<std::shared_ptr<DBHandle>> 
 	// registry purge (use_count() > 1), so on release we must retry the purge or
 	// the registry entry — and the open RocksDB — would linger forever.
 	void releaseDescriptor() noexcept {
-		if (this->descriptor) {
-			try {
-				DBKey key = descriptorKey(*this->descriptor);
-				this->descriptor.reset();
-				DBRegistry::PurgeIfUnreferenced(key);
-			} catch (...) {
-				this->descriptor.reset();
-			}
-		}
+		releaseDescriptorPin(this->descriptor);
 	}
 
 	~AsyncBackupStreamState() override {
@@ -688,7 +680,7 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 	}
 
 	auto state = new AsyncBackupStreamState(env, *dbHandle, descriptor, flushBeforeBackup);
-	// Owns the state, which holds only its constructor's reference, until the tsfn shares it.
+	// Owns the state until the tsfn shares it; rejectAndCleanup() below takes over from there.
 	state->completed.store(true);
 	PendingAsyncState pending(env, state);
 	state->backupTransactionLogs = backupTransactionLogs;
@@ -721,22 +713,11 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 	// after successful creation — on failure the finalize callback never runs.
 	state->acquire();
 	pending.release();
-	state->completed.store(false);
-
-	NAPI_STATUS_THROWS(::napi_create_async_work(
-		env,
-		nullptr,
-		resourceName,
-		backupStreamExecute,
-		backupStreamComplete,
-		state,
-		&state->asyncWork
-	));
 
 	// This state is refcounted (not a plain `delete`), shared with the tsfn
 	// above, so queueAsyncWorkOrReject()'s generic `delete state` would
 	// double-free against tsfnFinalize()'s later release(). Mirror
-	// backupStreamComplete()'s cleanup by hand instead for both failure exits
+	// backupStreamComplete()'s cleanup by hand instead for every failure exit
 	// below, since execute/complete never run to do it themselves: delete the
 	// async work object, release the tsfn (tsfnFinalize drops its ref), drop
 	// the descriptor pin, reject, and release the constructor's own ref.
@@ -756,18 +737,22 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 			state->tsfn = nullptr;
 		}
 		state->releaseDescriptor();
-
-		napi_value error = nullptr;
-		napi_value messageValue;
-		if (::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &messageValue) == napi_ok) {
-			::napi_create_error(env, nullptr, messageValue, &error);
-		}
-		if (error == nullptr) {
-			::napi_get_undefined(env, &error);
-		}
-		state->callReject(error);
+		rejectAsyncState(env, state, nullptr, message);
 		state->release();
 	};
+
+	if (::napi_create_async_work(
+			env,
+			nullptr,
+			resourceName,
+			backupStreamExecute,
+			backupStreamComplete,
+			state,
+			&state->asyncWork
+		) != napi_ok) {
+		rejectAndCleanup(false, "Failed to create backup stream work");
+		NAPI_RETURN_UNDEFINED();
+	}
 
 	// The operationsInFlight claim taken above is held for the whole stream
 	// (released at the end of backupStreamExecute, not here), so it already
@@ -783,6 +768,7 @@ napi_value Database::BackupStream(napi_env env, napi_callback_info info) {
 		rejectAndCleanup(false, "Database is closing");
 		NAPI_RETURN_UNDEFINED();
 	}
+	state->completed.store(false);
 
 	if (::napi_queue_async_work(env, state->asyncWork) != napi_ok) {
 		rejectAndCleanup(true, "Failed to queue backup stream work");

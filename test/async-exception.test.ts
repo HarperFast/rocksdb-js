@@ -64,7 +64,7 @@ describe('C++ exceptions in async operations', () => {
 				'stage %i (%s)',
 				async (stage, _description, expected) => {
 					const rejections = await runFixture(stage);
-					expect(rejections.length).toBeGreaterThanOrEqual(17);
+					expect(rejections.length).toBeGreaterThanOrEqual(19);
 					for (const { op, code, message } of rejections) {
 						expect({ op, message }).toEqual({ op, message: expected.message });
 						if (expected.code) {

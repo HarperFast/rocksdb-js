@@ -309,11 +309,11 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 		name,
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncMultiGetState<std::shared_ptr<DBHandle>>*>(data);
-			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during get many operation");
-				state->batch.values.reset();
-			} else {
-				runAsyncExecute(state, [state] {
+			runAsyncExecute(state, [state] {
+				if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during get many operation");
+					state->batch.values.reset();
+				} else {
 					state->handle->descriptor->db->MultiGet(
 						state->readOptions,
 						state->handle->getColumnFamilyHandle(),
@@ -323,9 +323,9 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 						state->batch.statuses.get()
 					);
 					finishMultiGet(state->status, state->batch, state->result);
-				});
-				state->batch.values.reset();
-			}
+				}
+			});
+			state->batch.values.reset();
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete

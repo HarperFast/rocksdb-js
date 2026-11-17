@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include "database/db_descriptor.h"
@@ -262,6 +263,26 @@ public:
 	static bool Teardown(bool quarantinedOnly = false);
 	static size_t Size();
 };
+
+/**
+ * Drops an async operation's descriptor pin, then retries the registry purge that pin may have
+ * made a racing close skip (HarperFast/rocksdb-js#672). When copying the key throws, the pin is
+ * dropped without the retry, since the callers are destructors and completions that must not throw.
+ */
+inline void releaseDescriptorPin(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
+	if (!descriptor) {
+		return;
+	}
+	std::optional<DBKey> key;
+	try {
+		key.emplace(descriptorKey(*descriptor));
+	} catch (...) {
+	}
+	descriptor.reset();
+	if (key) {
+		DBRegistry::PurgeIfUnreferenced(*key);
+	}
+}
 
 } // namespace rocksdb_js
 

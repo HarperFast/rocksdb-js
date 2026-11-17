@@ -30,10 +30,13 @@ await db.transaction(async (txn) => {
 });
 const backupDir = join(dir, 'backups');
 await db.backup(backupDir);
+await db.backup(backupDir);
+const dropped = RocksDatabase.open(join(dir, 'dropped'));
 
 const secondary = RocksDatabase.open(join(dir, 'db'), { secondaryPath: join(dir, 'secondary') });
 
 let sequence = 0;
+let backupId = 1;
 const ops: [string, () => unknown][] = [
 	[
 		'get',
@@ -50,6 +53,7 @@ const ops: [string, () => unknown][] = [
 	['compact', () => db.compact()],
 	['syncWal', () => db.syncWal()],
 	['clear', () => db.clear()],
+	['drop', () => dropped.drop()],
 	['catchUpWithPrimary', () => secondary.catchUpWithPrimary()],
 	['backup', () => db.backup(backupDir)],
 	['backup stream', () => db.backup(new WritableStream<Uint8Array>())],
@@ -57,6 +61,7 @@ const ops: [string, () => unknown][] = [
 	['backups.list', () => backups.list(backupDir)],
 	['backups.verify', () => backups.verify(backupDir, 1)],
 	['backups.purge', () => backups.purge(backupDir, 100)],
+	['backups.delete', () => backups.delete(backupDir, backupId++)],
 	['backups.restore', () => backups.restore(backupDir, join(dir, `restore-${sequence++}`))],
 	[
 		'validateTransactionLogStore',
@@ -87,6 +92,7 @@ for (const [op, run] of ops) {
 }
 
 secondary.close();
+dropped.close();
 cold.close();
 db.close();
 console.log(JSON.stringify(results));
