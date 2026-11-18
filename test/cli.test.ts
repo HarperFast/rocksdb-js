@@ -356,6 +356,30 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(code).toBe(0);
 		});
 
+		it.each(['EPIPE', 'ENOTCONN'])('exits 0 when a stdout write fails with %s', async (code) => {
+			const dbPath = tempDBPath();
+			seed(dbPath, { a: 'one' });
+			const preload = `process.stdout.write = function () { const e = new Error('write ${code}'); e.code = '${code}'; process.nextTick(() => this.emit('error', e)); return true; };`;
+			const result = await runChild(
+				process.execPath,
+				[
+					'--import',
+					`data:text/javascript,${encodeURIComponent(preload)}`,
+					cliPath,
+					dbPath,
+					'get',
+					'a',
+				],
+				{
+					env: { ...process.env, NO_COLOR: '1' },
+					deadlineMs: CLI_TIMEOUT_MS,
+					closeTimeoutMs: 5_000,
+				}
+			);
+			expect(result.stderr).toBe('');
+			expect(result.code).toBe(0);
+		});
+
 		it('uses the current directory when the first argument is a command', async () => {
 			const dbPath = tempDBPath();
 			seed(dbPath, { a: 'one' });
