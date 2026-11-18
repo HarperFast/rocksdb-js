@@ -8,7 +8,11 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = resolve(fileURLToPath(import.meta.url), '../..');
 const root = join(repoRoot, 'src/binding');
 const extensions = new Set(['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx']);
-const bareAssert = /(?<![\w.>:])assert\s*\(|#\s*include\s*[<"](?:cassert|assert\.h)[>"]/;
+const assertInclude = /^[ \t]*#[ \t]*include\s*[<"](?:cassert|assert\.h)[>"]/gm;
+const assertCall = /(?<![\w.>:])assert\s*\(/g;
+// Comments and string/char literals, blanked out so a match inside one is ignored. Newlines are
+// kept, so offsets still map to the right line and a call split across lines still matches.
+const commentOrLiteral = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/g;
 
 function collect(dir: string, files: string[]): void {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -21,20 +25,33 @@ function collect(dir: string, files: string[]): void {
 	}
 }
 
+function lineAt(source: string, offset: number): number {
+	let line = 1;
+	for (let i = 0; i < offset; i++) {
+		if (source.charCodeAt(i) === 10) {
+			line++;
+		}
+	}
+	return line;
+}
+
 const files: string[] = [];
 collect(root, files);
 
 const violations: string[] = [];
 for (const file of files) {
-	const lines = readFileSync(file, 'utf-8').split(/\r?\n/);
-	for (const [index, line] of lines.entries()) {
-		const code = line.replace(/\/\/.*$/, '');
-		if (/^\s*(?:\/\*|\*(?:\s|\/|$))/.test(code)) {
-			continue;
-		}
-		if (bareAssert.test(code)) {
-			violations.push(`${relative(repoRoot, file)}:${index + 1}: ${line.trim()}`);
-		}
+	const source = readFileSync(file, 'utf-8');
+	const lines = source.split(/\r?\n/);
+	const report = (offset: number) => {
+		const line = lineAt(source, offset);
+		violations.push(`${relative(repoRoot, file)}:${line}: ${lines[line - 1].trim()}`);
+	};
+	for (const match of source.matchAll(assertInclude)) {
+		report(match.index);
+	}
+	const code = source.replace(commentOrLiteral, (text) => text.replace(/[^\n]/g, ' '));
+	for (const match of code.matchAll(assertCall)) {
+		report(match.index);
 	}
 }
 
