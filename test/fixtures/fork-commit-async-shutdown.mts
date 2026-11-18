@@ -4,10 +4,7 @@ import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 
 // A use-after-free need not crash; assert the operation count captured at the descriptor drain.
-// argv: <path> <shutdown|destroy>. With ROCKSDB_JS_COMMIT_DISPATCH_FAILURE the completion is dropped
-// as if its env were gone, so the commit thread's fallback closes the transaction and the commit
-// promise never settles; with ROCKSDB_JS_COMMIT_THREAD_START_FAILURE as well, that fallback runs
-// inline on this thread, inside commit().
+// A dropped completion's commit promise never settles.
 const path = process.argv[2];
 const closer = process.argv[3];
 if (closer !== 'shutdown' && closer !== 'destroy') {
@@ -53,7 +50,6 @@ txn.putSync('k', 'committed');
 let settled = false;
 if (droppedCompletion) {
 	void txn.commit().finally(() => (settled = true));
-	// Inline, commit() returns only after the worker's close has passed the drain.
 	if (inlineCommit && !isTransactionCloseGuardedAtDrainForTesting()) {
 		fail(
 			`${closer}() reached the drain inside commit() without the fallback close's operation registered`

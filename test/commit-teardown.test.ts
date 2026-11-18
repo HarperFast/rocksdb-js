@@ -74,8 +74,6 @@ describe('Async commit completion vs. worker env teardown', () => {
 
 describe('Async commit completion vs. foreign shutdown()/destroy()', () => {
 	const ALL_MODES = [...COMMIT_THREAD_MODES, { label: '0', mode: '0' }];
-	// Without a commit thread the lane runs inline, and a dropped completion takes the env-gone fallback
-	// on the JS thread; legacy mode has neither.
 	const inlineEnvGone = {
 		ROCKSDB_JS_COMMIT_THREAD_START_FAILURE: '1',
 		ROCKSDB_JS_COMMIT_DISPATCH_FAILURE: '1',
@@ -86,7 +84,8 @@ describe('Async commit completion vs. foreign shutdown()/destroy()', () => {
 				...mode,
 				owner: 'completion',
 				fixture: 'fork-commit-async-shutdown.mts',
-				arg: closer,
+				args: [closer],
+				name: closer,
 				seams: {},
 			}))
 		),
@@ -95,30 +94,35 @@ describe('Async commit completion vs. foreign shutdown()/destroy()', () => {
 				...mode,
 				owner: 'inline env-gone fallback',
 				fixture: 'fork-commit-async-shutdown.mts',
-				arg: closer,
+				args: [closer],
+				name: closer,
 				seams: inlineEnvGone,
 			}))
 		),
-		...ALL_MODES.flatMap((mode) => [
-			{
-				...mode,
-				owner: 'teardown completion',
-				fixture: 'fork-commit-reaper-shutdown.mts',
-				arg: 'committed',
-				seams: {},
-			},
-			{
-				...mode,
-				owner: 'reaper',
-				fixture: 'fork-commit-reaper-shutdown.mts',
-				arg: 'pending',
-				seams: {},
-			},
-		]),
+		...ALL_MODES.flatMap((mode) =>
+			['shutdown', 'destroy'].flatMap((closer) => [
+				{
+					...mode,
+					owner: 'teardown completion',
+					fixture: 'fork-commit-reaper-shutdown.mts',
+					args: ['committed', closer],
+					name: `committed, ${closer}`,
+					seams: {},
+				},
+				{
+					...mode,
+					owner: 'reaper',
+					fixture: 'fork-commit-reaper-shutdown.mts',
+					args: ['pending', closer],
+					name: `pending, ${closer}`,
+					seams: {},
+				},
+			])
+		),
 	])(
-		'keeps the $owner close registered at the drain ($arg, ROCKSDB_JS_COMMIT_THREAD=$label)',
+		'keeps the $owner close registered at the drain ($name, ROCKSDB_JS_COMMIT_THREAD=$label)',
 		{ timeout: 30_000 },
-		async ({ mode, fixture, arg, seams }) => {
+		async ({ mode, fixture, args, seams }) => {
 			const env: NodeJS.ProcessEnv = {
 				...process.env,
 				...seams,
@@ -131,7 +135,7 @@ describe('Async commit completion vs. foreign shutdown()/destroy()', () => {
 			}
 			const { code, signal, stderr, timedOut } = await runChild(
 				process.execPath,
-				[join(__dirname, 'fixtures', fixture), generateDBPath(), arg],
+				[join(__dirname, 'fixtures', fixture), generateDBPath(), ...args],
 				{ deadlineMs: 20_000, env }
 			);
 			expect({ code, signal, stderr, timedOut }).toEqual({
