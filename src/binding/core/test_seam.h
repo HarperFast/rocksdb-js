@@ -111,13 +111,11 @@ inline std::atomic<int>& commitExecuteDelayMsFlag() {
 	return delayMs;
 }
 
-// A flag: every CommitWorker thread start fails, so tasks run inline on the enqueuing thread.
 inline std::atomic<bool>& commitThreadStartFailureFlag() {
 	static std::atomic<bool> failing{ false };
 	return failing;
 }
 
-// A count: commit completions to drop as if their env were gone.
 inline std::atomic<int>& commitDispatchFailureFlag() {
 	static std::atomic<int> pending{ 0 };
 	return pending;

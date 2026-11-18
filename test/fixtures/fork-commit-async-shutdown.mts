@@ -15,10 +15,13 @@ if (!(Number(process.env.ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH) > 0)) {
 }
 const droppedCompletion = Number(process.env.ROCKSDB_JS_COMMIT_DISPATCH_FAILURE) > 0;
 const inlineCommit = Number(process.env.ROCKSDB_JS_COMMIT_THREAD_START_FAILURE) > 0;
-if (inlineCommit && !droppedCompletion) {
+if (inlineCommit !== droppedCompletion) {
 	throw new Error(
-		'ROCKSDB_JS_COMMIT_THREAD_START_FAILURE needs ROCKSDB_JS_COMMIT_DISPATCH_FAILURE'
+		'set ROCKSDB_JS_COMMIT_THREAD_START_FAILURE and ROCKSDB_JS_COMMIT_DISPATCH_FAILURE together'
 	);
+}
+if (droppedCompletion && /^(0|false)$/.test(process.env.ROCKSDB_JS_COMMIT_THREAD ?? '')) {
+	throw new Error('the legacy commit path has no lane or completion dispatch to fail');
 }
 const fail = (message: string): never => {
 	throw new Error(message);
