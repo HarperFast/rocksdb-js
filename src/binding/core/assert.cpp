@@ -62,7 +62,7 @@ void assertionFailed(
 		sizeof(buffer),
 		"rocksdb-js: %s: %s (%s) at %s:%d\n",
 		fatal ? "fatal internal check failed" : "internal check failed, continuing",
-		message,
+		message ? message : "",
 		expression,
 		file,
 		line

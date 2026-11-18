@@ -412,7 +412,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * Returns false when the busy count was already zero; the caller reports
 	 * that with `reportIteratorCountUnderflow()` once it holds no lock.
 	 */
-	bool unregisterIterator(DBIteratorHandle* iterator);
+	[[nodiscard]] bool unregisterIterator(DBIteratorHandle* iterator);
 	static void reportIteratorCountUnderflow() noexcept;
 	void closeIterators();
 
@@ -437,7 +437,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * `closeOrphanIfUnused()` when `checkOrphan` is set, and
 	 * `reportIteratorCountUnderflow()` when `countUnderflow` is.
 	 */
-	bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) noexcept;
+	[[nodiscard]] bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) noexcept;
 
 	void closeIdleIterators() noexcept;
 

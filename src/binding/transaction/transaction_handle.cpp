@@ -512,7 +512,6 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 		// Closed since it was taken, or its column family was dropped/reopened.
 		iterator->close();
 	}
-	// Only a failed registration breaks out of the loop.
 	refuseDuplicateIterator();
 }
 
