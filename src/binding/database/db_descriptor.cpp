@@ -947,6 +947,9 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 }
 
 bool DBDescriptor::CommitCompletion::dispatch(void* state) {
+	if (testConsumeCommitDispatchFailure()) {
+		return false;
+	}
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	if (this->closed || this->tsfn == nullptr) {
 		// Env was torn down / released; the caller drops the state.
