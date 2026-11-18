@@ -225,8 +225,17 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance, key.path.c_str(), entry.descriptor.use_count());
 			if (entry.descriptor && entry.descriptor.use_count() <= 1) {
 				// Allocated before beginClose() publishes the claim: a failure after it would leave a
-				// close that nobody runs, and every OpenDB() for the path would wait on it.
-				claimed.emplace_back(key, nullptr, nullptr);
+				// close that nobody runs, and every OpenDB() for the path would wait on it. A failure
+				// here skips the purge instead, since releaseDescriptorPin() is noexcept: the entry stays
+				// open and unclaimed for a later close, shutdown() or exit teardown.
+				try {
+					if (consumeAsyncExceptionForTesting(AsyncExceptionStage::PurgeClaim)) {
+						throw std::bad_alloc();
+					}
+					claimed.emplace_back(key, nullptr, nullptr);
+				} catch (...) {
+					return CloseResult{};
+				}
 				if (entry.descriptor->beginClose()) {
 					DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance, key.path.c_str());
 					claimed.front().descriptor = entry.descriptor;

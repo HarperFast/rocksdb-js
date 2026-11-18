@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-async-exception.mts');
+const purgeFixturePath = join(__dirname, 'fixtures', 'fork-purge-claim-alloc.mts');
 
 type Rejection = { op: string; code?: string; message?: string };
 
@@ -74,6 +75,43 @@ describe('C++ exceptions in async operations', () => {
 				},
 				60_000
 			);
+
+			it('skips a pin-release purge whose close claim cannot be allocated', async () => {
+				const dir = generateDBPath();
+				try {
+					const { code, signal, stdout, stderr } = await new Promise<{
+						code: number | null;
+						signal: NodeJS.Signals | null;
+						stdout: string;
+						stderr: string;
+					}>((resolve, reject) => {
+						const child = spawn(process.execPath, [purgeFixturePath, dir]);
+						let stdout = '';
+						let stderr = '';
+						child.stdout.on('data', (chunk) => {
+							stdout += chunk.toString();
+						});
+						child.stderr.on('data', (chunk) => {
+							stderr += chunk.toString();
+						});
+						const timer = setTimeout(() => child.kill('SIGKILL'), 50_000);
+						child.on('close', (code, signal) => {
+							clearTimeout(timer);
+							resolve({ code, signal, stdout, stderr });
+						});
+						child.on('error', reject);
+					});
+					expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: '' });
+					// The entry outlives the failed retry, unclaimed, and the next close purges it.
+					expect(JSON.parse(stdout)).toEqual({
+						afterFailedPurge: [{ refCount: 1 }],
+						value: 'value',
+						afterReopenClose: 0,
+					});
+				} finally {
+					rmSync(dir, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+				}
+			}, 60_000);
 
 			it.each(['0', '2'])(
 				'allocating the commit state with ROCKSDB_JS_COMMIT_THREAD=%s',

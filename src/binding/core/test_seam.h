@@ -454,7 +454,9 @@ enum class AsyncExceptionStage : int {
 	None = 0,
 	State = 1,
 	Execute = 2,
-	Complete = 3
+	Complete = 3,
+	// DBRegistry::PurgeIfUnreferenced()'s close-claim allocation.
+	PurgeClaim = 4
 };
 
 inline std::atomic<int>& asyncExceptionStage() {
