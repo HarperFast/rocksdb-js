@@ -5,7 +5,7 @@
  */
 import { RocksDatabase } from '../../src/index.ts';
 import {
-	transactionLogMapBufferCreateFailures,
+	getTransactionLogMapBufferCreateFailures,
 	transactionLogMapCount,
 } from '../../src/load-binding.ts';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -59,7 +59,7 @@ if (!isMainThread) {
 		gc();
 		await delay(50);
 		const before = transactionLogMapCount();
-		const failuresBefore = transactionLogMapBufferCreateFailures();
+		const failuresBefore = getTransactionLogMapBufferCreateFailures();
 
 		worker.postMessage('go');
 		await until(() => transactionLogMapCount() === before + 1, 'the worker to map segment 1');
@@ -67,7 +67,7 @@ if (!isMainThread) {
 		if (messages.includes('buffer')) fail('terminate() landed after the buffer was created');
 
 		await until(
-			() => transactionLogMapBufferCreateFailures() > failuresBefore,
+			() => getTransactionLogMapBufferCreateFailures() > failuresBefore,
 			'the worker to reach a failed buffer create'
 		);
 		await until(() => transactionLogMapCount() === before, 'the mapping to be released');

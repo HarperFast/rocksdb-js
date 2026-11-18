@@ -1185,8 +1185,8 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
 /** Process-wide count of failed mapping-buffer creates (test probe). */
-export const transactionLogMapBufferCreateFailures: () => number =
-	binding.transactionLogMapBufferCreateFailures;
+export const getTransactionLogMapBufferCreateFailures: () => number =
+	binding.getTransactionLogMapBufferCreateFailures;
 
 /**
  * Whether this runtime can back transaction-log memory maps with a SharedArrayBuffer: the shared
