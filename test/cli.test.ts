@@ -18,11 +18,11 @@ let childMayBeRunning = false;
 
 async function cli(
 	args: string[],
-	options: { cwd?: string; input?: string } = {}
+	options: { cwd?: string; input?: string; nodeArgs?: string[] } = {}
 ): Promise<CLIResult> {
 	let result: ChildResult;
 	try {
-		result = await runChild(process.execPath, [cliPath, ...args], {
+		result = await runChild(process.execPath, [...(options.nodeArgs ?? []), cliPath, ...args], {
 			deadlineMs: CLI_TIMEOUT_MS,
 			cwd: options.cwd,
 			env: { ...process.env, NO_COLOR: '1' },
@@ -360,22 +360,9 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			const dbPath = tempDBPath();
 			seed(dbPath, { a: 'one' });
 			const preload = `process.stdout.write = function () { const e = new Error('write ${code}'); e.code = '${code}'; process.nextTick(() => this.emit('error', e)); return true; };`;
-			const result = await runChild(
-				process.execPath,
-				[
-					'--import',
-					`data:text/javascript,${encodeURIComponent(preload)}`,
-					cliPath,
-					dbPath,
-					'get',
-					'a',
-				],
-				{
-					env: { ...process.env, NO_COLOR: '1' },
-					deadlineMs: CLI_TIMEOUT_MS,
-					closeTimeoutMs: 5_000,
-				}
-			);
+			const result = await cli([dbPath, 'get', 'a'], {
+				nodeArgs: ['--import', `data:text/javascript,${encodeURIComponent(preload)}`],
+			});
 			expect(result.stderr).toBe('');
 			expect(result.code).toBe(0);
 		});
