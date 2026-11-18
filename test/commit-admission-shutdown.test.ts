@@ -5,16 +5,21 @@ import { describe, expect, it } from 'vitest';
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-commit-admission-shutdown.mts');
 
-describe.each(['1', '2'])('Commit admission vs. shutdown (mode %s)', (mode) => {
-	it.each(['cold', 'warm'])(
-		'rejects after foreign shutdown with a %s completion cache',
-		async (cache) => {
+describe.each(['0', '1', '2'])('Commit admission vs. shutdown (mode %s)', (mode) => {
+	it.each([
+		['cold', 'before'],
+		['warm', 'before'],
+		['cold', 'after'],
+		['warm', 'after'],
+	])(
+		'rejects after foreign shutdown with a %s completion cache, paused %s registration',
+		async (cache, phase) => {
 			const result = await new Promise<{
 				code: number | null;
 				signal: string | null;
 				output: string;
 			}>((resolve, reject) => {
-				const child = spawn(process.execPath, [fixturePath, generateDBPath(), cache], {
+				const child = spawn(process.execPath, [fixturePath, generateDBPath(), cache, phase], {
 					env: { ...process.env, ROCKSDB_JS_COMMIT_THREAD: mode },
 				});
 				let output = '';

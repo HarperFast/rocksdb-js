@@ -225,10 +225,16 @@ napi_value IsTransactionCommitExecuteDelayedForTesting(napi_env env, napi_callba
 }
 
 napi_value SetTransactionCommitAdmissionDelayForTesting(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1);
+	NAPI_METHOD_ARGV(2);
 	int32_t delayMs = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &delayMs));
-	setTransactionCommitAdmissionDelayForTesting(std::clamp(delayMs, 0, 60000));
+	bool afterRegistration = false;
+	napi_valuetype phaseType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &phaseType));
+	if (phaseType != napi_undefined) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[1], &afterRegistration));
+	}
+	setTransactionCommitAdmissionDelayForTesting(std::clamp(delayMs, 0, 60000), afterRegistration);
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -288,6 +294,7 @@ static const TestSwitch testSwitches[] = {
 	 } },
 	{ "setTransactionCommitAdmissionDelayForTesting", SetTransactionCommitAdmissionDelayForTesting, []() {
 		 const bool changed = transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) != 0 ||
+			 transactionCommitAdmissionDelayRegistered().load(std::memory_order_relaxed) ||
 			 transactionCommitAdmissionDelayActive().load(std::memory_order_acquire);
 		 setTransactionCommitAdmissionDelayForTesting(0);
 		 return changed;

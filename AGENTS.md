@@ -218,12 +218,17 @@ env; its terminal closed flag prevents a delayed registration or dispatch from
 reviving the released TSFN. A per-commit tsfn acquire is NOT
 sufficient (env teardown does not honor tsfn acquire counts); see
 `test/commit-teardown.test.ts` and the `ROCKSDB_JS_COMMIT_DELAY_MS` test seam.
-Every path registers its native execute in the descriptor's
+Every path first registers with the transaction's async-work drain, before it
+reads the transaction's `dbHandle` at all: a foreign shutdown's sweep resets that
+`shared_ptr` in `TransactionHandle::close()` on its own thread, so the close must
+either wait for the commit or have already refused it (`commitSync()` does the
+same; `test/fixtures/fork-commit-admission-shutdown.mts` pauses on each side of
+the registration). A commit rejected during setup releases that registration
+before `completeCommitWork()`, which can `close()` the handle and so would wait
+on it. Every path then registers its native execute in the descriptor's
 `operationsInFlight` count before queueing and rechecks `isClosing()` afterward
 (publish-then-check, so teardown either waits for the operation or the commit
-observes the close and rejects). In the lane modes this must precede the
-`DBHandle` completion-cache access: foreign shutdown can reset the transaction's
-`dbHandle` before admission. The local descriptor pin is declared before the pending
+observes the close and rejects). The local descriptor pin is declared before the pending
 commit state so setup-error cleanup releases its operation count while the descriptor
 is still alive. The operation releases only after the transaction's
 async-work registration is cleared — legacy from its libuv execute thread, the

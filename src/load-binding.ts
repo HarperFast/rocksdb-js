@@ -1270,8 +1270,11 @@ export const isTransactionCloseGuardedAtDrainForTesting: () => boolean =
 export const isFlushCompletedDelayedForTesting: () => boolean =
 	binding.isFlushCompletedDelayedForTesting;
 
-export const setTransactionCommitAdmissionDelayForTesting: (delayMs: number) => void =
-	binding.setTransactionCommitAdmissionDelayForTesting;
+/** Pauses the next async commit before (default) or after it registers with its transaction. */
+export const setTransactionCommitAdmissionDelayForTesting: (
+	delayMs: number,
+	afterRegistration?: boolean
+) => void = binding.setTransactionCommitAdmissionDelayForTesting;
 
 export const isTransactionCommitAdmissionDelayedForTesting: () => boolean =
 	binding.isTransactionCommitAdmissionDelayedForTesting;

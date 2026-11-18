@@ -368,7 +368,15 @@ inline std::atomic<bool>& transactionCommitAdmissionDelayActive() {
 	return active;
 }
 
-inline void setTransactionCommitAdmissionDelayForTesting(int delayMs) {
+// Whether the commit admission pause sits after the transaction's async-work registration rather
+// than before it.
+inline std::atomic<bool>& transactionCommitAdmissionDelayRegistered() {
+	static std::atomic<bool> registered{ false };
+	return registered;
+}
+
+inline void setTransactionCommitAdmissionDelayForTesting(int delayMs, bool afterRegistration = false) {
+	transactionCommitAdmissionDelayRegistered().store(afterRegistration, std::memory_order_relaxed);
 	transactionCommitAdmissionDelayMs().store(delayMs, std::memory_order_relaxed);
 	if (delayMs == 0) {
 		transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
