@@ -386,7 +386,7 @@ bool TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
 		}
 		previous = releaseBusyIteratorLocked(this->activeIteratorCount);
 	}
-	if (previous == 1) {
+	if (previous <= 1) {
 		this->closeOrphanIfUnused();
 	}
 	return previous > 0;
@@ -561,7 +561,7 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 		previous = releaseBusyIteratorLocked(this->activeIteratorCount);
 	}
 	countUnderflow = previous == 0;
-	checkOrphan = previous == 1;
+	checkOrphan = previous <= 1;
 	return true;
 }
 
