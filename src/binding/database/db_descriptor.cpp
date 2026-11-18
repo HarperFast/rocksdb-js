@@ -2376,21 +2376,28 @@ struct LockCompletionPurge final {
 	}
 };
 
-/**
- * Hands the lock to the next waiter, then releases the descriptor pin taken to
- * do so and leaves the purge retry to `purge`.
- */
 static void completeLockCallback(const LockCallbackCompletionData& callbackData, LockCompletionPurge& purge) noexcept {
 	try {
-		std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock();
-		if (!descriptor) {
+		{
+			std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock();
+			if (!descriptor) {
+				return;
+			}
+			descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
+			if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+			}
+		}
+		// Every other owner retries the purge when it lets go, so only a count of
+		// 1 (the registry alone) after this release is ours to retry. Checking
+		// before the release would miss a close that skipped because of this pin.
+		// The second pin is always followed by the retry.
+		if (callbackData.descriptor.use_count() != 1) {
 			return;
 		}
-		descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
-		if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+		if (std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock()) {
+			purge.key = descriptorKey(*descriptor);
 		}
-		purge.key = descriptorKey(*descriptor);
 	} catch (...) {
 	}
 }

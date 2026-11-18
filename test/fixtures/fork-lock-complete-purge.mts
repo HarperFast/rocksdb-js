@@ -7,8 +7,6 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 // reference while a worker closes the last handle: that close skips its purge, and the completion
 // must retry it once it lets go.
 const WAIT_MS = 10_000;
-// Index 0: the main thread's handle is closed. Index 1: the main thread has checked the registry.
-// Index 2: the descriptor's reference count before the completion took its own.
 const MAIN_CLOSED = 0;
 const MAIN_CHECKED = 1;
 const BASELINE = 2;
@@ -29,9 +27,13 @@ if (!isMainThread) {
 	// The completion pins the descriptor only after the callback returns, so close once it has.
 	const baseline = Atomics.load(signal, BASELINE);
 	const deadline = Date.now() + WAIT_MS;
-	while ((entryOf(path)?.refCount ?? 0) <= baseline) {
-		if (Date.now() > deadline)
-			throw new Error('The withLock() completion never pinned the descriptor');
+	let refCount = 0;
+	while ((refCount = entryOf(path)?.refCount ?? 0) <= baseline) {
+		if (Date.now() > deadline) {
+			throw new Error(
+				`The withLock() completion never pinned the descriptor (refCount ${refCount}, baseline ${baseline})`
+			);
+		}
 	}
 	db.close();
 	parentPort!.postMessage(entryOf(path) ? 'overlapped' : 'purged');
@@ -52,7 +54,6 @@ if (!isMainThread) {
 		await nextMessage();
 		const closed = nextMessage();
 		const releaseToWorker = () => {
-			// The worker still holds a handle, so this close leaves the descriptor registered.
 			db.close();
 			Atomics.store(signal, BASELINE, entryOf(path)!.refCount);
 			Atomics.store(signal, MAIN_CLOSED, 1);
