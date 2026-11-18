@@ -84,6 +84,20 @@ inline std::atomic<bool>& txnCloseDelayActive() {
 	return active;
 }
 
+// A child-process-only latch: one transaction close waits until its descriptor's
+// drain records the operation count. No timer can release the close first.
+struct TransactionCloseDrainLatch {
+	std::atomic<bool> enabled{ false };
+	std::atomic<void*> descriptor{ nullptr };
+	std::atomic<int> operations{ -1 };
+	std::atomic<bool> finished{ false };
+};
+
+inline TransactionCloseDrainLatch& txnCloseDrainLatch() {
+	static TransactionCloseDrainLatch latch;
+	return latch;
+}
+
 // Transactional reads execute on a libuv worker, so their test delay cannot
 // read the process environment concurrently with JavaScript.
 inline std::atomic<int>& txnGetDelayMsFlag() {
@@ -285,6 +299,9 @@ inline void initializeTestSeams() {
 		);
 		txnCloseDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_TXN_CLOSE_DELAY_MS"), std::memory_order_relaxed
+		);
+		txnCloseDrainLatch().enabled.store(
+			testDelayMs("ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH") > 0, std::memory_order_relaxed
 		);
 		txnGetDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_TXN_GET_DELAY_MS"), std::memory_order_relaxed

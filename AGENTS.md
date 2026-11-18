@@ -254,6 +254,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `commitThreads`), `2` = experimental two-lane txnlog→commit pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
+- `ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH` - Child-process test only: park a single transaction's
+  native close until its descriptor reaches the operation drain, capturing the count before
+  releasing the latch. The regression asserts that close still owns the sole operation, without
+  depending on shutdown duration. Snapshotted at module initialization; unset in production.
 - `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` / `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only delays
   immediately before a native transaction commit (while its async work and descriptor operation
   remain registered, widening close-vs-execute race windows) and before a transaction's

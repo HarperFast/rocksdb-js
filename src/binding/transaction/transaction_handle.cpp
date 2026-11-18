@@ -606,6 +606,14 @@ void TransactionHandle::close() {
 		txnCloseDelayActive().store(false, std::memory_order_release);
 	}
 
+	auto& closeLatch = txnCloseDrainLatch();
+	const bool latched = closeLatch.enabled.load(std::memory_order_relaxed) && this->dbHandle && this->dbHandle->descriptor;
+	if (latched) {
+		closeLatch.descriptor.store(this->dbHandle->descriptor.get(), std::memory_order_release);
+		txnCloseDelayActive().store(true, std::memory_order_release);
+		closeLatch.operations.wait(-1, std::memory_order_acquire);
+	}
+
 	// Only now that no native work can be running: settle the final state. A commit completion
 	// on the owning thread can still be mid-transition; abort() wins over it either way.
 	const bool committed = this->state.abort() == TransactionState::Committed;
@@ -668,6 +676,11 @@ void TransactionHandle::close() {
 	DEBUG_LOG("%p TransactionHandle::close Transaction should already be removed from registry\n", this);
 
 	this->dbHandle.reset();
+	if (latched) {
+		txnCloseDelayActive().store(false, std::memory_order_release);
+		closeLatch.finished.store(true, std::memory_order_release);
+		closeLatch.finished.notify_all();
+	}
 }
 
 /**

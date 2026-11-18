@@ -2,10 +2,10 @@ import { RocksDatabase, Transaction } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 
-// A use-after-free here does not reliably crash, so whether shutdown() waited is what is asserted.
+// A use-after-free need not crash; assert the operation count captured at the descriptor drain.
 const path = process.argv[2];
-if (!(Number(process.env.ROCKSDB_JS_TXN_CLOSE_DELAY_MS) > 0)) {
-	throw new Error('ROCKSDB_JS_TXN_CLOSE_DELAY_MS must be set');
+if (!(Number(process.env.ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH) > 0)) {
+	throw new Error('ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH must be set');
 }
 const fail = (message: string): never => {
 	throw new Error(message);
@@ -44,10 +44,8 @@ try {
 
 const result = await nextMessage();
 if (!result.shutdown) fail(`shutdown failed: ${JSON.stringify(result)}`);
-if (!result.closeDelayedAtShutdown)
-	fail('shutdown() started after the close delay; nothing was tested');
-if (result.closeStillDelayed) {
-	fail("shutdown() returned while the commit completion's close() was still running");
+if (!result.closeGuardedAtDrain) {
+	fail("shutdown() reached the drain without the completion's close operation registered");
 }
 await worker.terminate();
 
