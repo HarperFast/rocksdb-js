@@ -1127,7 +1127,7 @@ static unsigned commitDelayMs() {
  */
 static void pauseAtCommitAdmissionForTesting(const TransactionHandle& txnHandle, bool registered) {
 	if (transactionCommitAdmissionDelayMs().load(std::memory_order_acquire) <= 0 ||
-		transactionCommitAdmissionDelayRegistered().load(std::memory_order_relaxed) != registered) {
+		transactionCommitAdmissionDelayRegistered().load(std::memory_order_acquire) != registered) {
 		return;
 	}
 	const int delayMs = transactionCommitAdmissionDelayMs().exchange(0, std::memory_order_acq_rel);
