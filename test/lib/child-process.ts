@@ -14,7 +14,10 @@ export type ChildResult = ChildOutput & {
 
 type RunChildOptions = {
 	deadlineMs: number;
+	cwd?: string;
 	env?: NodeJS.ProcessEnv;
+	// Written to stdin, which is otherwise ignored so a child that reads it sees EOF.
+	input?: string;
 	stopWhen?: (output: ChildOutput) => boolean;
 	closeTimeoutMs?: number;
 };
@@ -29,10 +32,14 @@ type RunChildOptions = {
 export function runChild(
 	command: string,
 	args: string[],
-	{ deadlineMs, env, stopWhen, closeTimeoutMs = 10_000 }: RunChildOptions
+	{ deadlineMs, cwd, env, input, stopWhen, closeTimeoutMs = 10_000 }: RunChildOptions
 ): Promise<ChildResult> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, { env });
+		const child = spawn(command, args, {
+			cwd,
+			env,
+			stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+		});
 		const output: ChildOutput = { stdout: '', stderr: '' };
 		let timedOut = false;
 		let settled = false;
@@ -83,6 +90,11 @@ export function runChild(
 		};
 		child.stdout?.on('data', onData('stdout'));
 		child.stderr?.on('data', onData('stderr'));
+		if (input !== undefined) {
+			// A child that exits without reading its input must not fail the runner with EPIPE.
+			child.stdin?.on('error', () => {});
+			child.stdin?.end(input);
+		}
 
 		child.on('error', (error) => {
 			// Without a pid nothing was started, so there is no process to wait for.
