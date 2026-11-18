@@ -26,11 +26,7 @@ if (isMainThread) {
 	try {
 		assert.deepEqual(await once(worker, 'message'), ['ready']);
 		const result = once(worker, 'message');
-		// After registration the shutdown below blocks until the pause ends, so keep it short.
-		setTransactionCommitAdmissionDelayForTesting(
-			afterRegistration ? 500 : 10000,
-			afterRegistration
-		);
+		setTransactionCommitAdmissionDelayForTesting(10000, afterRegistration);
 		worker.postMessage('commit');
 		const deadline = Date.now() + 5000;
 		while (!isTransactionCommitAdmissionDelayedForTesting()) {
@@ -39,8 +35,6 @@ if (isMainThread) {
 		}
 		shutdown();
 		if (afterRegistration) {
-			// The commit holds its transaction registration while it reads `dbHandle`, so the
-			// sweep's close() of the transaction waits for it rather than resetting it underneath.
 			assert(
 				!isTransactionCommitAdmissionDelayedForTesting(),
 				'shutdown did not wait for the commit'
@@ -59,8 +53,7 @@ if (isMainThread) {
 							'Operation aborted: Database closed during transaction commit operation',
 						],
 					]
-				: // Refused at registration, before reading the `dbHandle` the sweep reset.
-					[['ERR_TRANSACTION_CLOSING', 'Transaction is closing']]
+				: [['ERR_TRANSACTION_CLOSING', 'Transaction is closing']]
 		);
 	} finally {
 		setTransactionCommitAdmissionDelayForTesting(0);

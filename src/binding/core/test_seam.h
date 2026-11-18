@@ -368,8 +368,6 @@ inline std::atomic<bool>& transactionCommitAdmissionDelayActive() {
 	return active;
 }
 
-// Whether the commit admission pause sits after the transaction's async-work registration rather
-// than before it.
 inline std::atomic<bool>& transactionCommitAdmissionDelayRegistered() {
 	static std::atomic<bool> registered{ false };
 	return registered;

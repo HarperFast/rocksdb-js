@@ -1122,12 +1122,11 @@ static unsigned commitDelayMs() {
 }
 
 /**
- * Test seam: a one-shot pause in an async commit, before or after it registers with its
- * transaction, so a foreign closer can land on either side of that registration.
+ * Test seam: a one-shot pause before or after the commit registers with its transaction. After
+ * registration it ends once a closer cancels the transaction, since that close() now waits on us.
  */
-static void pauseAtCommitAdmissionForTesting(bool registered) {
-	if (transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) <= 0 ||
-		transactionCommitAdmissionDelayRegistered().load(std::memory_order_relaxed) != registered) {
+static void pauseAtCommitAdmissionForTesting(const TransactionHandle& txnHandle, bool registered) {
+	if (transactionCommitAdmissionDelayRegistered().load(std::memory_order_relaxed) != registered) {
 		return;
 	}
 	const int delayMs = transactionCommitAdmissionDelayMs().exchange(0, std::memory_order_relaxed);
@@ -1137,6 +1136,7 @@ static void pauseAtCommitAdmissionForTesting(bool registered) {
 	transactionCommitAdmissionDelayActive().store(true, std::memory_order_release);
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
 	while (transactionCommitAdmissionDelayActive().load(std::memory_order_acquire) &&
+		!(registered && txnHandle.isCancelled()) &&
 		std::chrono::steady_clock::now() < deadline) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
@@ -1189,7 +1189,10 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
 	}
 
-	pauseAtCommitAdmissionForTesting(/*registered=*/false);
+	const bool admissionPauseArmed = transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) > 0;
+	if (admissionPauseArmed) {
+		pauseAtCommitAdmissionForTesting(**txnHandle, /*registered=*/false);
+	}
 	// Registered before anything reads `dbHandle`: a foreign close() resets it from its own thread,
 	// so it must either wait for this commit or refuse it here. Refusal means cancellation was
 	// already published; that close() settles the state to Aborted.
@@ -1200,7 +1203,9 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		NAPI_RETURN_UNDEFINED();
 	}
 	stateOwner.asyncWorkRegistered = true;
-	pauseAtCommitAdmissionForTesting(/*registered=*/true);
+	if (admissionPauseArmed) {
+		pauseAtCommitAdmissionForTesting(**txnHandle, /*registered=*/true);
+	}
 
 	const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
 	if (dbHandle && dbHandle->descriptor) {
