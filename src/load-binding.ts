@@ -1184,7 +1184,7 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
  */
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
-/** Process-wide, never-reset count of failed mapping-buffer creates. Internal — used by tests. */
+/** Process-wide count of failed mapping-buffer creates (test probe). */
 export const transactionLogMapBufferCreateFailures: () => number =
 	binding.transactionLogMapBufferCreateFailures;
 

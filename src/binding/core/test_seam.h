@@ -187,7 +187,7 @@ inline std::atomic<int>& memoryMapBufferDelayMsFlag() {
 	return delayMs;
 }
 
-// Native mapping-buffer creates that failed (and ran `failed()` on their hint). Never reset.
+// Failed native mapping-buffer creates. Never reset.
 inline std::atomic<uint64_t>& memoryMapBufferCreateFailures() {
 	static std::atomic<uint64_t> failures{ 0 };
 	return failures;
