@@ -46,10 +46,14 @@ for (const file of files) {
 		const line = lineAt(source, offset);
 		violations.push(`${relative(repoRoot, file)}:${line}: ${lines[line - 1].trim()}`);
 	};
-	for (const match of source.matchAll(assertInclude)) {
+	const blank = (text: string) => text.replace(/[^\n]/g, ' ');
+	const uncommented = source.replace(commentOrLiteral, (text) =>
+		text.startsWith('"') || text.startsWith("'") ? text : blank(text)
+	);
+	for (const match of uncommented.matchAll(assertInclude)) {
 		report(match.index);
 	}
-	const code = source.replace(commentOrLiteral, (text) => text.replace(/[^\n]/g, ' '));
+	const code = source.replace(commentOrLiteral, blank);
 	for (const match of code.matchAll(assertCall)) {
 		report(match.index);
 	}
