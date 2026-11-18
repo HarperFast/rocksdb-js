@@ -328,7 +328,6 @@ void TransactionHandle::onWrapperCollected() {
 
 namespace {
 
-/** Callers refuse before marking the iterator registered or counting it, so the accounting stays intact. */
 [[noreturn]] void refuseDuplicateIterator() {
 	ROCKSDB_JS_ASSERT(false, "Transaction iterator registered twice");
 	throw std::runtime_error("Transaction iterator registered twice");
@@ -377,20 +376,24 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 	return iterator;
 }
 
-void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
+bool TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
 	uint32_t previous;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
 		// Erase even an idle entry: closeIterators() waits for the map to empty.
 		if (this->activeIterators.erase(iterator) == 0 || iterator->idle) {
-			return;
+			return true;
 		}
 		previous = releaseBusyIteratorLocked(this->activeIteratorCount);
 	}
-	ROCKSDB_JS_ASSERT(previous > 0, "Transaction iterator count underflow");
 	if (previous == 1) {
 		this->closeOrphanIfUnused();
 	}
+	return previous > 0;
+}
+
+void TransactionHandle::reportIteratorCountUnderflow() noexcept {
+	ROCKSDB_JS_ASSERT(false, "Transaction iterator count underflow");
 }
 
 void TransactionHandle::closeIterators() {
@@ -509,7 +512,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 		// Closed since it was taken, or its column family was dropped/reopened.
 		iterator->close();
 	}
-	// Only a failed registration leaves the loop, after its lock and the new iterator are released.
+	// Only a failed registration breaks out of the loop.
 	refuseDuplicateIterator();
 }
 
@@ -527,8 +530,9 @@ void TransactionHandle::closeIdleIterators() noexcept {
 	}
 }
 
-bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept {
+bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) noexcept {
 	checkOrphan = false;
+	countUnderflow = false;
 	uint32_t previous;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
@@ -557,7 +561,7 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 		iterator->idle = true;
 		previous = releaseBusyIteratorLocked(this->activeIteratorCount);
 	}
-	ROCKSDB_JS_ASSERT(previous > 0, "Transaction iterator count underflow");
+	countUnderflow = previous == 0;
 	checkOrphan = previous == 1;
 	return true;
 }

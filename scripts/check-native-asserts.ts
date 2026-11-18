@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = resolve(fileURLToPath(import.meta.url), '../..');
 const root = join(repoRoot, 'src/binding');
 const extensions = new Set(['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx']);
-const bareAssert = /(?<![\w.>:])assert\s*\(|#\s*include\s*<(?:cassert|assert\.h)>/;
+const bareAssert = /(?<![\w.>:])assert\s*\(|#\s*include\s*[<"](?:cassert|assert\.h)[>"]/;
 
 function collect(dir: string, files: string[]): void {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -29,7 +29,7 @@ for (const file of files) {
 	const lines = readFileSync(file, 'utf-8').split(/\r?\n/);
 	for (const [index, line] of lines.entries()) {
 		const code = line.replace(/\/\/.*$/, '');
-		if (/^\s*\*/.test(code)) {
+		if (/^\s*(?:\/\*|\*(?:\s|\/|$))/.test(code)) {
 			continue;
 		}
 		if (bareAssert.test(code)) {

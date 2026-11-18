@@ -263,7 +263,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - `KEEP_FILES=1` - Don't delete temporary test databases for debugging purposes
 - `ROCKSDB_JS_FATAL_ASSERTS=1` - Read at configure time (`node-gyp rebuild`, `pnpm build`): builds
   the addon with fatal `ROCKSDB_JS_ASSERT` checks. Set by `pr.yml`, `stress.yml` and
-  `benchmark-asan.yml`; never by `publish.yml`, whose prebuilds warn and continue. `pnpm test:native`
+  `benchmark-asan.yml`; not by `benchmark.yml` (it measures the shipped mode) and never by
+  `publish.yml`, whose prebuilds warn and continue. `pnpm test:native`
   rebuilds the addon too, so set it there to get a fatal addon locally (the GoogleTest target is
   always fatal)
 - `ROCKSDB_JS_COMMIT_THREAD` - Async-commit execution mode: `0`/`false` = legacy

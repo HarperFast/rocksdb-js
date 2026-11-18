@@ -183,7 +183,6 @@
 			'configurations': {
 				'Release': {
 					# 'defines': ['DEBUG'],
-					# No NDEBUG either: internal checks use ROCKSDB_JS_ASSERT, which ignores it.
 					'msvs_settings': {
 						'VCCLCompilerTool': {
 							'RuntimeLibrary': 0,

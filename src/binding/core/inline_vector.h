@@ -38,7 +38,6 @@ struct InlineVector final {
 		return this->overflow.back();
 	}
 
-	/** The last element, or null when empty. */
 	const T* last() const noexcept {
 		if (this->count == 0) {
 			return nullptr;

@@ -408,7 +408,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		DBIteratorOptions& options,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
-	void unregisterIterator(DBIteratorHandle* iterator);
+	/**
+	 * Returns false when the busy count was already zero; the caller reports
+	 * that with `reportIteratorCountUnderflow()` once it holds no lock.
+	 */
+	bool unregisterIterator(DBIteratorHandle* iterator);
+	static void reportIteratorCountUnderflow() noexcept;
 	void closeIterators();
 
 	/**
@@ -428,10 +433,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * Returns a busy pooled iterator to the idle slots. Caller holds the
 	 * iterator's `iteratorMutex` and has ended its range. Returns false when it
 	 * was not pooled (transaction no longer pending, or slots full); the caller
-	 * then closes it. `checkOrphan` is set when the caller must call
-	 * `closeOrphanIfUnused()` after dropping `iteratorMutex`.
+	 * then closes it. After dropping `iteratorMutex`, the caller must call
+	 * `closeOrphanIfUnused()` when `checkOrphan` is set, and
+	 * `reportIteratorCountUnderflow()` when `countUnderflow` is.
 	 */
-	bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept;
+	bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) noexcept;
 
 	void closeIdleIterators() noexcept;
 

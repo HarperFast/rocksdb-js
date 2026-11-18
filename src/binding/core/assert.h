@@ -37,10 +37,6 @@
 
 namespace rocksdb_js {
 
-/**
- * Reports a failed check. Fatal: always writes, then aborts. Otherwise writes
- * only if `reported` was unset, and returns.
- */
 ROCKSDB_JS_COLD void assertionFailed(
 	const char* file,
 	int line,

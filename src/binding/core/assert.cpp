@@ -25,8 +25,8 @@ void writeToStderr(const char* data, size_t length) noexcept {
 #else
 	while (length > 0) {
 		const ssize_t written = ::write(STDERR_FILENO, data, length);
-		if (written < 0) {
-			if (errno == EINTR) {
+		if (written <= 0) {
+			if (written < 0 && errno == EINTR) {
 				continue;
 			}
 			return;

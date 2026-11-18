@@ -5,7 +5,7 @@ console.log(
 	`rocksdb-js v${versions['rocksdb-js']} (RocksDB v${versions.rocksdb}) loaded successfully!`
 );
 
-// A published prebuild must report a failed internal check and continue, never abort the host.
+// ROCKSDB_JS_ASSERT must warn and continue in a published prebuild, not abort the host.
 const binding = createRequire(import.meta.url)('../build/Release/rocksdb-js.node');
 if (binding.fatalAsserts !== false) {
 	console.error(

@@ -111,21 +111,27 @@ void DBIteratorHandle::close() {
 }
 
 bool DBIteratorHandle::closeIfOpen() {
-	std::lock_guard<std::mutex> lock(this->iteratorMutex);
-	DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
-	if (!this->iterator) return false;
-	this->iterator->Reset();
-	this->iterator.reset();
-	// Detach only after the reset: until then a foreign close sweep must still
-	// find this handle and wait on `iteratorMutex`. The descriptor is alive: its
-	// close cannot finish before that sweep has closed this attached handle.
-	if (DBDescriptor* descriptor = this->attachedDescriptor.exchange(nullptr)) {
-		descriptor->detach(static_cast<Closable*>(this));
+	bool countConsistent = true;
+	{
+		std::lock_guard<std::mutex> lock(this->iteratorMutex);
+		DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
+		if (!this->iterator) return false;
+		this->iterator->Reset();
+		this->iterator.reset();
+		// Detach only after the reset: until then a foreign close sweep must still
+		// find this handle and wait on `iteratorMutex`. The descriptor is alive: its
+		// close cannot finish before that sweep has closed this attached handle.
+		if (DBDescriptor* descriptor = this->attachedDescriptor.exchange(nullptr)) {
+			descriptor->detach(static_cast<Closable*>(this));
+		}
+		if (this->txnHandle && this->transactionRegistered) {
+			this->transactionRegistered = false;
+			auto txnHandle = std::move(this->txnHandle);
+			countConsistent = txnHandle->unregisterIterator(this);
+		}
 	}
-	if (this->txnHandle && this->transactionRegistered) {
-		this->transactionRegistered = false;
-		auto txnHandle = std::move(this->txnHandle);
-		txnHandle->unregisterIterator(this);
+	if (!countConsistent) {
+		TransactionHandle::reportIteratorCountUnderflow();
 	}
 	return true;
 }
