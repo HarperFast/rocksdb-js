@@ -11,8 +11,10 @@ const extensions = new Set(['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.
 const assertInclude = /^[ \t]*#[ \t]*include\s*[<"](?:cassert|assert\.h)[>"]/gm;
 const assertCall = /(?<![\w.>:])assert\s*\(/g;
 // Comments and string/char literals, blanked out so a match inside one is ignored. Newlines are
-// kept, so offsets still map to the right line and a call split across lines still matches.
-const commentOrLiteral = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'/g;
+// kept, so offsets still map to the right line and a call split across lines still matches. A quote
+// after a hex digit is a digit separator (1'000), not a character literal.
+const commentOrLiteral =
+	/\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\\n])*"|(?<![\dA-Fa-f])'(?:\\.|[^'\\\n])*'/g;
 
 function collect(dir: string, files: string[]): void {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
