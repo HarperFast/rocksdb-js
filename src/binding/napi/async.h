@@ -1,11 +1,11 @@
 #ifndef __NAPI_ASYNC_H__
 #define __NAPI_ASYNC_H__
 
-#include <cassert>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include "core/assert.h"
 #include "core/debug.h"
 #include "napi/binding.h"
 #include "napi/status_macros.h"
@@ -42,7 +42,9 @@ struct BaseAsyncState {
 
 		this->signalExecuteCompleted();
 
-		assert(this->asyncWork == nullptr && "Async work was not deleted before destructor!");
+		// Every state is freed from its complete callback or before its work was queued, so a work
+		// item still set here has no callback pending: napi_delete_async_work() failed and it leaks.
+		ROCKSDB_JS_ASSERT(this->asyncWork == nullptr, "Async work was not deleted before destructor");
 	}
 
 	void deleteAsyncWork() {

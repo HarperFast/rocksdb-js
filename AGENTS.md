@@ -95,6 +95,20 @@ Layout (include via `src/binding` root, e.g. `#include "core/encoding.h"`):
 `core/` and `transaction_log/` store/file code are suitable for **GoogleTest** without Node.
 N-API surface remains covered by Vitest (`test/*.test.ts`). Native tests live in `test/native/`.
 
+**Never use the libc `assert()` in `src/binding`** (`pnpm check:native-asserts`, part of
+`pnpm check`, rejects it). Nothing defines `NDEBUG`, so it is live in the published prebuilds and a
+failed check would `abort()` the host process. Use `ROCKSDB_JS_ASSERT(condition, message)` from
+`core/assert.h`: it aborts when `DEBUG` or `ROCKSDB_JS_FATAL_ASSERTS` is defined (Debug builds, the
+native-test target, and every CI test build), and otherwise writes one stderr line per call site
+and **continues**. So the code after it must leave the process safe when the condition is false:
+repair the state (see the iterator accounting in `transaction_handle.cpp`) or fail the operation,
+and remove an accessor that cannot continue (`InlineVector::last()` returns null rather than
+reading out of bounds). Reserve the always-fatal `ROCKSDB_JS_CHECK` for a state no code can make
+safe; its one use is the commit transition in `transaction.cpp`, where continuing would publish
+and then cancel a committed batch. Both are callable from any thread or destructor, but the report
+is a blocking stderr write, so call them after releasing lifecycle locks. The publish workflow's
+`scripts/test-binding.mjs` refuses a prebuild built with fatal checks (`binding.fatalAsserts`).
+
 ### Key Design Patterns
 
 1. **Hybrid Sync/Async**: Operations return promises for disk I/O or immediate values for cached
@@ -247,6 +261,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - `ROCKSDB_PATH` - Build from local RocksDB source instead of prebuilt
 - `MINIFY=1` - Enable minification of TypeScript bundle
 - `KEEP_FILES=1` - Don't delete temporary test databases for debugging purposes
+- `ROCKSDB_JS_FATAL_ASSERTS=1` - Read at configure time (`node-gyp rebuild`, `pnpm build`): builds
+  the addon with fatal `ROCKSDB_JS_ASSERT` checks. Set by `pr.yml`, `stress.yml` and
+  `benchmark-asan.yml`; never by `publish.yml`, whose prebuilds warn and continue. `pnpm test:native`
+  rebuilds the addon too, so set it there to get a fatal addon locally (the GoogleTest target is
+  always fatal)
 - `ROCKSDB_JS_COMMIT_THREAD` - Async-commit execution mode: `0`/`false` = legacy
   libuv threadpool, unset = dedicated per-database commit threads (default; see
   `commitThreads`), `2` = experimental two-lane txnlog→commit pipeline

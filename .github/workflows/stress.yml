@@ -64,6 +64,7 @@ jobs:
       - name: Build
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ROCKSDB_JS_FATAL_ASSERTS: '1'
         run: pnpm build
 
       - name: Run stress tests
