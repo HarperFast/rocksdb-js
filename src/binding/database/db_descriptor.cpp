@@ -2360,7 +2360,7 @@ void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::s
 /**
  * Retries the registry purge for a descriptor a lock completion pinned: a
  * last-handle close on another env that landed inside the pin saw it and
- * skipped its purge. Destroyed after the caller's promise is settled.
+ * skipped its purge.
  */
 struct LockCompletionPurge final {
 	std::optional<DBKey> key;
@@ -2391,7 +2391,6 @@ static void completeLockCallback(const LockCallbackCompletionData& callbackData,
 		// Every other owner retries the purge when it lets go, so only a count of
 		// 1 (the registry alone) after this release is ours to retry. Checking
 		// before the release would miss a close that skipped because of this pin.
-		// The second pin is always followed by the retry.
 		if (callbackData.descriptor.use_count() != 1) {
 			return;
 		}
