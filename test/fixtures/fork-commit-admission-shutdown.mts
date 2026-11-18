@@ -33,8 +33,10 @@ if (isMainThread) {
 			assert(Date.now() < deadline, 'commit did not reach admission pause');
 			await delay(1);
 		}
+		const shutdownStart = Date.now();
 		shutdown();
 		if (afterRegistration) {
+			assert(Date.now() - shutdownStart < 5000, 'the pause outlived the close that cancelled it');
 			assert(
 				!isTransactionCommitAdmissionDelayedForTesting(),
 				'shutdown did not wait for the commit'
