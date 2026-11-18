@@ -102,8 +102,13 @@ describe('C++ exceptions in async operations', () => {
 						child.on('error', reject);
 					});
 					expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: '' });
+					const { checkpointError, ...result } = JSON.parse(stdout);
+					// The pin is released either way when close() cancels the checkpoint before it starts.
+					if (checkpointError !== undefined) {
+						expect(checkpointError).toMatch(/Database closed during checkpoint operation/);
+					}
 					// The entry outlives the failed retry, unclaimed, and the next close purges it.
-					expect(JSON.parse(stdout)).toEqual({
+					expect(result).toEqual({
 						afterFailedPurge: [{ refCount: 1 }],
 						value: 'value',
 						afterReopenClose: 0,
