@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <thread>
+#include <type_traits>
 #include <stdlib.h>
 #include <fcntl.h>
 #ifdef _WIN32
@@ -110,6 +111,9 @@ napi_status settleFinalizeHint(SharedFinalizeHint<T>* hint, napi_status createSt
 		hint->created();
 	} else {
 		hint->failed();
+		if constexpr (std::is_same_v<T, MemoryMap>) {
+			memoryMapBufferCreateFailures().fetch_add(1, std::memory_order_relaxed);
+		}
 	}
 	return createStatus;
 }
@@ -481,11 +485,7 @@ napi_value TransactionLog::GetMemoryMapOfFile(napi_env env, napi_callback_info i
 	// frozen log the log file keeps only a weak handle, so the buffers are the sole owners and the
 	// mapping is unmapped when JS GCs the last of them.
 	napi_value result;
-	napi_status createStatus = createMemoryMapBuffer(env, memoryMap, &result);
-	if (createStatus != napi_ok) {
-		memoryMapBufferCreateFailures().fetch_add(1, std::memory_order_relaxed);
-		NAPI_STATUS_THROWS(createStatus);
-	}
+	NAPI_STATUS_THROWS(createMemoryMapBuffer(env, memoryMap, &result));
 	NAPI_STATUS_THROWS(::napi_type_tag_object(env, result, &READABLE_EXTENT_BUFFER_TAG));
 
 	// A separate shared handle keeps an extracted getter safe after the buffer's

@@ -187,8 +187,7 @@ inline std::atomic<int>& memoryMapBufferDelayMsFlag() {
 	return delayMs;
 }
 
-// Failed JS buffer creates in TransactionLog::GetMemoryMapOfFile(), never reset. Read-only
-// diagnostic (`transactionLogMapBufferCreateFailures`); bumped on the failure path only.
+// Native mapping-buffer creates that failed (and ran `failed()` on their hint). Never reset.
 inline std::atomic<uint64_t>& memoryMapBufferCreateFailures() {
 	static std::atomic<uint64_t> failures{ 0 };
 	return failures;

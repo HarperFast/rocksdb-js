@@ -1184,10 +1184,7 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
  */
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
-/**
- * Monotonic process-wide count of failed JS buffer creates in `_getMemoryMapOfFile()`. Internal —
- * used by tests to prove a terminated worker reached a failed create.
- */
+/** Process-wide, never-reset count of failed mapping-buffer creates. Internal — used by tests. */
 export const transactionLogMapBufferCreateFailures: () => number =
 	binding.transactionLogMapBufferCreateFailures;
 
