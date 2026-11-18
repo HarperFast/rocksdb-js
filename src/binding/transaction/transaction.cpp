@@ -1122,14 +1122,15 @@ static unsigned commitDelayMs() {
 }
 
 /**
- * Test seam: a one-shot pause before or after the commit registers with its transaction. After
- * registration it ends once a closer cancels the transaction, since that close() now waits on us.
+ * Test seam. After registration the pause ends once a closer cancels the transaction: that closer is
+ * draining on this registration.
  */
 static void pauseAtCommitAdmissionForTesting(const TransactionHandle& txnHandle, bool registered) {
-	if (transactionCommitAdmissionDelayRegistered().load(std::memory_order_relaxed) != registered) {
+	if (transactionCommitAdmissionDelayMs().load(std::memory_order_acquire) <= 0 ||
+		transactionCommitAdmissionDelayRegistered().load(std::memory_order_relaxed) != registered) {
 		return;
 	}
-	const int delayMs = transactionCommitAdmissionDelayMs().exchange(0, std::memory_order_relaxed);
+	const int delayMs = transactionCommitAdmissionDelayMs().exchange(0, std::memory_order_acq_rel);
 	if (delayMs <= 0) {
 		return;
 	}
