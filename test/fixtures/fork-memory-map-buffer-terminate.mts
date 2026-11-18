@@ -6,7 +6,7 @@
 import { RocksDatabase } from '../../src/index.ts';
 import {
 	getTransactionLogMapBufferCreateFailures,
-	transactionLogMapCount,
+	getTransactionLogMapCount,
 } from '../../src/load-binding.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
@@ -58,11 +58,11 @@ if (!isMainThread) {
 		await until(() => messages.includes('ready'), 'the worker to open the database');
 		gc();
 		await delay(50);
-		const before = transactionLogMapCount();
+		const before = getTransactionLogMapCount();
 		const failuresBefore = getTransactionLogMapBufferCreateFailures();
 
 		worker.postMessage('go');
-		await until(() => transactionLogMapCount() === before + 1, 'the worker to map segment 1');
+		await until(() => getTransactionLogMapCount() === before + 1, 'the worker to map segment 1');
 		await worker.terminate();
 		if (messages.includes('buffer')) fail('terminate() landed after the buffer was created');
 
@@ -70,7 +70,7 @@ if (!isMainThread) {
 			() => getTransactionLogMapBufferCreateFailures() > failuresBefore,
 			'the worker to reach a failed buffer create'
 		);
-		await until(() => transactionLogMapCount() === before, 'the mapping to be released');
+		await until(() => getTransactionLogMapCount() === before, 'the mapping to be released');
 		console.log(JSON.stringify({ released: true }));
 	} finally {
 		db.close();

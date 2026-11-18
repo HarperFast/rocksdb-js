@@ -420,7 +420,7 @@ napi_value CoolTransactionLogs(napi_env env, napi_callback_info info) {
  * Used by tests to verify that releasing a (frozen) log's external buffer
  * actually unmaps the mapping rather than leaving it retained.
  */
-napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
+napi_value GetTransactionLogMapCount(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_int64(env, MemoryMap::liveCount.load(std::memory_order_relaxed), &result));
 	return result;
@@ -685,10 +685,10 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "coolTransactionLogs", NAPI_AUTO_LENGTH, CoolTransactionLogs, nullptr, &coolTransactionLogsFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "coolTransactionLogs", coolTransactionLogsFn));
 
-	// transactionLogMapCount function (test/diagnostics)
-	napi_value transactionLogMapCountFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapCount", NAPI_AUTO_LENGTH, TransactionLogMapCount, nullptr, &transactionLogMapCountFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapCount", transactionLogMapCountFn));
+	// getTransactionLogMapCount function (test/diagnostics)
+	napi_value getTransactionLogMapCountFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "getTransactionLogMapCount", NAPI_AUTO_LENGTH, GetTransactionLogMapCount, nullptr, &getTransactionLogMapCountFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "getTransactionLogMapCount", getTransactionLogMapCountFn));
 
 	napi_value getTransactionLogMapBufferCreateFailuresFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "getTransactionLogMapBufferCreateFailures", NAPI_AUTO_LENGTH, GetTransactionLogMapBufferCreateFailures, nullptr, &getTransactionLogMapBufferCreateFailuresFn));
