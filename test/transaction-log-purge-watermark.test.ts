@@ -1,6 +1,14 @@
 import { backups, RocksDatabase, validateTransactionLogStore } from '../src/index.ts';
 import { dbRunner, generateDBPath, runFixture } from './lib/util.ts';
-import { cpSync, existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -14,6 +22,11 @@ function copyRelease213Store(dbPath: string): string {
 	const storePath = join(dbPath, 'transaction_logs', 'legacy');
 	mkdirSync(join(dbPath, 'transaction_logs'), { recursive: true });
 	cpSync(RELEASE_213_STORE, storePath, { recursive: true });
+	// Bun's cpSync keeps the checkout's mtimes, which would make every segment old enough to purge.
+	const now = new Date();
+	for (const name of readdirSync(storePath)) {
+		utimesSync(join(storePath, name), now, now);
+	}
 	return storePath;
 }
 

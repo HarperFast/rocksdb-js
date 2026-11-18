@@ -1,4 +1,6 @@
 import { runChild } from './lib/child-process.ts';
+import { realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -39,6 +41,19 @@ describe('runChild()', () => {
 		expect(result.timedOut, result.stderr).toBe(false);
 		expect(result.stdout).toContain('READY');
 		expect(isAlive(result.pid)).toBe(false);
+	});
+
+	it.each([undefined, 'piped input'])('runs in cwd and writes input %j to stdin', async (input) => {
+		const cwd = tmpdir();
+		const result = await runChild(process.execPath, [probePath, 'echo'], {
+			deadlineMs: 20_000,
+			cwd,
+			input,
+		});
+		expect(result.code, result.stderr).toBe(0);
+		const echoed = JSON.parse(result.stdout);
+		expect(realpathSync(echoed.cwd)).toBe(realpathSync(cwd));
+		expect(echoed.input).toBe(input ?? '');
 	});
 
 	it('rejects when the command cannot be spawned', async () => {

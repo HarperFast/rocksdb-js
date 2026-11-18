@@ -1,4 +1,5 @@
 import { RocksDatabase } from '../src/index.ts';
+import { ChildCloseTimeoutError, type ChildResult, runChild } from './lib/child-process.ts';
 import { generateDBPath } from './lib/util.ts';
 import { type ChildProcess, spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -12,35 +13,32 @@ const CLI_TIMEOUT_MS = 20_000;
 
 type CLIResult = { code: number | null; stdout: string; stderr: string };
 
-function cli(args: string[], options: { cwd?: string; input?: string } = {}): Promise<CLIResult> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(process.execPath, [cliPath, ...args], {
+// Set when a child did not close after SIGKILL, so afterEach keeps the paths it may hold open.
+let childMayBeRunning = false;
+
+async function cli(
+	args: string[],
+	options: { cwd?: string; input?: string } = {}
+): Promise<CLIResult> {
+	let result: ChildResult;
+	try {
+		result = await runChild(process.execPath, [cliPath, ...args], {
+			deadlineMs: CLI_TIMEOUT_MS,
 			cwd: options.cwd,
 			env: { ...process.env, NO_COLOR: '1' },
-			stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+			input: options.input,
+			// Deadline plus close wait must stay under the 30s test timeout.
+			closeTimeoutMs: 5_000,
 		});
-		let stdout = '';
-		let stderr = '';
-		const timer = setTimeout(() => {
-			child.kill('SIGKILL');
-			reject(new Error(`CLI timed out: ${args.join(' ')}\n${stdout}\n${stderr}`));
-		}, CLI_TIMEOUT_MS);
-		child.stdout?.on('data', (chunk) => {
-			stdout += chunk.toString();
-		});
-		child.stderr?.on('data', (chunk) => {
-			stderr += chunk.toString();
-		});
-		if (options.input !== undefined) child.stdin?.end(options.input);
-		child.on('error', (err) => {
-			clearTimeout(timer);
-			reject(err);
-		});
-		child.on('close', (code) => {
-			clearTimeout(timer);
-			resolve({ code, stdout, stderr });
-		});
-	});
+	} catch (error) {
+		childMayBeRunning ||= error instanceof ChildCloseTimeoutError;
+		throw error;
+	}
+	const { code, stdout, stderr, timedOut } = result;
+	if (timedOut) {
+		throw new Error(`CLI timed out: ${args.join(' ')}\n${stdout}\n${stderr}`);
+	}
+	return { code, stdout, stderr };
 }
 
 const tempPaths: string[] = [];
@@ -73,7 +71,10 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				}
 			}
 			liveChildren.clear();
-			for (const path of tempPaths) rmSync(path, { force: true, recursive: true, maxRetries: 3 });
+			if (!childMayBeRunning) {
+				for (const path of tempPaths) rmSync(path, { force: true, recursive: true, maxRetries: 3 });
+			}
+			childMayBeRunning = false;
 			tempPaths.length = 0;
 		});
 
