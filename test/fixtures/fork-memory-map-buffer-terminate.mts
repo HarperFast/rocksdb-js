@@ -4,7 +4,10 @@
  * mapping must still be released.
  */
 import { RocksDatabase } from '../../src/index.ts';
-import { transactionLogMapCount } from '../../src/load-binding.ts';
+import {
+	transactionLogMapBufferCreateFailures,
+	transactionLogMapCount,
+} from '../../src/load-binding.ts';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
@@ -56,16 +59,17 @@ if (!isMainThread) {
 		gc();
 		await delay(50);
 		const before = transactionLogMapCount();
+		const failuresBefore = transactionLogMapBufferCreateFailures();
 
-		const goAt = performance.now();
 		worker.postMessage('go');
 		await until(() => transactionLogMapCount() === before + 1, 'the worker to map segment 1');
-		// The worker's delay starts after it receives 'go', so terminate() lands inside it unless this
-		// thread stalls for half the delay between the check and the call.
-		if (performance.now() - goAt > delayMs / 2) fail('too slow to terminate inside the delay');
 		await worker.terminate();
 		if (messages.includes('buffer')) fail('terminate() landed after the buffer was created');
 
+		await until(
+			() => transactionLogMapBufferCreateFailures() > failuresBefore,
+			'the worker to reach a failed buffer create'
+		);
 		await until(() => transactionLogMapCount() === before, 'the mapping to be released');
 		console.log(JSON.stringify({ released: true }));
 	} finally {

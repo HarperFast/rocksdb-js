@@ -1185,6 +1185,13 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
 export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
 
 /**
+ * Monotonic process-wide count of failed JS buffer creates in `_getMemoryMapOfFile()`. Internal —
+ * used by tests to prove a terminated worker reached a failed create.
+ */
+export const transactionLogMapBufferCreateFailures: () => number =
+	binding.transactionLogMapBufferCreateFailures;
+
+/**
  * Whether this runtime can back transaction-log memory maps with a SharedArrayBuffer: the shared
  * buffer API is exported and the addon could be pinned. An individual mapping can still fall back to
  * an external buffer if creating its shared buffer fails. Internal — used by tests.

@@ -426,6 +426,16 @@ napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+/**
+ * Returns how many JS buffer creates in `_getMemoryMapOfFile()` have failed in this process. Lets a
+ * test prove a terminated worker reached a failed create rather than a successful one.
+ */
+napi_value TransactionLogMapBufferCreateFailures(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(memoryMapBufferCreateFailures().load(std::memory_order_relaxed)), &result));
+	return result;
+}
+
 napi_value SupportsSharedTransactionLogMaps(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, TransactionLog::SupportsSharedMemoryMaps(), &result));
@@ -683,6 +693,10 @@ NAPI_MODULE_INIT() {
 	napi_value transactionLogMapCountFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapCount", NAPI_AUTO_LENGTH, TransactionLogMapCount, nullptr, &transactionLogMapCountFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapCount", transactionLogMapCountFn));
+
+	napi_value transactionLogMapBufferCreateFailuresFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapBufferCreateFailures", NAPI_AUTO_LENGTH, TransactionLogMapBufferCreateFailures, nullptr, &transactionLogMapBufferCreateFailuresFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapBufferCreateFailures", transactionLogMapBufferCreateFailuresFn));
 
 	// supportsSharedTransactionLogMaps function (test/diagnostics)
 	napi_value supportsSharedTransactionLogMapsFn;
