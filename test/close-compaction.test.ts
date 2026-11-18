@@ -1,5 +1,5 @@
+import { type ChildResult, ChildCloseTimeoutError, runChild } from './lib/child-process.ts';
 import { generateDBPath } from './lib/util.ts';
-import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -21,46 +21,45 @@ const nodeExecutable =
 const SLOW_COMPACTION = { ROCKSDB_JS_COMPACTION_KEY_DELAY_MS: '1' };
 const DEADLINE_MS = 20_000;
 
-function runFixture(dbPath: string, mode: string, env: NodeJS.ProcessEnv = {}): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(nodeExecutable, ['--expose-gc', fixture, dbPath, mode], {
+async function runFixture(
+	dbPath: string,
+	mode: string,
+	env: NodeJS.ProcessEnv = {}
+): Promise<string> {
+	let result: ChildResult;
+	try {
+		result = await runChild(nodeExecutable, ['--expose-gc', fixture, dbPath, mode], {
+			deadlineMs: DEADLINE_MS,
 			env: { ...process.env, ...env },
+			// Deadline plus close wait must stay under the 30s test timeout.
+			closeTimeoutMs: 5_000,
 		});
-		let stdout = '';
-		let stderr = '';
-		child.stdout.on('data', (chunk) => {
-			stdout += chunk.toString();
-		});
-		child.stderr.on('data', (chunk) => {
-			stderr += chunk.toString();
-		});
-		const timeout = setTimeout(() => {
-			child.kill('SIGKILL');
-			reject(new Error(`${mode} fixture did not finish in ${DEADLINE_MS}ms\n${stdout}${stderr}`));
-		}, DEADLINE_MS);
-		child.on('error', (error) => {
-			clearTimeout(timeout);
-			reject(new Error(`Unable to run the close fixture with Node (${nodeExecutable}): ${error}`));
-		});
-		child.on('close', (code, signal) => {
-			clearTimeout(timeout);
-			if (code === 0 && signal === null) {
-				resolve(stdout);
-			} else {
-				reject(
-					new Error(`${mode} fixture failed (code=${code}, signal=${signal})\n${stdout}${stderr}`)
-				);
-			}
-		});
-	});
+	} catch (error) {
+		if (error instanceof ChildCloseTimeoutError) {
+			throw error;
+		}
+		throw new Error(`Unable to run the close fixture with Node (${nodeExecutable}): ${error}`);
+	}
+	const { code, signal, stdout, stderr, timedOut } = result;
+	if (timedOut) {
+		throw new Error(`${mode} fixture did not finish in ${DEADLINE_MS}ms\n${stdout}${stderr}`);
+	}
+	if (code !== 0 || signal !== null) {
+		throw new Error(`${mode} fixture failed (code=${code}, signal=${signal})\n${stdout}${stderr}`);
+	}
+	return stdout;
 }
 
 async function withPath(test: (dbPath: string) => Promise<void>): Promise<void> {
 	const dbPath = generateDBPath();
+	let childMayBeRunning = false;
 	try {
 		await test(dbPath);
+	} catch (error) {
+		childMayBeRunning = error instanceof ChildCloseTimeoutError;
+		throw error;
 	} finally {
-		if (!process.env.KEEP_FILES) {
+		if (!childMayBeRunning && !process.env.KEEP_FILES) {
 			rmSync(dbPath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
 		}
 	}
@@ -112,6 +111,15 @@ describe('Close during background compaction', () => {
 		() =>
 			withPath(async (dbPath) => {
 				await runFixture(dbPath, 'checkpoint', { ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS: '1500' });
+			}),
+		30_000
+	);
+
+	it(
+		'closing the last handle during a flush listener callback purges the database',
+		() =>
+			withPath(async (dbPath) => {
+				await runFixture(dbPath, 'listenerPin', { ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS: '1000' });
 			}),
 		30_000
 	);
