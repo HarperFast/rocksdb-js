@@ -1122,11 +1122,13 @@ void NonVerifyingWriterSet::add(NonVerifyingWriterCount* counter) {
 }
 
 void NonVerifyingWriterSet::removeLast(NonVerifyingWriterCount* counter) noexcept {
-	if (this->counters.size() == 0 || this->counters.back() != counter) {
+	NonVerifyingWriterCount* const* tail = this->counters.last();
+	if (tail == nullptr || *tail != counter) {
 		return;
 	}
 	this->counters.popBack();
-	this->last = this->counters.size() == 0 ? nullptr : this->counters.back();
+	tail = this->counters.last();
+	this->last = tail == nullptr ? nullptr : *tail;
 	counter->release();
 }
 
