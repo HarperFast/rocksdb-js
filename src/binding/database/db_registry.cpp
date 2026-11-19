@@ -967,9 +967,13 @@ void DBRegistry::OpenDB(
 				// disabled WriteBufferManager(0), so GetDBOptions().write_buffer_manager is never
 				// null post-open and would clamp every late family regardless of whether one was
 				// ever configured (#823).
+				const rocksdb::WriteBufferManager* attached = entry.descriptor->attachedWriteBufferManager;
+				auto settings = DBSettings::getInstance().snapshotForColumnFamily(!options.noBlockCache, attached);
 				auto cfOptions = buildColumnFamilyOptions(
 					options,
-					entry.descriptor->attachedWriteBufferManager,
+					attached,
+					settings.writeBufferManagerBudget,
+					std::move(settings.blockCache),
 					entry.descriptor->cfOptions
 				);
 				if (options.compression) {

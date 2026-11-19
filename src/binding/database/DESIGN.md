@@ -1,9 +1,9 @@
 # Optimistic commit validation: policy and lock buckets
 
-Every writable optimistic descriptor reads two process-wide settings at open time and passes them
-to `OptimisticTransactionDB::Open`: `occValidation` (`DBSettings::getOccValidateSerial()`, default
-`'parallel'`) and `occLockBuckets` (`DBSettings::getOccLockBucketCount()`, default 2^16). Neither
-freezes; a descriptor keeps what it opened with.
+Every writable optimistic descriptor passes two process-wide settings to
+`OptimisticTransactionDB::Open`: `occValidation` (default `'parallel'`) and `occLockBuckets` (default
+2^16), taken from its open-time snapshot (see "Open-time settings come from one snapshot" below).
+Neither freezes; a descriptor keeps what it opened with.
 
 **Parallel** (`kValidateParallel`) gives each database a private `OccLockBuckets` pool. A commit
 takes the buckets for its keys in sorted order, runs the conflict check, and holds them through
@@ -36,6 +36,20 @@ default 2^16 buckets (361 against 336/s), where raising the bucket count does be
 `test/occ-lock-buckets.test.ts` covers config validation, conflict detection under both policies
 with small pools, and Linux memory assertions for the default count, a configured count, and the
 serial policy. `test/occ-serial-drop.test.ts` reruns the column-family drop suites under serial.
+
+# Open-time settings come from one snapshot
+
+A new descriptor fixes the block cache, the WriteBufferManager and its budget (which sizes the
+arena block), the OCC options and `commitThreads` when it opens. It reads all of them from one
+`DBSettings::snapshotForOpen()`, and `DBSettings::Config` stores every field inside the same
+`writeBufferManagerMutex` block, so a first open racing `config()` on another thread gets all of
+that call or none of it (#1070). Reading any of them separately later in `DBDescriptor::open` lets
+an open that spans a `config()` combine two calls; the OCC and commit-thread fields therefore have
+no getter outside the snapshot. The snapshot lock is released before `DB::Open`, so `config()` never
+waits for open I/O. A column family added to an already-open database reads the live cache and its
+database's manager budget together through `snapshotForColumnFamily()`.
+`test/fixtures/fork-config-open-snapshot.mts` flips the cache, manager budget, `occValidation` and
+`commitThreads`; it cannot observe `occLockBuckets`.
 
 # Commit threads: concurrent RocksDB commits per database
 
