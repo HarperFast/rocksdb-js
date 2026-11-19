@@ -500,7 +500,9 @@ enum class AsyncExceptionStage : int {
 	Execute = 2,
 	Complete = 3,
 	// DBRegistry::PurgeIfUnreferenced()'s close-claim allocation.
-	PurgeClaim = 4
+	PurgeClaim = 4,
+	// Transaction::Commit() just before dispatch, with the commit fully registered.
+	CommitDispatch = 5
 };
 
 inline std::atomic<int>& asyncExceptionStage() {

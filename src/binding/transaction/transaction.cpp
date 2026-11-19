@@ -1127,6 +1127,12 @@ static unsigned commitDelayMs() {
 	return ms;
 }
 
+static void throwAtCommitDispatchForTesting() {
+	if (consumeAsyncExceptionForTesting(AsyncExceptionStage::CommitDispatch)) {
+		throw std::bad_alloc();
+	}
+}
+
 /**
  * Test seam. After registration the pause ends once a closer cancels the transaction: that closer is
  * draining on this registration.
@@ -1280,6 +1286,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				}
 			};
 
+			throwAtCommitDispatchForTesting();
 			if (mode == CommitThreadMode::TwoLane) {
 				// Two-lane pipeline: the log lane writes the transaction-log
 				// batch, then forwards to the commit worker. Commits are in
@@ -1360,6 +1367,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	// releases the real claim and the handle returns to Pending). Without that
 	// release the stranded claim blocks this handle's close forever, and with it
 	// every later OpenDB() for the path.
+	throwAtCommitDispatchForTesting();
 	if (::napi_queue_async_work(env, state->asyncWork) != napi_ok) {
 		napi_value error;
 		rocksdb_js::createJSError(env, "ERR_COMMIT_QUEUE_FAILED", "Failed to queue commit work", error);
