@@ -548,9 +548,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    a close landed inside a flush callback, leaving the database open with no handles until exit
    (`listenerPin` in `test/fixtures/fork-close-compaction.mts`). Once `beginClose()` wins,
    `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
-   path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
-   immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
-   from another env after the in-flight count drains. The VT-only `verifyVersion` / `populateVersion`
+   path that dereferences `descriptor->db` or the handle's column family must take
+   `ACQUIRE_OPERATIONS_LOCK()` immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can
+   reset the column-family pointer from another env after the in-flight count drains. That guard counts
+   the call on its own handle, which `finishClose()` drains before the descriptor's `operationsInFlight`
+   (src/binding/database/DESIGN.md, "Synchronous calls register on their own handle"). The VT-only `verifyVersion` / `populateVersion`
    fast paths narrow, but do not remove, that requirement: both still start with
    `UNWRAP_DB_HANDLE_AND_OPEN()`, so they still gate on `descriptor`/`isClosing()`. What
    `DBHandle::open()`'s snapshotted `verificationTableDbId` / `verificationTableColumnFamilyId` actually
@@ -572,8 +574,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    path-keyed set guarded by its own `lifecycleCondition` — is what keeps a concurrent `OpenDB`/
    `Shutdown` from treating that path as free once its entries are already erased from the registry
    but the files are not yet gone.
-   Because `finishClose()` drains `operationsInFlight` with an **untimed** wait, any operation that can
-   run unboundedly while holding an `OperationGuard` must abort itself once `closing` is published, or
+   Because `finishClose()` drains in-flight operations with an **untimed** wait, any operation that can
+   run unboundedly while holding an operation guard must abort itself once `closing` is published, or
    it blocks teardown — and, since the blocked closer holds the path gate, times out every concurrent
    `OpenDB()` for that path. There are two such operations and they cancel differently: the whole-range
    count scan (`DBIteratorHandle::countRemaining`, behind `getKeysCount()` on both the database and
@@ -582,8 +584,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    cancel token → `CompactRangeOptions::canceled`. There are **two** such tokens, and which one a
    compaction is handed is decided by the drain that awaits it, not by where the compaction runs.
    `DBDescriptor::compactCancelRequested` covers a **synchronous** `compactSync()`/`clearSync()`,
-   which holds an `OperationGuard` for its whole duration and so is awaited by `finishClose()`'s
-   untimed `operationsInFlight` wait; it is armed in exactly one place — `beginClose()`, in the same
+   which holds its handle's operation guard for its whole duration and so is awaited by `finishClose()`'s
+   untimed in-flight drain; it is armed in exactly one place — `beginClose()`, in the same
    transition that publishes `closing`. `DBHandle::compactCancelRequested` covers an **async**
    `compact()`/`clear()`, which released its guard at setup handoff and is instead awaited by
    `DBHandle::close()`'s untimed async-work drain. It has **two** arming sites, one per closer:
@@ -646,7 +648,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    and the `NativeIterator`/iterator finalizer each own a handle/iterator that a foreign
    `destroy()`/`shutdown()` can also try to claim, and detaching first makes that foreign closer's
    sweep skip this one entirely — it drains `operationsInFlight` (already zero: an admitted async
-   `Flush`/`Compact`/`Get` releases its `OperationGuard` at setup handoff, per invariant 17) and
+   `Flush`/`Compact`/`Get` releases its operation guard at setup handoff, per invariant 17) and
    reaches `db.reset()`/`iterator::Reset()` while the self-close's own async-work drain, or the
    `Next()` in progress, is still using the DB. Detaching after close() returns costs nothing on the
    ordinary path — a foreign close arriving in that window blocks on the same `closeMutex`/
@@ -997,7 +999,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     worker on Bun/Windows (`transaction-log.test.ts`, "should write to same log from multiple
     workers"). So close can still wedge on a stall; fixing that has to happen without flushing into
     the teardown race. A `destroy()` does opt in, because it holds the path gate; `purgeLogs()`
-    holds an `OperationGuard` so that drain-then-flush cannot overlap a purge (see
+    holds an operation guard so that drain-then-flush cannot overlap a purge (see
     `src/binding/database/DESIGN.md`, "Close does not wait for compaction"). Still
     uncovered: `flushBeforeBackup` (`src/binding/database/backup.cpp`) flushes inside RocksDB's
     `BackupEngine`, which builds its own default `FlushOptions` we cannot reach — and that wait is
@@ -1029,7 +1031,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     fixed bound. A bounded wait that gives up anyway — a fixed timeout with a "leak instead of free"
     fallback — would let `finishClose()` reach `this->db.reset()` while a flush was still executing
     against it, a genuine use-after-free. `database.cpp`'s `Flush`/`Compact`/`Clear`/async `Get` rely
-    entirely on this drain for safety: their `OperationGuard` from `ACQUIRE_OPERATIONS_LOCK()` covers
+    entirely on this drain for safety: their guard from `ACQUIRE_OPERATIONS_LOCK()` covers
     only the synchronous setup, not the queued execute callback. Backup/checkpoint/backup-stream
     additionally hold the descriptor's `operationsInFlight` claim through their whole async execution
     (the pinning pattern from invariant 9), so for those this drain is defense in depth rather than

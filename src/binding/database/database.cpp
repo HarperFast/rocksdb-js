@@ -67,6 +67,21 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 	}
 }
 
+/**
+ * Guarded calls run only on their handle's owning thread, so a count seen here
+ * means this call was made from JavaScript inside one of them (an options
+ * getter, `toJSON`). Closing would release the descriptor that call borrows;
+ * destroying would wait for it on this thread forever.
+ */
+static bool throwIfOperationInFlight(napi_env env, DBHandle& dbHandle, const char* action) {
+	if (dbHandle.operationsInFlight.load() == 0) {
+		return true;
+	}
+	const std::string message = std::string("Cannot ") + action + " the database during one of its own operations";
+	::napi_throw_error(env, nullptr, message.c_str());
+	return false;
+}
+
 static napi_value doClear(napi_env env, napi_callback_info info, const char* failureMsg) {
 	NAPI_METHOD_ARGV(2);
 	UNWRAP_DB_HANDLE_AND_OPEN();
@@ -160,7 +175,7 @@ static napi_value doClearSync(napi_env env, napi_callback_info info, const char*
 	UNWRAP_DB_HANDLE_AND_OPEN();
 	ACQUIRE_OPERATIONS_LOCK();
 
-	// synchronous: counted by operationsInFlight, which beginClose() arms the
+	// synchronous: drained by finishClose(), which beginClose() arms the
 	// descriptor token ahead of
 	rocksdb::Status status = (*dbHandle)->clear(&(*dbHandle)->descriptor->compactCancelRequested);
 	if (!status.ok()) {
@@ -201,6 +216,9 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE();
 
 	if (*dbHandle) {
+		if (!throwIfOperationInFlight(env, **dbHandle, "close")) {
+			return nullptr;
+		}
 		DEBUG_LOG("%p Database::Close Closing database: \"%s\"\n", dbHandle->get(), (*dbHandle)->path.c_str());
 		CloseResult closeResult = DBRegistry::CloseDB(*dbHandle);
 		if (!closeResult.error.empty()) {
@@ -329,6 +347,7 @@ napi_value Database::Compact(napi_env env, napi_callback_info info) {
 	}
 
 	if ((*dbHandle)->descriptor->readOnly) {
+		__operationGuard.release();
 		napi_value recv;
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
 		napi_value ignored;
@@ -472,8 +491,8 @@ napi_value Database::CompactSync(napi_env env, napi_callback_info info) {
 			startPtr,
 			endPtr,
 			bottommost,
-			// synchronous: counted by operationsInFlight, which beginClose()
-			// arms the descriptor token ahead of
+			// synchronous: drained by finishClose(), which beginClose() arms
+			// the descriptor token ahead of
 			&(*dbHandle)->descriptor->compactCancelRequested
 		),
 		"Compact failed"
@@ -768,6 +787,9 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, "ERR_DATABASE_READONLY", "Destroy failed: Unsupported operation in read-only mode");
 			return nullptr;
 		}
+		if (!throwIfOperationInFlight(env, **dbHandle, "destroy")) {
+			return nullptr;
+		}
 		// A handle that was never opened knows no path, and destroy ends in
 		// remove_all(): refuse rather than resolve an empty string into
 		// whatever the platform makes of it.
@@ -854,6 +876,7 @@ napi_value Database::Drop(napi_env env, napi_callback_info info) {
 
 	DEBUG_LOG("%p Database::Drop dropping database: %s\n", dbHandle->get(), (*dbHandle)->path.c_str());
 	rocksdb::Status status = dropColumnFamily(**dbHandle);
+	__operationGuard.release();
 	if (!status.ok()) {
 		napi_value error = nullptr;
 		rocksdb_js::createRocksDBError(env, status, "Drop failed", error);
@@ -969,6 +992,7 @@ napi_value Database::Flush(napi_env env, napi_callback_info info) {
 	}
 
 	if ((*dbHandle)->descriptor->readOnly) {
+		__operationGuard.release();
 		napi_value recv;
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
 		napi_value ignored;
@@ -1079,6 +1103,7 @@ napi_value Database::SyncWal(napi_env env, napi_callback_info info) {
 	napi_value reject = argv[1];
 
 	if ((*dbHandle)->descriptor->readOnly) {
+		__operationGuard.release();
 		napi_value recv;
 		NAPI_STATUS_THROWS(::napi_get_undefined(env, &recv));
 		napi_value ignored;

@@ -28,7 +28,7 @@ const destroying = await nextMessage();
 if (!destroying.destroying)
 	throw new Error(`Worker did not start destroying: ${JSON.stringify(destroying)}`);
 
-// 20 rows x ROCKSDB_JS_COUNT_DELAY_MS holds an OperationGuard well past the
+// 20 rows x ROCKSDB_JS_COUNT_DELAY_MS holds an operation guard well past the
 // worker's 50ms destroy delay. finishClose() drains in-flight operations with
 // an untimed wait, so without the isClosing() poll in countRemaining() this
 // scan would run to completion, block the destroy for its full duration, and

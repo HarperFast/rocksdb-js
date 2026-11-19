@@ -275,10 +275,47 @@ it skips `compactOnClose`. A failed destroy flush does not stop the deletion (a 
 sticky background error must stay destroyable): `finishClose()` keeps the error in `closeError`,
 finishes teardown, and throws it after `db.reset()`. Destroy treats a completed teardown's error as
 non-fatal and reports it through `database:closeFailed`. The immediate flush fires listeners into
-the transaction-log stores, so `Database::PurgeLogs` takes an `OperationGuard`: the drain at the top
+the transaction-log stores, so `Database::PurgeLogs` takes an operation guard: the drain at the top
 of `finishClose()` waits for an admitted `purgeLogs({ destroy: true })` instead of flushing into the
 stores it is removing (the crash invariant 16 records for close).
 
 Nothing is logged through the RocksDB info log after `Close()`, which closes that logger.
 `test/close-compaction.test.ts` covers close, process exit and worker teardown during a compaction,
 `compactOnClose`, the explicit position write, and the retry.
+
+# Synchronous calls register on their own handle
+
+A guarded `Database::*` call (`ACQUIRE_OPERATIONS_LOCK()` in `database.h`) counts itself in its
+`DBHandle::operationsInFlight` through `HandleOperationGuard`, and borrows the descriptor the handle
+holds instead of copying the `shared_ptr`. Every `worker_threads` env on a path shares one
+descriptor, and its counter plus the copy's reference count doubled `getSync()` with four workers on
+one database (rocksdb-js#1138). `finishClose()` waits for every attached handle's count
+(`waitForHandleOperations()`) and then for the descriptor's, so descriptor work a guarded call
+registers before returning is drained too. Four facts make that equivalent to one shared count:
+
+- **Ordering.** The call increments, then reads `closing`. The closer stores `closing` in
+  `beginClose()` and only then reads each count. All four are seq_cst, so either the call refuses or
+  the drain sees it. On exit the call decrements and then reads `closing` again, notifying only if
+  set; if it reads false, its decrement precedes the drain's first read, so no wakeup is lost.
+- **Enumeration.** The drain reads `closables` under `txnsMutex`. `DBRegistry::OpenDB` attaches a
+  handle there before JS can use it (invariant 28). A handle attached after that read took
+  `txnsMutex` after `closing` was stored, so its calls refuse. A handle leaves `closables` only in
+  `DBRegistry::CloseDB`, after its own `close()` on its owning thread, or in the closables sweep,
+  after this drain.
+- **Owner thread.** Guarded calls run only on the handle's owning thread, which is also the only
+  thread that resets or reassigns `DBHandle::descriptor` (`DBHandle::close()`, `DBRegistry::OpenDB`).
+  So the member keeps the borrowed descriptor alive for the whole call, including the exit's
+  `closing` read after the drain has moved on.
+- **Re-entrancy.** JavaScript can run inside a guarded call (an options getter, `toJSON`), so
+  `Database::Close` and `Database::Destroy` refuse while the handle's count is nonzero; on the
+  owning thread that count can only be a call below this one on the stack. A close would release the
+  borrowed descriptor and detach the handle the drain must find, and a destroy would wait for the
+  call forever. A call that settles through a JavaScript callback ends its admission first
+  (`HandleOperationGuard::release()`), so closing from that callback still works. A `destroy()` or
+  `shutdown()` through another handle from such a getter still waits on this thread, as it did with
+  the shared count.
+
+Iterators, transactions, backups, checkpoints, commits and column-family reclamation
+still use the descriptor's `operationsInFlight` (`OperationGuard`).
+`test/fixtures/fork-sync-operation-destroy.mts` holds calls on two handles open in getters while a
+third worker destroys the database, and covers the refusals and the callback case.

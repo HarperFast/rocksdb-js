@@ -440,7 +440,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 *     transition that publishes `closing` -- so a close claim and manual
 	 *     compaction cancellation are one step. Arming it any later reopens the
 	 *     window this exists to close: `finishClose()` drains
-	 *     `operationsInFlight` with an untimed wait, and a synchronous
+	 *     its handles' in-flight calls with an untimed wait, and a synchronous
 	 *     `compactSync()`/`clearSync()` blocks it for the compaction's whole
 	 *     duration. `DestroyDB`/`Shutdown` also claim every entry for a path
 	 *     under one lock and then close them sequentially, so arming at claim
@@ -450,7 +450,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 *     token instead, since nothing external is waiting on it, and a
 	 *     descriptor never leaves the closing state.
 	 *  3. It covers synchronous compaction only. Async `compact()`/`clear()`
-	 *     released their OperationGuard at setup handoff, so this drain does not
+	 *     released their operation guard at setup handoff, so this drain does not
 	 *     await them; they are awaited by `DBHandle::close()`'s async-work drain
 	 *     and cancelled by the per-handle token, which a self-close arms before
 	 *     it ever reaches `beginClose()` and a foreign close arms from
@@ -472,8 +472,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::atomic<bool> compactCancelRequested{ false };
 
 	/**
-	 * Counter tracking in-flight database operations. close() uses
-	 * atomic::wait() to block until this reaches zero.
+	 * Counter tracking in-flight database operations that are not counted on a
+	 * handle (`OperationGuard`: iterators, transactions, commits, backups).
+	 * close() uses atomic::wait() to block until this reaches zero.
 	 */
 	std::atomic<uint32_t> operationsInFlight{ 0 };
 
@@ -733,6 +734,13 @@ public:
 	bool finalFlush() noexcept;
 
 	void closeClosables(std::unique_lock<std::mutex>& txnsLock);
+
+	/**
+	 * Waits until no guarded call is in flight on any attached handle. Only
+	 * valid once `closing` is published: a handle attached later refuses.
+	 */
+	void waitForHandleOperations();
+
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
 	void detach(Closable* closable);

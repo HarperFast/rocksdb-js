@@ -633,6 +633,27 @@ void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
 	}
 }
 
+void DBDescriptor::waitForHandleOperations() {
+	std::vector<std::pair<std::shared_ptr<Closable>, std::atomic<uint32_t>*>> counted;
+	{
+		std::lock_guard<std::mutex> closablesLock(this->txnsMutex);
+		for (auto& [key, weakClosable] : this->closables) {
+			if (auto closable = weakClosable.lock()) {
+				if (std::atomic<uint32_t>* count = closable->operationCount()) {
+					counted.emplace_back(std::move(closable), count);
+				}
+			}
+		}
+	}
+	// Unlocked: an admitted call may take txnsMutex (a transaction lookup).
+	for (auto& [closable, count] : counted) {
+		uint32_t current;
+		while ((current = count->load()) != 0) {
+			count->wait(current);
+		}
+	}
+}
+
 void DBDescriptor::closeRemainingClosables() {
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 	this->closeClosables(txnsLock);
@@ -671,6 +692,9 @@ void DBDescriptor::finishClose(bool destroying) {
 		// uses the cancel token armed by beginClose(). An async one is not
 		// counted here at all -- it is awaited by the closables sweep below,
 		// and by then the per-handle token armed above has already cancelled it.
+		// Handles first: a guarded call can register descriptor work before it
+		// returns, and the descriptor drain below then waits for that too.
+		this->waitForHandleOperations();
 		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
 		auto& closeLatch = txnCloseDrainLatch();
 		if (closeLatch.descriptor.load(std::memory_order_acquire) == this) {
