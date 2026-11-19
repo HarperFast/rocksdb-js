@@ -17,14 +17,19 @@ describe('aftercommit after a durable commit', () => {
 		it(`${method}() succeeds and warns when the database closed after the commit`, () =>
 			dbRunner(async ({ db, dbPath }) => {
 				const warnings: string[] = [];
-				const onWarn = (msg: string) => warnings.push(msg);
+				let warned!: () => void;
+				const warning = new Promise<void>((resolve) => (warned = resolve));
+				const onWarn = (msg: string) => {
+					warnings.push(msg);
+					warned();
+				};
 				RocksDatabase.on('log.warn', onWarn);
 				try {
 					const txn = new Transaction(db.store);
 					txn.putSync('k', 'v');
 					closeBeforeAfterCommit(txn, db);
 					await (method === 'commit' ? txn.commit() : txn.commitSync());
-					await new Promise((resolve) => setTimeout(resolve, 50));
+					await warning;
 					expect(warnings.filter((w) => w.includes('aftercommit'))).toHaveLength(1);
 				} finally {
 					RocksDatabase.off('log.warn', onWarn);

@@ -184,6 +184,9 @@ export class Transaction extends DBI {
 	 *
 	 * Returns `RETRY_NOW` when `coordinatedRetry: true` and an IsBusy conflict
 	 * was detected. The caller should retry the transaction body immediately.
+	 *
+	 * If the database closes after the commit landed, the `aftercommit` notification is skipped with
+	 * a process-wide `log.warn` and the commit still succeeds.
 	 */
 	async commit(): Promise<typeof RETRY_NOW | void> {
 		let result: number | void;
@@ -198,14 +201,15 @@ export class Transaction extends DBI {
 			throw failure;
 		}
 		if (result === RETRY_NOW) {
-			this.#notifyAfterFailedCommit();
+			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
 			return RETRY_NOW;
 		}
 		this.#notifyAfterDurableCommit();
 	}
 
 	/**
-	 * Commit the transaction synchronously.
+	 * Commit the transaction synchronously. Closing of the database after the commit landed is
+	 * handled as in {@link Transaction.commit}.
 	 */
 	commitSync(): void {
 		try {
@@ -231,7 +235,7 @@ export class Transaction extends DBI {
 				throw err;
 			}
 			globalNotify('log.warn', [
-				`aftercommit notification skipped for committed transaction ${this.#txn.id}: ${
+				`aftercommit notification skipped for committed transaction ${this.#txn.id} of ${this.store.identityPath}: ${
 					err instanceof Error ? err.message : String(err)
 				}`,
 			]);
