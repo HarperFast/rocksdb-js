@@ -79,6 +79,25 @@ inline std::atomic<int>& txnCloseDelayMsFlag() {
 	return delayMs;
 }
 
+inline std::atomic<bool>& txnCloseDelayActive() {
+	static std::atomic<bool> active{ false };
+	return active;
+}
+
+// A child-process-only latch: one transaction close waits until its descriptor's
+// drain records the operation count. No timer can release the close first.
+struct TransactionCloseDrainLatch {
+	std::atomic<bool> enabled{ false };
+	std::atomic<void*> descriptor{ nullptr };
+	std::atomic<int> operations{ -1 };
+	std::atomic<bool> finished{ false };
+};
+
+inline TransactionCloseDrainLatch& txnCloseDrainLatch() {
+	static TransactionCloseDrainLatch latch;
+	return latch;
+}
+
 // Transactional reads execute on a libuv worker, so their test delay cannot
 // read the process environment concurrently with JavaScript.
 inline std::atomic<int>& txnGetDelayMsFlag() {
@@ -187,6 +206,12 @@ inline std::atomic<int>& memoryMapBufferDelayMsFlag() {
 	return delayMs;
 }
 
+// Failed native mapping-buffer creates. Never reset.
+inline std::atomic<uint64_t>& memoryMapBufferCreateFailures() {
+	static std::atomic<uint64_t> failures{ 0 };
+	return failures;
+}
+
 // Number of transaction-log abort-marker syncs to fail after the marker is written (a count). Read
 // on the commit and teardown threads that write markers, so snapshotted like the fault flags above.
 inline std::atomic<int>& abortMarkFailureFlag() {
@@ -280,6 +305,9 @@ inline void initializeTestSeams() {
 		);
 		txnCloseDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_TXN_CLOSE_DELAY_MS"), std::memory_order_relaxed
+		);
+		txnCloseDrainLatch().enabled.store(
+			testDelayMs("ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH") > 0, std::memory_order_relaxed
 		);
 		txnGetDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_TXN_GET_DELAY_MS"), std::memory_order_relaxed
@@ -454,6 +482,43 @@ inline int consumeWriteBufferManagerJoinDelayForTesting() {
 		}
 	}
 	return 0;
+}
+
+enum class AsyncExceptionStage : int {
+	None = 0,
+	State = 1,
+	Execute = 2,
+	Complete = 3,
+	// DBRegistry::PurgeIfUnreferenced()'s close-claim allocation.
+	PurgeClaim = 4
+};
+
+inline std::atomic<int>& asyncExceptionStage() {
+	static std::atomic<int> stage{ 0 };
+	return stage;
+}
+
+inline std::atomic<int>& asyncExceptionCount() {
+	static std::atomic<int> count{ 0 };
+	return count;
+}
+
+inline void setAsyncExceptionForTesting(int stage, int count) {
+	asyncExceptionCount().store(count, std::memory_order_relaxed);
+	asyncExceptionStage().store(stage, std::memory_order_relaxed);
+}
+
+inline bool consumeAsyncExceptionForTesting(AsyncExceptionStage stage) {
+	if (asyncExceptionStage().load(std::memory_order_relaxed) != static_cast<int>(stage)) {
+		return false;
+	}
+	int remaining = asyncExceptionCount().load(std::memory_order_relaxed);
+	while (remaining > 0) {
+		if (asyncExceptionCount().compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 #endif

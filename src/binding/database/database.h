@@ -306,6 +306,7 @@ struct Database final {
 	static napi_value SyncWalSync(napi_env env, napi_callback_info info);
 	static napi_value Get(napi_env env, napi_callback_info info);
 	static napi_value GetCompression(napi_env env, napi_callback_info info);
+	static napi_value GetOpenSettingsForTesting(napi_env env, napi_callback_info info);
 	static napi_value GetLastError(napi_env env, napi_callback_info info);
 	static napi_value SetLastError(napi_env env, napi_callback_info info);
 	static napi_value EstimateCount(napi_env env, napi_callback_info info);

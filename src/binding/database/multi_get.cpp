@@ -172,19 +172,20 @@ napi_value multiGetSyncResult(
 }
 
 void finishMultiGet(rocksdb::Status& status, MultiGetBatch& batch, std::string& result) noexcept {
-	size_t resultSize = 0;
-	const size_t failed = batch.findFailure(resultSize);
-	if (failed < batch.size()) {
-		status = batch.statuses[failed];
-	} else if (resultSize > MAX_RESULT_SIZE) {
-		status = rocksdb::Status::InvalidArgument("values exceed 2 GiB");
-	} else {
-		try {
+	// Copying a failed status allocates its message too, and building one here could throw again.
+	try {
+		size_t resultSize = 0;
+		const size_t failed = batch.findFailure(resultSize);
+		if (failed < batch.size()) {
+			status = batch.statuses[failed];
+		} else if (resultSize > MAX_RESULT_SIZE) {
+			status = rocksdb::Status::InvalidArgument("values exceed 2 GiB");
+		} else {
 			result.resize(resultSize);
 			batch.writeResult(result.data());
-		} catch (const std::bad_alloc&) {
-			status = rocksdb::Status::MemoryLimit("could not allocate the result");
 		}
+	} catch (...) {
+		status = rocksdb::Status::MemoryLimit();
 	}
 	batch.values.reset();
 }
@@ -293,7 +294,7 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 	rocksdb::ReadOptions readOptions;
 	auto state = new AsyncMultiGetState<std::shared_ptr<DBHandle>>(env, *dbHandle, readOptions);
 	// Not admitted yet, so a setup failure must delete the state without unregistering anything.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pendingState(env, state);
 	if (!state->batch.copyKeys(keys) || !state->batch.allocateResults()) {
 		::napi_throw_error(env, nullptr, "Get many failed: out of memory");
@@ -308,27 +309,30 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 		name,
 		[](napi_env doNotUse, void* data) { // execute
 			auto state = reinterpret_cast<AsyncMultiGetState<std::shared_ptr<DBHandle>>*>(data);
-			if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during get many operation");
-				state->batch.values.reset();
-			} else {
-				state->handle->descriptor->db->MultiGet(
-					state->readOptions,
-					state->handle->getColumnFamilyHandle(),
-					state->batch.size(),
-					state->batch.keys.data(),
-					state->batch.values.get(),
-					state->batch.statuses.get()
-				);
-				finishMultiGet(state->status, state->batch, state->result);
-			}
+			runAsyncExecute(state, [state] {
+				if (!state->handle || !state->handle->opened() || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during get many operation");
+					state->batch.values.reset();
+				} else {
+					state->handle->descriptor->db->MultiGet(
+						state->readOptions,
+						state->handle->getColumnFamilyHandle(),
+						state->batch.size(),
+						state->batch.keys.data(),
+						state->batch.values.get(),
+						state->batch.statuses.get()
+					);
+					finishMultiGet(state->status, state->batch, state->result);
+				}
+			});
+			state->batch.values.reset();
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncMultiGetState<std::shared_ptr<DBHandle>>*>(data);
 			state->deleteAsyncWork();
 			if (status != napi_cancelled) {
-				resolveMultiGetResult(env, "Get many failed", state);
+				runAsyncComplete(env, state, [env, state] { resolveMultiGetResult(env, "Get many failed", state); });
 			}
 			delete state;
 		},
@@ -338,7 +342,7 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 
 	// From here admitAsyncWorkOrReject()/queueAsyncWorkOrReject() own the state's cleanup.
 	pendingState.release();
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	// Balances the unregisterAsyncWork() in signalExecuteCompleted(), so close() waits for this read.
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();

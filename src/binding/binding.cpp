@@ -1,4 +1,5 @@
 #include "napi/binding.h"
+#include "core/assert.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "database/backup.h"
 #include "database/database.h"
@@ -188,6 +189,20 @@ napi_value IsTransactionStagingDelayedForTesting(napi_env env, napi_callback_inf
 	return result;
 }
 
+napi_value IsTransactionCloseDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, txnCloseDelayActive().load(std::memory_order_acquire), &result));
+	return result;
+}
+
+napi_value IsTransactionCloseGuardedAtDrainForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, txnCloseDrainLatch().operations.load(std::memory_order_acquire) == 1, &result));
+	return result;
+}
+
 napi_value IsFlushCompletedDelayedForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	napi_value result;
@@ -239,6 +254,16 @@ napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_
 	NAPI_RETURN_UNDEFINED();
 }
 
+napi_value ForceAsyncExceptionForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	int32_t stage = 0;
+	int32_t count = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &stage));
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &count));
+	setAsyncExceptionForTesting(stage, std::max(count, 0));
+	NAPI_RETURN_UNDEFINED();
+}
+
 /**
  * Every `*ForTesting` setter is exported from this table so `ResetTestSwitchesForTesting` cannot
  * miss it: the switches are process-global, and Vitest runs many test files in one process.
@@ -282,6 +307,12 @@ static const TestSwitch testSwitches[] = {
 		 const bool changed = writeBufferManagerJoinDelayCountdown().load(std::memory_order_relaxed) != 0 ||
 			 writeBufferManagerJoinDelayMs().load(std::memory_order_relaxed) != 0;
 		 setWriteBufferManagerJoinDelayForTesting(0, 0);
+		 return changed;
+	 } },
+	{ "forceAsyncExceptionForTesting", ForceAsyncExceptionForTesting, []() {
+		 const bool changed = asyncExceptionStage().load(std::memory_order_relaxed) != 0 ||
+			 asyncExceptionCount().load(std::memory_order_relaxed) != 0;
+		 setAsyncExceptionForTesting(0, 0);
 		 return changed;
 	 } },
 };
@@ -420,9 +451,15 @@ napi_value CoolTransactionLogs(napi_env env, napi_callback_info info) {
  * Used by tests to verify that releasing a (frozen) log's external buffer
  * actually unmaps the mapping rather than leaving it retained.
  */
-napi_value TransactionLogMapCount(napi_env env, napi_callback_info info) {
+napi_value GetTransactionLogMapCount(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_int64(env, MemoryMap::liveCount.load(std::memory_order_relaxed), &result));
+	return result;
+}
+
+napi_value GetTransactionLogMapBufferCreateFailures(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(memoryMapBufferCreateFailures().load(std::memory_order_relaxed)), &result));
 	return result;
 }
 
@@ -489,6 +526,11 @@ NAPI_MODULE_INIT() {
 		NAPI_STATUS_THROWS(::napi_set_element(env, supportedCompression, static_cast<uint32_t>(i), name));
 	}
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "supportedCompression", supportedCompression));
+
+	// Read by scripts/test-binding.mjs to refuse a fatal prebuild; not part of the package API.
+	napi_value fatalAsserts;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, ROCKSDB_JS_ASSERTS_ARE_FATAL, &fatalAsserts));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "fatalAsserts", fatalAsserts));
 
 	int32_t refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
@@ -644,6 +686,26 @@ NAPI_MODULE_INIT() {
 		isTransactionCommitExecuteDelayedFn
 	));
 
+	napi_value isTransactionCloseDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"isTransactionCloseDelayedForTesting",
+		NAPI_AUTO_LENGTH,
+		IsTransactionCloseDelayedForTesting,
+		nullptr,
+		&isTransactionCloseDelayedFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"isTransactionCloseDelayedForTesting",
+		isTransactionCloseDelayedFn
+	));
+
+	napi_value isTransactionCloseGuardedAtDrainFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCloseGuardedAtDrainForTesting", NAPI_AUTO_LENGTH, IsTransactionCloseGuardedAtDrainForTesting, nullptr, &isTransactionCloseGuardedAtDrainFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isTransactionCloseGuardedAtDrainForTesting", isTransactionCloseGuardedAtDrainFn));
+
 	napi_value isFlushCompletedDelayedFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "isFlushCompletedDelayedForTesting", NAPI_AUTO_LENGTH, IsFlushCompletedDelayedForTesting, nullptr, &isFlushCompletedDelayedFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isFlushCompletedDelayedForTesting", isFlushCompletedDelayedFn));
@@ -679,10 +741,14 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "coolTransactionLogs", NAPI_AUTO_LENGTH, CoolTransactionLogs, nullptr, &coolTransactionLogsFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "coolTransactionLogs", coolTransactionLogsFn));
 
-	// transactionLogMapCount function (test/diagnostics)
-	napi_value transactionLogMapCountFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "transactionLogMapCount", NAPI_AUTO_LENGTH, TransactionLogMapCount, nullptr, &transactionLogMapCountFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "transactionLogMapCount", transactionLogMapCountFn));
+	// getTransactionLogMapCount function (test/diagnostics)
+	napi_value getTransactionLogMapCountFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "getTransactionLogMapCount", NAPI_AUTO_LENGTH, GetTransactionLogMapCount, nullptr, &getTransactionLogMapCountFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "getTransactionLogMapCount", getTransactionLogMapCountFn));
+
+	napi_value getTransactionLogMapBufferCreateFailuresFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "getTransactionLogMapBufferCreateFailures", NAPI_AUTO_LENGTH, GetTransactionLogMapBufferCreateFailures, nullptr, &getTransactionLogMapBufferCreateFailuresFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "getTransactionLogMapBufferCreateFailures", getTransactionLogMapBufferCreateFailuresFn));
 
 	// supportsSharedTransactionLogMaps function (test/diagnostics)
 	napi_value supportsSharedTransactionLogMapsFn;

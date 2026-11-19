@@ -36,10 +36,14 @@ bool releasePooled(IteratorWrap* wrap, std::unique_lock<std::mutex>& iteratorLoc
 	std::shared_ptr<TransactionHandle> txnHandle = handle->txnHandle;
 	bool released = false;
 	bool checkOrphan = false;
+	bool countUnderflow = false;
 	if (pool && txnHandle && handle->iterator) {
-		released = txnHandle->releaseIterator(handle.get(), checkOrphan);
+		released = txnHandle->releaseIterator(handle.get(), checkOrphan, countUnderflow);
 	}
 	iteratorLock.unlock();
+	if (countUnderflow) {
+		TransactionHandle::reportIteratorCountUnderflow();
+	}
 	if (!released) {
 		handle->close();
 	}

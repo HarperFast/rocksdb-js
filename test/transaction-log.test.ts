@@ -9,7 +9,7 @@ import {
 	constants,
 	coolTransactionLogs,
 	type TransactionLog,
-	transactionLogMapCount,
+	getTransactionLogMapCount,
 	supportsSharedTransactionLogMaps,
 } from '../src/load-binding.ts';
 import { parseTransactionLog } from '../src/parse-transaction-log.ts';
@@ -5108,21 +5108,21 @@ describe('Transaction Log', () => {
 					// owned and may not have been collected yet) so the forced GC below
 					// can only be reclaiming the buffer under test.
 					await untilGc(() => false, 150);
-					const before = transactionLogMapCount();
+					const before = getTransactionLogMapCount();
 
 					// Map the frozen seq 1 directly (bypasses the query() WeakRef cache,
 					// so our local is the only strong reference to the buffer).
 					let buffer: Buffer | undefined = log._getMemoryMapOfFile(1);
 					expect(buffer).toBeDefined();
-					expect(transactionLogMapCount()).toBe(before + 1);
+					expect(getTransactionLogMapCount()).toBe(before + 1);
 					// Sanity: the frozen log reads back through the mapping.
 					expect(buffer!.subarray(0, 4).toString()).toBe('WOOF');
 
 					// Release the only strong reference; the frozen file holds just a
 					// weak handle, so GC → finalize must unmap it.
 					buffer = undefined;
-					await untilGc(() => transactionLogMapCount() === before);
-					expect(transactionLogMapCount()).toBe(before);
+					await untilGc(() => getTransactionLogMapCount() === before);
+					expect(getTransactionLogMapCount()).toBe(before);
 				})
 		);
 
@@ -5140,12 +5140,12 @@ describe('Transaction Log', () => {
 					}
 
 					await untilGc(() => false, 150);
-					const before = transactionLogMapCount();
+					const before = getTransactionLogMapCount();
 
 					// Map seq 1 while it is current: the file retains a strong reference.
 					let buffer: Buffer | undefined = log._getMemoryMapOfFile(1);
 					expect(buffer).toBeDefined();
-					expect(transactionLogMapCount()).toBe(before + 1);
+					expect(getTransactionLogMapCount()).toBe(before + 1);
 
 					// Write enough to rotate past seq 1 (current advances to seq 2/3),
 					// which downgrades seq 1's strong reference to a weak handle.
@@ -5159,8 +5159,8 @@ describe('Transaction Log', () => {
 					// strong reference, so GC must unmap it. (Without the downgrade the
 					// file would still pin it and this would never reach `before`.)
 					buffer = undefined;
-					await untilGc(() => transactionLogMapCount() === before);
-					expect(transactionLogMapCount()).toBe(before);
+					await untilGc(() => getTransactionLogMapCount() === before);
+					expect(getTransactionLogMapCount()).toBe(before);
 				})
 		);
 	});

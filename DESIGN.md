@@ -20,5 +20,7 @@
   waiting for it.
 - [Transaction state transitions](src/binding/transaction/DESIGN.md#state-transitions): `Committed` and `Aborted` are terminal; every change is a compare-exchange, because `close()` can settle `Aborted` from another thread.
 - [Transaction abort](src/binding/transaction/DESIGN.md): abort drains in-flight async gets before `Rollback()` and holds an `OperationGuard` so teardown cannot close the transaction under it.
+- [Transaction registry removal](src/binding/transaction/DESIGN.md#registry-removal): `close()` leaves the registry through a non-owning link, so a transaction outliving its handle is not retained and no descriptor pin can skip a purge.
 - [Pooled transaction iterators](src/binding/iterator/DESIGN.md): transaction `getRange()` re-seeks an idle native iterator after rewriting the read-bound Slices it points to.
 - [N-API error builders](src/binding/napi/DESIGN.md): `createRocksDBError`/`createJSError` always write their out-param, even when their own N-API calls fail.
+- [C++ exceptions in async work](src/binding/napi/DESIGN.md#c-exceptions-in-async-work): async entry points, execute and complete callbacks turn an exception into a rejection, and what each wrapped entry must own for that to be safe.

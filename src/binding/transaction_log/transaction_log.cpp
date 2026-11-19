@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <thread>
+#include <type_traits>
 #include <stdlib.h>
 #include <fcntl.h>
 #ifdef _WIN32
@@ -110,6 +111,9 @@ napi_status settleFinalizeHint(SharedFinalizeHint<T>* hint, napi_status createSt
 		hint->created();
 	} else {
 		hint->failed();
+		if constexpr (std::is_same_v<T, MemoryMap>) {
+			memoryMapBufferCreateFailures().fetch_add(1, std::memory_order_relaxed);
+		}
 	}
 	return createStatus;
 }

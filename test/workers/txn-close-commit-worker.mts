@@ -42,7 +42,7 @@ parentPort?.on('message', async (message: { stop?: boolean; nextRound?: boolean 
 		});
 
 		// Drop W's descriptor ref (refcount → 1, descriptor still alive via M)
-		// T->dbHandle->descriptor is now null; PATH B's transactionRemove is skipped
+		// T->dbHandle->descriptor is now null; PATH B leaves the registry through its link
 		db.close();
 
 		// Signal M: W's handle is closed; M closing now triggers descriptor->close()
