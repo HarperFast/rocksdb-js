@@ -193,6 +193,10 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 
 bool DBIteratorHandle::countRemaining(uint64_t& count) {
 	std::lock_guard<std::mutex> lock(this->iteratorMutex);
+	// Closed before the scan began, by its transaction's close() or a foreign sweep: not exhausted.
+	if (!this->iterator) {
+		return false;
+	}
 	const DBDescriptor* descriptor = this->dbHandle->descriptor.get();
 	// Test-only: stretch the scan so a fixture can land a foreign destroy()
 	// inside it rather than only before or after.

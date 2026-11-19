@@ -10,7 +10,9 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 // - `closing`: a foreign shutdown() has closed the transaction and the database this worker still
 //   holds a handle to.
 // - `detached`: the transaction's owner closed its own handle; another handle keeps the database open.
-type Mode = 'closing' | 'detached';
+// - `reentrant`: JavaScript that the native call runs itself aborts the transaction or closes its
+//   handle; the call must neither wait on its own admission nor dereference the closed handle.
+type Mode = 'closing' | 'detached' | 'reentrant';
 
 async function callEntryPoints(
 	db: RocksDatabase,
@@ -45,9 +47,57 @@ async function callEntryPoints(
 }
 
 const mode = (isMainThread ? process.argv[3] : workerData.mode) as Mode;
-assert(mode === 'closing' || mode === 'detached');
+assert(mode === 'closing' || mode === 'detached' || mode === 'reentrant');
 
-if (mode === 'detached') {
+if (mode === 'reentrant') {
+	const path = process.argv[2];
+	assert(path);
+	const keeper = RocksDatabase.open(path);
+	const owner = RocksDatabase.open(path);
+	const NativeDatabase = (owner.store.db as any).constructor;
+	const useLogWhile = (hook: () => void) => {
+		const txn = new Transaction(owner.store);
+		Object.defineProperty(NativeDatabase, Symbol.hasInstance, {
+			configurable: true,
+			value: () => {
+				hook.call(txn);
+				return true;
+			},
+		});
+		try {
+			(txn as any)._context.useLog('log', owner.store.db);
+			return 'ok';
+		} catch (error) {
+			return (error as Error).message;
+		} finally {
+			delete NativeDatabase[Symbol.hasInstance];
+		}
+	};
+	assert.equal(
+		useLogWhile(function (this: Transaction) {
+			this.abort();
+		}),
+		'Transaction is closed'
+	);
+	assert.equal(
+		useLogWhile(() => owner.close()),
+		'Transaction is closed'
+	);
+	owner.open();
+	assert.throws(
+		() =>
+			new Transaction(owner.store, {
+				get disableSnapshot() {
+					owner.close();
+					return false;
+				},
+			} as any),
+		{ message: 'Database not open' }
+	);
+	keeper.close();
+	assert.equal(registryStatus().length, 0);
+	console.log('SUCCESS');
+} else if (mode === 'detached') {
 	const path = process.argv[2];
 	assert(path);
 	const keeper = RocksDatabase.open(path);
@@ -68,7 +118,7 @@ if (mode === 'detached') {
 		getRange: 'Database not open',
 		putSync: 'Database not open',
 		removeSync: 'Database not open',
-		useLog: 'Database not open',
+		useLog: 'Transaction is closed',
 		setTimestamp: 'Cannot set timestamp: transaction already has staged writes or log entries',
 		abandonWrites: 'ok',
 	});

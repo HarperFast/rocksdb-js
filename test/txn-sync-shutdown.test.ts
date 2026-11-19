@@ -25,7 +25,7 @@ function runFixture(fixture: string, args: string[]) {
 
 describe('Synchronous transaction calls vs. a foreign shutdown', () => {
 	describe.each(['txn', 'db'])('through the %s context', (context) => {
-		it.each(['getSync', 'putSync', 'removeSync', 'getRange'])(
+		it.each(['getSync', 'putSync', 'removeSync', 'getRange', 'getCount'])(
 			'%s holds shutdown off until it returns',
 			async (operation) => {
 				const result = await runFixture('fork-txn-sync-shutdown.mts', [
@@ -40,8 +40,8 @@ describe('Synchronous transaction calls vs. a foreign shutdown', () => {
 		);
 	});
 
-	it.each(['closing', 'detached'])(
-		'refuses every entry point once its database is %s',
+	it.each(['closing', 'detached', 'reentrant'])(
+		'refuses calls whose transaction or handle is gone (%s)',
 		async (mode) => {
 			const result = await runFixture('fork-txn-sync-refusal.mts', [generateDBPath(), mode]);
 			expect(result, result.output).toMatchObject({ code: 0, signal: null });

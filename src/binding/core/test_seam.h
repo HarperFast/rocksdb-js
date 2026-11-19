@@ -459,8 +459,9 @@ inline int consumeTransactionStagingDelayForTesting() {
 	return 0;
 }
 
-// Parks the next synchronous transaction read (getSync, or a transaction iterator's setup) after it
-// has read the transaction's database handle, so a foreign close can land mid-call.
+// Parks the next synchronous transaction read (getSync, getCount after its iterator exists, or a
+// transaction iterator's setup) after it has read the transaction's database handle, so a foreign
+// close can land mid-call.
 inline std::atomic<int>& transactionReadDelayMs() {
 	static std::atomic<int> delayMs{ 0 };
 	return delayMs;

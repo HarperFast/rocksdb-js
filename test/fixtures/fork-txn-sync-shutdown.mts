@@ -15,7 +15,7 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 // database handle, and this thread runs a foreign shutdown(). The shutdown must wait for the call.
 const PAUSE_MS = 1000;
 
-const operations = ['getSync', 'putSync', 'removeSync', 'getRange'] as const;
+const operations = ['getSync', 'putSync', 'removeSync', 'getRange', 'getCount'] as const;
 type Operation = (typeof operations)[number];
 type Context = 'txn' | 'db';
 
@@ -57,15 +57,14 @@ if (isMainThread) {
 		assert.equal(registryStatus().length, 0);
 		assert(!isPaused(), 'shutdown did not wait for the call');
 		assert(elapsed >= PAUSE_MS / 2, `shutdown returned after ${elapsed}ms, during the call`);
-		// Iterator setup checks again after the pause: the transaction's close has begun and the
-		// database is closing, so the range is refused cleanly instead.
+		// An iterator's setup and a count scan check again after the pause: the transaction's close has
+		// begun and the database is closing, so each is refused instead of reading a closed iterator.
 		const expected =
-			operation !== 'getRange'
-				? ['ok']
-				: [
-						'error',
-						context === 'txn' ? 'Transaction is not in pending state' : 'Database not open',
-					];
+			operation === 'getRange'
+				? ['error', context === 'txn' ? 'Transaction is not in pending state' : 'Database not open']
+				: operation === 'getCount'
+					? ['error', 'Get count failed: Database is closing']
+					: ['ok'];
 		assert.deepEqual(await result, [expected]);
 	} finally {
 		setPause(0);
@@ -87,16 +86,19 @@ if (isMainThread) {
 	try {
 		const target = context === 'txn' ? txn : db;
 		const options = context === 'txn' ? undefined : { transaction: txn };
+		let result: unknown[] = ['ok'];
 		if (operation === 'getSync') {
 			assert.equal(target.getSync('key', options), 'value');
 		} else if (operation === 'putSync') {
 			target.putSync('key', 'updated', options);
 		} else if (operation === 'removeSync') {
 			target.removeSync('key', options);
-		} else {
+		} else if (operation === 'getRange') {
 			target.getKeys(options);
+		} else {
+			result = ['count', target.getKeysCount(options)];
 		}
-		parentPort!.postMessage(['ok']);
+		parentPort!.postMessage(result);
 	} catch (error) {
 		assert(error instanceof Error);
 		parentPort!.postMessage(['error', error.message]);

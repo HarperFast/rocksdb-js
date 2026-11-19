@@ -166,7 +166,6 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	IteratorWrap* wrap = nullptr;
 	std::shared_ptr<DBHandle>* dbHandle = nullptr;
 	std::shared_ptr<TransactionHandle> txnHandle;
-	// Held through descriptor attachment below.
 	std::optional<TransactionOperation> transactionOperation;
 	std::optional<OperationGuard> operationGuard;
 
@@ -210,7 +209,6 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			if (!rocksdb_js::readTransactionId(env, argv[6], txnId)) {
 				return nullptr;
 			}
-			// Before the lookup, which reads the transaction's fields that a foreign close resets.
 			operationGuard.emplace((*dbHandle)->descriptor);
 			if ((*dbHandle)->descriptor->isClosing()) {
 				::napi_throw_error(env, nullptr, "Database is closing");

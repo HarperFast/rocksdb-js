@@ -184,11 +184,6 @@ std::shared_ptr<TransactionHandle> getOwnedTransaction(
 	return nullptr;
 }
 
-/**
- * Registers with the transaction's own async-work drain, which `close()` waits on before it deletes
- * `txn` or resets `dbHandle`. The closables sweep closes transactions before database handles, so the
- * handle's column descriptor stays put too.
- */
 TransactionOperation::TransactionOperation(TransactionHandle& handle) :
 	handle(handle),
 	admittedCall(handle.enterSync()) {
@@ -852,6 +847,7 @@ bool TransactionHandle::getCount(
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	std::shared_ptr<DBIteratorHandle> itHandle = this->createIterator(itOptions, std::move(dbHandleOverride));
+	pauseTransactionReadForTesting();
 	return itHandle->countRemaining(count);
 }
 
@@ -1143,7 +1139,6 @@ rocksdb::Status TransactionHandle::putSync(
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
-	// The resolved handle's descriptor: the transaction's own handle loses it once its owner closes it.
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	if (!this->disableSnapshot && !this->snapshotSet && dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
@@ -1195,7 +1190,6 @@ rocksdb::Status TransactionHandle::removeSync(
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
-	// The resolved handle's descriptor: the transaction's own handle loses it once its owner closes it.
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	if (!this->disableSnapshot && !this->snapshotSet && dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
