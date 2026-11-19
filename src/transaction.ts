@@ -181,18 +181,20 @@ export class Transaction extends DBI {
 	 * was detected. The caller should retry the transaction body immediately.
 	 */
 	async commit(): Promise<typeof RETRY_NOW | void> {
+		let result: number | void;
 		try {
-			const result = await new Promise<number | void>((resolve, reject) => {
+			result = await new Promise<number | void>((resolve, reject) => {
 				this.notify('beforecommit');
 				this.#txn.commit(resolve, reject);
 			});
-			if (result === RETRY_NOW) {
-				return RETRY_NOW;
-			}
 		} catch (err) {
-			throw this.#handleCommitError(err);
-		} finally {
-			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+			const failure = this.#handleCommitError(err);
+			this.#notifyAfterFailedCommit();
+			throw failure;
+		}
+		this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+		if (result === RETRY_NOW) {
+			return RETRY_NOW;
 		}
 	}
 
@@ -204,9 +206,22 @@ export class Transaction extends DBI {
 			this.notify('beforecommit');
 			this.#txn.commitSync();
 		} catch (err) {
-			throw this.#handleCommitError(err);
-		} finally {
+			const failure = this.#handleCommitError(err);
+			this.#notifyAfterFailedCommit();
+			throw failure;
+		}
+		this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+	}
+
+	/**
+	 * The commit's own error is the one a caller needs; the notification can fail only because the
+	 * database closed under the commit, so any failure here is dropped.
+	 */
+	#notifyAfterFailedCommit(): void {
+		try {
 			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+		} catch {
+			// intentionally dropped
 		}
 	}
 

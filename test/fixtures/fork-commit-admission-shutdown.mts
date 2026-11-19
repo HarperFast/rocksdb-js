@@ -1,7 +1,6 @@
-import { registryStatus, RocksDatabase, shutdown } from '../../src/index.ts';
+import { registryStatus, RocksDatabase, shutdown, Transaction } from '../../src/index.ts';
 import {
 	isTransactionCommitAdmissionDelayedForTesting,
-	NativeTransaction,
 	setTransactionCommitAdmissionDelayForTesting,
 } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
@@ -36,7 +35,7 @@ if (isMainThread) {
 		assert.equal(registryStatus().length, 0);
 		setTransactionCommitAdmissionDelayForTesting(0);
 		assert.deepEqual(await result, [
-			'Operation aborted: Database closed during transaction commit operation',
+			['ERR_ABORTED', 'Operation aborted: Database closed during transaction commit operation'],
 		]);
 	} finally {
 		setTransactionCommitAdmissionDelayForTesting(0);
@@ -49,17 +48,15 @@ if (isMainThread) {
 	if (workerData.cache === 'warm') {
 		await db.transaction((txn) => txn.putSync('warm', true));
 	}
-	// Call the native commit directly so the TS aftercommit notification on the
-	// closed database cannot replace its rejection with "Database not open".
-	const txn = new NativeTransaction(db.store.db);
+	const txn = new Transaction(db.store);
 	parentPort!.postMessage('ready');
 	await once(parentPort!, 'message');
 	try {
-		await new Promise<number | void>((resolve, reject) => txn.commit(resolve, reject));
+		await txn.commit();
 		throw new Error('commit unexpectedly succeeded after shutdown');
 	} catch (error) {
 		assert(error instanceof Error);
-		parentPort!.postMessage(error.message);
+		parentPort!.postMessage([(error as { code?: string }).code, error.message]);
 	}
 	parentPort!.close();
 }
