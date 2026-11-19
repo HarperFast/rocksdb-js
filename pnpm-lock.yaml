@@ -40,8 +40,8 @@ importers:
         specifier: 2.2.2
         version: 2.2.2
       lmdb:
-        specifier: 3.5.10
-        version: 3.5.10
+        specifier: 3.5.11
+        version: 3.5.11
       node-gyp:
         specifier: 13.1.0
         version: 13.1.0
@@ -202,38 +202,38 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@lmdb/lmdb-darwin-arm64@3.5.10':
-    resolution: {integrity: sha512-F69uuCB80CxlKXZIEwvNEIKF2DiWAXWt0EWbxgZKjpjXwAETvej3SJHiOYw2cmwaNeuvWqzaLRUxjGWesGOe7A==}
+  '@lmdb/lmdb-darwin-arm64@3.5.11':
+    resolution: {integrity: sha512-8+e3UduMy9VLY6dFV4eFZC7pfz9MbA3cDJqQ31IcekeUp97KYG+5CkMvpRA3vYFRcRch4px59JmmNsdCkP0upA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@lmdb/lmdb-darwin-x64@3.5.10':
-    resolution: {integrity: sha512-iEgQ8lgKGaspVBfLFiAZZ9sW2w5VZBOsn3PorP+FeWS+gkzSZzVT+EfF6J0Jd0QyyNUUaz+MfZnQcXOsFRn9yg==}
+  '@lmdb/lmdb-darwin-x64@3.5.11':
+    resolution: {integrity: sha512-0bj2iJwSqAsH0uU7gZqbHt6S0R2YP6DSXxQqBJiD0c1tQu+luiHDgg14bNYkfCz6npNx9sTxD1ncXLKwrUuWtA==}
     cpu: [x64]
     os: [darwin]
 
-  '@lmdb/lmdb-linux-arm64@3.5.10':
-    resolution: {integrity: sha512-QADLn0ILKIoUiD0HSAny+A2TZq3DNCELEpZ6YHDDI1J7TScWZkipNgvcxU5KI4OYF66BARhiNy3ZNvbTXRWAqA==}
+  '@lmdb/lmdb-linux-arm64@3.5.11':
+    resolution: {integrity: sha512-J91Pk0CvvH67zN3wNpju8Hf9nsNZ46lja70YYOabmauc2XbofKk89QMj1WZ5Vv/zMB2hAxylknqebiTROlqBXA==}
     cpu: [arm64]
     os: [linux]
 
-  '@lmdb/lmdb-linux-arm@3.5.10':
-    resolution: {integrity: sha512-OyXzjDZjpCn+0At2A9DfIWBgSXS+Ka0wO20P5o5yWcMfLuVVFhvYv44ToDcciecAkTPGCGt9l07iDacCNCDYqA==}
+  '@lmdb/lmdb-linux-arm@3.5.11':
+    resolution: {integrity: sha512-o8thad4v8S5pRV0/0CFBzsgvYnrlADLfMvKWoOFz5Ru5v0WiPFmO+9DZ09cbhl8p40owSLRCj/hvfvDIvKnqWQ==}
     cpu: [arm]
     os: [linux]
 
-  '@lmdb/lmdb-linux-x64@3.5.10':
-    resolution: {integrity: sha512-kr0gMtexNcyCRRBqHxFs8/MtHXCNJ7MJy4uU86MOvqSz36heK6pNdb3esTEN+qaJppsaC/heTPbQzWgw9blMIw==}
+  '@lmdb/lmdb-linux-x64@3.5.11':
+    resolution: {integrity: sha512-CzSR9ZCliHich4RdPpCnUZQFfk7GvHVV+mWGSaFTaVwe5rnbYF5Rm/L+uvBMFXNg6EoFj9eNGpU2aOc2TLpo5w==}
     cpu: [x64]
     os: [linux]
 
-  '@lmdb/lmdb-win32-arm64@3.5.10':
-    resolution: {integrity: sha512-lL3SVOMsrBZWhWEako1HRLQvL4HmXRlxksT9Q4osV1wKo/kObsEbXWeus2ifAQmHahOSPQJrUAFYJuxy4SX0NA==}
+  '@lmdb/lmdb-win32-arm64@3.5.11':
+    resolution: {integrity: sha512-f2XGku0H2JSz7WRVC2RTNPIDr0mBmmoCaBadYe2wBHUtWIBjd+sOjEHL4vtwRrWEIXrkvrvsP3DPRfnK5Xv8ow==}
     cpu: [arm64]
     os: [win32]
 
-  '@lmdb/lmdb-win32-x64@3.5.10':
-    resolution: {integrity: sha512-e01yANog2yev3U8d2T2wQwq873hwREG8Vt03EUTpD+lqp9NAgBY9xg1MolTvQlWiJv4w1l8v4EgXIFBnrgcI9w==}
+  '@lmdb/lmdb-win32-x64@3.5.11':
+    resolution: {integrity: sha512-h9LtmYO5cFH3zpilcoT/vjBhhrtMdVrINZqi4TzkDcGNwsJJNvGIVAL0nR1ce4fL0KcDMfj3uvgBMc5eGG84FQ==}
     cpu: [x64]
     os: [win32]
 
@@ -753,8 +753,8 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
-  '@tybys/wasm-util@0.10.4':
-    resolution: {integrity: sha512-W3c4gRigFS0T/Ma4qIYF3GDAc5AQdHb1yL5znJT1Zv1YaD9Kitx656wBjvr19qbiosmZT8lWDM5BEMynUqX65A==}
+  '@tybys/wasm-util@0.10.5':
+    resolution: {integrity: sha512-dOGOPxlaNV+G046mZzN+9C0dAcQZeSKcXiVaM0TYy/LM4ttTmgSBDxYfovcYI8Em3+eAbiAYpvWLOv8+ZVRJKA==}
 
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
@@ -1255,8 +1255,8 @@ packages:
     resolution: {integrity: sha512-WkUDrojuJs0xkgGf2udWxa3yGBRxPtxUkB79i6aCZLRgc7PM8fZe9TosfPDcvEpQZbuFASnHYmRLBLUbmLOIIA==}
     engines: {node: '>= 12.0.0'}
 
-  lmdb@3.5.10:
-    resolution: {integrity: sha512-BmqrG6y8xxmmNvEARFLy/6Nxst+Iy05l2XnfbLog+j/yRAEL3MBTmxj1a3R18h9PJ4gw7gEkSypC5iAUNwPWhQ==}
+  lmdb@3.5.11:
+    resolution: {integrity: sha512-Eb0mC3qpaLsIlxwNyiIqtVT8vd9Cws2xNA5mGq/hpgYgGO5unMSf9uK3MSRxxbDgh92JlESyiqN4wVY+1G173w==}
     hasBin: true
 
   magic-string@0.30.21:
@@ -1757,25 +1757,25 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.3
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@lmdb/lmdb-darwin-arm64@3.5.10':
+  '@lmdb/lmdb-darwin-arm64@3.5.11':
     optional: true
 
-  '@lmdb/lmdb-darwin-x64@3.5.10':
+  '@lmdb/lmdb-darwin-x64@3.5.11':
     optional: true
 
-  '@lmdb/lmdb-linux-arm64@3.5.10':
+  '@lmdb/lmdb-linux-arm64@3.5.11':
     optional: true
 
-  '@lmdb/lmdb-linux-arm@3.5.10':
+  '@lmdb/lmdb-linux-arm@3.5.11':
     optional: true
 
-  '@lmdb/lmdb-linux-x64@3.5.10':
+  '@lmdb/lmdb-linux-x64@3.5.11':
     optional: true
 
-  '@lmdb/lmdb-win32-arm64@3.5.10':
+  '@lmdb/lmdb-win32-arm64@3.5.11':
     optional: true
 
-  '@lmdb/lmdb-win32-x64@3.5.10':
+  '@lmdb/lmdb-win32-x64@3.5.11':
     optional: true
 
   '@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.7':
@@ -1800,7 +1800,7 @@ snapshots:
     dependencies:
       '@emnapi/core': 2.0.0-beta.2
       '@emnapi/runtime': 2.0.0-beta.2
-      '@tybys/wasm-util': 0.10.4
+      '@tybys/wasm-util': 0.10.5
     optional: true
 
   '@oxc-project/types@0.156.0': {}
@@ -2044,7 +2044,7 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
-  '@tybys/wasm-util@0.10.4':
+  '@tybys/wasm-util@0.10.5':
     dependencies:
       tslib: 2.9.1
     optional: true
@@ -2411,7 +2411,7 @@ snapshots:
       lightningcss-win32-arm64-msvc: 1.33.0
       lightningcss-win32-x64-msvc: 1.33.0
 
-  lmdb@3.5.10:
+  lmdb@3.5.11:
     dependencies:
       '@harperfast/extended-iterable': 1.0.5
       msgpackr: 1.12.1
@@ -2420,13 +2420,13 @@ snapshots:
       ordered-binary: 1.6.3
       weak-lru-cache: 1.2.3
     optionalDependencies:
-      '@lmdb/lmdb-darwin-arm64': 3.5.10
-      '@lmdb/lmdb-darwin-x64': 3.5.10
-      '@lmdb/lmdb-linux-arm': 3.5.10
-      '@lmdb/lmdb-linux-arm64': 3.5.10
-      '@lmdb/lmdb-linux-x64': 3.5.10
-      '@lmdb/lmdb-win32-arm64': 3.5.10
-      '@lmdb/lmdb-win32-x64': 3.5.10
+      '@lmdb/lmdb-darwin-arm64': 3.5.11
+      '@lmdb/lmdb-darwin-x64': 3.5.11
+      '@lmdb/lmdb-linux-arm': 3.5.11
+      '@lmdb/lmdb-linux-arm64': 3.5.11
+      '@lmdb/lmdb-linux-x64': 3.5.11
+      '@lmdb/lmdb-win32-arm64': 3.5.11
+      '@lmdb/lmdb-win32-x64': 3.5.11
 
   magic-string@0.30.21:
     dependencies:
