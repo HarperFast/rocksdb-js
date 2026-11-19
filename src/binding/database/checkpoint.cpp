@@ -47,12 +47,8 @@ struct AsyncCheckpointState final : BaseAsyncState<std::shared_ptr<DBHandle>> {
 		descriptor(std::move(descriptor)),
 		targetPath(std::move(targetPath)) {}
 
-	void releaseDescriptor() {
-		if (this->descriptor) {
-			DBKey key = descriptorKey(*this->descriptor);
-			this->descriptor.reset();
-			DBRegistry::PurgeIfUnreferenced(key);
-		}
+	void releaseDescriptor() noexcept {
+		releaseDescriptorPin(this->descriptor);
 	}
 
 	~AsyncCheckpointState() override {
@@ -125,6 +121,8 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		descriptor,
 		std::move(targetPath)
 	);
+	state->completed.store(true, std::memory_order_relaxed);
+	PendingAsyncState pending(env, state);
 
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
 	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
@@ -144,20 +142,22 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 			// so the database stays valid even if close() runs concurrently.
 			// isCancelled() lets us skip starting a checkpoint once close() has been
 			// requested.
-			if (!state->handle || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during checkpoint operation");
-			} else {
-				rocksdb::Checkpoint* checkpoint = nullptr;
-				rocksdb::Status s = rocksdb::Checkpoint::Create(state->descriptor->db.get(), &checkpoint);
-				if (s.ok()) {
-					std::unique_ptr<rocksdb::Checkpoint> guard(checkpoint);
-					// log_size_for_flush = 0 (default) always flushes the memtable so
-					// the checkpoint contains up-to-date data even when the WAL is
-					// disabled.
-					s = checkpoint->CreateCheckpoint(state->targetPath);
+			runAsyncExecute(state, [state] {
+				if (!state->handle || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during checkpoint operation");
+				} else {
+					rocksdb::Checkpoint* checkpoint = nullptr;
+					rocksdb::Status s = rocksdb::Checkpoint::Create(state->descriptor->db.get(), &checkpoint);
+					if (s.ok()) {
+						std::unique_ptr<rocksdb::Checkpoint> guard(checkpoint);
+						// log_size_for_flush = 0 (default) always flushes the memtable so
+						// the checkpoint contains up-to-date data even when the WAL is
+						// disabled.
+						s = checkpoint->CreateCheckpoint(state->targetPath);
+					}
+					state->status = s;
 				}
-				state->status = s;
-			}
+			});
 			// Release the in-flight claim made on the JS thread (the worker owns
 			// this decrement once the work was queued). Wake any finishClose()
 			// waiting for this copy before it tears down descriptor->db. Mirrors
@@ -176,15 +176,17 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 			}
 			state->releaseDescriptor();
 			if (status != napi_cancelled) {
-				if (state->status.ok()) {
-					napi_value undefined;
-					NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
-					state->callResolve(undefined);
-				} else {
-					napi_value error;
-					rocksdb_js::createRocksDBError(env, state->status, "Create checkpoint failed", error);
-					state->callReject(error);
-				}
+				runAsyncComplete(env, state, [env, state] {
+					if (state->status.ok()) {
+						napi_value undefined;
+						NAPI_STATUS_THROWS_VOID(::napi_get_undefined(env, &undefined));
+						state->callResolve(undefined);
+					} else {
+						napi_value error;
+						rocksdb_js::createRocksDBError(env, state->status, "Create checkpoint failed", error);
+						state->callReject(error);
+					}
+				});
 			}
 			delete state;
 		},
@@ -192,6 +194,8 @@ napi_value Database::CreateCheckpoint(napi_env env, napi_callback_info info) {
 		&state->asyncWork
 	));
 
+	pending.release();
+	state->completed.store(false, std::memory_order_relaxed);
 	if (!admitAsyncWorkOrReject(env, (*dbHandle).get(), state, "Database is closing")) {
 		NAPI_RETURN_UNDEFINED();
 	}

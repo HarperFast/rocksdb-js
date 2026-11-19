@@ -1182,7 +1182,11 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
  * used by tests to verify that releasing a frozen log's mapping buffer unmaps
  * the underlying mapping rather than leaving it retained.
  */
-export const transactionLogMapCount: () => number = binding.transactionLogMapCount;
+export const getTransactionLogMapCount: () => number = binding.getTransactionLogMapCount;
+
+/** Process-wide count of failed mapping-buffer creates (test probe). */
+export const getTransactionLogMapBufferCreateFailures: () => number =
+	binding.getTransactionLogMapBufferCreateFailures;
 
 /**
  * Whether this runtime can back transaction-log memory maps with a SharedArrayBuffer: the shared
@@ -1275,6 +1279,14 @@ export const setTransactionCommitAdmissionDelayForTesting: (delayMs: number) => 
 
 export const isTransactionCommitAdmissionDelayedForTesting: () => boolean =
 	binding.isTransactionCommitAdmissionDelayedForTesting;
+
+/**
+ * Test-only: makes the next `count` async operations reaching `stage` throw `std::bad_alloc` —
+ * `1` while constructing the async state, `2` in the worker's execute, `3` in the completion, `4` in
+ * the registry purge's close-claim allocation.
+ */
+export const forceAsyncExceptionForTesting: (stage: 0 | 1 | 2 | 3 | 4, count: number) => void =
+	binding.forceAsyncExceptionForTesting;
 
 /** Delays one selected watchdog join in the concurrent-shutdown regression test. */
 export const setWriteBufferManagerJoinDelayForTesting: (

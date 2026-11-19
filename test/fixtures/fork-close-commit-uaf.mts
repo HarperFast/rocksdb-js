@@ -8,7 +8,7 @@
  * 1. M opens the DB path (descriptor refcount = 1).
  * 2. M signals W "nextRound"; W opens the same path (refcount = 2).
  * 3. W queues an async commit, then immediately closes W's handle (refcount → 1).
- *    T->dbHandle->descriptor is now null; PATH B's transactionRemove is skipped.
+ *    T->dbHandle->descriptor is now null; PATH B leaves the registry through its link.
  * 4. W signals M "committing"; M closes M's handle (refcount → 0) →
  *    DBDescriptor::close() → T->close() on M's JS thread (PATH A).
  * 5. PATH A calls waitForAsyncWorkCompletion(), unblocking when the execute

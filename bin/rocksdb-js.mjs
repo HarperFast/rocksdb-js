@@ -1334,8 +1334,9 @@ async function runREPL() {
 
 async function main() {
 	// `rocksdb-js db query | head` closes the pipe early; that is not a failure.
+	// macOS stdio sockets can report ENOTCONN instead of EPIPE.
 	stdout.on('error', (error) => {
-		if (error.code !== 'EPIPE') throw error;
+		if (error.code !== 'EPIPE' && error.code !== 'ENOTCONN') throw error;
 		let exitCode = process.exitCode ?? 0;
 		try {
 			closeAllDatabases();

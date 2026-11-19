@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const fixturePath = join(__dirname, 'fixtures', 'fork-config-atomic.mts');
+const openSnapshotFixturePath = join(__dirname, 'fixtures', 'fork-config-open-snapshot.mts');
 const MiB = 1024 * 1024;
 const lifecycleError = 'RangeError: Lifecycle wait seconds must be a positive integer';
 
@@ -72,4 +73,37 @@ describe('config()', () => {
 			flushPolicy: 'largest',
 		});
 	}, 90_000);
+
+	it.each(['default', 'cost-to-cache'])(
+		'should give a first open every setting from one config() call (%s)',
+		(mode) => {
+			const basePath = generateDBPath();
+			const openCount = 20;
+			try {
+				const child = spawnSync(
+					process.execPath,
+					[openSnapshotFixturePath, basePath, String(openCount), mode],
+					{
+						encoding: 'utf8',
+						timeout: 60_000,
+					}
+				);
+				expect(child.status, child.stderr).toBe(0);
+				const line = /^RESULT (.*)$/m.exec(child.stdout);
+				expect(line, child.stdout).not.toBeNull();
+				const result = JSON.parse(line![1]);
+				expect(result.flips).toBeGreaterThan(0);
+				expect(result.mixed).toEqual([]);
+				expect(result.pinned).toEqual({ A: true, B: true });
+				expect(result.seen.A).toBeGreaterThan(0);
+				expect(result.seen.B).toBeGreaterThan(0);
+				expect(result.seen.A + result.seen.B).toBe(result.opens);
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					rmSync(basePath, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
+				}
+			}
+		},
+		90_000
+	);
 });
