@@ -2,7 +2,6 @@
 #define __DB_HANDLE_H__
 
 #include <atomic>
-#include <cassert>
 #include <memory>
 #include <vector>
 #include <utility>
@@ -11,6 +10,7 @@
 #include <thread>
 #include <mutex>
 #include <node_api.h>
+#include "core/assert.h"
 #include "rocksdb/db.h"
 #include "database/db_descriptor.h"
 #include "options/db_options.h"
@@ -45,11 +45,11 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	}
 
 	/**
-	 * Debug builds only. Nothing defines `NDEBUG`, so a bare `assert` would abort release builds too.
+	 * Debug builds only, so release builds pay nothing for the thread-id read on this path.
 	 */
 	void assertOwnerThread() const {
 #ifdef DEBUG
-		assert(std::this_thread::get_id() == this->ownerThreadId && "DBHandle::descriptor used off its owner thread");
+		ROCKSDB_JS_ASSERT(std::this_thread::get_id() == this->ownerThreadId, "DBHandle::descriptor used off its owner thread");
 #endif
 	}
 
