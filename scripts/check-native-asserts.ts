@@ -87,6 +87,23 @@ function collect(dir: string, files: string[]): void {
 	}
 }
 
+/** Joins backslash-newline splices as the compiler does before tokenizing; `origin` maps each kept character back. */
+function splice(source: string): { text: string; origin: number[] } {
+	const kept: string[] = [];
+	const origin: number[] = [];
+	for (let i = 0; i < source.length; i++) {
+		const joined =
+			source[i] === '\\' && source.startsWith(source[i + 1] === '\r' ? '\r\n' : '\n', i + 1);
+		if (joined) {
+			i += source[i + 1] === '\r' ? 2 : 1;
+		} else {
+			kept.push(source[i]);
+			origin.push(i);
+		}
+	}
+	return { text: kept.join(''), origin };
+}
+
 function lineAt(source: string, offset: number): number {
 	let line = 1;
 	for (let i = 0; i < offset; i++) {
@@ -104,11 +121,12 @@ const violations: string[] = [];
 for (const file of files) {
 	const source = readFileSync(file, 'utf-8');
 	const lines = source.split(/\r?\n/);
+	const { text, origin } = splice(source);
 	const report = (offset: number) => {
-		const line = lineAt(source, offset);
+		const line = lineAt(source, origin[offset]);
 		violations.push(`${relative(repoRoot, file)}:${line}: ${lines[line - 1].trim()}`);
 	};
-	const { code, directives } = mask(source);
+	const { code, directives } = mask(text);
 	for (const found of directives.matchAll(assertInclude)) {
 		report(found.index);
 	}
