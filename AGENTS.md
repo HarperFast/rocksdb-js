@@ -243,7 +243,9 @@ is still alive. The operation releases only after the transaction's
 async-work registration is cleared — legacy from its libuv execute thread, the
 lane modes at the end of the commit stage. This makes direct shutdown wait for
 the native commit rather than destroy RocksDB after the transaction handle's
-bounded drain expires. The recheck is not redundant with
+bounded drain expires. The JS completion that later closes the committed handle takes a fresh
+operation for that `close()` (`closeSettledHandle`), because `close()` leaves the closables before
+deleting the RocksDB transaction; on a closing descriptor it leaves the handle to the sweep. The recheck is not redundant with
 `commitCompletionsClosed`, which `finishClose()` sets only after it has passed
 the drain gate and stopped both lanes; a commit that registered its completion
 just before that would otherwise reach `CommitWorker::enqueue` on a stopped
@@ -272,6 +274,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `commitThreads`), `2` = experimental two-lane txnlog→commit pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
+- `ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH` - Child-process test only: park a single transaction's
+  native close until its descriptor reaches the operation drain, capturing the count before
+  releasing the latch. The regression asserts that close still owns the sole operation, without
+  depending on shutdown duration. Snapshotted at module initialization; unset in production.
 - `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` / `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only delays
   immediately before a native transaction commit (while its async work and descriptor operation
   remain registered, widening close-vs-execute race windows) and before a transaction's
@@ -419,7 +425,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   process
 - `ROCKSDB_JS_MEMORY_MAP_BUFFER_DELAY_MS` - Test-only: delay inside a transaction log's
   `_getMemoryMapOfFile()` after it takes its mapping reference and before it creates the JS buffer, so
-  a worker `terminate()` makes that create fail (`test/fixtures/fork-memory-map-buffer-terminate.mts`).
+  a worker `terminate()` makes that create fail (`test/fixtures/fork-memory-map-buffer-terminate.mts`). The fixture proves the create failed through the read-only
+  `getTransactionLogMapBufferCreateFailures()` counter, not by timing.
   Snapshotted in `initializeTestSeams()`, so it must be set in the environment that starts the
   process
 - `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` - How long `open()` of a column-family name whose
@@ -1247,9 +1254,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     not `uv_timer_t`, for invariant 12's reason.
 
     Three constraints on that thread, each of which has a failure mode:
-    - **Lock order is `databasesMutex -> writeBufferManagerMutex -> watchdogMutex`**, because
-      `DBRegistry::OpenDB` holds `databasesMutex` across `DBDescriptor::open`, which calls
-      `getWriteBufferManager()`. The watchdog drops `watchdogMutex` before every sample and only
+    - **Lock order is `databasesMutex -> columnsMutex -> writeBufferManagerMutex -> watchdogMutex`**,
+      because `DBRegistry::OpenDB` holds `databasesMutex` across `DBDescriptor::open`, which calls
+      `DBSettings::snapshotForOpen()`, and holds a descriptor's `columnsMutex` while it calls
+      `DBSettings::snapshotForColumnFamily()` for a new column family. The watchdog drops `watchdogMutex` before every sample and only
       try-locks the registry and column inventories, so there is no cycle. `ensure` and `disable`
       only arm or park it because they run under higher-order locks and its stderr write may block;
       joining is `DBStats::joinWriteBufferManagerWatchdog()`'s final-teardown job alone. `DBStats::Init()`

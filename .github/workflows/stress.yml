@@ -18,8 +18,12 @@ on:
           - 'essential'
 
 concurrency:
-  cancel-in-progress: true
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # cancel-in-progress only affects a RUNNING run; GitHub also drops an older QUEUED run when a
+  # newer one joins its group. PRs share one group per ref so a new commit supersedes the old run;
+  # push/dispatch get a group unique to the run so quick successive merges to main never cancel
+  # each other's results.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
 
 jobs:
   stress:

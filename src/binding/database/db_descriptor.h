@@ -45,11 +45,14 @@ struct UserSharedBufferFinalizeData;
 /**
  * `attachedWriteBufferManager` must be the manager the database this column family belongs to
  * holds (null when none), never the current `DBSettings` value — see
- * `resolveMaxWriteBufferSizeToMaintain` for why they diverge.
+ * `resolveMaxWriteBufferSizeToMaintain` for why they diverge. `writeBufferManagerBudget` is that
+ * manager's budget, captured with it.
  */
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
 	const rocksdb::WriteBufferManager* attachedWriteBufferManager,
+	size_t writeBufferManagerBudget,
+	std::shared_ptr<rocksdb::Cache> blockCache,
 	rocksdb::ColumnFamilyOptions cfOptions = {}
 );
 
@@ -255,6 +258,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 
 	/** An optimistic database opened with `occValidation: 'parallel'`, which validates commits off the write thread. */
 	bool parallelValidation = false;
+
+	/** The `occLockBuckets` this optimistic database opened with (0 otherwise); read only by the open-snapshot probe. */
+	uint32_t occLockBuckets = 0;
 
 	/**
 	 * Whether the database was opened in readonly mode via
@@ -670,7 +676,8 @@ private:
 		std::shared_ptr<rocksdb::DB> db,
 		rocksdb::WriteBufferManager* attachedWriteBufferManager,
 		std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
-		std::shared_ptr<rocksdb::Statistics> statistics
+		std::shared_ptr<rocksdb::Statistics> statistics,
+		uint32_t commitThreads
 	);
 
 public:

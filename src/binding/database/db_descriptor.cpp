@@ -194,17 +194,14 @@ constexpr uint64_t kArenaBlockAlignment = 4 * 1024;
  * this database holds, read when the family opens (src/binding/database/DESIGN.md, "WriteBufferManager
  * flush policy and arena size").
  */
-static size_t resolveArenaBlockSize(
-	const DBOptions& options,
-	const rocksdb::WriteBufferManager* attachedWriteBufferManager
-) {
+static size_t resolveArenaBlockSize(const DBOptions& options, size_t writeBufferManagerBudget) {
 	if (options.arenaBlockSize > 0) {
 		return static_cast<size_t>(options.arenaBlockSize);
 	}
-	if (!attachedWriteBufferManager) {
+	if (writeBufferManagerBudget == 0) {
 		return 0;
 	}
-	const uint64_t scaled = attachedWriteBufferManager->buffer_size() / kArenaBudgetDivisor;
+	const uint64_t scaled = writeBufferManagerBudget / kArenaBudgetDivisor;
 	const uint64_t aligned =
 		(std::max(scaled, kMinArenaBlockSize) + kArenaBlockAlignment - 1) / kArenaBlockAlignment * kArenaBlockAlignment;
 	return static_cast<size_t>(std::min({ aligned, kMaxArenaBlockSize, options.writeBufferSize / 8 }));
@@ -228,13 +225,15 @@ public:
 rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	const DBOptions& options,
 	const rocksdb::WriteBufferManager* attachedWriteBufferManager,
+	size_t writeBufferManagerBudget,
+	std::shared_ptr<rocksdb::Cache> blockCache,
 	rocksdb::ColumnFamilyOptions cfOptions
 ) {
 	rocksdb::BlockBasedTableOptions tableOptions;
 	if (options.noBlockCache) {
 		tableOptions.no_block_cache = true;
 	} else {
-		tableOptions.block_cache = DBSettings::getInstance().getBlockCache();
+		tableOptions.block_cache = std::move(blockCache);
 	}
 	if (options.bloomFilterBitsPerKey > 0) {
 		tableOptions.filter_policy.reset(rocksdb::NewBloomFilterPolicy(options.bloomFilterBitsPerKey));
@@ -244,7 +243,7 @@ rocksdb::ColumnFamilyOptions buildColumnFamilyOptions(
 	cfOptions.min_blob_size = 2048;
 	cfOptions.enable_blob_garbage_collection = true;
 	cfOptions.write_buffer_size = static_cast<size_t>(options.writeBufferSize);
-	cfOptions.arena_block_size = resolveArenaBlockSize(options, attachedWriteBufferManager);
+	cfOptions.arena_block_size = resolveArenaBlockSize(options, writeBufferManagerBudget);
 	cfOptions.max_write_buffer_number = options.maxWriteBufferNumber;
 	cfOptions.max_write_buffer_size_to_maintain =
 		resolveMaxWriteBufferSizeToMaintain(options, attachedWriteBufferManager != nullptr);
@@ -529,7 +528,8 @@ DBDescriptor::DBDescriptor(
 	std::shared_ptr<rocksdb::DB> db,
 	rocksdb::WriteBufferManager* attachedWriteBufferManager,
 	std::unordered_map<std::string, std::shared_ptr<ColumnFamilyDescriptor>>&& columns,
-	std::shared_ptr<rocksdb::Statistics> statistics
+	std::shared_ptr<rocksdb::Statistics> statistics,
+	uint32_t commitThreads
 ) :
 	path(path),
 	identityPath(identityPath),
@@ -543,7 +543,7 @@ DBDescriptor::DBDescriptor(
 	columns(std::move(columns)),
 	retiringCondition(std::make_shared<std::condition_variable>()),
 	statistics(statistics),
-	commitWorker("rocksdb-commit", DBSettings::getInstance().getCommitThreads()) {
+	commitWorker("rocksdb-commit", commitThreads) {
 	// Resolve the debounce window here (JS thread, open path) so the emit path on
 	// a RocksDB background thread reads a plain field instead of calling ::getenv.
 	this->writeStallDebounceWindowMs = writeStallDebounceMs();
@@ -672,6 +672,17 @@ void DBDescriptor::finishClose(bool destroying) {
 		// counted here at all -- it is awaited by the closables sweep below,
 		// and by then the per-handle token armed above has already cancelled it.
 		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
+		auto& closeLatch = txnCloseDrainLatch();
+		if (closeLatch.descriptor.load(std::memory_order_acquire) == this) {
+			const int operations = static_cast<int>(this->operationsInFlight.load());
+			closeLatch.operations.store(operations, std::memory_order_release);
+			closeLatch.operations.notify_all();
+			// Keep guard-removal tests from using freed RocksDB memory. Their
+			// assertion uses the count captured above, not shutdown's duration.
+			if (operations == 0) {
+				closeLatch.finished.wait(false, std::memory_order_acquire);
+			}
+		}
 		uint32_t current;
 		while ((current = this->operationsInFlight.load()) != 0) {
 			this->operationsInFlight.wait(current);
@@ -1593,6 +1604,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	const std::string& path, const std::string& identityPath, const DBOptions& options
 ) {
 	bool parallelValidation = false;
+	uint32_t occLockBuckets = 0;
 	std::string name = options.name.empty() ? "default" : options.name;
 	DEBUG_LOG("DBDescriptor::open Opening \"%s\" (column family: \"%s\", read-only: %s)\n", path.c_str(), name.c_str(), options.readOnly ? "true" : "false");
 
@@ -1601,7 +1613,7 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	// header comment for why this cannot live inside Register).
 	TransactionLogStoreRegistry::EnsureWritableRegistrationSafe(identityPath, options.readOnly);
 
-	DBSettings& settings = DBSettings::getInstance();
+	const OpenSettings settings = DBSettings::getInstance().snapshotForOpen(!options.noBlockCache);
 
 	// set the database options
 	rocksdb::Options dbOptions;
@@ -1618,10 +1630,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	// memory is bounded across all DBs in this process. With cost_to_cache,
 	// active memtables share the block cache pool — the cache shrinks during
 	// write bursts and reclaims room as memtables flush.
-	rocksdb::WriteBufferManager* attachedWriteBufferManager = nullptr;
-	if (auto wbm = settings.getWriteBufferManager()) {
-		dbOptions.write_buffer_manager = wbm;
-		attachedWriteBufferManager = wbm.get();
+	rocksdb::WriteBufferManager* attachedWriteBufferManager = settings.writeBufferManager.get();
+	if (attachedWriteBufferManager) {
+		dbOptions.write_buffer_manager = settings.writeBufferManager;
 	}
 	dbOptions.IncreaseParallelism(options.parallelismThreads);
 	// Bound how many table files RocksDB holds open: with the RocksDB default
@@ -1649,7 +1660,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 
 	// Base options shared by every column family. Compression is applied per CF
 	// below so opening one family cannot restamp another's algorithm.
-	auto cfOptions = buildColumnFamilyOptions(options, attachedWriteBufferManager);
+	auto cfOptions = buildColumnFamilyOptions(
+		options, attachedWriteBufferManager, settings.writeBufferManagerBudget, settings.blockCache
+	);
 
 	// Shared listener state, created BEFORE DB::Open so a background error fired
 	// during open has a valid, race-free target (the descriptor does not exist
@@ -1857,9 +1870,10 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 		db = std::shared_ptr<rocksdb::DB>(rdb, DBDeleter{});
 	} else {
 		rocksdb::OptimisticTransactionDBOptions occOptions;
-		occOptions.occ_lock_buckets = settings.getOccLockBucketCount();
-		occOptions.validate_policy = settings.getOccValidateSerial() ? rocksdb::OccValidationPolicy::kValidateSerial
-																	 : rocksdb::OccValidationPolicy::kValidateParallel;
+		occOptions.occ_lock_buckets = settings.occLockBucketCount;
+		occOptions.validate_policy = settings.occValidateSerial ? rocksdb::OccValidationPolicy::kValidateSerial
+																: rocksdb::OccValidationPolicy::kValidateParallel;
+		occLockBuckets = settings.occLockBucketCount;
 		parallelValidation = occOptions.validate_policy == rocksdb::OccValidationPolicy::kValidateParallel;
 		rocksdb::OptimisticTransactionDB* rdb;
 		DEBUG_LOG("DBDescriptor::open Opening optimistic transaction db for \"%s\"\n", path.c_str());
@@ -1914,8 +1928,9 @@ std::shared_ptr<DBDescriptor> DBDescriptor::open(
 	);
 
 	DEBUG_LOG("DBDescriptor::open Creating DBDescriptor for \"%s\"\n", path.c_str());
-	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, identityPath, options, cfOptions, db, attachedWriteBufferManager, std::move(columns), dbOptions.statistics));
+	auto descriptor = std::shared_ptr<DBDescriptor>(new DBDescriptor(path, identityPath, options, cfOptions, db, attachedWriteBufferManager, std::move(columns), dbOptions.statistics, settings.commitThreads));
 	descriptor->parallelValidation = parallelValidation;
+	descriptor->occLockBuckets = occLockBuckets;
 	descriptor->secondaryLockToken = secondaryLock.token;
 	secondaryLock.token = 0;
 
@@ -1992,6 +2007,13 @@ void DBDescriptor::collectTransactions(std::vector<std::shared_ptr<TransactionHa
  * DBHandle::close().
  */
 void DBDescriptor::closeTransactionsByEnv(napi_env env) {
+	// close() detaches before deleting the native transaction. Publish before
+	// checking closing so the drain waits for us or the sweep owns the close.
+	OperationGuard operation(shared_from_this());
+	if (this->isClosing()) {
+		return;
+	}
+
 	// Collect matches under the mutex, close outside it: close() calls
 	// transactionRemove(), which re-takes txnsMutex, and may block in
 	// waitForAsyncWorkCompletion() draining an execute still running on the
