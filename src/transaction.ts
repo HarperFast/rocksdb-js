@@ -186,7 +186,8 @@ export class Transaction extends DBI {
 	 * was detected. The caller should retry the transaction body immediately.
 	 *
 	 * If the database closes after the commit landed, the `aftercommit` notification is skipped with
-	 * a process-wide `log.warn` and the commit still succeeds.
+	 * a process-wide `log.warn` and the commit still succeeds. A `RETRY_NOW` result did not commit, so a
+	 * closed database still rejects it.
 	 */
 	async commit(): Promise<typeof RETRY_NOW | void> {
 		let result: number | void;
@@ -208,8 +209,7 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * Commit the transaction synchronously. Closing of the database after the commit landed is
-	 * handled as in {@link Transaction.commit}.
+	 * Commit the transaction synchronously.
 	 */
 	commitSync(): void {
 		try {
@@ -223,10 +223,6 @@ export class Transaction extends DBI {
 		this.#notifyAfterDurableCommit();
 	}
 
-	/**
-	 * The commit has landed, so a notification that fails because the database closed meanwhile
-	 * is a `log.warn`, not a failed commit.
-	 */
 	#notifyAfterDurableCommit(): void {
 		try {
 			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
