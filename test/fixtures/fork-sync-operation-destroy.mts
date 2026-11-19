@@ -3,7 +3,7 @@ import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 
 // Holds native getCount() calls open in options getters, which run after the
-// call's admission. Modes: destroy, destroy-holder-last, reentrant, callback-close.
+// call's admission.
 
 const DESTROY = 0;
 const HOLDER = 1;
