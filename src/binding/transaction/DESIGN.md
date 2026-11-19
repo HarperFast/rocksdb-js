@@ -73,3 +73,18 @@ The old completion did a check-then-store (`if (state == Committing) state = Pen
 Reads are relaxed. They gate operations on the owning thread and order no data, and `state` is read on every get, put and remove, where a `seq_cst` access would add a barrier. A check that must not run past a concurrent abort needs a `transition()`, not a `load()`. The cell does not stop `close()` from deleting `txn` under an idle `abort()` on the owning thread: that is the admission and drain work tracked by HarperFast/rocksdb-js#784. A `commitSync()` registers with the transaction's async-work drain, as an async commit does, so a foreign `close()` waits for it; and it holds a descriptor operation through its own `close()` of the committed handle, because that `close()` leaves the closables before deleting `txn`, after which `finishClose()`'s sweep would no longer wait for it (`test/fixtures/fork-commit-sync-shutdown.mts`). An async commit's completion runs after its operation was released, and cannot hold one into JavaScript that may close the database on the same thread, so `closeSettledHandle()` takes a fresh operation for the `close()` alone and leaves a closing descriptor's handle to the sweep; the commit then resolves with its handle still registered (`test/fixtures/fork-commit-async-shutdown.mts`). The env cleanup hook's `closeTransactionsByEnv()` likewise holds an operation across its reaper pass, checking `isClosing()` after registration so a shutdown that won owns the sweep. The commit thread's env-gone fallback does the same: when no commit thread could start, the lane runs it inline on the JS thread, which `finishClose()` does not join. The descriptor is passed as a raw pointer its caller keeps alive, so a commit thread never takes the strong reference that would make a racing last-handle close skip its purge.
 
 See [lifecycle cost accounting](../../../docs/performance/transaction-state.md) for per-path CAS counts and the reproducible state-only measurement.
+
+# Registry removal
+
+`close()` removes the transaction from `DBDescriptor::transactions` whatever state its `DBHandle` is
+in: the registry holds a strong reference, so a transaction aborted, committed or collected after its
+owner closed the handle otherwise stayed registered until the whole database closed. It cannot
+reach the descriptor through `dbHandle->descriptor`, which the owner's handle close resets, nor
+through `owningDescriptor.lock()`: that reference can make a racing last-handle close skip its purge,
+and `close()` runs on commit-lane and libuv threads where retrying the purge would make
+`finishClose()` join or wait for the thread running it. It uses `TransactionRegistryLink` instead, a
+raw pointer whose mutex is `txnsMutex`; `~DBDescriptor` clears it under that lock before anything
+else. `~TransactionHandle` can run under `txnsMutex` (`transactions.clear()`), so `close()` skips
+removal when `weak_from_this()` is empty; the registry cannot be holding it then. Covered by
+`test/transactions.test.ts`, `test/transaction-orphan-gc.test.ts` and the
+`async-get-handle-closed` mode of `test/fixtures/transaction-orphan-dependents.mts`.

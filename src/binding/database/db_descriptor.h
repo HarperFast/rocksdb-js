@@ -200,6 +200,26 @@ private:
 struct DBEventListenerState;
 
 /**
+ * How a transaction leaves the registry it was added to without holding a
+ * `shared_ptr<DBDescriptor>`, which would make a racing last-handle close skip
+ * its purge (`use_count() > 1`). `TransactionHandle::close()` cannot retry that
+ * purge: it runs on commit-lane and libuv threads that `finishClose()` joins or
+ * waits for. `mutex` is the descriptor's `txnsMutex`, so removal takes no extra
+ * lock; `~DBDescriptor` clears `descriptor` under it before anything else.
+ */
+struct TransactionRegistryLink final {
+	explicit TransactionRegistryLink(DBDescriptor* descriptor) : descriptor(descriptor) {}
+
+	void remove(const std::shared_ptr<TransactionHandle>& txnHandle);
+	void detach();
+
+	std::mutex mutex;
+
+private:
+	DBDescriptor* descriptor;
+};
+
+/**
  * Descriptor for a RocksDB database, its column families, and any in-flight
  * transactions. The DBRegistry uses this to track active databases and reuse
  * RocksDB instances.
@@ -392,12 +412,15 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 */
 	std::atomic<uint64_t> nextTransactionId{ 1 };
 
+	const std::shared_ptr<TransactionRegistryLink> transactionRegistryLink =
+		std::make_shared<TransactionRegistryLink>(this);
+
 	/**
 	 * Mutex to protect the transactions map and closables set. When both are
 	 * held, DBRegistry::databasesMutex precedes txnsMutex; no txnsMutex holder
 	 * acquires the registry mutex.
 	 */
-	std::mutex txnsMutex;
+	std::mutex& txnsMutex = transactionRegistryLink->mutex;
 
 	/**
 	 * Set of closables to be closed when the descriptor is closed.
@@ -789,16 +812,16 @@ public:
 
 	void transactionAdd(std::shared_ptr<TransactionHandle> txnHandle);
 	std::shared_ptr<TransactionHandle> transactionGet(uint64_t id);
-	void transactionRemove(std::shared_ptr<TransactionHandle> txnHandle);
+	void transactionRemoveLocked(const std::shared_ptr<TransactionHandle>& txnHandle);
 	uint64_t transactionGetNextId();
 
 	/**
 	 * Closes every registered transaction created on `env` (`ownerEnv`), from
-	 * that env's module cleanup hook. Pending transactions are only
-	 * removed from the registry by commit/abort, so a worker env that dies with
-	 * one still open leaks the TransactionHandle — holding a live RocksDB
+	 * that env's module cleanup hook. A pending transaction leaves the registry
+	 * only when it is closed, so a worker env that dies with one still open
+	 * would leak the TransactionHandle — holding a live RocksDB
 	 * transaction/snapshot — into this process-global descriptor, and the last
-	 * env's Shutdown later walks it with a dangling env
+	 * env's Shutdown would later walk it with a dangling env
 	 * (HarperFast/rocksdb-js#741).
 	 *
 	 * Deliberately env-scoped, NOT part of DBHandle::close(): a user-called

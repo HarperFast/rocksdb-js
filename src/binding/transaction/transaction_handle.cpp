@@ -38,6 +38,7 @@ inline void delayTransactionStagingForTesting() {
 TransactionHandle::TransactionHandle(napi_env env, std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
 	owningDescriptor(dbHandle->descriptor),
+	registryLink(dbHandle->descriptor->transactionRegistryLink),
 	ownerEnv(env),
 	disableSnapshot(disableSnapshot),
 	coordinatedRetry(false),
@@ -511,10 +512,6 @@ void TransactionHandle::closeOrphanIfUnused() {
 
 	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%llu, state=%d)\n",
 		this, (unsigned long long)this->id, static_cast<int>(this->state.load()));
-	// transactionRemove() can drop the registry's last reference. Keep this
-	// object alive until close() returns even when the final dependent releases
-	// on a worker thread.
-	auto keepAlive = this->shared_from_this();
 	this->close();
 }
 
@@ -532,8 +529,12 @@ void TransactionHandle::close() {
 	}
 	this->closeIterators();
 
-	if (this->dbHandle && this->dbHandle->descriptor) {
-		this->dbHandle->descriptor->transactionRemove(shared_from_this());
+	// Keeps this alive through close() once the registry's reference is gone.
+	// Empty in ~TransactionHandle, which can run under txnsMutex; the registry
+	// held no reference then anyway.
+	const std::shared_ptr<TransactionHandle> self = this->weak_from_this().lock();
+	if (self) {
+		this->registryLink->remove(self);
 	}
 
 	if (!this->txn) {
@@ -627,11 +628,6 @@ void TransactionHandle::close() {
 	// close is safe from any thread and any teardown phase — a weak napi_ref
 	// held here and still alive at worker-env teardown crashes Node's
 	// second-pass finalizer drain (HarperFast/rocksdb-js#741).
-
-	// the transaction should already be removed from the registry when
-	// committing/aborting  so we don't need to call transactionRemove here to
-	// avoid race conditions and bad_weak_ptr errors
-	DEBUG_LOG("%p TransactionHandle::close Transaction should already be removed from registry\n", this);
 
 	this->dbHandle.reset();
 	if (latched) {

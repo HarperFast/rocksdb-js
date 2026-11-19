@@ -1037,7 +1037,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 
 18. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
-    `DBDescriptor`, and only commit/abort call `transactionRemove` (the JS wrap finalizer drops
+    `DBDescriptor`, and only `TransactionHandle::close()` removes it (the JS wrap finalizer drops
     the JS-side ref and, per invariant 13, `onWrapperCollected()` reaps a transaction whose
     _wrapper_ was GC'd while its env is still alive). That finalizer path does not cover the
     distinct case this invariant addresses: a worker **env that exits with a transaction still
@@ -1052,7 +1052,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     `DBRegistry::CloseTransactionsByEnv` → `DBDescriptor::closeTransactionsByEnv`, wired into the
     module's per-env cleanup hook (binding.cpp) so it runs on the dying env's own thread while the
     env is still valid. Both reap paths funnel through the same idempotent `close()`
-    (`closed` gate) + idempotent `transactionRemove`, so a handle reachable by both the finalizer
+    (`closed` gate), which leaves the registry, so a handle reachable by both the finalizer
     and this hook is closed exactly once.
 
     **Do not "simplify" this into `DBHandle::close()`.** A user-called `db.close()` runs with live
