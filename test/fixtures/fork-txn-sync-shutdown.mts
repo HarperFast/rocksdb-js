@@ -57,8 +57,7 @@ if (isMainThread) {
 		assert.equal(registryStatus().length, 0);
 		assert(!isPaused(), 'shutdown did not wait for the call');
 		assert(elapsed >= PAUSE_MS / 2, `shutdown returned after ${elapsed}ms, during the call`);
-		// An iterator's setup and a count scan check again after the pause: the transaction's close has
-		// begun and the database is closing, so each is refused instead of reading a closed iterator.
+		// Range setup and the count scan recheck closing after the pause.
 		const expected =
 			operation === 'getRange'
 				? ['error', 'Database not open']

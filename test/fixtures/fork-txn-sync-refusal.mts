@@ -154,7 +154,6 @@ if (mode === 'reentrant') {
 		if (mode === 'closing') {
 			worker.postMessage('run');
 		}
-		// The transaction is closed, or its close has begun, so each call reports it as closed.
 		const closed = 'Transaction is closed';
 		assert.deepEqual(await result, [
 			{

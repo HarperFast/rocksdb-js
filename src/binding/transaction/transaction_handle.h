@@ -670,7 +670,6 @@ public:
 	TransactionOperation(const TransactionOperation&) = delete;
 	TransactionOperation& operator=(const TransactionOperation&) = delete;
 
-	/** False once the transaction is closed or a close of it has begun. */
 	bool admitted() const { return this->admittedCall; }
 
 	/**
