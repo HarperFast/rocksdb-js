@@ -1391,9 +1391,16 @@ async function main() {
 			process.exitCode = error.exitCode ?? 1;
 		}
 	} finally {
-		r?.close();
-		closeAllDatabases();
-		rl?.close();
+		try {
+			r?.close();
+			closeAllDatabases();
+		} catch (closeError) {
+			// An escaping throw here is an unhandled rejection: no JSON, raw trace.
+			reportError(closeError);
+			process.exitCode ||= 1;
+		} finally {
+			rl?.close();
+		}
 	}
 }
 
