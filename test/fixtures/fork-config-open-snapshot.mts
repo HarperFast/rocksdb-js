@@ -56,7 +56,6 @@ const expectedB = {
 
 RocksDatabase.config(settingsA);
 
-// control: [0] stop, [1] flipped once, [2] phase (0 free-running, 1 pin A, 2 pin B), [3] phase acked
 const control = new Int32Array(new SharedArrayBuffer(16));
 const worker = new Worker(createWorkerBootstrapScript('./test/workers/config-flip-worker.mts'), {
 	eval: true,
@@ -102,18 +101,18 @@ function record(captured: object) {
 	}
 }
 
-// Pin one open to each phase: the worker applies the phase, acks, and holds it until released.
 for (const [phase, name, expected] of [
 	[1, 'A', expectedA],
 	[2, 'B', expectedB],
 ] as const) {
 	Atomics.store(control, 2, phase);
 	Atomics.notify(control, 2);
-	while (Atomics.load(control, 3) !== phase) {
-		if (Atomics.load(control, 3) === -1) {
-			break;
-		}
-		Atomics.wait(control, 3, Atomics.load(control, 3), 100);
+	for (
+		let acked = Atomics.load(control, 3);
+		acked !== phase && acked !== -1;
+		acked = Atomics.load(control, 3)
+	) {
+		Atomics.wait(control, 3, acked, 100);
 	}
 	if (Atomics.load(control, 3) === phase) {
 		const captured = await openOnce();
@@ -122,7 +121,6 @@ for (const [phase, name, expected] of [
 	}
 }
 
-// Release the pin so the worker flips freely while the remaining opens race it.
 Atomics.store(control, 2, 0);
 Atomics.notify(control, 2);
 while (Atomics.load(control, 1) === 0) {
