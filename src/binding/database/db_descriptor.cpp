@@ -612,6 +612,20 @@ void DBDescriptor::close() {
 }
 
 void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
+	// Every transaction before the database handles it reads through: a synchronous call admitted on a
+	// transaction makes only that transaction's close() wait (transaction/DESIGN.md, "Synchronous
+	// admission"). Transaction::Constructor's operation keeps new ones out once closing.
+	while (!this->transactions.empty()) {
+		auto it = this->transactions.begin();
+		std::shared_ptr<TransactionHandle> txnHandle = std::move(it->second);
+		this->transactions.erase(it);
+		this->closables.erase(txnHandle.get());
+		txnsLock.unlock();
+		txnHandle->close();
+		txnHandle.reset();
+		txnsLock.lock();
+	}
+
 	// Close all handles that still exist and reset their descriptor references
 	for (auto it = this->closables.begin(); it != this->closables.end();) {
 		if (auto closable = it->second.lock()) {

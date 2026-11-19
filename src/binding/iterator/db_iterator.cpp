@@ -9,6 +9,7 @@
 #include "napi/helpers.h"
 #include "napi/async.h"
 #include <chrono>
+#include <optional>
 #include <thread>
 
 namespace rocksdb_js {
@@ -165,6 +166,9 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	IteratorWrap* wrap = nullptr;
 	std::shared_ptr<DBHandle>* dbHandle = nullptr;
 	std::shared_ptr<TransactionHandle> txnHandle;
+	// Held through descriptor attachment below.
+	std::optional<TransactionOperation> transactionOperation;
+	std::optional<OperationGuard> operationGuard;
 
 	if (isTransaction) {
 		std::shared_ptr<TransactionHandle>* wrappedTxnHandle = nullptr;
@@ -174,6 +178,11 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		txnHandle = *wrappedTxnHandle;
+		transactionOperation.emplace(*txnHandle);
+		if (const char* refusal = transactionOperation->refusal("Transaction is not in pending state")) {
+			::napi_throw_error(env, nullptr, refusal);
+			return nullptr;
+		}
 		if (!txnHandle->dbHandle) {
 			::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 			return nullptr;
@@ -201,6 +210,12 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 			if (!rocksdb_js::readTransactionId(env, argv[6], txnId)) {
 				return nullptr;
 			}
+			// Before the lookup, which reads the transaction's fields that a foreign close resets.
+			operationGuard.emplace((*dbHandle)->descriptor);
+			if ((*dbHandle)->descriptor->isClosing()) {
+				::napi_throw_error(env, nullptr, "Database is closing");
+				return nullptr;
+			}
 			txnHandle = getOwnedTransaction(env, *(*dbHandle)->descriptor, txnId, "Iterator failed");
 			if (!txnHandle) {
 				return nullptr;
@@ -211,15 +226,20 @@ napi_value DBIterator::Constructor(napi_env env, napi_callback_info info) {
 	if (setupDelayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(setupDelayMs));
 	}
-	auto descriptor = (*dbHandle)->descriptor;
-	if (!descriptor) {
-		::napi_throw_error(env, nullptr, "Database not open");
-		return nullptr;
+	if (txnHandle) {
+		pauseTransactionReadForTesting();
 	}
-	OperationGuard operationGuard(descriptor);
-	if (descriptor->isClosing()) {
-		::napi_throw_error(env, nullptr, "Database is closing");
-		return nullptr;
+	if (!transactionOperation && !operationGuard) {
+		auto descriptor = (*dbHandle)->descriptor;
+		if (!descriptor) {
+			::napi_throw_error(env, nullptr, "Database not open");
+			return nullptr;
+		}
+		operationGuard.emplace(std::move(descriptor));
+		if (operationGuard->descriptor->isClosing()) {
+			::napi_throw_error(env, nullptr, "Database is closing");
+			return nullptr;
+		}
 	}
 
 	// Resolve start/end key pointers from the shared default key buffer

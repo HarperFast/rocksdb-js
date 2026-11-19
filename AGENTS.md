@@ -550,7 +550,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    `DBHandle::opened()` must report false even while the native DB still exists. Any synchronous N-API
    path that dereferences `descriptor->db` or the handle's column family must take an `OperationGuard`
    immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can reset the column-family pointer
-   from another env after the in-flight count drains. The VT-only `verifyVersion` / `populateVersion`
+   from another env after the in-flight count drains. A `Transaction::*` method instead takes a
+   `TransactionOperation` before it reads `dbHandle` or `txn`, which that sweep also resets, and the
+   sweep closes transactions before handles (src/binding/transaction/DESIGN.md, "Synchronous
+   admission"). The VT-only `verifyVersion` / `populateVersion`
    fast paths narrow, but do not remove, that requirement: both still start with
    `UNWRAP_DB_HANDLE_AND_OPEN()`, so they still gate on `descriptor`/`isClosing()`. What
    `DBHandle::open()`'s snapshotted `verificationTableDbId` / `verificationTableColumnFamilyId` actually
