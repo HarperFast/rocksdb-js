@@ -1108,6 +1108,8 @@ void DBRegistry::OpenDB(
 			// Env teardown removes a transaction from the map before cancelling
 			// its queued commit, which can still admit and write; only the
 			// descriptor-wide operation count covers it before its family claim.
+			// Handle-counted calls need no check: their handle is attached, and
+			// nonVerifyingHandles already refused above.
 			if (mayHoldUnguardedWrite || entry.descriptor->operationsInFlight.load() > 0) {
 				throw rocksdb_js::DBException(
 					"ERR_VERIFICATION_TABLE_CONFLICT",

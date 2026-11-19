@@ -403,11 +403,16 @@ describe('Destroy', () => {
 		});
 	}, 15_000);
 
-	it.each(['destroy', 'reentrant', 'callback-close'])(
-		'drains synchronous calls on every handle before a foreign destroy (%s)',
+	it.each([
+		// A foreign destroy waits for calls in flight on two handles; reopening from
+		// inside the main thread's call is refused.
+		['destroy', 'waits for synchronous calls on every handle before a foreign destroy'],
+		['reentrant', 'refuses close() and destroy() from inside a synchronous call'],
+		['callback-close', 'lets a synchronous resolve callback close the database'],
+	])(
+		'%s: %s',
 		async (mode) => {
-			// Synchronous calls register on their own DBHandle; finishClose() must
-			// find and wait for each. See fork-sync-operation-destroy.mts.
+			// See fork-sync-operation-destroy.mts.
 			await runDestroyFixture(syncOperationDestroyFixture, generateDBPath(), undefined, [mode]);
 		},
 		15_000

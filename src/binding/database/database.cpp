@@ -70,15 +70,14 @@ napi_value Database::Constructor(napi_env env, napi_callback_info info) {
 /**
  * Guarded calls run only on their handle's owning thread, so a count seen here
  * means this call was made from JavaScript inside one of them (an options
- * getter, `toJSON`). Closing would release the descriptor that call borrows;
- * destroying would wait for it on this thread forever.
+ * getter, `toJSON`). Closing or reopening would replace the descriptor that
+ * call borrows; destroying would wait for it on this thread forever.
  */
-static bool throwIfOperationInFlight(napi_env env, DBHandle& dbHandle, const char* action) {
+static bool throwIfOperationInFlight(napi_env env, DBHandle& dbHandle, const char* message) {
 	if (dbHandle.operationsInFlight.load() == 0) {
 		return true;
 	}
-	const std::string message = std::string("Cannot ") + action + " the database during one of its own operations";
-	::napi_throw_error(env, nullptr, message.c_str());
+	::napi_throw_error(env, nullptr, message);
 	return false;
 }
 
@@ -216,7 +215,7 @@ napi_value Database::Close(napi_env env, napi_callback_info info) {
 	UNWRAP_DB_HANDLE();
 
 	if (*dbHandle) {
-		if (!throwIfOperationInFlight(env, **dbHandle, "close")) {
+		if (!throwIfOperationInFlight(env, **dbHandle, "Cannot close the database during one of its own operations")) {
 			return nullptr;
 		}
 		DEBUG_LOG("%p Database::Close Closing database: \"%s\"\n", dbHandle->get(), (*dbHandle)->path.c_str());
@@ -787,7 +786,7 @@ napi_value Database::Destroy(napi_env env, napi_callback_info info) {
 			::napi_throw_error(env, "ERR_DATABASE_READONLY", "Destroy failed: Unsupported operation in read-only mode");
 			return nullptr;
 		}
-		if (!throwIfOperationInFlight(env, **dbHandle, "destroy")) {
+		if (!throwIfOperationInFlight(env, **dbHandle, "Cannot destroy the database during one of its own operations")) {
 			return nullptr;
 		}
 		// A handle that was never opened knows no path, and destroy ends in
@@ -2530,6 +2529,9 @@ napi_value Database::Open(napi_env env, napi_callback_info info) {
 	if ((*dbHandle)->opened()) {
 		// already open
 		NAPI_RETURN_UNDEFINED();
+	}
+	if (!throwIfOperationInFlight(env, **dbHandle, "Cannot open the database during one of its own operations")) {
+		return nullptr;
 	}
 
 	NAPI_GET_STRING(argv[0], path, "Database path is required");

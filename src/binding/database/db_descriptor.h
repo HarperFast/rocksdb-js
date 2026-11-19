@@ -742,8 +742,8 @@ public:
 	void closeClosables(std::unique_lock<std::mutex>& txnsLock);
 
 	/**
-	 * Waits until no guarded call is in flight on any attached handle. Only
-	 * valid once `closing` is published: a handle attached later refuses.
+	 * Only complete once `closing` is published: calls on a handle attached
+	 * after this reads `closables` refuse instead of being waited for.
 	 */
 	void waitForHandleOperations();
 

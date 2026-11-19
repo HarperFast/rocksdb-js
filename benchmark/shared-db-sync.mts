@@ -53,14 +53,16 @@ if (isMainThread) {
 			if (m === 'ready') ready.resolve();
 			else done.resolve(m);
 		});
-		return { worker, ready: ready.promise, done: done.promise };
+		const exited = new Promise((resolve) => worker.once('exit', resolve));
+		return { worker, ready: ready.promise, done: done.promise, exited };
 	});
 	await Promise.all(states.map((s) => s.ready));
 	const start = performance.now();
 	for (const s of states) s.worker.postMessage('go');
 	await Promise.all(states.map((s) => s.done));
 	const elapsed = performance.now() - start;
-	await Promise.all(states.map((s) => s.worker.terminate()));
+	// Each worker closes its database after reporting, then exits.
+	await Promise.all(states.map((s) => s.exited));
 	for (const db of holders) db.close();
 	rmSync(root, { recursive: true, force: true });
 	console.log(

@@ -2,18 +2,8 @@ import { RocksDatabase, registryStatus } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 
-// A guarded synchronous call registers on its own DBHandle, not on the shared
-// descriptor, so a foreign destroy() must find every handle with a call in
-// flight among the descriptor's closables and wait for each. A call is held
-// open by an options getter, which the native getCount() reads after its
-// admission check.
-//
-//   destroy:            the main thread and a second worker are each inside a
-//                       call while a third worker destroys the database.
-//   reentrant:          close() and destroy() from such a getter are refused,
-//                       and the database stays usable.
-//   callback-close:     calls that settle through a JavaScript callback end
-//                       their admission first, so closing from it succeeds.
+// Holds native getCount() calls open in options getters, which run after the
+// call's admission. Modes: destroy, reentrant, callback-close (see destroy.test.ts).
 
 const DESTROY = 0;
 const HOLDER = 1;
@@ -84,6 +74,16 @@ if (mode === 'destroy') {
 			Atomics.wait(state, DESTROY, 1, 300) === 'timed-out'
 				? 'waited'
 				: 'destroy returned while the main thread was inside a synchronous call';
+		// Reopening would replace the descriptor this call borrows, and would
+		// wait for the destroy that is waiting for this call.
+		try {
+			db.open();
+			observed = 'reopened inside a synchronous call';
+		} catch (error) {
+			if (!String(error).includes('Cannot open the database during one of its own operations')) {
+				observed = `unexpected reopen error: ${String(error)}`;
+			}
+		}
 	});
 	if (observed !== 'waited') throw new Error(observed || String(callError));
 	if (!String(callError).includes('Database is closing')) {

@@ -269,8 +269,8 @@ struct HandleOperationGuard final {
 	~HandleOperationGuard() { this->release(); }
 
 	/**
-	 * Ends the admission early, before invoking a JavaScript callback the
-	 * caller has no further native work after.
+	 * For a call that settles through a JavaScript callback, which may close
+	 * this handle, and touches no native state after it.
 	 */
 	void release() {
 		if (!this->admitted) {
