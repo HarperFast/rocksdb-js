@@ -405,7 +405,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				nodeArgs: ['--import', `data:text/javascript,${encodeURIComponent(preload)}`],
 			});
 			expect(result.code).toBe(1);
-			expect(result.stderr).toContain('probe get');
+			expect(result.stderr.match(/probe get/g)).toHaveLength(1);
 			expect(result.stderr).toContain('injected range failure');
 			expect(result.stderr).not.toContain('could not be read');
 			expect(result.stdout).not.toContain('"key"');
