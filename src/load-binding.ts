@@ -1258,11 +1258,9 @@ export const setTransactionStagingDelayForTesting: (countdown: number, delayMs: 
 export const isTransactionStagingDelayedForTesting: () => boolean =
 	binding.isTransactionStagingDelayedForTesting;
 
-/** Parks the next synchronous transaction read after it reads the transaction's database handle. */
 export const setTransactionReadDelayForTesting: (delayMs: number) => void =
 	binding.setTransactionReadDelayForTesting;
 
-/** Reports whether a synchronous transaction read is parked. */
 export const isTransactionReadDelayedForTesting: () => boolean =
 	binding.isTransactionReadDelayedForTesting;
 
