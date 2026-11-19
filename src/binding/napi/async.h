@@ -1,13 +1,13 @@
 #ifndef __NAPI_ASYNC_H__
 #define __NAPI_ASYNC_H__
 
-#include <cassert>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <mutex>
 #include <new>
+#include "core/assert.h"
 #include "core/debug.h"
 #include "core/test_seam.h"
 #include "napi/binding.h"
@@ -17,6 +17,13 @@
 #include "rocksdb/status.h"
 
 namespace rocksdb_js {
+
+// Every state is freed from its complete callback or before its work was queued, so a work item
+// still set at destruction has no callback pending: napi_delete_async_work() failed and it leaks.
+// Not a template, so one report covers every BaseAsyncState instantiation.
+inline void checkAsyncWorkDeleted(bool deleted) noexcept {
+	ROCKSDB_JS_ASSERT(deleted, "Async work was not deleted before destructor");
+}
 
 template <typename T>
 struct BaseAsyncState {
@@ -56,7 +63,7 @@ struct BaseAsyncState {
 
 		this->signalExecuteCompleted();
 
-		assert(this->asyncWork == nullptr && "Async work was not deleted before destructor!");
+		checkAsyncWorkDeleted(this->asyncWork == nullptr);
 	}
 
 	void deleteAsyncWork() {

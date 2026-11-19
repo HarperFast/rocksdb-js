@@ -9,6 +9,7 @@
 #include <cstring>
 #include <memory>
 #include <thread>
+#include "core/assert.h"
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_handle.h"
@@ -779,10 +780,11 @@ static void executeCommitWork(TransactionCommitState* state) {
 
 		if (state->status.ok()) {
 			DEBUG_LOG("%p Transaction::Commit Emitted committed event (txnId=%llu)\n", txnHandle.get(), (unsigned long long)txnHandle->id);
-			// close() settles state only after this execute drains, so nothing else has moved it.
+			// close() settles state only after this execute drains, so nothing else has moved it. A miss
+			// means close() ran concurrently: it may be freeing `txn`, and it would cancel the batch just
+			// published although RocksDB committed it. Nothing past that point is safe.
 			const bool committed = txnHandle->state.transition(TransactionState::Committing, TransactionState::Committed);
-			assert(committed && "Commit left Committing before its execute finished");
-			(void)committed;
+			ROCKSDB_JS_CHECK(committed, "Commit left Committing before its execute finished");
 			descriptor->notify("committed", nullptr);
 		} else if (state->status.IsBusy() || state->status.IsTryAgain()) {
 			DEBUG_LOG("%p Transaction::Commit ERROR: Commit failed with %s, resetting transaction\n",

@@ -2,7 +2,6 @@
 #define __TRANSACTION_HANDLE_H__
 
 #include <array>
-#include <cassert>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -18,6 +17,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "core/inline_vector.h"
 #include "core/transaction_state.h"
 #include "core/verification_table.h"
 
@@ -29,81 +29,6 @@ struct DBIteratorHandle;
 struct DBIteratorOptions;
 struct MultiGetBatch;
 struct TransactionLogStore;
-
-/**
- * A vector that holds its first `N` elements inline and spills the rest into
- * heap storage. Both users — the set of column-family generations a
- * transaction has staged a write to, and a commit's claim over that set — are
- * rebuilt per transaction on paths that run for every staged write, and a
- * transaction almost always names one or two families, so the inline slots
- * keep the common case allocation-free.
- *
- * `overflow` is public so a caller can `reserve()` it before publishing
- * anything: `ColumnFamilyCommitClaim::admit` secures storage for every claim
- * up front, so recording one can never fail after its count was taken
- * (invariant 24).
- */
-template <typename T, size_t N>
-struct InlineVector final {
-	static constexpr size_t inlineCapacity = N;
-	T inlineSlots[N];
-	std::vector<T> overflow;
-	size_t count = 0;
-
-	T& add(T value) {
-		if (this->count < N) {
-			this->inlineSlots[this->count] = std::move(value);
-			this->count++;
-			return this->inlineSlots[this->count - 1];
-		}
-		this->overflow.push_back(std::move(value));
-		this->count++;
-		return this->overflow.back();
-	}
-
-	const T& back() const {
-		assert(this->count > 0);
-		return this->count <= N
-			? this->inlineSlots[this->count - 1]
-			: this->overflow.back();
-	}
-
-	void popBack() {
-		if (this->count == 0) {
-			return;
-		}
-		if (this->count <= N) {
-			this->inlineSlots[this->count - 1] = T();
-		} else {
-			this->overflow.pop_back();
-		}
-		this->count--;
-	}
-
-	template <typename Fn>
-	void forEach(Fn&& fn) const {
-		const size_t inlineCount = this->count < N ? this->count : N;
-		for (size_t i = 0; i < inlineCount; i++) {
-			fn(this->inlineSlots[i]);
-		}
-		for (const auto& entry : this->overflow) {
-			fn(entry);
-		}
-	}
-
-	void clear() {
-		const size_t inlineCount = this->count < N ? this->count : N;
-		for (size_t i = 0; i < inlineCount; i++) {
-			this->inlineSlots[i] = T();
-		}
-		this->overflow.clear();
-		this->count = 0;
-	}
-
-	size_t size() const {
-		return this->count;
-	}
-};
 
 /**
  * One column-family generation a transaction has staged a write to. Weak,
@@ -489,7 +414,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		DBIteratorOptions& options,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
-	void unregisterIterator(DBIteratorHandle* iterator);
+	/**
+	 * Like `releaseIterator`, the caller acts on `checkOrphan` and `countUnderflow`
+	 * only after dropping the iterator's `iteratorMutex`.
+	 */
+	void unregisterIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow);
+	static void reportIteratorCountUnderflow() noexcept;
 	void closeIterators();
 
 	/**
@@ -509,10 +439,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * Returns a busy pooled iterator to the idle slots. Caller holds the
 	 * iterator's `iteratorMutex` and has ended its range. Returns false when it
 	 * was not pooled (transaction no longer pending, or slots full); the caller
-	 * then closes it. `checkOrphan` is set when the caller must call
-	 * `closeOrphanIfUnused()` after dropping `iteratorMutex`.
+	 * then closes it. After dropping `iteratorMutex`, the caller must call
+	 * `closeOrphanIfUnused()` when `checkOrphan` is set, and
+	 * `reportIteratorCountUnderflow()` when `countUnderflow` is.
 	 */
-	bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept;
+	[[nodiscard]] bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) noexcept;
 
 	void closeIdleIterators() noexcept;
 

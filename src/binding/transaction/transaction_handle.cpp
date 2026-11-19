@@ -1,7 +1,7 @@
-#include <cassert>
 #include <chrono>
 #include <sstream>
 #include <thread>
+#include "core/assert.h"
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
@@ -285,44 +285,71 @@ void TransactionHandle::onWrapperCollected() {
 	this->closeOrphanIfUnused();
 }
 
+namespace {
+
+[[noreturn]] void refuseDuplicateIterator() {
+	ROCKSDB_JS_ASSERT(false, "Transaction iterator registered twice");
+	throw std::runtime_error("Transaction iterator registered twice");
+}
+
+/** Every increment of the count also holds `iteratorsMutex`, so the caller's lock serializes this. */
+uint32_t releaseBusyIteratorLocked(std::atomic<uint32_t>& count) noexcept {
+	const uint32_t previous = count.load(std::memory_order_relaxed);
+	if (previous > 0) {
+		count.store(previous - 1, std::memory_order_relaxed);
+	}
+	return previous;
+}
+
+} // namespace
+
 std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 	DBIteratorOptions& options,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
-	std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-	if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending) {
-		throw std::runtime_error("Transaction is not in pending state");
+	std::shared_ptr<DBIteratorHandle> iterator;
+	bool inserted = false;
+	{
+		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+		if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending) {
+			throw std::runtime_error("Transaction is not in pending state");
+		}
+		const std::shared_ptr<DBHandle>& targetHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+		if (!targetHandle || !targetHandle->opened()) {
+			throw std::runtime_error("Database not open");
+		}
+		iterator = std::make_shared<DBIteratorHandle>(
+			this->shared_from_this(),
+			options,
+			dbHandleOverride
+		);
+		inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
+		if (inserted) {
+			iterator->transactionRegistered = true;
+			this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
+		}
 	}
-	const std::shared_ptr<DBHandle>& targetHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-	if (!targetHandle || !targetHandle->opened()) {
-		throw std::runtime_error("Database not open");
+	if (!inserted) {
+		refuseDuplicateIterator();
 	}
-	std::shared_ptr<DBIteratorHandle> iterator = std::make_shared<DBIteratorHandle>(
-		this->shared_from_this(),
-		options,
-		dbHandleOverride
-	);
-	const bool inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
-	assert(inserted && "Transaction iterator registered twice");
-	(void)inserted;
-	iterator->transactionRegistered = true;
-	this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 	return iterator;
 }
 
-void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
-	{
-		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-		// Erase even an idle entry: closeIterators() waits for the map to empty.
-		if (this->activeIterators.erase(iterator) == 0 || iterator->idle) {
-			return;
-		}
+void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) {
+	checkOrphan = false;
+	countUnderflow = false;
+	std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+	// Erase even an idle entry: closeIterators() waits for the map to empty.
+	if (this->activeIterators.erase(iterator) == 0 || iterator->idle) {
+		return;
 	}
-	const uint32_t previous = this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
-	assert(previous > 0 && "Transaction iterator count underflow");
-	if (previous == 1) {
-		this->closeOrphanIfUnused();
-	}
+	const uint32_t previous = releaseBusyIteratorLocked(this->activeIteratorCount);
+	countUnderflow = previous == 0;
+	checkOrphan = previous <= 1;
+}
+
+void TransactionHandle::reportIteratorCountUnderflow() noexcept {
+	ROCKSDB_JS_ASSERT(false, "Transaction iterator count underflow");
 }
 
 void TransactionHandle::closeIterators() {
@@ -404,9 +431,9 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 					dbHandleOverride,
 					poolable
 				);
-				const bool inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
-				assert(inserted && "Transaction iterator registered twice");
-				(void)inserted;
+				if (!this->activeIterators.emplace(iterator.get(), iterator).second) {
+					break;
+				}
 				iterator->transactionRegistered = true;
 				iterator->poolGeneration = this->trimGeneration;
 				iterator->lentEpoch = this->iteratorEpoch.load(std::memory_order_relaxed);
@@ -441,6 +468,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 		// Closed since it was taken, or its column family was dropped/reopened.
 		iterator->close();
 	}
+	refuseDuplicateIterator();
 }
 
 void TransactionHandle::closeIdleIterators() noexcept {
@@ -457,8 +485,10 @@ void TransactionHandle::closeIdleIterators() noexcept {
 	}
 }
 
-bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept {
+bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) noexcept {
 	checkOrphan = false;
+	countUnderflow = false;
+	uint32_t previous;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
 		if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending || (iterator->writeBufferManagerAttached && DBSettings::getInstance().getWriteBufferManagerAllowStall())) {
@@ -484,10 +514,10 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 			return false;
 		}
 		iterator->idle = true;
+		previous = releaseBusyIteratorLocked(this->activeIteratorCount);
 	}
-	const uint32_t previous = this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
-	assert(previous > 0 && "Transaction iterator count underflow");
-	checkOrphan = previous == 1;
+	countUnderflow = previous == 0;
+	checkOrphan = previous <= 1;
 	return true;
 }
 
@@ -1021,11 +1051,13 @@ void ColumnFamilySet::add(const std::shared_ptr<ColumnFamilyDescriptor>& column)
 }
 
 void ColumnFamilySet::removeLast(ColumnFamilyDescriptor* column) {
-	if (this->entries.size() == 0 || this->entries.back().raw != column) {
+	const TouchedColumnFamily* tail = this->entries.last();
+	if (!tail || tail->raw != column) {
 		return;
 	}
 	this->entries.popBack();
-	this->last = this->entries.size() == 0 ? nullptr : this->entries.back().raw;
+	tail = this->entries.last();
+	this->last = tail ? tail->raw : nullptr;
 }
 
 rocksdb::Status TransactionHandle::abandonForDroppedColumnFamily(

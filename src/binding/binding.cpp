@@ -1,4 +1,5 @@
 #include "napi/binding.h"
+#include "core/assert.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "database/backup.h"
 #include "database/database.h"
@@ -525,6 +526,11 @@ NAPI_MODULE_INIT() {
 		NAPI_STATUS_THROWS(::napi_set_element(env, supportedCompression, static_cast<uint32_t>(i), name));
 	}
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "supportedCompression", supportedCompression));
+
+	// Read by scripts/test-binding.mjs to refuse a fatal prebuild; not part of the package API.
+	napi_value fatalAsserts;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, ROCKSDB_JS_ASSERTS_ARE_FATAL, &fatalAsserts));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "fatalAsserts", fatalAsserts));
 
 	int32_t refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
