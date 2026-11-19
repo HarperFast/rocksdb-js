@@ -1,5 +1,10 @@
 import { DBI } from './dbi.ts';
-import { constants, NativeTransaction, type NativeTransactionOptions } from './load-binding.ts';
+import {
+	constants,
+	globalNotify,
+	NativeTransaction,
+	type NativeTransactionOptions,
+} from './load-binding.ts';
 import { Store } from './store.ts';
 
 /**
@@ -192,7 +197,7 @@ export class Transaction extends DBI {
 			this.#notifyAfterFailedCommit();
 			throw failure;
 		}
-		this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+		this.#notifyAfterDurableCommit();
 		if (result === RETRY_NOW) {
 			return RETRY_NOW;
 		}
@@ -210,7 +215,27 @@ export class Transaction extends DBI {
 			this.#notifyAfterFailedCommit();
 			throw failure;
 		}
-		this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+		this.#notifyAfterDurableCommit();
+	}
+
+	/**
+	 * The commit has landed, so a notification that fails because the database closed in the
+	 * meantime must not report it as failed; it is surfaced as a `log.warn` instead. Any other
+	 * failure is a listener bug and still propagates.
+	 */
+	#notifyAfterDurableCommit(): void {
+		try {
+			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+		} catch (err) {
+			if (this.store.db.opened) {
+				throw err;
+			}
+			globalNotify('log.warn', [
+				`aftercommit notification skipped for committed transaction ${this.#txn.id}: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			]);
+		}
 	}
 
 	/**

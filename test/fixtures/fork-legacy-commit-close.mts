@@ -90,16 +90,8 @@ while (!isTransactionCommitExecuteDelayedForTesting()) {
 	await new Promise((resolve) => setTimeout(resolve, 5));
 }
 db.close();
-let commitError: unknown;
-try {
-	await commit;
-} catch (error) {
-	commitError = error;
-}
-assert(
-	commitError instanceof Error && /Database not open/.test(commitError.message),
-	`closed wrapper should only fail its aftercommit notification: ${commitError}`
-);
+// The commit landed; the aftercommit notification on the closed database is only a warning.
+await commit;
 
 assertReopenable();
 
