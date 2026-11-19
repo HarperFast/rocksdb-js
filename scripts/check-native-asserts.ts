@@ -23,9 +23,14 @@ const blank = (text: string) => text.replace(/[^\n]/g, ' ');
 /**
  * Returns `code` with comments and literals blanked, and `directives` with comments and raw strings
  * blanked, so `#include "assert.h"` stays visible but a multi-line raw string cannot fake a directive.
- * Newlines are kept, so offsets map to the right line.
+ * Newlines are kept, so offsets map to the right line. `source` is spliced; a raw string ends where it
+ * does in `original`, because the compiler reverts splices inside one.
  */
-function mask(source: string): { code: string; directives: string } {
+function mask(
+	source: string,
+	original: string,
+	origin: number[]
+): { code: string; directives: string } {
 	const code: string[] = [];
 	const directives: string[] = [];
 	const emit = (text: string, inCode: string, inDirectives: string) => {
@@ -57,8 +62,17 @@ function mask(source: string): { code: string; directives: string } {
 			const raw = rawPrefix.test(name) ? match(rawOpen, after) : null;
 			if (raw) {
 				const close = `)${raw[1]}"`;
-				const end = source.indexOf(close, after + raw[0].length);
-				i += hidden(source.slice(i, end < 0 ? source.length : end + close.length));
+				const body = after + raw[0].length;
+				const found = original.indexOf(
+					close,
+					body < origin.length ? origin[body] : original.length
+				);
+				const stop = found < 0 ? original.length : found + close.length;
+				let end = body;
+				while (end < source.length && origin[end] < stop) {
+					end++;
+				}
+				i += hidden(source.slice(i, end));
 			} else {
 				i += keep(name);
 				if (literalPrefix.test(name) && (source[i] === '"' || source[i] === "'")) {
@@ -126,7 +140,7 @@ for (const file of files) {
 		const line = lineAt(source, origin[offset]);
 		violations.push(`${relative(repoRoot, file)}:${line}: ${lines[line - 1].trim()}`);
 	};
-	const { code, directives } = mask(text);
+	const { code, directives } = mask(text, source, origin);
 	for (const found of directives.matchAll(assertInclude)) {
 		report(found.index);
 	}
