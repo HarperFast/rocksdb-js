@@ -1,5 +1,4 @@
-// Release builds define no NDEBUG, so a libc assert() aborts the host process; native code uses
-// ROCKSDB_JS_ASSERT (src/binding/core/assert.h) instead.
+// Nothing defines NDEBUG in release builds, so a libc assert() would abort the host process.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { extname, join, relative, resolve } from 'node:path';
@@ -10,11 +9,71 @@ const root = join(repoRoot, 'src/binding');
 const extensions = new Set(['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.hxx']);
 const assertInclude = /^[ \t]*#[ \t]*include\s*[<"](?:cassert|assert\.h)[>"]/gm;
 const assertCall = /(?<![\w.>:])assert\s*\(/g;
-// Comments and string/char literals, blanked out so a match inside one is ignored. Newlines are
-// kept, so offsets still map to the right line and a call split across lines still matches. A quote
-// after a hex digit is a digit separator (1'000), not a character literal.
-const commentOrLiteral =
-	/\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\\n])*"|(?<![\dA-Fa-f])'(?:\\.|[^'\\\n])*'/g;
+
+const identifier = /[A-Za-z_]\w*/y;
+// A pp-number takes its digit separators (1'000, 0xFF'FF), so their quotes never open a literal.
+const ppNumber = /\.?\d(?:[eEpP][+-]|'\w|[\w.])*/y;
+const quoted = /(["'])(?:\\.|(?!\1)[^\\\n])*\1?/y;
+const rawOpen = /"([^()\\\s]{0,16})\(/y;
+const literalPrefix = /^(?:u8|u|U|L)$/;
+const rawPrefix = /^(?:u8|u|U|L)?R$/;
+
+const blank = (text: string) => text.replace(/[^\n]/g, ' ');
+
+/**
+ * Returns `code` with comments and literals blanked, and `directives` with only comments blanked,
+ * so `#include "assert.h"` is still visible. Newlines are kept, so offsets map to the right line.
+ */
+function mask(source: string): { code: string; directives: string } {
+	const code: string[] = [];
+	const directives: string[] = [];
+	const emit = (text: string, inCode: string, inDirectives: string) => {
+		code.push(inCode);
+		directives.push(inDirectives);
+		return text.length;
+	};
+	const keep = (text: string) => emit(text, text, text);
+	const literal = (text: string) => emit(text, blank(text), text);
+	const comment = (text: string) => emit(text, blank(text), blank(text));
+	const match = (pattern: RegExp, at: number) => {
+		pattern.lastIndex = at;
+		return pattern.exec(source);
+	};
+
+	let i = 0;
+	while (i < source.length) {
+		const char = source[i];
+		const name = match(identifier, i)?.[0];
+		const number = name ? undefined : match(ppNumber, i)?.[0];
+		if (source.startsWith('//', i)) {
+			const end = source.indexOf('\n', i);
+			i += comment(source.slice(i, end < 0 ? source.length : end));
+		} else if (source.startsWith('/*', i)) {
+			const end = source.indexOf('*/', i + 2);
+			i += comment(source.slice(i, end < 0 ? source.length : end + 2));
+		} else if (name) {
+			const after = i + name.length;
+			const raw = rawPrefix.test(name) ? match(rawOpen, after) : null;
+			if (raw) {
+				const close = `)${raw[1]}"`;
+				const end = source.indexOf(close, after + raw[0].length);
+				i += literal(source.slice(i, end < 0 ? source.length : end + close.length));
+			} else {
+				i += keep(name);
+				if (literalPrefix.test(name) && (source[i] === '"' || source[i] === "'")) {
+					i += literal(match(quoted, i)![0]);
+				}
+			}
+		} else if (number) {
+			i += keep(number);
+		} else if (char === '"' || char === "'") {
+			i += literal(match(quoted, i)![0]);
+		} else {
+			i += keep(char);
+		}
+	}
+	return { code: code.join(''), directives: directives.join('') };
+}
 
 function collect(dir: string, files: string[]): void {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -48,16 +107,12 @@ for (const file of files) {
 		const line = lineAt(source, offset);
 		violations.push(`${relative(repoRoot, file)}:${line}: ${lines[line - 1].trim()}`);
 	};
-	const blank = (text: string) => text.replace(/[^\n]/g, ' ');
-	const uncommented = source.replace(commentOrLiteral, (text) =>
-		text.startsWith('"') || text.startsWith("'") ? text : blank(text)
-	);
-	for (const match of uncommented.matchAll(assertInclude)) {
-		report(match.index);
+	const { code, directives } = mask(source);
+	for (const found of directives.matchAll(assertInclude)) {
+		report(found.index);
 	}
-	const code = source.replace(commentOrLiteral, blank);
-	for (const match of code.matchAll(assertCall)) {
-		report(match.index);
+	for (const found of code.matchAll(assertCall)) {
+		report(found.index);
 	}
 }
 
