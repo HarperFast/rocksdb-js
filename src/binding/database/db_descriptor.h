@@ -420,8 +420,14 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * A flag used by the `DBRegistry` to indicate the database is being closed,
 	 * this descriptor should not be used, and it should create a new
 	 * descriptor.
+	 *
+	 * Every guarded call on every worker reads it, so it gets a cache line of its
+	 * own: `operationsInFlight` below is written by every commit and iterator
+	 * (128 bytes covers Apple Silicon's line size).
 	 */
+	char closingPadBefore[128];
 	std::atomic<bool> closing{ false };
+	char closingPadAfter[128];
 	// finishClose() can be retried after a quarantined failure. These guards
 	// prevent its one-shot stages from running twice while later idempotent
 	// cleanup resumes from the failed point.
