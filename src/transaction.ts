@@ -197,10 +197,11 @@ export class Transaction extends DBI {
 			this.#notifyAfterFailedCommit();
 			throw failure;
 		}
-		this.#notifyAfterDurableCommit();
 		if (result === RETRY_NOW) {
+			this.#notifyAfterFailedCommit();
 			return RETRY_NOW;
 		}
+		this.#notifyAfterDurableCommit();
 	}
 
 	/**
@@ -219,9 +220,8 @@ export class Transaction extends DBI {
 	}
 
 	/**
-	 * The commit has landed, so a notification that fails because the database closed in the
-	 * meantime must not report it as failed; it is surfaced as a `log.warn` instead. Any other
-	 * failure is a listener bug and still propagates.
+	 * The commit has landed, so a notification that fails because the database closed meanwhile
+	 * is a `log.warn`, not a failed commit.
 	 */
 	#notifyAfterDurableCommit(): void {
 		try {

@@ -90,7 +90,6 @@ while (!isTransactionCommitExecuteDelayedForTesting()) {
 	await new Promise((resolve) => setTimeout(resolve, 5));
 }
 db.close();
-// The commit landed; the aftercommit notification on the closed database is only a warning.
 await commit;
 
 assertReopenable();

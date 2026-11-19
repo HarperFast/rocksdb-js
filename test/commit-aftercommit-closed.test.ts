@@ -2,7 +2,6 @@ import { RocksDatabase, Transaction } from '../src/index.ts';
 import { dbRunner } from './lib/util.ts';
 import { describe, expect, it } from 'vitest';
 
-/** Closes the database right before the transaction's aftercommit notification runs. */
 function closeBeforeAfterCommit(txn: Transaction, db: RocksDatabase): void {
 	const notify = txn.notify.bind(txn);
 	txn.notify = (event: string, ...args: any[]) => {
@@ -40,16 +39,21 @@ describe('aftercommit after a durable commit', () => {
 	}
 
 	for (const method of ['commit', 'commitSync'] as const) {
-		it(`${method}() still propagates a notification failure while the database is open`, () =>
+		it(`${method}() still propagates an aftercommit failure while the database is open`, () =>
 			dbRunner(async ({ db }) => {
 				const txn = new Transaction(db.store);
 				txn.putSync('k', 'v');
-				txn.notify = () => {
-					throw new Error('listener bug');
+				const notify = txn.notify.bind(txn);
+				txn.notify = (event: string, ...args: any[]) => {
+					if (event === 'aftercommit') {
+						throw new Error('notify failed');
+					}
+					return notify(event, ...args);
 				};
 				await expect(async () =>
 					method === 'commit' ? txn.commit() : txn.commitSync()
-				).rejects.toThrow('listener bug');
+				).rejects.toThrow('notify failed');
+				expect(db.getSync('k')).toBe('v');
 			}));
 	}
 });
