@@ -87,7 +87,7 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			for (const options of [['-c', 'foo'], ['--json'], ['--yes']]) {
 				const result = await cli([dbPath, ...options]);
 				expect(result.code).toBe(2);
-				expect(result.stdout).not.toContain('"key"');
+				expect(result.stdout).toBe('');
 				expect(result.stderr).toContain('Error: specify a command');
 				expect(result.stderr).toContain('rocksdb-js [dbpath] <command>');
 			}
@@ -369,21 +369,27 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			expect(result.code).toBe(0);
 		});
 
-		it('reports a close failure from the EPIPE handler, proving it closes explicitly', async () => {
-			const dbPath = tempDBPath();
-			seed(dbPath, { a: 'one' });
-			const preload = [
-				`import { RocksDatabase } from ${JSON.stringify(distIndexURL)};`,
-				`const close = RocksDatabase.prototype.close;`,
-				`RocksDatabase.prototype.close = function () { close.call(this); throw new Error('injected close failure'); };`,
-				`process.stdout.write = function () { const e = new Error('write EPIPE'); e.code = 'EPIPE'; process.nextTick(() => this.emit('error', e)); return true; };`,
-			].join('\n');
-			const result = await cli([dbPath, 'get', 'a'], {
-				nodeArgs: ['--import', `data:text/javascript,${encodeURIComponent(preload)}`],
-			});
-			expect(result.stderr).toContain('injected close failure');
-			expect(result.code).toBe(1);
-		});
+		it.each(['EPIPE', 'ENOTCONN'])(
+			'closes explicitly in the %s handler, which reports a close failure',
+			async (code) => {
+				const dbPath = tempDBPath();
+				seed(dbPath, { a: 'one' });
+				// The error is emitted synchronously mid-command, while the database is still open, and
+				// close() throws only after that: only the handler's own closeAllDatabases() can.
+				const preload = [
+					`import { RocksDatabase } from ${JSON.stringify(distIndexURL)};`,
+					`let armed = false;`,
+					`const close = RocksDatabase.prototype.close;`,
+					`RocksDatabase.prototype.close = function () { if (armed) throw new Error('injected close failure'); close.call(this); };`,
+					`process.stdout.write = function () { const e = new Error('write ${code}'); e.code = '${code}'; armed = true; this.emit('error', e); return true; };`,
+				].join('\n');
+				const result = await cli([dbPath, 'get', 'a'], {
+					nodeArgs: ['--import', `data:text/javascript,${encodeURIComponent(preload)}`],
+				});
+				expect(result.stderr).toContain('injected close failure');
+				expect(result.code).toBe(1);
+			}
+		);
 
 		it('rethrows the range error when the row it failed on reads fine', async () => {
 			const dbPath = tempDBPath();
@@ -392,11 +398,14 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				`import { RocksDatabase } from ${JSON.stringify(distIndexURL)};`,
 				`RocksDatabase.prototype.getRange = () => ({ [Symbol.iterator]: () => ({`,
 				`\tnext() { throw new Error('injected range failure'); }, return() { return { done: true }; } }) });`,
+				`const get = RocksDatabase.prototype.get;`,
+				`RocksDatabase.prototype.get = function (...args) { process.stderr.write('probe get\\n'); return get.apply(this, args); };`,
 			].join('\n');
 			const result = await cli([dbPath, 'query', '--json'], {
 				nodeArgs: ['--import', `data:text/javascript,${encodeURIComponent(preload)}`],
 			});
 			expect(result.code).toBe(1);
+			expect(result.stderr).toContain('probe get');
 			expect(result.stderr).toContain('injected range failure');
 			expect(result.stderr).not.toContain('could not be read');
 			expect(result.stdout).not.toContain('"key"');
