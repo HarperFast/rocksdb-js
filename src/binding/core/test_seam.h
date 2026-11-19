@@ -206,6 +206,12 @@ inline std::atomic<int>& memoryMapBufferDelayMsFlag() {
 	return delayMs;
 }
 
+// Failed native mapping-buffer creates. Never reset.
+inline std::atomic<uint64_t>& memoryMapBufferCreateFailures() {
+	static std::atomic<uint64_t> failures{ 0 };
+	return failures;
+}
+
 // Number of transaction-log abort-marker syncs to fail after the marker is written (a count). Read
 // on the commit and teardown threads that write markers, so snapshotted like the fault flags above.
 inline std::atomic<int>& abortMarkFailureFlag() {

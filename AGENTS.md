@@ -405,7 +405,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   process
 - `ROCKSDB_JS_MEMORY_MAP_BUFFER_DELAY_MS` - Test-only: delay inside a transaction log's
   `_getMemoryMapOfFile()` after it takes its mapping reference and before it creates the JS buffer, so
-  a worker `terminate()` makes that create fail (`test/fixtures/fork-memory-map-buffer-terminate.mts`).
+  a worker `terminate()` makes that create fail (`test/fixtures/fork-memory-map-buffer-terminate.mts`). The fixture proves the create failed through the read-only
+  `getTransactionLogMapBufferCreateFailures()` counter, not by timing.
   Snapshotted in `initializeTestSeams()`, so it must be set in the environment that starts the
   process
 - `ROCKSDB_JS_CF_RECLAIM_WAIT_MS` - How long `open()` of a column-family name whose
