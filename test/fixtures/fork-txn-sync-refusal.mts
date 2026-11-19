@@ -87,7 +87,7 @@ if (mode === 'reentrant') {
 	);
 	assert.equal(
 		useLogWhile(() => owner.close()),
-		'Transaction is closed'
+		'Database not open'
 	);
 	owner.open();
 	assert.throws(
@@ -124,7 +124,7 @@ if (mode === 'reentrant') {
 		getRange: 'Database not open',
 		putSync: 'Database not open',
 		removeSync: 'Database not open',
-		useLog: 'Transaction is closed',
+		useLog: 'Database not open',
 		setTimestamp: 'Cannot set timestamp: transaction already has staged writes or log entries',
 		abandonWrites: 'ok',
 	});

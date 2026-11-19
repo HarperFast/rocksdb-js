@@ -61,7 +61,7 @@ if (isMainThread) {
 		// begun and the database is closing, so each is refused instead of reading a closed iterator.
 		const expected =
 			operation === 'getRange'
-				? ['error', context === 'txn' ? 'Transaction is not in pending state' : 'Database not open']
+				? ['error', 'Database not open']
 				: operation === 'getCount'
 					? ['error', 'Get count failed: Database is closing']
 					: ['ok'];

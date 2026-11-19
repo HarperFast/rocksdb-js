@@ -69,9 +69,10 @@ The admission covers the transaction's `DBHandle` only because `DBDescriptor::cl
 `columnDescriptor`, which these calls read; in the map's own order the sweep could reach the handle
 first. The order holds only if no transaction is registered once the drain has started, so
 `Transaction::Constructor` holds a descriptor `OperationGuard` from its `isClosing()` check through
-`transactionAdd()`, after its option getters have run. The drain closes idle transactions first:
-closing a pessimistic writer blocked on a row lock waits for its call, and the holder of that lock may
-be another transaction in the same map.
+`transactionAdd()`, after its option getters have run. The drain first cancels every transaction, which aborts
+parked async reads and refuses new calls, then closes idle ones first; while every one still has a call
+in flight it waits for one to finish rather than close any. Closing a pessimistic writer blocked on a
+row lock waits for its call, and the holder of that lock may be another transaction in the same map.
 
 Admission comes after any argument parsing that can run JavaScript: a getter that aborts, commits or
 closes on the same thread would wait on the admission it is running under. `useLog` cannot order it

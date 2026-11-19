@@ -1969,11 +1969,11 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	std::shared_ptr<DBHandle> ownHandle;
 	{
 		TransactionOperation operation(**txnHandle);
-		// A closed transaction has txn/dbHandle reset, and a transaction whose
-		// database handle was closed (db.close() with the txn still open) keeps
-		// dbHandle but loses its descriptor.
-		if (operation.refusal("Transaction is closed") || !(*txnHandle)->txn || !(*txnHandle)->dbHandle ||
-			!(*txnHandle)->dbHandle->descriptor) {
+		if (const char* refusal = operation.refusal("Transaction is closed")) {
+			::napi_throw_error(env, nullptr, refusal);
+			return nullptr;
+		}
+		if (!(*txnHandle)->txn || !(*txnHandle)->dbHandle) {
 			::napi_throw_error(env, nullptr, "Transaction is closed");
 			return nullptr;
 		}
@@ -2009,8 +2009,11 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 
 	{
 		TransactionOperation operation(**txnHandle);
-		if (operation.refusal("Transaction is closed") || !(*txnHandle)->txn || (*txnHandle)->dbHandle != ownHandle ||
-			!ownHandle->descriptor) {
+		if (const char* refusal = operation.refusal("Transaction is closed")) {
+			::napi_throw_error(env, nullptr, refusal);
+			return nullptr;
+		}
+		if (!(*txnHandle)->txn || (*txnHandle)->dbHandle != ownHandle) {
 			::napi_throw_error(env, nullptr, "Transaction is closed");
 			return nullptr;
 		}
