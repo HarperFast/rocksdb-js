@@ -78,7 +78,10 @@ Admission comes after any argument parsing that can run JavaScript: a getter tha
 closes on the same thread would wait on the admission it is running under. `useLog` cannot order it
 that way, since it validates its database argument with `instanceof` and constructs a JavaScript
 `TransactionLog`: it admits once to read the transaction's handle, releases, validates, and admits
-again to recheck that handle before it binds the store. After admission, a handle
+again to recheck that handle before it binds the store. Building an
+error is outside that rule: it reads `Object.create` and `Error.prototype`, so a call that fails while
+admitted would wait on itself if those were patched to end the transaction. A call made under a
+descriptor `OperationGuard` is exposed the same way to a re-entrant `shutdown()`. After admission, a handle
 the owner has closed or reopened no longer belongs to this transaction's descriptor, so calls that
 use it refuse with "Database not open". `setTimestamp` and `abandonWrites` use only the transaction and
 are not refused for that.
