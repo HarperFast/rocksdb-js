@@ -478,6 +478,8 @@ struct PendingTransactionCommitState final {
 	napi_env env;
 	std::unique_ptr<TransactionCommitState> state;
 	bool asyncWorkRegistered = false;
+	// Set once registerCommitCompletion() has accounted this commit on its completion.
+	bool completionRegistered = false;
 
 	PendingTransactionCommitState(napi_env env, std::unique_ptr<TransactionCommitState> state) : env(env), state(std::move(state)) {}
 
@@ -505,6 +507,10 @@ struct PendingTransactionCommitState final {
 			this->state->signalExecuteCompleted();
 		} else {
 			this->state->completed.store(true);
+		}
+		if (this->completionRegistered) {
+			// An accounted commit that never dispatches would keep this env's loop alive.
+			this->state->completion->finish(this->env);
 		}
 	}
 
@@ -1249,6 +1255,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs, completionsClosed, completion));
 		state->completion = completion;
 		if (!completionsClosed) {
+			stateOwner.completionRegistered = true;
 			// Commit-lane stage: RocksDB commit, then marshal the completion
 			// back to the originating env.
 			auto commitStage = [state]() {
@@ -2070,11 +2077,11 @@ void Transaction::Init(napi_env env, napi_value exports) {
 	napi_property_descriptor properties[] = {
 		{ "abandonWrites", nullptr, AbandonWrites, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "abort", nullptr, Abort, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "commit", nullptr, Commit, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "commit", nullptr, guardAsyncEntry<Commit>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "commitSync", nullptr, CommitSync, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "get", nullptr, guardAsyncEntry<Get>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },
-		{ "getMany", nullptr, GetMany, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getMany", nullptr, guardAsyncEntry<GetMany>, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getManySync", nullptr, GetManySync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getSync", nullptr, GetSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getTimestamp", nullptr, GetTimestamp, nullptr, nullptr, nullptr, napi_default, nullptr },

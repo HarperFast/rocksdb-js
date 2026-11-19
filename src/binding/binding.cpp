@@ -259,6 +259,16 @@ napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_
 	NAPI_RETURN_UNDEFINED();
 }
 
+napi_value ForceAsyncExceptionForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	int32_t stage = 0;
+	int32_t count = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &stage));
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &count));
+	setAsyncExceptionForTesting(stage, std::max(count, 0));
+	NAPI_RETURN_UNDEFINED();
+}
+
 /**
  * Every `*ForTesting` setter is exported from this table so `ResetTestSwitchesForTesting` cannot
  * miss it: the switches are process-global, and Vitest runs many test files in one process.
@@ -303,6 +313,12 @@ static const TestSwitch testSwitches[] = {
 		 const bool changed = writeBufferManagerJoinDelayCountdown().load(std::memory_order_relaxed) != 0 ||
 			 writeBufferManagerJoinDelayMs().load(std::memory_order_relaxed) != 0;
 		 setWriteBufferManagerJoinDelayForTesting(0, 0);
+		 return changed;
+	 } },
+	{ "forceAsyncExceptionForTesting", ForceAsyncExceptionForTesting, []() {
+		 const bool changed = asyncExceptionStage().load(std::memory_order_relaxed) != 0 ||
+			 asyncExceptionCount().load(std::memory_order_relaxed) != 0;
+		 setAsyncExceptionForTesting(0, 0);
 		 return changed;
 	 } },
 };

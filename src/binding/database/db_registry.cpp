@@ -216,34 +216,45 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 		return CloseResult{};
 	}
 
-	std::shared_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<std::condition_variable> condition;
+	std::vector<ClosingDescriptor> claimed;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		auto entryIterator = instance->databases.find(key);
 		if (entryIterator != instance->databases.end()) {
 			DBRegistryEntry& entry = entryIterator->second;
 			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance, key.path.c_str(), entry.descriptor.use_count());
-			if (entry.descriptor && entry.descriptor.use_count() <= 1 && entry.descriptor->beginClose()) {
-				DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance, key.path.c_str());
-				descriptor = entry.descriptor;
-				condition = entry.condition;
+			if (entry.descriptor && entry.descriptor.use_count() <= 1) {
+				// Allocated before beginClose() publishes the claim: a failure after it would leave a
+				// close that nobody runs, and every OpenDB() for the path would wait on it. A failure
+				// here skips the purge instead, since releaseDescriptorPin() is noexcept: the entry stays
+				// open and unclaimed for a later close, shutdown() or exit teardown.
+				try {
+					if (consumeAsyncExceptionForTesting(AsyncExceptionStage::PurgeClaim)) {
+						throw std::bad_alloc();
+					}
+					claimed.emplace_back(key, nullptr, nullptr);
+				} catch (...) {
+					return CloseResult{};
+				}
+				if (entry.descriptor->beginClose()) {
+					DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance, key.path.c_str());
+					claimed.front().descriptor = entry.descriptor;
+					claimed.front().condition = entry.condition;
+				}
 			}
 		} else {
 			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced DBDescriptor not found! \"%s\"\n", instance, key.path.c_str());
 		}
 	}
 
-	if (!descriptor) {
+	if (claimed.empty() || !claimed.front().descriptor) {
 		return CloseResult{};
 	}
 
 	// We claimed the close under the lock via beginClose(); run the actual
-	// teardown now. The local copy keeps the descriptor alive throughout.
+	// teardown now. The claim's copy keeps the descriptor alive throughout.
 	// Only the entry we claimed is erased -- a brand-new descriptor cannot
 	// appear because OpenDB blocks until the helper notifies.
-	std::vector<ClosingDescriptor> claimed;
-	claimed.emplace_back(key, descriptor, condition);
 	// The close error is reported through CloseResult, not thrown.
 	closeClaimedDescriptors(
 		claimed, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex
