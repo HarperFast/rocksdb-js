@@ -19,6 +19,7 @@
 #include "napi/async.h"
 #include "core/verification_table.h"
 #include "core/compression.h"
+#include "rocksdb/table.h"
 #include "transaction_log/transaction_log_store.h"
 
 namespace rocksdb_js {
@@ -1478,6 +1479,34 @@ napi_value Database::GetCompression(napi_env env, napi_callback_info info) {
 		NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "level", level));
 	}
 
+	return result;
+}
+
+napi_value Database::GetOpenSettingsForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	UNWRAP_DB_HANDLE_AND_OPEN();
+	ACQUIRE_OPERATIONS_LOCK();
+
+	const auto& descriptor = (*dbHandle)->descriptor;
+	const auto* tableOptions = descriptor->cfOptions.table_factory
+		? descriptor->cfOptions.table_factory->GetOptions<rocksdb::BlockBasedTableOptions>()
+		: nullptr;
+	const auto sharedCache = DBSettings::getInstance().peekBlockCache();
+	const bool sharedBlockCache = tableOptions && sharedCache && tableOptions->block_cache == sharedCache;
+
+	napi_value result;
+	napi_value value;
+	NAPI_STATUS_THROWS(::napi_create_object(env, &result));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, sharedBlockCache, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "sharedBlockCache", value));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, descriptor->attachedWriteBufferManager != nullptr, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "writeBufferManager", value));
+	NAPI_STATUS_THROWS(::napi_create_double(env, static_cast<double>(descriptor->cfOptions.arena_block_size), &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "arenaBlockSize", value));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, descriptor->parallelValidation, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "parallelValidation", value));
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, descriptor->commitWorker.maxThreads, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "commitThreads", value));
 	return result;
 }
 
@@ -3147,6 +3176,7 @@ void Database::Init(napi_env env, napi_value exports) {
 		{ "syncWalSync", nullptr, SyncWalSync, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "get", nullptr, Get, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCompression", nullptr, GetCompression, nullptr, nullptr, nullptr, napi_default, nullptr },
+		{ "getOpenSettingsForTesting", nullptr, GetOpenSettingsForTesting, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getLastError", nullptr, GetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "setLastError", nullptr, SetLastError, nullptr, nullptr, nullptr, napi_default, nullptr },
 		{ "getCount", nullptr, GetCount, nullptr, nullptr, nullptr, napi_default, nullptr },

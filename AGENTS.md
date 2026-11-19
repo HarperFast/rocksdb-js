@@ -1233,9 +1233,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     not `uv_timer_t`, for invariant 12's reason.
 
     Three constraints on that thread, each of which has a failure mode:
-    - **Lock order is `databasesMutex -> writeBufferManagerMutex -> watchdogMutex`**, because
-      `DBRegistry::OpenDB` holds `databasesMutex` across `DBDescriptor::open`, which calls
-      `getWriteBufferManager()`. The watchdog drops `watchdogMutex` before every sample and only
+    - **Lock order is `databasesMutex -> columnsMutex -> writeBufferManagerMutex -> watchdogMutex`**,
+      because `DBRegistry::OpenDB` holds `databasesMutex` across `DBDescriptor::open`, which calls
+      `DBSettings::snapshotForOpen()`, and holds a descriptor's `columnsMutex` while it calls
+      `DBSettings::snapshotForColumnFamily()` for a new column family. The watchdog drops `watchdogMutex` before every sample and only
       try-locks the registry and column inventories, so there is no cycle. `ensure` and `disable`
       only arm or park it because they run under higher-order locks and its stderr write may block;
       joining is `DBStats::joinWriteBufferManagerWatchdog()`'s final-teardown job alone. `DBStats::Init()`

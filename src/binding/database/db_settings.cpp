@@ -234,8 +234,6 @@ std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
 }
 
 /**
- * Get the WriteBufferManager instance, lazily creating it on first request.
- *
  * The manager is constructed once and reused across all databases opened in
  * this process. When `costToCache` is enabled, memtable memory is charged
  * against the shared block cache, so both subsystems draw from a single pool.
@@ -245,37 +243,53 @@ std::shared_ptr<rocksdb::Cache> DBSettings::getBlockCache() {
  * database; swapping the instance would orphan any already-open DB. Changes
  * to `buffer_size` use `SetBufferSize()` which is the supported runtime
  * update path.
- *
- * @returns The write buffer manager, or `nullptr` if disabled (size == 0).
  */
-std::shared_ptr<rocksdb::WriteBufferManager> DBSettings::getWriteBufferManager() {
-	const size_t size = writeBufferManagerSize.load(std::memory_order_relaxed);
-	if (size == 0) {
-		return nullptr;
-	}
+OpenSettings DBSettings::snapshotForOpen(bool needBlockCache) {
+	OpenSettings snapshot;
 	std::lock_guard<std::mutex> lock(writeBufferManagerMutex);
-	// Re-check inside the lock: another thread may have torn down the value
-	// (set size=0) between our atomic load and acquiring the lock.
-	if (writeBufferManagerSize.load(std::memory_order_relaxed) == 0) {
-		return nullptr;
+	if (needBlockCache) {
+		snapshot.blockCache = getBlockCache();
 	}
-	if (!writeBufferManager) {
-		std::shared_ptr<rocksdb::Cache> cache;
-		if (writeBufferManagerCostToCache.load(std::memory_order_relaxed)) {
-			cache = getBlockCache(); // may be nullptr if block cache is disabled
+	const size_t size = writeBufferManagerSize.load(std::memory_order_relaxed);
+	if (size > 0) {
+		if (!writeBufferManager) {
+			std::shared_ptr<rocksdb::Cache> cache;
+			if (writeBufferManagerCostToCache.load(std::memory_order_relaxed)) {
+				cache = needBlockCache ? snapshot.blockCache : getBlockCache();
+			}
+			writeBufferManager = std::make_shared<rocksdb::WriteBufferManager>(
+				size,
+				cache,
+				writeBufferManagerAllowStall.load(std::memory_order_relaxed),
+				getWriteBufferManagerFlushPolicy()
+			);
+			DBStats::getInstance().publishWriteBufferManager(writeBufferManager.get());
 		}
-		writeBufferManager = std::make_shared<rocksdb::WriteBufferManager>(
-			writeBufferManagerSize.load(std::memory_order_relaxed),
-			cache,
-			writeBufferManagerAllowStall.load(std::memory_order_relaxed),
-			getWriteBufferManagerFlushPolicy()
-		);
-		DBStats::getInstance().publishWriteBufferManager(writeBufferManager.get());
+		if (writeBufferManagerAllowStall.load(std::memory_order_relaxed)) {
+			DBStats::getInstance().ensureWriteBufferManagerWatchdog();
+		}
+		snapshot.writeBufferManager = writeBufferManager;
+		snapshot.writeBufferManagerBudget = writeBufferManager->buffer_size();
 	}
-	if (writeBufferManagerAllowStall.load(std::memory_order_relaxed)) {
-		DBStats::getInstance().ensureWriteBufferManagerWatchdog();
+	snapshot.occLockBucketCount = occLockBucketCount;
+	snapshot.occValidateSerial = occValidateSerial;
+	snapshot.commitThreads = commitThreads;
+	return snapshot;
+}
+
+ColumnFamilySettings DBSettings::snapshotForColumnFamily(
+	bool needBlockCache,
+	const rocksdb::WriteBufferManager* attached
+) {
+	ColumnFamilySettings snapshot;
+	std::lock_guard<std::mutex> lock(writeBufferManagerMutex);
+	if (needBlockCache) {
+		snapshot.blockCache = getBlockCache();
 	}
-	return writeBufferManager;
+	if (attached) {
+		snapshot.writeBufferManagerBudget = attached->buffer_size();
+	}
+	return snapshot;
 }
 
 /**
@@ -445,7 +459,7 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 			// place (SetBufferSize is atomic). RocksDB asserts new_size > 0,
 			// so when "disabling" via size=0 we leave the existing manager
 			// alone — already-open DBs keep their reference, and subsequent
-			// opens skip the manager entirely (see getWriteBufferManager).
+			// opens skip the manager entirely (see snapshotForOpen).
 			// Runtime size=0 is a "no new attachments" signal, not a teardown.
 			if (*wbmSize > 0 && manager) {
 				manager->SetBufferSize(static_cast<size_t>(*wbmSize));
@@ -468,18 +482,22 @@ napi_value DBSettings::Config(napi_env env, napi_callback_info info) {
 				}
 			}
 		}
-	}
 
-	if (compactOnClose) {
-		settings.compactOnClose = *compactOnClose;
+		if (occLockBuckets) {
+			settings.occLockBucketCount = static_cast<uint32_t>(*occLockBuckets);
+		}
+		if (occValidateSerial) {
+			settings.occValidateSerial = *occValidateSerial;
+		}
+		if (commitThreads) {
+			settings.commitThreads = static_cast<uint32_t>(*commitThreads);
+		}
+		storeIfSet(settings.compactOnClose, compactOnClose);
+		storeIfSet(settings.lifecycleWaitSeconds, lifecycleWaitSeconds);
+		storeIfSet(settings.transactionLogAbortMarkers, abortMarkers);
+		storeIfSet(settings.transactionLogWriteIntents, writeIntents);
+		storeIfSet(settings.shutdownOnExit, shutdownOnExit);
 	}
-	storeIfSet(settings.lifecycleWaitSeconds, lifecycleWaitSeconds);
-	storeIfSet(settings.occLockBucketCount, occLockBuckets);
-	storeIfSet(settings.occValidateSerial, occValidateSerial);
-	storeIfSet(settings.commitThreads, commitThreads);
-	storeIfSet(settings.transactionLogAbortMarkers, abortMarkers);
-	storeIfSet(settings.transactionLogWriteIntents, writeIntents);
-	storeIfSet(settings.shutdownOnExit, shutdownOnExit);
 
 	if (enableStallAfterDrain) {
 		// A stalling manager can block a synchronous write on the JS thread
