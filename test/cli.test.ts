@@ -375,13 +375,13 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				const dbPath = tempDBPath();
 				seed(dbPath, { a: 'one' });
 				// The error is emitted synchronously mid-command, while the database is still open, and
-				// close() throws only after that: only the handler's own closeAllDatabases() can.
+				// close() throws only during that emission: only the handler's own closeAllDatabases() can.
 				const preload = [
 					`import { RocksDatabase } from ${JSON.stringify(distIndexURL)};`,
 					`let armed = false;`,
 					`const close = RocksDatabase.prototype.close;`,
 					`RocksDatabase.prototype.close = function () { if (armed) throw new Error('injected close failure'); close.call(this); };`,
-					`process.stdout.write = function () { const e = new Error('write ${code}'); e.code = '${code}'; armed = true; this.emit('error', e); return true; };`,
+					`process.stdout.write = function () { const e = new Error('write ${code}'); e.code = '${code}'; armed = true; try { this.emit('error', e); } finally { armed = false; } return true; };`,
 				].join('\n');
 				const result = await cli([dbPath, 'get', 'a'], {
 					nodeArgs: ['--import', `data:text/javascript,${encodeURIComponent(preload)}`],
