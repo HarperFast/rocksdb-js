@@ -21,8 +21,9 @@ const rawPrefix = /^(?:u8|u|U|L)?R$/;
 const blank = (text: string) => text.replace(/[^\n]/g, ' ');
 
 /**
- * Returns `code` with comments and literals blanked, and `directives` with only comments blanked,
- * so `#include "assert.h"` is still visible. Newlines are kept, so offsets map to the right line.
+ * Returns `code` with comments and literals blanked, and `directives` with comments and raw strings
+ * blanked, so `#include "assert.h"` stays visible but a multi-line raw string cannot fake a directive.
+ * Newlines are kept, so offsets map to the right line.
  */
 function mask(source: string): { code: string; directives: string } {
 	const code: string[] = [];
@@ -34,7 +35,7 @@ function mask(source: string): { code: string; directives: string } {
 	};
 	const keep = (text: string) => emit(text, text, text);
 	const literal = (text: string) => emit(text, blank(text), text);
-	const comment = (text: string) => emit(text, blank(text), blank(text));
+	const hidden = (text: string) => emit(text, blank(text), blank(text));
 	const match = (pattern: RegExp, at: number) => {
 		pattern.lastIndex = at;
 		return pattern.exec(source);
@@ -47,17 +48,17 @@ function mask(source: string): { code: string; directives: string } {
 		const number = name ? undefined : match(ppNumber, i)?.[0];
 		if (source.startsWith('//', i)) {
 			const end = source.indexOf('\n', i);
-			i += comment(source.slice(i, end < 0 ? source.length : end));
+			i += hidden(source.slice(i, end < 0 ? source.length : end));
 		} else if (source.startsWith('/*', i)) {
 			const end = source.indexOf('*/', i + 2);
-			i += comment(source.slice(i, end < 0 ? source.length : end + 2));
+			i += hidden(source.slice(i, end < 0 ? source.length : end + 2));
 		} else if (name) {
 			const after = i + name.length;
 			const raw = rawPrefix.test(name) ? match(rawOpen, after) : null;
 			if (raw) {
 				const close = `)${raw[1]}"`;
 				const end = source.indexOf(close, after + raw[0].length);
-				i += literal(source.slice(i, end < 0 ? source.length : end + close.length));
+				i += hidden(source.slice(i, end < 0 ? source.length : end + close.length));
 			} else {
 				i += keep(name);
 				if (literalPrefix.test(name) && (source[i] === '"' || source[i] === "'")) {
