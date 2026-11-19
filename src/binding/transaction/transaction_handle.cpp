@@ -334,20 +334,17 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 	return iterator;
 }
 
-bool TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
-	uint32_t previous;
-	{
-		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-		// Erase even an idle entry: closeIterators() waits for the map to empty.
-		if (this->activeIterators.erase(iterator) == 0 || iterator->idle) {
-			return true;
-		}
-		previous = releaseBusyIteratorLocked(this->activeIteratorCount);
+void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) {
+	checkOrphan = false;
+	countUnderflow = false;
+	std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+	// Erase even an idle entry: closeIterators() waits for the map to empty.
+	if (this->activeIterators.erase(iterator) == 0 || iterator->idle) {
+		return;
 	}
-	if (previous <= 1) {
-		this->closeOrphanIfUnused();
-	}
-	return previous > 0;
+	const uint32_t previous = releaseBusyIteratorLocked(this->activeIteratorCount);
+	countUnderflow = previous == 0;
+	checkOrphan = previous <= 1;
 }
 
 void TransactionHandle::reportIteratorCountUnderflow() noexcept {

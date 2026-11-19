@@ -111,7 +111,9 @@ void DBIteratorHandle::close() {
 }
 
 bool DBIteratorHandle::closeIfOpen() {
-	bool countConsistent = true;
+	std::shared_ptr<TransactionHandle> txnHandle;
+	bool checkOrphan = false;
+	bool countUnderflow = false;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorMutex);
 		DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
@@ -126,12 +128,16 @@ bool DBIteratorHandle::closeIfOpen() {
 		}
 		if (this->txnHandle && this->transactionRegistered) {
 			this->transactionRegistered = false;
-			auto txnHandle = std::move(this->txnHandle);
-			countConsistent = txnHandle->unregisterIterator(this);
+			txnHandle = std::move(this->txnHandle);
+			txnHandle->unregisterIterator(this, checkOrphan, countUnderflow);
 		}
 	}
-	if (!countConsistent) {
+	if (countUnderflow) {
 		TransactionHandle::reportIteratorCountUnderflow();
+	}
+	// Closes every registered handle, so it runs without `iteratorMutex`.
+	if (checkOrphan) {
+		txnHandle->closeOrphanIfUnused();
 	}
 	return true;
 }
