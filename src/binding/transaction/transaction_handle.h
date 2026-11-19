@@ -675,8 +675,8 @@ public:
 
 	/**
 	 * Null when the call may use the transaction and its own database handle; otherwise
-	 * `closedMessage` for a closed transaction, or "Database not open" when the owner has since closed
-	 * or reopened that handle.
+	 * `closedMessage` (never null) for a closed transaction, or "Database not open" when the owner has
+	 * since closed or reopened that handle.
 	 */
 	const char* refusal(const char* closedMessage) const {
 		if (!this->admittedCall) {

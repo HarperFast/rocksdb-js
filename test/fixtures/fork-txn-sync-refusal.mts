@@ -1,5 +1,9 @@
 import { registryStatus, RocksDatabase, shutdown, Transaction } from '../../src/index.ts';
-import { constants, NativeIterator } from '../../src/load-binding.ts';
+import {
+	constants,
+	isTransactionCloseDelayedForTesting,
+	NativeIterator,
+} from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -9,10 +13,12 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 // layer's open check, once admission has to refuse it:
 // - `closing`: a foreign shutdown() has closed the transaction and the database this worker still
 //   holds a handle to.
+// - `cancelling`: a foreign shutdown() is inside the transaction's close(), past its cancellation and
+//   before it deletes the transaction (ROCKSDB_JS_TXN_CLOSE_DELAY_MS holds it there).
 // - `detached`: the transaction's owner closed its own handle; another handle keeps the database open.
 // - `reentrant`: JavaScript that the native call runs itself aborts the transaction or closes its
 //   handle; the call must neither wait on its own admission nor dereference the closed handle.
-type Mode = 'closing' | 'detached' | 'reentrant';
+type Mode = 'closing' | 'cancelling' | 'detached' | 'reentrant';
 
 async function callEntryPoints(
 	db: RocksDatabase,
@@ -47,7 +53,7 @@ async function callEntryPoints(
 }
 
 const mode = (isMainThread ? process.argv[3] : workerData.mode) as Mode;
-assert(mode === 'closing' || mode === 'detached' || mode === 'reentrant');
+assert(['closing', 'cancelling', 'detached', 'reentrant'].includes(mode));
 
 if (mode === 'reentrant') {
 	const path = process.argv[2];
@@ -140,10 +146,15 @@ if (mode === 'reentrant') {
 	try {
 		assert.deepEqual(await once(worker, 'message'), ['ready']);
 		const result = once(worker, 'message');
+		if (mode === 'cancelling') {
+			worker.postMessage('run');
+		}
 		shutdown();
 		assert.equal(registryStatus().length, 0);
-		worker.postMessage('run');
-		// The shutdown closed the transaction, so each call reports it as closed.
+		if (mode === 'closing') {
+			worker.postMessage('run');
+		}
+		// The transaction is closed, or its close has begun, so each call reports it as closed.
 		const closed = 'Transaction is closed';
 		assert.deepEqual(await result, [
 			{
@@ -156,7 +167,9 @@ if (mode === 'reentrant') {
 				putSync: `Operation aborted: ${closed}`,
 				removeSync: `Operation aborted: ${closed}`,
 				useLog: closed,
-				setTimestamp: 'Cannot set timestamp: transaction is not pending',
+				// Mid-close the transaction is still pending, so only admission refuses it.
+				setTimestamp:
+					mode === 'cancelling' ? closed : 'Cannot set timestamp: transaction is not pending',
 				abandonWrites: 'ok',
 			},
 		]);
@@ -172,6 +185,12 @@ if (mode === 'reentrant') {
 	txn.getSync('key');
 	parentPort!.postMessage('ready');
 	await once(parentPort!, 'message');
+	if (workerData.mode === 'cancelling') {
+		const deadline = Date.now() + 5000;
+		while (!isTransactionCloseDelayedForTesting()) {
+			assert(Date.now() < deadline, 'the foreign close never reached its delay');
+		}
+	}
 	parentPort!.postMessage(await callEntryPoints(db, txn));
 	parentPort!.close();
 }

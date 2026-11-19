@@ -3,10 +3,12 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-function runFixture(fixture: string, args: string[]) {
+function runFixture(fixture: string, args: string[], env: Record<string, string> = {}) {
 	return new Promise<{ code: number | null; signal: string | null; output: string }>(
 		(resolve, reject) => {
-			const child = spawn(process.execPath, [join(__dirname, 'fixtures', fixture), ...args]);
+			const child = spawn(process.execPath, [join(__dirname, 'fixtures', fixture), ...args], {
+				env: { ...process.env, ...env },
+			});
 			let output = '';
 			child.stdout.on('data', (chunk) => (output += chunk));
 			child.stderr.on('data', (chunk) => (output += chunk));
@@ -40,10 +42,14 @@ describe('Synchronous transaction calls vs. a foreign shutdown', () => {
 		);
 	});
 
-	it.each(['closing', 'detached', 'reentrant'])(
+	it.each(['closing', 'cancelling', 'detached', 'reentrant'])(
 		'refuses calls whose transaction or handle is gone (%s)',
 		async (mode) => {
-			const result = await runFixture('fork-txn-sync-refusal.mts', [generateDBPath(), mode]);
+			const result = await runFixture(
+				'fork-txn-sync-refusal.mts',
+				[generateDBPath(), mode],
+				mode === 'cancelling' ? { ROCKSDB_JS_TXN_CLOSE_DELAY_MS: '1000' } : {}
+			);
 			expect(result, result.output).toMatchObject({ code: 0, signal: null });
 			expect(result.output).toContain('SUCCESS');
 		},

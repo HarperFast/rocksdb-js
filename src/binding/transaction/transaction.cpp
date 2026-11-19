@@ -1840,7 +1840,7 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 		ROCKSDB_STATUS_THROWS_ERROR_LIKE(rocksdb::Status::Aborted("Transaction is closed"), "Transaction put failed");
 		return nullptr;
 	}
-	if (const char* refusal = operation.refusal(nullptr)) {
+	if (const char* refusal = operation.refusal("Transaction is closed")) {
 		::napi_throw_error(env, nullptr, refusal);
 		return nullptr;
 	}
@@ -1875,7 +1875,7 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 		ROCKSDB_STATUS_THROWS_ERROR_LIKE(rocksdb::Status::Aborted("Transaction is closed"), "Transaction remove failed");
 		return nullptr;
 	}
-	if (const char* refusal = operation.refusal(nullptr)) {
+	if (const char* refusal = operation.refusal("Transaction is closed")) {
 		::napi_throw_error(env, nullptr, refusal);
 		return nullptr;
 	}
@@ -1972,7 +1972,7 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 		// A closed transaction has txn/dbHandle reset, and a transaction whose
 		// database handle was closed (db.close() with the txn still open) keeps
 		// dbHandle but loses its descriptor.
-		if (operation.refusal(nullptr) || !(*txnHandle)->txn || !(*txnHandle)->dbHandle ||
+		if (operation.refusal("Transaction is closed") || !(*txnHandle)->txn || !(*txnHandle)->dbHandle ||
 			!(*txnHandle)->dbHandle->descriptor) {
 			::napi_throw_error(env, nullptr, "Transaction is closed");
 			return nullptr;
@@ -2009,7 +2009,7 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 
 	{
 		TransactionOperation operation(**txnHandle);
-		if (operation.refusal(nullptr) || !(*txnHandle)->txn || (*txnHandle)->dbHandle != ownHandle ||
+		if (operation.refusal("Transaction is closed") || !(*txnHandle)->txn || (*txnHandle)->dbHandle != ownHandle ||
 			!ownHandle->descriptor) {
 			::napi_throw_error(env, nullptr, "Transaction is closed");
 			return nullptr;

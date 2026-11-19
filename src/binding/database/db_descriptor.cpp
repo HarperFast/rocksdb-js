@@ -616,7 +616,13 @@ void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
 	// transaction makes only that transaction's close() wait (transaction/DESIGN.md, "Synchronous
 	// admission"). Transaction::Constructor's operation keeps new ones out once closing.
 	while (!this->transactions.empty()) {
-		auto it = this->transactions.begin();
+		// Idle ones first: a pessimistic write blocked on a row lock waits for its holder's close.
+		auto it = std::find_if(this->transactions.begin(), this->transactions.end(), [](const auto& entry) {
+			return entry.second->activeAsyncWorkCount.load() == 0;
+		});
+		if (it == this->transactions.end()) {
+			it = this->transactions.begin();
+		}
 		std::shared_ptr<TransactionHandle> txnHandle = std::move(it->second);
 		this->transactions.erase(it);
 		this->closables.erase(txnHandle.get());
