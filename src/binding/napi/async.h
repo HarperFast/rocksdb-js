@@ -5,8 +5,11 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <mutex>
+#include <new>
 #include "core/debug.h"
+#include "core/test_seam.h"
 #include "napi/binding.h"
 #include "napi/status_macros.h"
 #include "napi/macros.h"
@@ -35,6 +38,17 @@ struct BaseAsyncState {
 		asyncWork(nullptr),
 		resolveRef(nullptr),
 		rejectRef(nullptr) {}
+
+	static void* operator new(std::size_t size) {
+		if (consumeAsyncExceptionForTesting(AsyncExceptionStage::State)) {
+			throw std::bad_alloc();
+		}
+		return ::operator new(size);
+	}
+
+	static void operator delete(void* pointer) noexcept {
+		::operator delete(pointer);
+	}
 
 	virtual ~BaseAsyncState() {
 		this->resolveRef = nullptr;
@@ -66,13 +80,6 @@ struct BaseAsyncState {
 			return;
 		}
 
-		if (this->rejectRef != nullptr) {
-			DEBUG_LOG("%p BaseAsyncState::callResolve Deleting usused reject reference\n", this);
-			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
-			DEBUG_LOG("%p BaseAsyncState::callResolve Reject reference deleted successfully\n", this);
-			this->rejectRef = nullptr;
-		}
-
 		napi_value global;
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_get_global(this->env, &global), "Failed to get global object");
 
@@ -84,23 +91,13 @@ struct BaseAsyncState {
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_call_function(this->env, global, resolve, result ? 1 : 0, result ? &result : nullptr, nullptr), "Failed to call resolve function");
 		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve function completed successfully\n", this);
 
-		DEBUG_LOG("%p BaseAsyncState::callResolve Deleting resolve reference\n", this);
-		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
-		DEBUG_LOG("%p BaseAsyncState::callResolve Resolve reference deleted successfully\n", this);
-		this->resolveRef = nullptr;
+		this->deleteCallbackRefs();
 	}
 
 	void callReject(napi_value error) {
 		if (this->rejectRef == nullptr) {
 			DEBUG_LOG("%p BaseAsyncState::callReject rejectRef is null\n", this);
 			return;
-		}
-
-		if (this->resolveRef != nullptr) {
-			DEBUG_LOG("%p BaseAsyncState::callReject Deleting usused resolve reference\n", this);
-			NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->resolveRef), "Failed to delete reference to resolve function");
-			DEBUG_LOG("%p BaseAsyncState::callReject Resolve reference deleted successfully\n", this);
-			this->resolveRef = nullptr;
 		}
 
 		napi_value global;
@@ -114,10 +111,18 @@ struct BaseAsyncState {
 		NAPI_STATUS_THROWS_ERROR_VOID(::napi_call_function(this->env, global, reject, 1, &error, nullptr), "Failed to call reject function");
 		DEBUG_LOG("%p BaseAsyncState::callReject Reject function completed successfully\n", this);
 
-		DEBUG_LOG("%p BaseAsyncState::callReject Deleting reject reference\n", this);
-		NAPI_STATUS_THROWS_ERROR_VOID(::napi_delete_reference(this->env, this->rejectRef), "Failed to delete reference to reject function");
-		DEBUG_LOG("%p BaseAsyncState::callReject Reject reference deleted successfully\n", this);
-		this->rejectRef = nullptr;
+		this->deleteCallbackRefs();
+	}
+
+	void deleteCallbackRefs() noexcept {
+		if (this->resolveRef != nullptr) {
+			::napi_delete_reference(this->env, this->resolveRef);
+			this->resolveRef = nullptr;
+		}
+		if (this->rejectRef != nullptr) {
+			::napi_delete_reference(this->env, this->rejectRef);
+			this->rejectRef = nullptr;
+		}
 	}
 
 	void signalExecuteCompleted() {
@@ -134,6 +139,107 @@ struct BaseAsyncState {
 		}
 	}
 };
+
+constexpr const char* OUT_OF_MEMORY_CODE = "ERR_OUT_OF_MEMORY";
+
+/**
+ * Wraps an async N-API entry point: N-API calls it from C, so a C++ exception that escaped it
+ * would terminate the process. Its JS caller runs it inside a `new Promise` executor, so the
+ * thrown JS error rejects that promise. Only wrap entry points whose setup releases what it took
+ * (registrations, in-flight claims, state) by RAII, since the exception unwinds through it.
+ */
+template <napi_callback Entry>
+napi_value guardAsyncEntry(napi_env env, napi_callback_info info) noexcept {
+	try {
+		return Entry(env, info);
+	} catch (const std::bad_alloc&) {
+		::napi_throw_error(env, OUT_OF_MEMORY_CODE, "Out of memory");
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+	} catch (...) {
+		::napi_throw_error(env, nullptr, "Unexpected native error");
+	}
+	return nullptr;
+}
+
+/**
+ * Runs the work of an async execute callback on its libuv thread, turning an exception into a
+ * message-free `state->status` (building a message could throw again) for the completion to reject
+ * with. Steps that must run whether or not the work threw — releasing pins and claims,
+ * `signalExecuteCompleted()` — belong after this call.
+ */
+template <typename State, typename Work>
+void runAsyncExecute(State* state, Work&& work) noexcept {
+	try {
+		if (consumeAsyncExceptionForTesting(AsyncExceptionStage::Execute)) {
+			throw std::bad_alloc();
+		}
+		work();
+	} catch (const std::bad_alloc&) {
+		state->status = rocksdb::Status::MemoryLimit();
+	} catch (...) {
+		state->status = rocksdb::Status::Aborted();
+	}
+}
+
+/**
+ * Rejects `state`'s promise using N-API calls alone, without the throwing status macros, so it can
+ * run inside a `noexcept` handler. A pending JS exception is taken as the error, since N-API calls
+ * fail while one is pending.
+ */
+template <typename State>
+void rejectAsyncState(napi_env env, State* state, const char* code, const char* message) noexcept {
+	if (state->rejectRef == nullptr) {
+		return;
+	}
+	napi_value error = nullptr;
+	bool pending = false;
+	if (::napi_is_exception_pending(env, &pending) != napi_ok || !pending) {
+		napi_value codeValue = nullptr;
+		napi_value messageValue;
+		if (code != nullptr && ::napi_create_string_utf8(env, code, NAPI_AUTO_LENGTH, &codeValue) != napi_ok) {
+			codeValue = nullptr;
+		}
+		if (::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &messageValue) != napi_ok ||
+			::napi_create_error(env, codeValue, messageValue, &error) != napi_ok) {
+			error = nullptr;
+		}
+	}
+	if (error == nullptr && ::napi_get_and_clear_last_exception(env, &error) != napi_ok) {
+		::napi_get_undefined(env, &error);
+	}
+	napi_value global;
+	napi_value reject;
+	// Without a call the references are kept rather than dropped, so nothing claims the promise
+	// settled.
+	if (error != nullptr && ::napi_get_global(env, &global) == napi_ok &&
+		::napi_get_reference_value(env, state->rejectRef, &reject) == napi_ok &&
+		::napi_call_function(env, global, reject, 1, &error, nullptr) == napi_ok) {
+		state->deleteCallbackRefs();
+	}
+}
+
+/**
+ * Runs the settling part of an async complete callback. When it throws, or returns without
+ * settling (a status macro bailed out), the promise is rejected instead. Releasing the state belongs
+ * after this call.
+ */
+template <typename State, typename Settle>
+void runAsyncComplete(napi_env env, State* state, Settle&& settle) noexcept {
+	try {
+		if (consumeAsyncExceptionForTesting(AsyncExceptionStage::Complete)) {
+			throw std::bad_alloc();
+		}
+		settle();
+	} catch (const std::bad_alloc&) {
+		rejectAsyncState(env, state, OUT_OF_MEMORY_CODE, "Out of memory");
+		return;
+	} catch (...) {
+		rejectAsyncState(env, state, nullptr, "Unexpected native error");
+		return;
+	}
+	rejectAsyncState(env, state, nullptr, "Failed to settle the operation");
+}
 
 struct AsyncWorkHandle {
 	std::atomic<bool> cancelled{ false };
@@ -264,6 +370,49 @@ struct AsyncWorkHandle {
 };
 
 /**
+ * Holds one async-work admission on `handle` until it is released to its new
+ * owner or goes out of scope. Transaction reads use it to keep a target
+ * DBHandle open while they pin its column descriptor; async setup uses it so a
+ * failure, including an exception, before the state takes the admission over
+ * does not strand it.
+ *
+ * Admission can be refused if `handle`'s cancellation was already published
+ * (a concurrent close); `admitted` tracks that so the destructor only
+ * unregisters a claim it actually holds — unregistering an admission that
+ * never succeeded would underflow the target's active-work count and could
+ * make a later close() stop waiting while real work is still outstanding.
+ * Callers must check `ok()` after construction and treat a false result the
+ * same as the target already being closed.
+ */
+struct ScopedAsyncWorkRegistration {
+	AsyncWorkHandle* handle;
+	bool admitted;
+
+	explicit ScopedAsyncWorkRegistration(AsyncWorkHandle* handle) : handle(handle), admitted(false) {
+		if (this->handle) {
+			this->admitted = this->handle->registerAsyncWork();
+		}
+	}
+
+	~ScopedAsyncWorkRegistration() {
+		if (this->handle && this->admitted) {
+			this->handle->unregisterAsyncWork();
+		}
+	}
+
+	ScopedAsyncWorkRegistration(const ScopedAsyncWorkRegistration&) = delete;
+	ScopedAsyncWorkRegistration& operator=(const ScopedAsyncWorkRegistration&) = delete;
+
+	bool ok() const {
+		return !this->handle || this->admitted;
+	}
+
+	void release() {
+		this->handle = nullptr;
+	}
+};
+
+/**
  * Owns a not-yet-queued `state` during N-API setup: an early return deletes it with its promise
  * references and async work. Set `state->completed` while this owns a state that holds no async
  * work registration, so the destructor does not release one; `release()` once the work is queued.
@@ -323,15 +472,7 @@ bool admitAsyncWorkOrReject(napi_env env, AsyncWorkHandle* handle, State* state,
 		}
 	}
 
-	napi_value error = nullptr;
-	napi_value messageValue;
-	if (::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &messageValue) == napi_ok) {
-		::napi_create_error(env, nullptr, messageValue, &error);
-	}
-	if (error == nullptr) {
-		::napi_get_undefined(env, &error);
-	}
-	state->callReject(error);
+	rejectAsyncState(env, state, nullptr, message);
 
 	delete state;
 	return false;
@@ -376,15 +517,7 @@ bool queueAsyncWorkOrReject(napi_env env, State* state, const char* message, boo
 		}
 	}
 
-	napi_value error = nullptr;
-	napi_value messageValue;
-	if (::napi_create_string_utf8(env, message, NAPI_AUTO_LENGTH, &messageValue) == napi_ok) {
-		::napi_create_error(env, nullptr, messageValue, &error);
-	}
-	if (error == nullptr) {
-		::napi_get_undefined(env, &error);
-	}
-	state->callReject(error);
+	rejectAsyncState(env, state, nullptr, message);
 
 	delete state;
 	return false;

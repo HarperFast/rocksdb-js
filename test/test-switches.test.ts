@@ -18,6 +18,7 @@ const nonDefaultArgs: Record<string, unknown[]> = {
 	setTransactionReadDelayForTesting: [1000],
 	setTransactionCommitAdmissionDelayForTesting: [1000],
 	setWriteBufferManagerJoinDelayForTesting: [1, 1000],
+	forceAsyncExceptionForTesting: [1, 1],
 };
 
 const exportedSetters = Object.keys(binding).filter(
