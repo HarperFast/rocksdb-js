@@ -404,15 +404,13 @@ describe('Destroy', () => {
 	}, 15_000);
 
 	it.each([
-		// A foreign destroy waits for calls in flight on two handles; reopening from
-		// inside the main thread's call is refused.
-		['destroy', 'waits for synchronous calls on every handle before a foreign destroy'],
+		['destroy', "waits for the main handle's synchronous call before a foreign destroy"],
+		['destroy-holder-last', "waits for another handle's synchronous call before a foreign destroy"],
 		['reentrant', 'refuses close() and destroy() from inside a synchronous call'],
 		['callback-close', 'lets a synchronous resolve callback close the database'],
 	])(
 		'%s: %s',
 		async (mode) => {
-			// See fork-sync-operation-destroy.mts.
 			await runDestroyFixture(syncOperationDestroyFixture, generateDBPath(), undefined, [mode]);
 		},
 		15_000

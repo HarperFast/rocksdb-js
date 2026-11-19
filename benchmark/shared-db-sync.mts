@@ -61,7 +61,6 @@ if (isMainThread) {
 	for (const s of states) s.worker.postMessage('go');
 	await Promise.all(states.map((s) => s.done));
 	const elapsed = performance.now() - start;
-	// Each worker closes its database after reporting, then exits.
 	await Promise.all(states.map((s) => s.exited));
 	for (const db of holders) db.close();
 	rmSync(root, { recursive: true, force: true });

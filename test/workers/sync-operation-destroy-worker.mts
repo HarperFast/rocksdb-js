@@ -20,7 +20,6 @@ const signal = (index: number, value: number) => {
 
 port.on('message', (message: string) => {
 	if (message === 'hold') {
-		// A second handle inside a guarded call until the parent releases it.
 		let holdError: unknown;
 		try {
 			(db as any).store.db.getCount(

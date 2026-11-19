@@ -3,7 +3,7 @@ import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 
 // Holds native getCount() calls open in options getters, which run after the
-// call's admission. Modes: destroy, reentrant, callback-close (see destroy.test.ts).
+// call's admission. Modes: destroy, destroy-holder-last, reentrant, callback-close.
 
 const DESTROY = 0;
 const HOLDER = 1;
@@ -49,7 +49,7 @@ function waitUntil(state: Int32Array, index: number, from: number, what: string)
 	}
 }
 
-if (mode === 'destroy') {
+if (mode === 'destroy' || mode === 'destroy-holder-last') {
 	const db = RocksDatabase.open(path);
 	db.putSync('key', 'value');
 	const native = (db as any).store.db;
@@ -61,6 +61,13 @@ if (mode === 'destroy') {
 	holder.worker.postMessage('hold');
 	waitUntil(state, HOLDER, 0, 'the second handle to enter its call');
 
+	// Each order leaves one handle alone holding the destroy for the 300 ms
+	// check, so a drain that skipped either handle fails one of them.
+	const releaseHolder = () => {
+		Atomics.store(state, RELEASE, 1);
+		Atomics.notify(state, RELEASE);
+		waitUntil(state, HOLDER, 1, 'the second handle to leave its call');
+	};
 	let observed = '';
 	const callError = holdInGetCount(native, () => {
 		destroyer.worker.postMessage('destroy');
@@ -70,10 +77,15 @@ if (mode === 'destroy') {
 			if (Date.now() > deadline) throw new Error('destroy never published closing');
 			Atomics.wait(state, DESTROY, 1, 5);
 		}
-		observed =
-			Atomics.wait(state, DESTROY, 1, 300) === 'timed-out'
-				? 'waited'
-				: 'destroy returned while the main thread was inside a synchronous call';
+		if (mode === 'destroy') {
+			releaseHolder();
+			observed =
+				Atomics.wait(state, DESTROY, 1, 300) === 'timed-out'
+					? 'waited'
+					: 'destroy returned while the main thread was inside a synchronous call';
+		} else {
+			observed = 'waited';
+		}
 		// Reopening would replace the descriptor this call borrows, and would
 		// wait for the destroy that is waiting for this call.
 		try {
@@ -90,11 +102,12 @@ if (mode === 'destroy') {
 		throw new Error(`Expected the scan to observe the close, got ${String(callError)}`);
 	}
 
-	if (Atomics.wait(state, DESTROY, 1, 300) !== 'timed-out') {
-		throw new Error('destroy returned while the second handle was inside a synchronous call');
+	if (mode === 'destroy-holder-last') {
+		if (Atomics.wait(state, DESTROY, 1, 300) !== 'timed-out') {
+			throw new Error('destroy returned while the second handle was inside a synchronous call');
+		}
+		releaseHolder();
 	}
-	Atomics.store(state, RELEASE, 1);
-	Atomics.notify(state, RELEASE);
 
 	const held = await holder.done;
 	if (!String(held.error).includes('Database is closing')) {
