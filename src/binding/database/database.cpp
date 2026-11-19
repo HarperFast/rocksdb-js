@@ -1505,6 +1505,10 @@ napi_value Database::GetOpenSettingsForTesting(napi_env env, napi_callback_info 
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "arenaBlockSize", value));
 	NAPI_STATUS_THROWS(::napi_get_boolean(env, descriptor->parallelValidation, &value));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "parallelValidation", value));
+	NAPI_STATUS_THROWS(::napi_create_uint32(env, descriptor->occLockBuckets, &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "occLockBuckets", value));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, descriptor->attachedWriteBufferManager && descriptor->attachedWriteBufferManager->cost_to_cache(), &value));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "writeBufferManagerCostToCache", value));
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, descriptor->commitWorker.maxThreads, &value));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, result, "commitThreads", value));
 	return result;

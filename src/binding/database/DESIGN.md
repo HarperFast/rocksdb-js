@@ -48,8 +48,10 @@ an open that spans a `config()` combine two calls; the OCC and commit-thread fie
 no getter outside the snapshot. The snapshot lock is released before `DB::Open`, so `config()` never
 waits for open I/O. A column family added to an already-open database reads the live cache and its
 database's manager budget together through `snapshotForColumnFamily()`.
-`test/fixtures/fork-config-open-snapshot.mts` flips the cache, manager budget, `occValidation` and
-`commitThreads`; it cannot observe `occLockBuckets`.
+`test/fixtures/fork-config-open-snapshot.mts` flips the cache, manager budget, `occValidation`,
+`occLockBuckets` (kept on the descriptor for the probe) and `commitThreads`, pinning one open to
+each settings phase before racing the rest. Its `cost-to-cache` mode sets `writeBufferManagerCostToCache`
+before the manager exists, since it cannot change afterwards.
 
 # Commit threads: concurrent RocksDB commits per database
 
