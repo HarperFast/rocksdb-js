@@ -1181,6 +1181,31 @@ struct UserSharedBufferFinalizeData final {
 	) : key(k), dbHandle(d), sharedData(std::move(data)), listener(std::move(listener)) {}
 };
 
+/** Writers plus one reference for the family; see core/DESIGN.md, participation. */
+class NonVerifyingWriterCount final {
+	std::atomic<uint32_t> references{ 1 };
+
+public:
+	NonVerifyingWriterCount() = default;
+	NonVerifyingWriterCount(const NonVerifyingWriterCount&) = delete;
+	NonVerifyingWriterCount& operator=(const NonVerifyingWriterCount&) = delete;
+
+	/** Valid only through the owning family, which holds one reference. */
+	uint32_t writers() const {
+		return this->references.load() - 1;
+	}
+
+	void acquire() {
+		this->references.fetch_add(1);
+	}
+
+	void release() noexcept {
+		if (this->references.fetch_sub(1) == 1) {
+			delete this;
+		}
+	}
+};
+
 /**
  * Contains the column family handle and map of user shared buffers.
  */
@@ -1261,11 +1286,13 @@ struct ColumnFamilyDescriptor final {
 
 	std::atomic<uint32_t> nonVerifyingHandles{ 0 };
 
+	NonVerifyingWriterCount* const nonVerifyingWriters = new NonVerifyingWriterCount();
+
 	/**
-	 * Highest transaction id that may hold a write staged through a detached
-	 * non-participating handle; 0 until one detaches.
+	 * Set once a non-participating handle detaches; such a handle may have
+	 * seeded a slot its own writes left stale, so an opt-in settles them.
 	 */
-	std::atomic<uint64_t> nonVerifyingTransactionWatermark{ 0 };
+	std::atomic<bool> nonVerifyingHandleDetached{ false };
 
 	ColumnFamilyDescriptor(
 		std::shared_ptr<rocksdb::ColumnFamilyHandle> column,
@@ -1276,6 +1303,7 @@ struct ColumnFamilyDescriptor final {
 
 	~ColumnFamilyDescriptor() {
 		DEBUG_LOG("%p ColumnFamilyDescriptor::~ColumnFamilyDescriptor destroying column family descriptor\n", this);
+		this->nonVerifyingWriters->release();
 	}
 };
 
