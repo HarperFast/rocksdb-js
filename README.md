@@ -1659,7 +1659,9 @@ db.on('error', (err) => {
 ### Event: `'aftercommit'`
 
 The `'aftercommit'` event is emitted after a transaction has been committed and the transaction has
-completed including waiting for the async worker thread to finish.
+completed including waiting for the async worker thread to finish. If the database closed after the
+commit landed, the event is not emitted; `commit()` and `commitSync()` still succeed and a process-wide
+`'log.warn'` event is emitted instead.
 
 - `result: object`
   - `next: null`

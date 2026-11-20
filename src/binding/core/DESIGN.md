@@ -86,11 +86,10 @@ agree across every handle on a column family once any of them participates.
   holds no write intent, so a slot seeded after the switch would survive its commit. The open is
   refused with `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle is attached
   (`nonVerifyingHandles`). After one has detached, it is also refused while a transaction that
-  existed when it detached is still open (ids up to `nonVerifyingTransactionWatermark`; a closed
-  one can stay registered after its own handle closes),
+  existed when it detached is still open (ids up to `nonVerifyingTransactionWatermark`; one stays
+  registered until its `close()` has deleted it, even after its own handle closes),
   since that transaction may hold a write staged through it, or while any descriptor operation is in
-  flight: env teardown removes a transaction from the registry before its admitted commit finishes,
-  and that commit still holds `operationsInFlight`. The switch then settles every slot, since that
+  flight, such as a commit still executing. The switch then settles every slot, since that
   handle could seed a slot (`populateVersion()`) that its own writes left stale.
 
 `test/verification-table.test.ts` (`participation is per column family`) covers both.

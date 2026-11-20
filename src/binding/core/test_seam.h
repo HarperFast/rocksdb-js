@@ -84,18 +84,41 @@ inline std::atomic<bool>& txnCloseDelayActive() {
 	return active;
 }
 
-// A child-process-only latch: one transaction close waits until its descriptor's
-// drain records the operation count. No timer can release the close first.
+// A child-process-only latch: the first transaction close to reach it after its drain
+// parks until a foreign close records how it was protected. No timer can release it.
 struct TransactionCloseDrainLatch {
+	enum Outcome : int {
+		Parked = 0,
+		GuardedAtDrain,
+		AwaitedByClose,
+		// finishClose() passed its closables sweep with the close parked or unfinished.
+		Missed,
+	};
 	std::atomic<bool> enabled{ false };
+	std::atomic<void*> handle{ nullptr };
 	std::atomic<void*> descriptor{ nullptr };
-	std::atomic<int> operations{ -1 };
+	std::atomic<int> outcome{ Parked };
 	std::atomic<bool> finished{ false };
+
+	bool release(const std::atomic<void*>& field, void* owner, Outcome result) {
+		int expected = Parked;
+		if (owner == nullptr || field.load(std::memory_order_acquire) != owner ||
+			!this->outcome.compare_exchange_strong(expected, result, std::memory_order_acq_rel)) {
+			return false;
+		}
+		this->outcome.notify_all();
+		return true;
+	}
 };
 
 inline TransactionCloseDrainLatch& txnCloseDrainLatch() {
 	static TransactionCloseDrainLatch latch;
 	return latch;
+}
+
+inline bool isTransactionCloseAwaited() {
+	const int outcome = txnCloseDrainLatch().outcome.load(std::memory_order_acquire);
+	return outcome == TransactionCloseDrainLatch::GuardedAtDrain || outcome == TransactionCloseDrainLatch::AwaitedByClose;
 }
 
 // Transactional reads execute on a libuv worker, so their test delay cannot

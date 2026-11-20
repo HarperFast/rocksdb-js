@@ -115,7 +115,8 @@ TransactionLookup lookupOwnedTransaction(
 		txnHandle.reset();
 		return TransactionLookup::WrongEnv;
 	}
-	if (!txnHandle->txn) {
+	// A closing handle stays registered until its `txn` is deleted.
+	if (txnHandle->closed.load(std::memory_order_relaxed) || !txnHandle->txn) {
 		txnHandle.reset();
 		return TransactionLookup::NotFound;
 	}
@@ -542,116 +543,133 @@ void TransactionHandle::closeOrphanIfUnused() {
 
 	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%llu, state=%d)\n",
 		this, (unsigned long long)this->id, static_cast<int>(this->state.load()));
-	this->close();
+	// Runs on libuv and iterator-release threads too, so it never waits for a close another thread won.
+	this->closeImpl(/*waitForWinner=*/false);
 }
 
-/**
- * Release the transaction. This is called after successful commit, after
- * the transaction has been aborted, or when the transaction is destroyed.
- *
- * The `closed` atomic gate ensures this runs at most once even when called
- * from multiple threads concurrently (e.g. DBDescriptor::close() on env M's
- * JS thread racing the async commit's complete callback on env W's JS thread).
- */
+namespace {
+
+// The close() running on this thread, so a nested close() of the same handle cannot wait on itself.
+thread_local const TransactionHandle* closingOnThisThread = nullptr;
+
+} // namespace
+
 void TransactionHandle::close() {
+	this->closeImpl(/*waitForWinner=*/true);
+}
+
+void TransactionHandle::closeImpl(bool waitForWinner) noexcept {
+	// Empty in ~TransactionHandle, which can run under txnsMutex; nothing else
+	// holds the handle then, so there is no registry entry or waiter to handle.
+	const std::shared_ptr<TransactionHandle> self = this->weak_from_this().lock();
+
 	if (this->closed.exchange(true)) {
+		if (!waitForWinner || closingOnThisThread == this) {
+			return;
+		}
+		uint32_t progress = CloseRunning;
+		this->closeProgress.compare_exchange_strong(progress, CloseAwaited, std::memory_order_acq_rel);
+		auto& closeLatch = txnCloseDrainLatch();
+		closeLatch.release(closeLatch.handle, this, TransactionCloseDrainLatch::AwaitedByClose);
+		while ((progress = this->closeProgress.load(std::memory_order_acquire)) != CloseFinished) {
+			this->closeProgress.wait(progress, std::memory_order_acquire);
+		}
 		return;
 	}
+	const TransactionHandle* const outerClose = closingOnThisThread;
+	closingOnThisThread = this;
+
 	this->closeIterators();
 
-	// Keeps this alive through close() once the registry's reference is gone.
-	// Empty in ~TransactionHandle, which can run under txnsMutex; the registry
-	// held no reference then anyway.
-	const std::shared_ptr<TransactionHandle> self = this->weak_from_this().lock();
-	if (self) {
-		this->registryLink->remove(self);
-	}
-
-	if (!this->txn) {
-		return;
-	}
-
-	// cancel all active async work before closing
-	this->cancelAllAsyncWork();
-
-	// Drain BEFORE touching anything the in-flight work owns. Nothing below is
-	// safe while a commit is still executing: `state` feeds the commitAborted()
-	// decision, releaseIntent() mutates VT state the commit is using, and
-	// `delete txn` hands RocksDB a dangling transaction. waitForAsyncWorkCompletion()
-	// is unbounded (HarperFast/rocksdb-js#784) and cancelAllAsyncWork() above shares
-	// a mutex with registerAsyncWork(), so this always drains to zero — there is no
-	// timed-out case left to handle here; an earlier version of this close() leaked
-	// the transaction on a 5s drain timeout as a stopgap for exactly this window.
-	this->waitForAsyncWorkCompletion();
-
-	// Test seam: widen the PATH A vs PATH B race window.
-	// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
-	// unblocks); the seam makes it wide enough to reproduce deterministically.
-	// Noop in production.
-	const int closeDelayMs = txnCloseDelayMsFlag().load(std::memory_order_relaxed);
-	if (closeDelayMs > 0) {
-		txnCloseDelayActive().store(true, std::memory_order_release);
-		std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
-		txnCloseDelayActive().store(false, std::memory_order_release);
-	}
-
 	auto& closeLatch = txnCloseDrainLatch();
-	const bool latched = closeLatch.enabled.load(std::memory_order_relaxed) && this->dbHandle && this->dbHandle->descriptor;
-	if (latched) {
-		closeLatch.descriptor.store(this->dbHandle->descriptor.get(), std::memory_order_release);
-		txnCloseDelayActive().store(true, std::memory_order_release);
-		closeLatch.operations.wait(-1, std::memory_order_acquire);
-	}
+	bool latched = false;
+	if (this->txn) {
+		// cancel all active async work before closing
+		this->cancelAllAsyncWork();
 
-	// Only now that no native work can be running: settle the final state. A commit completion
-	// on the owning thread can still be mid-transition; abort() wins over it either way.
-	const bool committed = this->state.abort() == TransactionState::Committed;
+		// Drain BEFORE touching anything the in-flight work owns. Nothing below is
+		// safe while a commit is still executing: `state` feeds the commitAborted()
+		// decision, releaseIntent() mutates VT state the commit is using, and
+		// `delete txn` hands RocksDB a dangling transaction. waitForAsyncWorkCompletion()
+		// is unbounded (HarperFast/rocksdb-js#784) and cancelAllAsyncWork() above shares
+		// a mutex with registerAsyncWork(), so this always drains to zero — there is no
+		// timed-out case left to handle here; an earlier version of this close() leaked
+		// the transaction on a 5s drain timeout as a stopgap for exactly this window.
+		this->waitForAsyncWorkCompletion();
 
-	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
-	// to remove the committed position from the log store
-	if (!committed && this->committedPosition.logSequenceNumber > 0) {
-		auto store = this->boundLogStore.lock();
-		if (store) {
-			if (this->cancelOnAbort && this->batchAddress.logSequenceNumber > 0) {
-				// Durable before the position is released (transaction_log/DESIGN.md, "Abort markers").
-				this->cancellation = store->cancelBatch(this->batchAddress, this->batchTimestamp, this->committedPosition)
-					? Cancellation::Resolved
-					: Cancellation::Failed;
-			} else {
-				store->commitAborted(this->committedPosition);
-				this->cancellation = Cancellation::Released;
-			}
-			this->recordPinnedTime(*store);
+		// Test seam: widen the PATH A vs PATH B race window.
+		// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
+		// unblocks); the seam makes it wide enough to reproduce deterministically.
+		// Noop in production.
+		const int closeDelayMs = txnCloseDelayMsFlag().load(std::memory_order_relaxed);
+		if (closeDelayMs > 0) {
+			txnCloseDelayActive().store(true, std::memory_order_release);
+			std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
+			txnCloseDelayActive().store(false, std::memory_order_release);
 		}
-	}
 
-	// If the transaction was bound to a log store but writeBatch() was never called (committedPosition
-	// is still zero), the pendingTransactionCount was incremented at bind time but never decremented
-	// by writeBatch(). Decrement it now so the store can be safely destroyed.
-	//
-	// Guard under transactionBindMutex and verify isClosing first: if tryClose() already closed
-	// the store and reset the count to zero we must not decrement again (count would go negative).
-	if (this->committedPosition.logSequenceNumber == 0) {
-		auto store = this->boundLogStore.lock();
-		if (store) {
-			std::lock_guard<std::mutex> bindLock(store->transactionBindMutex);
-			if (!store->isClosing.load(std::memory_order_relaxed)) {
-				store->pendingTransactionCount--;
+		if (closeLatch.enabled.load(std::memory_order_relaxed) && this->dbHandle && this->dbHandle->descriptor &&
+			!this->dbHandle->descriptor->isClosing()) {
+			void* unclaimed = nullptr;
+			latched = closeLatch.handle.compare_exchange_strong(unclaimed, this, std::memory_order_acq_rel);
+		}
+		if (latched) {
+			closeLatch.descriptor.store(this->dbHandle->descriptor.get(), std::memory_order_release);
+			txnCloseDelayActive().store(true, std::memory_order_release);
+			closeLatch.outcome.wait(TransactionCloseDrainLatch::Parked, std::memory_order_acquire);
+		}
+
+		// Only now that no native work can be running: settle the final state. A commit completion
+		// on the owning thread can still be mid-transition; abort() wins over it either way.
+		const bool committed = this->state.abort() == TransactionState::Committed;
+
+		// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
+		// to remove the committed position from the log store
+		if (!committed && this->committedPosition.logSequenceNumber > 0) {
+			auto store = this->boundLogStore.lock();
+			if (store) {
+				if (this->cancelOnAbort && this->batchAddress.logSequenceNumber > 0) {
+					// Durable before the position is released (transaction_log/DESIGN.md, "Abort markers").
+					this->cancellation = store->cancelBatch(this->batchAddress, this->batchTimestamp, this->committedPosition)
+						? Cancellation::Resolved
+						: Cancellation::Failed;
+				} else {
+					store->commitAborted(this->committedPosition);
+					this->cancellation = Cancellation::Released;
+				}
+				this->recordPinnedTime(*store);
 			}
 		}
-	}
 
-	// Release any VT locks that were installed at putSync/removeSync time
-	// but not yet released (e.g. transaction aborted or DB closed mid-commit).
-	if (!this->lockedVTSlots.empty()) {
-		this->releaseIntent();
-	}
+		// If the transaction was bound to a log store but writeBatch() was never called (committedPosition
+		// is still zero), the pendingTransactionCount was incremented at bind time but never decremented
+		// by writeBatch(). Decrement it now so the store can be safely destroyed.
+		//
+		// Guard under transactionBindMutex and verify isClosing first: if tryClose() already closed
+		// the store and reset the count to zero we must not decrement again (count would go negative).
+		if (this->committedPosition.logSequenceNumber == 0) {
+			auto store = this->boundLogStore.lock();
+			if (store) {
+				std::lock_guard<std::mutex> bindLock(store->transactionBindMutex);
+				if (!store->isClosing.load(std::memory_order_relaxed)) {
+					store->pendingTransactionCount--;
+				}
+			}
+		}
 
-	// destroy the RocksDB transaction
-	this->txn->ClearSnapshot();
-	delete this->txn;
-	this->txn = nullptr;
-	this->touchedColumnFamilies.clear();
+		// Release any VT locks that were installed at putSync/removeSync time
+		// but not yet released (e.g. transaction aborted or DB closed mid-commit).
+		if (!this->lockedVTSlots.empty()) {
+			this->releaseIntent();
+		}
+
+		// destroy the RocksDB transaction; deleting an unprepared one also discards
+		// its writes and releases its locks, which is all an abort needs
+		this->txn->ClearSnapshot();
+		delete this->txn;
+		this->txn = nullptr;
+		this->touchedColumnFamilies.clear();
+	}
 
 	// Note: close() is deliberately napi-free. The transaction holds no napi
 	// refs (the JS database is passed to UseLog by the TS layer per-call), so
@@ -659,11 +677,19 @@ void TransactionHandle::close() {
 	// held here and still alive at worker-env teardown crashes Node's
 	// second-pass finalizer drain (HarperFast/rocksdb-js#741).
 
-	this->dbHandle.reset();
 	if (latched) {
 		txnCloseDelayActive().store(false, std::memory_order_release);
 		closeLatch.finished.store(true, std::memory_order_release);
 		closeLatch.finished.notify_all();
+	}
+	// Only now, so a foreign finishClose() sweep that comes first finds this handle and waits.
+	if (self) {
+		this->registryLink->remove(self);
+	}
+	this->dbHandle.reset();
+	closingOnThisThread = outerClose;
+	if (this->closeProgress.exchange(CloseFinished, std::memory_order_acq_rel) == CloseAwaited) {
+		this->closeProgress.notify_all();
 	}
 }
 
