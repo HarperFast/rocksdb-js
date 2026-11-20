@@ -89,11 +89,9 @@ inline std::atomic<bool>& txnCloseDelayActive() {
 struct TransactionCloseDrainLatch {
 	enum Outcome : int {
 		Parked = 0,
-		// finishClose()'s drain found an operation in flight.
 		GuardedAtDrain,
-		// A losing close() of the parked handle waited for it.
 		AwaitedByClose,
-		// finishClose() passed its closables sweep with the close still parked.
+		// finishClose() passed its closables sweep with the close parked or unfinished.
 		Missed,
 	};
 	std::atomic<bool> enabled{ false };

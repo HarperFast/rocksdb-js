@@ -1,11 +1,12 @@
-# Abort waits for in-flight async gets, under an operation guard
+# Abort drains in-flight async gets
 
 `rocksdb::Transaction` is not thread-safe, but a cold-cache `get()` runs `txn->Get()` on a libuv
 worker while the transaction stays usable on its JS thread. `Transaction::Abort` therefore ends the
 transaction with `TransactionHandle::close()`, which cancels and drains the handle's admitted async
 work before it deletes `txn`. It does not call `Rollback()`: abort only ever sees an unprepared
 transaction, and deleting one discards its writes and releases its locks. After a failed pessimistic
-commit, `Rollback()` reports an invalid state, which used to make abort throw and leave the handle open.
+commit, `Rollback()` reports an invalid state; abort used to throw that before closing, leaving the
+transaction registered.
 
 That drain can wait on a disk read, so with work in flight Abort holds a descriptor `OperationGuard`
 until `close()` returns, and leaves the close to a teardown that is already under way (a closing or
@@ -78,9 +79,10 @@ See [lifecycle cost accounting](../../../docs/performance/transaction-state.md) 
 `finishClose()` destroys the database right after its closables sweep, so the sweep must not return
 while any `TransactionHandle::close()` is still using `txn`. `close()` makes that hold for every caller
 (commit completions, abort, the GC finalizer's orphan close, the env reaper, the sweep itself), with no
-descriptor operation: the first call wins `closed` and keeps the handle in `DBDescriptor::closables`
-until `txn` is deleted, and a later call waits on `closeProgress` until the winner finishes. The sweep
-either closes the handle itself or finds it registered and waits. This is invariant 6's rule for
+descriptor operation: the first call wins `closed` and leaves `DBDescriptor::transactions` and
+`closables` only after `txn` is deleted, and a later call waits on `closeProgress` until the winner
+finishes. Registration is what makes the sweep find an unfinished close; the sweep's own `close()`,
+which loses the gate, is what makes it wait (the sweep erases the entry before calling it). This is invariant 6's rule for
 self-closing handles, which `DBIteratorHandle::closeIfOpen()` follows with `iteratorMutex`.
 
 The handle leaves `transactions` and `closables` together, under one `txnsMutex` acquisition, as

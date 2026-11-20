@@ -3,7 +3,6 @@ import { generateDBPath } from './lib/util.ts';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-/** `overrides` entries set to undefined are removed from the child's environment. */
 async function expectFixturePasses(
 	fixture: string,
 	args: string[],
@@ -31,13 +30,16 @@ async function expectFixturePasses(
 describe.skipIf(!!process.versions.deno || !!process.versions.bun)(
 	'Transaction close() vs. foreign shutdown()',
 	() => {
-		it.each(['orphan', 'abort'])('waits for an in-flight %s close', { timeout: 30_000 }, (mode) =>
-			expectFixturePasses(
-				'fork-txn-close-shutdown.mts',
-				[mode],
-				{ ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH: '1' },
-				['--expose-gc']
-			)
+		it.each(['orphan', 'abort', 'commit-sync'])(
+			'waits for an in-flight %s close',
+			{ timeout: 30_000 },
+			(mode) =>
+				expectFixturePasses(
+					'fork-txn-close-shutdown.mts',
+					[mode],
+					{ ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH: '1' },
+					['--expose-gc']
+				)
 		);
 
 		it.each([

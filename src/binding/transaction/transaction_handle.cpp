@@ -116,7 +116,7 @@ TransactionLookup lookupOwnedTransaction(
 		return TransactionLookup::WrongEnv;
 	}
 	// A closing handle stays registered until its `txn` is deleted.
-	if (txnHandle->closed.load() || !txnHandle->txn) {
+	if (txnHandle->closed.load(std::memory_order_relaxed) || !txnHandle->txn) {
 		txnHandle.reset();
 		return TransactionLookup::NotFound;
 	}
@@ -576,8 +576,18 @@ void TransactionHandle::closeImpl(bool waitForWinner) {
 		}
 		return;
 	}
-	const TransactionHandle* const outerClose = closingOnThisThread;
-	closingOnThisThread = this;
+	// Publishes completion even if a step below throws, so no loser waits forever.
+	struct Completion {
+		TransactionHandle& handle;
+		const TransactionHandle* const outerClose = closingOnThisThread;
+		explicit Completion(TransactionHandle& handle) : handle(handle) { closingOnThisThread = &handle; }
+		~Completion() {
+			closingOnThisThread = this->outerClose;
+			if (this->handle.closeProgress.exchange(CloseFinished, std::memory_order_acq_rel) == CloseAwaited) {
+				this->handle.closeProgress.notify_all();
+			}
+		}
+	} completion(*this);
 
 	this->closeIterators();
 
@@ -677,20 +687,16 @@ void TransactionHandle::closeImpl(bool waitForWinner) {
 	// held here and still alive at worker-env teardown crashes Node's
 	// second-pass finalizer drain (HarperFast/rocksdb-js#741).
 
-	// Only now, so a foreign finishClose() sweep that comes first finds this handle and waits.
-	if (self) {
-		this->registryLink->remove(self);
-	}
-	this->dbHandle.reset();
 	if (latched) {
 		txnCloseDelayActive().store(false, std::memory_order_release);
 		closeLatch.finished.store(true, std::memory_order_release);
 		closeLatch.finished.notify_all();
 	}
-	closingOnThisThread = outerClose;
-	if (this->closeProgress.exchange(CloseFinished, std::memory_order_acq_rel) == CloseAwaited) {
-		this->closeProgress.notify_all();
+	// Only now, so a foreign finishClose() sweep that comes first finds this handle and waits.
+	if (self) {
+		this->registryLink->remove(self);
 	}
+	this->dbHandle.reset();
 }
 
 /**

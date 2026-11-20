@@ -2,12 +2,12 @@ import { RocksDatabase, Transaction } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 
-// A transaction close that holds no descriptor operation parks at the close latch on this thread
-// while a worker runs shutdown(). `orphan` reaches it from the NativeTransaction finalizer once the
-// wrapper is collected, `abort` from an abort() with no async work in flight. A use-after-free need
-// not crash, so the worker reports whether shutdown waited for the close.
+// A transaction close parks at the close latch on this thread while a worker runs shutdown().
+// `orphan` reaches it from the NativeTransaction finalizer once the wrapper is collected, `abort`
+// from an abort() with no async work in flight, `commit-sync` from commitSync(). A use-after-free
+// need not crash, so the worker reports whether shutdown waited for the close.
 const [path, mode] = process.argv.slice(2);
-if (mode !== 'orphan' && mode !== 'abort') {
+if (mode !== 'orphan' && mode !== 'abort' && mode !== 'commit-sync') {
 	throw new Error(`unknown mode: ${mode}`);
 }
 if (!(Number(process.env.ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH) > 0)) {
@@ -42,6 +42,15 @@ if (mode === 'abort') {
 	const txn = new Transaction(db.store);
 	txn.putSync('k', 'aborted');
 	txn.abort();
+} else if (mode === 'commit-sync') {
+	const txn = new Transaction(db.store);
+	txn.putSync('k', 'committed');
+	try {
+		txn.commitSync();
+	} catch (error) {
+		// The after-commit notification finds the database shut down; the write is checked below.
+		if (!/Database (not open|is closing)/.test(String(error))) throw error;
+	}
 } else {
 	(() => {
 		const txn = new Transaction(db.store);
@@ -61,7 +70,9 @@ await worker.terminate();
 
 const reopened = RocksDatabase.open(path);
 try {
-	if (reopened.getSync('k') !== undefined) throw new Error('an uncommitted write survived');
+	const expected = mode === 'commit-sync' ? 'committed' : undefined;
+	if (reopened.getSync('k') !== expected)
+		throw new Error(`expected ${expected} after the ${mode} close`);
 } finally {
 	reopened.close();
 }

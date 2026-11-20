@@ -212,10 +212,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		CloseFinished
 	};
 
-	/**
-	 * Lets a losing close() wait for the winner. The winner's single exchange to
-	 * `CloseFinished` notifies only when a loser marked `CloseAwaited`.
-	 */
+	/** The winner notifies only when a losing close() marked `CloseAwaited`. */
 	std::atomic<uint32_t> closeProgress{ CloseRunning };
 
 	/**
