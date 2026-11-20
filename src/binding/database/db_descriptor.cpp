@@ -613,6 +613,45 @@ void DBDescriptor::close() {
 }
 
 void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
+	// Every transaction before the database handles it reads through: a synchronous call admitted on a
+	// transaction makes only that transaction's close() wait (transaction/DESIGN.md, "Synchronous
+	// admission"). Transaction::Constructor's operation keeps new ones out once closing.
+	{
+		// Cancelled together first, so parked async reads abort and no call is admitted while the drain
+		// below waits for an idle one.
+		std::vector<std::shared_ptr<TransactionHandle>> cancelling;
+		cancelling.reserve(this->transactions.size());
+		for (auto& [_id, txnHandle] : this->transactions) {
+			cancelling.push_back(txnHandle);
+		}
+		txnsLock.unlock();
+		for (auto& txnHandle : cancelling) {
+			txnHandle->cancelAllAsyncWork();
+		}
+		cancelling.clear();
+		txnsLock.lock();
+	}
+	while (!this->transactions.empty()) {
+		// Idle ones first, and none while all are busy: a pessimistic write blocked on a row lock waits
+		// for its holder's close, and closing a busy one waits for its call anyway.
+		auto it = std::find_if(this->transactions.begin(), this->transactions.end(), [](const auto& entry) {
+			return entry.second->activeAsyncWorkCount.load() == 0;
+		});
+		if (it == this->transactions.end()) {
+			txnsLock.unlock();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			txnsLock.lock();
+			continue;
+		}
+		std::shared_ptr<TransactionHandle> txnHandle = std::move(it->second);
+		this->transactions.erase(it);
+		this->closables.erase(txnHandle.get());
+		txnsLock.unlock();
+		txnHandle->close();
+		txnHandle.reset();
+		txnsLock.lock();
+	}
+
 	// Close all handles that still exist and reset their descriptor references
 	for (auto it = this->closables.begin(); it != this->closables.end();) {
 		if (auto closable = it->second.lock()) {

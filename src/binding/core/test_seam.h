@@ -2,9 +2,11 @@
 #define __CORE_TEST_SEAM_H__
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <thread>
 
 // Deterministic test seams that widen a race window are gated on a millisecond
 // delay read from an environment variable (0 = disabled). They are inert in
@@ -478,6 +480,43 @@ inline int consumeTransactionStagingDelayForTesting() {
 		}
 	}
 	return 0;
+}
+
+// Parks the next synchronous transaction read (getSync, getCount after its iterator exists, or a
+// transaction iterator's setup) after it has read the transaction's database handle, so a foreign
+// close can land mid-call.
+inline std::atomic<int>& transactionReadDelayMs() {
+	static std::atomic<int> delayMs{ 0 };
+	return delayMs;
+}
+
+inline std::atomic<bool>& transactionReadDelayActive() {
+	static std::atomic<bool> active{ false };
+	return active;
+}
+
+inline void setTransactionReadDelayForTesting(int delayMs) {
+	if (delayMs == 0) {
+		transactionReadDelayActive().store(false, std::memory_order_release);
+	}
+	transactionReadDelayMs().store(delayMs > 60000 ? 60000 : delayMs, std::memory_order_release);
+}
+
+inline void pauseTransactionReadForTesting() {
+	if (transactionReadDelayMs().load(std::memory_order_relaxed) <= 0) {
+		return;
+	}
+	const int delayMs = transactionReadDelayMs().exchange(0, std::memory_order_acq_rel);
+	if (delayMs <= 0) {
+		return;
+	}
+	transactionReadDelayActive().store(true, std::memory_order_release);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
+	while (transactionReadDelayActive().load(std::memory_order_acquire) &&
+		std::chrono::steady_clock::now() < deadline) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	transactionReadDelayActive().store(false, std::memory_order_release);
 }
 
 inline std::atomic<int>& writeBufferManagerJoinDelayCountdown() {

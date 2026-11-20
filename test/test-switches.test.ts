@@ -15,6 +15,7 @@ const nonDefaultArgs: Record<string, unknown[]> = {
 	setPrelogConflictCheckRetriesOnlyForTesting: [prelogCheck === 'always'],
 	forceDropFailureForTesting: [1],
 	setTransactionStagingDelayForTesting: [1, 1000],
+	setTransactionReadDelayForTesting: [1000],
 	setTransactionCommitAdmissionDelayForTesting: [1000],
 	setWriteBufferManagerJoinDelayForTesting: [1, 1000],
 	forceAsyncExceptionForTesting: [1, 1],
