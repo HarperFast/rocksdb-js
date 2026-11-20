@@ -674,8 +674,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    ordinary path — a foreign close arriving in that window blocks on the same `closeMutex`/
    `iteratorMutex`, finds nothing left to do once it acquires it, and moves on — and it makes
    `close()` itself the single point every teardown source waits on. `TransactionHandle::close()`
-   follows the same rule with an atomic instead of a mutex: it stays in `closables` until `txn` is
-   deleted and a losing `close()` waits for the winner, so no caller needs a descriptor operation
+   follows the same rule with an atomic instead of a mutex: it stays registered until `txn` is
+   deleted and a losing `close()` (the sweep's included) waits for the winner, so no caller needs a
+   descriptor operation
    (`src/binding/transaction/DESIGN.md`, "Close ownership").
 
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
