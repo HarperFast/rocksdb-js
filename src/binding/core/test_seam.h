@@ -134,6 +134,26 @@ inline std::atomic<int>& commitExecuteDelayMsFlag() {
 	return delayMs;
 }
 
+inline std::atomic<bool>& commitThreadStartFailureFlag() {
+	static std::atomic<bool> failing{ false };
+	return failing;
+}
+
+inline std::atomic<int>& commitDispatchFailureFlag() {
+	static std::atomic<int> pending{ 0 };
+	return pending;
+}
+
+inline bool testConsumeCommitDispatchFailure() {
+	int cur = commitDispatchFailureFlag().load(std::memory_order_relaxed);
+	while (cur > 0) {
+		if (commitDispatchFailureFlag().compare_exchange_weak(cur, cur - 1, std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // Upper bound, in milliseconds, that a cancellable manual compactRange() parks
 // before handing the range to RocksDB. It returns as soon as the descriptor's
 // cancel token is armed, so a fixture can hold a compaction across a foreign
@@ -337,6 +357,12 @@ inline void initializeTestSeams() {
 		);
 		commitExecuteDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"), std::memory_order_relaxed
+		);
+		commitThreadStartFailureFlag().store(
+			testDelayMs("ROCKSDB_JS_COMMIT_THREAD_START_FAILURE") > 0, std::memory_order_relaxed
+		);
+		commitDispatchFailureFlag().store(
+			testDelayMs("ROCKSDB_JS_COMMIT_DISPATCH_FAILURE"), std::memory_order_relaxed
 		);
 		compactCancelDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed

@@ -62,7 +62,7 @@ if (mode === 'abort') {
 }
 
 const result = await nextMessage();
-if (!result.shutdown) throw new Error(`shutdown failed: ${JSON.stringify(result)}`);
+if (!result.closed) throw new Error(`shutdown failed: ${JSON.stringify(result)}`);
 if (!result.closeAwaited) throw new Error(`shutdown() did not wait for the ${mode} close`);
 await worker.terminate();
 
