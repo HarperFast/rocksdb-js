@@ -100,7 +100,6 @@ struct TransactionCloseDrainLatch {
 	std::atomic<int> outcome{ Parked };
 	std::atomic<bool> finished{ false };
 
-	/** Releases the parked close if `owner` is its handle or descriptor; false if it was not parked. */
 	bool release(const std::atomic<void*>& field, void* owner, Outcome result) {
 		int expected = Parked;
 		if (owner == nullptr || field.load(std::memory_order_acquire) != owner ||
