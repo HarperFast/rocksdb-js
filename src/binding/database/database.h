@@ -176,9 +176,8 @@ inline void vtPopulateIfSettled(
 	// No usable version in the value the caller read (too short, or lock-tagged
 	// garbage) — nothing to publish, and re-reading the latest wouldn't help.
 	if (readVersion == 0 || vtIsLock(readVersion)) return;
-	// Raw pointer: the caller holds the DBHandle (and an OperationGuard keeps the
-	// descriptor alive for the call), so we avoid an atomic shared_ptr refcount
-	// bump/drop on this per-read path.
+	// Raw pointer: the caller holds the DBHandle and an operation guard, so we
+	// avoid an atomic shared_ptr refcount bump/drop on this per-read path.
 	rocksdb::DB* db = dbHandle->descriptor->db.get();
 	if (!db) return;
 	auto* cf = dbHandle->getColumnFamilyHandle();
@@ -251,23 +250,57 @@ inline bool readWantsPopulate(int32_t flags, const std::shared_ptr<DBHandle>& db
 	} while (0)
 
 /**
- * Registers an in-flight operation to prevent use-after-free during shutdown.
- * Also checks if the database is closing and throws an error if so.
- *
- * Use this macro after UNWRAP_DB_HANDLE_AND_OPEN() in operations that
- * access descriptor->db or column family handles.
- *
- * Note: We copy the descriptor shared_ptr first to ensure the descriptor
- * stays alive even if another thread calls close() on our handle.
+ * Admits a call on its handle's own counter rather than the descriptor's, and
+ * borrows the descriptor the handle holds instead of copying the shared_ptr:
+ * every worker on a database shares those two cache lines. The caller checks
+ * `isClosing()` after construction. src/binding/database/DESIGN.md,
+ * "Synchronous calls register on their own handle", has the ordering and
+ * lifetime argument.
+ */
+struct HandleOperationGuard final {
+	DBHandle& handle;
+	DBDescriptor& descriptor;
+	bool admitted = true;
+
+	explicit HandleOperationGuard(DBHandle& h) : handle(h), descriptor(*h.descriptor) {
+		this->handle.operationsInFlight.fetch_add(1);
+	}
+
+	~HandleOperationGuard() { this->release(); }
+
+	/**
+	 * For a call that settles through a JavaScript callback, which may close
+	 * this handle, and touches no native state after it.
+	 */
+	void release() {
+		if (!this->admitted) {
+			return;
+		}
+		this->admitted = false;
+		if (this->handle.operationsInFlight.fetch_sub(1) == 1 && this->descriptor.isClosing()) {
+			this->handle.operationsInFlight.notify_all();
+		}
+	}
+
+	HandleOperationGuard(const HandleOperationGuard&) = delete;
+	HandleOperationGuard& operator=(const HandleOperationGuard&) = delete;
+	HandleOperationGuard(HandleOperationGuard&&) = delete;
+	HandleOperationGuard& operator=(HandleOperationGuard&&) = delete;
+};
+
+/**
+ * Registers an in-flight operation so a foreign close waits for it, and throws
+ * if the database is closing. Use it right after UNWRAP_DB_HANDLE_AND_OPEN() in
+ * any method that touches `descriptor->db` or the column family handle.
  */
 #define ACQUIRE_OPERATIONS_LOCK() \
 	if (!(*dbHandle)->descriptor) { \
 		::napi_throw_error(env, nullptr, "Database not open"); \
 		NAPI_RETURN_UNDEFINED(); \
 	} \
-	OperationGuard __operationGuard((*dbHandle)->descriptor); \
+	HandleOperationGuard __operationGuard(**dbHandle); \
 	do { \
-		if ((*dbHandle)->descriptor->isClosing()) { \
+		if (__operationGuard.descriptor.isClosing()) { \
 			::napi_throw_error(env, nullptr, "Database is closing"); \
 			NAPI_RETURN_UNDEFINED(); \
 		} \

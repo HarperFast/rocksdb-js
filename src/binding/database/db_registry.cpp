@@ -164,7 +164,7 @@ CloseResult DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	// a no-op once it runs (closeIfOpen-style idempotency; see close()'s
 	// per-substep guards). That makes the foreign finishClose() wait out this
 	// close's async-work drain instead of skipping the handle: an admitted
-	// Flush/Compact/Get releases its OperationGuard at setup handoff, so
+	// Flush/Compact/Get releases its operation guard at setup handoff, so
 	// nothing else would stop finishClose() from reaching db.reset() while
 	// that op's execute callback is still using descriptor->db. Detaching
 	// first (the previous order) left that in-flight op with no closer
@@ -1119,6 +1119,8 @@ void DBRegistry::OpenDB(
 			// Env teardown removes a transaction from the map before cancelling
 			// its queued commit, which can still admit and write; only the
 			// descriptor-wide operation count covers it before its family claim.
+			// Handle-counted calls need no check: their handle is attached, and
+			// nonVerifyingHandles already refused above.
 			if (mayHoldUnguardedWrite || entry.descriptor->operationsInFlight.load() > 0) {
 				throw rocksdb_js::DBException(
 					"ERR_VERIFICATION_TABLE_CONFLICT",
