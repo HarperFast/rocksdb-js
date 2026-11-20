@@ -616,7 +616,8 @@ void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
 	// Close all handles that still exist and reset their descriptor references
 	for (auto it = this->closables.begin(); it != this->closables.end();) {
 		if (auto closable = it->second.lock()) {
-			// Remove from map before closing to avoid re-entrant detach() calls
+			// Remove from map before closing to avoid re-entrant detach() calls. A
+			// transaction already closing on another thread makes this close() wait.
 			it = this->closables.erase(it);
 
 			// Release mutex during close to avoid deadlocks

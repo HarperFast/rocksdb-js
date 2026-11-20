@@ -212,7 +212,6 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		CloseFinished
 	};
 
-	/** The winner notifies only when a losing close() marked `CloseAwaited`. */
 	std::atomic<uint32_t> closeProgress{ CloseRunning };
 
 	/**
@@ -469,7 +468,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void closeOrphanIfUnused();
 
 private:
-	void closeImpl(bool waitForWinner);
+	/**
+	 * noexcept: completion is published only once `txn` is deleted, so a throw must end the
+	 * process rather than strand the waiting sweep or let it destroy the database first.
+	 */
+	void closeImpl(bool waitForWinner) noexcept;
 
 public:
 	napi_value get(

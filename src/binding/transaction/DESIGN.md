@@ -5,8 +5,8 @@ worker while the transaction stays usable on its JS thread. `Transaction::Abort`
 transaction with `TransactionHandle::close()`, which cancels and drains the handle's admitted async
 work before it deletes `txn`. It does not call `Rollback()`: abort only ever sees an unprepared
 transaction, and deleting one discards its writes and releases its locks. After a failed pessimistic
-commit, `Rollback()` reports an invalid state; abort used to throw that before closing, leaving the
-transaction registered.
+commit, `Rollback()` reports an invalid state, which abort used to throw as "Transaction rollback
+failed" after the transaction was already gone.
 
 That drain can wait on a disk read, so with work in flight Abort holds a descriptor `OperationGuard`
 until `close()` returns, and leaves the close to a teardown that is already under way (a closing or

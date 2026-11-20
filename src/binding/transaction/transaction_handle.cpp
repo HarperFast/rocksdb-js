@@ -558,7 +558,7 @@ void TransactionHandle::close() {
 	this->closeImpl(/*waitForWinner=*/true);
 }
 
-void TransactionHandle::closeImpl(bool waitForWinner) {
+void TransactionHandle::closeImpl(bool waitForWinner) noexcept {
 	// Empty in ~TransactionHandle, which can run under txnsMutex; nothing else
 	// holds the handle then, so there is no registry entry or waiter to handle.
 	const std::shared_ptr<TransactionHandle> self = this->weak_from_this().lock();
@@ -576,18 +576,8 @@ void TransactionHandle::closeImpl(bool waitForWinner) {
 		}
 		return;
 	}
-	// Publishes completion even if a step below throws, so no loser waits forever.
-	struct Completion {
-		TransactionHandle& handle;
-		const TransactionHandle* const outerClose = closingOnThisThread;
-		explicit Completion(TransactionHandle& handle) : handle(handle) { closingOnThisThread = &handle; }
-		~Completion() {
-			closingOnThisThread = this->outerClose;
-			if (this->handle.closeProgress.exchange(CloseFinished, std::memory_order_acq_rel) == CloseAwaited) {
-				this->handle.closeProgress.notify_all();
-			}
-		}
-	} completion(*this);
+	const TransactionHandle* const outerClose = closingOnThisThread;
+	closingOnThisThread = this;
 
 	this->closeIterators();
 
@@ -697,6 +687,10 @@ void TransactionHandle::closeImpl(bool waitForWinner) {
 		this->registryLink->remove(self);
 	}
 	this->dbHandle.reset();
+	closingOnThisThread = outerClose;
+	if (this->closeProgress.exchange(CloseFinished, std::memory_order_acq_rel) == CloseAwaited) {
+		this->closeProgress.notify_all();
+	}
 }
 
 /**
