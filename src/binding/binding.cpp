@@ -196,10 +196,10 @@ napi_value IsTransactionCloseDelayedForTesting(napi_env env, napi_callback_info 
 	return result;
 }
 
-napi_value IsTransactionCloseGuardedAtDrainForTesting(napi_env env, napi_callback_info info) {
+napi_value IsTransactionCloseAwaitedByShutdownForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, txnCloseDrainLatch().operations.load(std::memory_order_acquire) == 1, &result));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, isTransactionCloseAwaited(), &result));
 	return result;
 }
 
@@ -702,9 +702,9 @@ NAPI_MODULE_INIT() {
 		isTransactionCloseDelayedFn
 	));
 
-	napi_value isTransactionCloseGuardedAtDrainFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCloseGuardedAtDrainForTesting", NAPI_AUTO_LENGTH, IsTransactionCloseGuardedAtDrainForTesting, nullptr, &isTransactionCloseGuardedAtDrainFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isTransactionCloseGuardedAtDrainForTesting", isTransactionCloseGuardedAtDrainFn));
+	napi_value isTransactionCloseAwaitedByShutdownFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCloseAwaitedByShutdownForTesting", NAPI_AUTO_LENGTH, IsTransactionCloseAwaitedByShutdownForTesting, nullptr, &isTransactionCloseAwaitedByShutdownFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isTransactionCloseAwaitedByShutdownForTesting", isTransactionCloseAwaitedByShutdownFn));
 
 	napi_value isFlushCompletedDelayedFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "isFlushCompletedDelayedForTesting", NAPI_AUTO_LENGTH, IsFlushCompletedDelayedForTesting, nullptr, &isFlushCompletedDelayedFn));

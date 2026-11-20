@@ -243,9 +243,9 @@ is still alive. The operation releases only after the transaction's
 async-work registration is cleared — legacy from its libuv execute thread, the
 lane modes at the end of the commit stage. This makes direct shutdown wait for
 the native commit rather than destroy RocksDB after the transaction handle's
-bounded drain expires. The JS completion that later closes the committed handle takes a fresh
-operation for that `close()` (`closeSettledHandle`), because `close()` leaves the closables before
-deleting the RocksDB transaction; on a closing descriptor it leaves the handle to the sweep. The recheck is not redundant with
+bounded drain expires. The JS completion that later closes the committed handle needs no
+operation, even on a closing descriptor: `close()` stays in the closables until the RocksDB
+transaction is deleted, so the sweep waits for it (invariant 6). The recheck is not redundant with
 `commitCompletionsClosed`, which `finishClose()` sets only after it has passed
 the drain gate and stopped both lanes; a commit that registered its completion
 just before that would otherwise reach `CommitWorker::enqueue` on a stopped
@@ -274,10 +274,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `commitThreads`), `2` = experimental two-lane txnlog→commit pipeline
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
-- `ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH` - Child-process test only: park a single transaction's
-  native close until its descriptor reaches the operation drain, capturing the count before
-  releasing the latch. The regression asserts that close still owns the sole operation, without
-  depending on shutdown duration. Snapshotted at module initialization; unset in production.
+- `ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH` - Child-process test only: park the first transaction close
+  that starts on an open database, after its drain and before it deletes the RocksDB transaction,
+  until a foreign shutdown either finds an operation in flight at its drain or reaches the close
+  through its closables sweep (`isTransactionCloseAwaitedByShutdownForTesting()`). A sweep that
+  returns with the close still parked, or still unfinished, is reported instead of destroying the
+  database under it. Snapshotted at module initialization; unset in production.
 - `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` / `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only delays
   immediately before a native transaction commit (while its async work and descriptor operation
   remain registered, widening close-vs-execute race windows) and before a transaction's
@@ -671,7 +673,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    `Next()` in progress, is still using the DB. Detaching after close() returns costs nothing on the
    ordinary path — a foreign close arriving in that window blocks on the same `closeMutex`/
    `iteratorMutex`, finds nothing left to do once it acquires it, and moves on — and it makes
-   `close()` itself the single point every teardown source waits on.
+   `close()` itself the single point every teardown source waits on. `TransactionHandle::close()`
+   follows the same rule with an atomic instead of a mutex: it stays in `closables` until `txn` is
+   deleted and a losing `close()` waits for the winner, so no caller needs a descriptor operation
+   (`src/binding/transaction/DESIGN.md`, "Close ownership").
 
 7. **One writable BackupEngine per backup directory (kernel advisory lock)**: each backup op opens its
    own short-lived `rocksdb::BackupEngine`/`BackupEngineReadOnly` (`src/binding/database/backup.cpp`), and
@@ -1073,7 +1078,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     module's per-env cleanup hook (binding.cpp) so it runs on the dying env's own thread while the
     env is still valid. Both reap paths funnel through the same idempotent `close()`
     (`closed` gate), which leaves the registry, so a handle reachable by both the finalizer
-    and this hook is closed exactly once.
+    and this hook is closed exactly once. The reap also runs on a closing or quarantined
+    descriptor: a sweep already closing the handle makes it wait, and one that never ran (a
+    failed close-time flush) would otherwise leave the transaction registered until a retry.
 
     **Do not "simplify" this into `DBHandle::close()`.** A user-called `db.close()` runs with live
     microtasks: `db.transaction()` awaits its callback before committing, so a legitimate commit

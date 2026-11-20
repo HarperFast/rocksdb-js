@@ -195,8 +195,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	rocksdb::Transaction* txn;
 
 	/**
-	 * One-shot close gate: set to true by the first close() caller. Subsequent
-	 * callers from any thread return immediately. Mirrors DBDescriptor::closing.
+	 * One-shot close gate: set to true by the first close() caller, which then
+	 * runs the whole close. A later close() waits for it to finish (`closeProgress`).
 	 *
 	 * Without this, DBDescriptor::close() (on env M's JS thread) and the async
 	 * commit's complete callback (on env W's JS thread) can both pass the
@@ -205,6 +205,18 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * (HarperFast/harper#1370, close-vs-commit variant).
 	 */
 	std::atomic<bool> closed{ false };
+
+	enum CloseProgress : uint32_t {
+		CloseRunning = 0,
+		CloseAwaited,
+		CloseFinished
+	};
+
+	/**
+	 * Lets a losing close() wait for the winner. The winner's single exchange to
+	 * `CloseFinished` notifies only when a loser marked `CloseAwaited`.
+	 */
+	std::atomic<uint32_t> closeProgress{ CloseRunning };
 
 	/**
 	 * Set when the JS `NativeTransaction` wrapper is garbage collected: no JS code can reach this
@@ -392,6 +404,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 
+	/**
+	 * Releases the transaction. The handle stays in its descriptor's closables until
+	 * the RocksDB transaction is deleted, and a call that loses the gate returns only
+	 * once the winner has finished, so `finishClose()`'s sweep always waits for an
+	 * in-flight close. See src/binding/transaction/DESIGN.md, "Close ownership".
+	 */
 	void close() override;
 
 	/**
@@ -453,6 +471,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	void closeOrphanIfUnused();
 
+private:
+	void closeImpl(bool waitForWinner);
+
+public:
 	napi_value get(
 		napi_env env,
 		std::string& key,
