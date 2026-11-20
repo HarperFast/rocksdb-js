@@ -410,7 +410,7 @@ inline void setTransactionCommitAdmissionDelayForTesting(int delayMs, bool after
 		return;
 	}
 	transactionCommitAdmissionDelayMs().store(0, std::memory_order_release);
-	transactionCommitAdmissionDelayRegistered().store(afterRegistration, std::memory_order_release);
+	transactionCommitAdmissionDelayRegistered().store(false, std::memory_order_release);
 	transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
 }
 

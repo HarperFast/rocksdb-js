@@ -1102,8 +1102,8 @@ static void throwAtCommitDispatchForTesting() {
 }
 
 /**
- * Test seam. After registration the pause ends once a closer cancels the transaction: that closer is
- * draining on this registration.
+ * After registration the pause ends once a closer cancels the transaction: that closer is draining on
+ * this registration.
  */
 static void pauseAtCommitAdmissionForTesting(const TransactionHandle& txnHandle, bool registered) {
 	if (transactionCommitAdmissionDelayMs().load(std::memory_order_acquire) <= 0 ||
