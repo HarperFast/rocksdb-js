@@ -401,10 +401,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 
 	/**
-	 * Releases the transaction. The handle stays in its descriptor's closables until
-	 * the RocksDB transaction is deleted, and a call that loses the gate returns only
-	 * once the winner has finished, so `finishClose()`'s sweep always waits for an
-	 * in-flight close. See src/binding/transaction/DESIGN.md, "Close ownership".
+	 * Releases the transaction. The handle stays registered until the RocksDB
+	 * transaction is deleted, and a call that loses the gate returns only once the
+	 * winner has finished, so `finishClose()`'s sweep finds an in-flight close and
+	 * its own close() waits for it. See src/binding/transaction/DESIGN.md, "Close
+	 * ownership".
 	 */
 	void close() override;
 
