@@ -89,9 +89,10 @@ agree across every handle on a column family once any of them participates.
   column family (`nonVerifyingWriters`). Each transaction counts once per family
   (`TransactionHandle::nonVerifyingWriters`, default family included) and, once a write is staged,
   releases only when its RocksDB transaction is deleted (a first write that fails gives its count
-  straight back): `resetTransaction()`, or `close()` after its async-work drain. A
-  commit still running, including one whose env teardown already removed the transaction from the
-  registry, therefore keeps the count. Staging through a handle is sequenced before that handle's
+  straight back): `resetTransaction()`, or the `close()` that wins the `closed` gate, after its
+  async-work drain; a later `close()` waits for that one (`closeProgress`), and a GC orphan close
+  runs the same body. A commit still running therefore keeps the count, and so does a transaction
+  that is closing on another thread. Staging through a handle is sequenced before that handle's
   `close()` on its owner thread, so `OpenDB` reads the handle count first and the writer count
   second. The count (`NonVerifyingWriterCount`) is its own allocation and doubles as its reference
   count: holding the `ColumnFamilyDescriptor` instead would let a transaction outliving its database

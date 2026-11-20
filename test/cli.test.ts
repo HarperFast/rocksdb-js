@@ -391,6 +391,47 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			}
 		);
 
+		describe('close failure after the command finishes', () => {
+			const preload = [
+				`import { RocksDatabase } from ${JSON.stringify(distIndexURL)};`,
+				`const close = RocksDatabase.prototype.close;`,
+				`RocksDatabase.prototype.close = function () { close.call(this); throw new Error('injected close failure'); };`,
+			].join('\n');
+			const nodeArgs = ['--import', `data:text/javascript,${encodeURIComponent(preload)}`];
+
+			it('reports a one-shot close failure through reportError', async () => {
+				const dbPath = tempDBPath();
+				seed(dbPath, { a: 'one' });
+				const result = await cli([dbPath, 'get', 'a'], { nodeArgs });
+				expect(result.stdout).toBe('one\n');
+				expect(result.stderr).toContain('injected close failure');
+				expect(result.stderr).not.toContain('data:text');
+				expect(result.stderr).not.toContain('unhandled');
+				expect(result.code).toBe(1);
+			});
+
+			it('formats the close failure as JSON with --json', async () => {
+				const dbPath = tempDBPath();
+				seed(dbPath, { a: 'one' });
+				const result = await cli([dbPath, 'get', 'a', '--json'], { nodeArgs });
+				expect(JSON.parse(result.stderr.trim())).toMatchObject({
+					error: expect.stringContaining('injected close failure'),
+				});
+				expect(result.code).toBe(1);
+			});
+
+			it('reports a close failure when the REPL ends at EOF', async () => {
+				const dbPath = tempDBPath();
+				seed(dbPath, { a: 'one' });
+				const result = await cli([dbPath], { nodeArgs, input: 'get a\n' });
+				expect(result.stdout).toContain('\none\n');
+				expect(result.stderr).toContain('injected close failure');
+				expect(result.stderr).not.toContain('data:text');
+				expect(result.stderr).not.toContain('unhandled');
+				expect(result.code).toBe(1);
+			});
+		});
+
 		it('rethrows the range error when the row it failed on reads fine', async () => {
 			const dbPath = tempDBPath();
 			seed(dbPath, { a: 'one', b: 'two' });

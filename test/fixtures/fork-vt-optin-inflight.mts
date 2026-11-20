@@ -49,10 +49,10 @@ if (scenario === 'unrelated-commit') {
 	await waitFor(isTransactionCommitExecuteDelayedForTesting, 'the commit to execute');
 	assert.throws(() => cached.open(), conflict);
 	const terminated = worker.terminate();
-	// A legacy (libuv) commit finishes before env cleanup reaps its transaction.
-	if (!['0', 'false'].includes(process.env.ROCKSDB_JS_COMMIT_THREAD ?? '')) {
-		await waitFor(() => pendingTransactions() === 0, 'teardown to remove the transaction');
-	}
+	// Env cleanup's close() drains the commit before it deletes the transaction or leaves the
+	// registry, so neither the registration nor the writer count may end while the commit runs.
+	await delay(200);
+	assert.equal(pendingTransactions(), 1);
 	assert.throws(() => cached.open(), conflict);
 	assert.ok(isTransactionCommitExecuteDelayedForTesting(), 'the commit finished before the check');
 	await terminated;

@@ -1,17 +1,17 @@
-# Abort waits for in-flight async gets, under an operation guard
+# Abort drains in-flight async gets
 
 `rocksdb::Transaction` is not thread-safe, but a cold-cache `get()` runs `txn->Get()` on a libuv
-worker while the transaction stays usable on its JS thread. `Rollback()` destroys the write-batch
-index that `Get()` walks first, so `Transaction::Abort` cancels and drains the handle's admitted
-async work before rolling back. `TransactionHandle::close()` drains before it deletes `txn` and
-never calls `Rollback()`; Abort needs its own drain because it rolls back before calling `close()`.
+worker while the transaction stays usable on its JS thread. `Transaction::Abort` therefore ends the
+transaction with `TransactionHandle::close()`, which cancels and drains the handle's admitted async
+work before it deletes `txn`. It does not call `Rollback()`: abort only ever sees an unprepared
+transaction, and deleting one discards its writes and releases its locks. After a failed pessimistic
+commit, `Rollback()` reports an invalid state, which abort used to throw as "Transaction rollback
+failed" after the transaction was already gone.
 
-That drain can wait on a disk read, so Abort also holds a descriptor `OperationGuard` from before
-the drain until `close()` returns. A foreign `destroy()`/`shutdown()` closes transactions in
-`finishClose()`'s closables sweep, which starts only once `operationsInFlight` is zero. Without
-the guard the sweep can delete `txn` while Abort waits, or find Abort's `close()` already holding
-the close gate, skip it, and destroy the database while the parked get still pins a column family.
-The guard pins `TransactionHandle::owningDescriptor`, a weak reference fixed at construction:
+That drain can wait on a disk read, so with work in flight Abort holds a descriptor `OperationGuard`
+until `close()` returns, and leaves the close to a teardown that is already under way (a closing or
+destroyed descriptor) rather than wait for its sweep. The guard pins
+`TransactionHandle::owningDescriptor`, a weak reference fixed at construction:
 `dbHandle->descriptor` is gone once the owner has closed its handle, and another env can still
 hold the database open. Locking it can make a concurrent last-handle close skip its purge, so
 Abort retries `DBRegistry::PurgeIfUnreferenced` after releasing it, as backup and checkpoint do.
@@ -19,15 +19,15 @@ Abort retries `DBRegistry::PurgeIfUnreferenced` after releasing it, as backup an
 `AsyncWorkHandle::cancelIfIdle()` makes the common abort, with nothing admitted, cheap: under the
 handle's own mutex it either closes admission or reports work in flight, so no get from any env
 can slip in between. Only the in-flight case touches the descriptor (Harper ends every read-only
-transaction with an abort). The idle case takes no guard and so still races a foreign teardown's
-sweep the way every abort did before. An already-cancelled handle, or a closing or destroyed
-descriptor, means a teardown `close()` owns the rollback. Abort then only sets the atomic
-`writesAbandoned`, so the transaction refuses later writes and commits before that `close()` runs;
-it leaves `state` to the `close()`, which writes it concurrently.
+transaction with an abort). The idle case needs no guard: `close()` itself keeps a foreign sweep
+waiting ([close ownership](#close-ownership)). An already-cancelled handle means a teardown `close()`
+owns the transaction. Abort then only sets the atomic `writesAbandoned`, so the transaction refuses
+later writes and commits before that `close()` runs; it leaves `state` to the `close()`, which writes
+it concurrently.
 
 Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASan build with
-`max_free_fill_size` faults on the unfixed code) and `test/fixtures/fork-abort-get-destroy.mts`
-(segfaults without the guard or the owning-descriptor pin, no sanitizer needed).
+`max_free_fill_size` faults on an abort that does not drain first) and
+`test/fixtures/fork-abort-get-destroy.mts` (abort and a foreign destroy, in each order).
 
 Other owning-thread mutations still run while an admitted get may be inside `txn->Get()`:
 commit (`Clear()` after the write),
@@ -70,21 +70,42 @@ It runs off RocksDB's write thread without the DB mutex, as RocksDB's own parall
 
 The old completion did a check-then-store (`if (state == Committing) state = Pending`). A `close()` that landed between the two set `Aborted` and deleted `txn`, and the store then put the handle back to `Pending`. That leaves a `Pending` handle with no transaction, which `commit()`/`commitSync()` would admit again (HarperFast/rocksdb-js#769). `Commit`/`CommitSync` take `Pending` → `Committing` with a compare-exchange for the same reason, and reject as already aborted when it fails.
 
-Reads are relaxed. They gate operations on the owning thread and order no data, and `state` is read on every get, put and remove, where a `seq_cst` access would add a barrier. A check that must not run past a concurrent abort needs a `transition()`, not a `load()`. The cell does not stop `close()` from deleting `txn` under an idle `abort()` on the owning thread: that is the admission and drain work tracked by HarperFast/rocksdb-js#784. A `commitSync()` registers with the transaction's async-work drain, as an async commit does, so a foreign `close()` waits for it; and it holds a descriptor operation through its own `close()` of the committed handle, because that `close()` leaves the closables before deleting `txn`, after which `finishClose()`'s sweep would no longer wait for it (`test/fixtures/fork-commit-sync-shutdown.mts`). An async commit's completion runs after its operation was released, and cannot hold one into JavaScript that may close the database on the same thread, so `closeSettledHandle()` takes a fresh operation for the `close()` alone and leaves a closing descriptor's handle to the sweep; the commit then resolves with its handle still registered (`test/fixtures/fork-commit-async-shutdown.mts`). The env cleanup hook's `closeTransactionsByEnv()` likewise holds an operation across its reaper pass, checking `isClosing()` after registration so a shutdown that won owns the sweep. The commit thread's env-gone fallback does the same: when no commit thread could start, the lane runs it inline on the JS thread, which `finishClose()` does not join. The descriptor is passed as a raw pointer its caller keeps alive, so a commit thread never takes the strong reference that would make a racing last-handle close skip its purge.
+Reads are relaxed. They gate operations on the owning thread and order no data, and `state` is read on every get, put and remove, where a `seq_cst` access would add a barrier. A check that must not run past a concurrent abort needs a `transition()`, not a `load()`. A `commitSync()` registers with the transaction's async-work drain, as an async commit does, so a foreign `close()` waits for it (`test/fixtures/fork-commit-sync-shutdown.mts`).
 
 See [lifecycle cost accounting](../../../docs/performance/transaction-state.md) for per-path CAS counts and the reproducible state-only measurement.
 
-# Registry removal
+# Close ownership
 
-`close()` removes the transaction from `DBDescriptor::transactions` whatever state its `DBHandle` is
-in: the registry holds a strong reference, so a transaction aborted, committed or collected after its
-owner closed the handle otherwise stayed registered until the whole database closed. It cannot
-reach the descriptor through `dbHandle->descriptor`, which the owner's handle close resets, nor
-through `owningDescriptor.lock()`: that reference can make a racing last-handle close skip its purge,
-and `close()` runs on commit-lane and libuv threads where retrying the purge would make
-`finishClose()` join or wait for the thread running it. It uses `TransactionRegistryLink` instead, a
-raw pointer whose mutex is `txnsMutex`; `~DBDescriptor` clears it under that lock before anything
-else. `~TransactionHandle` can run under `txnsMutex` (`transactions.clear()`), so `close()` skips
-removal when `weak_from_this()` is empty; the registry cannot be holding it then. Covered by
-`test/transactions.test.ts`, `test/transaction-orphan-gc.test.ts` and the
-`async-get-handle-closed` mode of `test/fixtures/transaction-orphan-dependents.mts`.
+`finishClose()` destroys the database right after its closables sweep, so the sweep must not return
+while any `TransactionHandle::close()` is still using `txn`. `close()` makes that hold for every caller
+(commit completions, abort, the GC finalizer's orphan close, the env reaper, the sweep itself), with no
+descriptor operation: the first call wins `closed` and leaves `DBDescriptor::transactions` and
+`closables` only after `txn` is deleted, and a later call waits on `closeProgress` until the winner
+finishes. Registration is what makes the sweep find an unfinished close; the sweep's own `close()`,
+which loses the gate, is what makes it wait (the sweep erases the entry before calling it). This is invariant 6's rule for
+self-closing handles, which `DBIteratorHandle::closeIfOpen()` follows with `iteratorMutex`.
+
+The handle leaves `transactions` and `closables` together, under one `txnsMutex` acquisition, as
+the last step: a second acquisition cost 4 workers sharing a database about a third more per abort.
+`lookupOwnedTransaction()` therefore refuses a handle once `closed` is set, so a by-id call does not
+resolve a transaction being torn down. The uncontended close is one exchange on `closeProgress`,
+with no notify. A nested close of the same handle
+on the winner's thread returns instead of waiting on itself, and `closeOrphanIfUnused()` never waits:
+it runs on libuv and iterator-release threads, and a winner already owns the close. Because no close
+depends on the descriptor being open, a commit completion and the env reaper close their handles
+even after a failed close-time flush quarantined the descriptor, instead of leaving them to a sweep
+that has not run (`test/fixtures/fork-commit-quarantine-close.mts`). Covered by
+`test/fixtures/fork-txn-close-shutdown.mts` (orphan and idle-abort closes),
+`fork-commit-async-shutdown.mts` and `fork-commit-reaper-shutdown.mts`; the
+`ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH` seam parks the close and reports whether shutdown waited for it.
+
+`close()` reaches the descriptor through `TransactionRegistryLink`, never through
+`dbHandle->descriptor`, which the owner's handle close resets, nor through `owningDescriptor.lock()`:
+that reference can make a racing last-handle close skip its purge, and `close()` runs on commit-lane
+and libuv threads where retrying the purge would make `finishClose()` join or wait for the thread
+running it. The link is a raw pointer whose mutex is `txnsMutex`; `~DBDescriptor` clears it under
+that lock before anything else. `~TransactionHandle` can run under `txnsMutex`
+(`transactions.clear()`), so `close()` skips the registry when `weak_from_this()` is empty; the
+registry cannot be holding it then. Covered by `test/transactions.test.ts`,
+`test/transaction-orphan-gc.test.ts` and the `async-get-handle-closed` mode of
+`test/fixtures/transaction-orphan-dependents.mts`.

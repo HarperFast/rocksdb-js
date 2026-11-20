@@ -2,7 +2,7 @@ import { RocksDatabase, Transaction } from '../../src/index.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { Worker } from 'node:worker_threads';
 
-// A use-after-free need not crash; assert the operation count captured at the descriptor drain.
+// A use-after-free need not crash; assert that shutdown waited for the close it raced.
 const path = process.argv[2];
 if (!(Number(process.env.ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH) > 0)) {
 	throw new Error('ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH must be set');
@@ -44,8 +44,8 @@ try {
 
 const result = await nextMessage();
 if (!result.shutdown) fail(`shutdown failed: ${JSON.stringify(result)}`);
-if (!result.closeGuardedAtDrain) {
-	fail("shutdown() reached the drain without the completion's close operation registered");
+if (!result.closeAwaited) {
+	fail("shutdown() did not wait for the completion's close");
 }
 await worker.terminate();
 

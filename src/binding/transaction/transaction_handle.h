@@ -206,8 +206,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	rocksdb::Transaction* txn;
 
 	/**
-	 * One-shot close gate: set to true by the first close() caller. Subsequent
-	 * callers from any thread return immediately. Mirrors DBDescriptor::closing.
+	 * One-shot close gate: set to true by the first close() caller, which then
+	 * runs the whole close. A later close() waits for it to finish (`closeProgress`).
 	 *
 	 * Without this, DBDescriptor::close() (on env M's JS thread) and the async
 	 * commit's complete callback (on env W's JS thread) can both pass the
@@ -216,6 +216,14 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * (HarperFast/harper#1370, close-vs-commit variant).
 	 */
 	std::atomic<bool> closed{ false };
+
+	enum CloseProgress : uint32_t {
+		CloseRunning = 0,
+		CloseAwaited,
+		CloseFinished
+	};
+
+	std::atomic<uint32_t> closeProgress{ CloseRunning };
 
 	/**
 	 * Set when the JS `NativeTransaction` wrapper is garbage collected: no JS code can reach this
@@ -406,6 +414,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 
+	/**
+	 * Releases the transaction. The handle stays registered until the RocksDB
+	 * transaction is deleted, and a call that loses the gate returns only once the
+	 * winner has finished, so `finishClose()`'s sweep finds an in-flight close and
+	 * its own close() waits for it. See src/binding/transaction/DESIGN.md, "Close
+	 * ownership".
+	 */
 	void close() override;
 
 	/**
@@ -467,6 +482,14 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	void closeOrphanIfUnused();
 
+private:
+	/**
+	 * noexcept: completion is published only once `txn` is deleted, so a throw must end the
+	 * process rather than strand the waiting sweep or let it destroy the database first.
+	 */
+	void closeImpl(bool waitForWinner) noexcept;
+
+public:
 	napi_value get(
 		napi_env env,
 		std::string& key,
