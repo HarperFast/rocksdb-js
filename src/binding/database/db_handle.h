@@ -10,6 +10,7 @@
 #include <thread>
 #include <mutex>
 #include <node_api.h>
+#include "core/assert.h"
 #include "rocksdb/db.h"
 #include "database/db_descriptor.h"
 #include "options/db_options.h"
@@ -33,9 +34,24 @@ struct DBDescriptor;
  */
 struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_from_this<DBHandle> {
 	/**
-	 * The RocksDB database descriptor
+	 * The RocksDB database descriptor. Assigned and reset only on `ownerThreadId`; a foreign
+	 * `close()` leaves it set.
 	 */
 	std::shared_ptr<DBDescriptor> descriptor;
+
+	const std::shared_ptr<DBDescriptor>& ownerDescriptor() const {
+		this->assertOwnerThread();
+		return this->descriptor;
+	}
+
+	/**
+	 * Debug builds only, so release builds pay nothing for the thread-id read on this path.
+	 */
+	void assertOwnerThread() const {
+#ifdef DEBUG
+		ROCKSDB_JS_ASSERT(std::this_thread::get_id() == this->ownerThreadId, "DBHandle::descriptor used off its owner thread");
+#endif
+	}
 
 	// Accessed only by this handle's env thread; reset on reopen, never from
 	// cross-env close. The registry owns TSFN release independently of this cache.
