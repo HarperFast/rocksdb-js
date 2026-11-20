@@ -91,16 +91,7 @@ while (!isTransactionCommitExecuteDelayedForTesting()) {
 	await new Promise((resolve) => setTimeout(resolve, 5));
 }
 db.close();
-let commitError: unknown;
-try {
-	await commit;
-} catch (error) {
-	commitError = error;
-}
-assert(
-	commitError instanceof Error && /Database not open/.test(commitError.message),
-	`closed wrapper should only fail its aftercommit notification: ${commitError}`
-);
+await commit;
 
 if (survivor) {
 	const entry = registryStatus().find((status) => status.path === dbPath);
