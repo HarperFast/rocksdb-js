@@ -1,5 +1,10 @@
 import { DBI } from './dbi.ts';
-import { constants, NativeTransaction, type NativeTransactionOptions } from './load-binding.ts';
+import {
+	constants,
+	globalNotify,
+	NativeTransaction,
+	type NativeTransactionOptions,
+} from './load-binding.ts';
 import { Store } from './store.ts';
 
 /**
@@ -179,21 +184,28 @@ export class Transaction extends DBI {
 	 *
 	 * Returns `RETRY_NOW` when `coordinatedRetry: true` and an IsBusy conflict
 	 * was detected. The caller should retry the transaction body immediately.
+	 *
+	 * If the database closes after the commit landed, the `aftercommit` notification is skipped with
+	 * a process-wide `log.warn` and the commit still succeeds. A `RETRY_NOW` result did not commit, so a
+	 * closed database still rejects it.
 	 */
 	async commit(): Promise<typeof RETRY_NOW | void> {
+		let result: number | void;
 		try {
-			const result = await new Promise<number | void>((resolve, reject) => {
+			result = await new Promise<number | void>((resolve, reject) => {
 				this.notify('beforecommit');
 				this.#txn.commit(resolve, reject);
 			});
-			if (result === RETRY_NOW) {
-				return RETRY_NOW;
-			}
 		} catch (err) {
-			throw this.#handleCommitError(err);
-		} finally {
-			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+			const failure = this.#handleCommitError(err);
+			this.#notifyAfterFailedCommit();
+			throw failure;
 		}
+		if (result === RETRY_NOW) {
+			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+			return RETRY_NOW;
+		}
+		this.#notifyAfterDurableCommit();
 	}
 
 	/**
@@ -204,9 +216,37 @@ export class Transaction extends DBI {
 			this.notify('beforecommit');
 			this.#txn.commitSync();
 		} catch (err) {
-			throw this.#handleCommitError(err);
-		} finally {
+			const failure = this.#handleCommitError(err);
+			this.#notifyAfterFailedCommit();
+			throw failure;
+		}
+		this.#notifyAfterDurableCommit();
+	}
+
+	#notifyAfterDurableCommit(): void {
+		try {
 			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+		} catch (err) {
+			if (this.store.db.opened) {
+				throw err;
+			}
+			globalNotify('log.warn', [
+				`aftercommit notification skipped for committed transaction ${this.#txn.id} of ${this.store.identityPath}: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			]);
+		}
+	}
+
+	/**
+	 * The commit's own error is the one a caller needs; the notification can fail only because the
+	 * database closed under the commit, so any failure here is dropped.
+	 */
+	#notifyAfterFailedCommit(): void {
+		try {
+			this.notify('aftercommit', { next: null, last: null, txnId: this.#txn.id });
+		} catch {
+			// intentionally dropped
 		}
 	}
 

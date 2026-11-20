@@ -1,7 +1,7 @@
 import { RocksDatabase, shutdown } from '../../src/index.ts';
 import {
 	isTransactionCloseDelayedForTesting,
-	isTransactionCloseGuardedAtDrainForTesting,
+	isTransactionCloseAwaitedByShutdownForTesting,
 } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { once } from 'node:events';
@@ -41,10 +41,8 @@ if (closer === 'destroy') {
 } else {
 	shutdown();
 }
-if (!isTransactionCloseGuardedAtDrainForTesting()) {
-	throw new Error(
-		`${closer}() reached the drain without the ${state} transaction's close operation registered`
-	);
+if (!isTransactionCloseAwaitedByShutdownForTesting()) {
+	throw new Error(`${closer}() did not wait for the ${state} transaction's close`);
 }
 await terminated;
 

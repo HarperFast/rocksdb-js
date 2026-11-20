@@ -11,6 +11,20 @@
 
 namespace rocksdb_js {
 
+struct OpenSettings final {
+	std::shared_ptr<rocksdb::Cache> blockCache;
+	std::shared_ptr<rocksdb::WriteBufferManager> writeBufferManager;
+	size_t writeBufferManagerBudget = 0;
+	uint32_t occLockBucketCount = 0;
+	bool occValidateSerial = false;
+	uint32_t commitThreads = 1;
+};
+
+struct ColumnFamilySettings final {
+	std::shared_ptr<rocksdb::Cache> blockCache;
+	size_t writeBufferManagerBudget = 0;
+};
+
 /**
  * Stores the global settings for RocksDB databases as well as various global
  * state.
@@ -21,14 +35,14 @@ private:
 
 	// Guarded by blockCacheMutex: config() resizes the cache while a first open on another thread
 	// may create it. A leaf lock, taken under writeBufferManagerMutex by config() and
-	// getWriteBufferManager().
+	// snapshotForOpen().
 	size_t blockCacheSize;
 	std::shared_ptr<rocksdb::Cache> blockCache;
 	std::mutex blockCacheMutex;
-	// Atomic because config() and open() can run on different worker_threads.
-	std::atomic<uint32_t> occLockBucketCount;
-	std::atomic<bool> occValidateSerial;
-	std::atomic<uint32_t> commitThreads;
+	// Read only through snapshotForOpen(). Guarded by writeBufferManagerMutex.
+	uint32_t occLockBucketCount;
+	bool occValidateSerial;
+	uint32_t commitThreads;
 	// Writes transaction-log abort markers. Read when a transaction starts and at each retry reset;
 	// see transaction_log/DESIGN.md, "Abort markers".
 	std::atomic<bool> transactionLogAbortMarkers;
@@ -40,10 +54,7 @@ private:
 	// immutable memtables. 0 disables the manager (each database uses its own
 	// unbounded memtable budget).
 	//
-	// Atomic so JS-thread writes in Config() are safely visible to libuv
-	// worker threads that read it from getWriteBufferManager() during async
-	// database open. Not protected by writeBufferManagerMutex because the
-	// "should I attach a WBM at all?" check needs to be lock-free fast path.
+	// Written under writeBufferManagerMutex; atomic so stats can read it lock-free.
 	std::atomic<size_t> writeBufferManagerSize;
 
 	// When true, memtable memory is "charged" against the shared block cache.
@@ -74,7 +85,7 @@ private:
 	// manager stall only if no later change superseded it.
 	uint64_t allowStallGeneration = 0;
 
-	bool compactOnClose;
+	std::atomic<bool> compactOnClose;
 	std::atomic<bool> shutdownOnExit;
 	std::atomic<uint32_t> lifecycleWaitSeconds;
 
@@ -106,17 +117,25 @@ public:
 
 	std::shared_ptr<rocksdb::Cache> getBlockCache();
 
-	uint32_t getOccLockBucketCount() const {
-		return occLockBucketCount.load(std::memory_order_relaxed);
+	std::shared_ptr<rocksdb::Cache> peekBlockCache() {
+		std::lock_guard<std::mutex> lock(blockCacheMutex);
+		return blockCache;
 	}
 
-	bool getOccValidateSerial() const {
-		return occValidateSerial.load(std::memory_order_relaxed);
-	}
+	/**
+	 * Every setting a new descriptor fixes at open, taken under the lock `config()` applies under,
+	 * so one open cannot combine two `config()` calls.
+	 */
+	OpenSettings snapshotForOpen(bool needBlockCache);
 
-	uint32_t getCommitThreads() const {
-		return commitThreads.load(std::memory_order_relaxed);
-	}
+	/**
+	 * The live block cache and `attached`'s budget for a column family added to an open database,
+	 * read under the same lock for the same reason as `snapshotForOpen()`.
+	 */
+	ColumnFamilySettings snapshotForColumnFamily(
+		bool needBlockCache,
+		const rocksdb::WriteBufferManager* attached
+	);
 
 	bool getTransactionLogAbortMarkers() const {
 		return transactionLogAbortMarkers.load(std::memory_order_relaxed);
@@ -159,10 +178,8 @@ public:
 			: rocksdb::WriteBufferFlushPolicy::kFlushOldest;
 	}
 
-	std::shared_ptr<rocksdb::WriteBufferManager> getWriteBufferManager();
-
-	inline bool getCompactOnClose() const {
-		return compactOnClose;
+	bool getCompactOnClose() const {
+		return compactOnClose.load(std::memory_order_relaxed);
 	}
 
 	bool getShutdownOnExit() const {

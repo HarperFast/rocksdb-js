@@ -120,7 +120,7 @@ describe('Async commit completion vs. foreign shutdown()/destroy()', () => {
 			])
 		),
 	])(
-		'keeps the $owner close registered at the drain ($name, ROCKSDB_JS_COMMIT_THREAD=$label)',
+		'waits for the $owner close ($name, ROCKSDB_JS_COMMIT_THREAD=$label)',
 		{ timeout: 30_000 },
 		async ({ mode, fixture, args, seams }) => {
 			const env: NodeJS.ProcessEnv = {

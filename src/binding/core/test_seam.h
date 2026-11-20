@@ -84,18 +84,41 @@ inline std::atomic<bool>& txnCloseDelayActive() {
 	return active;
 }
 
-// A child-process-only latch: one transaction close waits until its descriptor's
-// drain records the operation count. No timer can release the close first.
+// A child-process-only latch: the first transaction close to reach it after its drain
+// parks until a foreign close records how it was protected. No timer can release it.
 struct TransactionCloseDrainLatch {
+	enum Outcome : int {
+		Parked = 0,
+		GuardedAtDrain,
+		AwaitedByClose,
+		// finishClose() passed its closables sweep with the close parked or unfinished.
+		Missed,
+	};
 	std::atomic<bool> enabled{ false };
+	std::atomic<void*> handle{ nullptr };
 	std::atomic<void*> descriptor{ nullptr };
-	std::atomic<int> operations{ -1 };
+	std::atomic<int> outcome{ Parked };
 	std::atomic<bool> finished{ false };
+
+	bool release(const std::atomic<void*>& field, void* owner, Outcome result) {
+		int expected = Parked;
+		if (owner == nullptr || field.load(std::memory_order_acquire) != owner ||
+			!this->outcome.compare_exchange_strong(expected, result, std::memory_order_acq_rel)) {
+			return false;
+		}
+		this->outcome.notify_all();
+		return true;
+	}
 };
 
 inline TransactionCloseDrainLatch& txnCloseDrainLatch() {
 	static TransactionCloseDrainLatch latch;
 	return latch;
+}
+
+inline bool isTransactionCloseAwaited() {
+	const int outcome = txnCloseDrainLatch().outcome.load(std::memory_order_acquire);
+	return outcome == TransactionCloseDrainLatch::GuardedAtDrain || outcome == TransactionCloseDrainLatch::AwaitedByClose;
 }
 
 // Transactional reads execute on a libuv worker, so their test delay cannot
@@ -224,6 +247,12 @@ inline std::atomic<int>& clearDeleteDelayMsFlag() {
 inline std::atomic<int>& memoryMapBufferDelayMsFlag() {
 	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
+}
+
+// Failed native mapping-buffer creates. Never reset.
+inline std::atomic<uint64_t>& memoryMapBufferCreateFailures() {
+	static std::atomic<uint64_t> failures{ 0 };
+	return failures;
 }
 
 // Number of transaction-log abort-marker syncs to fail after the marker is written (a count). Read
@@ -502,6 +531,43 @@ inline int consumeWriteBufferManagerJoinDelayForTesting() {
 		}
 	}
 	return 0;
+}
+
+enum class AsyncExceptionStage : int {
+	None = 0,
+	State = 1,
+	Execute = 2,
+	Complete = 3,
+	// DBRegistry::PurgeIfUnreferenced()'s close-claim allocation.
+	PurgeClaim = 4
+};
+
+inline std::atomic<int>& asyncExceptionStage() {
+	static std::atomic<int> stage{ 0 };
+	return stage;
+}
+
+inline std::atomic<int>& asyncExceptionCount() {
+	static std::atomic<int> count{ 0 };
+	return count;
+}
+
+inline void setAsyncExceptionForTesting(int stage, int count) {
+	asyncExceptionCount().store(count, std::memory_order_relaxed);
+	asyncExceptionStage().store(stage, std::memory_order_relaxed);
+}
+
+inline bool consumeAsyncExceptionForTesting(AsyncExceptionStage stage) {
+	if (asyncExceptionStage().load(std::memory_order_relaxed) != static_cast<int>(stage)) {
+		return false;
+	}
+	int remaining = asyncExceptionCount().load(std::memory_order_relaxed);
+	while (remaining > 0) {
+		if (asyncExceptionCount().compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 #endif

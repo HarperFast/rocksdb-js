@@ -2,7 +2,6 @@
 #define __TRANSACTION_HANDLE_H__
 
 #include <array>
-#include <cassert>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -18,6 +17,7 @@
 #include "core/platform.h"
 #include "napi/helpers.h"
 #include "napi/async.h"
+#include "core/inline_vector.h"
 #include "core/transaction_state.h"
 #include "core/verification_table.h"
 
@@ -29,81 +29,6 @@ struct DBIteratorHandle;
 struct DBIteratorOptions;
 struct MultiGetBatch;
 struct TransactionLogStore;
-
-/**
- * A vector that holds its first `N` elements inline and spills the rest into
- * heap storage. Both users — the set of column-family generations a
- * transaction has staged a write to, and a commit's claim over that set — are
- * rebuilt per transaction on paths that run for every staged write, and a
- * transaction almost always names one or two families, so the inline slots
- * keep the common case allocation-free.
- *
- * `overflow` is public so a caller can `reserve()` it before publishing
- * anything: `ColumnFamilyCommitClaim::admit` secures storage for every claim
- * up front, so recording one can never fail after its count was taken
- * (invariant 24).
- */
-template <typename T, size_t N>
-struct InlineVector final {
-	static constexpr size_t inlineCapacity = N;
-	T inlineSlots[N];
-	std::vector<T> overflow;
-	size_t count = 0;
-
-	T& add(T value) {
-		if (this->count < N) {
-			this->inlineSlots[this->count] = std::move(value);
-			this->count++;
-			return this->inlineSlots[this->count - 1];
-		}
-		this->overflow.push_back(std::move(value));
-		this->count++;
-		return this->overflow.back();
-	}
-
-	const T& back() const {
-		assert(this->count > 0);
-		return this->count <= N
-			? this->inlineSlots[this->count - 1]
-			: this->overflow.back();
-	}
-
-	void popBack() {
-		if (this->count == 0) {
-			return;
-		}
-		if (this->count <= N) {
-			this->inlineSlots[this->count - 1] = T();
-		} else {
-			this->overflow.pop_back();
-		}
-		this->count--;
-	}
-
-	template <typename Fn>
-	void forEach(Fn&& fn) const {
-		const size_t inlineCount = this->count < N ? this->count : N;
-		for (size_t i = 0; i < inlineCount; i++) {
-			fn(this->inlineSlots[i]);
-		}
-		for (const auto& entry : this->overflow) {
-			fn(entry);
-		}
-	}
-
-	void clear() {
-		const size_t inlineCount = this->count < N ? this->count : N;
-		for (size_t i = 0; i < inlineCount; i++) {
-			this->inlineSlots[i] = T();
-		}
-		this->overflow.clear();
-		this->count = 0;
-	}
-
-	size_t size() const {
-		return this->count;
-	}
-};
 
 /**
  * One column-family generation a transaction has staged a write to. Weak,
@@ -190,6 +115,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	const std::weak_ptr<DBDescriptor> owningDescriptor;
 
 	/**
+	 * How close() leaves the registry: unlike `owningDescriptor`, it never pins
+	 * the descriptor.
+	 */
+	const std::shared_ptr<TransactionRegistryLink> registryLink;
+
+	/**
 	 * The environment that created this transaction. A RocksDB transaction is
 	 * not thread-safe, so every by-id lookup rejects any other environment
 	 * (`lookupOwnedTransaction`). Immutable, unlike `dbHandle`, which close()
@@ -264,8 +195,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	rocksdb::Transaction* txn;
 
 	/**
-	 * One-shot close gate: set to true by the first close() caller. Subsequent
-	 * callers from any thread return immediately. Mirrors DBDescriptor::closing.
+	 * One-shot close gate: set to true by the first close() caller, which then
+	 * runs the whole close. A later close() waits for it to finish (`closeProgress`).
 	 *
 	 * Without this, DBDescriptor::close() (on env M's JS thread) and the async
 	 * commit's complete callback (on env W's JS thread) can both pass the
@@ -274,6 +205,14 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * (HarperFast/harper#1370, close-vs-commit variant).
 	 */
 	std::atomic<bool> closed{ false };
+
+	enum CloseProgress : uint32_t {
+		CloseRunning = 0,
+		CloseAwaited,
+		CloseFinished
+	};
+
+	std::atomic<uint32_t> closeProgress{ CloseRunning };
 
 	/**
 	 * Set when the JS `NativeTransaction` wrapper is garbage collected: no JS code can reach this
@@ -461,6 +400,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 
+	/**
+	 * Releases the transaction. The handle stays registered until the RocksDB
+	 * transaction is deleted, and a call that loses the gate returns only once the
+	 * winner has finished, so `finishClose()`'s sweep finds an in-flight close and
+	 * its own close() waits for it. See src/binding/transaction/DESIGN.md, "Close
+	 * ownership".
+	 */
 	void close() override;
 
 	/**
@@ -483,7 +429,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 		DBIteratorOptions& options,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr
 	);
-	void unregisterIterator(DBIteratorHandle* iterator);
+	/**
+	 * Like `releaseIterator`, the caller acts on `checkOrphan` and `countUnderflow`
+	 * only after dropping the iterator's `iteratorMutex`.
+	 */
+	void unregisterIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow);
+	static void reportIteratorCountUnderflow() noexcept;
 	void closeIterators();
 
 	/**
@@ -503,10 +454,11 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * Returns a busy pooled iterator to the idle slots. Caller holds the
 	 * iterator's `iteratorMutex` and has ended its range. Returns false when it
 	 * was not pooled (transaction no longer pending, or slots full); the caller
-	 * then closes it. `checkOrphan` is set when the caller must call
-	 * `closeOrphanIfUnused()` after dropping `iteratorMutex`.
+	 * then closes it. After dropping `iteratorMutex`, the caller must call
+	 * `closeOrphanIfUnused()` when `checkOrphan` is set, and
+	 * `reportIteratorCountUnderflow()` when `countUnderflow` is.
 	 */
-	bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept;
+	[[nodiscard]] bool releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) noexcept;
 
 	void closeIdleIterators() noexcept;
 
@@ -516,6 +468,14 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	void closeOrphanIfUnused();
 
+private:
+	/**
+	 * noexcept: completion is published only once `txn` is deleted, so a throw must end the
+	 * process rather than strand the waiting sweep or let it destroy the database first.
+	 */
+	void closeImpl(bool waitForWinner) noexcept;
+
+public:
 	napi_value get(
 		napi_env env,
 		std::string& key,

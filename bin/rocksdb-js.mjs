@@ -1391,9 +1391,15 @@ async function main() {
 			process.exitCode = error.exitCode ?? 1;
 		}
 	} finally {
-		r?.close();
-		closeAllDatabases();
-		rl?.close();
+		try {
+			r?.close();
+			closeAllDatabases();
+		} catch (closeError) {
+			reportError(closeError);
+			process.exitCode ||= 1;
+		} finally {
+			rl?.close();
+		}
 	}
 }
 

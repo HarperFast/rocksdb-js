@@ -1,4 +1,4 @@
-import { transactionLogMapCount } from '../src/load-binding.ts';
+import { getTransactionLogMapCount } from '../src/load-binding.ts';
 import { dbRunner } from '../test/lib/util.ts';
 import { createWorkerBootstrapScript } from '../test/lib/worker-bootstrap.ts';
 import { stressTest } from './setup.ts';
@@ -97,7 +97,7 @@ describe('Stress Transaction Log Memory Map', () => {
 					await delay(50);
 				}
 
-				const liveMaps = transactionLogMapCount();
+				const liveMaps = getTransactionLogMapCount();
 				expect(liveMaps).toBeLessThanOrEqual(5);
 			})
 	);
