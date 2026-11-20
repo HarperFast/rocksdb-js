@@ -47,6 +47,20 @@ for (const { name, options, txnOptions } of testOptions) {
 				}
 			}));
 
+		it(`${name} should unregister a transaction aborted after its handle closed`, () =>
+			dbRunner({ dbOptions: [options, options] }, async ({ db }, { db: second }) => {
+				const txn = new Transaction(db.store, txnOptions);
+				txn.putSync('foo', 'bar');
+				expect(registryStatus().find((entry) => entry.path === db.path)?.transactions).toBe(1);
+
+				db.close();
+				expect(registryStatus().find((entry) => entry.path === second.path)?.transactions).toBe(1);
+				txn.abort();
+
+				expect(registryStatus().find((entry) => entry.path === second.path)?.transactions).toBe(0);
+				expect(second.getSync('foo')).toBeUndefined();
+			}));
+
 		it(`${name} async should error if callback is not a function`, () =>
 			dbRunner({ dbOptions: [options] }, async ({ db }) => {
 				await expect(db.transaction('foo' as any, txnOptions)).rejects.toThrow(

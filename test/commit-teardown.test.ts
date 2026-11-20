@@ -79,7 +79,7 @@ describe('Async commit completion vs. foreign shutdown()', () => {
 			{ ...mode, owner: 'reaper', fixture: 'fork-commit-reaper-shutdown.mts' },
 		])
 	)(
-		'keeps the $owner close registered at the shutdown drain (ROCKSDB_JS_COMMIT_THREAD=$label)',
+		'makes shutdown wait for the $owner close (ROCKSDB_JS_COMMIT_THREAD=$label)',
 		{ timeout: 30_000 },
 		async ({ mode, fixture }) => {
 			const env: NodeJS.ProcessEnv = { ...process.env, ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH: '1' };

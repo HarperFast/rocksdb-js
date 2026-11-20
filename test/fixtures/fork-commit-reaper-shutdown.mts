@@ -1,7 +1,7 @@
 import { RocksDatabase, shutdown } from '../../src/index.ts';
 import {
 	isTransactionCloseDelayedForTesting,
-	isTransactionCloseGuardedAtDrainForTesting,
+	isTransactionCloseAwaitedByShutdownForTesting,
 } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { once } from 'node:events';
@@ -31,8 +31,8 @@ while (!isTransactionCloseDelayedForTesting()) {
 	Atomics.wait(sleepCell, 0, 0, 2);
 }
 shutdown();
-if (!isTransactionCloseGuardedAtDrainForTesting()) {
-	throw new Error("shutdown() reached the drain without the reaper's close operation registered");
+if (!isTransactionCloseAwaitedByShutdownForTesting()) {
+	throw new Error("shutdown() did not wait for the reaper's close");
 }
 await terminated;
 

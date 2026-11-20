@@ -22,6 +22,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
 
+env:
+  # Internal native checks abort these test builds instead of warning; publish.yml never sets it.
+  ROCKSDB_JS_FATAL_ASSERTS: '1'
+
 jobs:
   checks:
     name: Check

@@ -16,7 +16,7 @@ process.on('unhandledRejection', (error) => {
 });
 
 if (!dbPath) {
-	throw new Error('Usage: fork-legacy-commit-close.mts <dbPath> [commit|worker|probe]');
+	throw new Error('Usage: fork-legacy-commit-close.mts <dbPath> [commit|survivor|worker|probe]');
 }
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -79,6 +79,7 @@ if (mode === 'worker') {
 	process.exit(0);
 }
 
+const survivor = mode === 'survivor' ? RocksDatabase.open(dbPath) : undefined;
 const db = RocksDatabase.open(dbPath);
 const txn = new Transaction(db.store);
 txn.putSync('committed', 'value');
@@ -90,16 +91,18 @@ while (!isTransactionCommitExecuteDelayedForTesting()) {
 	await new Promise((resolve) => setTimeout(resolve, 5));
 }
 db.close();
-let commitError: unknown;
-try {
-	await commit;
-} catch (error) {
-	commitError = error;
+await commit;
+
+if (survivor) {
+	const entry = registryStatus().find((status) => status.path === dbPath);
+	assert(entry, 'the surviving handle should keep the descriptor registered');
+	assert(
+		entry.transactions === 0,
+		`the committed transaction stayed registered: ${JSON.stringify(entry.transactionDetails)}`
+	);
+	assert(survivor.getSync('committed') === 'value', 'the surviving handle did not see the commit');
+	survivor.close();
 }
-assert(
-	commitError instanceof Error && /Database not open/.test(commitError.message),
-	`closed wrapper should only fail its aftercommit notification: ${commitError}`
-);
 
 assertReopenable();
 

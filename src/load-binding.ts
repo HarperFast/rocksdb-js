@@ -1266,9 +1266,12 @@ export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
 export const isTransactionCloseDelayedForTesting: () => boolean =
 	binding.isTransactionCloseDelayedForTesting;
 
-/** Reports whether the latched close held the sole operation when its descriptor reached the drain. */
-export const isTransactionCloseGuardedAtDrainForTesting: () => boolean =
-	binding.isTransactionCloseGuardedAtDrainForTesting;
+/**
+ * Reports whether shutdown waited for the latched transaction close: its drain found an operation
+ * in flight, or its closables sweep waited for the close to finish.
+ */
+export const isTransactionCloseAwaitedByShutdownForTesting: () => boolean =
+	binding.isTransactionCloseAwaitedByShutdownForTesting;
 
 /** Reports whether a flush callback is delayed after its descriptor lookup. */
 export const isFlushCompletedDelayedForTesting: () => boolean =
