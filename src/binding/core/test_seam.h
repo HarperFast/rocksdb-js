@@ -397,11 +397,21 @@ inline std::atomic<bool>& transactionCommitAdmissionDelayActive() {
 	return active;
 }
 
-inline void setTransactionCommitAdmissionDelayForTesting(int delayMs) {
-	transactionCommitAdmissionDelayMs().store(delayMs, std::memory_order_relaxed);
-	if (delayMs == 0) {
-		transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
+inline std::atomic<bool>& transactionCommitAdmissionDelayRegistered() {
+	static std::atomic<bool> registered{ false };
+	return registered;
+}
+
+inline void setTransactionCommitAdmissionDelayForTesting(int delayMs, bool afterRegistration = false) {
+	// The phase is set before arming and cleared after disarming, so a delay never meets a stale phase.
+	if (delayMs != 0) {
+		transactionCommitAdmissionDelayRegistered().store(afterRegistration, std::memory_order_release);
+		transactionCommitAdmissionDelayMs().store(delayMs, std::memory_order_release);
+		return;
 	}
+	transactionCommitAdmissionDelayMs().store(0, std::memory_order_release);
+	transactionCommitAdmissionDelayRegistered().store(false, std::memory_order_release);
+	transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
 }
 
 // Deterministic one-shot(-per-N) seam for the stranded-snapshot retry path: forces the next N
@@ -513,7 +523,9 @@ enum class AsyncExceptionStage : int {
 	Execute = 2,
 	Complete = 3,
 	// DBRegistry::PurgeIfUnreferenced()'s close-claim allocation.
-	PurgeClaim = 4
+	PurgeClaim = 4,
+	// Transaction::Commit() just before dispatch, with the commit fully registered.
+	CommitDispatch = 5
 };
 
 inline std::atomic<int>& asyncExceptionStage() {
