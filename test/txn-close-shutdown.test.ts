@@ -26,34 +26,40 @@ async function expectFixturePasses(
 	});
 }
 
-// The fixtures run under the test runtime's executable and collect a wrapper with Node's --expose-gc.
-describe.skipIf(!!process.versions.deno || !!process.versions.bun)(
-	'Transaction close() vs. foreign shutdown()',
-	() => {
-		it.each(['orphan', 'abort', 'commit-sync'])(
-			'waits for an in-flight %s close',
-			{ timeout: 30_000 },
-			(mode) =>
-				expectFixturePasses(
-					'fork-txn-close-shutdown.mts',
-					[mode],
-					{ ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH: '1' },
-					['--expose-gc']
-				)
-		);
+describe.skipIf(!!process.versions.deno)('Transaction close() vs. foreign shutdown()', () => {
+	// Collects the wrapper with Node's --expose-gc.
+	it.skipIf(!!process.versions.bun)(
+		'waits for an in-flight orphan close',
+		{ timeout: 30_000 },
+		() =>
+			expectFixturePasses(
+				'fork-txn-close-shutdown.mts',
+				['orphan'],
+				{ ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH: '1' },
+				['--expose-gc']
+			)
+	);
 
-		it.each([
-			{ label: 'default', mode: undefined },
-			{ label: '2', mode: '2' },
-			{ label: '0', mode: '0' },
-		])(
-			'releases a committed transaction on a quarantined database (ROCKSDB_JS_COMMIT_THREAD=$label)',
-			{ timeout: 30_000 },
-			({ mode }) =>
-				expectFixturePasses('fork-commit-quarantine-close.mts', [], {
-					ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '1',
-					ROCKSDB_JS_COMMIT_THREAD: mode,
-				})
-		);
-	}
-);
+	it.each(['abort', 'commit-sync'])(
+		'waits for an in-flight %s close',
+		{ timeout: 30_000 },
+		(mode) =>
+			expectFixturePasses('fork-txn-close-shutdown.mts', [mode], {
+				ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH: '1',
+			})
+	);
+
+	it.each([
+		{ label: 'default', mode: undefined },
+		{ label: '2', mode: '2' },
+		{ label: '0', mode: '0' },
+	])(
+		'releases a committed transaction on a quarantined database (ROCKSDB_JS_COMMIT_THREAD=$label)',
+		{ timeout: 30_000 },
+		({ mode }) =>
+			expectFixturePasses('fork-commit-quarantine-close.mts', [], {
+				ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '1',
+				ROCKSDB_JS_COMMIT_THREAD: mode,
+			})
+	);
+});
