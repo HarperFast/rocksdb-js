@@ -1,7 +1,6 @@
-import { shutdown, RocksDatabase } from '../../src/index.ts';
+import { shutdown, RocksDatabase, Transaction } from '../../src/index.ts';
 import {
 	isTransactionCommitAdmissionDelayedForTesting,
-	NativeTransaction,
 	setTransactionCommitAdmissionDelayForTesting,
 } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
@@ -58,9 +57,7 @@ if (isMainThread) {
 	console.log('SUCCESS');
 } else {
 	const db = RocksDatabase.open(workerData.path);
-	// The native commit, so the TS aftercommit notification on the closed database cannot replace
-	// the error.
-	const txn = new NativeTransaction(db.store.db);
+	const txn = new Transaction(db.store);
 	parentPort!.postMessage('ready');
 	await once(parentPort!, 'message');
 	try {
