@@ -1073,14 +1073,14 @@ describe('Verification Table', () => {
 			const path = generateDBPath();
 			const keepAlive = new RocksDatabase(path).open();
 			const plain = new RocksDatabase(path, plainOptions).open();
-			const extras = ['x1', 'x2', 'x3'].map((name) =>
+			const extras = ['x1', 'x2', 'x3', 'x4'].map((name) =>
 				new RocksDatabase(path, { name, encoding: false }).open()
 			);
 			const cached = new RocksDatabase(path, cachedOptions);
 			try {
 				const first = new Transaction(keepAlive.store);
 				const second = new Transaction(keepAlive.store);
-				// The extra families spill the transaction's set past its inline slots.
+				// Written first, so the plain family's count lands past both per-family sets' inline slots.
 				for (const db of extras) {
 					db.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: first });
 				}
