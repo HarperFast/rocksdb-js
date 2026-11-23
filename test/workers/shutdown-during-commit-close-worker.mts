@@ -7,7 +7,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 
 // The parent's JS thread is blocked inside a transaction close(), so this worker cannot be
 // messaged; it watches the native close-latch flag instead.
-RocksDatabase.open(workerData.path);
+const db = RocksDatabase.open(workerData.path);
 if (!parentPort) throw new Error('Shutdown-during-commit-close worker requires a parent port');
 const port = parentPort;
 port.postMessage({ ready: true });
@@ -22,9 +22,13 @@ while (!isTransactionCloseDelayedForTesting()) {
 	Atomics.wait(sleepCell, 0, 0, 2);
 }
 try {
-	shutdown();
+	if (workerData.closer === 'destroy') {
+		db.destroy();
+	} else {
+		shutdown();
+	}
 	port.postMessage({
-		shutdown: true,
+		closed: true,
 		closeAwaited: isTransactionCloseAwaitedByShutdownForTesting(),
 	});
 } catch (error) {

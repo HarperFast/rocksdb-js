@@ -232,12 +232,17 @@ env; its terminal closed flag prevents a delayed registration or dispatch from
 reviving the released TSFN. A per-commit tsfn acquire is NOT
 sufficient (env teardown does not honor tsfn acquire counts); see
 `test/commit-teardown.test.ts` and the `ROCKSDB_JS_COMMIT_DELAY_MS` test seam.
-Every path registers its native execute in the descriptor's
+Every path first registers with the transaction's async-work drain, before it
+reads the transaction's `dbHandle` at all: a foreign shutdown's sweep resets that
+`shared_ptr` in `TransactionHandle::close()` on its own thread, so the close must
+either wait for the commit or have already refused it (`commitSync()` does the
+same; `test/fixtures/fork-commit-admission-shutdown.mts` pauses on each side of
+the registration). A commit rejected during setup releases that registration
+before `completeCommitWork()`, which can `close()` the handle and so would wait
+on it. Every path then registers its native execute in the descriptor's
 `operationsInFlight` count before queueing and rechecks `isClosing()` afterward
 (publish-then-check, so teardown either waits for the operation or the commit
-observes the close and rejects). In the lane modes this must precede the
-`DBHandle` completion-cache access: foreign shutdown can reset the transaction's
-`dbHandle` before admission. The local descriptor pin is declared before the pending
+observes the close and rejects). The local descriptor pin is declared before the pending
 commit state so setup-error cleanup releases its operation count while the descriptor
 is still alive. The operation releases only after the transaction's
 async-work registration is cleared — legacy from its libuv execute thread, the
@@ -280,6 +285,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   through its closables sweep (`isTransactionCloseAwaitedByShutdownForTesting()`). A sweep that
   returns with the close still parked, or still unfinished, is reported instead of destroying the
   database under it. Snapshotted at module initialization; unset in production.
+- `ROCKSDB_JS_COMMIT_THREAD_START_FAILURE` / `ROCKSDB_JS_COMMIT_DISPATCH_FAILURE` - Test-only: a
+  **flag** that fails every `CommitWorker` thread start, so commit lanes run their tasks inline on
+  the enqueuing thread, and a **count** of commit completions to drop as if their env were gone.
+  Together they drive the commit thread's env-gone fallback inline on the JS thread
+  (`test/fixtures/fork-commit-async-shutdown.mts`). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` / `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only delays
   immediately before a native transaction commit (while its async work and descriptor operation
   remain registered, widening close-vs-execute race windows) and before a transaction's
@@ -414,6 +424,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - `ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS` - Test-only: delay while a per-env cleanup hook's registry
   snapshot pins every descriptor, so another thread's last-handle close skips its purge
   (`test/fixtures/fork-env-cleanup-purge.mts`). Snapshotted in `initializeTestSeams()`
+- `ROCKSDB_JS_LOCK_COMPLETE_DELAY_MS` - Test-only: delay while a `withLock()` completion holds its
+  descriptor reference, so another thread's last-handle close skips its purge
+  (`test/fixtures/fork-lock-complete-purge.mts`). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS` / `ROCKSDB_JS_TXN_CLOSE_DELAY_MS` - Test-only delays inside
   iterator construction and transaction close. Both are snapshotted in `initializeTestSeams()`, so
   they must be set in the environment that starts the process rather than through an in-process
@@ -563,7 +576,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). The per-env cleanup hooks
    pin every descriptor the same way (`DBRegistry::ForEachDescriptor`) while other workers close
    theirs, so the hook ends with `DBRegistry::PurgeUnreferenced()` once its last pinning step has released
-   them (HarperFast/rocksdb-js#1074). A pin that cannot retry must not be taken at all: the RocksDB
+   them (HarperFast/rocksdb-js#1074), and a `withLock()` completion, which pins the descriptor while
+   it hands the lock on, retries the purge after releasing it (`completeLockCallback`). A pin that cannot retry must not be taken at all: the RocksDB
    event listener runs on flush and write threads that `finishClose()` waits for, so its callbacks
    reach the descriptor through `DBEventListenerState`'s raw pointer under that state's mutex, which
    `~DBDescriptor` detaches first. A `weak_ptr::lock()` there skipped the last-handle purge whenever

@@ -131,6 +131,22 @@ describe('C++ exceptions in async operations', () => {
 				},
 				60_000
 			);
+
+			// Thrown after the commit registered with its transaction (and, on the lanes, with its
+			// completion): a leaked registration parks close(), a leaked completion keeps the loop alive.
+			it.each(['0', '1', '2'])(
+				'dispatching a registered commit with ROCKSDB_JS_COMMIT_THREAD=%s',
+				async (mode) => {
+					const rejections = await runFixture(5, {
+						op: 'commit',
+						env: { ROCKSDB_JS_COMMIT_THREAD: mode },
+					});
+					expect(rejections).toEqual([
+						{ op: 'commit', code: 'ERR_OUT_OF_MEMORY', message: 'Out of memory' },
+					]);
+				},
+				60_000
+			);
 		}
 	);
 });

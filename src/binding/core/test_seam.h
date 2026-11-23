@@ -134,6 +134,26 @@ inline std::atomic<int>& commitExecuteDelayMsFlag() {
 	return delayMs;
 }
 
+inline std::atomic<bool>& commitThreadStartFailureFlag() {
+	static std::atomic<bool> failing{ false };
+	return failing;
+}
+
+inline std::atomic<int>& commitDispatchFailureFlag() {
+	static std::atomic<int> pending{ 0 };
+	return pending;
+}
+
+inline bool testConsumeCommitDispatchFailure() {
+	int cur = commitDispatchFailureFlag().load(std::memory_order_relaxed);
+	while (cur > 0) {
+		if (commitDispatchFailureFlag().compare_exchange_weak(cur, cur - 1, std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // Upper bound, in milliseconds, that a cancellable manual compactRange() parks
 // before handing the range to RocksDB. It returns as soon as the descriptor's
 // cancel token is armed, so a fixture can hold a compaction across a foreign
@@ -202,6 +222,13 @@ inline std::atomic<int>& closeRetryDelayMsFlag() {
 // Holds an env-cleanup hook's registry snapshot, so a last-handle close on another thread lands
 // while it pins the descriptor.
 inline std::atomic<int>& envCleanupPinDelayMsFlag() {
+	static std::atomic<int> delayMs{ 0 };
+	return delayMs;
+}
+
+// Holds a withLock() completion's descriptor reference, so a last-handle close on another
+// thread lands while it is pinned.
+inline std::atomic<int>& lockCompleteDelayMsFlag() {
 	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
@@ -338,6 +365,12 @@ inline void initializeTestSeams() {
 		commitExecuteDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"), std::memory_order_relaxed
 		);
+		commitThreadStartFailureFlag().store(
+			testDelayMs("ROCKSDB_JS_COMMIT_THREAD_START_FAILURE") > 0, std::memory_order_relaxed
+		);
+		commitDispatchFailureFlag().store(
+			testDelayMs("ROCKSDB_JS_COMMIT_DISPATCH_FAILURE"), std::memory_order_relaxed
+		);
 		compactCancelDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed
 		);
@@ -364,6 +397,9 @@ inline void initializeTestSeams() {
 		);
 		envCleanupPinDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS"), std::memory_order_relaxed
+		);
+		lockCompleteDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_LOCK_COMPLETE_DELAY_MS"), std::memory_order_relaxed
 		);
 		clearDeleteDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_CLEAR_DELAY_MS"), std::memory_order_relaxed
@@ -397,11 +433,21 @@ inline std::atomic<bool>& transactionCommitAdmissionDelayActive() {
 	return active;
 }
 
-inline void setTransactionCommitAdmissionDelayForTesting(int delayMs) {
-	transactionCommitAdmissionDelayMs().store(delayMs, std::memory_order_relaxed);
-	if (delayMs == 0) {
-		transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
+inline std::atomic<bool>& transactionCommitAdmissionDelayRegistered() {
+	static std::atomic<bool> registered{ false };
+	return registered;
+}
+
+inline void setTransactionCommitAdmissionDelayForTesting(int delayMs, bool afterRegistration = false) {
+	// The phase is set before arming and cleared after disarming, so a delay never meets a stale phase.
+	if (delayMs != 0) {
+		transactionCommitAdmissionDelayRegistered().store(afterRegistration, std::memory_order_release);
+		transactionCommitAdmissionDelayMs().store(delayMs, std::memory_order_release);
+		return;
 	}
+	transactionCommitAdmissionDelayMs().store(0, std::memory_order_release);
+	transactionCommitAdmissionDelayRegistered().store(false, std::memory_order_release);
+	transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
 }
 
 // Deterministic one-shot(-per-N) seam for the stranded-snapshot retry path: forces the next N
@@ -513,7 +559,9 @@ enum class AsyncExceptionStage : int {
 	Execute = 2,
 	Complete = 3,
 	// DBRegistry::PurgeIfUnreferenced()'s close-claim allocation.
-	PurgeClaim = 4
+	PurgeClaim = 4,
+	// Transaction::Commit() just before dispatch, with the commit fully registered.
+	CommitDispatch = 5
 };
 
 inline std::atomic<int>& asyncExceptionStage() {

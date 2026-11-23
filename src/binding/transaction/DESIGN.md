@@ -96,8 +96,12 @@ depends on the descriptor being open, a commit completion and the env reaper clo
 even after a failed close-time flush quarantined the descriptor, instead of leaving them to a sweep
 that has not run (`test/fixtures/fork-commit-quarantine-close.mts`). Covered by
 `test/fixtures/fork-txn-close-shutdown.mts` (orphan and idle-abort closes),
-`fork-commit-async-shutdown.mts` and `fork-commit-reaper-shutdown.mts`; the
-`ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH` seam parks the close and reports whether shutdown waited for it.
+`fork-commit-async-shutdown.mts` (a commit completion, and the commit lane's env-gone fallback,
+which runs on the enqueuing thread and so, when no lane thread could start, inline on the JS thread
+inside `commit()`, a thread `finishClose()` does not join) and `fork-commit-reaper-shutdown.mts` (a
+terminated worker's transactions: Node runs a dying env's queued completions before its cleanup
+hooks, so the env reaper closes only a pending one), each under `shutdown()` and `destroy()`; the
+`ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH` seam parks the close and reports whether the closer waited for it.
 
 `close()` reaches the descriptor through `TransactionRegistryLink`, never through
 `dbHandle->descriptor`, which the owner's handle close resets, nor through `owningDescriptor.lock()`:
