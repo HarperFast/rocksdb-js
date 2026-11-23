@@ -1088,47 +1088,29 @@ void DBRegistry::OpenDB(
 			);
 		}
 	}
-	// A write staged through a non-participating handle
-	// holds no write intent, so switching on while one may exist would let a
-	// seed taken now survive its commit. Read the count before the watermark;
-	// DBHandle::close() writes them in the other order.
+	// A write staged through a non-participating handle holds no write intent.
+	// Handles before writers: staging precedes its handle's close() on the
+	// owner thread (core/DESIGN.md, participation).
 	if (options.verificationTable && !columnDescriptor->verificationTable) {
 		const uint32_t nonVerifying = columnDescriptor->nonVerifyingHandles.load();
 		if (nonVerifying > 0) {
 			throw rocksdb_js::DBException(
 				"ERR_VERIFICATION_TABLE_CONFLICT",
 				"Column family \"" + columnDescriptor->name + "\" is already open without verificationTable through " +
-					std::to_string(nonVerifying) + " handle(s) in this process; first close those handles and let pending " +
-					"transactions and operations finish, then retry opening with verificationTable: true"
+					std::to_string(nonVerifying) + " handle(s) in this process; first close those handles and let " +
+					"transactions that wrote through them finish, then retry opening with verificationTable: true"
 			);
 		}
-		const uint64_t watermark = columnDescriptor->nonVerifyingTransactionWatermark.load();
-		if (watermark > 0) {
-			bool mayHoldUnguardedWrite = false;
-			{
-				std::lock_guard<std::mutex> txnsLock(entry.descriptor->txnsMutex);
-				// A closed transaction can linger here once its owning handle has
-				// closed; its commit, if still running, holds an operation.
-				for (const auto& registered : entry.descriptor->transactions) {
-					if (registered.first <= watermark && registered.second && !registered.second->closed.load()) {
-						mayHoldUnguardedWrite = true;
-						break;
-					}
-				}
-			}
-			// Env teardown removes a transaction from the map before cancelling
-			// its queued commit, which can still admit and write; only the
-			// descriptor-wide operation count covers it before its family claim.
-			if (mayHoldUnguardedWrite || entry.descriptor->operationsInFlight.load() > 0) {
-				throw rocksdb_js::DBException(
-					"ERR_VERIFICATION_TABLE_CONFLICT",
-					"Column family \"" + columnDescriptor->name + "\" was open without verificationTable and a " +
-						"transaction or operation that may have written through it is still running; retry the open " +
-						"once it finishes"
-				);
-			}
-			// A non-participating handle can seed a slot (populateVersion) that
-			// its own later writes left stale.
+		const uint32_t writers = columnDescriptor->nonVerifyingWriters->writers();
+		if (writers > 0) {
+			throw rocksdb_js::DBException(
+				"ERR_VERIFICATION_TABLE_CONFLICT",
+				"Column family \"" + columnDescriptor->name + "\" was open without verificationTable and " +
+					std::to_string(writers) + " transaction(s) holding a write staged through it have not finished; " +
+					"retry the open once they commit or abort"
+			);
+		}
+		if (columnDescriptor->nonVerifyingHandleDetached.load()) {
 			if (VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw()) {
 				vt->settleAllSlots();
 			}

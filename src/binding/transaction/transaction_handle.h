@@ -25,6 +25,7 @@ namespace rocksdb_js {
 
 struct DBDescriptor;
 struct DBHandle;
+class NonVerifyingWriterCount;
 struct DBIteratorHandle;
 struct DBIteratorOptions;
 struct MultiGetBatch;
@@ -84,6 +85,16 @@ struct ColumnFamilySet final {
 	size_t size() const {
 		return this->entries.size();
 	}
+};
+
+struct NonVerifyingWriterSet final {
+	InlineVector<NonVerifyingWriterCount*, 4> counters;
+	NonVerifyingWriterCount* last = nullptr;
+
+	bool contains(NonVerifyingWriterCount* counter);
+	void add(NonVerifyingWriterCount* counter);
+	void removeLast(NonVerifyingWriterCount* counter) noexcept;
+	void release() noexcept;
 };
 
 /**
@@ -268,6 +279,9 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * `close()`.
 	 */
 	ColumnFamilySet touchedColumnFamilies;
+
+	/** Held until the RocksDB transaction is deleted; a failed first stage returns its count (core/DESIGN.md, participation). */
+	NonVerifyingWriterSet nonVerifyingWriters;
 
 	/**
 	 * VT slots locked by this transaction. Parallel to heldTrackers.
@@ -564,6 +578,8 @@ public:
 		const std::shared_ptr<ColumnFamilyDescriptor>& column,
 		bool& added
 	);
+
+	rocksdb::Status noteNonVerifyingWrite(const DBHandle& dbHandle, bool& added) noexcept;
 
 	/** Abandons before fallible cleanup so a failure still refuses commit. */
 	rocksdb::Status abandonForDroppedColumnFamily(

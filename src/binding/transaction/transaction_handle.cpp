@@ -64,6 +64,7 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 
 	this->logEntryBatch.reset();
 	this->touchedColumnFamilies.clear();
+	this->nonVerifyingWriters.release();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 	if (this->lockedVTSlots.empty()) {
 		// held intents are released with the setting they were taken under
@@ -669,6 +670,7 @@ void TransactionHandle::closeImpl(bool waitForWinner) noexcept {
 		delete this->txn;
 		this->txn = nullptr;
 		this->touchedColumnFamilies.clear();
+		this->nonVerifyingWriters.release();
 	}
 
 	// Note: close() is deliberately napi-free. The transaction holds no napi
@@ -1125,6 +1127,63 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
 	return rocksdb::Status::OK();
 }
 
+bool NonVerifyingWriterSet::contains(NonVerifyingWriterCount* counter) {
+	if (counter == this->last) {
+		return true;
+	}
+	bool found = false;
+	this->counters.forEach([&](NonVerifyingWriterCount* entry) {
+		if (entry == counter) found = true;
+	});
+	if (found) {
+		this->last = counter;
+	}
+	return found;
+}
+
+void NonVerifyingWriterSet::add(NonVerifyingWriterCount* counter) {
+	this->counters.add(counter);
+	counter->acquire();
+	this->last = counter;
+}
+
+void NonVerifyingWriterSet::removeLast(NonVerifyingWriterCount* counter) noexcept {
+	NonVerifyingWriterCount* const* tail = this->counters.last();
+	if (tail == nullptr || *tail != counter) {
+		return;
+	}
+	this->counters.popBack();
+	tail = this->counters.last();
+	this->last = tail == nullptr ? nullptr : *tail;
+	counter->release();
+}
+
+void NonVerifyingWriterSet::release() noexcept {
+	this->counters.forEach([](NonVerifyingWriterCount* entry) {
+		entry->release();
+	});
+	this->counters.clear();
+	this->last = nullptr;
+}
+
+rocksdb::Status TransactionHandle::noteNonVerifyingWrite(const DBHandle& dbHandle, bool& added) noexcept {
+	added = false;
+	if (dbHandle.enableVerificationTable) {
+		return rocksdb::Status::OK();
+	}
+	NonVerifyingWriterCount* counter = dbHandle.columnDescriptor->nonVerifyingWriters;
+	if (this->nonVerifyingWriters.contains(counter)) {
+		return rocksdb::Status::OK();
+	}
+	try {
+		this->nonVerifyingWriters.add(counter);
+		added = true;
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit();
+	}
+	return rocksdb::Status::OK();
+}
+
 /**
  * Put a value using the specified database handle.
  */
@@ -1153,12 +1212,23 @@ rocksdb::Status TransactionHandle::putSync(
 	if (!touched.ok()) {
 		return touched;
 	}
+	bool addedWriter = false;
+	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle, addedWriter);
+	if (!counted.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		return counted;
+	}
 	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Put(column, key, value);
 	if (!status.ok()) {
 		if (addedTouch) {
 			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (addedWriter) {
+			this->nonVerifyingWriters.removeLast(dbHandle->columnDescriptor->nonVerifyingWriters);
 		}
 		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
 			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);
@@ -1204,12 +1274,23 @@ rocksdb::Status TransactionHandle::removeSync(
 	if (!touched.ok()) {
 		return touched;
 	}
+	bool addedWriter = false;
+	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle, addedWriter);
+	if (!counted.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		return counted;
+	}
 	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Delete(column, key);
 	if (!status.ok()) {
 		if (addedTouch) {
 			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (addedWriter) {
+			this->nonVerifyingWriters.removeLast(dbHandle->columnDescriptor->nonVerifyingWriters);
 		}
 		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
 			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);
