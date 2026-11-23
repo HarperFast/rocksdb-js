@@ -72,17 +72,62 @@ describe('Async commit completion vs. worker env teardown', () => {
 	);
 });
 
-describe('Async commit completion vs. foreign shutdown()', () => {
-	it.skipIf(!!process.versions.deno).each(
-		[...COMMIT_THREAD_MODES, { label: '0', mode: '0' }].flatMap((mode) => [
-			{ ...mode, owner: 'completion', fixture: 'fork-commit-async-shutdown.mts' },
-			{ ...mode, owner: 'reaper', fixture: 'fork-commit-reaper-shutdown.mts' },
-		])
-	)(
-		'makes shutdown wait for the $owner close (ROCKSDB_JS_COMMIT_THREAD=$label)',
+describe('Async commit completion vs. foreign shutdown()/destroy()', () => {
+	const ALL_MODES = [...COMMIT_THREAD_MODES, { label: '0', mode: '0' }];
+	const inlineEnvGone = {
+		ROCKSDB_JS_COMMIT_THREAD_START_FAILURE: '1',
+		ROCKSDB_JS_COMMIT_DISPATCH_FAILURE: '1',
+	};
+	it.skipIf(!!process.versions.deno).each([
+		...ALL_MODES.flatMap((mode) =>
+			['shutdown', 'destroy'].map((closer) => ({
+				...mode,
+				owner: 'completion',
+				fixture: 'fork-commit-async-shutdown.mts',
+				args: [closer],
+				name: closer,
+				seams: {},
+			}))
+		),
+		...COMMIT_THREAD_MODES.flatMap((mode) =>
+			['shutdown', 'destroy'].map((closer) => ({
+				...mode,
+				owner: 'inline env-gone fallback',
+				fixture: 'fork-commit-async-shutdown.mts',
+				args: [closer],
+				name: closer,
+				seams: inlineEnvGone,
+			}))
+		),
+		...ALL_MODES.flatMap((mode) =>
+			['shutdown', 'destroy'].flatMap((closer) => [
+				{
+					...mode,
+					owner: 'teardown completion',
+					fixture: 'fork-commit-reaper-shutdown.mts',
+					args: ['committed', closer],
+					name: `committed, ${closer}`,
+					seams: {},
+				},
+				{
+					...mode,
+					owner: 'reaper',
+					fixture: 'fork-commit-reaper-shutdown.mts',
+					args: ['pending', closer],
+					name: `pending, ${closer}`,
+					seams: {},
+				},
+			])
+		),
+	])(
+		'waits for the $owner close ($name, ROCKSDB_JS_COMMIT_THREAD=$label)',
 		{ timeout: 30_000 },
-		async ({ mode, fixture }) => {
-			const env: NodeJS.ProcessEnv = { ...process.env, ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH: '1' };
+		async ({ mode, fixture, args, seams }) => {
+			const env: NodeJS.ProcessEnv = {
+				...process.env,
+				...seams,
+				ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH: '1',
+			};
 			if (mode === undefined) {
 				delete env.ROCKSDB_JS_COMMIT_THREAD;
 			} else {
@@ -90,7 +135,7 @@ describe('Async commit completion vs. foreign shutdown()', () => {
 			}
 			const { code, signal, stderr, timedOut } = await runChild(
 				process.execPath,
-				[join(__dirname, 'fixtures', fixture), generateDBPath()],
+				[join(__dirname, 'fixtures', fixture), generateDBPath(), ...args],
 				{ deadlineMs: 20_000, env }
 			);
 			expect({ code, signal, stderr, timedOut }).toEqual({

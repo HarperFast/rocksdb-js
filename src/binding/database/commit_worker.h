@@ -5,10 +5,12 @@
 #include <deque>
 #include <functional>
 #include <mutex>
+#include <system_error>
 #include <thread>
 #include <vector>
 #include "core/debug.h"
 #include "core/platform.h"
+#include "core/test_seam.h"
 
 namespace rocksdb_js {
 
@@ -70,6 +72,9 @@ struct CommitWorker final {
 				// lands is drained by that one thread.
 				if (this->queue.size() > this->idleThreads && this->threads.size() < this->maxThreads) {
 					try {
+						if (commitThreadStartFailureFlag().load(std::memory_order_relaxed)) {
+							throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+						}
 						this->threads.emplace_back([this]() { this->run(); });
 					} catch (const std::exception& e) {
 						DEBUG_LOG("%p CommitWorker::enqueue Failed to start a thread: %s\n", this, e.what());
