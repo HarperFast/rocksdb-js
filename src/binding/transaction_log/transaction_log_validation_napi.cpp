@@ -96,6 +96,7 @@ napi_value ValidateTransactionLog(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[2], path, "Transaction log store path must be a string");
 
 	auto state = new AsyncValidateLogState(env, std::move(path));
+	PendingAsyncState pending(env, state);
 
 	napi_valuetype strictType;
 	NAPI_STATUS_THROWS(::napi_typeof(env, argv[3], &strictType));
@@ -115,42 +116,54 @@ napi_value ValidateTransactionLog(napi_env env, napi_callback_info info) {
 		name,
 		[](napi_env, void* data) { // execute (worker thread, no N-API)
 			auto state = reinterpret_cast<AsyncValidateLogState*>(data);
-			try {
-				state->result = validateTransactionLogStore(state->path, state->strict);
-			} catch (const std::exception& e) {
-				state->errorMessage = e.what();
-			}
+			runAsyncExecute(state, [state] {
+				try {
+					state->result = validateTransactionLogStore(state->path, state->strict);
+				} catch (const std::bad_alloc&) {
+					throw;
+				} catch (const std::exception& e) {
+					state->errorMessage = e.what();
+				}
+			});
 			state->signalExecuteCompleted();
 		},
 		[](napi_env env, napi_status status, void* data) { // complete (JS thread)
 			auto state = reinterpret_cast<AsyncValidateLogState*>(data);
 			state->deleteAsyncWork();
 			if (status != napi_cancelled) {
-				if (state->errorMessage.empty()) {
-					napi_value result = nullptr;
-					buildValidationResult(env, state->result, result);
-					if (result != nullptr) {
-						state->callResolve(result);
+				runAsyncComplete(env, state, [env, state] {
+					if (!state->status.ok()) {
+						napi_value error;
+						createRocksDBError(env, state->status, "Transaction log validation failed", error);
+						state->callReject(error);
+						return;
+					}
+					if (state->errorMessage.empty()) {
+						napi_value result = nullptr;
+						buildValidationResult(env, state->result, result);
+						if (result != nullptr) {
+							state->callResolve(result);
+						} else {
+							// object creation failed outright — reject (best-effort) rather
+							// than leaving the promise forever pending
+							napi_value message;
+							napi_value error;
+							if (::napi_create_string_utf8(env, "Failed to build validation result",
+									NAPI_AUTO_LENGTH, &message) == napi_ok &&
+								::napi_create_error(env, nullptr, message, &error) == napi_ok) {
+								state->callReject(error);
+							}
+						}
 					} else {
-						// object creation failed outright — reject (best-effort) rather
-						// than leaving the promise forever pending
 						napi_value message;
 						napi_value error;
-						if (::napi_create_string_utf8(env, "Failed to build validation result",
-								NAPI_AUTO_LENGTH, &message) == napi_ok &&
-							::napi_create_error(env, nullptr, message, &error) == napi_ok) {
-							state->callReject(error);
-						}
+						NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(
+							env, state->errorMessage.c_str(), state->errorMessage.size(), &message
+						));
+						NAPI_STATUS_THROWS_VOID(::napi_create_error(env, nullptr, message, &error));
+						state->callReject(error);
 					}
-				} else {
-					napi_value message;
-					napi_value error;
-					NAPI_STATUS_THROWS_VOID(::napi_create_string_utf8(
-						env, state->errorMessage.c_str(), state->errorMessage.size(), &message
-					));
-					NAPI_STATUS_THROWS_VOID(::napi_create_error(env, nullptr, message, &error));
-					state->callReject(error);
-				}
+				});
 			}
 			delete state;
 		},
@@ -159,6 +172,7 @@ napi_value ValidateTransactionLog(napi_env env, napi_callback_info info) {
 	));
 
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
+	pending.release();
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -168,7 +182,7 @@ napi_value ValidateTransactionLog(napi_env env, napi_callback_info info) {
 void initTransactionLogValidationExports(napi_env env, napi_value exports) {
 	napi_value fn;
 	NAPI_STATUS_THROWS_VOID(::napi_create_function(
-		env, "validateTransactionLog", NAPI_AUTO_LENGTH, ValidateTransactionLog, nullptr, &fn
+		env, "validateTransactionLog", NAPI_AUTO_LENGTH, guardAsyncEntry<ValidateTransactionLog>, nullptr, &fn
 	));
 	NAPI_STATUS_THROWS_VOID(::napi_set_named_property(env, exports, "validateTransactionLog", fn));
 }

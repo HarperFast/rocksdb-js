@@ -216,34 +216,45 @@ CloseResult DBRegistry::PurgeIfUnreferenced(const DBKey& key) {
 		return CloseResult{};
 	}
 
-	std::shared_ptr<DBDescriptor> descriptor;
-	std::shared_ptr<std::condition_variable> condition;
+	std::vector<ClosingDescriptor> claimed;
 	{
 		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		auto entryIterator = instance->databases.find(key);
 		if (entryIterator != instance->databases.end()) {
 			DBRegistryEntry& entry = entryIterator->second;
 			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Found DBDescriptor for \"%s\" (ref count = %ld)\n", instance, key.path.c_str(), entry.descriptor.use_count());
-			if (entry.descriptor && entry.descriptor.use_count() <= 1 && entry.descriptor->beginClose()) {
-				DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance, key.path.c_str());
-				descriptor = entry.descriptor;
-				condition = entry.condition;
+			if (entry.descriptor && entry.descriptor.use_count() <= 1) {
+				// Allocated before beginClose() publishes the claim: a failure after it would leave a
+				// close that nobody runs, and every OpenDB() for the path would wait on it. A failure
+				// here skips the purge instead, since releaseDescriptorPin() is noexcept: the entry stays
+				// open and unclaimed for a later close, shutdown() or exit teardown.
+				try {
+					if (consumeAsyncExceptionForTesting(AsyncExceptionStage::PurgeClaim)) {
+						throw std::bad_alloc();
+					}
+					claimed.emplace_back(key, nullptr, nullptr);
+				} catch (...) {
+					return CloseResult{};
+				}
+				if (entry.descriptor->beginClose()) {
+					DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced Claiming descriptor purge for \"%s\"\n", instance, key.path.c_str());
+					claimed.front().descriptor = entry.descriptor;
+					claimed.front().condition = entry.condition;
+				}
 			}
 		} else {
 			DEBUG_LOG("%p DBRegistry::PurgeIfUnreferenced DBDescriptor not found! \"%s\"\n", instance, key.path.c_str());
 		}
 	}
 
-	if (!descriptor) {
+	if (claimed.empty() || !claimed.front().descriptor) {
 		return CloseResult{};
 	}
 
 	// We claimed the close under the lock via beginClose(); run the actual
-	// teardown now. The local copy keeps the descriptor alive throughout.
+	// teardown now. The claim's copy keeps the descriptor alive throughout.
 	// Only the entry we claimed is erased -- a brand-new descriptor cannot
 	// appear because OpenDB blocks until the helper notifies.
-	std::vector<ClosingDescriptor> claimed;
-	claimed.emplace_back(key, descriptor, condition);
 	// The close error is reported through CloseResult, not thrown.
 	closeClaimedDescriptors(
 		claimed, ClaimedCloseOptions{}, instance->databases, instance->databasesMutex
@@ -1077,49 +1088,29 @@ void DBRegistry::OpenDB(
 			);
 		}
 	}
-	// A write staged through a non-participating handle
-	// holds no write intent, so switching on while one may exist would let a
-	// seed taken now survive its commit. Read the count before the watermark;
-	// DBHandle::close() writes them in the other order.
+	// A write staged through a non-participating handle holds no write intent.
+	// Handles before writers: staging precedes its handle's close() on the
+	// owner thread (core/DESIGN.md, participation).
 	if (options.verificationTable && !columnDescriptor->verificationTable) {
 		const uint32_t nonVerifying = columnDescriptor->nonVerifyingHandles.load();
 		if (nonVerifying > 0) {
 			throw rocksdb_js::DBException(
 				"ERR_VERIFICATION_TABLE_CONFLICT",
 				"Column family \"" + columnDescriptor->name + "\" is already open without verificationTable through " +
-					std::to_string(nonVerifying) + " handle(s) in this process; first close those handles and let pending " +
-					"transactions and operations finish, then retry opening with verificationTable: true"
+					std::to_string(nonVerifying) + " handle(s) in this process; first close those handles and let " +
+					"transactions that wrote through them finish, then retry opening with verificationTable: true"
 			);
 		}
-		const uint64_t watermark = columnDescriptor->nonVerifyingTransactionWatermark.load();
-		if (watermark > 0) {
-			bool mayHoldUnguardedWrite = false;
-			{
-				std::lock_guard<std::mutex> txnsLock(entry.descriptor->txnsMutex);
-				// A closed transaction can linger here once its owning handle has
-				// closed; its commit, if still running, holds an operation.
-				for (const auto& registered : entry.descriptor->transactions) {
-					if (registered.first <= watermark && registered.second && !registered.second->closed.load()) {
-						mayHoldUnguardedWrite = true;
-						break;
-					}
-				}
-			}
-			// Env teardown removes a transaction from the map before cancelling
-			// its queued commit, which can still admit and write; only the
-			// descriptor-wide operation count covers it before its family claim.
-			// Handle-counted calls need no check: their handle is attached, and
-			// nonVerifyingHandles already refused above.
-			if (mayHoldUnguardedWrite || entry.descriptor->operationsInFlight.load() > 0) {
-				throw rocksdb_js::DBException(
-					"ERR_VERIFICATION_TABLE_CONFLICT",
-					"Column family \"" + columnDescriptor->name + "\" was open without verificationTable and a " +
-						"transaction or operation that may have written through it is still running; retry the open " +
-						"once it finishes"
-				);
-			}
-			// A non-participating handle can seed a slot (populateVersion) that
-			// its own later writes left stale.
+		const uint32_t writers = columnDescriptor->nonVerifyingWriters->writers();
+		if (writers > 0) {
+			throw rocksdb_js::DBException(
+				"ERR_VERIFICATION_TABLE_CONFLICT",
+				"Column family \"" + columnDescriptor->name + "\" was open without verificationTable and " +
+					std::to_string(writers) + " transaction(s) holding a write staged through it have not finished; " +
+					"retry the open once they commit or abort"
+			);
+		}
+		if (columnDescriptor->nonVerifyingHandleDetached.load()) {
 			if (VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw()) {
 				vt->settleAllSlots();
 			}

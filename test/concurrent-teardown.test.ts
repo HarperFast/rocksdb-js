@@ -73,4 +73,15 @@ describe('Concurrent cross-thread teardown', () => {
 			rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		}
 	});
+
+	it('purges a descriptor whose last handle closed while a withLock() completion pinned it', async () => {
+		const path = generateDBPath();
+		try {
+			await runFixture(join(__dirname, 'fixtures', 'fork-lock-complete-purge.mts'), path, {
+				env: { ROCKSDB_JS_LOCK_COMPLETE_DELAY_MS: '500' },
+			});
+		} finally {
+			rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
 });

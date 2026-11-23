@@ -90,3 +90,22 @@ TEST(CommitWorker, ShutdownDrainsQueuedTasksAndLaterTasksRunInline) {
 	worker.enqueue([&]() { ranOn = std::this_thread::get_id(); });
 	EXPECT_EQ(ranOn, caller);
 }
+
+TEST(CommitWorker, ThreadStartFailureRunsTasksInline) {
+	struct FailThreadStarts {
+		FailThreadStarts() { commitThreadStartFailureFlag().store(true); }
+		~FailThreadStarts() { this->restore(); }
+		void restore() { commitThreadStartFailureFlag().store(false); }
+	} failThreadStarts;
+	rocksdb_js::CommitWorker worker("test-commit", 2);
+	const auto caller = std::this_thread::get_id();
+	std::thread::id ranOn;
+	worker.enqueue([&]() { ranOn = std::this_thread::get_id(); });
+	failThreadStarts.restore();
+	EXPECT_EQ(ranOn, caller);
+	EXPECT_EQ(worker.threadCount(), 0u);
+	std::atomic<bool> ranElsewhere{ false };
+	worker.enqueue([&]() { ranElsewhere = std::this_thread::get_id() != caller; });
+	worker.shutdown();
+	EXPECT_TRUE(ranElsewhere.load());
+}

@@ -84,18 +84,41 @@ inline std::atomic<bool>& txnCloseDelayActive() {
 	return active;
 }
 
-// A child-process-only latch: one transaction close waits until its descriptor's
-// drain records the operation count. No timer can release the close first.
+// A child-process-only latch: the first transaction close to reach it after its drain
+// parks until a foreign close records how it was protected. No timer can release it.
 struct TransactionCloseDrainLatch {
+	enum Outcome : int {
+		Parked = 0,
+		GuardedAtDrain,
+		AwaitedByClose,
+		// finishClose() passed its closables sweep with the close parked or unfinished.
+		Missed,
+	};
 	std::atomic<bool> enabled{ false };
+	std::atomic<void*> handle{ nullptr };
 	std::atomic<void*> descriptor{ nullptr };
-	std::atomic<int> operations{ -1 };
+	std::atomic<int> outcome{ Parked };
 	std::atomic<bool> finished{ false };
+
+	bool release(const std::atomic<void*>& field, void* owner, Outcome result) {
+		int expected = Parked;
+		if (owner == nullptr || field.load(std::memory_order_acquire) != owner ||
+			!this->outcome.compare_exchange_strong(expected, result, std::memory_order_acq_rel)) {
+			return false;
+		}
+		this->outcome.notify_all();
+		return true;
+	}
 };
 
 inline TransactionCloseDrainLatch& txnCloseDrainLatch() {
 	static TransactionCloseDrainLatch latch;
 	return latch;
+}
+
+inline bool isTransactionCloseAwaited() {
+	const int outcome = txnCloseDrainLatch().outcome.load(std::memory_order_acquire);
+	return outcome == TransactionCloseDrainLatch::GuardedAtDrain || outcome == TransactionCloseDrainLatch::AwaitedByClose;
 }
 
 // Transactional reads execute on a libuv worker, so their test delay cannot
@@ -109,6 +132,26 @@ inline std::atomic<int>& txnGetDelayMsFlag() {
 inline std::atomic<int>& commitExecuteDelayMsFlag() {
 	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
+}
+
+inline std::atomic<bool>& commitThreadStartFailureFlag() {
+	static std::atomic<bool> failing{ false };
+	return failing;
+}
+
+inline std::atomic<int>& commitDispatchFailureFlag() {
+	static std::atomic<int> pending{ 0 };
+	return pending;
+}
+
+inline bool testConsumeCommitDispatchFailure() {
+	int cur = commitDispatchFailureFlag().load(std::memory_order_relaxed);
+	while (cur > 0) {
+		if (commitDispatchFailureFlag().compare_exchange_weak(cur, cur - 1, std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 // Upper bound, in milliseconds, that a cancellable manual compactRange() parks
@@ -179,6 +222,13 @@ inline std::atomic<int>& closeRetryDelayMsFlag() {
 // Holds an env-cleanup hook's registry snapshot, so a last-handle close on another thread lands
 // while it pins the descriptor.
 inline std::atomic<int>& envCleanupPinDelayMsFlag() {
+	static std::atomic<int> delayMs{ 0 };
+	return delayMs;
+}
+
+// Holds a withLock() completion's descriptor reference, so a last-handle close on another
+// thread lands while it is pinned.
+inline std::atomic<int>& lockCompleteDelayMsFlag() {
 	static std::atomic<int> delayMs{ 0 };
 	return delayMs;
 }
@@ -315,6 +365,12 @@ inline void initializeTestSeams() {
 		commitExecuteDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS"), std::memory_order_relaxed
 		);
+		commitThreadStartFailureFlag().store(
+			testDelayMs("ROCKSDB_JS_COMMIT_THREAD_START_FAILURE") > 0, std::memory_order_relaxed
+		);
+		commitDispatchFailureFlag().store(
+			testDelayMs("ROCKSDB_JS_COMMIT_DISPATCH_FAILURE"), std::memory_order_relaxed
+		);
 		compactCancelDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed
 		);
@@ -341,6 +397,9 @@ inline void initializeTestSeams() {
 		);
 		envCleanupPinDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS"), std::memory_order_relaxed
+		);
+		lockCompleteDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_LOCK_COMPLETE_DELAY_MS"), std::memory_order_relaxed
 		);
 		clearDeleteDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_CLEAR_DELAY_MS"), std::memory_order_relaxed
@@ -374,11 +433,21 @@ inline std::atomic<bool>& transactionCommitAdmissionDelayActive() {
 	return active;
 }
 
-inline void setTransactionCommitAdmissionDelayForTesting(int delayMs) {
-	transactionCommitAdmissionDelayMs().store(delayMs, std::memory_order_relaxed);
-	if (delayMs == 0) {
-		transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
+inline std::atomic<bool>& transactionCommitAdmissionDelayRegistered() {
+	static std::atomic<bool> registered{ false };
+	return registered;
+}
+
+inline void setTransactionCommitAdmissionDelayForTesting(int delayMs, bool afterRegistration = false) {
+	// The phase is set before arming and cleared after disarming, so a delay never meets a stale phase.
+	if (delayMs != 0) {
+		transactionCommitAdmissionDelayRegistered().store(afterRegistration, std::memory_order_release);
+		transactionCommitAdmissionDelayMs().store(delayMs, std::memory_order_release);
+		return;
 	}
+	transactionCommitAdmissionDelayMs().store(0, std::memory_order_release);
+	transactionCommitAdmissionDelayRegistered().store(false, std::memory_order_release);
+	transactionCommitAdmissionDelayActive().store(false, std::memory_order_release);
 }
 
 // Deterministic one-shot(-per-N) seam for the stranded-snapshot retry path: forces the next N
@@ -482,6 +551,45 @@ inline int consumeWriteBufferManagerJoinDelayForTesting() {
 		}
 	}
 	return 0;
+}
+
+enum class AsyncExceptionStage : int {
+	None = 0,
+	State = 1,
+	Execute = 2,
+	Complete = 3,
+	// DBRegistry::PurgeIfUnreferenced()'s close-claim allocation.
+	PurgeClaim = 4,
+	// Transaction::Commit() just before dispatch, with the commit fully registered.
+	CommitDispatch = 5
+};
+
+inline std::atomic<int>& asyncExceptionStage() {
+	static std::atomic<int> stage{ 0 };
+	return stage;
+}
+
+inline std::atomic<int>& asyncExceptionCount() {
+	static std::atomic<int> count{ 0 };
+	return count;
+}
+
+inline void setAsyncExceptionForTesting(int stage, int count) {
+	asyncExceptionCount().store(count, std::memory_order_relaxed);
+	asyncExceptionStage().store(stage, std::memory_order_relaxed);
+}
+
+inline bool consumeAsyncExceptionForTesting(AsyncExceptionStage stage) {
+	if (asyncExceptionStage().load(std::memory_order_relaxed) != static_cast<int>(stage)) {
+		return false;
+	}
+	int remaining = asyncExceptionCount().load(std::memory_order_relaxed);
+	while (remaining > 0) {
+		if (asyncExceptionCount().compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 #endif

@@ -1266,19 +1266,32 @@ export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
 export const isTransactionCloseDelayedForTesting: () => boolean =
 	binding.isTransactionCloseDelayedForTesting;
 
-/** Reports whether the latched close held the sole operation when its descriptor reached the drain. */
-export const isTransactionCloseGuardedAtDrainForTesting: () => boolean =
-	binding.isTransactionCloseGuardedAtDrainForTesting;
+/**
+ * Reports whether shutdown waited for the latched transaction close: its drain found an operation
+ * in flight, or its closables sweep waited for the close to finish.
+ */
+export const isTransactionCloseAwaitedByShutdownForTesting: () => boolean =
+	binding.isTransactionCloseAwaitedByShutdownForTesting;
 
 /** Reports whether a flush callback is delayed after its descriptor lookup. */
 export const isFlushCompletedDelayedForTesting: () => boolean =
 	binding.isFlushCompletedDelayedForTesting;
 
-export const setTransactionCommitAdmissionDelayForTesting: (delayMs: number) => void =
-	binding.setTransactionCommitAdmissionDelayForTesting;
+export const setTransactionCommitAdmissionDelayForTesting: (
+	delayMs: number,
+	afterRegistration?: boolean
+) => void = binding.setTransactionCommitAdmissionDelayForTesting;
 
 export const isTransactionCommitAdmissionDelayedForTesting: () => boolean =
 	binding.isTransactionCommitAdmissionDelayedForTesting;
+
+/**
+ * Test-only: makes the next `count` async operations reaching `stage` throw `std::bad_alloc` —
+ * `1` while constructing the async state, `2` in the worker's execute, `3` in the completion, `4` in
+ * the registry purge's close-claim allocation, `5` as a registered async commit is dispatched.
+ */
+export const forceAsyncExceptionForTesting: (stage: 0 | 1 | 2 | 3 | 4 | 5, count: number) => void =
+	binding.forceAsyncExceptionForTesting;
 
 /** Delays one selected watchdog join in the concurrent-shutdown regression test. */
 export const setWriteBufferManagerJoinDelayForTesting: (

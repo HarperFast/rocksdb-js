@@ -1,7 +1,7 @@
-#include <cassert>
 #include <chrono>
 #include <sstream>
 #include <thread>
+#include "core/assert.h"
 #include "database/database.h"
 #include "database/db_descriptor.h"
 #include "database/db_settings.h"
@@ -14,48 +14,6 @@
 namespace rocksdb_js {
 
 namespace {
-
-/**
- * Keeps a target DBHandle open while a transaction resolves and pins that
- * handle's column descriptor. This bridges the gap between the caller's open
- * check and the transaction's async-work registration without making the
- * worker access a concurrently closing DBHandle.
- *
- * Admission can be refused if `handle`'s cancellation was already published
- * (a concurrent close); `admitted` tracks that so the destructor only
- * unregisters a claim it actually holds — unregistering an admission that
- * never succeeded would underflow the target's active-work count and could
- * make a later close() stop waiting while real work is still outstanding.
- * Callers must check `ok()` after construction and treat a false result the
- * same as the target already being closed.
- */
-struct ScopedAsyncWorkRegistration {
-	AsyncWorkHandle* handle;
-	bool admitted;
-
-	explicit ScopedAsyncWorkRegistration(AsyncWorkHandle* handle) : handle(handle), admitted(false) {
-		if (this->handle) {
-			this->admitted = this->handle->registerAsyncWork();
-		}
-	}
-
-	~ScopedAsyncWorkRegistration() {
-		if (this->handle && this->admitted) {
-			this->handle->unregisterAsyncWork();
-		}
-	}
-
-	ScopedAsyncWorkRegistration(const ScopedAsyncWorkRegistration&) = delete;
-	ScopedAsyncWorkRegistration& operator=(const ScopedAsyncWorkRegistration&) = delete;
-
-	bool ok() const {
-		return !this->handle || this->admitted;
-	}
-
-	void release() {
-		this->handle = nullptr;
-	}
-};
 
 inline void delayTransactionStagingForTesting() {
 	const int timeoutMs = consumeTransactionStagingDelayForTesting();
@@ -80,6 +38,7 @@ inline void delayTransactionStagingForTesting() {
 TransactionHandle::TransactionHandle(napi_env env, std::shared_ptr<DBHandle> dbHandle, bool disableSnapshot) :
 	dbHandle(dbHandle),
 	owningDescriptor(dbHandle->descriptor),
+	registryLink(dbHandle->descriptor->transactionRegistryLink),
 	ownerEnv(env),
 	disableSnapshot(disableSnapshot),
 	coordinatedRetry(false),
@@ -105,6 +64,7 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 
 	this->logEntryBatch.reset();
 	this->touchedColumnFamilies.clear();
+	this->nonVerifyingWriters.release();
 	this->snapshotSet = false; // snapshot flag so it will be reapplied
 	if (this->lockedVTSlots.empty()) {
 		// held intents are released with the setting they were taken under
@@ -156,7 +116,8 @@ TransactionLookup lookupOwnedTransaction(
 		txnHandle.reset();
 		return TransactionLookup::WrongEnv;
 	}
-	if (!txnHandle->txn) {
+	// A closing handle stays registered until its `txn` is deleted.
+	if (txnHandle->closed.load(std::memory_order_relaxed) || !txnHandle->txn) {
 		txnHandle.reset();
 		return TransactionLookup::NotFound;
 	}
@@ -326,44 +287,71 @@ void TransactionHandle::onWrapperCollected() {
 	this->closeOrphanIfUnused();
 }
 
+namespace {
+
+[[noreturn]] void refuseDuplicateIterator() {
+	ROCKSDB_JS_ASSERT(false, "Transaction iterator registered twice");
+	throw std::runtime_error("Transaction iterator registered twice");
+}
+
+/** Every increment of the count also holds `iteratorsMutex`, so the caller's lock serializes this. */
+uint32_t releaseBusyIteratorLocked(std::atomic<uint32_t>& count) noexcept {
+	const uint32_t previous = count.load(std::memory_order_relaxed);
+	if (previous > 0) {
+		count.store(previous - 1, std::memory_order_relaxed);
+	}
+	return previous;
+}
+
+} // namespace
+
 std::shared_ptr<DBIteratorHandle> TransactionHandle::createIterator(
 	DBIteratorOptions& options,
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
-	std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-	if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending) {
-		throw std::runtime_error("Transaction is not in pending state");
+	std::shared_ptr<DBIteratorHandle> iterator;
+	bool inserted = false;
+	{
+		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+		if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending) {
+			throw std::runtime_error("Transaction is not in pending state");
+		}
+		const std::shared_ptr<DBHandle>& targetHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+		if (!targetHandle || !targetHandle->opened()) {
+			throw std::runtime_error("Database not open");
+		}
+		iterator = std::make_shared<DBIteratorHandle>(
+			this->shared_from_this(),
+			options,
+			dbHandleOverride
+		);
+		inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
+		if (inserted) {
+			iterator->transactionRegistered = true;
+			this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
+		}
 	}
-	const std::shared_ptr<DBHandle>& targetHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
-	if (!targetHandle || !targetHandle->opened()) {
-		throw std::runtime_error("Database not open");
+	if (!inserted) {
+		refuseDuplicateIterator();
 	}
-	std::shared_ptr<DBIteratorHandle> iterator = std::make_shared<DBIteratorHandle>(
-		this->shared_from_this(),
-		options,
-		dbHandleOverride
-	);
-	const bool inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
-	assert(inserted && "Transaction iterator registered twice");
-	(void)inserted;
-	iterator->transactionRegistered = true;
-	this->activeIteratorCount.fetch_add(1, std::memory_order_relaxed);
 	return iterator;
 }
 
-void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator) {
-	{
-		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
-		// Erase even an idle entry: closeIterators() waits for the map to empty.
-		if (this->activeIterators.erase(iterator) == 0 || iterator->idle) {
-			return;
-		}
+void TransactionHandle::unregisterIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) {
+	checkOrphan = false;
+	countUnderflow = false;
+	std::lock_guard<std::mutex> lock(this->iteratorsMutex);
+	// Erase even an idle entry: closeIterators() waits for the map to empty.
+	if (this->activeIterators.erase(iterator) == 0 || iterator->idle) {
+		return;
 	}
-	const uint32_t previous = this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
-	assert(previous > 0 && "Transaction iterator count underflow");
-	if (previous == 1) {
-		this->closeOrphanIfUnused();
-	}
+	const uint32_t previous = releaseBusyIteratorLocked(this->activeIteratorCount);
+	countUnderflow = previous == 0;
+	checkOrphan = previous <= 1;
+}
+
+void TransactionHandle::reportIteratorCountUnderflow() noexcept {
+	ROCKSDB_JS_ASSERT(false, "Transaction iterator count underflow");
 }
 
 void TransactionHandle::closeIterators() {
@@ -445,9 +433,9 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 					dbHandleOverride,
 					poolable
 				);
-				const bool inserted = this->activeIterators.emplace(iterator.get(), iterator).second;
-				assert(inserted && "Transaction iterator registered twice");
-				(void)inserted;
+				if (!this->activeIterators.emplace(iterator.get(), iterator).second) {
+					break;
+				}
 				iterator->transactionRegistered = true;
 				iterator->poolGeneration = this->trimGeneration;
 				iterator->lentEpoch = this->iteratorEpoch.load(std::memory_order_relaxed);
@@ -482,6 +470,7 @@ std::shared_ptr<DBIteratorHandle> TransactionHandle::acquireIterator(
 		// Closed since it was taken, or its column family was dropped/reopened.
 		iterator->close();
 	}
+	refuseDuplicateIterator();
 }
 
 void TransactionHandle::closeIdleIterators() noexcept {
@@ -498,8 +487,10 @@ void TransactionHandle::closeIdleIterators() noexcept {
 	}
 }
 
-bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan) noexcept {
+bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkOrphan, bool& countUnderflow) noexcept {
 	checkOrphan = false;
+	countUnderflow = false;
+	uint32_t previous;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorsMutex);
 		if (this->closed.load() || !this->txn || this->state.load() != TransactionState::Pending || (iterator->writeBufferManagerAttached && DBSettings::getInstance().getWriteBufferManagerAllowStall())) {
@@ -525,10 +516,10 @@ bool TransactionHandle::releaseIterator(DBIteratorHandle* iterator, bool& checkO
 			return false;
 		}
 		iterator->idle = true;
+		previous = releaseBusyIteratorLocked(this->activeIteratorCount);
 	}
-	const uint32_t previous = this->activeIteratorCount.fetch_sub(1, std::memory_order_relaxed);
-	assert(previous > 0 && "Transaction iterator count underflow");
-	checkOrphan = previous == 1;
+	countUnderflow = previous == 0;
+	checkOrphan = previous <= 1;
 	return true;
 }
 
@@ -553,116 +544,134 @@ void TransactionHandle::closeOrphanIfUnused() {
 
 	DEBUG_LOG("%p TransactionHandle::closeOrphanIfUnused Closing orphaned transaction (txnId=%llu, state=%d)\n",
 		this, (unsigned long long)this->id, static_cast<int>(this->state.load()));
-	// transactionRemove() can drop the registry's last reference. Keep this
-	// object alive until close() returns even when the final dependent releases
-	// on a worker thread.
-	auto keepAlive = this->shared_from_this();
-	this->close();
+	// Runs on libuv and iterator-release threads too, so it never waits for a close another thread won.
+	this->closeImpl(/*waitForWinner=*/false);
 }
 
-/**
- * Release the transaction. This is called after successful commit, after
- * the transaction has been aborted, or when the transaction is destroyed.
- *
- * The `closed` atomic gate ensures this runs at most once even when called
- * from multiple threads concurrently (e.g. DBDescriptor::close() on env M's
- * JS thread racing the async commit's complete callback on env W's JS thread).
- */
+namespace {
+
+// The close() running on this thread, so a nested close() of the same handle cannot wait on itself.
+thread_local const TransactionHandle* closingOnThisThread = nullptr;
+
+} // namespace
+
 void TransactionHandle::close() {
+	this->closeImpl(/*waitForWinner=*/true);
+}
+
+void TransactionHandle::closeImpl(bool waitForWinner) noexcept {
+	// Empty in ~TransactionHandle, which can run under txnsMutex; nothing else
+	// holds the handle then, so there is no registry entry or waiter to handle.
+	const std::shared_ptr<TransactionHandle> self = this->weak_from_this().lock();
+
 	if (this->closed.exchange(true)) {
+		if (!waitForWinner || closingOnThisThread == this) {
+			return;
+		}
+		uint32_t progress = CloseRunning;
+		this->closeProgress.compare_exchange_strong(progress, CloseAwaited, std::memory_order_acq_rel);
+		auto& closeLatch = txnCloseDrainLatch();
+		closeLatch.release(closeLatch.handle, this, TransactionCloseDrainLatch::AwaitedByClose);
+		while ((progress = this->closeProgress.load(std::memory_order_acquire)) != CloseFinished) {
+			this->closeProgress.wait(progress, std::memory_order_acquire);
+		}
 		return;
 	}
+	const TransactionHandle* const outerClose = closingOnThisThread;
+	closingOnThisThread = this;
+
 	this->closeIterators();
 
-	if (this->dbHandle && this->dbHandle->descriptor) {
-		this->dbHandle->descriptor->transactionRemove(shared_from_this());
-	}
-
-	if (!this->txn) {
-		return;
-	}
-
-	// cancel all active async work before closing
-	this->cancelAllAsyncWork();
-
-	// Drain BEFORE touching anything the in-flight work owns. Nothing below is
-	// safe while a commit is still executing: `state` feeds the commitAborted()
-	// decision, releaseIntent() mutates VT state the commit is using, and
-	// `delete txn` hands RocksDB a dangling transaction. waitForAsyncWorkCompletion()
-	// is unbounded (HarperFast/rocksdb-js#784) and cancelAllAsyncWork() above shares
-	// a mutex with registerAsyncWork(), so this always drains to zero — there is no
-	// timed-out case left to handle here; an earlier version of this close() leaked
-	// the transaction on a 5s drain timeout as a stopgap for exactly this window.
-	this->waitForAsyncWorkCompletion();
-
-	// Test seam: widen the PATH A vs PATH B race window.
-	// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
-	// unblocks); the seam makes it wide enough to reproduce deterministically.
-	// Noop in production.
-	const int closeDelayMs = txnCloseDelayMsFlag().load(std::memory_order_relaxed);
-	if (closeDelayMs > 0) {
-		txnCloseDelayActive().store(true, std::memory_order_release);
-		std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
-		txnCloseDelayActive().store(false, std::memory_order_release);
-	}
-
 	auto& closeLatch = txnCloseDrainLatch();
-	const bool latched = closeLatch.enabled.load(std::memory_order_relaxed) && this->dbHandle && this->dbHandle->descriptor;
-	if (latched) {
-		closeLatch.descriptor.store(this->dbHandle->descriptor.get(), std::memory_order_release);
-		txnCloseDelayActive().store(true, std::memory_order_release);
-		closeLatch.operations.wait(-1, std::memory_order_acquire);
-	}
+	bool latched = false;
+	if (this->txn) {
+		// cancel all active async work before closing
+		this->cancelAllAsyncWork();
 
-	// Only now that no native work can be running: settle the final state. A commit completion
-	// on the owning thread can still be mid-transition; abort() wins over it either way.
-	const bool committed = this->state.abort() == TransactionState::Committed;
+		// Drain BEFORE touching anything the in-flight work owns. Nothing below is
+		// safe while a commit is still executing: `state` feeds the commitAborted()
+		// decision, releaseIntent() mutates VT state the commit is using, and
+		// `delete txn` hands RocksDB a dangling transaction. waitForAsyncWorkCompletion()
+		// is unbounded (HarperFast/rocksdb-js#784) and cancelAllAsyncWork() above shares
+		// a mutex with registerAsyncWork(), so this always drains to zero — there is no
+		// timed-out case left to handle here; an earlier version of this close() leaked
+		// the transaction on a 5s drain timeout as a stopgap for exactly this window.
+		this->waitForAsyncWorkCompletion();
 
-	// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
-	// to remove the committed position from the log store
-	if (!committed && this->committedPosition.logSequenceNumber > 0) {
-		auto store = this->boundLogStore.lock();
-		if (store) {
-			if (this->cancelOnAbort && this->batchAddress.logSequenceNumber > 0) {
-				// Durable before the position is released (transaction_log/DESIGN.md, "Abort markers").
-				this->cancellation = store->cancelBatch(this->batchAddress, this->batchTimestamp, this->committedPosition)
-					? Cancellation::Resolved
-					: Cancellation::Failed;
-			} else {
-				store->commitAborted(this->committedPosition);
-				this->cancellation = Cancellation::Released;
-			}
-			this->recordPinnedTime(*store);
+		// Test seam: widen the PATH A vs PATH B race window.
+		// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
+		// unblocks); the seam makes it wide enough to reproduce deterministically.
+		// Noop in production.
+		const int closeDelayMs = txnCloseDelayMsFlag().load(std::memory_order_relaxed);
+		if (closeDelayMs > 0) {
+			txnCloseDelayActive().store(true, std::memory_order_release);
+			std::this_thread::sleep_for(std::chrono::milliseconds(closeDelayMs));
+			txnCloseDelayActive().store(false, std::memory_order_release);
 		}
-	}
 
-	// If the transaction was bound to a log store but writeBatch() was never called (committedPosition
-	// is still zero), the pendingTransactionCount was incremented at bind time but never decremented
-	// by writeBatch(). Decrement it now so the store can be safely destroyed.
-	//
-	// Guard under transactionBindMutex and verify isClosing first: if tryClose() already closed
-	// the store and reset the count to zero we must not decrement again (count would go negative).
-	if (this->committedPosition.logSequenceNumber == 0) {
-		auto store = this->boundLogStore.lock();
-		if (store) {
-			std::lock_guard<std::mutex> bindLock(store->transactionBindMutex);
-			if (!store->isClosing.load(std::memory_order_relaxed)) {
-				store->pendingTransactionCount--;
+		if (closeLatch.enabled.load(std::memory_order_relaxed) && this->dbHandle && this->dbHandle->descriptor &&
+			!this->dbHandle->descriptor->isClosing()) {
+			void* unclaimed = nullptr;
+			latched = closeLatch.handle.compare_exchange_strong(unclaimed, this, std::memory_order_acq_rel);
+		}
+		if (latched) {
+			closeLatch.descriptor.store(this->dbHandle->descriptor.get(), std::memory_order_release);
+			txnCloseDelayActive().store(true, std::memory_order_release);
+			closeLatch.outcome.wait(TransactionCloseDrainLatch::Parked, std::memory_order_acquire);
+		}
+
+		// Only now that no native work can be running: settle the final state. A commit completion
+		// on the owning thread can still be mid-transition; abort() wins over it either way.
+		const bool committed = this->state.abort() == TransactionState::Committed;
+
+		// if the transaction was aborted (either via an error, explicit abort, or was pending), we need
+		// to remove the committed position from the log store
+		if (!committed && this->committedPosition.logSequenceNumber > 0) {
+			auto store = this->boundLogStore.lock();
+			if (store) {
+				if (this->cancelOnAbort && this->batchAddress.logSequenceNumber > 0) {
+					// Durable before the position is released (transaction_log/DESIGN.md, "Abort markers").
+					this->cancellation = store->cancelBatch(this->batchAddress, this->batchTimestamp, this->committedPosition)
+						? Cancellation::Resolved
+						: Cancellation::Failed;
+				} else {
+					store->commitAborted(this->committedPosition);
+					this->cancellation = Cancellation::Released;
+				}
+				this->recordPinnedTime(*store);
 			}
 		}
-	}
 
-	// Release any VT locks that were installed at putSync/removeSync time
-	// but not yet released (e.g. transaction aborted or DB closed mid-commit).
-	if (!this->lockedVTSlots.empty()) {
-		this->releaseIntent();
-	}
+		// If the transaction was bound to a log store but writeBatch() was never called (committedPosition
+		// is still zero), the pendingTransactionCount was incremented at bind time but never decremented
+		// by writeBatch(). Decrement it now so the store can be safely destroyed.
+		//
+		// Guard under transactionBindMutex and verify isClosing first: if tryClose() already closed
+		// the store and reset the count to zero we must not decrement again (count would go negative).
+		if (this->committedPosition.logSequenceNumber == 0) {
+			auto store = this->boundLogStore.lock();
+			if (store) {
+				std::lock_guard<std::mutex> bindLock(store->transactionBindMutex);
+				if (!store->isClosing.load(std::memory_order_relaxed)) {
+					store->pendingTransactionCount--;
+				}
+			}
+		}
 
-	// destroy the RocksDB transaction
-	this->txn->ClearSnapshot();
-	delete this->txn;
-	this->txn = nullptr;
-	this->touchedColumnFamilies.clear();
+		// Release any VT locks that were installed at putSync/removeSync time
+		// but not yet released (e.g. transaction aborted or DB closed mid-commit).
+		if (!this->lockedVTSlots.empty()) {
+			this->releaseIntent();
+		}
+
+		// destroy the RocksDB transaction; deleting an unprepared one also discards
+		// its writes and releases its locks, which is all an abort needs
+		this->txn->ClearSnapshot();
+		delete this->txn;
+		this->txn = nullptr;
+		this->touchedColumnFamilies.clear();
+		this->nonVerifyingWriters.release();
+	}
 
 	// Note: close() is deliberately napi-free. The transaction holds no napi
 	// refs (the JS database is passed to UseLog by the TS layer per-call), so
@@ -670,16 +679,19 @@ void TransactionHandle::close() {
 	// held here and still alive at worker-env teardown crashes Node's
 	// second-pass finalizer drain (HarperFast/rocksdb-js#741).
 
-	// the transaction should already be removed from the registry when
-	// committing/aborting  so we don't need to call transactionRemove here to
-	// avoid race conditions and bad_weak_ptr errors
-	DEBUG_LOG("%p TransactionHandle::close Transaction should already be removed from registry\n", this);
-
-	this->dbHandle.reset();
 	if (latched) {
 		txnCloseDelayActive().store(false, std::memory_order_release);
 		closeLatch.finished.store(true, std::memory_order_release);
 		closeLatch.finished.notify_all();
+	}
+	// Only now, so a foreign finishClose() sweep that comes first finds this handle and waits.
+	if (self) {
+		this->registryLink->remove(self);
+	}
+	this->dbHandle.reset();
+	closingOnThisThread = outerClose;
+	if (this->closeProgress.exchange(CloseFinished, std::memory_order_acq_rel) == CloseAwaited) {
+		this->closeProgress.notify_all();
 	}
 }
 
@@ -756,7 +768,7 @@ napi_value TransactionHandle::get(
 	);
 	// Until the transaction registration is transferred below, setup failures
 	// must delete this state without unregistering work it does not own.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pendingState(env, state);
 	// Resolve and pin the caller's column family on the JS thread. The worker
 	// releases this descriptor before signaling completion so the native column
@@ -782,21 +794,23 @@ napi_value TransactionHandle::get(
 			if (getDelayMs > 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
 			}
-			if (!state->handle || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
-			} else {
-				state->status = state->handle->txn->Get(
-					state->readOptions,
-					state->readColumnDescriptor->column.get(),
-					state->key,
-					&state->value
-				);
-				// While the database and the caller's column family are still pinned — the completion
-				// runs after teardown may have released both.
-				if (state->status.ok() && state->vtSlot) {
-					vtCheckAsyncGet(state, state->readDb, state->readColumnDescriptor->column.get());
+			runAsyncExecute(state, [state] {
+				if (!state->handle || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
+				} else {
+					state->status = state->handle->txn->Get(
+						state->readOptions,
+						state->readColumnDescriptor->column.get(),
+						state->key,
+						&state->value
+					);
+					// While the database and the caller's column family are still pinned — the completion
+					// runs after teardown may have released both.
+					if (state->status.ok() && state->vtSlot) {
+						vtCheckAsyncGet(state, state->readDb, state->readColumnDescriptor->column.get());
+					}
 				}
-			}
+			});
 			state->readColumnDescriptor.reset();
 			// signal that execute handler is complete
 			state->signalExecuteCompleted();
@@ -807,7 +821,7 @@ napi_value TransactionHandle::get(
 			state->deleteAsyncWork();
 
 			if (status != napi_cancelled) {
-				resolveGetResult(env, "Transaction get failed", state);
+				runAsyncComplete(env, state, [env, state] { resolveGetResult(env, "Transaction get failed", state); });
 			}
 
 			delete state;
@@ -820,7 +834,7 @@ napi_value TransactionHandle::get(
 	// If queueing fails, PendingAsyncState deletes the state, whose base
 	// destructor releases the registration and whose derived members release the
 	// column descriptor first.
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	transactionRegistration.release();
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 	pendingState.release();
@@ -950,7 +964,7 @@ napi_value TransactionHandle::multiGet(
 	auto state = new AsyncTransactionMultiGetState(env, this->shared_from_this(), readOptions);
 	// Until the transaction registration is transferred below, setup failures must delete this
 	// state without unregistering work it does not own.
-	state->completed.store(true);
+	state->completed.store(true, std::memory_order_relaxed);
 	PendingAsyncState pendingState(env, state);
 	if (!state->batch.copyKeys(keys) || !state->batch.allocateResults()) {
 		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
@@ -1001,25 +1015,28 @@ napi_value TransactionHandle::multiGet(
 			if (getDelayMs > 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
 			}
-			if (!state->handle || state->handle->isCancelled()) {
-				state->status = rocksdb::Status::Aborted("Database closed during transaction get many operation");
-				state->batch.values.reset();
-			} else {
-				state->readDb->MultiGet(
-					state->readOptions,
-					state->readColumnDescriptor->column.get(),
-					state->misses.size(),
-					state->misses.keys.data(),
-					state->misses.values.get(),
-					state->misses.statuses.get()
-				);
-				for (size_t i = 0; i < state->misses.size(); i++) {
-					const size_t index = state->missingIndices[i];
-					state->batch.values[index] = std::move(state->misses.values[i]);
-					state->batch.statuses[index] = std::move(state->misses.statuses[i]);
+			runAsyncExecute(state, [state] {
+				if (!state->handle || state->handle->isCancelled()) {
+					state->status = rocksdb::Status::Aborted("Database closed during transaction get many operation");
+					state->batch.values.reset();
+				} else {
+					state->readDb->MultiGet(
+						state->readOptions,
+						state->readColumnDescriptor->column.get(),
+						state->misses.size(),
+						state->misses.keys.data(),
+						state->misses.values.get(),
+						state->misses.statuses.get()
+					);
+					for (size_t i = 0; i < state->misses.size(); i++) {
+						const size_t index = state->missingIndices[i];
+						state->batch.values[index] = std::move(state->misses.values[i]);
+						state->batch.statuses[index] = std::move(state->misses.statuses[i]);
+					}
+					finishMultiGet(state->status, state->batch, state->result);
 				}
-				finishMultiGet(state->status, state->batch, state->result);
-			}
+			});
+			state->batch.values.reset();
 			state->misses.values.reset();
 			state->snapshot.reset();
 			state->readColumnDescriptor.reset();
@@ -1030,7 +1047,7 @@ napi_value TransactionHandle::multiGet(
 			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
 			state->deleteAsyncWork();
 			if (status != napi_cancelled) {
-				resolveMultiGetResult(env, "Transaction get many failed", state);
+				runAsyncComplete(env, state, [env, state] { resolveMultiGetResult(env, "Transaction get many failed", state); });
 			}
 			delete state;
 		},
@@ -1038,7 +1055,7 @@ napi_value TransactionHandle::multiGet(
 		&state->asyncWork
 	));
 
-	state->completed.store(false);
+	state->completed.store(false, std::memory_order_relaxed);
 	transactionRegistration.release();
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 	pendingState.release();
@@ -1062,11 +1079,13 @@ void ColumnFamilySet::add(const std::shared_ptr<ColumnFamilyDescriptor>& column)
 }
 
 void ColumnFamilySet::removeLast(ColumnFamilyDescriptor* column) {
-	if (this->entries.size() == 0 || this->entries.back().raw != column) {
+	const TouchedColumnFamily* tail = this->entries.last();
+	if (!tail || tail->raw != column) {
 		return;
 	}
 	this->entries.popBack();
-	this->last = this->entries.size() == 0 ? nullptr : this->entries.back().raw;
+	tail = this->entries.last();
+	this->last = tail ? tail->raw : nullptr;
 }
 
 rocksdb::Status TransactionHandle::abandonForDroppedColumnFamily(
@@ -1108,6 +1127,63 @@ rocksdb::Status TransactionHandle::noteTouchedColumnFamily(
 	return rocksdb::Status::OK();
 }
 
+bool NonVerifyingWriterSet::contains(NonVerifyingWriterCount* counter) {
+	if (counter == this->last) {
+		return true;
+	}
+	bool found = false;
+	this->counters.forEach([&](NonVerifyingWriterCount* entry) {
+		if (entry == counter) found = true;
+	});
+	if (found) {
+		this->last = counter;
+	}
+	return found;
+}
+
+void NonVerifyingWriterSet::add(NonVerifyingWriterCount* counter) {
+	this->counters.add(counter);
+	counter->acquire();
+	this->last = counter;
+}
+
+void NonVerifyingWriterSet::removeLast(NonVerifyingWriterCount* counter) noexcept {
+	NonVerifyingWriterCount* const* tail = this->counters.last();
+	if (tail == nullptr || *tail != counter) {
+		return;
+	}
+	this->counters.popBack();
+	tail = this->counters.last();
+	this->last = tail == nullptr ? nullptr : *tail;
+	counter->release();
+}
+
+void NonVerifyingWriterSet::release() noexcept {
+	this->counters.forEach([](NonVerifyingWriterCount* entry) {
+		entry->release();
+	});
+	this->counters.clear();
+	this->last = nullptr;
+}
+
+rocksdb::Status TransactionHandle::noteNonVerifyingWrite(const DBHandle& dbHandle, bool& added) noexcept {
+	added = false;
+	if (dbHandle.enableVerificationTable) {
+		return rocksdb::Status::OK();
+	}
+	NonVerifyingWriterCount* counter = dbHandle.columnDescriptor->nonVerifyingWriters;
+	if (this->nonVerifyingWriters.contains(counter)) {
+		return rocksdb::Status::OK();
+	}
+	try {
+		this->nonVerifyingWriters.add(counter);
+		added = true;
+	} catch (...) {
+		return rocksdb::Status::MemoryLimit();
+	}
+	return rocksdb::Status::OK();
+}
+
 /**
  * Put a value using the specified database handle.
  */
@@ -1136,12 +1212,23 @@ rocksdb::Status TransactionHandle::putSync(
 	if (!touched.ok()) {
 		return touched;
 	}
+	bool addedWriter = false;
+	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle, addedWriter);
+	if (!counted.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		return counted;
+	}
 	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Put(column, key, value);
 	if (!status.ok()) {
 		if (addedTouch) {
 			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (addedWriter) {
+			this->nonVerifyingWriters.removeLast(dbHandle->columnDescriptor->nonVerifyingWriters);
 		}
 		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
 			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);
@@ -1187,12 +1274,23 @@ rocksdb::Status TransactionHandle::removeSync(
 	if (!touched.ok()) {
 		return touched;
 	}
+	bool addedWriter = false;
+	rocksdb::Status counted = this->noteNonVerifyingWrite(*dbHandle, addedWriter);
+	if (!counted.ok()) {
+		if (addedTouch) {
+			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		return counted;
+	}
 	delayTransactionStagingForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 	rocksdb::Status status = this->txn->Delete(column, key);
 	if (!status.ok()) {
 		if (addedTouch) {
 			this->touchedColumnFamilies.removeLast(dbHandle->columnDescriptor.get());
+		}
+		if (addedWriter) {
+			this->nonVerifyingWriters.removeLast(dbHandle->columnDescriptor->nonVerifyingWriters);
 		}
 		if (dbHandle->columnDescriptor->lifetime.isRetiredOrdered()) {
 			return this->abandonForDroppedColumnFamily(dbHandle->columnDescriptor);

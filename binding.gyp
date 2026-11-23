@@ -6,6 +6,10 @@
 	#   ROCKSDB_ASAN=1 node-gyp rebuild
 	'variables': {
 		"rocksdb_asan%": "<!(node -p \"process.env.ROCKSDB_ASAN==='1'?1:0\")",
+		# Fatal internal checks (`ROCKSDB_JS_ASSERT`, src/binding/core/assert.h), read the same way.
+		# CI test builds set it; the published prebuilds must not, so a failed check there warns and
+		# continues instead of aborting the host process. Debug builds are always fatal.
+		"rocksdb_js_fatal_asserts%": "<!(node -p \"process.env.ROCKSDB_JS_FATAL_ASSERTS==='1'?1:0\")",
 		# RocksDB link libraries — the core `librocksdb` archive plus the compression
 		# libs the resolved prebuild actually ships — emitted as `-l` flags / `.lib`
 		# names (not absolute paths — see configure-rocksdb.mjs for why), resolved
@@ -52,6 +56,7 @@
 			],
 			'sources': [
 				'src/binding/binding.cpp',
+				'src/binding/core/assert.cpp',
 				'src/binding/core/background_error.cpp',
 				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
@@ -153,6 +158,9 @@
 						'CLANG_CXX_LANGUAGE_STANDARD': 'c++20',
 					}
 				}],
+				['rocksdb_js_fatal_asserts==1', {
+					'defines': ['ROCKSDB_JS_FATAL_ASSERTS'],
+				}],
 				# AddressSanitizer instrumentation for diagnosing heap corruption
 				# in the binding. Enable with `ROCKSDB_ASAN=1 node-gyp rebuild`.
 				# RocksDB is linked as a non-instrumented prebuilt static lib;
@@ -235,6 +243,7 @@
 				'deps/googletest/googlemock/include',
 			],
 			'sources': [
+				'src/binding/core/assert.cpp',
 				'src/binding/core/background_error.cpp',
 				'src/binding/core/compression.cpp',
 				'src/binding/core/debug.cpp',
@@ -254,6 +263,8 @@
 				'test/native/rocksdb_version_test.cc',
 				'test/native/backup_disk_space_test.cc',
 				'test/native/backup_verify_tables_test.cc',
+				'test/native/assert_fatal_test.cc',
+				'test/native/assert_release_test.cc',
 				'test/native/background_error_test.cc',
 				'test/native/column_family_lifetime_test.cc',
 				'test/native/commit_worker_test.cc',
@@ -288,6 +299,7 @@
 			],
 			'defines': [
 				'ROCKSDB_JS_NATIVE_TESTS',
+				'ROCKSDB_JS_FATAL_ASSERTS',
 				'ROCKSDB_JS_WRITEV=rocksdb_js_mock_writev',
 				'ROCKSDB_JS_WRITE=rocksdb_js_mock_write',
 				'ROCKSDB_JS_FTRUNCATE=rocksdb_js_mock_ftruncate',

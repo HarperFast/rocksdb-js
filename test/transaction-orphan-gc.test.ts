@@ -38,8 +38,16 @@ const forceGC: (() => void) | undefined =
 const itWithGC = it.skipIf(!forceGC);
 const itWithNodeGC = it.skipIf(Boolean(process.versions.bun || process.versions.deno));
 
+type DependentMode =
+	| 'async-get'
+	| 'async-get-many'
+	| 'async-get-many-decoded'
+	| 'async-get-handle-closed'
+	| 'iterator'
+	| 'routed-iterator';
+
 function runDependentFixture(
-	mode: 'async-get' | 'async-get-many' | 'async-get-many-decoded' | 'iterator' | 'routed-iterator',
+	mode: DependentMode,
 	dbPath: string
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
 	return new Promise((resolve, reject) => {
@@ -58,9 +66,7 @@ function runDependentFixture(
 	});
 }
 
-async function expectDependentFixtureSurvives(
-	mode: 'async-get' | 'async-get-many' | 'async-get-many-decoded' | 'iterator' | 'routed-iterator'
-): Promise<void> {
+async function expectDependentFixtureSurvives(mode: DependentMode): Promise<void> {
 	const dbPath = join(process.cwd(), `.transaction-orphan-${mode}-${process.pid}-${Date.now()}`);
 	try {
 		const { code, signal, stderr } = await runDependentFixture(mode, dbPath);
@@ -102,6 +108,12 @@ describe('orphaned transactions', () => {
 	itWithNodeGC(
 		'should not retain a dropped transaction through a decoded batched read',
 		() => expectDependentFixtureSurvives('async-get-many-decoded'),
+		15_000
+	);
+
+	itWithNodeGC(
+		'should unregister an orphan closed on the libuv worker after its handle closed',
+		() => expectDependentFixtureSurvives('async-get-handle-closed'),
 		15_000
 	);
 
@@ -217,6 +229,23 @@ describe('orphaned transactions', () => {
 				expect(status(dbPath).transactions).toBe(0);
 				expect(db.getDBIntProperty('rocksdb.num-snapshots')).toBe(0);
 			})
+	);
+
+	itWithGC('should unregister a dropped transaction whose handle already closed', () =>
+		dbRunner(async ({ db, dbPath }, { db: second }) => {
+			await (async () => {
+				const txn = new Transaction(db.store);
+				txn.putSync('foo', 'bar');
+				expect(status(dbPath).transactions).toBe(1);
+			})();
+			db.close();
+			expect(status(dbPath).transactions).toBe(1);
+
+			await collectOrphans(dbPath);
+
+			expect(second.isOpen()).toBe(true);
+			expect(status(dbPath).transactions).toBe(0);
+		})
 	);
 
 	// An orphan that never read holds no snapshot, so close() reaches ClearSnapshot with nothing set

@@ -1,4 +1,5 @@
 #include "napi/binding.h"
+#include "core/assert.h"
 #include "rocksdb/utilities/optimistic_transaction_db.h"
 #include "database/backup.h"
 #include "database/database.h"
@@ -195,10 +196,10 @@ napi_value IsTransactionCloseDelayedForTesting(napi_env env, napi_callback_info 
 	return result;
 }
 
-napi_value IsTransactionCloseGuardedAtDrainForTesting(napi_env env, napi_callback_info info) {
+napi_value IsTransactionCloseAwaitedByShutdownForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	napi_value result;
-	NAPI_STATUS_THROWS(::napi_get_boolean(env, txnCloseDrainLatch().operations.load(std::memory_order_acquire) == 1, &result));
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, isTransactionCloseAwaited(), &result));
 	return result;
 }
 
@@ -225,10 +226,16 @@ napi_value IsTransactionCommitExecuteDelayedForTesting(napi_env env, napi_callba
 }
 
 napi_value SetTransactionCommitAdmissionDelayForTesting(napi_env env, napi_callback_info info) {
-	NAPI_METHOD_ARGV(1);
+	NAPI_METHOD_ARGV(2);
 	int32_t delayMs = 0;
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &delayMs));
-	setTransactionCommitAdmissionDelayForTesting(std::clamp(delayMs, 0, 60000));
+	bool afterRegistration = false;
+	napi_valuetype phaseType;
+	NAPI_STATUS_THROWS(::napi_typeof(env, argv[1], &phaseType));
+	if (phaseType != napi_undefined) {
+		NAPI_STATUS_THROWS(::napi_get_value_bool(env, argv[1], &afterRegistration));
+	}
+	setTransactionCommitAdmissionDelayForTesting(std::clamp(delayMs, 0, 60000), afterRegistration);
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -250,6 +257,16 @@ napi_value SetWriteBufferManagerJoinDelayForTesting(napi_env env, napi_callback_
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &countdown));
 	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &delayMs));
 	setWriteBufferManagerJoinDelayForTesting(std::max(countdown, 0), std::max(delayMs, 0));
+	NAPI_RETURN_UNDEFINED();
+}
+
+napi_value ForceAsyncExceptionForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(2);
+	int32_t stage = 0;
+	int32_t count = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &stage));
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[1], &count));
+	setAsyncExceptionForTesting(stage, std::max(count, 0));
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -288,6 +305,7 @@ static const TestSwitch testSwitches[] = {
 	 } },
 	{ "setTransactionCommitAdmissionDelayForTesting", SetTransactionCommitAdmissionDelayForTesting, []() {
 		 const bool changed = transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) != 0 ||
+			 transactionCommitAdmissionDelayRegistered().load(std::memory_order_relaxed) ||
 			 transactionCommitAdmissionDelayActive().load(std::memory_order_acquire);
 		 setTransactionCommitAdmissionDelayForTesting(0);
 		 return changed;
@@ -296,6 +314,12 @@ static const TestSwitch testSwitches[] = {
 		 const bool changed = writeBufferManagerJoinDelayCountdown().load(std::memory_order_relaxed) != 0 ||
 			 writeBufferManagerJoinDelayMs().load(std::memory_order_relaxed) != 0;
 		 setWriteBufferManagerJoinDelayForTesting(0, 0);
+		 return changed;
+	 } },
+	{ "forceAsyncExceptionForTesting", ForceAsyncExceptionForTesting, []() {
+		 const bool changed = asyncExceptionStage().load(std::memory_order_relaxed) != 0 ||
+			 asyncExceptionCount().load(std::memory_order_relaxed) != 0;
+		 setAsyncExceptionForTesting(0, 0);
 		 return changed;
 	 } },
 };
@@ -510,6 +534,11 @@ NAPI_MODULE_INIT() {
 	}
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "supportedCompression", supportedCompression));
 
+	// Read by scripts/test-binding.mjs to refuse a fatal prebuild; not part of the package API.
+	napi_value fatalAsserts;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, ROCKSDB_JS_ASSERTS_ARE_FATAL, &fatalAsserts));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "fatalAsserts", fatalAsserts));
+
 	int32_t refCount = ++moduleRefCount;
 	DEBUG_LOG("Binding::Init Module ref count: %d\n", refCount);
 
@@ -680,9 +709,9 @@ NAPI_MODULE_INIT() {
 		isTransactionCloseDelayedFn
 	));
 
-	napi_value isTransactionCloseGuardedAtDrainFn;
-	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCloseGuardedAtDrainForTesting", NAPI_AUTO_LENGTH, IsTransactionCloseGuardedAtDrainForTesting, nullptr, &isTransactionCloseGuardedAtDrainFn));
-	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isTransactionCloseGuardedAtDrainForTesting", isTransactionCloseGuardedAtDrainFn));
+	napi_value isTransactionCloseAwaitedByShutdownFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCloseAwaitedByShutdownForTesting", NAPI_AUTO_LENGTH, IsTransactionCloseAwaitedByShutdownForTesting, nullptr, &isTransactionCloseAwaitedByShutdownFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isTransactionCloseAwaitedByShutdownForTesting", isTransactionCloseAwaitedByShutdownFn));
 
 	napi_value isFlushCompletedDelayedFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "isFlushCompletedDelayedForTesting", NAPI_AUTO_LENGTH, IsFlushCompletedDelayedForTesting, nullptr, &isFlushCompletedDelayedFn));

@@ -57,9 +57,16 @@ describe('TransactionHandle::close() vs async-commit complete callback', () => {
 		() => expectSurvives()
 	);
 
-	for (const commitThread of ['0', '1'] as const) {
+	for (const [commitThread, mode] of [
+		['0', 'commit'],
+		['1', 'commit'],
+		['0', 'survivor'],
+		['1', 'survivor'],
+	] as const) {
 		it(
-			`finishes a last-handle close deferred by commit mode ${commitThread}`,
+			mode === 'commit'
+				? `finishes a last-handle close deferred by commit mode ${commitThread}`
+				: `unregisters a transaction committed after its handle closed in commit mode ${commitThread}`,
 			{ timeout: 30_000 },
 			async () => {
 				const dbPath = generateDBPath();
@@ -70,7 +77,7 @@ describe('TransactionHandle::close() vs async-commit complete callback', () => {
 						stdout: string;
 						stderr: string;
 					}>((resolve, reject) => {
-						const child = spawn(process.execPath, [legacyLastHandleFixturePath, dbPath], {
+						const child = spawn(process.execPath, [legacyLastHandleFixturePath, dbPath, mode], {
 							env: {
 								...process.env,
 								ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '6000',

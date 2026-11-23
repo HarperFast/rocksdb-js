@@ -119,27 +119,34 @@ rocksdb::Status DBHandle::clear(std::atomic<bool>* compactCanceled) {
 	}
 	std::atomic<uint64_t>& clearEpoch = this->columnDescriptor->clearEpoch;
 	clearEpoch.fetch_add(1, std::memory_order_acq_rel);
+	// Runs when the deletion throws too: an epoch left running would never finish.
+	struct ClearEpilogue {
+		std::atomic<uint64_t>& clearEpoch;
+		bool settleSlots;
+		~ClearEpilogue() {
+			this->clearEpoch.fetch_add(ColumnFamilyDescriptor::CLEAR_EPOCH_FINISHED - 1, std::memory_order_acq_rel);
+			// After data is deleted, advance all non-lock VT slots to fresh
+			// settled-empty generations. This prevents stale pre-clear versions from
+			// being re-published via a concurrent populate CAS. The sweep is coarse
+			// (covers all slots in the process-global table) since slot provenance is
+			// not tracked for non-lock slots; the cost is spurious cache misses for
+			// other stores, which is acceptable given clear() is already a rare,
+			// expensive operation. Lock slots are skipped — the write-intent lifecycle
+			// handles them independently. We sweep regardless of the clear's status:
+			// if the delete partially succeeded, any keys that were removed must not
+			// remain cacheable via stale VT entries.
+			if (this->settleSlots) {
+				VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
+				if (vt) vt->settleAllSlots();
+			}
+		}
+	} epilogue{ clearEpoch, this->enableVerificationTable };
 	// it appears we do not need to call WaitForCompact for this to work
 	rocksdb::Status clearStatus = rocksdb::DeleteFilesInRange(
 		this->descriptor->db.get(), this->columnDescriptor->column.get(), nullptr, nullptr
 	);
 	if (int delayMs = clearDeleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-	}
-	clearEpoch.fetch_add(ColumnFamilyDescriptor::CLEAR_EPOCH_FINISHED - 1, std::memory_order_acq_rel);
-	// After data is deleted, advance all non-lock VT slots to fresh
-	// settled-empty generations. This prevents stale pre-clear versions from
-	// being re-published via a concurrent populate CAS. The sweep is coarse
-	// (covers all slots in the process-global table) since slot provenance is
-	// not tracked for non-lock slots; the cost is spurious cache misses for
-	// other stores, which is acceptable given clear() is already a rare,
-	// expensive operation. Lock slots are skipped — the write-intent lifecycle
-	// handles them independently. We sweep regardless of clearStatus: if the
-	// delete partially succeeded, any keys that were removed must not remain
-	// cacheable via stale VT entries.
-	if (this->enableVerificationTable) {
-		VerificationTable* vt = DBSettings::getInstance().getVerificationTableRaw();
-		if (vt) vt->settleAllSlots();
 	}
 	return clearStatus;
 }
@@ -168,13 +175,8 @@ void DBHandle::close() {
 		if (this->enableVerificationTable) {
 			this->columnDescriptor->verifyingHandles.fetch_sub(1);
 		} else {
-			// Raised before the count drops: OpenDB reads them in the other order.
-			if (this->descriptor) {
-				const uint64_t lastId = this->descriptor->nextTransactionId.load();
-				std::atomic<uint64_t>& watermark = this->columnDescriptor->nonVerifyingTransactionWatermark;
-				uint64_t current = watermark.load();
-				while (current < lastId && !watermark.compare_exchange_weak(current, lastId)) {}
-			}
+			// Set before the count drops: OpenDB reads them in the other order.
+			this->columnDescriptor->nonVerifyingHandleDetached.store(true);
 			this->columnDescriptor->nonVerifyingHandles.fetch_sub(1);
 		}
 		this->columnDescriptor.reset();
