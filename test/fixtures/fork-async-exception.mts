@@ -6,7 +6,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [dir, stageArg, only] = process.argv.slice(2);
-const stage = Number(stageArg) as 1 | 2 | 3;
+const stage = Number(stageArg) as 1 | 2 | 3 | 5;
 mkdirSync(dir, { recursive: true });
 
 const coldPath = join(dir, 'cold');
@@ -65,8 +65,8 @@ const ops: [string, () => unknown][] = [
 		() => validateTransactionLogStore(join(db.path, 'transaction_logs', 'log')),
 	],
 ];
-if (stage === 1) {
-	// Only the state allocation is guarded on the commit path.
+if (stage === 1 || stage === 5) {
+	// The commit path's execute and completion are not wrapped.
 	ops.push(['commit', () => db.transaction((txn) => txn.put('committed', 'value'))]);
 }
 
@@ -88,8 +88,11 @@ for (const [op, run] of ops) {
 	await run();
 }
 
-secondary.close();
-dropped.close();
-cold.close();
-db.close();
-console.log(JSON.stringify(results));
+// Closing only once the loop is idle proves no failed operation left it referenced.
+process.once('beforeExit', () => {
+	secondary.close();
+	dropped.close();
+	cold.close();
+	db.close();
+	console.log(JSON.stringify(results));
+});

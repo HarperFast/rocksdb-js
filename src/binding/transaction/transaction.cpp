@@ -417,6 +417,8 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	bool refusedBeforeLog = false;
 	const char* errorCode = nullptr;
 
+	// Reads no `handle->dbHandle`: a foreign close() resets it, so an async commit captures
+	// `descriptor` and `parkTimeouts` only once registered with the transaction.
 	TransactionCommitState(
 		napi_env env,
 		const std::shared_ptr<TransactionHandle>& handle,
@@ -424,15 +426,7 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	) :
 		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
 		hasLog(false),
-		parksOnBusy(async && handle && handle->coordinatedRetry) {
-		if (async && handle && handle->dbHandle) {
-			const std::shared_ptr<DBDescriptor>& owner = handle->dbHandle->ownerDescriptor();
-			this->descriptor = owner;
-			if (owner && this->parksOnBusy) {
-				this->parkTimeouts = owner->parkTimeouts;
-			}
-		}
-	}
+		parksOnBusy(async && handle && handle->coordinatedRetry) {}
 
 	void registerDescriptorOperation(std::shared_ptr<DBDescriptor> descriptor) {
 		this->libuvDescriptor = std::move(descriptor);
@@ -1105,21 +1099,29 @@ static unsigned commitDelayMs() {
 	return ms;
 }
 
+static void throwAtCommitDispatchForTesting() {
+	if (consumeAsyncExceptionForTesting(AsyncExceptionStage::CommitDispatch)) {
+		throw std::bad_alloc();
+	}
+}
+
 /**
- * Test seam: a one-shot pause before the commit registers anywhere, so a foreign closer can land in
- * that window.
+ * After registration the pause ends once a closer cancels the transaction: that closer is draining on
+ * this registration.
  */
-static void pauseBeforeCommitAdmission() {
-	if (transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) <= 0) {
+static void pauseAtCommitAdmissionForTesting(const TransactionHandle& txnHandle, bool registered) {
+	if (transactionCommitAdmissionDelayMs().load(std::memory_order_acquire) <= 0 ||
+		transactionCommitAdmissionDelayRegistered().load(std::memory_order_acquire) != registered) {
 		return;
 	}
-	const int delayMs = transactionCommitAdmissionDelayMs().exchange(0, std::memory_order_relaxed);
+	const int delayMs = transactionCommitAdmissionDelayMs().exchange(0, std::memory_order_acq_rel);
 	if (delayMs <= 0) {
 		return;
 	}
 	transactionCommitAdmissionDelayActive().store(true, std::memory_order_release);
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(delayMs);
 	while (transactionCommitAdmissionDelayActive().load(std::memory_order_acquire) &&
+		!(registered && txnHandle.isCancelled()) &&
 		std::chrono::steady_clock::now() < deadline) {
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
@@ -1172,9 +1174,43 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
 	}
 
+	const bool admissionPauseArmed = transactionCommitAdmissionDelayMs().load(std::memory_order_relaxed) > 0;
+	if (admissionPauseArmed) {
+		pauseAtCommitAdmissionForTesting(**txnHandle, /*registered=*/false);
+	}
+	// Registered before anything reads `dbHandle`: a foreign close() resets it from its own thread,
+	// so it must either wait for this commit or refuse it here. Refusal means cancellation was
+	// already published; that close() settles the state to Aborted.
+	if (!(*txnHandle)->registerAsyncWork()) {
+		napi_value error;
+		rocksdb_js::createJSError(env, "ERR_TRANSACTION_CLOSING", "Transaction is closing", error);
+		state->callReject(error);
+		NAPI_RETURN_UNDEFINED();
+	}
+	stateOwner.asyncWorkRegistered = true;
+	if (admissionPauseArmed) {
+		pauseAtCommitAdmissionForTesting(**txnHandle, /*registered=*/true);
+	}
+
+	const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
+	if (dbHandle) {
+		descriptor = dbHandle->ownerDescriptor();
+	}
+	if (descriptor) {
+		state->descriptor = descriptor;
+		if (state->parksOnBusy) {
+			state->parkTimeouts = descriptor->parkTimeouts;
+		}
+	}
+	// Releases the registration before completeCommitWork(), which can close() the handle and so
+	// would wait on it.
+	auto rejectClosed = [env, state]() {
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+		state->signalExecuteCompleted();
+		completeCommitWork(env, state);
+	};
+
 	CommitThreadMode mode = commitThreadMode();
-	descriptor = state->descriptor.lock();
-	pauseBeforeCommitAdmission();
 	bool completionsClosed = false;
 	if (mode != CommitThreadMode::Legacy && descriptor) {
 		// The workers are descriptor members, and every descriptor close drains and
@@ -1188,35 +1224,18 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		// finishClose waits on this operation before draining the owning lanes.
 		state->registerDescriptorOperation(descriptorOwner);
 		if (descriptorOwner->isClosing()) {
-			state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-			completeCommitWork(env, state);
+			rejectClosed();
 			NAPI_RETURN_UNDEFINED();
 		}
 		// Ensure this env has a completion tsfn and account the dispatch (refs
 		// the tsfn as the env goes idle->busy so the event loop stays alive).
 		// Closed completion plumbing means finishClose() has already drained the
 		// lanes; the commit is rejected below rather than dispatched elsewhere.
-		auto& completion = (*txnHandle)->dbHandle->commitCompletion;
+		auto& completion = dbHandle->commitCompletion;
 		NAPI_STATUS_THROWS(descriptor->registerCommitCompletion(env, commitCompletionCallJs, completionsClosed, completion));
 		state->completion = completion;
 		if (!completionsClosed) {
 			stateOwner.completionRegistered = true;
-			// Register the commit with the transaction handle so close() can wait.
-			// Refusal means a concurrent close() already published cancellation (it
-			// settles state to Aborted once its drain finishes, overriding Committing) —
-			// reject rather than dispatching into a transaction that is being torn
-			// down. `stateOwner` still owns the state, so its destructor performs
-			// the unwind: it undoes the completion registration just above, and
-			// marks the state completed rather than signalling an execute that
-			// never ran (nothing was registered).
-			if (!(*txnHandle)->registerAsyncWork()) {
-				napi_value error;
-				rocksdb_js::createJSError(env, "ERR_TRANSACTION_CLOSING", "Transaction is closing", error);
-				state->callReject(error);
-				NAPI_RETURN_UNDEFINED();
-			}
-			stateOwner.asyncWorkRegistered = true;
-
 			// Commit-lane stage: RocksDB commit, then marshal the completion
 			// back to the originating env.
 			auto commitStage = [state]() {
@@ -1238,6 +1257,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				}
 			};
 
+			throwAtCommitDispatchForTesting();
 			if (mode == CommitThreadMode::TwoLane) {
 				// Two-lane pipeline: the log lane writes the transaction-log
 				// batch, then forwards to the commit worker. Commits are in
@@ -1258,8 +1278,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		}
 	}
 	if (mode != CommitThreadMode::Legacy || !descriptor) {
-		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-		completeCommitWork(env, state);
+		rejectClosed();
 		NAPI_RETURN_UNDEFINED();
 	}
 
@@ -1268,8 +1287,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	// Publish the operation before checking closing, as in the checkpoint path:
 	// teardown either waits for us or this check observes that it already won.
 	if (descriptor->isClosing()) {
-		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-		completeCommitWork(env, state);
+		rejectClosed();
 		NAPI_RETURN_UNDEFINED();
 	}
 
@@ -1315,23 +1333,12 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 		&state->asyncWork // -> result
 	));
 
-	// Register the async work with the transaction handle. Refusal means a
-	// concurrent close() already published cancellation; `stateOwner` still owns
-	// the state, so rejecting and returning lets its destructor delete the async
-	// work and mark the state completed (nothing was registered to run down).
-	if (!(*txnHandle)->registerAsyncWork()) {
-		napi_value error;
-		rocksdb_js::createJSError(env, "ERR_TRANSACTION_CLOSING", "Transaction is closing", error);
-		state->callReject(error);
-		NAPI_RETURN_UNDEFINED();
-	}
-	stateOwner.asyncWorkRegistered = true;
-
 	// A queue failure leaves the admission above with nothing to run it down, so
 	// it cannot simply throw: `stateOwner` unwinds it (signalExecuteCompleted()
 	// releases the real claim and the handle returns to Pending). Without that
 	// release the stranded claim blocks this handle's close forever, and with it
 	// every later OpenDB() for the path.
+	throwAtCommitDispatchForTesting();
 	if (::napi_queue_async_work(env, state->asyncWork) != napi_ok) {
 		napi_value error;
 		rocksdb_js::createJSError(env, "ERR_COMMIT_QUEUE_FAILED", "Failed to queue commit work", error);
@@ -1365,7 +1372,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if (!(*txnHandle)->state.transition(TransactionState::Pending, TransactionState::Committing)) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
 	}
-	pauseBeforeCommitAdmission();
+	pauseAtCommitAdmissionForTesting(**txnHandle, /*registered=*/false);
 
 	// Registered before anything reads `dbHandle`, so a foreign close() of this transaction waits
 	// for the commit instead of resetting it underneath.
