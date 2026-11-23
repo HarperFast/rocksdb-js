@@ -4,6 +4,7 @@
 #include "core/platform.h"
 #include "core/test_seam.h"
 #include "database/db_descriptor.h"
+#include "database/db_registry.h"
 #include "database/db_settings.h"
 #include "napi/global_events.h"
 #include "napi/helpers.h"
@@ -23,6 +24,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <system_error>
 #include <thread>
@@ -2383,6 +2385,50 @@ void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::s
 	} while (0)
 
 /**
+ * Retries the registry purge for a descriptor a lock completion pinned: a
+ * last-handle close on another env that landed inside the pin saw it and
+ * skipped its purge.
+ */
+struct LockCompletionPurge final {
+	std::optional<DBKey> key;
+
+	~LockCompletionPurge() {
+		if (!this->key) {
+			return;
+		}
+		try {
+			DBRegistry::PurgeIfUnreferenced(*this->key);
+		} catch (...) {
+		}
+	}
+};
+
+static void completeLockCallback(const LockCallbackCompletionData& callbackData, LockCompletionPurge& purge) noexcept {
+	try {
+		{
+			std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock();
+			if (!descriptor) {
+				return;
+			}
+			descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
+			if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+			}
+		}
+		// Every other owner retries the purge when it lets go, so only a count of
+		// 1 (the registry alone) after this release is ours to retry. Checking
+		// before the release would miss a close that skipped because of this pin.
+		if (callbackData.descriptor.use_count() != 1) {
+			return;
+		}
+		if (std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock()) {
+			purge.key = descriptorKey(*descriptor);
+		}
+	} catch (...) {
+	}
+}
+
+/**
  * Settles a `withLock()` callback's returned promise: resolves or rejects the
  * caller's deferred and hands the lock to the next waiter. Bound to `.then()`
  * as both handlers; `data` is the handler's own reference to the shared
@@ -2406,9 +2452,8 @@ static napi_value settleLockCallback(napi_env env, napi_callback_info info, bool
 	DEBUG_LOG("lockCallbackCallJs promise %s, calling onLockCallbackComplete() (key=\"%s\")\n", rejected ? "rejected" : "resolved", callbackData->key.c_str());
 	// Release before settling: a runtime may run the caller's continuation
 	// inside the settle call (Deno does), and it must see the lock released.
-	if (auto desc = callbackData->descriptor.lock()) {
-		desc->onLockCallbackComplete(callbackData->key, callbackData->lockHandle);
-	}
+	LockCompletionPurge purge;
+	completeLockCallback(*callbackData, purge);
 	if (callbackData->deferred != nullptr) {
 		if (rejected) {
 			::napi_reject_deferred(env, callbackData->deferred, argv[0]);
@@ -2481,17 +2526,16 @@ static void lockCallbackCallJs(napi_env env, napi_value jsCallback, void* contex
 	// The TSFN owns context until its finalizer; copying the preallocated
 	// shared_ptr does not allocate during handoff or delivery.
 	auto callbackData = *static_cast<std::shared_ptr<LockCallbackCompletionData>*>(context);
+	LockCompletionPurge purge;
 
 	// Claims completion, then hands the lock to the next waiter. False when a
 	// `.then()` handler already did: a user-overridden `then` can run one and
 	// still fail the call.
-	auto complete = [&callbackData]() {
+	auto complete = [&callbackData, &purge]() {
 		if (callbackData->completed.exchange(true)) {
 			return false;
 		}
-		if (auto desc = callbackData->descriptor.lock()) {
-			desc->onLockCallbackComplete(callbackData->key, callbackData->lockHandle);
-		}
+		completeLockCallback(*callbackData, purge);
 		return true;
 	};
 

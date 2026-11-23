@@ -419,6 +419,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - `ROCKSDB_JS_ENV_CLEANUP_PIN_DELAY_MS` - Test-only: delay while a per-env cleanup hook's registry
   snapshot pins every descriptor, so another thread's last-handle close skips its purge
   (`test/fixtures/fork-env-cleanup-purge.mts`). Snapshotted in `initializeTestSeams()`
+- `ROCKSDB_JS_LOCK_COMPLETE_DELAY_MS` - Test-only: delay while a `withLock()` completion holds its
+  descriptor reference, so another thread's last-handle close skips its purge
+  (`test/fixtures/fork-lock-complete-purge.mts`). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_ITERATOR_SETUP_DELAY_MS` / `ROCKSDB_JS_TXN_CLOSE_DELAY_MS` - Test-only delays inside
   iterator construction and transaction close. Both are snapshotted in `initializeTestSeams()`, so
   they must be set in the environment that starts the process rather than through an in-process
@@ -568,7 +571,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    and the entry (plus the open RocksDB) leaks (HarperFast/rocksdb-js#672). The per-env cleanup hooks
    pin every descriptor the same way (`DBRegistry::ForEachDescriptor`) while other workers close
    theirs, so the hook ends with `DBRegistry::PurgeUnreferenced()` once its last pinning step has released
-   them (HarperFast/rocksdb-js#1074). A pin that cannot retry must not be taken at all: the RocksDB
+   them (HarperFast/rocksdb-js#1074), and a `withLock()` completion, which pins the descriptor while
+   it hands the lock on, retries the purge after releasing it (`completeLockCallback`). A pin that cannot retry must not be taken at all: the RocksDB
    event listener runs on flush and write threads that `finishClose()` waits for, so its callbacks
    reach the descriptor through `DBEventListenerState`'s raw pointer under that state's mutex, which
    `~DBDescriptor` detaches first. A `weak_ptr::lock()` there skipped the last-handle purge whenever
