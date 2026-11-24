@@ -278,10 +278,7 @@ inline std::shared_ptr<const DBKey> releaseDescriptorPinKeepingKey(std::shared_p
 	return key;
 }
 
-/**
- * Retries the registry purge a released pin may have made a racing close skip. Noexcept because
- * the callers are destructors and completions that cannot report a close failure.
- */
+/** Noexcept because the callers are destructors and completions that cannot report a close failure. */
 inline void retryPurgeAfterPinRelease(const std::shared_ptr<const DBKey>& key) noexcept {
 	if (!key) {
 		return;
@@ -294,8 +291,8 @@ inline void retryPurgeAfterPinRelease(const std::shared_ptr<const DBKey>& key) n
 
 /**
  * Drops an async operation's descriptor pin, then retries the purge it may have made a racing close
- * skip. Always retries: owners that never retry on release (`OperationGuard`) can hold the count
- * above 1, so skipping on a count read here could strand the purge.
+ * skip. Always retries: a `use_count()` gate would be safe only if every other transient owner
+ * retries on release, which is not established for all of them.
  */
 inline void releaseDescriptorPin(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
 	retryPurgeAfterPinRelease(releaseDescriptorPinKeepingKey(descriptor));

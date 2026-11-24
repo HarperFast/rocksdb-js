@@ -2431,17 +2431,24 @@ static void completeLockCallback(const LockCallbackCompletionData& callbackData,
 		if (!descriptor) {
 			return;
 		}
-		descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
-		if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
-			std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+		// A throw must still reach the retry below: a close may have skipped its purge for this pin.
+		try {
+			descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
+			if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+			}
+		} catch (...) {
 		}
-		std::shared_ptr<const DBKey> key = releaseDescriptorPinKeepingKey(descriptor);
-		// Keeps ordinary completions off databasesMutex: a count above 1 after the release means
-		// another owner is still there to retry. Checking before the release would miss a close
-		// that skipped because of this pin. This gate is deliberately not in the shared helper,
-		// whose other callers cannot assume every remaining owner retries (OperationGuard does not).
-		if (callbackData.descriptor.use_count() == 1) {
-			purge.key = std::move(key);
+		descriptor.reset();
+		// A count above 1 after the release means another owner is left to retry, which keeps
+		// ordinary completions off databasesMutex. Checking before it would miss a close that
+		// skipped because of this pin.
+		if (callbackData.descriptor.use_count() != 1) {
+			return;
+		}
+		// Only the last-owner path pays for a second, brief pin; the purge itself runs after it drops.
+		if (std::shared_ptr<DBDescriptor> last = callbackData.descriptor.lock()) {
+			purge.key = releaseDescriptorPinKeepingKey(last);
 		}
 	} catch (...) {
 	}

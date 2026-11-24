@@ -113,8 +113,6 @@ describe('C++ exceptions in async operations', () => {
 						if (checkpointError !== undefined) {
 							expect(checkpointError).toMatch(/Database closed during checkpoint operation/);
 						}
-						// A failed claim leaves the entry unclaimed for the next close to purge; without a
-						// failure the checkpoint, as last owner, purges it itself.
 						expect(result).toEqual({
 							afterFailedPurge: mode === 'control' ? [] : [{ refCount: 1 }],
 							value: 'value',
