@@ -44,7 +44,6 @@ if (mode === 'worker-exit') {
 	}
 	await Promise.all(burst);
 	if (mode === 'burst') {
-		// The replacement completion fails once more, alone.
 		await commit('alone', 1);
 		assert.equal(db.getSync('alone'), 1);
 	}
