@@ -1477,7 +1477,12 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	UNWRAP_TRANSACTION_HANDLE("GetCount");
 	// Before the claim: a getter that tears the database down would wait for it.
 	DBIteratorOptions itOptions;
-	if (itOptions.initFromNapiObject(env, argv[0]) != napi_ok) {
+	try {
+		if (itOptions.initFromNapiObject(env, argv[0]) != napi_ok) {
+			return nullptr;
+		}
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
 		return nullptr;
 	}
 	itOptions.values = false;

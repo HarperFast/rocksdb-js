@@ -3,8 +3,8 @@ import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 
-// Holds native getCount() calls open in options getters, which run after the
-// call's admission.
+// Holds native getCount() calls open in options getters. Database getCount()
+// reads its options after admission; transaction getCount() reads them before.
 
 const DESTROY = 0;
 const HOLDER = 1;

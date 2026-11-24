@@ -1744,7 +1744,14 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	ACQUIRE_OPERATIONS_LOCK();
 
 	DBIteratorOptions itOptions;
-	itOptions.initFromNapiObject(env, argv[0]);
+	try {
+		if (itOptions.initFromNapiObject(env, argv[0]) != napi_ok) {
+			return nullptr;
+		}
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	itOptions.values = false;
 
 	uint64_t count = 0;
