@@ -84,6 +84,13 @@ inline std::atomic<bool>& txnCloseDelayActive() {
 	return active;
 }
 
+// Transactions currently inside close()'s async-work drain. Read-only probe, so it is not a
+// testSwitches entry; the increment costs one relaxed atomic per close of a live transaction.
+inline std::atomic<int>& txnCloseDrainWaiting() {
+	static std::atomic<int> waiting{ 0 };
+	return waiting;
+}
+
 // A child-process-only latch: the first transaction close to reach it after its drain
 // parks until a foreign close records how it was protected. No timer can release it.
 struct TransactionCloseDrainLatch {

@@ -1,7 +1,10 @@
 // Runs in its own process because ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, which holds each commit
 // just before RocksDB applies it, is read once at process start.
 import { registryStatus, RocksDatabase, Transaction } from '../../src/index.ts';
-import { isTransactionCommitExecuteDelayedForTesting } from '../../src/load-binding.ts';
+import {
+	isTransactionCloseDrainingForTesting,
+	isTransactionCommitExecuteDelayedForTesting,
+} from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -51,7 +54,13 @@ if (scenario === 'unrelated-commit') {
 	const terminated = worker.terminate();
 	// Env cleanup's close() drains the commit before it deletes the transaction or leaves the
 	// registry, so neither the registration nor the writer count may end while the commit runs.
-	await delay(200);
+	if (['0', 'false'].includes(process.env.ROCKSDB_JS_COMMIT_THREAD ?? '')) {
+		// A legacy commit holds the terminating env alive, so cleanup never reaches the drain
+		// while it runs; there is nothing to observe, only the commit's hold to outlast.
+		await delay(200);
+	} else {
+		await waitFor(isTransactionCloseDrainingForTesting, 'env cleanup to enter the close drain');
+	}
 	assert.equal(pendingTransactions(), 1);
 	assert.throws(() => cached.open(), conflict);
 	assert.ok(isTransactionCommitExecuteDelayedForTesting(), 'the commit finished before the check');
