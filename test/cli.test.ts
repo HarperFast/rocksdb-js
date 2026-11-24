@@ -430,13 +430,31 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 					`let calls = 0;`,
 					`RocksDatabase.prototype.close = function () {`,
 					`\tif (calls++ === 0) throw new Error('injected first close failure');`,
-					`\tclose.call(this); process.stderr.write('closed later handle\\n');`,
+					`\tclose.call(this); process.stderr.write('closed later handle ' + this.name + '\\n');`,
 					`};`,
 				]);
 				const result = await cli([dbPath, '--column', 'foo', 'get', 'a'], { nodeArgs });
 				expect(result.stderr).toContain('injected first close failure');
-				expect(result.stderr).toContain('closed later handle');
+				expect(result.stderr).toContain('closed later handle foo');
 				expect(result.code).toBe(1);
+			});
+
+			it('refuses to restore when closing the database for it fails', async () => {
+				const dbPath = tempDBPath();
+				const backupDir = tempDBPath();
+				seed(dbPath, { a: 'one' });
+				expect((await cli([dbPath, 'backups', backupDir, 'backup'])).code).toBe(0);
+				seed(dbPath, { a: 'changed' });
+				const nodeArgs = withPreload([
+					...closeProbe,
+					`RocksDatabase.prototype.close = function () { close.call(this); throw new Error('injected close failure'); };`,
+				]);
+				const result = await cli([dbPath, 'backups', backupDir, 'restore', '1', '--yes'], {
+					nodeArgs,
+				});
+				expect(result.stderr).toContain('injected close failure');
+				expect(result.code).toBe(1);
+				expect((await cli([dbPath, 'get', 'a'])).stdout).toBe('changed\n');
 			});
 
 			it('closes the databases when the REPL close throws', async () => {

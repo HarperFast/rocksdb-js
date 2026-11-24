@@ -603,7 +603,6 @@ async function dirSize(dir) {
 	return total;
 }
 
-// Closes every handle even when one throws; returns the failures instead of throwing.
 function closeAllDatabases() {
 	const errors = [];
 	for (const [name, db] of Object.entries(dbs)) {
@@ -619,8 +618,7 @@ function closeAllDatabases() {
 	return errors;
 }
 
-// Shared by the EPIPE handler and main()'s finally. An earlier failure code (such as 2 for
-// usage) is kept: a close failure must not mask the first thing that went wrong.
+// An earlier failure code (such as 2 for usage) is kept: a close failure must not mask it.
 function reportCloseFailures(errors) {
 	for (const error of errors) reportError(error);
 	if (errors.length > 0) process.exitCode ||= 1;
@@ -728,8 +726,16 @@ async function backupsCommand(args) {
 			const backupId = await requireBackupId(backupDir, extra);
 			await confirmOrCancel(`Are you sure you want to restore backup ${hl(backupId)}?`);
 			const preferredColumn = currentDB?.name;
-			const [closeError] = closeAllDatabases();
-			if (closeError) throw closeError;
+			const closeErrors = closeAllDatabases();
+			if (closeErrors.length > 0) {
+				// The handles are gone, so an interactive session has nothing left to run on.
+				if (interactive) {
+					reportCloseFailures(closeErrors);
+					process.exit(1);
+				}
+				reportCloseFailures(closeErrors.slice(1));
+				throw closeErrors[0];
+			}
 			let elapsedMs;
 			try {
 				({ elapsedMs } = await timed(() => backups.restore(backupDir, dbPath, { backupId })));
@@ -1408,8 +1414,11 @@ async function main() {
 			closeErrors.push(error);
 		}
 		closeErrors.push(...closeAllDatabases());
-		reportCloseFailures(closeErrors);
-		rl?.close();
+		try {
+			reportCloseFailures(closeErrors);
+		} finally {
+			rl?.close();
+		}
 	}
 }
 
