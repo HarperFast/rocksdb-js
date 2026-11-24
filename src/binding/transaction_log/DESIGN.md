@@ -18,7 +18,7 @@ Once every segment can go, `txn.state` is the only durable record of the highest
 - `writeFlushedPosition()` never moves it back, since flush jobs can complete out of order.
 - Purge syncs it, and its directory, before unlinking the highest registered segment (`syncFlushedStateForPurge()`), and keeps that segment if the sync fails. Deleting any lower segment leaves a higher file as the record, so only emptying a store pays the fsync, under `writeMutex`. A filesystem that rejects directory fsync keeps that last segment, as before this rule. The record stays an 8-byte in-place overwrite at offset 0, inside one sector, so the flush path takes no extra fsync.
 
-A backup captures `txn.state` before it copies segments, outside the store's locks. `pinRetention()` holds off ordinary purges for that window: a purge reads a newer flushed position and could delete entries the captured one still needs replayed. A stalled backup stream therefore suspends retention for its store until the stream ends.
+A backup captures `txn.state` with its table files, before it copies them or any segment (`captureLiveFilesWithTransactionLogs`). `pinRetention()`, taken at that capture, holds off ordinary purges until the segments are copied: a purge reads a newer flushed position and could delete entries the captured one still needs replayed. A stalled backup stream therefore suspends retention for its store until the stream ends. A store first registered after the capture is not backed up, since no pin protected its segments and the captured table files need none of its entries.
 
 # Conditional close
 

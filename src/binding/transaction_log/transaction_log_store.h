@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <atomic>
 #include <functional>
+#include <optional>
 #include "rocksdb/db.h"
 #include "transaction_log_entry.h"
 #include "transaction_log_file.h"
@@ -681,10 +682,23 @@ struct TransactionLogStore final {
 	 * entries. Environmental open/read failures propagate so callers cannot publish
 	 * a silently incomplete backup; `collectTransactionLogBackupEntries()` converts
 	 * them to a `rocksdb::Status` before control returns to a backup worker.
+	 *
+	 * `capturedState`, when given, is the `txn.state` entry a backup captured
+	 * together with its table files (`captureFlushedStateForBackup()`), and is used
+	 * in place of the live file, which a later flush may have advanced.
 	 */
 	std::vector<TransactionLogBackupEntry> snapshotForBackup(
-		const std::function<bool()>& abandon = nullptr, bool waitForUnresolved = true
+		const std::function<bool()>& abandon = nullptr,
+		bool waitForUnresolved = true,
+		const std::optional<TransactionLogBackupEntry>* capturedState = nullptr
 	);
+
+	/**
+	 * Reads `txn.state` inline for a backup, or nothing when the store has none.
+	 * Throws when the file exists but cannot be read in full: omitting it would
+	 * make a restore replay history its table files already hold.
+	 */
+	std::optional<TransactionLogBackupEntry> captureFlushedStateForBackup();
 
 	/**
 	 * Holds off ordinary (non-destroy) retention purges of `store` until the

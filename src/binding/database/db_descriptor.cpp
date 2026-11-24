@@ -6,6 +6,7 @@
 #include "database/db_descriptor.h"
 #include "database/db_registry.h"
 #include "database/db_settings.h"
+#include "database/flush_capture_gate.h"
 #include "napi/global_events.h"
 #include "napi/helpers.h"
 #include "transaction/transaction_handle.h"
@@ -369,6 +370,10 @@ struct DBEventListenerState final {
 		this->descriptor_ = nullptr;
 	}
 
+	// Owned here rather than by the descriptor: a flush can reach OnFlushBegin
+	// before the descriptor is published or after it is detached.
+	FlushCaptureGate flushCaptureGate;
+
 private:
 	std::mutex mutex_;
 	DBDescriptor* descriptor_ = nullptr;
@@ -384,6 +389,7 @@ public:
 	TransactionLogEventListener(std::shared_ptr<DBEventListenerState> state) : state(std::move(state)) {}
 
 	void OnFlushBegin(rocksdb::DB* db, const rocksdb::FlushJobInfo& flush_info) override {
+		this->state->flushCaptureGate.enterFlushBegin();
 		std::string identityPath;
 		if (!this->state->attachedIdentityPath(identityPath)) {
 			return;
@@ -2947,6 +2953,10 @@ rocksdb::Status DBDescriptor::flush(bool allowWriteStall) {
 		flushOptions,
 		columnHandles
 	);
+}
+
+FlushCaptureGate* DBDescriptor::flushCaptureGate() const {
+	return this->eventListenerState ? &this->eventListenerState->flushCaptureGate : nullptr;
 }
 
 void DBDescriptor::recordFlushedLogPosition(rocksdb::SequenceNumber sequence) {

@@ -1,19 +1,98 @@
 #include "database/backup_transaction_logs.h"
 #include "core/platform.h"
 #include "database/db_descriptor.h"
+#include "database/flush_capture_gate.h"
 #include "transaction_log/transaction_log_store_registry.h"
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <limits>
+#include <thread>
 #include <fstream>
 #include <set>
 
 namespace rocksdb_js {
 
+rocksdb::Status captureLiveFilesWithTransactionLogs(
+	DBDescriptor* descriptor,
+	rocksdb::DB* db,
+	const rocksdb::LiveFilesStorageInfoOptions& opts,
+	std::vector<rocksdb::LiveFileStorageInfo>* files,
+	std::vector<CapturedTransactionLogStore>& captured,
+	const std::function<bool()>& abandon
+) {
+	captured.clear();
+	files->clear();
+	constexpr uint64_t noFlush = std::numeric_limits<uint64_t>::max();
+	if (opts.wal_size_for_flush != noFlush) {
+		// Only for RocksDB's flush of every column family; the list is taken below.
+		rocksdb::Status s = db->GetLiveFilesStorageInfo(opts, files);
+		files->clear();
+		if (!s.ok()) {
+			return s;
+		}
+	}
+	rocksdb::LiveFilesStorageInfoOptions listOpts = opts;
+	listOpts.wal_size_for_flush = noFlush;
+
+	FlushCaptureGate* gate = descriptor->flushCaptureGate();
+	std::unique_lock<std::mutex> serialized;
+	std::optional<FlushCaptureHold> hold;
+	if (gate) {
+		serialized = std::unique_lock<std::mutex>(gate->captureMutex);
+		hold.emplace(*gate);
+	}
+
+	// A running flush that is not parked may have installed files whose position
+	// its OnFlushCompleted has not recorded yet. Parked ones have installed
+	// nothing. Parked flushes are a subset of running ones and only grow while
+	// the gate is held, so reading them first makes `running <= parked` exact.
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(1);
+	for (;;) {
+		if (descriptor->isClosing() || (abandon && abandon())) {
+			return rocksdb::Status::Aborted("Database closed during backup");
+		}
+		const uint32_t parked = hold ? hold->parkedFlushes() : 0;
+		uint64_t running = 0;
+		if (!db->GetIntProperty(rocksdb::DB::Properties::kNumRunningFlushes, &running)) {
+			return rocksdb::Status::NotSupported("Unable to read rocksdb.num-running-flushes");
+		}
+		if (running <= parked) {
+			break;
+		}
+		if (std::chrono::steady_clock::now() >= deadline) {
+			return rocksdb::Status::Busy(
+				"Backup could not capture a consistent transaction log position: flushes kept running for a minute"
+			);
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+
+	try {
+		for (const auto& store : TransactionLogStoreRegistry::GetStores(descriptor->identityPath)) {
+			if (!store) {
+				continue;
+			}
+			auto retentionPin = TransactionLogStore::pinRetention(store);
+			captured.push_back({ store, std::move(retentionPin), store->captureFlushedStateForBackup() });
+		}
+	} catch (const std::exception& e) {
+		captured.clear();
+		return rocksdb::Status::IOError("Failed to capture transaction log state", e.what());
+	}
+	rocksdb::Status s = db->GetLiveFilesStorageInfo(listOpts, files);
+	if (!s.ok()) {
+		captured.clear();
+	}
+	return s;
+}
+
 rocksdb::Status collectTransactionLogBackupEntries(
 	DBDescriptor* descriptor,
 	std::vector<NamedTransactionLogBackupEntry>& entries,
 	const std::function<bool()>& abandon,
-	bool waitForUnresolved
+	bool waitForUnresolved,
+	const std::vector<CapturedTransactionLogStore>* captured
 ) {
 	if (descriptor == nullptr) {
 		return rocksdb::Status::OK();
@@ -21,15 +100,27 @@ rocksdb::Status collectTransactionLogBackupEntries(
 
 	try {
 		auto stores = TransactionLogStoreRegistry::GetStores(descriptor->identityPath);
-		for (const auto& store : stores) {
-			if (!store) {
-				continue;
+		auto closing = [descriptor, &abandon]() { return descriptor->isClosing() || (abandon && abandon()); };
+		if (captured) {
+			for (const auto& capture : *captured) {
+				// A store destroyed since the capture is left out, as it would have been
+				// had the backup started after the destroy.
+				if (std::find(stores.begin(), stores.end(), capture.store) == stores.end()) {
+					continue;
+				}
+				for (auto& file : capture.store->snapshotForBackup(closing, waitForUnresolved, &capture.flushedState)) {
+					entries.push_back({ capture.store->name, std::move(file), capture.retentionPin });
+				}
 			}
-			const std::string& storeName = store->name;
-			auto retentionPin = TransactionLogStore::pinRetention(store);
-			auto closing = [descriptor, &abandon]() { return descriptor->isClosing() || (abandon && abandon()); };
-			for (auto& file : store->snapshotForBackup(closing, waitForUnresolved)) {
-				entries.push_back({ storeName, std::move(file), retentionPin });
+		} else {
+			for (const auto& store : stores) {
+				if (!store) {
+					continue;
+				}
+				auto retentionPin = TransactionLogStore::pinRetention(store);
+				for (auto& file : store->snapshotForBackup(closing, waitForUnresolved)) {
+					entries.push_back({ store->name, std::move(file), retentionPin });
+				}
 			}
 		}
 	} catch (const std::exception& e) {
@@ -287,10 +378,11 @@ rocksdb::Status backupTransactionLogsToDir(
 	DBDescriptor* descriptor,
 	const std::filesystem::path& destBaseDir,
 	bool sync,
-	const std::function<bool()>& abandon
+	const std::function<bool()>& abandon,
+	const std::vector<CapturedTransactionLogStore>* captured
 ) {
 	std::vector<NamedTransactionLogBackupEntry> entries;
-	rocksdb::Status status = collectTransactionLogBackupEntries(descriptor, entries, abandon);
+	rocksdb::Status status = collectTransactionLogBackupEntries(descriptor, entries, abandon, true, captured);
 	if (!status.ok()) {
 		return status;
 	}

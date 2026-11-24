@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <exception>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 #include "transaction_log_store.h"
 #include "core/debug.h"
@@ -624,53 +625,60 @@ void TransactionLogStore::ensureExtent(const std::shared_ptr<TransactionLogFile>
 	file->close();
 }
 
-std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
-	const std::function<bool()>& abandon, bool waitForUnresolved
-) {
-	// Capture txn.state (the flushed-position side file) FIRST, and inline its
-	// bytes. Reading it before the log-file sizes guarantees its recorded flushed
-	// position is <= the sizes we capture next (sizes only grow), so a restored
-	// store never sees a committed/flushed offset past the backed-up bytes. It is
-	// captured inline (not re-read at copy time) because it is rewritten in place
-	// — a later re-read could observe a newer position past the captured extents.
-	TransactionLogBackupEntry stateEntry;
-	bool hasStateEntry = false;
-	{
-		// databaseFlushed() (RocksDB's OnFlushComplete callback) rewrites txn.state
-		// in place under flushedStateMutex, and a flush can fire mid-backup — an
-		// unsynchronized read could tear, decoding a position that is neither the
-		// old nor the new value and may point past the log extents captured below
-		// (same discipline as getLastFlushedPosition()). The lock is scoped to this
-		// block, which touches nothing but the 8-byte state file, and is released
-		// before dataSetsMutex is taken below (ordering: dataSetsMutex →
-		// flushedStateMutex, never the reverse).
-		std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
+std::optional<TransactionLogBackupEntry> TransactionLogStore::captureFlushedStateForBackup() {
+	// Inline, because databaseFlushed() rewrites txn.state in place under
+	// flushedStateMutex: a later re-read, or an unlocked one, could see a newer or
+	// torn position. Never take dataSetsMutex under it (dataSetsMutex →
+	// flushedStateMutex).
+	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 
-		std::filesystem::path statePath = this->path / "txn.state";
-		std::error_code existsEc;
-		if (std::filesystem::exists(statePath, existsEc) && !existsEc) {
-			std::error_code timeEc;
-			auto stateMtime = std::filesystem::last_write_time(statePath, timeEc);
-			std::ifstream in(statePath, std::ios::binary | std::ios::ate);
-			if (in && !timeEc) {
-				std::streamoff len = in.tellg();
-				if (len > 0) {
-					std::string contents(static_cast<size_t>(len), '\0');
-					in.seekg(0);
-					in.read(contents.data(), len);
-					if (in) {
-						stateEntry.relativeName = "txn.state";
-						stateEntry.sourcePath = statePath;
-						stateEntry.byteLimit = static_cast<uint64_t>(len);
-						stateEntry.mtime = stateMtime;
-						stateEntry.immutable = false;
-						stateEntry.inlineContents = std::move(contents);
-						hasStateEntry = true;
-					}
-				}
-			}
-		}
+	std::filesystem::path statePath = this->path / "txn.state";
+	std::error_code existsEc;
+	const bool exists = std::filesystem::exists(statePath, existsEc);
+	if (existsEc) {
+		throw std::runtime_error("Unable to stat " + statePath.string() + ": " + existsEc.message());
 	}
+	if (!exists) {
+		return std::nullopt;
+	}
+	std::error_code timeEc;
+	auto stateMtime = std::filesystem::last_write_time(statePath, timeEc);
+	if (timeEc) {
+		throw std::runtime_error("Unable to stat " + statePath.string() + ": " + timeEc.message());
+	}
+	std::ifstream in(statePath, std::ios::binary | std::ios::ate);
+	if (!in) {
+		throw std::runtime_error("Unable to open " + statePath.string());
+	}
+	std::streamoff len = in.tellg();
+	if (len <= 0) {
+		throw std::runtime_error("Unable to read " + statePath.string() + ": the file is empty");
+	}
+	std::string contents(static_cast<size_t>(len), '\0');
+	in.seekg(0);
+	in.read(contents.data(), len);
+	if (!in) {
+		throw std::runtime_error("Unable to read " + statePath.string());
+	}
+	TransactionLogBackupEntry stateEntry;
+	stateEntry.relativeName = "txn.state";
+	stateEntry.sourcePath = statePath;
+	stateEntry.byteLimit = static_cast<uint64_t>(len);
+	stateEntry.mtime = stateMtime;
+	stateEntry.immutable = false;
+	stateEntry.inlineContents = std::move(contents);
+	return stateEntry;
+}
+
+std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
+	const std::function<bool()>& abandon,
+	bool waitForUnresolved,
+	const std::optional<TransactionLogBackupEntry>* capturedState
+) {
+	// txn.state comes before the segment sizes: sizes only grow, so its position
+	// can never point past the captured extents.
+	std::optional<TransactionLogBackupEntry> stateEntry =
+		capturedState ? *capturedState : this->captureFlushedStateForBackup();
 
 	// Snapshot the sequence files under dataSetsMutex, copying shared_ptrs so the
 	// files outlive the lock (the CoolTransactionLogs pattern). Also capture the
@@ -790,8 +798,8 @@ std::vector<TransactionLogBackupEntry> TransactionLogStore::snapshotForBackup(
 		});
 	}
 
-	if (hasStateEntry) {
-		entries.push_back(std::move(stateEntry));
+	if (stateEntry) {
+		entries.push_back(std::move(*stateEntry));
 	}
 
 	// A store with nothing to copy and nothing purged stays out of the backup: a restore recreates it

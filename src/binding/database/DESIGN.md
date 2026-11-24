@@ -127,6 +127,26 @@ covered (RocksDB has no public blob-file reader). Three facts hold it together:
 The check describes the backup only at the moment it runs: `verify` takes no lock (invariant 7).
 A caller that verifies and then restores holds the shared `.backup.lock` across both calls.
 
+# Backup replay position
+
+A backup that copies transaction logs must give each store the `txn.state` recorded for exactly
+the flushes in its table files. A later position skips writes the files lack; an earlier one
+replays writes they hold, which resurrects a record a caller deleted without logging it.
+`txn.state` is written by `OnFlushCompleted` after the flush has installed its files, so the
+capture (`captureLiveFilesWithTransactionLogs`, used by the stream path and, through
+`TransactionLogCaptureDB`, by BackupEngine) does three things in order:
+
+- **Parks new flushes at `OnFlushBegin`** (`FlushCaptureGate`). RocksDB calls it with the DB mutex
+  released and, for an atomic flush, for every column family before any job installs, so a parked
+  flush has changed nothing and the capturer can still take the DB mutex.
+- **Waits until every running flush is parked** (`rocksdb.num-running-flushes` equals the parked
+  count). That count spans `OnFlushCompleted`, so every unparked flush has recorded its position.
+- **Reads `txn.state` and lists the files** with no flush, then releases the gate.
+
+The capture belongs to the backup, never the descriptor, because backups to different directories
+run concurrently. The position is still the store's conservative one: the commit ring
+is sampled, so under continuous commits it can lag the flushed data, live as in a backup.
+
 # Pending-wake threadsafe functions stay ref'd
 
 A lock waiter (`withLock()`, or `tryLock(key, onUnlocked)` on a held key) and a coordinated-retry

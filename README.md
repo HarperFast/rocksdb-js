@@ -3142,9 +3142,12 @@ const id = await db.backup('/path/to/backups', { metadata: 'nightly-2026-06-04' 
 When `transactionLogs` is enabled, the log snapshot is staged and atomically renamed into
 `<backupDir>/transaction_logs/<backupId>/` only after every file has been copied (and fsynced, per
 `sync`), so a crash mid-backup can never leave a partial log snapshot for a listed backup id — a
-backup either has its complete snapshot or none. The snapshot is captured just after the RocksDB
-engine snapshot, so restored logs may run slightly ahead of the restored key-value data (never
-behind it), which is safe for redo-style logs replayed against the restored data.
+backup either has its complete snapshot or none. Each log's replay position (`txn.state`) is captured
+together with the table files the backup copies, so a restore replays from the position recorded for
+exactly the flushes those files hold; the log files are copied afterwards and may include later
+entries, which the replay applies. To capture both together, the backup briefly holds new flushes
+back and waits for running ones to finish, and rejects with a `Busy` error (safe to retry) if they
+do not finish within a minute.
 
 `checkDiskSpace` (on by default) rejects with an I/O error — its message reports the available and
 required bytes — before any files are copied, so a full destination fails fast instead of partway

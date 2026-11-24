@@ -14,7 +14,8 @@
 - [Conflict check before the log write](src/binding/transaction/DESIGN.md#conflict-check-before-the-log-write) — with abort markers on, RocksDB's own conflict check refuses a stale optimistic attempt before it logs.
 - [Verification table](src/binding/core/DESIGN.md): slots store versions encoded with a per-key tag; only an opted-in handle publishes from a read, and its open creates the table before it can write; a park cancels its lock wake registration when it ends.
 - [Database resources](src/binding/database/DESIGN.md): optimistic commit validation policy,
-  per-database lock buckets, concurrent commit threads, backup table verification, why
+  per-database lock buckets, concurrent commit threads, backup table verification, capturing a
+  backup's `txn.state` with its table files, why
   pending lock/park wake TSFNs stay ref'd, the WriteBufferManager flush-policy and arena-size
   defaults, SST filters with where their blocks live, why close cancels compaction instead of
   waiting for it, and how synchronous calls register on their own handle.

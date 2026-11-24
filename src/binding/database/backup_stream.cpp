@@ -439,7 +439,11 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 	infoOpts.include_checksum_info = false;
 
 	std::vector<rocksdb::LiveFileStorageInfo> files;
-	rocksdb::Status s = db->GetLiveFilesStorageInfo(infoOpts, &files);
+	std::vector<CapturedTransactionLogStore> captured;
+	auto cancelled = [state]() { return state->handle && state->handle->isCancelled(); };
+	rocksdb::Status s = state->backupTransactionLogs
+		? captureLiveFilesWithTransactionLogs(state->descriptor.get(), db, infoOpts, &files, captured, cancelled)
+		: db->GetLiveFilesStorageInfo(infoOpts, &files);
 	if (!s.ok()) {
 		return s;
 	}
@@ -495,9 +499,7 @@ rocksdb::Status doBackupStream(AsyncBackupStreamState* state) {
 	// extract) so the restored store's age-based rotation/retention stays correct.
 	if (state->backupTransactionLogs) {
 		std::vector<NamedTransactionLogBackupEntry> entries;
-		s = collectTransactionLogBackupEntries(
-			state->descriptor.get(), entries, [state]() { return state->handle && state->handle->isCancelled(); }
-		);
+		s = collectTransactionLogBackupEntries(state->descriptor.get(), entries, cancelled, true, &captured);
 		if (!s.ok()) {
 			return s;
 		}
