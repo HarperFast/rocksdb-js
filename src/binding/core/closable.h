@@ -39,7 +39,7 @@ struct Closable {
 	 * `DBDescriptor::finishClose()` must drain before it releases native
 	 * state, or nullptr when it admits none (only a `DBHandle` does).
 	 */
-	virtual std::atomic<uint32_t>* operationCount() { return nullptr; }
+	virtual std::atomic<uint32_t>* getOperationCounter() { return nullptr; }
 };
 
 } // namespace rocksdb_js

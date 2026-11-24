@@ -114,7 +114,7 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	 */
 	std::atomic<uint32_t> operationsInFlight{ 0 };
 
-	std::atomic<uint32_t>* operationCount() override { return &this->operationsInFlight; }
+	std::atomic<uint32_t>* getOperationCounter() override { return &this->operationsInFlight; }
 
 	/**
 	 * The node environment.
