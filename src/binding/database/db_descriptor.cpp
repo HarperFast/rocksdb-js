@@ -539,6 +539,7 @@ DBDescriptor::DBDescriptor(
 	mode(options.mode),
 	readOnly(options.readOnly),
 	secondaryPath(options.secondaryPath),
+	registryKey(std::make_shared<const DBKey>(descriptorKey(*this))),
 	cfOptions(cfOptions),
 	db(db),
 	attachedWriteBufferManager(attachedWriteBufferManager),
@@ -2417,39 +2418,30 @@ void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::s
  * skipped its purge.
  */
 struct LockCompletionPurge final {
-	std::optional<DBKey> key;
+	std::shared_ptr<const DBKey> key;
 
 	~LockCompletionPurge() {
-		if (!this->key) {
-			return;
-		}
-		try {
-			DBRegistry::PurgeIfUnreferenced(*this->key);
-		} catch (...) {
-		}
+		retryPurgeAfterPinRelease(this->key);
 	}
 };
 
 static void completeLockCallback(const LockCallbackCompletionData& callbackData, LockCompletionPurge& purge) noexcept {
 	try {
-		{
-			std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock();
-			if (!descriptor) {
-				return;
-			}
-			descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
-			if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-			}
-		}
-		// Every other owner retries the purge when it lets go, so only a count of
-		// 1 (the registry alone) after this release is ours to retry. Checking
-		// before the release would miss a close that skipped because of this pin.
-		if (callbackData.descriptor.use_count() != 1) {
+		std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock();
+		if (!descriptor) {
 			return;
 		}
-		if (std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock()) {
-			purge.key = descriptorKey(*descriptor);
+		descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
+		if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+		}
+		std::shared_ptr<const DBKey> key = releaseDescriptorPinKeepingKey(descriptor);
+		// Keeps ordinary completions off databasesMutex: a count above 1 after the release means
+		// another owner is still there to retry. Checking before the release would miss a close
+		// that skipped because of this pin. This gate is deliberately not in the shared helper,
+		// whose other callers cannot assume every remaining owner retries (OperationGuard does not).
+		if (callbackData.descriptor.use_count() == 1) {
+			purge.key = std::move(key);
 		}
 	} catch (...) {
 	}

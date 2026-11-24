@@ -1,13 +1,14 @@
-// Usage: node fork-purge-claim-alloc.mts <dir>
+// Usage: node fork-purge-claim-alloc.mts <dir> [control]
 // A checkpoint's descriptor pin makes close() skip its purge; the checkpoint's completion retries it
 // from a noexcept destructor. Fails that retry's close-claim allocation, then prints the registry
-// entries left after it and after a reopen and close.
+// entries left after it and after a reopen and close. With `control`, nothing is failed, so the
+// retry must purge the entry itself.
 import { RocksDatabase, registryStatus } from '../../src/index.ts';
 import { forceAsyncExceptionForTesting } from '../../src/load-binding.ts';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const [dir] = process.argv.slice(2);
+const [dir, mode] = process.argv.slice(2);
 mkdirSync(dir, { recursive: true });
 const path = join(dir, 'db');
 
@@ -16,7 +17,9 @@ db.putSync('key', 'value');
 // The completion cannot run before close(): nothing yields in between.
 const checkpoint = db.createCheckpoint(join(dir, 'checkpoint'));
 db.close();
-forceAsyncExceptionForTesting(4, 1);
+if (mode !== 'control') {
+	forceAsyncExceptionForTesting(4, 1);
+}
 let checkpointError: string | undefined;
 try {
 	await checkpoint;

@@ -76,47 +76,56 @@ describe('C++ exceptions in async operations', () => {
 				60_000
 			);
 
-			it('skips a pin-release purge whose close claim cannot be allocated', async () => {
-				const dir = generateDBPath();
-				try {
-					const { code, signal, stdout, stderr } = await new Promise<{
-						code: number | null;
-						signal: NodeJS.Signals | null;
-						stdout: string;
-						stderr: string;
-					}>((resolve, reject) => {
-						const child = spawn(process.execPath, [purgeFixturePath, dir]);
-						let stdout = '';
-						let stderr = '';
-						child.stdout.on('data', (chunk) => {
-							stdout += chunk.toString();
+			it.each(['control', 'failed-claim'])(
+				'pin-release purge, %s',
+				async (mode) => {
+					const dir = generateDBPath();
+					try {
+						const { code, signal, stdout, stderr } = await new Promise<{
+							code: number | null;
+							signal: NodeJS.Signals | null;
+							stdout: string;
+							stderr: string;
+						}>((resolve, reject) => {
+							const child = spawn(process.execPath, [
+								purgeFixturePath,
+								dir,
+								...(mode === 'control' ? ['control'] : []),
+							]);
+							let stdout = '';
+							let stderr = '';
+							child.stdout.on('data', (chunk) => {
+								stdout += chunk.toString();
+							});
+							child.stderr.on('data', (chunk) => {
+								stderr += chunk.toString();
+							});
+							const timer = setTimeout(() => child.kill('SIGKILL'), 50_000);
+							child.on('close', (code, signal) => {
+								clearTimeout(timer);
+								resolve({ code, signal, stdout, stderr });
+							});
+							child.on('error', reject);
 						});
-						child.stderr.on('data', (chunk) => {
-							stderr += chunk.toString();
+						expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: '' });
+						const { checkpointError, ...result } = JSON.parse(stdout);
+						// The pin is released either way when close() cancels the checkpoint before it starts.
+						if (checkpointError !== undefined) {
+							expect(checkpointError).toMatch(/Database closed during checkpoint operation/);
+						}
+						// A failed claim leaves the entry unclaimed for the next close to purge; without a
+						// failure the checkpoint, as last owner, purges it itself.
+						expect(result).toEqual({
+							afterFailedPurge: mode === 'control' ? [] : [{ refCount: 1 }],
+							value: 'value',
+							afterReopenClose: 0,
 						});
-						const timer = setTimeout(() => child.kill('SIGKILL'), 50_000);
-						child.on('close', (code, signal) => {
-							clearTimeout(timer);
-							resolve({ code, signal, stdout, stderr });
-						});
-						child.on('error', reject);
-					});
-					expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: '' });
-					const { checkpointError, ...result } = JSON.parse(stdout);
-					// The pin is released either way when close() cancels the checkpoint before it starts.
-					if (checkpointError !== undefined) {
-						expect(checkpointError).toMatch(/Database closed during checkpoint operation/);
+					} finally {
+						rmSync(dir, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
 					}
-					// The entry outlives the failed retry, unclaimed, and the next close purges it.
-					expect(result).toEqual({
-						afterFailedPurge: [{ refCount: 1 }],
-						value: 'value',
-						afterReopenClose: 0,
-					});
-				} finally {
-					rmSync(dir, { force: true, recursive: true, maxRetries: 3, retryDelay: 500 });
-				}
-			}, 60_000);
+				},
+				60_000
+			);
 
 			it.each(['0', '2'])(
 				'allocating the commit state with ROCKSDB_JS_COMMIT_THREAD=%s',

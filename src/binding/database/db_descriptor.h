@@ -37,6 +37,7 @@ namespace rocksdb_js {
 struct ColumnFamilyDescriptor;
 struct DBDescriptor;
 struct DBHandle;
+struct DBKey;
 struct LockHandle;
 struct TransactionHandle;
 struct UserSharedBufferData;
@@ -296,6 +297,12 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * or the secondary's registry entry is silently missed and leaks.
 	 */
 	std::string secondaryPath;
+
+	/**
+	 * This descriptor's registry key, built once at construction so a pin release can hold the
+	 * key past the pin without allocating (`releaseDescriptorPin()` in db_registry.h).
+	 */
+	const std::shared_ptr<const DBKey> registryKey;
 
 	/**
 	 * Kernel advisory lock (see core/file_lock.h) held on the secondary
