@@ -56,7 +56,7 @@ if (scenario === 'unrelated-commit') {
 	// registry, so neither the registration nor the writer count may end while the commit runs.
 	if (['0', 'false'].includes(process.env.ROCKSDB_JS_COMMIT_THREAD ?? '')) {
 		// A legacy commit holds the terminating env alive, so cleanup never reaches the drain
-		// while it runs; there is nothing to observe, only the commit's hold to outlast.
+		// while it runs; the pause only has to end inside the commit's hold.
 		await delay(200);
 	} else {
 		await waitFor(isTransactionCloseDrainingForTesting, 'env cleanup to enter the close drain');
@@ -65,6 +65,10 @@ if (scenario === 'unrelated-commit') {
 	assert.throws(() => cached.open(), conflict);
 	assert.ok(isTransactionCommitExecuteDelayedForTesting(), 'the commit finished before the check');
 	await terminated;
+	assert.ok(
+		!isTransactionCommitExecuteDelayedForTesting(),
+		'termination finished before the commit'
+	);
 	cached.open();
 } else {
 	throw new Error(`Unknown scenario ${scenario}`);

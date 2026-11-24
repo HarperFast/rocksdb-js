@@ -84,8 +84,7 @@ inline std::atomic<bool>& txnCloseDelayActive() {
 	return active;
 }
 
-// Transactions currently inside close()'s async-work drain. Read-only probe, so it is not a
-// testSwitches entry; the increment costs one relaxed atomic per close of a live transaction.
+// Transactions blocked in close()'s drain behind in-flight async work.
 inline std::atomic<int>& txnCloseDrainWaiting() {
 	static std::atomic<int> waiting{ 0 };
 	return waiting;
