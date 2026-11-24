@@ -633,6 +633,11 @@ std::optional<TransactionLogBackupEntry> TransactionLogStore::captureFlushedStat
 	std::lock_guard<std::mutex> flushedLock(this->flushedStateMutex);
 
 	std::filesystem::path statePath = this->path / "txn.state";
+	// A destroy removes the file without this mutex; the store is then left out of the backup.
+	auto vanished = [&statePath]() {
+		std::error_code ec;
+		return !std::filesystem::exists(statePath, ec) && !ec;
+	};
 	std::error_code existsEc;
 	const bool exists = std::filesystem::exists(statePath, existsEc);
 	if (existsEc) {
@@ -644,17 +649,27 @@ std::optional<TransactionLogBackupEntry> TransactionLogStore::captureFlushedStat
 	std::error_code timeEc;
 	auto stateMtime = std::filesystem::last_write_time(statePath, timeEc);
 	if (timeEc) {
+		if (vanished()) {
+			return std::nullopt;
+		}
 		throw std::runtime_error("Unable to stat " + statePath.string() + ": " + timeEc.message());
 	}
 	std::ifstream in(statePath, std::ios::binary | std::ios::ate);
 	if (!in) {
+		if (vanished()) {
+			return std::nullopt;
+		}
 		throw std::runtime_error("Unable to open " + statePath.string());
 	}
+	// A short record reads as position zero, which would replay the whole retained log.
 	std::streamoff len = in.tellg();
-	if (len <= 0) {
-		throw std::runtime_error("Unable to read " + statePath.string() + ": the file is empty");
+	if (len != static_cast<std::streamoff>(sizeof(LogPosition))) {
+		throw std::runtime_error(
+			"Unable to read " + statePath.string() + ": it is " + std::to_string(len) + " bytes, expected " +
+			std::to_string(sizeof(LogPosition))
+		);
 	}
-	std::string contents(static_cast<size_t>(len), '\0');
+	std::string contents(sizeof(LogPosition), '\0');
 	in.seekg(0);
 	in.read(contents.data(), len);
 	if (!in) {

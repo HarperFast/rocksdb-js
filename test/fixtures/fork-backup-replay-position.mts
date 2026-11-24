@@ -82,7 +82,8 @@ async function directoryBackup(db: RocksDatabase, target: string): Promise<strin
 async function streamBackup(
 	db: RocksDatabase,
 	target: string,
-	onStreaming?: () => Promise<void>
+	onStreaming?: () => Promise<void>,
+	flushBeforeBackup?: boolean
 ): Promise<string> {
 	let firstChunk = true;
 	const chunks: Buffer[] = [];
@@ -95,7 +96,7 @@ async function streamBackup(
 			chunks.push(Buffer.from(chunk));
 		},
 	});
-	await db.backup(stream, { transactionLogs: true });
+	await db.backup(stream, { transactionLogs: true, flushBeforeBackup });
 	writeFileSync(`${target}.tar`, Buffer.concat(chunks));
 	mkdirSync(target, { recursive: true });
 	tar.extract({ file: `${target}.tar`, cwd: target, sync: true });
@@ -132,10 +133,25 @@ try {
 		// the backup's own flush to write the L0 file that triggers one: the backup
 		// then resumes while that flush's delayed listener has not yet recorded the
 		// position its table files hold.
-		for (let file = 0; file < L0_COMPACTION_TRIGGER; file++) {
-			await commit(db, total, (total += BATCH));
-			if (file < L0_COMPACTION_TRIGGER - 1) db.flushSync();
-		}
+		const fillToTrigger = async (database: RocksDatabase) => {
+			let count = 0;
+			for (let file = 0; file < L0_COMPACTION_TRIGGER; file++) {
+				await commit(database, count, (count += BATCH));
+				if (file < L0_COMPACTION_TRIGGER - 1) database.flushSync();
+			}
+			return count;
+		};
+		// The same setup with a plain flush must return while its listener is still delayed,
+		// or this run cannot reach the interleaving it is testing.
+		const probe = RocksDatabase.open(`${path}-probe`, { disableWAL: true });
+		await fillToTrigger(probe);
+		await probe.flush();
+		const reached = isFlushCompletedDelayedForTesting();
+		probe.close();
+		rmSync(`${path}-probe`, { force: true, recursive: true });
+		if (!reached) throw new Error('Flush() waited for its listener; this case proves nothing');
+
+		total = await fillToTrigger(db);
 		const target = newTarget();
 		const restored =
 			mode === 'directoryBehind'
@@ -214,6 +230,26 @@ try {
 		await flushing;
 		other.close();
 		report({ mode, result, closeMs });
+		process.exit(0);
+	} else if (mode === 'pessimistic') {
+		// TransactionDB enables two-phase commit, and RocksDB then flushes inside every file
+		// listing, so the capture cannot list with new flushes parked.
+		db.close();
+		const pessimistic = RocksDatabase.open(path, { disableWAL: true, pessimistic: true });
+		await commit(pessimistic, 0, BATCH);
+		const directoryTarget = newTarget();
+		const id = await pessimistic.backup(directoryTarget, {
+			transactionLogs: true,
+			flushBeforeBackup: false,
+			checkDiskSpace: false,
+		});
+		await commit(pessimistic, BATCH, 2 * BATCH);
+		const stream = await streamBackup(pessimistic, newTarget(), undefined, false);
+		await backups.restore(directoryTarget, `${directoryTarget}-restore`, { backupId: id });
+		verifyRestored(`${directoryTarget}-restore`, BATCH);
+		verifyRestored(stream, 2 * BATCH);
+		pessimistic.close();
+		report({ mode, ok: true });
 		process.exit(0);
 	} else {
 		throw new Error(`Unknown mode ${mode}`);

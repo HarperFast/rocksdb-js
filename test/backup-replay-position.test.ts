@@ -41,13 +41,13 @@ async function runFixture(mode: string, env: NodeJS.ProcessEnv = {}): Promise<vo
 describe('Backup replay position', () => {
 	it(
 		'a directory backup waits for its flush to record the replayed position',
-		() => runFixture('directoryBehind', { ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS: '1500' }),
+		() => runFixture('directoryBehind', { ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS: '1000' }),
 		30_000
 	);
 
 	it(
 		'a stream backup waits for its flush to record the replayed position',
-		() => runFixture('streamBehind', { ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS: '1500' }),
+		() => runFixture('streamBehind', { ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS: '1000' }),
 		30_000
 	);
 
@@ -60,6 +60,12 @@ describe('Backup replay position', () => {
 	it(
 		'concurrent backups under continuous flushes converge without skipping writes',
 		() => runFixture('underLoad'),
+		30_000
+	);
+
+	it(
+		'a pessimistic database, whose listings always flush, captures without waiting on itself',
+		() => runFixture('pessimistic'),
 		30_000
 	);
 

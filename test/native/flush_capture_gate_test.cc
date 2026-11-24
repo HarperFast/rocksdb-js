@@ -39,7 +39,7 @@ TEST(FlushCaptureGate, ParksFlushesUntilTheHoldIsReleased) {
 			gate.enterFlushBegin();
 			passed++;
 		});
-		ASSERT_TRUE(waitUntil([&] { return hold.parkedFlushes() == 2; }));
+		EXPECT_TRUE(waitUntil([&] { return hold.parkedFlushes() == 2; }));
 		std::this_thread::sleep_for(std::chrono::milliseconds(20));
 		EXPECT_EQ(passed.load(), 0);
 	}
@@ -47,7 +47,6 @@ TEST(FlushCaptureGate, ParksFlushesUntilTheHoldIsReleased) {
 	second.join();
 	EXPECT_EQ(passed.load(), 2);
 
-	// A later hold starts with nothing parked.
 	rocksdb_js::FlushCaptureHold hold(gate);
 	EXPECT_EQ(hold.parkedFlushes(), 0u);
 }

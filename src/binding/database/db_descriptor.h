@@ -974,7 +974,6 @@ public:
 	 */
 	void recordFlushedLogPosition(rocksdb::SequenceNumber sequence);
 
-	/** The gate a backup holds to capture its table files and txn.state together. */
 	FlushCaptureGate* flushCaptureGate() const;
 
 	/** `DB::SyncWAL` on the calling thread: WAL-backed writes only, no memtable flush. */

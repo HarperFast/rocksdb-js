@@ -143,6 +143,12 @@ capture (`captureLiveFilesWithTransactionLogs`, used by the stream path and, thr
   count). That count spans `OnFlushCompleted`, so every unparked flush has recorded its position.
 - **Reads `txn.state` and lists the files** with no flush, then releases the gate.
 
+A pessimistic database is a `TransactionDB`, which enables `allow_2pc`, and RocksDB then flushes
+inside every listing whatever `wal_size_for_flush` says; listed with flushes parked, that flush
+would wait on the capture itself. So for `allow_2pc` the capture lists first, then parks and waits
+as above, reads `txn.state`, and keeps the listing only if every live table file is in it (no flush
+installed since). A compaction in that window also retries it, up to the same one-minute bound.
+
 The capture belongs to the backup, never the descriptor, because backups to different directories
 run concurrently. The position is still the store's conservative one: the commit ring
 is sampled, so under continuous commits it can lag the flushed data, live as in a backup.

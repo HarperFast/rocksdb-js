@@ -16,7 +16,6 @@ namespace rocksdb_js {
  */
 class FlushCaptureGate final {
 public:
-	/** Called first in `OnFlushBegin`; returns once no capture holds the gate. */
 	void enterFlushBegin() {
 		std::unique_lock<std::mutex> lock(this->mutex);
 		if (!this->held) {
@@ -27,7 +26,6 @@ public:
 		--this->parked;
 	}
 
-	/** Serializes captures on one database; held for a whole capture. */
 	std::mutex captureMutex;
 
 private:
@@ -39,10 +37,6 @@ private:
 	uint32_t parked = 0;
 };
 
-/**
- * Holds the gate for its lifetime. `parkedFlushes()` reads under the gate's
- * mutex, so it only grows while the hold is in place.
- */
 class FlushCaptureHold final {
 public:
 	explicit FlushCaptureHold(FlushCaptureGate& gate) : gate(gate) {

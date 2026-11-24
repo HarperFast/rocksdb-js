@@ -29,7 +29,6 @@ struct NamedTransactionLogBackupEntry final {
 	std::shared_ptr<void> retentionPin;
 };
 
-/** A transaction-log store as a backup captured it together with its table files. */
 struct CapturedTransactionLogStore final {
 	std::shared_ptr<TransactionLogStore> store;
 	/** Held from the capture until the store's segments are copied. */
