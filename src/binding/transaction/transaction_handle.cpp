@@ -145,6 +145,18 @@ std::shared_ptr<TransactionHandle> getOwnedTransaction(
 	return nullptr;
 }
 
+TransactionOperation::TransactionOperation(TransactionHandle& handle) :
+	handle(handle),
+	admittedCall(handle.enterSync()) {
+	if (this->admittedCall) {
+		const std::shared_ptr<DBHandle>& dbHandle = handle.dbHandle;
+		// Compares control blocks, which `owningDescriptor` keeps alive, without touching a count.
+		this->handleDetached = dbHandle &&
+			(!dbHandle->descriptor || handle.owningDescriptor.owner_before(dbHandle->descriptor) ||
+				dbHandle->descriptor.owner_before(handle.owningDescriptor));
+	}
+}
+
 /**
  * Adds a log entry to the specified transaction log store's batch.
  *
@@ -849,6 +861,7 @@ bool TransactionHandle::getCount(
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	std::shared_ptr<DBIteratorHandle> itHandle = this->createIterator(itOptions, std::move(dbHandleOverride));
+	pauseTransactionReadForTesting();
 	return itHandle->countRemaining(count);
 }
 
@@ -877,6 +890,7 @@ rocksdb::Status TransactionHandle::getSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	pauseTransactionReadForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 
 	// TODO: should this be GetForUpdate?
@@ -1201,12 +1215,12 @@ rocksdb::Status TransactionHandle::putSync(
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
-	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
+	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	if (!this->disableSnapshot && !this->snapshotSet && dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
 		this->txn->SetSnapshot();
 	}
 
-	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	bool addedTouch = false;
 	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
 	if (!touched.ok()) {
@@ -1263,12 +1277,12 @@ rocksdb::Status TransactionHandle::removeSync(
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
-	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
+	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	if (!this->disableSnapshot && !this->snapshotSet && dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
 		this->txn->SetSnapshot();
 	}
 
-	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	bool addedTouch = false;
 	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
 	if (!touched.ok()) {

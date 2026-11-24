@@ -48,6 +48,53 @@ Values, the snapshot and the column descriptor are released before signaling exe
 so teardown cannot destroy their database first. The existing transaction async registration still
 lets abort and orphan cleanup cancel and drain the read.
 
+# Synchronous admission
+
+A call that reaches a transaction through its own `NativeTransaction` wrapper (`getSync`, the setup of
+`get`, `getMany`, `getManySync`, `getCount`, `putSync`, `removeSync`, `useLog`, `setTimestamp`,
+`abandonWrites`, and a transaction-context `getRange`) holds a `TransactionOperation` from before its
+first read of `dbHandle` or `txn` until it returns. A foreign `destroy()`/`shutdown()` resets those in
+`TransactionHandle::close()`, from `finishClose()`'s closables sweep on its own thread.
+
+`TransactionOperation` registers with the transaction's own async-work drain through the lock-free
+`AsyncWorkHandle::enterSync()`, which `close()` waits on before it deletes `txn` or resets `dbHandle`.
+It is refused once `close()` has published cancellation, and the call then reports a closed
+transaction. A descriptor `OperationGuard` would also make that sweep wait, but its counter and the
+descriptor's reference count are shared by every thread using the database: with four workers on one
+database it roughly doubled the cost of `txn.getSync()`, which is what `db.getSync()` pays today
+(HarperFast/rocksdb-js#1138).
+
+The admission covers the transaction's `DBHandle` only because `DBDescriptor::closeClosables()` drains
+`transactions` before it closes any other closable. A `DBHandle::close()` from that sweep resets
+`columnDescriptor`, which these calls read; in the map's own order the sweep could reach the handle
+first. The order holds only if no transaction is registered once the drain has started, so
+`Transaction::Constructor` holds a descriptor `OperationGuard` from its `isClosing()` check through
+`transactionAdd()`, after its option getters have run. The drain first cancels every transaction, which aborts
+parked async reads and refuses new calls, then closes idle ones first; while every one still has a call
+in flight it waits for one to finish rather than close any. Closing a pessimistic writer blocked on a
+row lock waits for its call, and the holder of that lock may be another transaction in the same map.
+
+Admission comes after any argument parsing that can run JavaScript: a getter that aborts, commits or
+closes on the same thread would wait on the admission it is running under. `useLog` cannot order it
+that way, since it validates its database argument with `instanceof` and constructs a JavaScript
+`TransactionLog`: it admits once to read the transaction's handle, releases, validates, and admits
+again to recheck that handle before it binds the store. Building an
+error is outside that rule: it reads `Object.create` and `Error.prototype`, so a call that fails while
+admitted would wait on itself if those were patched to end the transaction. A call made under a
+descriptor `OperationGuard` is exposed the same way to a re-entrant `shutdown()`. After admission, a handle
+the owner has closed or reopened no longer belongs to this transaction's descriptor, so calls that
+use it refuse with "Database not open". `setTimestamp` and `abandonWrites` use only the transaction and
+are not refused for that.
+
+`Database::*` calls that name a transaction by id take `ACQUIRE_OPERATIONS_LOCK()` before the
+lookup. It counts on the caller's handle, which `finishClose()` drains before its sweep, and the lookup
+resolves in the caller's descriptor, which is the transaction's because ids are per descriptor. The
+iterator constructor takes a descriptor `OperationGuard` before its lookup. `TransactionHandle::getSync`,
+`putSync` and `removeSync` therefore admit nothing themselves. Covered by
+`test/fixtures/fork-txn-sync-shutdown.mts` (a pause past the handle read, shutdown from another
+thread; without the sweep order it crashes in about two runs of five) and
+`test/fixtures/fork-txn-sync-refusal.mts`.
+
 # Write-intent refusal
 
 With `transactionLogAbortMarkers` and `transactionLogWriteIntents` on (both read when an attempt begins; a handle still holding intents keeps the setting it took them under), a transaction's verification-table write intents carry its logical age (`TransactionHandle::age`, the constructor's timestamp, kept when JS changes the timestamp and across retries; `getMonotonicTimestamp()` never repeats within a process, and the handle address breaks a tie anyway). `lockSlotForWrite()` reports whether the slot already had a live holder that is, or may be, older: each tracker keeps its live holders' ages (four distinct holders inline, a holder's repeat intents sharing one entry, allocated only by an aged registration, under the VT `writerMutex_`). A holder without an age (a non-transactional write, an intent taken with either flag off) counts as possibly older. Aged holders past the inline four go to an overflow list, so precedence stays exact; one whose entry cannot be allocated is only counted, as possibly older. A monotonic minimum would not do: it would keep refusing behind a holder that has already released.
