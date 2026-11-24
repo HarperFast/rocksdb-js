@@ -603,12 +603,27 @@ async function dirSize(dir) {
 	return total;
 }
 
+// Closes every handle even when one throws; returns the failures instead of throwing.
 function closeAllDatabases() {
+	const errors = [];
 	for (const [name, db] of Object.entries(dbs)) {
-		db?.close();
-		delete dbs[name];
+		try {
+			db?.close();
+		} catch (error) {
+			errors.push(error);
+		} finally {
+			delete dbs[name];
+		}
 	}
 	currentDB = null;
+	return errors;
+}
+
+// Shared by the EPIPE handler and main()'s finally. An earlier failure code (such as 2 for
+// usage) is kept: a close failure must not mask the first thing that went wrong.
+function reportCloseFailures(errors) {
+	for (const error of errors) reportError(error);
+	if (errors.length > 0) process.exitCode ||= 1;
 }
 
 async function openDatabases(column, ifMissing, extra) {
@@ -713,7 +728,8 @@ async function backupsCommand(args) {
 			const backupId = await requireBackupId(backupDir, extra);
 			await confirmOrCancel(`Are you sure you want to restore backup ${hl(backupId)}?`);
 			const preferredColumn = currentDB?.name;
-			closeAllDatabases();
+			const [closeError] = closeAllDatabases();
+			if (closeError) throw closeError;
 			let elapsedMs;
 			try {
 				({ elapsedMs } = await timed(() => backups.restore(backupDir, dbPath, { backupId })));
@@ -1337,14 +1353,8 @@ async function main() {
 	// macOS stdio sockets can report ENOTCONN instead of EPIPE.
 	stdout.on('error', (error) => {
 		if (error.code !== 'EPIPE' && error.code !== 'ENOTCONN') throw error;
-		let exitCode = process.exitCode ?? 0;
-		try {
-			closeAllDatabases();
-		} catch (closeError) {
-			reportError(closeError);
-			exitCode = 1;
-		}
-		process.exit(exitCode);
+		reportCloseFailures(closeAllDatabases());
+		process.exit(process.exitCode ?? 0);
 	});
 
 	if (argv.help) {
@@ -1391,15 +1401,15 @@ async function main() {
 			process.exitCode = error.exitCode ?? 1;
 		}
 	} finally {
+		const closeErrors = [];
 		try {
 			r?.close();
-			closeAllDatabases();
-		} catch (closeError) {
-			reportError(closeError);
-			process.exitCode ||= 1;
-		} finally {
-			rl?.close();
+		} catch (error) {
+			closeErrors.push(error);
 		}
+		closeErrors.push(...closeAllDatabases());
+		reportCloseFailures(closeErrors);
+		rl?.close();
 	}
 }
 
