@@ -1258,6 +1258,12 @@ export const setTransactionStagingDelayForTesting: (countdown: number, delayMs: 
 export const isTransactionStagingDelayedForTesting: () => boolean =
 	binding.isTransactionStagingDelayedForTesting;
 
+export const setTransactionReadDelayForTesting: (delayMs: number) => void =
+	binding.setTransactionReadDelayForTesting;
+
+export const isTransactionReadDelayedForTesting: () => boolean =
+	binding.isTransactionReadDelayedForTesting;
+
 /** Reports whether a transaction is parked at the native commit seam. */
 export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
 	binding.isTransactionCommitExecuteDelayedForTesting;
