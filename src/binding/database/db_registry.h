@@ -264,7 +264,6 @@ public:
 	static size_t Size();
 };
 
-/** Drops a pin and returns the key to retry its purge with; see src/binding/napi/DESIGN.md. */
 inline std::shared_ptr<const DBKey> releaseDescriptorPinKeepingKey(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
 	if (!descriptor) {
 		return nullptr;
@@ -274,7 +273,7 @@ inline std::shared_ptr<const DBKey> releaseDescriptorPinKeepingKey(std::shared_p
 	return key;
 }
 
-/** Noexcept because the callers are destructors and completions that cannot report a close failure. */
+/** Noexcept: no C++ exception may cross the N-API boundary or leave a destructor. */
 inline void retryPurgeAfterPinRelease(const std::shared_ptr<const DBKey>& key) noexcept {
 	if (!key) {
 		return;
@@ -285,7 +284,7 @@ inline void retryPurgeAfterPinRelease(const std::shared_ptr<const DBKey>& key) n
 	}
 }
 
-/** Drops a pin, then always retries the purge it may have made a racing close skip (#672). */
+/** Always retries (#672); see src/binding/napi/DESIGN.md for why there is no `use_count()` gate. */
 inline void releaseDescriptorPin(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
 	retryPurgeAfterPinRelease(releaseDescriptorPinKeepingKey(descriptor));
 }
