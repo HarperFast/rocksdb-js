@@ -427,9 +427,8 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				seed(dbPath, { a: 'one' }, 'foo');
 				const nodeArgs = withPreload([
 					...closeProbe,
-					`let calls = 0;`,
 					`RocksDatabase.prototype.close = function () {`,
-					`\tif (calls++ === 0) throw new Error('injected first close failure');`,
+					`\tif (this.name === 'default') throw new Error('injected first close failure');`,
 					`\tclose.call(this); process.stderr.write('closed later handle ' + this.name + '\\n');`,
 					`};`,
 				]);

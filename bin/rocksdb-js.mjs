@@ -733,8 +733,8 @@ async function backupsCommand(args) {
 					reportCloseFailures(closeErrors);
 					process.exit(1);
 				}
-				reportCloseFailures(closeErrors.slice(1));
-				throw closeErrors[0];
+				reportCloseFailures(closeErrors.slice(0, -1));
+				throw closeErrors.at(-1);
 			}
 			let elapsedMs;
 			try {
