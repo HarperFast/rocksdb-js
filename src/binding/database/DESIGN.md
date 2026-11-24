@@ -320,8 +320,11 @@ registers before returning is drained too. Four facts make that equivalent to on
   claim reports `hasOperationOnThisThread()`. Only the owner thread changes a handle's count, so a
   match is a call on this stack and another env's handle never matches. The exit shutdown cannot
   refuse, because `process.exit()` never returns to that call: it marks those entries
-  `abandonedAtExit`, closes the rest, and reports them. Every later teardown, including a worker's
-  cleanup hook after the main thread exits, leaves an abandoned entry alone instead of waiting.
+  `abandonedAtExit`, closes the rest, and reports them. Later shutdowns, purges and destroys,
+  including a worker's cleanup hook after the main thread exits, leave an abandoned entry alone
+  instead of waiting. Only the last env's `Teardown()` releases it, when no env is left to resume
+  the call. A foreign closer that was already waiting for the call when the process exited still
+  waits.
   `Transaction::GetCount` reads its options before its `OperationGuard`, since the descriptor's
   count cannot tell which thread holds it.
 

@@ -194,8 +194,6 @@ switch (mode) {
 	}
 	case 'exit-inside-call':
 	case 'exit-inside-call-worker': {
-		// The exit shutdown would wait for the call this exit runs inside, and so
-		// would a worker's cleanup hook after it.
 		const db = RocksDatabase.open(path, { disableWAL: true });
 		const late = RocksDatabase.open(`${path}-late`, { disableWAL: true });
 		db.putSync('main', 'value');

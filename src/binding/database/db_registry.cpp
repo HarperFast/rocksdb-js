@@ -25,6 +25,7 @@ namespace {
 
 constexpr const char* destroyInsideOperation = "Cannot destroy the database during one of its own operations";
 constexpr const char* shutdownInsideOperation = "Cannot shut down during a database operation on this thread";
+constexpr const char* destroyAbandonedAtExit = "Cannot destroy the database: the process is exiting inside one of its own operations";
 
 struct ClosingDescriptor final {
 	DBKey key;
@@ -345,7 +346,10 @@ void DBRegistry::DestroyDB(const std::string& path) {
 			if (key.path != identityPath || !entry.descriptor) {
 				continue;
 			}
-			if (entry.abandonedAtExit || entry.descriptor->hasOperationOnThisThread(pinned)) {
+			if (entry.abandonedAtExit) {
+				throw rocksdb_js::DBException(destroyAbandonedAtExit);
+			}
+			if (entry.descriptor->hasOperationOnThisThread(pinned)) {
 				throw rocksdb_js::DBException(destroyInsideOperation);
 			}
 		}
@@ -1191,8 +1195,7 @@ void DBRegistry::PurgeAll() {
 			descriptorsToClose.reserve(instance->databases.size());
 			for (auto it = instance->databases.begin(); it != instance->databases.end();) {
 				if (!it->second.closeError.empty() || it->second.abandonedAtExit) {
-					// Quarantined: leave it for shutdown()/destroy() to retry. Abandoned:
-					// closing it would wait forever.
+					// Quarantined: leave it for shutdown()/destroy() to retry.
 					++it;
 					continue;
 				}
@@ -1591,9 +1594,6 @@ void DBRegistry::ReleaseLockCallbacksByEnv(napi_env env) {
 	ForEachDescriptor([env](DBDescriptor& descriptor) { descriptor.releaseLockCallbacksByEnv(env); });
 }
 
-/**
- * Shutdown will force all databases to flush in-memory data to disk and purge the registry.
- */
 void DBRegistry::RefuseShutdownOnThisThread() {
 	if (!instance) {
 		return;
@@ -1607,6 +1607,9 @@ void DBRegistry::RefuseShutdownOnThisThread() {
 	}
 }
 
+/**
+ * Shutdown will force all databases to flush in-memory data to disk and purge the registry.
+ */
 void DBRegistry::Shutdown(bool exiting) {
 	if (instance) {
 		// Before shutdownMutex: a foreign shutdown holding it may be waiting for
@@ -1657,8 +1660,7 @@ void DBRegistry::Shutdown(bool exiting) {
 						// stays visible in registryStatus().destroyCleanupPending.
 						// shutdown() is deliberately non-destructive -- only an
 						// explicit destroy() retries path deletion -- so skip it
-						// here rather than re-throwing the same error forever. An
-						// abandoned descriptor would wait forever (abandonedAtExit).
+						// here rather than re-throwing the same error forever.
 						continue;
 					}
 					ClosingDescriptor closing{ key, entry.descriptor, entry.condition };

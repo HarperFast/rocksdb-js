@@ -88,8 +88,9 @@ struct DBRegistryEntry final {
 	// for a path no descriptor in this process ever opened.
 	std::string reportedPath;
 	// Set by the exit shutdown when process.exit() ran inside a call admitted
-	// through one of this descriptor's handles: that call never returns, so
-	// every later teardown leaves the descriptor open rather than wait for it.
+	// through one of this descriptor's handles. That call never returns, so
+	// later shutdowns, purges and destroys leave the descriptor open rather than
+	// wait for it; only the last env's Teardown() releases it.
 	bool abandonedAtExit = false;
 
 	// Default constructor

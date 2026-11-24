@@ -147,7 +147,6 @@ if (mode === 'destroy' || mode === 'destroy-holder-last') {
 		throw new Error('Expected close to clear the registry entry');
 	}
 } else if (mode === 'reentrant-other') {
-	// Another handle to the same database: destroy would wait for this call.
 	const db = RocksDatabase.open(path);
 	const column = RocksDatabase.open(path, { name: 'column' });
 	const elsewherePath = `${path}-elsewhere`;
@@ -178,8 +177,6 @@ if (mode === 'destroy' || mode === 'destroy-holder-last') {
 		throw new Error('Expected destroy to close every handle and clear the registry entry');
 	}
 } else if (mode === 'reentrant-foreign-closing') {
-	// A worker's destroy is already waiting for this call, and holds the path
-	// gate a second destroy would wait on: the refusals must not wait first.
 	RocksDatabase.config({ lifecycleWaitSeconds: 30 });
 	const db = RocksDatabase.open(path);
 	const column = RocksDatabase.open(path, { name: 'column' });
@@ -245,7 +242,6 @@ if (mode === 'destroy' || mode === 'destroy-holder-last') {
 	if (db.getSync('key') !== 'value' || other.getSync('key') !== 'value') {
 		throw new Error('Database unusable after a refused shutdown');
 	}
-	// A refusal releases nothing, global listeners included.
 	if (RocksDatabase.listenerCount('reentrant-shutdown') !== 1) {
 		throw new Error('A refused shutdown released the global listeners');
 	}
@@ -286,8 +282,6 @@ if (mode === 'destroy' || mode === 'destroy-holder-last') {
 	if (!result.destroyed) throw new Error(`Shutdown failed: ${JSON.stringify(result)}`);
 	await shutter.worker.terminate();
 } else if (mode === 'reentrant-txn') {
-	// A transaction's getCount() reads its options before it claims the database,
-	// so a destroy from its getter runs instead of waiting for that claim.
 	const db = RocksDatabase.open(path);
 	const column = RocksDatabase.open(path, { name: 'column' });
 	db.putSync('key', 'value');
