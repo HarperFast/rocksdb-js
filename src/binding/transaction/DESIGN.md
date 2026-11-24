@@ -9,8 +9,14 @@ commit, `Rollback()` reports an invalid state, which abort used to throw as "Tra
 failed" after the transaction was already gone.
 
 That drain can wait on a disk read, so with work in flight Abort holds a descriptor `OperationGuard`
-until `close()` returns, and leaves the close to a teardown that is already under way (a closing or
-destroyed descriptor) rather than wait for its sweep. The guard pins
+until `close()` returns. On a closing or destroyed descriptor it does not wait: it closes admission
+and sets `abortDeferred`, and the last in-flight read's completion closes the transaction on the
+owning thread (`closeDeferredAbort()`) unless the sweep got there first. Leaving it to the sweep
+alone was not enough: a quarantined descriptor (failed close-time flush) is closing, but
+`finishClose()` threw before its sweep, so the transaction kept its snapshot, write intents and log
+position until a retry (HarperFast/rocksdb-js#1148). The completion, not the read's libuv execute,
+runs the close because the wrapper is still reachable and the owning thread's synchronous calls are
+not serialized against a close from another thread. The guard pins
 `TransactionHandle::owningDescriptor`, a weak reference fixed at construction:
 `dbHandle->descriptor` is gone once the owner has closed its handle, and another env can still
 hold the database open. Locking it can make a concurrent last-handle close skip its purge, so
@@ -27,7 +33,9 @@ it concurrently.
 
 Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASan build with
 `max_free_fill_size` faults on an abort that does not drain first) and
-`test/fixtures/fork-abort-get-destroy.mts` (abort and a foreign destroy, in each order).
+`test/fixtures/fork-abort-get-destroy.mts` (abort and a foreign destroy, in each order) and
+`fork-abort-get-quarantine.mts` (abort with `get`/`getMany` reads in flight on a quarantined
+database).
 
 Other owning-thread mutations still run while an admitted get may be inside `txn->Get()`:
 commit (`Clear()` after the write),

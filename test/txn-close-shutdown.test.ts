@@ -62,4 +62,15 @@ describe.skipIf(!!process.versions.deno)('Transaction close() vs. foreign shutdo
 				ROCKSDB_JS_COMMIT_THREAD: mode,
 			})
 	);
+
+	it.each(['get', 'getMany'])(
+		'closes a transaction aborted with %s reads in flight on a quarantined database',
+		{ timeout: 30_000 },
+		(read) =>
+			expectFixturePasses('fork-abort-get-quarantine.mts', [], {
+				READ: read,
+				ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '1',
+				ROCKSDB_JS_TXN_GET_DELAY_MS: '1500',
+			})
+	);
 });

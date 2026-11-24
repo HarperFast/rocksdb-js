@@ -232,6 +232,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::atomic<bool> wrapperCollected{ false };
 
 	/**
+	 * Set by an abort that left the close to its in-flight reads (`closeDeferredAbort()`). Owning
+	 * JS thread only.
+	 */
+	bool abortDeferred = false;
+
+	/**
 	 * Transaction-backed iterators whose RocksDB iterator still depends on txn.
 	 * Orphan cleanup waits for the count to reach zero. The weak map lets an
 	 * explicit commit/abort close those iterators before RocksDB mutates or
@@ -481,6 +487,13 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * on its RocksDB transaction.
 	 */
 	void closeOrphanIfUnused();
+
+	/**
+	 * Runs a deferred abort's close once no read is in flight. Called by a transaction read's
+	 * completion on the owning JS thread, after its execute unregistered: the last one to run sees
+	 * no work left, since the abort closed admission.
+	 */
+	void closeDeferredAbort() noexcept;
 
 private:
 	/**

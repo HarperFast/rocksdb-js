@@ -548,6 +548,14 @@ void TransactionHandle::closeOrphanIfUnused() {
 	this->closeImpl(/*waitForWinner=*/false);
 }
 
+void TransactionHandle::closeDeferredAbort() noexcept {
+	if (!this->abortDeferred || this->closed.load() || this->activeAsyncWorkCount.load() > 0) {
+		return;
+	}
+	// A teardown close that already won keeps it; this one never waits.
+	this->closeImpl(/*waitForWinner=*/false);
+}
+
 namespace {
 
 // The close() running on this thread, so a nested close() of the same handle cannot wait on itself.
@@ -819,6 +827,7 @@ napi_value TransactionHandle::get(
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
 			state->deleteAsyncWork();
+			state->handle->closeDeferredAbort();
 
 			if (status != napi_cancelled) {
 				runAsyncComplete(env, state, [env, state] { resolveGetResult(env, "Transaction get failed", state); });
@@ -1046,6 +1055,7 @@ napi_value TransactionHandle::multiGet(
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
 			state->deleteAsyncWork();
+			state->handle->closeDeferredAbort();
 			if (status != napi_cancelled) {
 				runAsyncComplete(env, state, [env, state] { resolveMultiGetResult(env, "Transaction get many failed", state); });
 			}
