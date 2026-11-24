@@ -643,7 +643,7 @@ void DBDescriptor::waitForHandleOperations() {
 		std::lock_guard<std::mutex> closablesLock(this->txnsMutex);
 		for (auto& [key, weakClosable] : this->closables) {
 			if (auto closable = weakClosable.lock()) {
-				if (std::atomic<uint32_t>* count = closable->operationCount()) {
+				if (std::atomic<uint32_t>* count = closable->getOperationCounter()) {
 					counted.emplace_back(std::move(closable), count);
 				}
 			}
