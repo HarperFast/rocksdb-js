@@ -49,6 +49,7 @@ const issuedAt = steadyClockNow();
 const first = startRead('cold-1');
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 Atomics.wait(sleepCell, 0, 0, staggerMs);
+const secondIssuedAt = steadyClockNow();
 const second = startRead('cold-2');
 
 assert.throws(() => shutdown(), /Injected database close flush failure/);
@@ -57,7 +58,6 @@ assert.ok(quarantined?.closeError, 'the flush failure did not quarantine the dat
 assert.equal(quarantined.transactions, 1);
 
 const started = steadyClockNow();
-// Neither read can have finished its parked execute yet, so abort() reaches the busy branch.
 assert.ok(started - issuedAt < getDelayMs - 200, `abort() started ${started - issuedAt}ms late`);
 txn.abort();
 const elapsed = steadyClockNow() - started;
@@ -65,11 +65,14 @@ assert.ok(elapsed < staggerMs, `abort() waited ${elapsed}ms for the in-flight re
 assert.throws(() => (txn as any)._context.commitSync(), { code: 'ERR_WRITES_ABANDONED' });
 
 const firstOutcome = await first;
-assert.equal(
-	registryStatus().find((entry) => entry.path === path)?.transactions,
-	1,
-	'the transaction closed while its second read was still in flight'
-);
+// Only meaningful while the second read's parked execute cannot have finished.
+if (steadyClockNow() - secondIssuedAt < getDelayMs - 100) {
+	assert.equal(
+		registryStatus().find((entry) => entry.path === path)?.transactions,
+		1,
+		'the transaction closed while its second read was still in flight'
+	);
+}
 const secondOutcome = await second;
 const after = registryStatus().find((entry) => entry.path === path);
 assert.equal(
@@ -77,7 +80,6 @@ assert.equal(
 	0,
 	`the aborted transaction stayed registered: ${JSON.stringify(after)}`
 );
-// abort() closed admission, so both parked reads were cancelled rather than run.
 const cancelled =
 	read === 'get'
 		? /Database closed during transaction get operation/

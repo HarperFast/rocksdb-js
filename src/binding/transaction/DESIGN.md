@@ -26,10 +26,13 @@ Abort retries `DBRegistry::PurgeIfUnreferenced` after releasing it, as backup an
 handle's own mutex it either closes admission or reports work in flight, so no get from any env
 can slip in between. Only the in-flight case touches the descriptor (Harper ends every read-only
 transaction with an abort). The idle case needs no guard: `close()` itself keeps a foreign sweep
-waiting ([close ownership](#close-ownership)). An already-cancelled handle means a teardown `close()`
-owns the transaction. Abort then only sets the atomic `writesAbandoned`, so the transaction refuses
-later writes and commits before that `close()` runs; it leaves `state` to the `close()`, which writes
-it concurrently.
+waiting ([close ownership](#close-ownership)). An already-cancelled handle has a close coming: a
+teardown `close()`, or an earlier deferred abort's read completion. Abort then only sets the atomic
+`writesAbandoned`, so the transaction refuses later writes and commits before that `close()` runs;
+it leaves `state` to the `close()`, which writes it concurrently. Every transaction async read's
+completion calls `closeDeferredAbort()` after deleting its state, since a read cancelled before its
+execute ran releases its registration only there; today those are `get` and `multiGet`, the only
+work that can be in flight on a `Pending` transaction.
 
 Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASan build with
 `max_free_fill_size` faults on an abort that does not drain first) and

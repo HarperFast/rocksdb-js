@@ -232,8 +232,7 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	std::atomic<bool> wrapperCollected{ false };
 
 	/**
-	 * Set by an abort that left the close to its in-flight reads (`closeDeferredAbort()`). Owning
-	 * JS thread only.
+	 * An abort left the close to its in-flight reads' completions. Owning JS thread only.
 	 */
 	bool abortDeferred = false;
 
@@ -489,9 +488,8 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void closeOrphanIfUnused();
 
 	/**
-	 * Runs a deferred abort's close once no read is in flight. Called by a transaction read's
-	 * completion on the owning JS thread, after its execute unregistered: the last one to run sees
-	 * no work left, since the abort closed admission.
+	 * Owning JS thread only, after a read's state is deleted. Every transaction async read's
+	 * completion must call it, or an abort deferred to that read is never closed.
 	 */
 	void closeDeferredAbort() noexcept;
 

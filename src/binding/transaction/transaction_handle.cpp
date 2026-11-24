@@ -552,7 +552,6 @@ void TransactionHandle::closeDeferredAbort() noexcept {
 	if (!this->abortDeferred || this->closed.load() || this->activeAsyncWorkCount.load() > 0) {
 		return;
 	}
-	// A teardown close that already won keeps it; this one never waits.
 	this->closeImpl(/*waitForWinner=*/false);
 }
 
@@ -827,13 +826,17 @@ napi_value TransactionHandle::get(
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
 			state->deleteAsyncWork();
-			state->handle->closeDeferredAbort();
 
 			if (status != napi_cancelled) {
 				runAsyncComplete(env, state, [env, state] { resolveGetResult(env, "Transaction get failed", state); });
 			}
 
+			// After `delete`: a cancelled read's registration is released only there.
+			std::shared_ptr<TransactionHandle> deferredAbort = state->handle->abortDeferred ? state->handle : nullptr;
 			delete state;
+			if (deferredAbort) {
+				deferredAbort->closeDeferredAbort();
+			}
 		},
 		state,     // data
 		&state->asyncWork // -> result
@@ -1055,11 +1058,14 @@ napi_value TransactionHandle::multiGet(
 		[](napi_env env, napi_status status, void* data) { // complete
 			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
 			state->deleteAsyncWork();
-			state->handle->closeDeferredAbort();
 			if (status != napi_cancelled) {
 				runAsyncComplete(env, state, [env, state] { resolveMultiGetResult(env, "Transaction get many failed", state); });
 			}
+			std::shared_ptr<TransactionHandle> deferredAbort = state->handle->abortDeferred ? state->handle : nullptr;
 			delete state;
+			if (deferredAbort) {
+				deferredAbort->closeDeferredAbort();
+			}
 		},
 		state,
 		&state->asyncWork
