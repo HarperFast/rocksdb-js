@@ -264,11 +264,7 @@ public:
 	static size_t Size();
 };
 
-/**
- * Drops an async operation's descriptor pin and returns the registry key to retry the purge with
- * (HarperFast/rocksdb-js#672). The key is the descriptor's own shared copy, so this never allocates:
- * a pin release that could throw would drop the retry and leave the database open until shutdown.
- */
+/** Drops a pin and returns the key to retry its purge with; see src/binding/napi/DESIGN.md. */
 inline std::shared_ptr<const DBKey> releaseDescriptorPinKeepingKey(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
 	if (!descriptor) {
 		return nullptr;
@@ -289,11 +285,7 @@ inline void retryPurgeAfterPinRelease(const std::shared_ptr<const DBKey>& key) n
 	}
 }
 
-/**
- * Drops an async operation's descriptor pin, then retries the purge it may have made a racing close
- * skip. Always retries: a `use_count()` gate would be safe only if every other transient owner
- * retries on release, which is not established for all of them.
- */
+/** Drops a pin, then always retries the purge it may have made a racing close skip (#672). */
 inline void releaseDescriptorPin(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
 	retryPurgeAfterPinRelease(releaseDescriptorPinKeepingKey(descriptor));
 }

@@ -2440,13 +2440,12 @@ static void completeLockCallback(const LockCallbackCompletionData& callbackData,
 		} catch (...) {
 		}
 		descriptor.reset();
-		// A count above 1 after the release means another owner is left to retry, which keeps
-		// ordinary completions off databasesMutex. Checking before it would miss a close that
-		// skipped because of this pin.
+		// Skips databasesMutex when another owner remains, relying on each such owner retrying on
+		// release (unproven for OperationGuard, #1161). Counting before the release would miss a
+		// close that skipped because of this pin.
 		if (callbackData.descriptor.use_count() != 1) {
 			return;
 		}
-		// Only the last-owner path pays for a second, brief pin; the purge itself runs after it drops.
 		if (std::shared_ptr<DBDescriptor> last = callbackData.descriptor.lock()) {
 			purge.key = releaseDescriptorPinKeepingKey(last);
 		}
