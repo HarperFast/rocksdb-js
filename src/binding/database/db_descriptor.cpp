@@ -1132,8 +1132,10 @@ void DBDescriptor::CommitCompletion::finalize(napi_env env, void* data, void* /*
 	bool deliver;
 	{
 		std::lock_guard<std::mutex> lock(completion.completionStateMutex);
-		// Env teardown can finalize a tsfn we never released: nothing may call it now.
+		// Env teardown can finalize a tsfn we never released: nothing may call
+		// or release it now.
 		completion.closed = true;
+		completion.tsfn = nullptr;
 		// Settle in dispatch order.
 		for (Item* pushed = completion.undelivered; pushed != nullptr;) {
 			Item* next = pushed->nextUndelivered;
@@ -1150,7 +1152,6 @@ void DBDescriptor::CommitCompletion::finalize(napi_env env, void* data, void* /*
 		try {
 			completion.callJs(deliver ? env : nullptr, nullptr, nullptr, item);
 		} catch (...) {
-			// The state is not freed until delivery returns.
 			try {
 				completion.callJs(nullptr, nullptr, nullptr, item);
 			} catch (...) {
