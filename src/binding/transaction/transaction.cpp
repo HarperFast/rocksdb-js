@@ -404,10 +404,12 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	bool hasLog;
 	std::shared_ptr<DBDescriptor::CommitCompletion> completion;
 	ColumnFamilyCommitClaim claim;
+	// Set and read by async commits only.
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
 	DBDescriptor* operationDescriptor = nullptr;
 	bool descriptorOperationActive = false;
+	const bool parksOnBusy;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
@@ -419,10 +421,12 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	// `descriptor` and `parkTimeouts` only once registered with the transaction.
 	TransactionCommitState(
 		napi_env env,
-		const std::shared_ptr<TransactionHandle>& handle
+		const std::shared_ptr<TransactionHandle>& handle,
+		bool async
 	) :
 		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
-		hasLog(false) {}
+		hasLog(false),
+		parksOnBusy(async && handle && handle->coordinatedRetry) {}
 
 	void registerDescriptorOperation(std::shared_ptr<DBDescriptor> descriptor) {
 		this->libuvDescriptor = std::move(descriptor);
@@ -675,7 +679,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			state->claim.release(descriptor);
 			if (state->refusedBeforeLog) {
 				// A failed conflict check has no holder to wait for: the conflicting writer committed.
-				if (txnHandle->coordinatedRetry && txnHandle->intentConflictSlot) {
+				if (state->parksOnBusy && txnHandle->intentConflictSlot) {
 					state->savedSlots = { txnHandle->intentConflictSlot };
 				}
 				txnHandle->releaseIntent();
@@ -729,7 +733,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// For coordinated retry: save slot pointers before
 			// releaseIntent() clears them so the complete callback
 			// can park on any new lock installed on those slots.
-			if (state->status.IsBusy() && txnHandle->coordinatedRetry) {
+			if (state->status.IsBusy() && state->parksOnBusy) {
 				if (refusedOn) {
 					state->savedSlots = { refusedOn };
 				} else {
@@ -1158,7 +1162,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	std::shared_ptr<DBDescriptor> descriptor;
 	auto stateOwner = PendingTransactionCommitState(
 		env,
-		std::make_unique<TransactionCommitState>(env, *txnHandle)
+		std::make_unique<TransactionCommitState>(env, *txnHandle, /*async=*/true)
 	);
 	TransactionCommitState* state = stateOwner.get();
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
@@ -1189,10 +1193,12 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 
 	const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
-	if (dbHandle && dbHandle->descriptor) {
-		descriptor = dbHandle->descriptor;
+	if (dbHandle) {
+		descriptor = dbHandle->ownerDescriptor();
+	}
+	if (descriptor) {
 		state->descriptor = descriptor;
-		if ((*txnHandle)->coordinatedRetry) {
+		if (state->parksOnBusy) {
 			state->parkTimeouts = descriptor->parkTimeouts;
 		}
 	}
@@ -1366,6 +1372,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if (!(*txnHandle)->state.transition(TransactionState::Pending, TransactionState::Committing)) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
 	}
+	pauseAtCommitAdmissionForTesting(**txnHandle, /*registered=*/false);
 
 	// Registered before anything reads `dbHandle`, so a foreign close() of this transaction waits
 	// for the commit instead of resetting it underneath.
@@ -1373,11 +1380,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_CLOSING", "Transaction is closing");
 	}
-	TransactionCommitState state(env, *txnHandle);
+	TransactionCommitState state(env, *txnHandle, /*async=*/false);
 	bool committed;
 	{
 		// Held through the commit; released, with the descriptor pin, before any JavaScript runs.
-		OperationGuard operationGuard((*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr);
+		OperationGuard operationGuard((*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->ownerDescriptor() : nullptr);
 		DBDescriptor* descriptor = operationGuard.descriptor.get();
 		const bool holdsOperation = descriptor && !descriptor->isClosing();
 		if (!holdsOperation) {
