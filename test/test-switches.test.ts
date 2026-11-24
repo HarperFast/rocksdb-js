@@ -16,7 +16,7 @@ const nonDefaultArgs: Record<string, unknown[]> = {
 	forceDropFailureForTesting: [1],
 	setTransactionStagingDelayForTesting: [1, 1000],
 	setTransactionReadDelayForTesting: [1000],
-	setTransactionCommitAdmissionDelayForTesting: [1000],
+	setTransactionCommitAdmissionDelayForTesting: [1000, true],
 	setWriteBufferManagerJoinDelayForTesting: [1, 1000],
 	forceAsyncExceptionForTesting: [1, 1],
 };

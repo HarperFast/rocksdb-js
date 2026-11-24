@@ -4,6 +4,7 @@
 #include "core/platform.h"
 #include "core/test_seam.h"
 #include "database/db_descriptor.h"
+#include "database/db_registry.h"
 #include "database/db_settings.h"
 #include "napi/global_events.h"
 #include "napi/helpers.h"
@@ -23,6 +24,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <system_error>
 #include <thread>
@@ -559,6 +561,7 @@ DBDescriptor::~DBDescriptor() {
 	if (this->eventListenerState) {
 		this->eventListenerState->detach();
 	}
+	this->transactionRegistryLink->detach();
 	try {
 		this->close();
 	} catch (const std::exception& error) {
@@ -654,7 +657,8 @@ void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
 	// Close all handles that still exist and reset their descriptor references
 	for (auto it = this->closables.begin(); it != this->closables.end();) {
 		if (auto closable = it->second.lock()) {
-			// Remove from map before closing to avoid re-entrant detach() calls
+			// Remove from map before closing to avoid re-entrant detach() calls. A
+			// transaction already closing on another thread makes this close() wait.
 			it = this->closables.erase(it);
 
 			// Release mutex during close to avoid deadlocks
@@ -711,16 +715,9 @@ void DBDescriptor::finishClose(bool destroying) {
 		// counted here at all -- it is awaited by the closables sweep below,
 		// and by then the per-handle token armed above has already cancelled it.
 		DEBUG_LOG("%p DBDescriptor::close Waiting for %u in-flight operations \"%s\"\n", this, this->operationsInFlight.load(), this->path.c_str());
-		auto& closeLatch = txnCloseDrainLatch();
-		if (closeLatch.descriptor.load(std::memory_order_acquire) == this) {
-			const int operations = static_cast<int>(this->operationsInFlight.load());
-			closeLatch.operations.store(operations, std::memory_order_release);
-			closeLatch.operations.notify_all();
-			// Keep guard-removal tests from using freed RocksDB memory. Their
-			// assertion uses the count captured above, not shutdown's duration.
-			if (operations == 0) {
-				closeLatch.finished.wait(false, std::memory_order_acquire);
-			}
+		if (this->operationsInFlight.load() > 0) {
+			auto& closeLatch = txnCloseDrainLatch();
+			closeLatch.release(closeLatch.descriptor, this, TransactionCloseDrainLatch::GuardedAtDrain);
 		}
 		uint32_t current;
 		while ((current = this->operationsInFlight.load()) != 0) {
@@ -849,6 +846,19 @@ void DBDescriptor::finishClose(bool destroying) {
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 	logPhase("closing " + std::to_string(this->closables.size()) + " handles");
 	this->closeClosables(txnsLock);
+	{
+		auto& closeLatch = txnCloseDrainLatch();
+		if (closeLatch.descriptor.load(std::memory_order_acquire) == this && !closeLatch.finished.load(std::memory_order_acquire)) {
+			// The sweep returned with the latched close parked or still running. Keep the regression
+			// from using freed RocksDB memory; it asserts the outcome instead.
+			if (!closeLatch.release(closeLatch.descriptor, this, TransactionCloseDrainLatch::Missed)) {
+				closeLatch.outcome.store(TransactionCloseDrainLatch::Missed, std::memory_order_release);
+			}
+			txnsLock.unlock();
+			closeLatch.finished.wait(false, std::memory_order_acquire);
+			txnsLock.lock();
+		}
+	}
 
 	// Safety-net: cancel any VT locks still held by this DB after all
 	// TransactionHandles have been closed. Under normal operation the
@@ -986,6 +996,9 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 }
 
 bool DBDescriptor::CommitCompletion::dispatch(void* state) {
+	if (testConsumeCommitDispatchFailure()) {
+		return false;
+	}
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	if (this->closed || this->tsfn == nullptr) {
 		// Env was torn down / released; the caller drops the state.
@@ -2018,14 +2031,13 @@ std::shared_ptr<TransactionHandle> DBDescriptor::transactionGet(uint64_t id) {
 /**
  * Removes a transaction from the registry.
  */
-void DBDescriptor::transactionRemove(std::shared_ptr<TransactionHandle> txnHandle) {
-	std::lock_guard<std::mutex> lock(this->txnsMutex);
+void DBDescriptor::transactionRemoveLocked(const std::shared_ptr<TransactionHandle>& txnHandle) {
 	this->closables.erase(txnHandle.get());
 
 	auto it = this->transactions.find(txnHandle->id);
 	if (it != this->transactions.end()) {
 		if (it->second != txnHandle) {
-			DEBUG_LOG("%p DBDescriptor::transactionRemove txnId %llu mismatch! expected %p, got %p\n", this, (unsigned long long)txnHandle->id, it->second.get(), txnHandle.get());
+			DEBUG_LOG("%p DBDescriptor::transactionRemoveLocked txnId %llu mismatch! expected %p, got %p\n", this, (unsigned long long)txnHandle->id, it->second.get(), txnHandle.get());
 		}
 		this->transactions.erase(it);
 	}
@@ -2046,15 +2058,8 @@ void DBDescriptor::collectTransactions(std::vector<std::shared_ptr<TransactionHa
  * DBHandle::close().
  */
 void DBDescriptor::closeTransactionsByEnv(napi_env env) {
-	// close() detaches before deleting the native transaction. Publish before
-	// checking closing so the drain waits for us or the sweep owns the close.
-	OperationGuard operation(shared_from_this());
-	if (this->isClosing()) {
-		return;
-	}
-
-	// Collect matches under the mutex, close outside it: close() calls
-	// transactionRemove(), which re-takes txnsMutex, and may block in
+	// Collect matches under the mutex, close outside it: close() leaves the
+	// registry, which re-takes txnsMutex, and may block in
 	// waitForAsyncWorkCompletion() draining an execute still running on the
 	// commit thread.
 	std::vector<std::shared_ptr<TransactionHandle>> toClose;
@@ -2070,14 +2075,19 @@ void DBDescriptor::closeTransactionsByEnv(napi_env env) {
 	for (auto& txnHandle : toClose) {
 		DEBUG_LOG("%p DBDescriptor::closeTransactionsByEnv closing transaction %llu (env=%p)\n", this, (unsigned long long)txnHandle->id, env);
 		txnHandle->close();
-		// close() can only self-remove while it can still reach this descriptor
-		// through its DBHandle, and a handle closed earlier by the user has
-		// already reset that pointer — so for exactly the case this reap exists
-		// to catch, the registry entry (a strong ref to the handle, and through
-		// it the DBHandle) would otherwise outlive the env for the life of the
-		// process. Removing here is idempotent when close() already did it.
-		this->transactionRemove(txnHandle);
 	}
+}
+
+void TransactionRegistryLink::remove(const std::shared_ptr<TransactionHandle>& txnHandle) {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	if (this->descriptor) {
+		this->descriptor->transactionRemoveLocked(txnHandle);
+	}
+}
+
+void TransactionRegistryLink::detach() {
+	std::lock_guard<std::mutex> lock(this->mutex);
+	this->descriptor = nullptr;
 }
 
 /**
@@ -2417,6 +2427,50 @@ void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::s
 	} while (0)
 
 /**
+ * Retries the registry purge for a descriptor a lock completion pinned: a
+ * last-handle close on another env that landed inside the pin saw it and
+ * skipped its purge.
+ */
+struct LockCompletionPurge final {
+	std::optional<DBKey> key;
+
+	~LockCompletionPurge() {
+		if (!this->key) {
+			return;
+		}
+		try {
+			DBRegistry::PurgeIfUnreferenced(*this->key);
+		} catch (...) {
+		}
+	}
+};
+
+static void completeLockCallback(const LockCallbackCompletionData& callbackData, LockCompletionPurge& purge) noexcept {
+	try {
+		{
+			std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock();
+			if (!descriptor) {
+				return;
+			}
+			descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
+			if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+			}
+		}
+		// Every other owner retries the purge when it lets go, so only a count of
+		// 1 (the registry alone) after this release is ours to retry. Checking
+		// before the release would miss a close that skipped because of this pin.
+		if (callbackData.descriptor.use_count() != 1) {
+			return;
+		}
+		if (std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock()) {
+			purge.key = descriptorKey(*descriptor);
+		}
+	} catch (...) {
+	}
+}
+
+/**
  * Settles a `withLock()` callback's returned promise: resolves or rejects the
  * caller's deferred and hands the lock to the next waiter. Bound to `.then()`
  * as both handlers; `data` is the handler's own reference to the shared
@@ -2440,9 +2494,8 @@ static napi_value settleLockCallback(napi_env env, napi_callback_info info, bool
 	DEBUG_LOG("lockCallbackCallJs promise %s, calling onLockCallbackComplete() (key=\"%s\")\n", rejected ? "rejected" : "resolved", callbackData->key.c_str());
 	// Release before settling: a runtime may run the caller's continuation
 	// inside the settle call (Deno does), and it must see the lock released.
-	if (auto desc = callbackData->descriptor.lock()) {
-		desc->onLockCallbackComplete(callbackData->key, callbackData->lockHandle);
-	}
+	LockCompletionPurge purge;
+	completeLockCallback(*callbackData, purge);
 	if (callbackData->deferred != nullptr) {
 		if (rejected) {
 			::napi_reject_deferred(env, callbackData->deferred, argv[0]);
@@ -2515,17 +2568,16 @@ static void lockCallbackCallJs(napi_env env, napi_value jsCallback, void* contex
 	// The TSFN owns context until its finalizer; copying the preallocated
 	// shared_ptr does not allocate during handoff or delivery.
 	auto callbackData = *static_cast<std::shared_ptr<LockCallbackCompletionData>*>(context);
+	LockCompletionPurge purge;
 
 	// Claims completion, then hands the lock to the next waiter. False when a
 	// `.then()` handler already did: a user-overridden `then` can run one and
 	// still fail the call.
-	auto complete = [&callbackData]() {
+	auto complete = [&callbackData, &purge]() {
 		if (callbackData->completed.exchange(true)) {
 			return false;
 		}
-		if (auto desc = callbackData->descriptor.lock()) {
-			desc->onLockCallbackComplete(callbackData->key, callbackData->lockHandle);
-		}
+		completeLockCallback(*callbackData, purge);
 		return true;
 	};
 
