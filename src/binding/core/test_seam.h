@@ -84,7 +84,6 @@ inline std::atomic<bool>& txnCloseDelayActive() {
 	return active;
 }
 
-// Transactions blocked in close()'s drain behind in-flight async work.
 inline std::atomic<int>& txnCloseDrainWaiting() {
 	static std::atomic<int> waiting{ 0 };
 	return waiting;

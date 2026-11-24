@@ -596,8 +596,6 @@ void TransactionHandle::closeImpl(bool waitForWinner) noexcept {
 		// a mutex with registerAsyncWork(), so this always drains to zero — there is no
 		// timed-out case left to handle here; an earlier version of this close() leaked
 		// the transaction on a 5s drain timeout as a stopgap for exactly this window.
-		// Admission is closed by cancelAllAsyncWork(), so a zero count here stays zero and the
-		// ordinary close touches no shared counter.
 		const bool draining = this->activeAsyncWorkCount.load(std::memory_order_relaxed) > 0;
 		if (draining) {
 			txnCloseDrainWaiting().fetch_add(1, std::memory_order_acq_rel);
