@@ -196,6 +196,21 @@ napi_value IsTransactionStagingDelayedForTesting(napi_env env, napi_callback_inf
 	return result;
 }
 
+napi_value SetTransactionReadDelayForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD_ARGV(1);
+	int32_t delayMs = 0;
+	NAPI_STATUS_THROWS(::napi_get_value_int32(env, argv[0], &delayMs));
+	setTransactionReadDelayForTesting(std::max(delayMs, 0));
+	NAPI_RETURN_UNDEFINED();
+}
+
+napi_value IsTransactionReadDelayedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, transactionReadDelayActive().load(std::memory_order_acquire), &result));
+	return result;
+}
+
 napi_value IsTransactionCloseDelayedForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	napi_value result;
@@ -308,6 +323,12 @@ static const TestSwitch testSwitches[] = {
 			 transactionStagingDelayMs().load(std::memory_order_relaxed) != 0 ||
 			 transactionStagingDelayActive().load(std::memory_order_acquire);
 		 setTransactionStagingDelayForTesting(0, 0);
+		 return changed;
+	 } },
+	{ "setTransactionReadDelayForTesting", SetTransactionReadDelayForTesting, []() {
+		 const bool changed = transactionReadDelayMs().load(std::memory_order_relaxed) != 0 ||
+			 transactionReadDelayActive().load(std::memory_order_acquire);
+		 setTransactionReadDelayForTesting(0);
 		 return changed;
 	 } },
 	{ "setTransactionCommitAdmissionDelayForTesting", SetTransactionCommitAdmissionDelayForTesting, []() {
@@ -682,6 +703,22 @@ NAPI_MODULE_INIT() {
 		exports,
 		"isTransactionStagingDelayedForTesting",
 		isTransactionStagingDelayedFn
+	));
+
+	napi_value isTransactionReadDelayedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(
+		env,
+		"isTransactionReadDelayedForTesting",
+		NAPI_AUTO_LENGTH,
+		IsTransactionReadDelayedForTesting,
+		nullptr,
+		&isTransactionReadDelayedFn
+	));
+	NAPI_STATUS_THROWS(::napi_set_named_property(
+		env,
+		exports,
+		"isTransactionReadDelayedForTesting",
+		isTransactionReadDelayedFn
 	));
 
 	napi_value isTransactionCommitExecuteDelayedFn;

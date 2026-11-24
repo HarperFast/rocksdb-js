@@ -629,6 +629,43 @@ std::shared_ptr<TransactionHandle> getOwnedTransaction(
 	const char* context
 );
 
+/**
+ * Admits a synchronous call that reaches a transaction through its own wrapper, on its owning thread,
+ * before the call reads `dbHandle` or `txn`. See src/binding/transaction/DESIGN.md, "Synchronous
+ * admission".
+ */
+class TransactionOperation final {
+public:
+	explicit TransactionOperation(TransactionHandle& handle);
+	~TransactionOperation() {
+		if (this->admittedCall) {
+			this->handle.exitSync();
+		}
+	}
+
+	TransactionOperation(const TransactionOperation&) = delete;
+	TransactionOperation& operator=(const TransactionOperation&) = delete;
+
+	bool admitted() const { return this->admittedCall; }
+
+	/**
+	 * Null when the call may use the transaction and its own database handle; otherwise
+	 * `closedMessage` (never null) for a closed transaction, or "Database not open" when the owner has
+	 * since closed or reopened that handle.
+	 */
+	const char* refusal(const char* closedMessage) const {
+		if (!this->admittedCall) {
+			return closedMessage;
+		}
+		return this->handleDetached ? "Database not open" : nullptr;
+	}
+
+private:
+	TransactionHandle& handle;
+	bool admittedCall;
+	bool handleDetached = false;
+};
+
 } // namespace rocksdb_js
 
 #endif

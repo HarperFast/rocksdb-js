@@ -325,10 +325,12 @@ registers before returning is drained too. Four facts make that equivalent to on
   instead of waiting. Only the last env's `Teardown()` releases it, when no env is left to resume
   the call. A foreign closer that was already waiting for the call when the process exited still
   waits.
-  `Transaction::GetCount` reads its options before its `OperationGuard`, since the descriptor's
-  count cannot tell which thread holds it.
+  A `Transaction::*` call needs no such check: it reads its options before its
+  `TransactionOperation` and runs no JavaScript while admitted, apart from building an error
+  (HarperFast/rocksdb-js#1140; src/binding/transaction/DESIGN.md, "Synchronous admission").
 
-Iterators, transactions, backups, checkpoints, commits and column-family reclamation
-still use the descriptor's `operationsInFlight` (`OperationGuard`).
+Iterators, the transaction constructor, backups, checkpoints, commits and column-family
+reclamation still use the descriptor's `operationsInFlight` (`OperationGuard`); other transaction
+calls register on the transaction itself.
 `test/fixtures/fork-sync-operation-destroy.mts` holds calls on two handles open in getters while a
 third worker destroys the database, and covers the refusals and the callback case.

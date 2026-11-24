@@ -37,6 +37,15 @@
 		} \
 	} while (0)
 
+#define ADMIT_TRANSACTION_OPERATION(closedMessage) \
+	TransactionOperation transactionOperation(**txnHandle); \
+	do { \
+		if (const char* refusal = transactionOperation.refusal(closedMessage)) { \
+			::napi_throw_error(env, nullptr, refusal); \
+			return nullptr; \
+		} \
+	} while (0)
+
 namespace rocksdb_js {
 
 /**
@@ -78,11 +87,6 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	if ((*dbHandle)->descriptor->closing.load()) {
-		::napi_throw_error(env, nullptr, "Database is closing!");
-		return nullptr;
-	}
-
 	// THROW_IF_READONLY((*dbHandle)->descriptor, "");
 
 	bool disableSnapshot = false;
@@ -90,6 +94,18 @@ napi_value Transaction::Constructor(napi_env env, napi_callback_info info) {
 
 	bool coordinatedRetry = false;
 	NAPI_STATUS_THROWS(rocksdb_js::getProperty(env, argv[1], "coordinatedRetry", coordinatedRetry));
+
+	// After the option getters, which run JavaScript that can close this handle. Held until
+	// transactionAdd(): the closables sweep drains transactions before it closes handles.
+	if (!(*dbHandle)->descriptor) {
+		::napi_throw_error(env, nullptr, "Database not open");
+		return nullptr;
+	}
+	OperationGuard operationGuard((*dbHandle)->descriptor);
+	if ((*dbHandle)->descriptor->isClosing()) {
+		::napi_throw_error(env, nullptr, "Database is closing!");
+		return nullptr;
+	}
 
 	// create shared_ptr on heap so it persists after function returns
 	std::shared_ptr<TransactionHandle>* txnHandle = new std::shared_ptr<TransactionHandle>(
@@ -237,7 +253,11 @@ napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 	}
 
 	(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
-	(*txnHandle)->releaseIntent();
+	// Unadmitted, a teardown close() owns the release; it runs releaseIntent() itself.
+	TransactionOperation operation(**txnHandle);
+	if (operation.admitted()) {
+		(*txnHandle)->releaseIntent();
+	}
 	NAPI_RETURN_UNDEFINED();
 }
 
@@ -404,10 +424,12 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	bool hasLog;
 	std::shared_ptr<DBDescriptor::CommitCompletion> completion;
 	ColumnFamilyCommitClaim claim;
+	// Set and read by async commits only.
 	std::weak_ptr<DBDescriptor> descriptor;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
 	DBDescriptor* operationDescriptor = nullptr;
 	bool descriptorOperationActive = false;
+	const bool parksOnBusy;
 	// Slot pointers captured before releaseIntent() for coordinated-retry parking.
 	std::vector<std::atomic<uint64_t>*> savedSlots;
 	std::weak_ptr<ParkTimeoutRegistry> parkTimeouts;
@@ -419,10 +441,12 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	// `descriptor` and `parkTimeouts` only once registered with the transaction.
 	TransactionCommitState(
 		napi_env env,
-		const std::shared_ptr<TransactionHandle>& handle
+		const std::shared_ptr<TransactionHandle>& handle,
+		bool async
 	) :
 		BaseAsyncState<std::shared_ptr<TransactionHandle>>(env, handle),
-		hasLog(false) {}
+		hasLog(false),
+		parksOnBusy(async && handle && handle->coordinatedRetry) {}
 
 	void registerDescriptorOperation(std::shared_ptr<DBDescriptor> descriptor) {
 		this->libuvDescriptor = std::move(descriptor);
@@ -675,7 +699,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			state->claim.release(descriptor);
 			if (state->refusedBeforeLog) {
 				// A failed conflict check has no holder to wait for: the conflicting writer committed.
-				if (txnHandle->coordinatedRetry && txnHandle->intentConflictSlot) {
+				if (state->parksOnBusy && txnHandle->intentConflictSlot) {
 					state->savedSlots = { txnHandle->intentConflictSlot };
 				}
 				txnHandle->releaseIntent();
@@ -729,7 +753,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// For coordinated retry: save slot pointers before
 			// releaseIntent() clears them so the complete callback
 			// can park on any new lock installed on those slots.
-			if (state->status.IsBusy() && txnHandle->coordinatedRetry) {
+			if (state->status.IsBusy() && state->parksOnBusy) {
 				if (refusedOn) {
 					state->savedSlots = { refusedOn };
 				} else {
@@ -1158,7 +1182,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	std::shared_ptr<DBDescriptor> descriptor;
 	auto stateOwner = PendingTransactionCommitState(
 		env,
-		std::make_unique<TransactionCommitState>(env, *txnHandle)
+		std::make_unique<TransactionCommitState>(env, *txnHandle, /*async=*/true)
 	);
 	TransactionCommitState* state = stateOwner.get();
 	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
@@ -1189,10 +1213,12 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 
 	const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
-	if (dbHandle && dbHandle->descriptor) {
-		descriptor = dbHandle->descriptor;
+	if (dbHandle) {
+		descriptor = dbHandle->ownerDescriptor();
+	}
+	if (descriptor) {
 		state->descriptor = descriptor;
-		if ((*txnHandle)->coordinatedRetry) {
+		if (state->parksOnBusy) {
 			state->parkTimeouts = descriptor->parkTimeouts;
 		}
 	}
@@ -1366,6 +1392,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	if (!(*txnHandle)->state.transition(TransactionState::Pending, TransactionState::Committing)) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_ABORTED", "Transaction has already been aborted");
 	}
+	pauseAtCommitAdmissionForTesting(**txnHandle, /*registered=*/false);
 
 	// Registered before anything reads `dbHandle`, so a foreign close() of this transaction waits
 	// for the commit instead of resetting it underneath.
@@ -1373,11 +1400,11 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 		(*txnHandle)->state.transition(TransactionState::Committing, TransactionState::Pending);
 		NAPI_THROW_JS_ERROR("ERR_TRANSACTION_CLOSING", "Transaction is closing");
 	}
-	TransactionCommitState state(env, *txnHandle);
+	TransactionCommitState state(env, *txnHandle, /*async=*/false);
 	bool committed;
 	{
 		// Held through the commit; released, with the descriptor pin, before any JavaScript runs.
-		OperationGuard operationGuard((*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->descriptor : nullptr);
+		OperationGuard operationGuard((*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->ownerDescriptor() : nullptr);
 		DBDescriptor* descriptor = operationGuard.descriptor.get();
 		const bool holdsOperation = descriptor && !descriptor->isClosing();
 		if (!holdsOperation) {
@@ -1425,6 +1452,7 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get");
+	ADMIT_TRANSACTION_OPERATION("Transaction is closed");
 	// Check the transaction's OWN database handle. UNWRAP_DB_HANDLE_AND_OPEN() cannot be used
 	// here: it unwraps `jsThis`, which for this method is the Transaction, so it reinterprets a
 	// shared_ptr<TransactionHandle> as a shared_ptr<DBHandle> and calls opened() through it —
@@ -1475,7 +1503,6 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_TRANSACTION_HANDLE("GetCount");
-	// Before the claim: a getter that tears the database down would wait for it.
 	DBIteratorOptions itOptions;
 	try {
 		if (itOptions.initFromNapiObject(env, argv[0]) != napi_ok) {
@@ -1487,24 +1514,11 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	}
 	itOptions.values = false;
 
-	// Without this claim finishClose()'s drain returns immediately and its
-	// closables sweep rolls back the transaction while the scan is parked
-	// between rows, leaving the iterator reading freed memory.
-	// A copy, not a reference: TransactionHandle::close() resets `dbHandle` from
-	// whichever thread drives a forced teardown, so a reference could be nulled
-	// between the check below and the descriptor read after it.
-	std::shared_ptr<DBHandle> txnDbHandle = (*txnHandle)->dbHandle;
-	if (!txnDbHandle) {
+	// After the option getters: JavaScript run while admitted that aborts or closes this transaction
+	// would wait on the admission.
+	ADMIT_TRANSACTION_OPERATION("Transaction is not in pending state");
+	if (!(*txnHandle)->dbHandle) {
 		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
-		NAPI_RETURN_UNDEFINED();
-	}
-	if (!txnDbHandle->descriptor) {
-		::napi_throw_error(env, nullptr, "Get count failed: Database not open");
-		NAPI_RETURN_UNDEFINED();
-	}
-	OperationGuard operationGuard(txnDbHandle->descriptor);
-	if (txnDbHandle->descriptor->isClosing()) {
-		::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
 		NAPI_RETURN_UNDEFINED();
 	}
 
@@ -1536,20 +1550,10 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 napi_value Transaction::GetMany(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(5);
 	UNWRAP_TRANSACTION_HANDLE("GetMany");
-	// A copy, not a reference: a forced teardown can reset `dbHandle` from another thread. Passing
-	// it to multiGet() as the target registers async work on it before its column is read.
+	ADMIT_TRANSACTION_OPERATION("Transaction is closed");
 	std::shared_ptr<DBHandle> txnDbHandle = (*txnHandle)->dbHandle;
 	if (!txnDbHandle) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
-		return nullptr;
-	}
-	if (!txnDbHandle->descriptor) {
-		::napi_throw_error(env, nullptr, "Get many failed: Database not open");
-		return nullptr;
-	}
-	OperationGuard operationGuard(txnDbHandle->descriptor);
-	if (txnDbHandle->descriptor->isClosing()) {
-		::napi_throw_error(env, nullptr, "Get many failed: Database is closing");
 		return nullptr;
 	}
 	std::vector<rocksdb::Slice> keys;
@@ -1571,19 +1575,10 @@ napi_value Transaction::GetMany(napi_env env, napi_callback_info info) {
 napi_value Transaction::GetManySync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(4);
 	UNWRAP_TRANSACTION_HANDLE("GetManySync");
-	// A copy, not a reference: a forced teardown can reset `dbHandle` from another thread.
+	ADMIT_TRANSACTION_OPERATION("Transaction is closed");
 	std::shared_ptr<DBHandle> txnDbHandle = (*txnHandle)->dbHandle;
 	if (!txnDbHandle) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
-		return nullptr;
-	}
-	if (!txnDbHandle->descriptor) {
-		::napi_throw_error(env, nullptr, "Get many failed: Database not open");
-		return nullptr;
-	}
-	OperationGuard operationGuard(txnDbHandle->descriptor);
-	if (txnDbHandle->descriptor->isClosing()) {
-		::napi_throw_error(env, nullptr, "Get many failed: Database is closing");
 		return nullptr;
 	}
 
@@ -1635,6 +1630,7 @@ napi_value Transaction::GetManySync(napi_env env, napi_callback_info info) {
 napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(4);
 	UNWRAP_TRANSACTION_HANDLE("GetSync");
+	ADMIT_TRANSACTION_OPERATION("Transaction is closed");
 	// close() (after commit or abort) resets the handle; the wrapper outlives it.
 	if (!(*txnHandle)->dbHandle) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
@@ -1839,6 +1835,15 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 	}
+	TransactionOperation operation(**txnHandle);
+	if (!operation.admitted()) {
+		ROCKSDB_STATUS_THROWS_ERROR_LIKE(rocksdb::Status::Aborted("Transaction is closed"), "Transaction put failed");
+		return nullptr;
+	}
+	if (const char* refusal = operation.refusal("Transaction is closed")) {
+		::napi_throw_error(env, nullptr, refusal);
+		return nullptr;
+	}
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
@@ -1865,6 +1870,15 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 	}
+	TransactionOperation operation(**txnHandle);
+	if (!operation.admitted()) {
+		ROCKSDB_STATUS_THROWS_ERROR_LIKE(rocksdb::Status::Aborted("Transaction is closed"), "Transaction remove failed");
+		return nullptr;
+	}
+	if (const char* refusal = operation.refusal("Transaction is closed")) {
+		::napi_throw_error(env, nullptr, refusal);
+		return nullptr;
+	}
 
 	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
 
@@ -1889,6 +1903,12 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	// concurrent with a Pending observation.
 	if ((*txnHandle)->state.load() != TransactionState::Pending) {
 		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction is not pending");
+	}
+	// Reads only `txn`, so a database handle the owner has since closed does not matter.
+	TransactionOperation operation(**txnHandle);
+	if (!operation.admitted()) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return nullptr;
 	}
 
 	double timestampMs = 0.0;
@@ -1944,13 +1964,20 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	NAPI_GET_STRING(argv[0], name, "Name is required");
 	UNWRAP_TRANSACTION_HANDLE("UseLog");
 
-	// A closed transaction has txn/dbHandle reset, and a transaction whose
-	// database handle was closed (db.close() with the txn still open) keeps
-	// dbHandle but loses its descriptor — every path below dereferences one
-	// of these, so guard them all rather than crash.
-	if (!(*txnHandle)->txn || !(*txnHandle)->dbHandle || !(*txnHandle)->dbHandle->descriptor) {
-		::napi_throw_error(env, nullptr, "Transaction is closed");
-		return nullptr;
+	// Admitted only around reads of the transaction: the validation and the TransactionLog constructor
+	// below can run JavaScript, which could abort or close this transaction on this thread.
+	std::shared_ptr<DBHandle> ownHandle;
+	{
+		TransactionOperation operation(**txnHandle);
+		if (const char* refusal = operation.refusal("Transaction is closed")) {
+			::napi_throw_error(env, nullptr, refusal);
+			return nullptr;
+		}
+		if (!(*txnHandle)->txn || !(*txnHandle)->dbHandle) {
+			::napi_throw_error(env, nullptr, "Transaction is closed");
+			return nullptr;
+		}
+		ownHandle = (*txnHandle)->dbHandle;
 	}
 
 	// The caller supplies the JS database (the transaction deliberately holds no
@@ -1962,7 +1989,7 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 	// it. Checked before the bind below so a mismatch cannot leave
 	// pendingTransactionCount incremented.
 	napi_value exports;
-	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, (*txnHandle)->dbHandle->exportsRef, &exports), "Failed to get 'exports' reference");
+	NAPI_STATUS_THROWS_ERROR(::napi_get_reference_value(env, ownHandle->exportsRef, &exports), "Failed to get 'exports' reference");
 
 	napi_value databaseCtor;
 	bool isDatabase = false;
@@ -1975,45 +2002,57 @@ napi_value Transaction::UseLog(napi_env env, napi_callback_info info) {
 
 	std::shared_ptr<DBHandle>* jsDbHandle = nullptr;
 	NAPI_STATUS_THROWS_ERROR(::napi_unwrap(env, argv[1], reinterpret_cast<void**>(&jsDbHandle)), "Failed to unwrap 'database' argument");
-	if (jsDbHandle == nullptr || (*jsDbHandle).get() != (*txnHandle)->dbHandle.get()) {
+	if (jsDbHandle == nullptr || (*jsDbHandle).get() != ownHandle.get()) {
 		::napi_throw_error(env, nullptr, "Database does not own this transaction");
 		return nullptr;
 	}
 
-	// check if transaction is already bound to a different log store
-	auto boundStore = (*txnHandle)->boundLogStore.lock();
-	if (boundStore && boundStore->name != name) {
-		std::string errorMessage = "Transaction " + std::to_string((*txnHandle)->id) + " is already bound to the log store \"" + boundStore->name + "\"";
-		::napi_throw_error(env, nullptr, errorMessage.c_str());
-		return nullptr;
-	}
-
-	// resolve the store and bind if not already bound
-	std::shared_ptr<TransactionLogStore> store;
-	try {
-		store = (*txnHandle)->dbHandle->descriptor->resolveTransactionLogStore(name);
-	} catch (const std::exception& e) {
-		// See TransactionLog::Constructor: resolution throws a DBException, and
-		// an escaped C++ exception aborts from an N-API callback.
-		::napi_throw_error(env, nullptr, e.what());
-		return nullptr;
-	}
-	if (!store) {
-		// Resolvable to null only on a read-only/secondary handle for a store
-		// this process has never loaded (a read-only registration never creates
-		// or lazily loads one).
-		std::string errorMsg = "Transaction log \"" + name + "\" not found";
-		::napi_throw_error(env, nullptr, errorMsg.c_str());
-		return nullptr;
-	}
-	if (!boundStore) {
-		if (!store->tryBindTransaction()) {
-			::napi_throw_error(env, nullptr, "Transaction log store is closed");
+	{
+		TransactionOperation operation(**txnHandle);
+		if (const char* refusal = operation.refusal("Transaction is closed")) {
+			::napi_throw_error(env, nullptr, refusal);
 			return nullptr;
 		}
-		(*txnHandle)->boundLogStore = store;
-		DEBUG_LOG("%p Transaction::UseLog Binding transaction %llu to log store \"%s\"\n",
-			(*txnHandle).get(), (unsigned long long)(*txnHandle)->id, name.c_str());
+		if (!(*txnHandle)->txn || (*txnHandle)->dbHandle != ownHandle) {
+			::napi_throw_error(env, nullptr, "Transaction is closed");
+			return nullptr;
+		}
+
+		// check if transaction is already bound to a different log store
+		auto boundStore = (*txnHandle)->boundLogStore.lock();
+		if (boundStore && boundStore->name != name) {
+			std::string errorMessage = "Transaction " + std::to_string((*txnHandle)->id) + " is already bound to the log store \"" + boundStore->name + "\"";
+			::napi_throw_error(env, nullptr, errorMessage.c_str());
+			return nullptr;
+		}
+
+		// resolve the store and bind if not already bound
+		std::shared_ptr<TransactionLogStore> store;
+		try {
+			store = ownHandle->descriptor->resolveTransactionLogStore(name);
+		} catch (const std::exception& e) {
+			// See TransactionLog::Constructor: resolution throws a DBException, and
+			// an escaped C++ exception aborts from an N-API callback.
+			::napi_throw_error(env, nullptr, e.what());
+			return nullptr;
+		}
+		if (!store) {
+			// Resolvable to null only on a read-only/secondary handle for a store
+			// this process has never loaded (a read-only registration never creates
+			// or lazily loads one).
+			std::string errorMsg = "Transaction log \"" + name + "\" not found";
+			::napi_throw_error(env, nullptr, errorMsg.c_str());
+			return nullptr;
+		}
+		if (!boundStore) {
+			if (!store->tryBindTransaction()) {
+				::napi_throw_error(env, nullptr, "Transaction log store is closed");
+				return nullptr;
+			}
+			(*txnHandle)->boundLogStore = store;
+			DEBUG_LOG("%p Transaction::UseLog Binding transaction %llu to log store \"%s\"\n",
+				(*txnHandle).get(), (unsigned long long)(*txnHandle)->id, name.c_str());
+		}
 	}
 
 	// this needs to create a new TransactionLog instance that is not tracked by

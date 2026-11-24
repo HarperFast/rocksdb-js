@@ -1,6 +1,7 @@
 import { forceTryAgainForTesting } from '../src/load-binding.ts';
-import { dbRunner, generateDBPath } from './lib/util.ts';
+import { dbRunner, generateDBPath, runFixture } from './lib/util.ts';
 import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -73,4 +74,19 @@ describe('commitSync() shares the async commit sequence', () => {
 			expect(result).toEqual({ code: 0, signal: null, stderr: '' });
 		}
 	);
+
+	it.each([
+		['refuses a transaction a foreign shutdown() closed', {}],
+		[
+			'refuses a descriptor a failed foreign shutdown() left closing',
+			{ ROCKSDB_JS_CLOSE_FAILURE: '1' },
+		],
+	])('%s', { timeout: 20_000 }, async (_title, env) => {
+		const path = generateDBPath();
+		try {
+			await runFixture(join(__dirname, 'fixtures', 'fork-commit-sync-closing.mts'), path, { env });
+		} finally {
+			rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+		}
+	});
 });

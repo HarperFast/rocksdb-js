@@ -1167,6 +1167,7 @@ void DBRegistry::OpenDB(
 	}
 	handle->enableVerificationTable = participates;
 	handle->columnDescriptor = std::move(columnDescriptor);
+	handle->assertOwnerThread();
 	handle->descriptor = entry.descriptor;
 	handle->identityPath = entry.descriptor->identityPath;
 	handle->verificationTableDbId = verificationTableDbId;
