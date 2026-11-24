@@ -427,9 +427,10 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 				seed(dbPath, { a: 'one' }, 'foo');
 				const nodeArgs = withPreload([
 					...closeProbe,
+					`let failed = false;`,
 					`RocksDatabase.prototype.close = function () {`,
-					`\tif (this.name === 'default') throw new Error('injected first close failure');`,
-					`\tclose.call(this); process.stderr.write('closed later handle ' + this.name + '\\n');`,
+					`\tif (this.name === 'default') { failed = true; throw new Error('injected first close failure'); }`,
+					`\tclose.call(this); if (failed) process.stderr.write('closed later handle ' + this.name + '\\n');`,
 					`};`,
 				]);
 				const result = await cli([dbPath, '--column', 'foo', 'get', 'a'], { nodeArgs });
