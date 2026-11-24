@@ -144,14 +144,27 @@ inline std::atomic<int>& commitDispatchFailureFlag() {
 	return pending;
 }
 
-inline bool testConsumeCommitDispatchFailure() {
-	int cur = commitDispatchFailureFlag().load(std::memory_order_relaxed);
+inline bool testConsumeCount(std::atomic<int>& counter) {
+	int cur = counter.load(std::memory_order_relaxed);
 	while (cur > 0) {
-		if (commitDispatchFailureFlag().compare_exchange_weak(cur, cur - 1, std::memory_order_relaxed)) {
+		if (counter.compare_exchange_weak(cur, cur - 1, std::memory_order_relaxed)) {
 			return true;
 		}
 	}
 	return false;
+}
+
+inline bool testConsumeCommitDispatchFailure() {
+	return testConsumeCount(commitDispatchFailureFlag());
+}
+
+inline std::atomic<int>& commitDispatchCallFailureFlag() {
+	static std::atomic<int> pending{ 0 };
+	return pending;
+}
+
+inline bool testConsumeCommitDispatchCallFailure() {
+	return testConsumeCount(commitDispatchCallFailureFlag());
 }
 
 // Upper bound, in milliseconds, that a cancellable manual compactRange() parks
@@ -370,6 +383,9 @@ inline void initializeTestSeams() {
 		);
 		commitDispatchFailureFlag().store(
 			testDelayMs("ROCKSDB_JS_COMMIT_DISPATCH_FAILURE"), std::memory_order_relaxed
+		);
+		commitDispatchCallFailureFlag().store(
+			testDelayMs("ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE"), std::memory_order_relaxed
 		);
 		compactCancelDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed

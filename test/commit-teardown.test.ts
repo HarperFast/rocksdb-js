@@ -147,3 +147,33 @@ describe('Async commit completion vs. foreign shutdown()/destroy()', () => {
 		}
 	);
 });
+
+describe('Async commit completion that cannot be dispatched to a live env', () => {
+	it.skipIf(!!process.versions.deno).each(COMMIT_THREAD_MODES)(
+		'settles every commit and lets the process exit (ROCKSDB_JS_COMMIT_THREAD=$label)',
+		{ timeout: 30_000 },
+		async ({ mode }) => {
+			const env: NodeJS.ProcessEnv = {
+				...process.env,
+				ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE: '2',
+			};
+			if (mode === undefined) {
+				delete env.ROCKSDB_JS_COMMIT_THREAD;
+			} else {
+				env.ROCKSDB_JS_COMMIT_THREAD = mode;
+			}
+			const { code, signal, stdout, stderr, timedOut } = await runChild(
+				process.execPath,
+				[join(__dirname, 'fixtures', 'fork-commit-dispatch-call-failure.mts'), generateDBPath()],
+				{ deadlineMs: 20_000, env }
+			);
+			expect({ code, signal, stderr, timedOut }).toEqual({
+				code: 0,
+				signal: null,
+				stderr: '',
+				timedOut: false,
+			});
+			expect(stdout).toContain('"ok":true');
+		}
+	);
+});

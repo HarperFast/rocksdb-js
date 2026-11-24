@@ -105,6 +105,21 @@ one exception, fixed here:
 `test/commit-threads.test.ts` covers the thread limit, lazy start, out-of-order resolution and the
 watermark; `test/native/transaction_log_flushed_state_test.cc` covers the flush correlation.
 
+**A commit thread drops a completion only when its env is gone.** `CommitCompletion::dispatch()`
+treats a released completion, `napi_closing` or `napi_invalid_arg` as env teardown: we never abort
+the TSFN and release it only after setting `closed`, so only the env's own cleanup closes it under
+us. That failed call has consumed our TSFN reference, so `release()` must not release it again. Any
+other failure leaves the env alive, and dropping the commit would strand its promise with `pending`
+holding the loop open (#1146). The completion instead retires: nothing calls its TSFN again, later
+commits collect in `undelivered`, and once `pending` equals their count the TSFN is released. Its
+finalizer runs on the env's JS thread and delivers them through `commitCompletionCallJs`. Releasing
+any earlier would let a commit dispatch after the finalizer ran. A finalizer that runs after the
+env's cleanup hook released the completion closes those transactions without calling into JS.
+`registerCommitCompletion()` replaces a retired completion, keeping the old one in
+`retiredCommitCompletions` so env cleanup and `finishClose()` still release it. Node 24 and Bun return only those three statuses for an unbounded
+TSFN, so retirement is defensive; `ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE` drives it in
+`test/commit-teardown.test.ts`.
+
 # Backup table verification
 
 `backups.verify({ verifyTables: true })` (`verifyBackupTables`, `backup_verify_tables.cpp`) must
