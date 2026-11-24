@@ -25,7 +25,7 @@ namespace {
 
 constexpr const char* destroyInsideOperation = "Cannot destroy the database during one of its own operations";
 constexpr const char* shutdownInsideOperation = "Cannot shut down during a database operation on this thread";
-constexpr const char* destroyAbandonedAtExit = "Cannot destroy the database: the process is exiting inside one of its own operations";
+constexpr const char* destroyAbandonedAtExit = "The process is exiting inside one of this database's own operations, so it cannot be destroyed";
 
 struct ClosingDescriptor final {
 	DBKey key;
@@ -1196,6 +1196,7 @@ void DBRegistry::PurgeAll() {
 			for (auto it = instance->databases.begin(); it != instance->databases.end();) {
 				if (!it->second.closeError.empty() || it->second.abandonedAtExit) {
 					// Quarantined: leave it for shutdown()/destroy() to retry.
+					// Abandoned: closing it would wait for the exiting stack.
 					++it;
 					continue;
 				}
@@ -1661,6 +1662,7 @@ void DBRegistry::Shutdown(bool exiting) {
 						// shutdown() is deliberately non-destructive -- only an
 						// explicit destroy() retries path deletion -- so skip it
 						// here rather than re-throwing the same error forever.
+						// Closing an abandoned entry would wait for the exiting stack.
 						continue;
 					}
 					ClosingDescriptor closing{ key, entry.descriptor, entry.condition };
