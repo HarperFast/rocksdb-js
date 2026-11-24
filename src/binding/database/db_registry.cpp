@@ -164,7 +164,7 @@ CloseResult DBRegistry::CloseDB(const std::shared_ptr<DBHandle> handle) {
 	// a no-op once it runs (closeIfOpen-style idempotency; see close()'s
 	// per-substep guards). That makes the foreign finishClose() wait out this
 	// close's async-work drain instead of skipping the handle: an admitted
-	// Flush/Compact/Get releases its operation guard at setup handoff, so
+	// Flush/Compact/Get releases its OperationGuard at setup handoff, so
 	// nothing else would stop finishClose() from reaching db.reset() while
 	// that op's execute callback is still using descriptor->db. Detaching
 	// first (the previous order) left that in-flight op with no closer

@@ -443,14 +443,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * A flag used by the `DBRegistry` to indicate the database is being closed,
 	 * this descriptor should not be used, and it should create a new
 	 * descriptor.
-	 *
-	 * Every guarded call on every worker reads it, so it gets a cache line of its
-	 * own: `operationsInFlight` below is written by every commit and iterator
-	 * (128 bytes covers Apple Silicon's line size).
 	 */
-	char closingPadBefore[128];
 	std::atomic<bool> closing{ false };
-	char closingPadAfter[128];
 	// finishClose() can be retried after a quarantined failure. These guards
 	// prevent its one-shot stages from running twice while later idempotent
 	// cleanup resumes from the failed point.
@@ -469,7 +463,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 *     transition that publishes `closing` -- so a close claim and manual
 	 *     compaction cancellation are one step. Arming it any later reopens the
 	 *     window this exists to close: `finishClose()` drains
-	 *     its handles' in-flight calls with an untimed wait, and a synchronous
+	 *     `operationsInFlight` with an untimed wait, and a synchronous
 	 *     `compactSync()`/`clearSync()` blocks it for the compaction's whole
 	 *     duration. `DestroyDB`/`Shutdown` also claim every entry for a path
 	 *     under one lock and then close them sequentially, so arming at claim
@@ -479,7 +473,7 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 *     token instead, since nothing external is waiting on it, and a
 	 *     descriptor never leaves the closing state.
 	 *  3. It covers synchronous compaction only. Async `compact()`/`clear()`
-	 *     released their operation guard at setup handoff, so this drain does not
+	 *     released their OperationGuard at setup handoff, so this drain does not
 	 *     await them; they are awaited by `DBHandle::close()`'s async-work drain
 	 *     and cancelled by the per-handle token, which a self-close arms before
 	 *     it ever reaches `beginClose()` and a foreign close arms from
@@ -501,9 +495,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	std::atomic<bool> compactCancelRequested{ false };
 
 	/**
-	 * Counter tracking in-flight database operations that are not counted on a
-	 * handle (`OperationGuard`: iterators, transactions, commits, backups).
-	 * close() uses atomic::wait() to block until this reaches zero.
+	 * Counter tracking in-flight database operations. close() uses
+	 * atomic::wait() to block until this reaches zero.
 	 */
 	std::atomic<uint32_t> operationsInFlight{ 0 };
 
@@ -763,13 +756,6 @@ public:
 	bool finalFlush() noexcept;
 
 	void closeClosables(std::unique_lock<std::mutex>& txnsLock);
-
-	/**
-	 * Only complete once `closing` is published: calls on a handle attached
-	 * after this reads `closables` refuse instead of being waited for.
-	 */
-	void waitForHandleOperations();
-
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
 	void detach(Closable* closable);

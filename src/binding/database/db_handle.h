@@ -109,14 +109,6 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	void cancelBlockingWork() override { this->compactCancelRequested.store(true); }
 
 	/**
-	 * Guarded calls in flight through this handle (`HandleOperationGuard`),
-	 * all on its owning thread; `finishClose()` drains it.
-	 */
-	std::atomic<uint32_t> operationsInFlight{ 0 };
-
-	std::atomic<uint32_t>* operationCount() override { return &this->operationsInFlight; }
-
-	/**
 	 * The node environment.
 	 */
 	napi_env env;

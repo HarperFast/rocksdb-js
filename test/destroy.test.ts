@@ -33,7 +33,6 @@ const flushFailureFixture = join(__dirname, 'fixtures', 'fork-flush-failure.mts'
 const backupDestroyFixture = join(__dirname, 'fixtures', 'fork-backup-destroy.mts');
 const iteratorNextRaceFixture = join(__dirname, 'fixtures', 'fork-iterator-next-race.mts');
 const countDestroyRaceFixture = join(__dirname, 'fixtures', 'fork-count-destroy-race.mts');
-const syncOperationDestroyFixture = join(__dirname, 'fixtures', 'fork-sync-operation-destroy.mts');
 const abortGetDestroyFixture = join(__dirname, 'fixtures', 'fork-abort-get-destroy.mts');
 const compactCancelSyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-sync.mts');
 const compactCancelAsyncFixture = join(__dirname, 'fixtures', 'fork-compact-cancel-async.mts');
@@ -396,25 +395,12 @@ describe('Destroy', () => {
 	}, 15_000);
 
 	it('aborts an in-flight getCount() when a foreign destroy begins', async () => {
-		// getCount() scans the whole range under one operation guard, which
+		// getCount() scans the whole range under one OperationGuard, which
 		// finishClose() drains with an untimed wait. See fork-count-destroy-race.mts.
 		await runDestroyFixture(countDestroyRaceFixture, generateDBPath(), {
 			ROCKSDB_JS_COUNT_DELAY_MS: '50',
 		});
 	}, 15_000);
-
-	it.each([
-		['destroy', "waits for the main handle's synchronous call before a foreign destroy"],
-		['destroy-holder-last', "waits for another handle's synchronous call before a foreign destroy"],
-		['reentrant', 'refuses close() and destroy() from inside a synchronous call'],
-		['callback-close', 'lets a synchronous resolve callback close the database'],
-	])(
-		'%s: %s',
-		async (mode) => {
-			await runDestroyFixture(syncOperationDestroyFixture, generateDBPath(), undefined, [mode]);
-		},
-		15_000
-	);
 
 	it.each(['admitted', 'owner-closed', 'closing'])(
 		'aborts a transaction with a parked async get when a foreign destroy is %s',

@@ -61,7 +61,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 * Counts the entries from the current position to the end of the range.
 	 *
 	 * Returns false when the descriptor began closing mid-scan. The scan is
-	 * unbounded and its caller holds an operation guard, which `finishClose()`
+	 * unbounded and its caller holds an `OperationGuard`, which `finishClose()`
 	 * drains with an untimed wait, so it must abort rather than block teardown
 	 * for the length of the range. The partial count is never reported.
 	 */
@@ -95,7 +95,7 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	 * Whether this pooled handle reads the same `ColumnFamilyDescriptor` as
 	 * `target` (a dropped family still matches; see the iterator DESIGN.md),
 	 * with no clear running when the handle was built or begun since. Only
-	 * meaningful while the caller holds an operation guard.
+	 * meaningful while the caller holds an `OperationGuard`.
 	 */
 	bool readsColumnOf(const std::shared_ptr<DBHandle>& target) const;
 

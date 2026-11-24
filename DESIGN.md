@@ -16,8 +16,8 @@
 - [Database resources](src/binding/database/DESIGN.md): optimistic commit validation policy,
   per-database lock buckets, concurrent commit threads, backup table verification, why
   pending lock/park wake TSFNs stay ref'd, the WriteBufferManager flush-policy and arena-size
-  defaults, SST filters with where their blocks live, why close cancels compaction instead of
-  waiting for it, and how synchronous calls register on their own handle.
+  defaults, SST filters with where their blocks live, and why close cancels compaction instead of
+  waiting for it.
 - [Transaction state transitions](src/binding/transaction/DESIGN.md#state-transitions): `Committed` and `Aborted` are terminal; every change is a compare-exchange, because `close()` can settle `Aborted` from another thread.
 - [Transaction abort](src/binding/transaction/DESIGN.md): abort ends the transaction with `close()`, which drains in-flight async gets first; with gets in flight it holds an `OperationGuard` and defers to a teardown already under way.
 - [Transaction close ownership](src/binding/transaction/DESIGN.md#close-ownership): a closing transaction stays registered until `txn` is deleted and a second `close()` waits for the first, so teardown's sweep finds it and its own `close()` waits; it leaves the registry through a non-owning link, so no descriptor pin can skip a purge.
