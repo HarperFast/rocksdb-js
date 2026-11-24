@@ -87,6 +87,10 @@ struct DBRegistryEntry final {
 	// (macOS `/var` vs `/private/var`, a symlink, a relative path). Empty only
 	// for a path no descriptor in this process ever opened.
 	std::string reportedPath;
+	// Set by the exit shutdown when process.exit() ran inside a call admitted
+	// through one of this descriptor's handles: that call never returns, so
+	// every later teardown leaves the descriptor open rather than wait for it.
+	bool abandonedAtExit = false;
 
 	// Default constructor
 	DBRegistryEntry() : condition(std::make_shared<std::condition_variable>()) {}
@@ -229,7 +233,17 @@ public:
 	static void ReleaseParkTimeoutsByEnv(napi_env env);
 	static void ReleaseLogRefsByEnv(napi_env env);
 	static void ReleaseLockCallbacksByEnv(napi_env env);
-	static void Shutdown();
+	/**
+	 * Throws if a call admitted on this thread is still running further down its
+	 * stack, which `finishClose()` would wait for forever. Changes nothing.
+	 */
+	static void RefuseShutdownOnThisThread();
+	/**
+	 * `exiting` is the main thread's exit shutdown: instead of refusing, it marks
+	 * the descriptors such a call is using `abandonedAtExit`, closes the rest,
+	 * and then throws to report them.
+	 */
+	static void Shutdown(bool exiting = false);
 	/**
 	 * Rejects every later `OpenDB()` for the rest of the process. The
 	 * main-thread exit shutdown sets it before its sweep: workers keep running

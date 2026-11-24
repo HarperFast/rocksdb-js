@@ -117,6 +117,14 @@ struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_fro
 	std::atomic<uint32_t>* getOperationCounter() override { return &this->operationsInFlight; }
 
 	/**
+	 * Only the owning thread changes the count, and a thread that has exited
+	 * left it at zero, so a reused thread id cannot match a stale count.
+	 */
+	bool hasOperationOnThisThread() const override {
+		return this->ownerThreadId == std::this_thread::get_id() && this->operationsInFlight.load() != 0;
+	}
+
+	/**
 	 * The node environment.
 	 */
 	napi_env env;

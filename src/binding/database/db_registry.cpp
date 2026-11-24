@@ -23,6 +23,9 @@ namespace rocksdb_js {
 
 namespace {
 
+constexpr const char* destroyInsideOperation = "Cannot destroy the database during one of its own operations";
+constexpr const char* shutdownInsideOperation = "Cannot shut down during a database operation on this thread";
+
 struct ClosingDescriptor final {
 	DBKey key;
 	std::shared_ptr<DBDescriptor> descriptor;
@@ -335,6 +338,24 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	const auto waitBudget =
 		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
 
+	// Before every wait below: a foreign destroy holding the gate may itself be
+	// waiting for the call this one runs inside. Caller holds databasesMutex.
+	const auto refuseInsideOperation = [&](std::vector<std::shared_ptr<Closable>>& pinned) {
+		for (auto& [key, entry] : instance->databases) {
+			if (key.path != identityPath || !entry.descriptor) {
+				continue;
+			}
+			if (entry.abandonedAtExit || entry.descriptor->hasOperationOnThisThread(pinned)) {
+				throw rocksdb_js::DBException(destroyInsideOperation);
+			}
+		}
+	};
+	{
+		std::vector<std::shared_ptr<Closable>> pinned;
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
+		refuseInsideOperation(pinned);
+	}
+
 	// Claim the path-level gate before touching any entry. This is what keeps
 	// a brand-new key on this path (one this destroy never saw in the registry
 	// scan below, e.g. a first-ever secondary open, or ANY open once every
@@ -374,8 +395,11 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	while (true) {
 		std::vector<ClosingDescriptor> claimed;
 		std::vector<ClosingDescriptor> alreadyClosing;
+		std::vector<std::shared_ptr<Closable>> pinned;
 		{
 			std::unique_lock<std::mutex> lock(instance->databasesMutex);
+			// The exit shutdown can abandon a descriptor while this destroy waits.
+			refuseInsideOperation(pinned);
 			claimed.reserve(instance->databases.size());
 			alreadyClosing.reserve(instance->databases.size());
 			for (auto& [key, entry] : instance->databases) {
@@ -1166,8 +1190,9 @@ void DBRegistry::PurgeAll() {
 #endif
 			descriptorsToClose.reserve(instance->databases.size());
 			for (auto it = instance->databases.begin(); it != instance->databases.end();) {
-				if (!it->second.closeError.empty()) {
-					// Quarantined: leave it for shutdown()/destroy() to retry.
+				if (!it->second.closeError.empty() || it->second.abandonedAtExit) {
+					// Quarantined: leave it for shutdown()/destroy() to retry. Abandoned:
+					// closing it would wait forever.
 					++it;
 					continue;
 				}
@@ -1569,8 +1594,37 @@ void DBRegistry::ReleaseLockCallbacksByEnv(napi_env env) {
 /**
  * Shutdown will force all databases to flush in-memory data to disk and purge the registry.
  */
-void DBRegistry::Shutdown() {
+void DBRegistry::RefuseShutdownOnThisThread() {
+	if (!instance) {
+		return;
+	}
+	std::vector<std::shared_ptr<Closable>> pinned;
+	std::lock_guard<std::mutex> lock(instance->databasesMutex);
+	for (auto& [_key, entry] : instance->databases) {
+		if (entry.descriptor && !entry.abandonedAtExit && entry.descriptor->hasOperationOnThisThread(pinned)) {
+			throw rocksdb_js::DBException(shutdownInsideOperation);
+		}
+	}
+}
+
+void DBRegistry::Shutdown(bool exiting) {
 	if (instance) {
+		// Before shutdownMutex: a foreign shutdown holding it may be waiting for
+		// the call this one runs inside.
+		std::string abandonedPaths;
+		if (exiting) {
+			std::vector<std::shared_ptr<Closable>> pinned;
+			std::lock_guard<std::mutex> lock(instance->databasesMutex);
+			for (auto& [_key, entry] : instance->databases) {
+				if (entry.descriptor && !entry.abandonedAtExit && entry.descriptor->hasOperationOnThisThread(pinned)) {
+					entry.abandonedAtExit = true;
+					abandonedPaths += (abandonedPaths.empty() ? "\"" : ", \"") + entry.descriptor->path + "\"";
+				}
+			}
+		} else {
+			RefuseShutdownOnThisThread();
+		}
+
 		// One budget per wait, not one for the whole shutdown; see DestroyDB.
 		const auto waitBudget =
 			std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
@@ -1596,14 +1650,15 @@ void DBRegistry::Shutdown() {
 				descriptorsToWaitFor.reserve(instance->databases.size());
 
 				for (auto& [key, entry] : instance->databases) {
-					if (!entry.descriptor) {
+					if (!entry.descriptor || entry.abandonedAtExit) {
 						// A prior destroy() left a tombstone (descriptor cleared,
 						// closeError set) after its physical cleanup failed. That
 						// failure was already surfaced via database:closeFailed and
 						// stays visible in registryStatus().destroyCleanupPending.
 						// shutdown() is deliberately non-destructive -- only an
 						// explicit destroy() retries path deletion -- so skip it
-						// here rather than re-throwing the same error forever.
+						// here rather than re-throwing the same error forever. An
+						// abandoned descriptor would wait forever (abandonedAtExit).
 						continue;
 					}
 					ClosingDescriptor closing{ key, entry.descriptor, entry.condition };
@@ -1653,6 +1708,10 @@ void DBRegistry::Shutdown() {
 		// Purge any remaining unreferenced-but-untouched entries (e.g. one whose
 		// last handle detached between two passes above).
 		PurgeAll();
+
+		if (!abandonedPaths.empty()) {
+			throw rocksdb_js::DBException(std::string(shutdownInsideOperation) + ", so " + abandonedPaths + " stayed open");
+		}
 
 		DEBUG_LOG("%p DBRegistry::Shutdown Shutdown complete\n", instance);
 	}

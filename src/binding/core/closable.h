@@ -40,6 +40,13 @@ struct Closable {
 	 * state, or nullptr when it admits none (only a `DBHandle` does).
 	 */
 	virtual std::atomic<uint32_t>* getOperationCounter() { return nullptr; }
+
+	/**
+	 * Whether a call admitted through this closable is still running on the
+	 * calling thread, i.e. further down its stack, so a teardown from here
+	 * would wait for it forever.
+	 */
+	virtual bool hasOperationOnThisThread() const { return false; }
 };
 
 } // namespace rocksdb_js

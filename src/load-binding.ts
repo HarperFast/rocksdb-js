@@ -731,7 +731,8 @@ export type RocksDatabaseConfig = {
 	 * not skip the flush. Defaults to `true`. After it runs, databases are
 	 * closed and opening one throws, so an `exit` listener that still needs a
 	 * database must be added with `process.prependListener`. If data may be
-	 * left unflushed (a timed-out shutdown, or a failed final flush), it sets
+	 * left unflushed (a timed-out shutdown, a failed final flush, or a database
+	 * left open because `process.exit()` ran inside a synchronous call on it), it sets
 	 * `process.exitCode` to 1 unless it is already nonzero. Like the cleanup on a natural exit, it waits for in-flight native
 	 * work (a commit, flush, or backup) without a time limit. Set to `false` to
 	 * leave memtables unflushed at a Node `process.exit()`, e.g. to exercise
@@ -1108,7 +1109,9 @@ export const registryStatus: () => RegistryStatus = getRegistryStatus;
  * **Throws** the first failure it encounters: a close whose native teardown
  * failed (that descriptor stays quarantined — call `shutdown()` again to retry
  * it), or a `lifecycleWaitSeconds` timeout waiting on a concurrent
- * open/destroy/shutdown. A quarantining close also emits
+ * open/destroy/shutdown. Called from JavaScript that a synchronous database
+ * call runs on this thread (an options getter), it throws without changing
+ * anything, since it would wait for that call forever. A quarantining close also emits
  * `database:closeFailed`; a timeout has no event, so the throw is its only
  * signal.
  *

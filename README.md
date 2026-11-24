@@ -749,6 +749,10 @@ deletion fails, or the process dies first) keeps writes made with `disableWAL`. 
 destruction still deletes the database and reports the flush error through `database:closeFailed`;
 only when the deletion then fails too are the unflushed `disableWAL` writes lost.
 
+Called from JavaScript that a synchronous call on the same database runs on the same thread (an
+options getter, for example), `destroy()` throws "Cannot destroy the database during one of its own
+operations" and changes nothing, because it would wait for that call forever.
+
 ```typescript
 db.destroy();
 console.log(fs.existsSync(db.path)); // false
@@ -3002,15 +3006,18 @@ The `shutdown()` will flush all in-memory data to disk and cancel outstanding ba
 compactions, for all open databases. It throws the first close failure after attempting every
 claimed database; call it again to retry any descriptor whose native teardown did not complete. It
 reports pending destroy-cleanup tombstones without deleting their paths; retry those with an
-explicit `destroy()`.
+explicit `destroy()`. Called from JavaScript that a synchronous database call runs on the same
+thread, it throws "Cannot shut down during a database operation on this thread" and changes
+nothing.
 
 You do not need to call it at exit. When rocksdb-js loads on the main thread, it registers a
 `process.on('exit')` listener that runs the same shutdown, so a `process.exit()` (which skips the
 native cleanup Node runs on a natural exit) still flushes and closes every database, including
 those opened by workers that are still running. That listener reports failures to stderr instead
 of throwing, and sets `process.exitCode` to 1 (unless it is already nonzero) when data may be left
-unflushed: a database another thread was still closing when the shutdown timed out, or a final
-flush that failed. Afterwards opening a database throws. It
+unflushed: a database another thread was still closing when the shutdown timed out, a final
+flush that failed, or a database left open because `process.exit()` was called from JavaScript
+that a synchronous call on it was running. Afterwards opening a database throws. It
 still runs when an earlier `exit` listener throws. It does not run when the process is killed by a
 signal it does not handle.
 

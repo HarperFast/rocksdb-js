@@ -312,9 +312,18 @@ registers before returning is drained too. Four facts make that equivalent to on
   the stack. Closing or reopening would replace the borrowed descriptor, and destroying would wait
   for the call forever. A call that settles synchronously through a `resolve`/`reject` it was handed
   ends its admission first (`HandleOperationGuard::release()`), except on an admission failure;
-  the JS layer passes promise settlers there, which run no JavaScript synchronously. A `destroy()`
-  or `shutdown()` through another handle from such a getter still waits on this thread, as it did
-  with the shared count.
+  the JS layer passes promise settlers there, which run no JavaScript synchronously.
+- **Re-entrant teardown.** A `destroy()` through another handle or a `shutdown()` from such a getter
+  would claim the descriptor and wait for the call below it. `DBRegistry::DestroyDB` and
+  `RefuseShutdownOnThisThread()` refuse first, before any wait (another thread's teardown can be
+  waiting for this call) and before any side effect, when a closable on a descriptor they would
+  claim reports `hasOperationOnThisThread()`. Only the owner thread changes a handle's count, so a
+  match is a call on this stack and another env's handle never matches. The exit shutdown cannot
+  refuse, because `process.exit()` never returns to that call: it marks those entries
+  `abandonedAtExit`, closes the rest, and reports them. Every later teardown, including a worker's
+  cleanup hook after the main thread exits, leaves an abandoned entry alone instead of waiting.
+  `Transaction::GetCount` reads its options before its `OperationGuard`, since the descriptor's
+  count cannot tell which thread holds it.
 
 Iterators, transactions, backups, checkpoints, commits and column-family reclamation
 still use the descriptor's `operationsInFlight` (`OperationGuard`).

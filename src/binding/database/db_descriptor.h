@@ -770,6 +770,14 @@ public:
 	 */
 	void waitForHandleOperations();
 
+	/**
+	 * Whether a call admitted on this thread through one of this descriptor's
+	 * closables is still running further down the stack. `pinned` receives every
+	 * closable it locked; the caller releases it after its own locks, since one
+	 * of them may be the last reference.
+	 */
+	bool hasOperationOnThisThread(std::vector<std::shared_ptr<Closable>>& pinned);
+
 	void attach(std::shared_ptr<Closable> closable);
 	void detach(std::shared_ptr<Closable> closable);
 	void detach(Closable* closable);

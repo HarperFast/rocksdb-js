@@ -47,6 +47,13 @@ namespace rocksdb_js {
  * Shutdown function to ensure that we write in-memory data from all databases.
  */
 napi_value Shutdown(napi_env env, napi_callback_info info) {
+	// A refusal is not a failed shutdown: it releases nothing, listeners included.
+	try {
+		DBRegistry::RefuseShutdownOnThisThread();
+	} catch (const std::exception& exception) {
+		::napi_throw_error(env, nullptr, exception.what());
+		return nullptr;
+	}
 	auto& stats = DBStats::getInstance();
 	const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
 	std::string error;
@@ -114,7 +121,7 @@ napi_value ShutdownOnExit(napi_env env, napi_callback_info info) {
 		auto& stats = DBStats::getInstance();
 		const uint64_t watchdogShutdownGeneration = stats.beginWriteBufferManagerWatchdogShutdown();
 		runCleanupStep("open fence", []() { DBRegistry::FenceOpensForExit(); });
-		runCleanupStep("database registry", []() { DBRegistry::Shutdown(); });
+		runCleanupStep("database registry", []() { DBRegistry::Shutdown(true); });
 		flushed = false;
 		runCleanupStep("database registry teardown", [&]() { flushed = DBRegistry::Teardown(true); });
 		runCleanupStep("global events", []() { GlobalEvents::Shutdown(); });

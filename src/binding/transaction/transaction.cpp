@@ -1475,6 +1475,10 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_TRANSACTION_HANDLE("GetCount");
+	// Before the claim: a getter that tears the database down would wait for it.
+	DBIteratorOptions itOptions;
+	itOptions.initFromNapiObject(env, argv[0]);
+	itOptions.values = false;
 
 	// Without this claim finishClose()'s drain returns immediately and its
 	// closables sweep rolls back the transaction while the scan is parked
@@ -1496,10 +1500,6 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 		::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
 		NAPI_RETURN_UNDEFINED();
 	}
-
-	DBIteratorOptions itOptions;
-	itOptions.initFromNapiObject(env, argv[0]);
-	itOptions.values = false;
 
 	uint64_t count = 0;
 	try {

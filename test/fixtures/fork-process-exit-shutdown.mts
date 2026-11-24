@@ -192,6 +192,34 @@ switch (mode) {
 		});
 		break;
 	}
+	case 'exit-inside-call':
+	case 'exit-inside-call-worker': {
+		// The exit shutdown would wait for the call this exit runs inside, and so
+		// would a worker's cleanup hook after it.
+		const db = RocksDatabase.open(path, { disableWAL: true });
+		const late = RocksDatabase.open(`${path}-late`, { disableWAL: true });
+		db.putSync('main', 'value');
+		late.putSync('late', 'value');
+		const exitInsideCall = () => {
+			(db as any).store.db.getCount(
+				{
+					get exclusiveStart(): boolean {
+						return process.exit(0);
+					},
+				},
+				undefined
+			);
+			throw new Error('process.exit() returned');
+		};
+		if (mode === 'exit-inside-call') exitInsideCall();
+		const worker = startWorker(`parentPort.postMessage('ready'); setInterval(() => {}, 1000);`);
+		worker.once('message', exitInsideCall);
+		worker.once('error', (error) => {
+			console.error(error);
+			process.exit(2);
+		});
+		break;
+	}
 	case 'verify': {
 		const db = RocksDatabase.open(path);
 		const read = (key: string) => db.getSync(key) ?? null;

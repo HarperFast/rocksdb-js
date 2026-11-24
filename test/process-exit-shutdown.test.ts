@@ -129,6 +129,19 @@ describe('Main-thread exit shutdown (#1004)', () => {
 		}
 	});
 
+	it.each(['exit-inside-call', 'exit-inside-call-worker'])(
+		'%s: leaves only the databases a call in progress uses open on process.exit() inside it',
+		(mode) => {
+			if (mode.endsWith('worker') && process.versions.deno) return;
+			// The database the call uses keeps its disableWAL write unflushed, and the exit reports it.
+			const { exited, values } = exitThenVerify(mode, { status: 1, verifySuffix: '-late' });
+			expect(exited.stderr).toContain(
+				'Cannot shut down during a database operation on this thread, so'
+			);
+			expect(values).toEqual({ ...nothing, late: 'value' });
+		}
+	);
+
 	// Relies on Node stopping the worker after the exit listeners. Bun runs no worker cleanup on
 	// process.exit(), and a worker still inside a native close at that point crashed Bun 1.4.0.
 	it.skipIf(process.versions.deno || process.versions.bun)(
