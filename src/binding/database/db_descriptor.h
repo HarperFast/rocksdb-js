@@ -612,23 +612,22 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * acquire count).
 	 */
 	struct CommitCompletion : std::enable_shared_from_this<CommitCompletion> {
-		/** A commit's link in `undelivered`; the tsfn's data is this item. */
+		/** The tsfn's data; links a commit into `undelivered`. */
 		struct Item {
 			Item* nextUndelivered = nullptr;
 		};
 
 		enum class Dispatch {
 			Delivered,
-			// Handed to the tsfn finalizer, which delivers it on the env's JS thread.
+			// The tsfn finalizer delivers it.
 			Undelivered,
-			// The env is tearing down or released this completion; the caller drops the item.
+			// The caller drops the item.
 			EnvGone
 		};
 
 		enum class Registration {
 			Registered,
 			Closed,
-			// A tsfn call failed: register on a fresh completion instead.
 			Retired
 		};
 
@@ -645,12 +644,12 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 		// Terminal even while a DBHandle or in-flight commit retains this object:
 		// a cached registration must never recreate a released env's TSFN.
 		bool closed = false;
-		// A tsfn call failed while the env was alive. Nothing calls the tsfn
-		// again; commits collect in `undelivered` until every pending one has,
-		// then the tsfn is released and its finalizer delivers them.
+		// A tsfn call failed while the env was alive (database/DESIGN.md,
+		// "Commit threads").
 		bool retired = false;
-		// Released by its env's cleanup hook: the finalizer must not call into JS.
-		bool envReleased = false;
+		// Cleared by the env's cleanup hook; the finalizer must not call into
+		// JS after it.
+		std::shared_ptr<std::atomic<bool>> envAlive;
 		Item* undelivered = nullptr;
 		uint32_t undeliveredCount = 0;
 
@@ -681,14 +680,19 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 		void finish(napi_env env);
 
 		/**
-		 * Module env-cleanup hook (`envGone`) or descriptor close, with
-		 * commitMutex held. Excludes dispatch while releasing the tsfn. Queued
-		 * completions are still delivered before finalization
-		 * (napi_tsfn_release, not abort).
+		 * Module env-cleanup hook or descriptor close, with commitMutex held.
+		 * Excludes dispatch while releasing the tsfn. Queued completions are
+		 * still delivered before finalization (napi_tsfn_release, not abort).
 		 */
-		void release(bool envGone);
+		void release();
 
 		bool isClosed();
+
+		/**
+		 * Module env-cleanup hook. Process-wide, so it reaches completions that
+		 * no descriptor still tracks.
+		 */
+		static void markEnvGone(napi_env env);
 
 	private:
 		static void finalize(napi_env env, void* data, void* hint);
@@ -700,8 +704,8 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	// detached entry and let Node free its TSFN before the releasing thread.
 	std::mutex commitMutex;
 	std::unordered_map<napi_env, std::shared_ptr<CommitCompletion>> commitCompletions;
-	// Replaced retired completions, kept for env cleanup and close to release
-	// until each is closed.
+	// Replaced retired completions, until each is closed: env cleanup and
+	// close must still release them.
 	std::vector<std::pair<napi_env, std::shared_ptr<CommitCompletion>>> retiredCommitCompletions;
 	// Set (under commitMutex) by finishClose()'s release pass. Blocks any
 	// later registry lookup from re-creating a tsfn that would never be

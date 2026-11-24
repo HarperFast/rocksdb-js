@@ -114,7 +114,10 @@ holding the loop open (#1146). The completion instead retires: nothing calls its
 commits collect in `undelivered`, and once `pending` equals their count the TSFN is released. Its
 finalizer runs on the env's JS thread and delivers them through `commitCompletionCallJs`. Releasing
 any earlier would let a commit dispatch after the finalizer ran. A finalizer that runs after the
-env's cleanup hook released the completion closes those transactions without calling into JS.
+env's cleanup hook (`CommitCompletion::markEnvGone`, a process-wide flag, so it also reaches a
+completion `finishClose()` already dropped) closes those transactions without calling into JS. Node
+can instead run it during teardown before the hooks, like any completion still queued on the TSFN;
+the hook's transaction reaper then closes what a failed commit left open.
 `registerCommitCompletion()` replaces a retired completion, keeping the old one in
 `retiredCommitCompletions` so env cleanup and `finishClose()` still release it. Node 24 and Bun return only those three statuses for an unbounded
 TSFN, so retirement is defensive; `ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE` drives it in

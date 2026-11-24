@@ -290,9 +290,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   the enqueuing thread, and a **count** of commit completions to drop as if their env were gone.
   Together they drive the commit thread's env-gone fallback inline on the JS thread
   (`test/fixtures/fork-commit-async-shutdown.mts`). Snapshotted in `initializeTestSeams()`
-- `ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE` - Test-only: a **count** of completion tsfn calls to fail
-  with `napi_generic_failure` while the env is alive, driving the retired-completion delivery path
-  (`test/fixtures/fork-commit-dispatch-call-failure.mts`). Snapshotted in `initializeTestSeams()`
+- `ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE` / `ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE_SKIP` -
+  Test-only: a **count** of completion tsfn calls to fail with `napi_generic_failure` while the env
+  is alive, after a **count** of calls that succeed, driving the retired-completion delivery path
+  (`test/fixtures/fork-commit-dispatch-call-failure.mts`). Not combinable with
+  `ROCKSDB_JS_COMMIT_DISPATCH_FAILURE`, whose drop skips the accounting that releases a retired
+  completion. Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` / `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only delays
   immediately before a native transaction commit (while its async work and descriptor operation
   remain registered, widening close-vs-execute race windows) and before a transaction's

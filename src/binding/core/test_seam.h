@@ -163,7 +163,17 @@ inline std::atomic<int>& commitDispatchCallFailureFlag() {
 	return pending;
 }
 
+// Completion tsfn calls that succeed before the injected failures start.
+inline std::atomic<int>& commitDispatchCallFailureSkipFlag() {
+	static std::atomic<int> pending{ 0 };
+	return pending;
+}
+
 inline bool testConsumeCommitDispatchCallFailure() {
+	if (commitDispatchCallFailureFlag().load(std::memory_order_relaxed) <= 0 ||
+		testConsumeCount(commitDispatchCallFailureSkipFlag())) {
+		return false;
+	}
 	return testConsumeCount(commitDispatchCallFailureFlag());
 }
 
@@ -386,6 +396,9 @@ inline void initializeTestSeams() {
 		);
 		commitDispatchCallFailureFlag().store(
 			testDelayMs("ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE"), std::memory_order_relaxed
+		);
+		commitDispatchCallFailureSkipFlag().store(
+			testDelayMs("ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE_SKIP"), std::memory_order_relaxed
 		);
 		compactCancelDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_COMPACT_DELAY_MS"), std::memory_order_relaxed
