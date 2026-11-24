@@ -1149,6 +1149,12 @@ void DBDescriptor::CommitCompletion::finalize(napi_env env, void* data, void* /*
 	}
 	while (item != nullptr) {
 		Item* next = item->nextUndelivered;
+		// Each as its own tsfn callback would be: its own handle scope, and no
+		// exception left to fail the N-API calls settling the next.
+		napi_handle_scope scope = nullptr;
+		if (deliver && ::napi_open_handle_scope(env, &scope) != napi_ok) {
+			scope = nullptr;
+		}
 		try {
 			completion.callJs(deliver ? env : nullptr, nullptr, nullptr, item);
 		} catch (...) {
@@ -1157,14 +1163,15 @@ void DBDescriptor::CommitCompletion::finalize(napi_env env, void* data, void* /*
 			} catch (...) {
 			}
 		}
-		// As separate tsfn callbacks, one commit's exception must not fail the
-		// N-API calls settling the next.
 		bool exceptionPending = false;
 		if (deliver && ::napi_is_exception_pending(env, &exceptionPending) == napi_ok && exceptionPending) {
 			napi_value error;
 			if (::napi_get_and_clear_last_exception(env, &error) == napi_ok) {
 				::napi_fatal_exception(env, error);
 			}
+		}
+		if (scope != nullptr) {
+			::napi_close_handle_scope(env, scope);
 		}
 		item = next;
 	}
