@@ -15,8 +15,8 @@ owning thread (`closeDeferredAbort()`) unless the sweep got there first. Leaving
 alone was not enough: a quarantined descriptor (failed close-time flush) is closing, but
 `finishClose()` threw before its sweep, so the transaction kept its snapshot, write intents and log
 position until a retry (HarperFast/rocksdb-js#1148). The completion, not the read's libuv execute,
-runs the close because the wrapper is still reachable and the owning thread's synchronous calls are
-not serialized against a close from another thread. The guard pins
+runs the close because a read cancelled before its execute ran reaches only its completion. The
+guard pins
 `TransactionHandle::owningDescriptor`, a weak reference fixed at construction:
 `dbHandle->descriptor` is gone once the owner has closed its handle, and another env can still
 hold the database open. Locking it can make a concurrent last-handle close skip its purge, so
