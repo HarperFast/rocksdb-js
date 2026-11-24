@@ -86,9 +86,10 @@ the owner has closed or reopened no longer belongs to this transaction's descrip
 use it refuse with "Database not open". `setTimestamp` and `abandonWrites` use only the transaction and
 are not refused for that.
 
-`Database::*` calls that name a transaction by id take `ACQUIRE_OPERATIONS_LOCK()` on the caller's
-descriptor before the lookup, which is the transaction's descriptor because ids are per descriptor;
-the iterator constructor takes the same guard before its lookup. `TransactionHandle::getSync`,
+`Database::*` calls that name a transaction by id take `ACQUIRE_OPERATIONS_LOCK()` before the
+lookup. It counts on the caller's handle, which `finishClose()` drains before its sweep, and the lookup
+resolves in the caller's descriptor, which is the transaction's because ids are per descriptor. The
+iterator constructor takes a descriptor `OperationGuard` before its lookup. `TransactionHandle::getSync`,
 `putSync` and `removeSync` therefore admit nothing themselves. Covered by
 `test/fixtures/fork-txn-sync-shutdown.mts` (a pause past the handle read, shutdown from another
 thread; without the sweep order it crashes in about two runs of five) and

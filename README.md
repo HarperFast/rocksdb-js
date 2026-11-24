@@ -239,7 +239,9 @@ from RocksDB's own final close is reported after native teardown completes; the 
 `compactOnClose` pass still runs to completion before background work is cancelled, but it is
 best-effort and its errors do not fail the close, since a skipped compaction loses no data. All
 native close errors emit `database:closeFailed`. The quarantine applies to both writable and
-read-only opens because both modes share the physical path lifecycle.
+read-only opens because both modes share the physical path lifecycle. Calling `close()` or
+`destroy()` from JavaScript that runs inside one of the same database's own synchronous calls (an
+options getter, for example) throws instead.
 
 ```typescript
 const db = RocksDatabase.open('foo');
