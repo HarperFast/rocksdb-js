@@ -274,6 +274,30 @@ struct AsyncWorkHandle {
 		return true;
 	}
 
+	/**
+	 * Admits a synchronous call without taking `waitMutex`. The count is published before
+	 * `cancelled` is read, and cancellation is published before the drain reads the count (both
+	 * seq_cst), so either the drain waits for this call or the call sees the cancellation. Only for
+	 * the owning thread of a handle whose wrapper is live: a refused call's transient count can make
+	 * `cancelIfIdle()` or an orphan close see work in flight, and neither can run alongside it then.
+	 */
+	[[nodiscard]] bool enterSync() {
+		this->activeAsyncWorkCount.fetch_add(1);
+		if (this->cancelled.load()) {
+			this->exitSync();
+			return false;
+		}
+		return true;
+	}
+
+	void exitSync() {
+		if (this->activeAsyncWorkCount.fetch_sub(1) == 1 && this->cancelled.load()) {
+			// Under the mutex, so a drain between its predicate check and its wait cannot miss this.
+			std::lock_guard<std::mutex> lock(this->waitMutex);
+			this->asyncWorkComplete.notify_all();
+		}
+	}
+
 	void unregisterAsyncWork() {
 		std::lock_guard<std::mutex> lock(this->waitMutex);
 		auto activeAsyncWorkCount = --this->activeAsyncWorkCount;

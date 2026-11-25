@@ -592,7 +592,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    `ACQUIRE_OPERATIONS_LOCK()` immediately after `UNWRAP_DB_HANDLE_AND_OPEN()`; `finishClose()` can
    reset the column-family pointer from another env after the in-flight count drains. That guard counts
    the call on its own handle, which `finishClose()` drains before the descriptor's `operationsInFlight`
-   (src/binding/database/DESIGN.md, "Synchronous calls register on their own handle"). The VT-only `verifyVersion` / `populateVersion`
+   (src/binding/database/DESIGN.md, "Synchronous calls register on their own handle"). A
+   `Transaction::*` method instead takes a `TransactionOperation` before it reads `dbHandle` or `txn`,
+   which that sweep also resets, and the sweep closes transactions before handles
+   (src/binding/transaction/DESIGN.md, "Synchronous admission"). The VT-only `verifyVersion` / `populateVersion`
    fast paths narrow, but do not remove, that requirement: both still start with
    `UNWRAP_DB_HANDLE_AND_OPEN()`, so they still gate on `descriptor`/`isClosing()`. What
    `DBHandle::open()`'s snapshotted `verificationTableDbId` / `verificationTableColumnFamilyId` actually
@@ -602,7 +605,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
    `getColumnFamilyHandle()->GetID()` rather than reading the cached fields, so there are two
    spellings of the same address computation that must stay in agreement.
    Async N-API setup must hold the guard until it hands off to `DBHandle::registerAsyncWork()`. Iterators
-   take the guard through construction/descriptor attachment, then serialize each native iterator call
+   take the guard (a transaction-context iterator, a `TransactionOperation`) through
+   construction/descriptor attachment, then serialize each native iterator call
    against foreign forced close with their per-iterator mutex. `DBHandle::close()` itself is cross-env and must
    serialize mutation of its `shared_ptr` members. A close-time flush failure keeps the native DB
    quarantined so `shutdown()` can retry without losing `disableWAL` writes; an explicit destroy may
@@ -1079,7 +1083,11 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     only the synchronous setup, not the queued execute callback. Backup/checkpoint/backup-stream
     additionally hold the descriptor's `operationsInFlight` claim through their whole async execution
     (the pinning pattern from invariant 9), so for those this drain is defense in depth rather than
-    the only thing preventing a use-after-free.
+    the only thing preventing a use-after-free. `enterSync()`/`exitSync()` admit on the same counter
+    without `waitMutex`, by publishing the count before reading `cancelled` (seq_cst on both sides). A
+    refused call still counts for an instant, so they are only for the owning thread of a transaction
+    whose wrapper is live: `cancelIfIdle()` and orphan close are then never concurrent with them
+    (src/binding/transaction/DESIGN.md, "Synchronous admission").
 
 18. **An env's pending transactions are reaped by its cleanup hook — never by `DBHandle::close()`**:
     `transactionAdd` stores a strong `shared_ptr<TransactionHandle>` in the process-global
