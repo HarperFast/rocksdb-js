@@ -4,6 +4,10 @@
 
 Regression: the async case in `test/error-object-failure.test.ts` (rejection through `backups.list`) fails on the pre-fix builder. The sync `createJSError` case passes there too: the synthesized exception is already pending, so the caller's `napi_throw` is a no-op. It checks the new path's result, not the regression.
 
+# Async-work admission
+
+`AsyncWorkHandle` (`async.h`) admits work two ways onto one counter that `waitForAsyncWorkCompletion()` drains: `registerAsyncWork()` under `waitMutex`, and the lock-free `enterSync()`/`exitSync()` for synchronous transaction calls on their owning thread. AGENTS.md invariant 17 states the contract; `src/binding/transaction/DESIGN.md`, "Synchronous admission", explains when the lock-free path is safe.
+
 # C++ exceptions in async work
 
 N-API and libuv call the binding through C, so a C++ exception that leaves an async entry point, an execute callback or a complete callback terminates the process. `napi/async.h` contains them at those three boundaries:
