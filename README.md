@@ -634,6 +634,12 @@ overlapping catch-ups on a backlogged follower can exhaust the default four-thre
 unrelated `fs`/`dns`/`crypto` work in the process. Await one before starting the next rather than
 firing one per timer tick.
 
+**Known issue:** a RocksDB bug can stop a secondary from advancing. Values of 2KB or more live in
+blob files, and if the primary deletes a blob file the secondary never saw while an older blob file
+is still in use, every later catch-up succeeds without showing newer writes. Reopening the
+secondary does not help. A full compaction on the primary, `db.compact({ bottommost: true })`,
+rewrites every blob file and lets the next catch-up advance.
+
 ```typescript
 const primary = RocksDatabase.open('/path/to/database');
 const follower = RocksDatabase.open('/path/to/database', {
