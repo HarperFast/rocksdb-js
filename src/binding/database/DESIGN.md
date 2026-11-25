@@ -146,15 +146,18 @@ capture (`captureLiveFilesWithTransactionLogs`, used by the stream path and, thr
 A listing waits out pending purges, which also run on the HIGH pool (one thread here), and iterator
 cleanup schedules one even while file deletions are disabled; behind a parked flush that purge never
 runs. So under one hold a flush parks for at most a second, then proceeds and marks the hold
-escaped (`FlushCaptureHold::flushEscaped`), and the capture retries. A flush still parked when the
-next hold is raised stays parked, and counted, under it with a fresh second. Listing outside the hold instead would
-retry whenever a flush installs between the listing and the hold, which under back-to-back flushes
-is most attempts.
+escaped (`FlushCaptureHold::flushEscaped`). A flush still parked when the next hold is raised stays
+parked, and counted, under it with a fresh second. After an escape the capture does not list under
+the hold again: each such attempt would park the only flush thread for another second, starving
+writers of flushes for the whole retry budget. It falls back to listing with flushes running and
+verifying the listing under a short hold (`captureListedThenVerified`, below). Listing under the
+hold is still the first attempt because the verified listing retries whenever a flush installs
+between the listing and the hold, which under back-to-back flushes is most attempts.
 
 A pessimistic database is a `TransactionDB`, which enables `allow_2pc`, and RocksDB then flushes
 inside every listing whatever `wal_size_for_flush` says; listed with flushes parked, that flush
-would wait on the capture itself. So for `allow_2pc` the capture lists first, then parks and waits
-as above, and keeps the listing only if the MANIFEST still has the number and length the listing
+would wait on the capture itself. So for `allow_2pc` the capture always takes that verified path: it
+lists first, then parks and waits as above, and keeps the listing only if the MANIFEST still has the number and length the listing
 recorded (`versionChangedSinceListing`, via `DB::GetLiveFiles` without a flush), then reads
 `txn.state`. Comparing live files instead missed a flush whose files a compaction had already
 removed. A compaction in that window also forces a retry, up to the same one-minute bound.

@@ -6,7 +6,7 @@ import { describe, it } from 'vitest';
 
 // A backup's txn.state must match its table files (HarperFast/harper#4507). Each
 // case runs test/fixtures/fork-backup-replay-position.mts in a child because
-// ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS is read once at module load.
+// the delay seams are read once at module load.
 
 const fixture = join(__dirname, 'fixtures', 'fork-backup-replay-position.mts');
 const nodeExecutable =
@@ -72,6 +72,12 @@ describe('Backup replay position', () => {
 	it(
 		'a pessimistic database, whose listings always flush, captures without waiting on itself',
 		() => runFixture('pessimistic'),
+		30_000
+	);
+
+	it(
+		'a capture whose held listing a flush escapes lists with flushes running instead',
+		() => runFixture('escapeFallback', { ROCKSDB_JS_BACKUP_CAPTURE_LIST_DELAY_MS: '1500' }),
 		30_000
 	);
 

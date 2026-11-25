@@ -1,5 +1,6 @@
 #include "database/backup_transaction_logs.h"
 #include "core/platform.h"
+#include "core/test_seam.h"
 #include "database/db_descriptor.h"
 #include "database/flush_capture_gate.h"
 #include "transaction_log/transaction_log_store_registry.h"
@@ -115,6 +116,55 @@ rocksdb::Status versionChangedSinceListing(
 	return rocksdb::Status::OK();
 }
 
+/**
+ * Lists with flushes running, then holds them only long enough to confirm that
+ * nothing installed since the listing and to read the stores, retrying when
+ * something did.
+ */
+rocksdb::Status captureListedThenVerified(
+	DBDescriptor* descriptor,
+	rocksdb::DB* db,
+	FlushCaptureGate& gate,
+	const rocksdb::LiveFilesStorageInfoOptions& listOpts,
+	std::vector<rocksdb::LiveFileStorageInfo>* files,
+	std::vector<CapturedTransactionLogStore>& captured,
+	const std::function<bool()>& abandon,
+	Deadline deadline
+) {
+	for (;;) {
+		rocksdb::Status s = captureStopped(descriptor, abandon, deadline);
+		if (s.ok()) {
+			s = db->GetLiveFilesStorageInfo(listOpts, files);
+		}
+		if (!s.ok()) {
+			return s;
+		}
+		{
+			FlushCaptureHold hold(gate);
+			bool changed = false;
+			s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
+			if (s.ok() && !hold.flushEscaped()) {
+				s = versionChangedSinceListing(db, *files, changed);
+			}
+			if (!s.ok()) {
+				return s;
+			}
+			if (!changed && !hold.flushEscaped()) {
+				s = captureStores(descriptor, captured);
+				if (s.ok() && !hold.flushEscaped()) {
+					s = captureStopped(descriptor, abandon, deadline);
+				}
+				if (!s.ok() || !hold.flushEscaped()) {
+					return s;
+				}
+			}
+		}
+		captured.clear();
+		files->clear();
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+}
+
 rocksdb::Status captureLiveFiles(
 	DBDescriptor* descriptor,
 	rocksdb::DB* db,
@@ -144,39 +194,7 @@ rocksdb::Status captureLiveFiles(
 	if (db->GetDBOptions().allow_2pc) {
 		// TransactionDB enables two-phase commit, and RocksDB then flushes inside
 		// every listing; one taken while flushes are parked would wait on itself.
-		// So list first, then accept the listing only if the version has not changed.
-		for (;;) {
-			rocksdb::Status s = captureStopped(descriptor, abandon, deadline);
-			if (s.ok()) {
-				s = db->GetLiveFilesStorageInfo(opts, files);
-			}
-			if (!s.ok()) {
-				return s;
-			}
-			{
-				FlushCaptureHold hold(*gate);
-				bool changed = false;
-				s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
-				if (s.ok() && !hold.flushEscaped()) {
-					s = versionChangedSinceListing(db, *files, changed);
-				}
-				if (!s.ok()) {
-					return s;
-				}
-				if (!changed && !hold.flushEscaped()) {
-					s = captureStores(descriptor, captured);
-					if (s.ok() && !hold.flushEscaped()) {
-						s = captureStopped(descriptor, abandon, deadline);
-					}
-					if (!s.ok() || !hold.flushEscaped()) {
-						return s;
-					}
-				}
-			}
-			captured.clear();
-			files->clear();
-			std::this_thread::sleep_for(std::chrono::milliseconds(10));
-		}
+		return captureListedThenVerified(descriptor, db, *gate, opts, files, captured, abandon, deadline);
 	}
 
 	if (opts.wal_size_for_flush != noFlush) {
@@ -191,32 +209,33 @@ rocksdb::Status captureLiveFiles(
 	}
 	rocksdb::LiveFilesStorageInfoOptions listOpts = opts;
 	listOpts.wal_size_for_flush = noFlush;
-	for (;;) {
-		{
-			FlushCaptureHold hold(*gate);
-			rocksdb::Status s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
-			// Stores are read after the listing so that none whose commits a copied WAL holds is left out.
-			if (s.ok() && !hold.flushEscaped()) {
-				s = db->GetLiveFilesStorageInfo(listOpts, files);
+	{
+		FlushCaptureHold hold(*gate);
+		rocksdb::Status s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
+		// Stores are read after the listing so that none whose commits a copied WAL holds is left out.
+		if (s.ok() && !hold.flushEscaped()) {
+			if (const int delayMs = backupCaptureListDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 			}
-			if (s.ok() && !hold.flushEscaped()) {
-				s = captureStores(descriptor, captured);
-			}
-			if (s.ok() && !hold.flushEscaped()) {
-				s = captureStopped(descriptor, abandon, deadline);
-			}
-			if (!s.ok() || !hold.flushEscaped()) {
-				return s;
-			}
+			s = db->GetLiveFilesStorageInfo(listOpts, files);
 		}
-		captured.clear();
-		files->clear();
-		rocksdb::Status s = captureStopped(descriptor, abandon, deadline);
-		if (!s.ok()) {
+		if (s.ok() && !hold.flushEscaped()) {
+			s = captureStores(descriptor, captured);
+		}
+		if (s.ok() && !hold.flushEscaped()) {
+			s = captureStopped(descriptor, abandon, deadline);
+		}
+		if (!s.ok() || !hold.flushEscaped()) {
 			return s;
 		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
+	// A flush escaped, usually because the listing waited on work queued behind it
+	// on the flush thread (a purge). Listing under the hold again would park the
+	// flush thread for another full bound, starving writers of flushes, so list
+	// with flushes running and hold them only to check the listing.
+	captured.clear();
+	files->clear();
+	return captureListedThenVerified(descriptor, db, *gate, listOpts, files, captured, abandon, deadline);
 }
 
 } // namespace

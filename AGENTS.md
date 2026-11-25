@@ -398,6 +398,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   `TransactionLogEventListener::OnFlushCompleted`, after its descriptor lookup, on the RocksDB flush
   thread, so a close can start while a flush's transaction-log position update is still pending.
   Snapshotted in `initializeTestSeams()`
+- `ROCKSDB_JS_BACKUP_CAPTURE_LIST_DELAY_MS` - Test-only: delay before a `transactionLogs` backup's
+  live-file listing taken while new flushes are held, so a flush parked behind it escapes the gate
+  and the capture must fall back to listing with flushes running
+  (`test/fixtures/fork-backup-replay-position.mts`). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_CLOSE_FAILURE_AFTER_CANCEL` - Test-only: a one-shot close failure (a **flag**) injected
   right after `finishClose()` cancels background work, so the `shutdown()` retry must finish without
   flushing again. Snapshotted in `initializeTestSeams()`
@@ -1816,8 +1820,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     [participation](src/binding/core/DESIGN.md#participation-is-per-column-family).
 
 40. **A backup's `txn.state` is captured with its table files**: a backup that copies transaction
-    logs lists its files and reads each store's `txn.state` while new flushes are parked at
-    `OnFlushBegin` and no other flush is running, and copies only the stores it captured. A later
+    logs reads each store's `txn.state` while new flushes are parked at `OnFlushBegin` and no other
+    flush is running, with its file listing taken under that hold or verified unchanged since, and
+    copies only the stores it captured. A later
     read skips writes the files lack; an earlier one replays writes they hold. Only the writer's
     flushes are gated: a read-only or secondary handle's table view does not follow a live writer's
     `txn.state`, so that pairing is documented as unsupported rather than enforced. See

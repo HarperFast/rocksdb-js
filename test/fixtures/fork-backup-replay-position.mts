@@ -201,6 +201,38 @@ try {
 		}
 		writing = false;
 		await writer;
+	} else if (mode === 'escapeFallback') {
+		// ROCKSDB_JS_BACKUP_CAPTURE_LIST_DELAY_MS outlasts the gate's park, so the flush
+		// that keeps arriving escapes every listing taken under the hold.
+		const padding = 'p'.repeat(1024);
+		let writing = true;
+		let flushes = 0;
+		const writer = (async () => {
+			while (writing) {
+				await commitOne(db, total, padding);
+				total++;
+				if (total % 20 === 0) {
+					await db.flush();
+					flushes++;
+				}
+			}
+		})();
+		while (total < 200) await delay(10);
+		const before = total;
+		const flushesBefore = flushes;
+		const started = performance.now();
+		const restored = await streamBackup(db, newTarget(), undefined, false);
+		const elapsed = performance.now() - started;
+		const upTo = total;
+		writing = false;
+		await writer;
+		if (flushes === flushesBefore) {
+			throw new Error('No flush ran during the backup; this case proves nothing');
+		}
+		if (elapsed > 10_000) {
+			throw new Error(`The capture kept holding flushes for ${Math.round(elapsed)}ms`);
+		}
+		verifyRestored(restored, before, upTo, true);
 	} else if (mode === 'closeDuringCapture') {
 		// A second handle keeps the database open, so closing the first waits only
 		// for its own backup, which is waiting on a flush whose listener is delayed.
