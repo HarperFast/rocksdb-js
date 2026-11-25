@@ -1166,7 +1166,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     secondary+BlobDB as unsupported (facebook/rocksdb#13296) while this codebase enables blob
     files unconditionally — the pinned build fd-holds blob files like SSTs (verified empirically),
     so `secondary_blob_test.cc` is the regression net that must stay green on every RocksDB
-    upgrade. It also pins one known upstream failure of that pairing (#1147): once the primary
+    upgrade. It also pins one known upstream failure of that pairing (#1189): once the primary
     drops a blob file the secondary never saw, numbered above one still in use, the point-in-time
     replay counts every later version as incomplete. Catch-up then returns OK but installs no
     flushed data; WAL tailing continues, so the view has holes (newer unflushed writes, older

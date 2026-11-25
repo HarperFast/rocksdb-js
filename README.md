@@ -634,8 +634,8 @@ overlapping catch-ups on a backlogged follower can exhaust the default four-thre
 unrelated `fs`/`dns`/`crypto` work in the process. Await one before starting the next rather than
 firing one per timer tick.
 
-**Known issue:** a RocksDB bug can stop a secondary from picking up flushed data. Values of 2KB or
-more live in blob files. If the primary deletes a blob file the secondary never saw while an older
+**Known issue ([#1189](https://github.com/HarperFast/rocksdb-js/issues/1189)):** a RocksDB bug can
+stop a secondary from picking up flushed data. Values of 2KB or more live in blob files. If the primary deletes a blob file the secondary never saw while an older
 blob file is still in use, every later catch-up succeeds but brings in nothing the primary has
 flushed since. The secondary keeps replaying the primary's WAL, so it can show newer unflushed
 writes while older flushed ones are missing, and it keeps those replayed memtables in memory (the

@@ -35,7 +35,7 @@ rocksdb::Options blobOptions() {
 	// at 0.0 every version marks its oldest blob file for forced GC, the
 	// primary recompacts its own output in an endless loop, and each catch-up
 	// races that churn into the stall pinned by
-	// DroppedNewerBlobFileStallsCatchUp (#1147).
+	// DroppedNewerBlobFileStallsCatchUp (#1147, tracked in #1189).
 	options.blob_garbage_collection_age_cutoff = 1.0;
 	return options;
 }
@@ -315,7 +315,7 @@ TEST(SecondarySpike, SameWorkspaceSecondPairInstance) {
 
 namespace {
 
-// Drives a secondary into an upstream RocksDB stall found through #1147. The
+// Drives a secondary into an upstream RocksDB stall (#1189). The
 // primary drops a blob file the secondary never saw, numbered above a blob file
 // still in use. The point-in-time replay marks the dropped file missing, and
 // VersionBuilder keeps only the highest missing blob number, which never goes
@@ -383,8 +383,8 @@ struct StalledSecondary {
 
 } // namespace
 
-// Pins the stall's current symptoms, so they fail when a RocksDB upgrade fixes
-// it: flip them then. The follower keeps tailing the WAL, so a newer unflushed
+// Pins the stall's current symptoms (#1189), so they fail when a RocksDB
+// upgrade fixes it: flip them then. The follower keeps tailing the WAL, so a newer unflushed
 // write is visible while an older flushed one is missing, and reopening it
 // discards what it tailed.
 TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
@@ -427,8 +427,9 @@ TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
 	EXPECT_TRUE(st.secondary->Get({}, "tailed", &value).ok() && value == "v");
 }
 
-// A reopened primary writes a new MANIFEST that no longer records the dropped
-// blob file, and the follower rebuilds its replay when it switches to it.
+// Recovery from #1189: a reopened primary writes a new MANIFEST that no longer
+// records the dropped blob file, and the follower rebuilds its replay when it
+// switches to it.
 TEST(SecondarySpike, PrimaryReopenClearsStalledCatchUp) {
 	StalledSecondary st;
 	ASSERT_NO_FATAL_FAILURE(st.setUp());
