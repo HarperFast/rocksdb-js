@@ -60,3 +60,20 @@ TEST(FlushCaptureGate, AFlushParkedTooLongProceedsAndMarksTheHold) {
 	EXPECT_TRUE(hold.flushEscaped());
 	EXPECT_EQ(hold.parkedFlushes(), 0u);
 }
+
+TEST(FlushCaptureGate, OnceAFlushEscapesNoOtherParksUnderThatHold) {
+	rocksdb_js::FlushCaptureGate gate(std::chrono::milliseconds(200));
+	rocksdb_js::FlushCaptureHold hold(gate);
+	std::thread waiting([&] { gate.enterFlushBegin(); });
+	EXPECT_TRUE(waitUntil([&] { return hold.parkedFlushes() == 1; }));
+	std::thread escaping([&] { gate.enterFlushBegin(); });
+
+	const auto start = std::chrono::steady_clock::now();
+	escaping.join();
+	waiting.join();
+	for (int i = 0; i < 3; i++) {
+		gate.enterFlushBegin();
+	}
+	EXPECT_TRUE(hold.flushEscaped());
+	EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::milliseconds(390));
+}

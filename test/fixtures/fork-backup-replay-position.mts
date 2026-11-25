@@ -145,11 +145,15 @@ try {
 		// The same setup with a plain flush must return while its listener is still delayed,
 		// or this run cannot reach the interleaving it is testing.
 		const probe = RocksDatabase.open(`${path}-probe`, { disableWAL: true });
-		await fillToTrigger(probe);
-		await probe.flush();
-		const reached = isFlushCompletedDelayedForTesting();
-		probe.close();
-		rmSync(`${path}-probe`, { force: true, recursive: true });
+		let reached: boolean;
+		try {
+			await fillToTrigger(probe);
+			await probe.flush();
+			reached = isFlushCompletedDelayedForTesting();
+		} finally {
+			probe.close();
+			rmSync(`${path}-probe`, { force: true, recursive: true });
+		}
 		if (!reached) throw new Error('Flush() waited for its listener; this case proves nothing');
 
 		total = await fillToTrigger(db);

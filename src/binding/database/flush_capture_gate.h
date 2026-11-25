@@ -16,7 +16,8 @@ namespace rocksdb_js {
  * `txn.state`, and the capturer may take the DB mutex while flushes are parked.
  *
  * A flush parks for at most `maxPark`, then proceeds and marks the hold
- * escaped. The bound is what keeps a parked flush from wedging the process:
+ * escaped; that dooms the capture attempt, so no flush parks under that hold
+ * again (atomic flush calls `OnFlushBegin` once per column family). The bound is what keeps a parked flush from wedging the process:
  * a parked flush occupies a HIGH-pool thread, and a listing waits for purges,
  * which RocksDB also schedules on that pool (iterator cleanup does so even while
  * file deletions are disabled).
@@ -27,12 +28,13 @@ public:
 
 	void enterFlushBegin() {
 		std::unique_lock<std::mutex> lock(this->mutex);
-		if (!this->held) {
+		if (!this->held || this->escaped) {
 			return;
 		}
 		++this->parked;
-		if (!this->condition.wait_for(lock, this->maxPark, [this] { return !this->held; })) {
+		if (!this->condition.wait_for(lock, this->maxPark, [this] { return !this->held || this->escaped; })) {
 			this->escaped = true;
+			this->condition.notify_all();
 		}
 		--this->parked;
 	}

@@ -31,10 +31,11 @@ rocksdb::Status captureStopped(DBDescriptor* descriptor, const std::function<boo
 }
 
 /**
- * Returns once every running flush is parked at the gate. An unparked one may
- * have installed files whose position its OnFlushCompleted has not recorded;
- * a parked one has installed nothing. Parked flushes are a subset of running
- * ones and only grow while the gate is held, so reading them first makes
+ * Returns once every running flush is parked at the gate, or once one escaped
+ * (the caller then retries). An unparked flush may have installed files whose
+ * position its OnFlushCompleted has not recorded; a parked one has installed
+ * nothing. Parked flushes are a subset of running ones and, until one escapes,
+ * only grow while the gate is held, so reading them first makes
  * `running <= parked` exact. A job counts once because `atomic_flush` (set in
  * DBDescriptor::open) notifies every column family before any installs.
  */
@@ -49,6 +50,9 @@ rocksdb::Status waitForParkedFlushes(
 		rocksdb::Status s = captureStopped(descriptor, abandon, deadline);
 		if (!s.ok()) {
 			return s;
+		}
+		if (hold.flushEscaped()) {
+			return rocksdb::Status::OK();
 		}
 		const uint32_t parked = hold.parkedFlushes();
 		uint64_t running = 0;
