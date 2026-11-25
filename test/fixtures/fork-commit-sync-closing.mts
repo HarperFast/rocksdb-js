@@ -10,8 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
 // ROCKSDB_JS_CLOSE_FAILURE stops shutdown() before it closes the transaction, leaving only the
-// descriptor closing. With `dropped`, the transaction also wrote to a dropped column family, which
-// the closing database outranks.
+// descriptor closing.
 if (isMainThread) {
 	const [path, family] = process.argv.slice(2);
 	assert(path);

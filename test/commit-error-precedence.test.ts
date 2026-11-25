@@ -5,9 +5,6 @@ import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-// A closing database (shutdown() mid-commit) is pinned by fork-commit-sync-closing.mts (commitSync)
-// and fork-commit-admission-shutdown.mts (commit).
-
 const methods = ['commit', 'commitSync'] as const;
 
 async function commitError(txn: Transaction, method: (typeof methods)[number]): Promise<unknown> {
@@ -31,9 +28,7 @@ function expectNothingCommitted(dbPath: string): void {
 describe('Transaction commit error precedence', () => {
 	for (const method of methods) {
 		describe(`${method}()`, () => {
-			// Closing the last handle aborts its pending transactions. The beforecommit notification's
-			// "Database not open" must outrank that ERR_ALREADY_ABORTED, which db.transaction() and
-			// transactionSync() swallow as a user abort, dropping the write without an error.
+			// Closing the last handle aborts its pending transactions.
 			for (const state of ['pending', 'aborted', 'abandoned'] as const) {
 				it(`reports a closed database over a transaction that was ${state}`, () =>
 					dbRunner(async ({ db }) => {

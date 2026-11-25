@@ -17,15 +17,19 @@ if (isMainThread) {
 		{ eval: true, workerData: { path, method, gate } }
 	);
 	try {
-		const result = once(worker, 'message');
+		let replied = false;
+		const result = once(worker, 'message').finally(() => (replied = true));
 		const deadline = Date.now() + 5000;
-		while (Atomics.load(gate, 0) !== 1) {
+		// A worker that fails before beforecommit replies instead, and the assertion below shows why.
+		while (Atomics.load(gate, 0) !== 1 && !replied) {
 			assert(Date.now() < deadline, 'the worker never reached beforecommit');
 			await delay(1);
 		}
-		shutdown();
-		Atomics.store(gate, 1, 1);
-		Atomics.notify(gate, 1);
+		if (!replied) {
+			shutdown();
+			Atomics.store(gate, 1, 1);
+			Atomics.notify(gate, 1);
+		}
 		assert.deepEqual(await result, [{ threw: true, message: 'Database is closing' }]);
 	} finally {
 		await worker.terminate();

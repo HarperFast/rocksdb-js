@@ -69,7 +69,6 @@ if (isMainThread) {
 		await db.transaction((txn) => txn.putSync('warm', true));
 	}
 	const txn = new Transaction(db.store);
-	// The closing database outranks a dropped column family the transaction wrote to.
 	if (workerData.dropped) {
 		const doomed = RocksDatabase.open(workerData.path, { name: 'doomed' });
 		doomed.putSync('k', 'v', { transaction: txn });
