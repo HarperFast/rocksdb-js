@@ -145,8 +145,9 @@ capture (`captureLiveFilesWithTransactionLogs`, used by the stream path and, thr
 
 A listing waits out pending purges, which also run on the HIGH pool (one thread here), and iterator
 cleanup schedules one even while file deletions are disabled; behind a parked flush that purge never
-runs. So a flush parks for at most a second, then proceeds and marks the hold escaped
-(`FlushCaptureHold::flushEscaped`), and the capture retries. Listing outside the hold instead would
+runs. So under one hold a flush parks for at most a second, then proceeds and marks the hold
+escaped (`FlushCaptureHold::flushEscaped`), and the capture retries. A flush still parked when the
+next hold is raised stays parked, and counted, under it with a fresh second. Listing outside the hold instead would
 retry whenever a flush installs between the listing and the hold, which under back-to-back flushes
 is most attempts.
 

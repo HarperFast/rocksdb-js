@@ -15,9 +15,12 @@ namespace rocksdb_js {
  * installs anything, so a parked flush has changed neither the live files nor
  * `txn.state`, and the capturer may take the DB mutex while flushes are parked.
  *
- * A flush parks for at most `maxPark`, then proceeds and marks the hold
- * escaped; that dooms the capture attempt, so no flush parks under that hold
- * again (atomic flush calls `OnFlushBegin` once per column family). The bound is what keeps a parked flush from wedging the process:
+ * Under one hold a flush parks for at most `maxPark`, then proceeds and marks
+ * the hold escaped; that dooms the capture attempt, so no flush parks under
+ * that hold again (atomic flush calls `OnFlushBegin` once per column family).
+ * A flush still parked when the next hold is raised parks again under it, with
+ * a fresh `maxPark`. The per-hold bound is what keeps a parked flush from
+ * wedging the process:
  * a parked flush occupies a HIGH-pool thread, and a listing waits for purges,
  * which RocksDB also schedules on that pool (iterator cleanup does so even while
  * file deletions are disabled).

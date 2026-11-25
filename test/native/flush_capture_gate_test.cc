@@ -62,7 +62,7 @@ TEST(FlushCaptureGate, AFlushParkedTooLongProceedsAndMarksTheHold) {
 }
 
 TEST(FlushCaptureGate, AFlushStillParkedWhenTheNextHoldIsRaisedStaysParkedUnderIt) {
-	rocksdb_js::FlushCaptureGate gate(std::chrono::milliseconds(100));
+	rocksdb_js::FlushCaptureGate gate(std::chrono::milliseconds(400));
 	std::atomic<bool> passed{ false };
 	std::thread flush;
 	{
@@ -72,11 +72,12 @@ TEST(FlushCaptureGate, AFlushStillParkedWhenTheNextHoldIsRaisedStaysParkedUnderI
 			passed = true;
 		});
 		EXPECT_TRUE(waitUntil([&] { return first.parkedFlushes() == 1; }));
-		std::this_thread::sleep_for(std::chrono::milliseconds(90));
+		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		{
 			// The next hold's generation, raised before the flush could leave the first.
 			rocksdb_js::FlushCaptureHold second(gate);
-			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			// Past the first hold's deadline, so only a fresh one keeps it parked.
+			std::this_thread::sleep_for(std::chrono::milliseconds(250));
 			EXPECT_EQ(second.parkedFlushes(), 1u);
 			EXPECT_FALSE(second.flushEscaped());
 			EXPECT_FALSE(passed.load());
