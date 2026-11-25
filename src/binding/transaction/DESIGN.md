@@ -87,7 +87,8 @@ owns its keys (`get` copies one out of the handle's shared default key buffer un
 admission, as `useLog` does; `getMany` copies with `MultiGetBatch::copyKeys()`), so JavaScript that
 reuses or detaches that buffer cannot change which records the read returns. `prepareGet`/
 `prepareMultiGet` then create the work, and the call admits again before `get()`/`multiGet()`
-register on the transaction and queue it. Those take the prepared state after their registration, so a
+register on the transaction and queue it, so an init hook runs before the read establishes its
+snapshot and looks at staged writes, like JavaScript run before the call. Those take the prepared state after their registration, so a
 failed setup releases the snapshot and column descriptor it pinned while the registration still holds
 off `close()`. The `Database::*` by-id reads prepare the same way. In builds with fatal asserts,
 `enterSync()` counts admissions per thread and `assertJavaScriptMayRun()`, called by both error
