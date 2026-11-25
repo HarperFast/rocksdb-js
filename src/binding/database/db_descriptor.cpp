@@ -1,3 +1,4 @@
+#include "core/assert.h"
 #include "core/background_error.h"
 #include "core/file_lock.h"
 #include "core/open_status.h"
@@ -643,9 +644,25 @@ void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
 				return entry.second->activeAsyncWorkCount.load() == 0;
 			});
 			if (it == this->transactions.end()) {
+				// Only a cancelled handle bumps the generation, so an uncancelled busy one would never wake
+				// this wait. None can be registered after the cancel above; cancel one that is, outside
+				// txnsMutex (its waitMutex orders before it), and rescan.
+				std::shared_ptr<TransactionHandle> uncancelled;
+				for (auto& [_id, txnHandle] : this->transactions) {
+					if (!txnHandle->isCancelled()) {
+						uncancelled = txnHandle;
+						break;
+					}
+				}
 				txnsLock.unlock();
+				if (uncancelled) {
+					uncancelled->cancelAllAsyncWork();
+					uncancelled.reset();
+					ROCKSDB_JS_ASSERT(false, "Transaction registered uncancelled during the close drain");
+					txnsLock.lock();
+					continue;
+				}
 				transactionDrainWaits().fetch_add(1, std::memory_order_relaxed);
-				// Every one was cancelled above, so whichever goes idle first bumps the generation.
 				AsyncWorkHandle::cancelledIdleGeneration.wait(idleGeneration);
 				txnsLock.lock();
 				continue;
