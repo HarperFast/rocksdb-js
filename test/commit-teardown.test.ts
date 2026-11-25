@@ -159,6 +159,13 @@ describe('Async commit completion that cannot be dispatched to a live env', () =
 			},
 		},
 		{ name: 'worker-exit', seams: { ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE: '1' } },
+		{
+			name: 'worker-exit-in-flight',
+			seams: {
+				ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE: '1',
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '300',
+			},
+		},
 	];
 	it
 		.skipIf(!!process.versions.deno)

@@ -225,7 +225,8 @@ serialize on the descriptor for dispatch and accounting. A dying env's tsfn is
 released under the same completion mutex from the module env-cleanup hook
 (`DBRegistry::ReleaseCommitCompletionsByEnv`) — the same env-teardown discipline
 as `EventEmitter::notify` above. Registry removal holds `commitMutex` through
-completion release (registry → completion is the only nested lock order): removing
+completion release (registry → completion is the only nested lock order, plus the leaf env-liveness
+mutex a completion takes when it creates its TSFN): removing
 an entry before releasing its TSFN lets concurrent env cleanup miss that entry and
 return before the TSFN is safe. A retained completion object does not pin the Node
 env; its terminal closed flag prevents a delayed registration or dispatch from

@@ -286,6 +286,13 @@ inline std::atomic<int>& memoryMapBufferDelayMsFlag() {
 	return delayMs;
 }
 
+// Parked commits a retired completion's finalizer closed without JS because
+// their env was gone. Never reset.
+inline std::atomic<uint64_t>& commitFinalizerSkippedDeliveries() {
+	static std::atomic<uint64_t> skipped{ 0 };
+	return skipped;
+}
+
 // Failed native mapping-buffer creates. Never reset.
 inline std::atomic<uint64_t>& memoryMapBufferCreateFailures() {
 	static std::atomic<uint64_t> failures{ 0 };

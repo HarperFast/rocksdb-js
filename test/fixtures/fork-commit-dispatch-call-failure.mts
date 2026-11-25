@@ -1,6 +1,7 @@
 // Commits whose completions cannot be handed to their live env must still settle, and must not
 // keep the event loop alive: the parent kills this process on a deadline.
 import { RocksDatabase, Transaction } from '../../src/index.ts';
+import { getCommitFinalizerSkippedDeliveries } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
@@ -8,21 +9,29 @@ import { Worker } from 'node:worker_threads';
 const [path, mode] = process.argv.slice(2);
 const failures = Number(process.env.ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE);
 const skips = Number(process.env.ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE_SKIP ?? 0);
-const expected = { burst: [2, 0], 'delivered-first': [1, 1], 'worker-exit': [1, 0] }[mode];
+const expected = {
+	burst: [2, 0],
+	'delivered-first': [1, 1],
+	'worker-exit': [1, 0],
+	'worker-exit-in-flight': [1, 0],
+}[mode];
 if (!expected || failures !== expected[0] || skips !== expected[1]) {
 	throw new Error(`unexpected mode ${mode} or seams ${failures}/${skips}`);
 }
 
-if (mode === 'worker-exit') {
+if (mode === 'worker-exit' || mode === 'worker-exit-in-flight') {
 	const worker = new Worker(
 		createWorkerBootstrapScript('./test/workers/commit-dispatch-call-failure-worker.mts'),
-		{ eval: true, workerData: { path } }
+		{ eval: true, workerData: { path, mode } }
 	);
 	const exitCode = await new Promise<number>((resolve, reject) => {
 		worker.once('error', reject);
 		worker.once('exit', resolve);
 	});
 	assert.equal(exitCode, 0);
+	if (mode === 'worker-exit-in-flight') {
+		assert.ok(getCommitFinalizerSkippedDeliveries() > 0, 'the finalizer called into an exited env');
+	}
 	const db = RocksDatabase.open(path);
 	assert.equal(db.getSync('worker'), 1);
 	db.close();

@@ -699,7 +699,9 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 		void releaseTsfnLocked();
 		void releaseRetiredIfDrainedLocked();
 	};
-	// Registry -> completion is the only nested lock order. Keep entries
+	// Registry -> completion is the only nested lock order between these;
+	// registerCommit() also takes the process-wide env-liveness mutex under a
+	// completion's, and that one is a leaf. Keep entries
 	// reachable until release finishes: otherwise env cleanup could miss a
 	// detached entry and let Node free its TSFN before the releasing thread.
 	std::mutex commitMutex;

@@ -492,6 +492,12 @@ napi_value GetTransactionLogMapCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value GetCommitFinalizerSkippedDeliveries(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(commitFinalizerSkippedDeliveries().load(std::memory_order_relaxed)), &result));
+	return result;
+}
+
 napi_value GetTransactionLogMapBufferCreateFailures(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(memoryMapBufferCreateFailures().load(std::memory_order_relaxed)), &result));
@@ -812,6 +818,10 @@ NAPI_MODULE_INIT() {
 	napi_value getTransactionLogMapCountFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "getTransactionLogMapCount", NAPI_AUTO_LENGTH, GetTransactionLogMapCount, nullptr, &getTransactionLogMapCountFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "getTransactionLogMapCount", getTransactionLogMapCountFn));
+
+	napi_value getCommitFinalizerSkippedDeliveriesFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "getCommitFinalizerSkippedDeliveries", NAPI_AUTO_LENGTH, GetCommitFinalizerSkippedDeliveries, nullptr, &getCommitFinalizerSkippedDeliveriesFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "getCommitFinalizerSkippedDeliveries", getCommitFinalizerSkippedDeliveriesFn));
 
 	napi_value getTransactionLogMapBufferCreateFailuresFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "getTransactionLogMapBufferCreateFailures", NAPI_AUTO_LENGTH, GetTransactionLogMapBufferCreateFailures, nullptr, &getTransactionLogMapBufferCreateFailuresFn));

@@ -21,6 +21,7 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -1194,9 +1195,14 @@ void DBDescriptor::CommitCompletion::finalize(napi_env env, void* data, void* /*
 		if (deliver && ::napi_open_handle_scope(env, &scope) != napi_ok) {
 			scope = nullptr;
 		}
+		if (!deliver) {
+			commitFinalizerSkippedDeliveries().fetch_add(1, std::memory_order_relaxed);
+		}
 		try {
 			completion.callJs(deliver ? env : nullptr, nullptr, nullptr, item);
 		} catch (...) {
+			// Constant text, so reporting cannot throw again.
+			::fputs("rocksdb-js: settling a commit after its completion could not be dispatched threw; its commit() will not settle\n", stderr);
 			try {
 				completion.callJs(nullptr, nullptr, nullptr, item);
 			} catch (...) {

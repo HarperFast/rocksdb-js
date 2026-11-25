@@ -1184,6 +1184,10 @@ export const coolTransactionLogs: () => { maps: number; bytes: number } =
  */
 export const getTransactionLogMapCount: () => number = binding.getTransactionLogMapCount;
 
+/** Process-wide count of parked commits closed without JS because their env was gone (test probe). */
+export const getCommitFinalizerSkippedDeliveries: () => number =
+	binding.getCommitFinalizerSkippedDeliveries;
+
 /** Process-wide count of failed mapping-buffer creates (test probe). */
 export const getTransactionLogMapBufferCreateFailures: () => number =
 	binding.getTransactionLogMapBufferCreateFailures;
