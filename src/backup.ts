@@ -220,6 +220,11 @@ export interface BackupOptions {
 	 * capture both together the backup briefly holds new flushes back and waits
 	 * for running ones to finish; if it cannot capture both together within a
 	 * minute, the backup rejects with a `Busy` error and can be retried.
+	 *
+	 * This pairing holds only for a backup taken from the handle that writes the
+	 * database. A read-only or secondary handle keeps the table files it opened
+	 * with, while the log's `txn.state` is shared with any writer still flushing
+	 * into it, so back up from the writer when one is running.
 	 */
 	transactionLogs?: boolean;
 }

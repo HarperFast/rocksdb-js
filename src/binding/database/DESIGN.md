@@ -159,6 +159,10 @@ recorded (`versionChangedSinceListing`, via `DB::GetLiveFiles` without a flush),
 `txn.state`. Comparing live files instead missed a flush whose files a compaction had already
 removed. A compaction in that window also forces a retry, up to the same one-minute bound.
 
+Only the descriptor's own flushes are gated. A read-only or secondary descriptor flushes nothing
+while the store's `txn.state` follows whichever writer shares it, in this process or another, so a
+backup taken there while a writer runs is documented as unsupported rather than enforced.
+
 The capture belongs to the backup, never the descriptor, because backups to different directories
 run concurrently. The position is still the store's conservative one: the commit ring
 is sampled, so under continuous commits it can lag the flushed data, live as in a backup.

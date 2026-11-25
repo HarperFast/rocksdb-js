@@ -3147,7 +3147,10 @@ together with the table files the backup copies, so a restore replays from the p
 exactly the flushes those files hold; the log files are copied afterwards and may include later
 entries, which the replay applies. To capture both together, the backup briefly holds new flushes
 back and waits for running ones to finish, and rejects with a `Busy` error (safe to retry) if it
-cannot capture both together within a minute.
+cannot capture both together within a minute. This holds only for a backup taken from the handle that
+writes the database: a read-only or secondary handle keeps the table files it opened with, while the
+log's `txn.state` is shared with any writer still flushing into it, so back up from the writer when
+one is running.
 
 `checkDiskSpace` (on by default) rejects with an I/O error — its message reports the available and
 required bytes — before any files are copied, so a full destination fails fast instead of partway

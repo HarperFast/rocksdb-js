@@ -1818,7 +1818,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 40. **A backup's `txn.state` is captured with its table files**: a backup that copies transaction
     logs lists its files and reads each store's `txn.state` while new flushes are parked at
     `OnFlushBegin` and no other flush is running, and copies only the stores it captured. A later
-    read skips writes the files lack; an earlier one replays writes they hold. See
+    read skips writes the files lack; an earlier one replays writes they hold. Only the writer's
+    flushes are gated: a read-only or secondary handle's table view does not follow a live writer's
+    `txn.state`, so that pairing is documented as unsupported rather than enforced. See
     [backup replay position](src/binding/database/DESIGN.md#backup-replay-position).
 
 ## Debugging native heap corruption
