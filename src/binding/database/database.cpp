@@ -1297,7 +1297,11 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		if (!txnHandle) {
 			return nullptr;
 		}
-		return txnHandle->get(env, key, resolve, reject, *dbHandle,
+		PendingAsyncState<AsyncTransactionGetState> read(env, nullptr);
+		if (!txnHandle->prepareGet(env, std::move(key), resolve, reject, read)) {
+			return nullptr;
+		}
+		return txnHandle->get(env, std::move(read), *dbHandle,
 			vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
 	}
 

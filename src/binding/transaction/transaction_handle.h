@@ -30,6 +30,11 @@ struct DBIteratorHandle;
 struct DBIteratorOptions;
 struct MultiGetBatch;
 struct TransactionLogStore;
+struct TransactionHandle;
+template <typename T>
+struct AsyncGetState;
+struct AsyncTransactionMultiGetState;
+using AsyncTransactionGetState = AsyncGetState<std::shared_ptr<TransactionHandle>>;
 
 /**
  * One column-family generation a transaction has staged a write to. Weak,
@@ -490,11 +495,25 @@ private:
 	void closeImpl(bool waitForWinner) noexcept;
 
 public:
-	napi_value get(
+	/**
+	 * Creates the state and async work of a `get()` of `key`, which the caller has already copied out
+	 * of any shared buffer. Call it before the read is admitted: creating async work runs
+	 * `async_hooks` init hooks. False, with a JavaScript exception pending, on failure.
+	 */
+	[[nodiscard]] bool prepareGet(
 		napi_env env,
-		std::string& key,
+		std::string key,
 		napi_value resolve,
 		napi_value reject,
+		PendingAsyncState<AsyncTransactionGetState>& read
+	);
+
+	/**
+	 * Admits and queues a read set up by `prepareGet()`.
+	 */
+	napi_value get(
+		napi_env env,
+		PendingAsyncState<AsyncTransactionGetState>&& read,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr,
 		VtSlotRef vtSlot = {},
 		bool hasExpectedVersion = false,
@@ -537,14 +556,24 @@ public:
 	);
 
 	/**
-	 * Queues an async `MultiGet` of `keys` through the transaction, reading `dbHandle`'s column
-	 * family; see `Database::GetMany`.
+	 * Copies `keys` and creates the async work of a `multiGet()`, before the read is admitted; see
+	 * `prepareGet()`.
 	 */
-	napi_value multiGet(
+	[[nodiscard]] bool prepareMultiGet(
 		napi_env env,
 		const std::vector<rocksdb::Slice>& keys,
 		napi_value resolve,
 		napi_value reject,
+		PendingAsyncState<AsyncTransactionMultiGetState>& read
+	);
+
+	/**
+	 * Queues an async `MultiGet` set up by `prepareMultiGet()` through the transaction, reading
+	 * `dbHandle`'s column family; see `Database::GetMany`.
+	 */
+	napi_value multiGet(
+		napi_env env,
+		PendingAsyncState<AsyncTransactionMultiGetState>&& read,
 		std::shared_ptr<DBHandle> dbHandle
 	);
 

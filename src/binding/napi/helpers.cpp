@@ -11,6 +11,7 @@
 #include <thread>
 #include "core/debug.h"
 #include "core/exception.h"
+#include "napi/async.h"
 #include "napi/helpers.h"
 #include "napi/macros.h"
 #include "rocksdb/utilities/options_util.h"
@@ -282,6 +283,8 @@ static void takeFailedCallException(napi_env env, napi_status status, napi_value
 	} while (0)
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error) {
+	// Calls Object.create and sets properties: patched globals run JavaScript here.
+	assertJavaScriptMayRun();
 	ROCKSDB_STATUS_FORMAT_ERROR(status, msg);
 
 	napi_value global;
@@ -328,6 +331,7 @@ void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, n
 }
 
 void createJSError(napi_env env, const char* code, const char* message, napi_value& error) {
+	assertJavaScriptMayRun();
 	napi_value global;
 	napi_value objectCtor;
 	napi_value objectCreateFn;

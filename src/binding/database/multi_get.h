@@ -16,6 +16,7 @@ namespace rocksdb_js {
 
 struct ColumnFamilyDescriptor;
 struct DBHandle;
+struct TransactionHandle;
 
 /**
  * One `MultiGet` call's keys and results. The sync path points `keys` into the caller's JS buffer;
@@ -95,6 +96,14 @@ struct AsyncMultiGetState : BaseAsyncState<T> {
 	// A transaction belongs to the database rather than a single column family, so the caller's
 	// descriptor is pinned until the worker finishes, then released before completion is signaled.
 	std::shared_ptr<ColumnFamilyDescriptor> readColumnDescriptor;
+};
+
+struct AsyncTransactionMultiGetState final : AsyncMultiGetState<std::shared_ptr<TransactionHandle>> {
+	using AsyncMultiGetState::AsyncMultiGetState;
+	std::shared_ptr<const rocksdb::Snapshot> snapshot;
+	rocksdb::DB* readDb = nullptr;
+	MultiGetBatch misses;
+	std::vector<size_t> missingIndices;
 };
 
 /**
