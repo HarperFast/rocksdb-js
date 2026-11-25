@@ -237,6 +237,9 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
  * else will ever release those intents, and other writers' coordinated-retry
  * commits park on them. Reads keep working, including read-your-own-writes.
  *
+ * Its non-verifying writer counts go too, so a verificationTable opt-in need not
+ * wait for the close (core/DESIGN.md, participation).
+ *
  * VT intents only: RocksDB's own transaction locks (pessimistic mode) are held
  * until the transaction is aborted.
  */
@@ -253,10 +256,10 @@ napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 	}
 
 	(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
-	// Unadmitted, a teardown close() owns the release; it runs releaseIntent() itself.
+	// Unadmitted, a teardown close() owns the release and runs it itself.
 	TransactionOperation operation(**txnHandle);
 	if (operation.admitted()) {
-		(*txnHandle)->releaseIntent();
+		(*txnHandle)->abandonStagedWrites();
 	}
 	NAPI_RETURN_UNDEFINED();
 }
@@ -705,10 +708,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 				txnHandle->releaseIntent();
 			}
 			if (state->status.IsColumnFamilyDropped()) {
-				txnHandle->writesAbandoned.store(true, std::memory_order_relaxed);
-				if (!txnHandle->lockedVTSlots.empty()) {
-					txnHandle->releaseIntent();
-				}
+				txnHandle->abandonStagedWrites();
 			}
 		}
 		if (state->status.ok()) {

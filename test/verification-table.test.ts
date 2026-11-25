@@ -1137,6 +1137,107 @@ describe('Verification Table', () => {
 			}
 		});
 
+		it('releases the count when a transaction abandons its writes, and only once', async () => {
+			const conflict = expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' });
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			const first = new Transaction(keepAlive.store);
+			const second = new Transaction(keepAlive.store);
+			try {
+				const key = Buffer.from('abandoned');
+				await plain.put(key, makeValue(1.5e12));
+				plain.putSync(key, makeValue(1.6e12), { transaction: first });
+				plain.putSync(key, makeValue(1.7e12), { transaction: second });
+				plain.close();
+
+				first.abandonWrites();
+				expect(() => first.commitSync()).toThrow(
+					expect.objectContaining({ code: 'ERR_WRITES_ABANDONED' })
+				);
+				first.abort();
+				expect(() => cached.open()).toThrow(conflict);
+
+				second.abandonWrites();
+				cached.open();
+				seed(cached, key, 1.5e12);
+				expect(() => second.commitSync()).toThrow(
+					expect.objectContaining({ code: 'ERR_WRITES_ABANDONED' })
+				);
+				expect(cached.getSync(key, { expectedVersion: 1.5e12 })).toBe(FRESH_VERSION_FLAG);
+			} finally {
+				first.abort();
+				second.abort();
+				cached.close();
+				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it('releases the count when a write to a dropped column family abandons the transaction', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const doomed = new RocksDatabase(path, { name: 'doomed', encoding: false }).open();
+			const stale = new RocksDatabase(path, { name: 'doomed', encoding: false }).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			const txn = new Transaction(keepAlive.store);
+			try {
+				plain.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: txn });
+				plain.close();
+				doomed.dropSync();
+				expect(() =>
+					stale.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: txn })
+				).toThrow(expect.objectContaining({ code: 'ERR_COLUMN_FAMILY_DROPPED' }));
+				cached.open();
+				expect(() => txn.commitSync()).toThrow(
+					expect.objectContaining({ code: 'ERR_WRITES_ABANDONED' })
+				);
+			} finally {
+				txn.abort();
+				cached.close();
+				stale.close();
+				doomed.close();
+				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it.each(['commit', 'commitSync'] as const)(
+			'releases the count when %s() is refused because a column family it wrote was dropped',
+			async (method) => {
+				const path = generateDBPath();
+				const keepAlive = new RocksDatabase(path).open();
+				const plain = new RocksDatabase(path, plainOptions).open();
+				const doomed = new RocksDatabase(path, { name: 'doomed', encoding: false }).open();
+				const stale = new RocksDatabase(path, { name: 'doomed', encoding: false }).open();
+				const cached = new RocksDatabase(path, cachedOptions);
+				const txn = new Transaction(keepAlive.store);
+				try {
+					plain.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: txn });
+					stale.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: txn });
+					plain.close();
+					doomed.dropSync();
+					const dropped = expect.objectContaining({ code: 'ERR_COLUMN_FAMILY_DROPPED' });
+					if (method === 'commit') {
+						await expect(txn.commit()).rejects.toEqual(dropped);
+					} else {
+						expect(() => txn.commitSync()).toThrow(dropped);
+					}
+					cached.open();
+					expect(cached.isOpen()).toBe(true);
+				} finally {
+					txn.abort();
+					cached.close();
+					stale.close();
+					doomed.close();
+					plain.close();
+					keepAlive.close();
+				}
+			}
+		);
+
 		it.skipIf(typeof globalThis.gc !== 'function')(
 			'allows opting in once a dropped transaction that staged through a closed handle is collected',
 			async () => {

@@ -92,9 +92,14 @@ agree across every handle on a column family once any of them participates.
   straight back): `resetTransaction()`, or the `close()` that wins the `closed` gate, after its
   async-work drain; a later `close()` waits for that one (`closeProgress`), and a GC orphan close
   runs the same body. A commit still running therefore keeps the count, and so does a transaction
-  that is closing on another thread. Staging through a handle is sequenced before that handle's
-  `close()` on its owner thread, so `OpenDB` reads the handle count first and the writer count
-  second. The count (`NonVerifyingWriterCount`) is its own allocation and doubles as its reference
+  that is closing on another thread. The one earlier release is `abandonStagedWrites()`:
+  `abandonWrites()`, a write refused for a dropped family, or a commit refused at admission for one
+  sets `writesAbandoned`, which bars every later write and commit, so the staged writes can never
+  land. It runs only where `close()` and `resetTransaction()` are excluded (an admitted call, or
+  the commit's registered async work); an abort that defers to a teardown close leaves the release
+  to it. A commit that fails for any other reason stays committable and keeps the count. Staging
+  through a handle is sequenced before that handle's `close()` on its owner thread, so `OpenDB`
+  reads the handle count first and the writer count second. The count (`NonVerifyingWriterCount`) is its own allocation and doubles as its reference
   count: holding the `ColumnFamilyDescriptor` instead would let a transaction outliving its database
   destroy the column-family handle after it. Activity on other
   column families never blocks the switch. Once a non-participating handle has detached

@@ -280,7 +280,10 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 */
 	ColumnFamilySet touchedColumnFamilies;
 
-	/** Held until the RocksDB transaction is deleted; a failed first stage returns its count (core/DESIGN.md, participation). */
+	/**
+	 * Held until the RocksDB transaction is deleted or its writes are abandoned; a failed first stage
+	 * returns its count (core/DESIGN.md, participation).
+	 */
 	NonVerifyingWriterSet nonVerifyingWriters;
 
 	/**
@@ -411,6 +414,16 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	 * IsBusy), and from close() to clean up orphaned locks.
 	 */
 	void releaseIntent();
+
+	/**
+	 * Bars every later write and commit, then releases what only a commit
+	 * could use: the non-verifying writer counts (core/DESIGN.md,
+	 * participation) and the VT write intents. The caller must exclude
+	 * close() and resetTransaction() on this handle: an admitted
+	 * TransactionOperation, a descriptor operation `finishClose()` drains
+	 * before its sweep, or the commit's registered async work.
+	 */
+	void abandonStagedWrites();
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 

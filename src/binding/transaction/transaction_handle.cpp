@@ -1109,14 +1109,20 @@ void ColumnFamilySet::removeLast(ColumnFamilyDescriptor* column) {
 	this->last = tail ? tail->raw : nullptr;
 }
 
+void TransactionHandle::abandonStagedWrites() {
+	this->writesAbandoned.store(true, std::memory_order_relaxed);
+	this->nonVerifyingWriters.release();
+	if (!this->lockedVTSlots.empty()) {
+		this->releaseIntent();
+	}
+}
+
 rocksdb::Status TransactionHandle::abandonForDroppedColumnFamily(
 	const std::shared_ptr<ColumnFamilyDescriptor>& column
 ) noexcept {
 	this->writesAbandoned.store(true, std::memory_order_relaxed);
 	try {
-		if (!this->lockedVTSlots.empty()) {
-			this->releaseIntent();
-		}
+		this->abandonStagedWrites();
 		return rocksdb::Status::ColumnFamilyDropped("Column family \"" + column->name + "\" was dropped");
 	} catch (...) {
 		return rocksdb::Status::MemoryLimit();
