@@ -50,10 +50,13 @@ lets abort and orphan cleanup cancel and drain the read.
 
 # Synchronous admission
 
-A call that reaches a transaction through its own `NativeTransaction` wrapper (`getSync`, the setup of
-`get`, `getMany`, `getManySync`, `getCount`, `putSync`, `removeSync`, `useLog`, `setTimestamp`,
-`abandonWrites`, and a transaction-context `getRange`) holds a `TransactionOperation` from before its
-first read of `dbHandle` or `txn` until it returns. A foreign `destroy()`/`shutdown()` resets those in
+A call that reaches a transaction through its own `NativeTransaction` wrapper (`getSync`, `getMany`,
+`getManySync`, `getCount`, `putSync`, `removeSync`, `useLog`, `setTimestamp`, `abandonWrites`, and a
+transaction-context `getRange`) holds a `TransactionOperation` whenever it reads `dbHandle` or `txn`,
+and releases it only around steps that run JavaScript (below). The setup of an async `get` holds one
+only to copy its key: after creating its work it reads the handle and `txn` under the transaction's
+async-work registration in `TransactionHandle::get()`, which `close()` drains the same way. An
+admission held across `prepareGet()` would put the work creation back under it. A foreign `destroy()`/`shutdown()` resets those in
 `TransactionHandle::close()`, from `finishClose()`'s closables sweep on its own thread.
 
 `TransactionOperation` registers with the transaction's own async-work drain through the lock-free
@@ -74,17 +77,38 @@ parked async reads and refuses new calls, then closes idle ones first; while eve
 in flight it waits for one to finish rather than close any. Closing a pessimistic writer blocked on a
 row lock waits for its call, and the holder of that lock may be another transaction in the same map.
 
-Admission comes after any argument parsing that can run JavaScript: a getter that aborts, commits or
-closes on the same thread would wait on the admission it is running under. `useLog` cannot order it
-that way, since it validates its database argument with `instanceof` and constructs a JavaScript
-`TransactionLog`: it admits once to read the transaction's handle, releases, validates, and admits
-again to recheck that handle before it binds the store. Building an
-error is outside that rule: it reads `Object.create` and `Error.prototype`, so a call that fails while
-admitted would wait on itself if those were patched to end the transaction. A call made under a
-descriptor `OperationGuard` is exposed the same way to a re-entrant `shutdown()`. After admission, a handle
-the owner has closed or reopened no longer belongs to this transaction's descriptor, so calls that
-use it refuse with "Database not open". `setTimestamp` and `abandonWrites` use only the transaction and
-are not refused for that.
+No JavaScript runs while a call is admitted: JavaScript that aborts, commits or closes the
+transaction on the same thread would wait on the admission it is running under. Each N-API step that
+can run JavaScript therefore happens before admission or after it ends: an option getter, `instanceof`,
+a coded error (`createJSError`/`createRocksDBError` call `Object.create` and set properties, so patched
+globals run there), and creating async work (`napi_create_async_work` runs `async_hooks` init hooks).
+Errors without a code (`napi_throw_error(env, nullptr, ...)`) run none. So `putSync`, `removeSync` and
+`setTimestamp` decide their error while admitted and build it after. `useLog` admits once to read the
+transaction's handle, releases, validates with `instanceof`, admits again to recheck that handle and
+bind the store, and constructs the JavaScript `TransactionLog` after. An async `get`/`getMany` first
+owns its keys (`get` copies one out of the handle's shared default key buffer while admitted;
+`getMany` copies with `MultiGetBatch::copyKeys()`), so JavaScript that reuses or detaches that buffer
+cannot change which records the read returns. `prepareGet`/`prepareMultiGet` then create the work
+without reading transaction or handle state. `getMany` then admits and calls `multiGet()`; `get` calls
+`get()` unadmitted, which rechecks its own handle (`ownHandleDetached()`) under its registration and
+derives the verification-table slot from the handle it reads, since a reopen can move it to another
+column family. Both check before `ensureSnapshot()`, so a refused read pins no snapshot. An init hook therefore runs before the read
+establishes its snapshot and looks at staged writes, like JavaScript run before the call. `get()`/
+`multiGet()` take the prepared state after their registration, so a failed setup releases the snapshot
+and column descriptor it pinned while the registration still holds off `close()`. The `Database::*`
+by-id reads prepare the same way. In builds with fatal asserts, `enterSync()` counts admissions per
+thread and `assertJavaScriptMayRun()`, called by both error builders and before each prepared work
+creation, fails while one is held. It does not see async-work registrations or handle guards.
+
+Still exposed: `commit()` creates its completion's threadsafe function (and, in legacy mode, its async
+work) while it holds the transaction's registration and a descriptor operation (#1172), and a
+`Database::*` call, by-id transaction reads included, holds its handle's `HandleOperationGuard` across
+its own error building and work creation, so a same-thread `destroy()`/`shutdown()` there still waits
+on itself (#1143).
+
+After admission, a handle the owner has closed or reopened no longer belongs to this transaction's
+descriptor, so calls that use it refuse with "Database not open". `setTimestamp` and
+`abandonWrites` use only the transaction and are not refused for that.
 
 `Database::*` calls that name a transaction by id take `ACQUIRE_OPERATIONS_LOCK()` before the
 lookup. It counts on the caller's handle, which `finishClose()` drains before its sweep, and the lookup
@@ -93,7 +117,8 @@ iterator constructor takes a descriptor `OperationGuard` before its lookup. `Tra
 `putSync` and `removeSync` therefore admit nothing themselves. Covered by
 `test/fixtures/fork-txn-sync-shutdown.mts` (a pause past the handle read, shutdown from another
 thread; without the sweep order it crashes in about two runs of five) and
-`test/fixtures/fork-txn-sync-refusal.mts`.
+`test/fixtures/fork-txn-sync-refusal.mts` (its `reentrant` mode patches `Object.create`, installs an
+`async_hooks` init hook and an `instanceof` hook that end the transaction or shut down).
 
 # Write-intent refusal
 

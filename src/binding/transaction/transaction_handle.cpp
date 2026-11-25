@@ -149,11 +149,7 @@ TransactionOperation::TransactionOperation(TransactionHandle& handle) :
 	handle(handle),
 	admittedCall(handle.enterSync()) {
 	if (this->admittedCall) {
-		const std::shared_ptr<DBHandle>& dbHandle = handle.dbHandle;
-		// Compares control blocks, which `owningDescriptor` keeps alive, without touching a count.
-		this->handleDetached = dbHandle &&
-			(!dbHandle->descriptor || handle.owningDescriptor.owner_before(dbHandle->descriptor) ||
-				dbHandle->descriptor.owner_before(handle.owningDescriptor));
+		this->handleDetached = handle.ownHandleDetached();
 	}
 }
 
@@ -714,25 +710,98 @@ void TransactionHandle::closeImpl(bool waitForWinner) noexcept {
 	}
 }
 
+PendingAsyncState<AsyncTransactionGetState> TransactionHandle::prepareGet(
+	napi_env env,
+	std::string key,
+	napi_value resolve,
+	napi_value reject
+) {
+	PendingAsyncState<AsyncTransactionGetState> read(env, nullptr);
+	const auto failed = [env] { return PendingAsyncState<AsyncTransactionGetState>(env, nullptr); };
+	// Racy, so only spares a closed transaction the allocations and init hook; get() decides.
+	if (this->cancelled.load(std::memory_order_relaxed)) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return read;
+	}
+	rocksdb::ReadOptions readOptions;
+	read.state = new AsyncTransactionGetState(env, this->shared_from_this(), readOptions, std::move(key));
+	// Holds no registration until get() transfers one.
+	read.state->completed.store(true, std::memory_order_relaxed);
+	NAPI_STATUS_THROWS_RVAL(::napi_create_reference(env, resolve, 1, &read.state->resolveRef), failed());
+	NAPI_STATUS_THROWS_RVAL(::napi_create_reference(env, reject, 1, &read.state->rejectRef), failed());
+
+	napi_value name;
+	NAPI_STATUS_THROWS_RVAL(::napi_create_string_utf8(env, "transaction.get", NAPI_AUTO_LENGTH, &name), failed());
+	assertJavaScriptMayRun();
+	NAPI_STATUS_THROWS_RVAL(::napi_create_async_work(
+								env,       // node_env
+								nullptr,   // async_resource
+								name,      // async_resource_name
+								[](napi_env doNotUse, void* data) { // execute
+									auto state = reinterpret_cast<AsyncTransactionGetState*>(data);
+									const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
+									if (getDelayMs > 0) {
+										std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
+									}
+									runAsyncExecute(state, [state] {
+										if (!state->handle || state->handle->isCancelled()) {
+											state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
+										} else {
+											state->status = state->handle->txn->Get(
+												state->readOptions,
+												state->readColumnDescriptor->column.get(),
+												state->key,
+												&state->value
+											);
+											// While the database and the caller's column family are still pinned — the completion
+											// runs after teardown may have released both.
+											if (state->status.ok() && state->vtSlot) {
+												vtCheckAsyncGet(state, state->readDb, state->readColumnDescriptor->column.get());
+											}
+										}
+									});
+									state->readColumnDescriptor.reset();
+									// signal that execute handler is complete
+									state->signalExecuteCompleted();
+									state->handle->closeOrphanIfUnused();
+								},
+								[](napi_env env, napi_status status, void* data) { // complete
+									auto state = reinterpret_cast<AsyncTransactionGetState*>(data);
+									state->deleteAsyncWork();
+
+									if (status != napi_cancelled) {
+										runAsyncComplete(env, state, [env, state] { resolveGetResult(env, "Transaction get failed", state); });
+									}
+
+									delete state;
+								},
+								read.state, // data
+								&read.state->asyncWork // -> result
+							),
+		failed());
+	return read;
+}
+
 /**
  * Reads a value on the thread pool through the caller's column family.
  */
 napi_value TransactionHandle::get(
 	napi_env env,
-	std::string& key,
-	napi_value resolve,
-	napi_value reject,
+	PendingAsyncState<AsyncTransactionGetState>&& read,
 	std::shared_ptr<DBHandle> dbHandleOverride,
-	VtSlotRef vtSlot,
+	int32_t flags,
 	bool hasExpectedVersion,
-	uint64_t expectedVersion,
-	bool wantsPopulate
+	uint64_t expectedVersion
 ) {
 	// Register before inspecting txn/state. Descriptor-wide close can select the
 	// transaction before the target DBHandle, and close() must not reset txn in
 	// the middle of this setup. The registration is transferred to the async
 	// state; failed setup paths release it on return.
 	ScopedAsyncWorkRegistration transactionRegistration(this);
+	// Declared after the registration so a failed setup frees the state, and the column descriptor
+	// it pins, while the registration still holds off close().
+	PendingAsyncState<AsyncTransactionGetState> pendingState(std::move(read));
+	AsyncTransactionGetState* state = pendingState.state;
 	if (!transactionRegistration.ok() || this->isCancelled() || !this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
 		return nullptr;
@@ -744,12 +813,18 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 
-	this->ensureSnapshot();
-	// Observed after the snapshot is established, as in getSync; the post-read CAS publishes only if
-	// no write cycle changed the slot since.
-	const uint64_t observedSlot = vtSlot ? vtSlot.load() : 0;
-
-	napi_value returnStatus;
+	if (!dbHandleOverride) {
+		// The caller checked its own handle before prepareGet(), whose JavaScript may have closed or
+		// reopened it.
+		if (!this->dbHandle) {
+			::napi_throw_error(env, nullptr, "Transaction is closed");
+			return nullptr;
+		}
+		if (this->ownHandleDetached() || !this->dbHandle->opened()) {
+			::napi_throw_error(env, nullptr, "Database not open");
+			return nullptr;
+		}
+	}
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	// Cross-column-family reads enter through another DBHandle. Register against
 	// that handle while copying its descriptor so a concurrent close cannot reset
@@ -761,34 +836,27 @@ napi_value TransactionHandle::get(
 	}
 	auto readColumnDescriptor = dbHandle->columnDescriptor;
 	rocksdb::DB* readDb = dbHandle->descriptor ? dbHandle->descriptor->db.get() : nullptr;
-	if (!readDb) {
+	if (!readColumnDescriptor || !readDb) {
 		::napi_throw_error(env, nullptr, "Database closed during transaction get operation");
 		return nullptr;
 	}
 
-	rocksdb::ReadOptions readOptions;
-	if (this->snapshotSet) {
-		readOptions.snapshot = this->txn->GetSnapshot();
+	// From the handle this read uses, which a reopen during prepareGet() may have moved to another
+	// column family.
+	const bool wantsPopulate = readWantsPopulate(flags, dbHandle);
+	VtSlotRef vtSlot;
+	if (hasExpectedVersion || wantsPopulate) {
+		vtSlot = vtSlotFor(dbHandle, DBSettings::getInstance().getVerificationTableRaw(), state->key);
 	}
 
-	napi_value name;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(
-		env,
-		"transaction.get",
-		NAPI_AUTO_LENGTH,
-		&name
-	));
+	this->ensureSnapshot();
+	// Observed after the snapshot is established, as in getSync; the post-read CAS publishes only if
+	// no write cycle changed the slot since.
+	const uint64_t observedSlot = vtSlot ? vtSlot.load() : 0;
 
-	auto state = new AsyncGetState<std::shared_ptr<TransactionHandle>>(
-		env,
-		this->shared_from_this(),
-		readOptions,
-		std::move(key)
-	);
-	// Until the transaction registration is transferred below, setup failures
-	// must delete this state without unregistering work it does not own.
-	state->completed.store(true, std::memory_order_relaxed);
-	PendingAsyncState pendingState(env, state);
+	if (this->snapshotSet) {
+		state->readOptions.snapshot = this->txn->GetSnapshot();
+	}
 	// Resolve and pin the caller's column family on the JS thread. The worker
 	// releases this descriptor before signaling completion so the native column
 	// family handle cannot outlive its RocksDB database during teardown.
@@ -800,54 +868,6 @@ napi_value TransactionHandle::get(
 	state->expectedVersion = expectedVersion;
 	state->wantsPopulate = wantsPopulate;
 	state->vtPublish = dbHandle->enableVerificationTable;
-	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
-	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
-
-	NAPI_STATUS_THROWS(::napi_create_async_work(
-		env,       // node_env
-		nullptr,   // async_resource
-		name,      // async_resource_name
-		[](napi_env doNotUse, void* data) { // execute
-			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
-			const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
-			if (getDelayMs > 0) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
-			}
-			runAsyncExecute(state, [state] {
-				if (!state->handle || state->handle->isCancelled()) {
-					state->status = rocksdb::Status::Aborted("Database closed during transaction get operation");
-				} else {
-					state->status = state->handle->txn->Get(
-						state->readOptions,
-						state->readColumnDescriptor->column.get(),
-						state->key,
-						&state->value
-					);
-					// While the database and the caller's column family are still pinned — the completion
-					// runs after teardown may have released both.
-					if (state->status.ok() && state->vtSlot) {
-						vtCheckAsyncGet(state, state->readDb, state->readColumnDescriptor->column.get());
-					}
-				}
-			});
-			state->readColumnDescriptor.reset();
-			// signal that execute handler is complete
-			state->signalExecuteCompleted();
-			state->handle->closeOrphanIfUnused();
-		},
-		[](napi_env env, napi_status status, void* data) { // complete
-			auto state = reinterpret_cast<AsyncGetState<std::shared_ptr<TransactionHandle>>*>(data);
-			state->deleteAsyncWork();
-
-			if (status != napi_cancelled) {
-				runAsyncComplete(env, state, [env, state] { resolveGetResult(env, "Transaction get failed", state); });
-			}
-
-			delete state;
-		},
-		state,     // data
-		&state->asyncWork // -> result
-	));
 
 	// Transfer the registration claimed at function entry to the queued state.
 	// If queueing fails, PendingAsyncState deletes the state, whose base
@@ -858,6 +878,7 @@ napi_value TransactionHandle::get(
 	NAPI_STATUS_THROWS(::napi_queue_async_work(env, state->asyncWork));
 	pendingState.release();
 
+	napi_value returnStatus;
 	NAPI_STATUS_THROWS(::napi_create_uint32(env, 1, &returnStatus));
 	return returnStatus;
 }
@@ -933,22 +954,98 @@ rocksdb::Status TransactionHandle::multiGetSync(
 	return rocksdb::Status::OK();
 }
 
-struct AsyncTransactionMultiGetState final : AsyncMultiGetState<std::shared_ptr<TransactionHandle>> {
-	using AsyncMultiGetState::AsyncMultiGetState;
-	std::shared_ptr<const rocksdb::Snapshot> snapshot;
-	rocksdb::DB* readDb = nullptr;
-	MultiGetBatch misses;
-	std::vector<size_t> missingIndices;
-};
-
-napi_value TransactionHandle::multiGet(
+PendingAsyncState<AsyncTransactionMultiGetState> TransactionHandle::prepareMultiGet(
 	napi_env env,
 	const std::vector<rocksdb::Slice>& keys,
 	napi_value resolve,
-	napi_value reject,
+	napi_value reject
+) {
+	PendingAsyncState<AsyncTransactionMultiGetState> read(env, nullptr);
+	const auto failed = [env] { return PendingAsyncState<AsyncTransactionMultiGetState>(env, nullptr); };
+	// Racy, so only spares a closed transaction the allocations and init hook; multiGet() decides.
+	if (this->cancelled.load(std::memory_order_relaxed)) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return read;
+	}
+	rocksdb::ReadOptions readOptions;
+	read.state = new AsyncTransactionMultiGetState(env, this->shared_from_this(), readOptions);
+	// Holds no registration until multiGet() transfers one.
+	read.state->completed.store(true, std::memory_order_relaxed);
+	// Before any JavaScript can run: the keys may be in a buffer that JavaScript reuses or detaches.
+	if (!read.state->batch.copyKeys(keys) || !read.state->batch.allocateResults()) {
+		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
+		return failed();
+	}
+	NAPI_STATUS_THROWS_RVAL(::napi_create_reference(env, resolve, 1, &read.state->resolveRef), failed());
+	NAPI_STATUS_THROWS_RVAL(::napi_create_reference(env, reject, 1, &read.state->rejectRef), failed());
+
+	napi_value name;
+	NAPI_STATUS_THROWS_RVAL(::napi_create_string_utf8(env, "transaction.getMany", NAPI_AUTO_LENGTH, &name), failed());
+	assertJavaScriptMayRun();
+	NAPI_STATUS_THROWS_RVAL(::napi_create_async_work(
+								env,
+								nullptr,
+								name,
+								[](napi_env doNotUse, void* data) { // execute
+									auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
+									const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
+									if (getDelayMs > 0) {
+										std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
+									}
+									runAsyncExecute(state, [state] {
+										if (!state->handle || state->handle->isCancelled()) {
+											state->status = rocksdb::Status::Aborted("Database closed during transaction get many operation");
+											state->batch.values.reset();
+										} else {
+											state->readDb->MultiGet(
+												state->readOptions,
+												state->readColumnDescriptor->column.get(),
+												state->misses.size(),
+												state->misses.keys.data(),
+												state->misses.values.get(),
+												state->misses.statuses.get()
+											);
+											for (size_t i = 0; i < state->misses.size(); i++) {
+												const size_t index = state->missingIndices[i];
+												state->batch.values[index] = std::move(state->misses.values[i]);
+												state->batch.statuses[index] = std::move(state->misses.statuses[i]);
+											}
+											finishMultiGet(state->status, state->batch, state->result);
+										}
+									});
+									state->batch.values.reset();
+									state->misses.values.reset();
+									state->snapshot.reset();
+									state->readColumnDescriptor.reset();
+									state->signalExecuteCompleted();
+									state->handle->closeOrphanIfUnused();
+								},
+								[](napi_env env, napi_status status, void* data) { // complete
+									auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
+									state->deleteAsyncWork();
+									if (status != napi_cancelled) {
+										runAsyncComplete(env, state, [env, state] { resolveMultiGetResult(env, "Transaction get many failed", state); });
+									}
+									delete state;
+								},
+								read.state,
+								&read.state->asyncWork
+							),
+		failed());
+
+	return read;
+}
+
+napi_value TransactionHandle::multiGet(
+	napi_env env,
+	PendingAsyncState<AsyncTransactionMultiGetState>&& read,
 	std::shared_ptr<DBHandle> dbHandle
 ) {
 	ScopedAsyncWorkRegistration transactionRegistration(this);
+	// Declared after the registration so a failed setup frees the state, and the snapshot, column
+	// descriptor and values it pins, while the registration still holds off close().
+	PendingAsyncState<AsyncTransactionMultiGetState> pendingState(std::move(read));
+	AsyncTransactionMultiGetState* state = pendingState.state;
 	if (!transactionRegistration.ok() || this->isCancelled() || !this->txn) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
 		return nullptr;
@@ -957,8 +1054,6 @@ napi_value TransactionHandle::multiGet(
 		::napi_throw_error(env, nullptr, "Transaction is not in pending state");
 		return nullptr;
 	}
-
-	this->ensureSnapshot();
 
 	// Registered while its column descriptor is copied, so a concurrent close cannot reset it between
 	// the caller's open check and the pin.
@@ -974,22 +1069,11 @@ napi_value TransactionHandle::multiGet(
 		return nullptr;
 	}
 
+	this->ensureSnapshot();
+
 	rocksdb::ReadOptions readOptions;
 	if (this->snapshotSet) {
 		readOptions.snapshot = this->txn->GetSnapshot();
-	}
-
-	napi_value name;
-	NAPI_STATUS_THROWS(::napi_create_string_utf8(env, "transaction.getMany", NAPI_AUTO_LENGTH, &name));
-
-	auto state = new AsyncTransactionMultiGetState(env, this->shared_from_this(), readOptions);
-	// Until the transaction registration is transferred below, setup failures must delete this
-	// state without unregistering work it does not own.
-	state->completed.store(true, std::memory_order_relaxed);
-	PendingAsyncState pendingState(env, state);
-	if (!state->batch.copyKeys(keys) || !state->batch.allocateResults()) {
-		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
-		return nullptr;
 	}
 	state->readColumnDescriptor = std::move(readColumnDescriptor);
 	state->readDb = readDb;
@@ -1023,58 +1107,6 @@ napi_value TransactionHandle::multiGet(
 		::napi_throw_error(env, nullptr, "Transaction get many failed: out of memory");
 		return nullptr;
 	}
-	NAPI_STATUS_THROWS(::napi_create_reference(env, resolve, 1, &state->resolveRef));
-	NAPI_STATUS_THROWS(::napi_create_reference(env, reject, 1, &state->rejectRef));
-
-	NAPI_STATUS_THROWS(::napi_create_async_work(
-		env,
-		nullptr,
-		name,
-		[](napi_env doNotUse, void* data) { // execute
-			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
-			const int getDelayMs = txnGetDelayMsFlag().load(std::memory_order_relaxed);
-			if (getDelayMs > 0) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(getDelayMs));
-			}
-			runAsyncExecute(state, [state] {
-				if (!state->handle || state->handle->isCancelled()) {
-					state->status = rocksdb::Status::Aborted("Database closed during transaction get many operation");
-					state->batch.values.reset();
-				} else {
-					state->readDb->MultiGet(
-						state->readOptions,
-						state->readColumnDescriptor->column.get(),
-						state->misses.size(),
-						state->misses.keys.data(),
-						state->misses.values.get(),
-						state->misses.statuses.get()
-					);
-					for (size_t i = 0; i < state->misses.size(); i++) {
-						const size_t index = state->missingIndices[i];
-						state->batch.values[index] = std::move(state->misses.values[i]);
-						state->batch.statuses[index] = std::move(state->misses.statuses[i]);
-					}
-					finishMultiGet(state->status, state->batch, state->result);
-				}
-			});
-			state->batch.values.reset();
-			state->misses.values.reset();
-			state->snapshot.reset();
-			state->readColumnDescriptor.reset();
-			state->signalExecuteCompleted();
-			state->handle->closeOrphanIfUnused();
-		},
-		[](napi_env env, napi_status status, void* data) { // complete
-			auto state = reinterpret_cast<AsyncTransactionMultiGetState*>(data);
-			state->deleteAsyncWork();
-			if (status != napi_cancelled) {
-				runAsyncComplete(env, state, [env, state] { resolveMultiGetResult(env, "Transaction get many failed", state); });
-			}
-			delete state;
-		},
-		state,
-		&state->asyncWork
-	));
 
 	state->completed.store(false, std::memory_order_relaxed);
 	transactionRegistration.release();

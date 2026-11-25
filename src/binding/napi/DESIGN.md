@@ -6,7 +6,7 @@ Regression: the async case in `test/error-object-failure.test.ts` (rejection thr
 
 # Async-work admission
 
-`AsyncWorkHandle` (`async.h`) admits work two ways onto one counter that `waitForAsyncWorkCompletion()` drains: `registerAsyncWork()` under `waitMutex`, and the lock-free `enterSync()`/`exitSync()` for synchronous transaction calls on their owning thread. AGENTS.md invariant 17 states the contract; `src/binding/transaction/DESIGN.md`, "Synchronous admission", explains when the lock-free path is safe.
+`AsyncWorkHandle` (`async.h`) admits work two ways onto one counter that `waitForAsyncWorkCompletion()` drains: `registerAsyncWork()` under `waitMutex`, and the lock-free `enterSync()`/`exitSync()` for synchronous transaction calls on their owning thread. AGENTS.md invariant 17 states the contract; `src/binding/transaction/DESIGN.md`, "Synchronous admission", explains when the lock-free path is safe. With fatal asserts, `enterSync()`/`exitSync()` also keep a per-thread count of held admissions, which `assertJavaScriptMayRun()` checks before an N-API step that can run JavaScript; release builds compile both out.
 
 # C++ exceptions in async work
 

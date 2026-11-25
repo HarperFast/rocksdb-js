@@ -1280,12 +1280,7 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
-	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), *dbHandle);
-
-	VtSlotRef vtSlot;
-	if (hasExpectedVersion || wantsPopulate) {
-		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
-	}
+	const int32_t optionalFlags = parseOptionalFlags(env, argv[5]);
 
 	if (txnIdType == napi_number) {
 		uint64_t txnId;
@@ -1297,8 +1292,17 @@ napi_value Database::Get(napi_env env, napi_callback_info info) {
 		if (!txnHandle) {
 			return nullptr;
 		}
-		return txnHandle->get(env, key, resolve, reject, *dbHandle,
-			vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
+		auto read = txnHandle->prepareGet(env, std::move(key), resolve, reject);
+		if (!read.state) {
+			return nullptr;
+		}
+		return txnHandle->get(env, std::move(read), *dbHandle, optionalFlags, hasExpectedVersion, expectedVersion);
+	}
+
+	const bool wantsPopulate = readWantsPopulate(optionalFlags, *dbHandle);
+	VtSlotRef vtSlot;
+	if (hasExpectedVersion || wantsPopulate) {
+		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
 	}
 
 	// No snapshot to order against: observe the slot before the read so the post-read CAS only

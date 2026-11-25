@@ -30,6 +30,11 @@ struct DBIteratorHandle;
 struct DBIteratorOptions;
 struct MultiGetBatch;
 struct TransactionLogStore;
+struct TransactionHandle;
+template <typename T>
+struct AsyncGetState;
+struct AsyncTransactionMultiGetState;
+using AsyncTransactionGetState = AsyncGetState<std::shared_ptr<TransactionHandle>>;
 
 /**
  * One column-family generation a transaction has staged a write to. Weak,
@@ -490,16 +495,30 @@ private:
 	void closeImpl(bool waitForWinner) noexcept;
 
 public:
+	/**
+	 * Creates the state and async work of a `get()` of `key`, which the caller has already copied out
+	 * of any shared buffer. Call it before the read is admitted: creating async work runs
+	 * `async_hooks` init hooks. It reads no transaction or handle state, which that JavaScript may
+	 * change; `get()` does, under its registration. Empty, with a JavaScript exception pending, on
+	 * failure.
+	 */
+	PendingAsyncState<AsyncTransactionGetState> prepareGet(
+		napi_env env,
+		std::string key,
+		napi_value resolve,
+		napi_value reject
+	);
+
+	/**
+	 * With no `dbHandleOverride`, refuses a closed or detached own handle.
+	 */
 	napi_value get(
 		napi_env env,
-		std::string& key,
-		napi_value resolve,
-		napi_value reject,
-		std::shared_ptr<DBHandle> dbHandleOverride = nullptr,
-		VtSlotRef vtSlot = {},
-		bool hasExpectedVersion = false,
-		uint64_t expectedVersion = 0,
-		bool wantsPopulate = false
+		PendingAsyncState<AsyncTransactionGetState>&& read,
+		std::shared_ptr<DBHandle> dbHandleOverride,
+		int32_t flags,
+		bool hasExpectedVersion,
+		uint64_t expectedVersion
 	);
 
 	/**
@@ -537,14 +556,23 @@ public:
 	);
 
 	/**
-	 * Queues an async `MultiGet` of `keys` through the transaction, reading `dbHandle`'s column
-	 * family; see `Database::GetMany`.
+	 * Copies `keys` and creates the async work of a `multiGet()`, before the read is admitted; see
+	 * `prepareGet()`.
 	 */
-	napi_value multiGet(
+	PendingAsyncState<AsyncTransactionMultiGetState> prepareMultiGet(
 		napi_env env,
 		const std::vector<rocksdb::Slice>& keys,
 		napi_value resolve,
-		napi_value reject,
+		napi_value reject
+	);
+
+	/**
+	 * Queues an async `MultiGet` set up by `prepareMultiGet()` through the transaction, reading
+	 * `dbHandle`'s column family; see `Database::GetMany`.
+	 */
+	napi_value multiGet(
+		napi_env env,
+		PendingAsyncState<AsyncTransactionMultiGetState>&& read,
 		std::shared_ptr<DBHandle> dbHandle
 	);
 
@@ -559,6 +587,18 @@ public:
 	 * (lost updates).
 	 */
 	void ensureSnapshot();
+
+	/**
+	 * Whether `dbHandle` was closed, or reopened onto another descriptor, since this transaction was
+	 * created. Only while the call is admitted.
+	 */
+	bool ownHandleDetached() const {
+		const std::shared_ptr<DBHandle>& handle = this->dbHandle;
+		// Compares control blocks, which `owningDescriptor` keeps alive, without touching a count.
+		return handle &&
+			(!handle->descriptor || this->owningDescriptor.owner_before(handle->descriptor) ||
+				handle->descriptor.owner_before(this->owningDescriptor));
+	}
 
 	/**
 	 * Returns the snapshot a read currently observes, or nullptr when reads see

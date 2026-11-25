@@ -285,7 +285,11 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 		if (!txnHandle) {
 			return nullptr;
 		}
-		return txnHandle->multiGet(env, keys, resolve, reject, *dbHandle);
+		auto read = txnHandle->prepareMultiGet(env, keys, resolve, reject);
+		if (!read.state) {
+			return nullptr;
+		}
+		return txnHandle->multiGet(env, std::move(read), *dbHandle);
 	}
 
 	napi_value name;

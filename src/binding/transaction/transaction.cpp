@@ -1452,27 +1452,6 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get");
-	ADMIT_TRANSACTION_OPERATION("Transaction is closed");
-	// Check the transaction's OWN database handle. UNWRAP_DB_HANDLE_AND_OPEN() cannot be used
-	// here: it unwraps `jsThis`, which for this method is the Transaction, so it reinterprets a
-	// shared_ptr<TransactionHandle> as a shared_ptr<DBHandle> and calls opened() through it —
-	// type-confused, and it rejected every async transactional read. Every other Transaction
-	// method relies on the handle's own checks (TransactionHandle::get() validates txn/state).
-	if (!(*txnHandle)->dbHandle) {
-		::napi_throw_error(env, nullptr, "Transaction is closed");
-		return nullptr;
-	}
-	if (!(*txnHandle)->dbHandle->opened()) {
-		::napi_throw_error(env, nullptr, "Database not open");
-		return nullptr;
-	}
-	rocksdb::Slice keySlice;
-	if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer")) {
-		return nullptr;
-	}
-	// storing in std::string so it can live through the async process
-	std::string key(keySlice.data(), keySlice.size());
-
 	// argv[3]: txnId (ignored — the transaction is self)
 	// argv[4]: optional expectedVersion for VT check and populate
 	bool hasExpectedVersion = false;
@@ -1480,14 +1459,35 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	if (argc >= 5) {
 		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
 	}
-	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), (*txnHandle)->dbHandle);
+	const int32_t optionalFlags = parseOptionalFlags(env, argv[5]);
 
-	VtSlotRef vtSlot;
-	if (hasExpectedVersion || wantsPopulate) {
-		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
+	// The key may be in the handle's shared default key buffer, which JavaScript run by prepareGet()
+	// can overwrite, so it is copied first. get() rechecks the handle under its own registration.
+	std::string key;
+	{
+		ADMIT_TRANSACTION_OPERATION("Transaction is closed");
+		// UNWRAP_DB_HANDLE_AND_OPEN() cannot be used here: it unwraps `jsThis`, which for this
+		// method is the Transaction.
+		if (!(*txnHandle)->dbHandle) {
+			::napi_throw_error(env, nullptr, "Transaction is closed");
+			return nullptr;
+		}
+		if (!(*txnHandle)->dbHandle->opened()) {
+			::napi_throw_error(env, nullptr, "Database not open");
+			return nullptr;
+		}
+		rocksdb::Slice keySlice;
+		if (!rocksdb_js::getSliceFromArg(env, argv[0], keySlice, (*txnHandle)->dbHandle->defaultKeyBufferPtr, "Key must be a buffer")) {
+			return nullptr;
+		}
+		key.assign(keySlice.data(), keySlice.size());
 	}
 
-	return (*txnHandle)->get(env, key, resolve, reject, nullptr, vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
+	auto read = (*txnHandle)->prepareGet(env, std::move(key), resolve, reject);
+	if (!read.state) {
+		return nullptr;
+	}
+	return (*txnHandle)->get(env, std::move(read), nullptr, optionalFlags, hasExpectedVersion, expectedVersion);
 }
 
 /**
@@ -1543,17 +1543,21 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 napi_value Transaction::GetMany(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(5);
 	UNWRAP_TRANSACTION_HANDLE("GetMany");
+	std::vector<rocksdb::Slice> keys;
+	if (!readMultiGetKeys(env, argv[0], argv[1], argv[2], keys)) {
+		return nullptr;
+	}
+	auto read = (*txnHandle)->prepareMultiGet(env, keys, argv[3], argv[4]);
+	if (!read.state) {
+		return nullptr;
+	}
 	ADMIT_TRANSACTION_OPERATION("Transaction is closed");
 	std::shared_ptr<DBHandle> txnDbHandle = (*txnHandle)->dbHandle;
 	if (!txnDbHandle) {
 		::napi_throw_error(env, nullptr, "Transaction is closed");
 		return nullptr;
 	}
-	std::vector<rocksdb::Slice> keys;
-	if (!readMultiGetKeys(env, argv[0], argv[1], argv[2], keys)) {
-		return nullptr;
-	}
-	return (*txnHandle)->multiGet(env, keys, argv[3], argv[4], txnDbHandle);
+	return (*txnHandle)->multiGet(env, std::move(read), txnDbHandle);
 }
 
 /**
@@ -1828,26 +1832,32 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 	}
-	TransactionOperation operation(**txnHandle);
-	if (!operation.admitted()) {
-		ROCKSDB_STATUS_THROWS_ERROR_LIKE(rocksdb::Status::Aborted("Transaction is closed"), "Transaction put failed");
-		return nullptr;
-	}
-	if (const char* refusal = operation.refusal("Transaction is closed")) {
+	// Built once admission has ended: building the error can run JavaScript.
+	const char* refusal = nullptr;
+	rocksdb::Status writeStatus = [&] {
+		TransactionOperation operation(**txnHandle);
+		if (!operation.admitted()) {
+			return rocksdb::Status::Aborted("Transaction is closed");
+		}
+		if ((refusal = operation.refusal("Transaction is closed"))) {
+			return rocksdb::Status::OK();
+		}
+		rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
+		rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
+
+		DEBUG_LOG("%p Transaction::PutSync key:", txnHandle->get());
+		DEBUG_LOG_KEY_LN(keySlice);
+
+		DEBUG_LOG("%p Transaction::PutSync value:", txnHandle->get());
+		DEBUG_LOG_KEY_LN(valueSlice);
+
+		return (*txnHandle)->putSync(keySlice, valueSlice);
+	}();
+	if (refusal) {
 		::napi_throw_error(env, nullptr, refusal);
 		return nullptr;
 	}
-
-	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-	rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
-
-	DEBUG_LOG("%p Transaction::PutSync key:", txnHandle->get());
-	DEBUG_LOG_KEY_LN(keySlice);
-
-	DEBUG_LOG("%p Transaction::PutSync value:", txnHandle->get());
-	DEBUG_LOG_KEY_LN(valueSlice);
-
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->putSync(keySlice, valueSlice), "Transaction put failed");
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(writeStatus, "Transaction put failed");
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -1863,19 +1873,23 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 	}
-	TransactionOperation operation(**txnHandle);
-	if (!operation.admitted()) {
-		ROCKSDB_STATUS_THROWS_ERROR_LIKE(rocksdb::Status::Aborted("Transaction is closed"), "Transaction remove failed");
-		return nullptr;
-	}
-	if (const char* refusal = operation.refusal("Transaction is closed")) {
+	const char* refusal = nullptr;
+	rocksdb::Status writeStatus = [&] {
+		TransactionOperation operation(**txnHandle);
+		if (!operation.admitted()) {
+			return rocksdb::Status::Aborted("Transaction is closed");
+		}
+		if ((refusal = operation.refusal("Transaction is closed"))) {
+			return rocksdb::Status::OK();
+		}
+		rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
+		return (*txnHandle)->removeSync(keySlice);
+	}();
+	if (refusal) {
 		::napi_throw_error(env, nullptr, refusal);
 		return nullptr;
 	}
-
-	rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-
-	ROCKSDB_STATUS_THROWS_ERROR_LIKE((*txnHandle)->removeSync(keySlice), "Transaction remove failed");
+	ROCKSDB_STATUS_THROWS_ERROR_LIKE(writeStatus, "Transaction remove failed");
 
 	NAPI_RETURN_UNDEFINED();
 }
@@ -1897,48 +1911,54 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->state.load() != TransactionState::Pending) {
 		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction is not pending");
 	}
-	// Reads only `txn`, so a database handle the owner has since closed does not matter.
-	TransactionOperation operation(**txnHandle);
-	if (!operation.admitted()) {
-		::napi_throw_error(env, nullptr, "Transaction is closed");
-		return nullptr;
-	}
-
-	double timestampMs = 0.0;
-	if (type == napi_number) {
-		NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),
-			"Invalid timestamp, expected positive number");
-		if (timestampMs <= 0 || !std::isfinite(timestampMs) || timestampMs >= 8.64e15) {
-			NAPI_THROW_JS_ERROR("ERR_INVALID_TIMESTAMP",
-				"Invalid timestamp, expected a finite positive number below 8640000000000000");
+	// Decided while admitted and thrown after: building the error can run JavaScript.
+	const char* errorCode = nullptr;
+	const char* errorMessage = nullptr;
+	{
+		// Reads only `txn`, so a database handle the owner has since closed does not matter.
+		TransactionOperation operation(**txnHandle);
+		if (!operation.admitted()) {
+			::napi_throw_error(env, nullptr, "Transaction is closed");
+			return nullptr;
 		}
-	} else if (type != napi_undefined) {
-		NAPI_THROW_JS_ERROR("ERR_INVALID_TIMESTAMP", "Invalid timestamp, expected positive number");
-	}
 
-	const bool isIdempotent = type == napi_number && timestampMs == (*txnHandle)->startTimestamp;
-	auto* txn = (*txnHandle)->txn;
-	if ((*txnHandle)->committedPosition.logSequenceNumber > 0) {
-		if (isIdempotent) {
-			NAPI_RETURN_UNDEFINED();
+		double timestampMs = 0.0;
+		if (type == napi_number) {
+			NAPI_STATUS_THROWS_ERROR(::napi_get_value_double(env, argv[0], &timestampMs),
+				"Invalid timestamp, expected positive number");
+			if (timestampMs <= 0 || !std::isfinite(timestampMs) || timestampMs >= 8.64e15) {
+				errorCode = "ERR_INVALID_TIMESTAMP";
+				errorMessage = "Invalid timestamp, expected a finite positive number below 8640000000000000";
+			}
+		} else if (type != napi_undefined) {
+			errorCode = "ERR_INVALID_TIMESTAMP";
+			errorMessage = "Invalid timestamp, expected positive number";
 		}
-		NAPI_THROW_JS_ERROR("ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction log batch is already durable");
-	}
-	if ((*txnHandle)->logEntryBatch ||
-		(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
-		if (isIdempotent) {
-			NAPI_RETURN_UNDEFINED();
-		}
-		NAPI_THROW_JS_ERROR(
-			"ERR_TIMESTAMP_FROZEN", "Cannot set timestamp: transaction already has staged writes or log entries"
-		);
-	}
 
-	if (type == napi_undefined) {
-		// use current timestamp
-		(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
-	} else {
-		(*txnHandle)->startTimestamp = timestampMs;
+		const bool isIdempotent = type == napi_number && timestampMs == (*txnHandle)->startTimestamp;
+		auto* txn = (*txnHandle)->txn;
+		if (!errorCode) {
+			if ((*txnHandle)->committedPosition.logSequenceNumber > 0) {
+				if (!isIdempotent) {
+					errorCode = "ERR_TIMESTAMP_FROZEN";
+					errorMessage = "Cannot set timestamp: transaction log batch is already durable";
+				}
+			} else if ((*txnHandle)->logEntryBatch ||
+				(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
+				if (!isIdempotent) {
+					errorCode = "ERR_TIMESTAMP_FROZEN";
+					errorMessage = "Cannot set timestamp: transaction already has staged writes or log entries";
+				}
+			} else if (type == napi_undefined) {
+				// use current timestamp
+				(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+			} else {
+				(*txnHandle)->startTimestamp = timestampMs;
+			}
+		}
+	}
+	if (errorCode) {
+		NAPI_THROW_JS_ERROR(errorCode, errorMessage);
 	}
 
 	NAPI_RETURN_UNDEFINED();

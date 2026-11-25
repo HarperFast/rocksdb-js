@@ -5,6 +5,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <new>
 #include "core/assert.h"
@@ -17,6 +18,22 @@
 #include "rocksdb/status.h"
 
 namespace rocksdb_js {
+
+#if defined(DEBUG) || defined(ROCKSDB_JS_FATAL_ASSERTS)
+inline thread_local int32_t heldSyncAdmissions = 0;
+#endif
+
+/**
+ * Asserts, in builds with fatal asserts, that this thread holds no synchronous admission. Call it
+ * before an N-API step that can run JavaScript: that JavaScript could end the admitted transaction,
+ * whose close() would then wait on the admission it runs under. See
+ * src/binding/transaction/DESIGN.md, "Synchronous admission".
+ */
+inline void assertJavaScriptMayRun() noexcept {
+#if defined(DEBUG) || defined(ROCKSDB_JS_FATAL_ASSERTS)
+	ROCKSDB_JS_ASSERT(heldSyncAdmissions == 0, "JavaScript can run while a transaction call is admitted");
+#endif
+}
 
 // Every state is freed from its complete callback or before its work was queued, so a work item
 // still set at destruction has no callback pending: napi_delete_async_work() failed and it leaks.
@@ -283,6 +300,9 @@ struct AsyncWorkHandle {
 	 */
 	[[nodiscard]] bool enterSync() {
 		this->activeAsyncWorkCount.fetch_add(1);
+#if defined(DEBUG) || defined(ROCKSDB_JS_FATAL_ASSERTS)
+		++heldSyncAdmissions;
+#endif
 		if (this->cancelled.load()) {
 			this->exitSync();
 			return false;
@@ -291,6 +311,9 @@ struct AsyncWorkHandle {
 	}
 
 	void exitSync() {
+#if defined(DEBUG) || defined(ROCKSDB_JS_FATAL_ASSERTS)
+		--heldSyncAdmissions;
+#endif
 		if (this->activeAsyncWorkCount.fetch_sub(1) == 1 && this->cancelled.load()) {
 			// Under the mutex, so a drain between its predicate check and its wait cannot miss this.
 			std::lock_guard<std::mutex> lock(this->waitMutex);
@@ -431,6 +454,10 @@ struct PendingAsyncState {
 
 	PendingAsyncState(napi_env env, State* state) : env(env), state(state) {}
 
+	PendingAsyncState(PendingAsyncState&& other) noexcept : env(other.env), state(other.state) {
+		other.state = nullptr;
+	}
+
 	~PendingAsyncState() {
 		if (!this->state) return;
 		if (this->state->resolveRef) {
@@ -451,6 +478,7 @@ struct PendingAsyncState {
 
 	PendingAsyncState(const PendingAsyncState&) = delete;
 	PendingAsyncState& operator=(const PendingAsyncState&) = delete;
+	PendingAsyncState& operator=(PendingAsyncState&&) = delete;
 };
 
 /**
