@@ -191,13 +191,21 @@ export class Transaction extends DBI {
 	 */
 	async commit(): Promise<typeof RETRY_NOW | void> {
 		let result: number | void;
+		// A synchronous native refusal is mapped where it is thrown: the mapping reads the database
+		// state, which can change before the await resumes.
+		let thrown: Error | undefined;
 		try {
 			result = await new Promise<number | void>((resolve, reject) => {
 				this.notify('beforecommit');
-				this.#txn.commit(resolve, reject);
+				try {
+					this.#txn.commit(resolve, reject);
+				} catch (err) {
+					thrown = this.#handleCommitError(err);
+					throw thrown;
+				}
 			});
 		} catch (err) {
-			const failure = this.#handleCommitError(err);
+			const failure = thrown ?? this.#handleCommitError(err);
 			this.#notifyAfterFailedCommit();
 			throw failure;
 		}

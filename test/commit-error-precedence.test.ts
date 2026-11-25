@@ -1,5 +1,5 @@
 import { RocksDatabase } from '../src/index.ts';
-import { Transaction } from '../src/transaction.ts';
+import { Transaction, TransactionAlreadyAbortedError } from '../src/transaction.ts';
 import { dbRunner, generateDBPath, runFixture } from './lib/util.ts';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -95,6 +95,27 @@ describe('Transaction commit error precedence', () => {
 				})
 			).toThrow('Database not open');
 			expectNothingCommitted(dbPath);
+		}));
+
+	// The database state that decides the error is the one at the native commit, not after it.
+	it('commit() keeps a user abort when the database closes in the same tick', () =>
+		dbRunner(async ({ db }) => {
+			const txn = new Transaction(db.store);
+			txn.putSync('k', 'v');
+			txn.abort();
+			const pending = txn.commit();
+			db.close();
+			await expect(pending).rejects.toBeInstanceOf(TransactionAlreadyAbortedError);
+		}));
+
+	it('db.transaction() keeps a user abort when the database closes in the same tick', () =>
+		dbRunner(async ({ db }) => {
+			const pending = db.transaction((txn) => {
+				txn.abort();
+			});
+			await null;
+			db.close();
+			await expect(pending).resolves.toBeUndefined();
 		}));
 
 	it.each(['transaction', 'transactionSync'])(
