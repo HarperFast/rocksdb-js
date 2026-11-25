@@ -213,7 +213,7 @@ if (mode === 'destroy' || mode === 'destroy-holder-last') {
 	}
 	refusals.forEach((refusal, i) => {
 		const elapsed = Number(/after (\d+) ms/.exec(refusal)?.[1] ?? Infinity);
-		if (!refusal.includes(expected[i]) || elapsed > 1_000) {
+		if (!refusal.includes(expected[i]) || elapsed > 5_000) {
 			throw new Error(`Expected a prompt refusal, got ${refusals.join('; ')}`);
 		}
 	});

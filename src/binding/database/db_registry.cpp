@@ -339,9 +339,11 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	const auto waitBudget =
 		std::chrono::seconds(DBSettings::getInstance().getLifecycleWaitSeconds());
 
-	// Before every wait below: a foreign destroy holding the gate may itself be
-	// waiting for the call this one runs inside. Caller holds databasesMutex.
-	const auto refuseInsideOperation = [&](std::vector<std::shared_ptr<Closable>>& pinned) {
+	// Before the gate wait: a foreign destroy holding the gate may itself be
+	// waiting for the call this one runs inside.
+	{
+		std::vector<std::shared_ptr<Closable>> pinned;
+		std::lock_guard<std::mutex> lock(instance->databasesMutex);
 		for (auto& [key, entry] : instance->databases) {
 			if (key.path != identityPath || !entry.descriptor) {
 				continue;
@@ -353,11 +355,6 @@ void DBRegistry::DestroyDB(const std::string& path) {
 				throw rocksdb_js::DBException(destroyInsideOperation);
 			}
 		}
-	};
-	{
-		std::vector<std::shared_ptr<Closable>> pinned;
-		std::lock_guard<std::mutex> lock(instance->databasesMutex);
-		refuseInsideOperation(pinned);
 	}
 
 	// Claim the path-level gate before touching any entry. This is what keeps
@@ -399,11 +396,15 @@ void DBRegistry::DestroyDB(const std::string& path) {
 	while (true) {
 		std::vector<ClosingDescriptor> claimed;
 		std::vector<ClosingDescriptor> alreadyClosing;
-		std::vector<std::shared_ptr<Closable>> pinned;
 		{
 			std::unique_lock<std::mutex> lock(instance->databasesMutex);
-			// The exit shutdown can abandon a descriptor while this destroy waits.
-			refuseInsideOperation(pinned);
+			// Only abandonment can change after the check above: the exit shutdown
+			// can abandon a descriptor while this destroy waits.
+			for (const auto& [key, entry] : instance->databases) {
+				if (key.path == identityPath && entry.abandonedAtExit) {
+					throw rocksdb_js::DBException(destroyAbandonedAtExit);
+				}
+			}
 			claimed.reserve(instance->databases.size());
 			alreadyClosing.reserve(instance->databases.size());
 			for (auto& [key, entry] : instance->databases) {

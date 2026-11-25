@@ -326,11 +326,14 @@ registers before returning is drained too. Four facts make that equivalent to on
   the call. A foreign closer that was already waiting for the call when the process exited still
   waits.
   A `Transaction::*` call needs no such check: it reads its options before its
-  `TransactionOperation` and runs no JavaScript while admitted, apart from building an error
-  (HarperFast/rocksdb-js#1140; src/binding/transaction/DESIGN.md, "Synchronous admission").
+  `TransactionOperation` and runs no JavaScript while admitted, apart from building an error and
+  creating async work (an `async_hooks` `init` hook): HarperFast/rocksdb-js#1185 moves that out
+  for get/getMany, and #1172 tracks commit (HarperFast/rocksdb-js#1140;
+  src/binding/transaction/DESIGN.md, "Synchronous admission").
 
 Iterators, the transaction constructor, backups, checkpoints, commits and column-family
-reclamation still use the descriptor's `operationsInFlight` (`OperationGuard`); other transaction
-calls register on the transaction itself.
+reclamation still use the descriptor's `operationsInFlight` (`OperationGuard`), as does
+`Transaction::Abort` while it drains the transaction's async work; other transaction calls register
+on the transaction itself.
 `test/fixtures/fork-sync-operation-destroy.mts` holds calls on two handles open in getters while a
 third worker destroys the database, and covers the refusals and the callback case.
