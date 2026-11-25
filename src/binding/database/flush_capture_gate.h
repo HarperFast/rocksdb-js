@@ -31,14 +31,21 @@ public:
 		if (!this->held || this->escaped) {
 			return;
 		}
-		// A later hold must not inherit this wait's deadline.
-		const uint64_t generation = this->generation;
 		++this->parked;
-		if (!this->condition.wait_for(lock, this->maxPark, [this, generation] {
-				return !this->held || this->escaped || this->generation != generation;
-			})) {
-			this->escaped = true;
-			this->condition.notify_all();
+		for (;;) {
+			// A flush still parked when the next hold is raised stays parked, and
+			// counted, under that hold with a fresh deadline.
+			const uint64_t generation = this->generation;
+			if (!this->condition.wait_for(lock, this->maxPark, [this, generation] {
+					return !this->held || this->escaped || this->generation != generation;
+				})) {
+				this->escaped = true;
+				this->condition.notify_all();
+				break;
+			}
+			if (!this->held || this->escaped) {
+				break;
+			}
 		}
 		--this->parked;
 	}

@@ -61,21 +61,29 @@ TEST(FlushCaptureGate, AFlushParkedTooLongProceedsAndMarksTheHold) {
 	EXPECT_EQ(hold.parkedFlushes(), 0u);
 }
 
-TEST(FlushCaptureGate, AFlushWokenByOneHoldDoesNotEscapeTheNext) {
+TEST(FlushCaptureGate, AFlushStillParkedWhenTheNextHoldIsRaisedStaysParkedUnderIt) {
 	rocksdb_js::FlushCaptureGate gate(std::chrono::milliseconds(100));
+	std::atomic<bool> passed{ false };
 	std::thread flush;
 	{
 		rocksdb_js::FlushCaptureHold first(gate);
-		flush = std::thread([&] { gate.enterFlushBegin(); });
+		flush = std::thread([&] {
+			gate.enterFlushBegin();
+			passed = true;
+		});
 		EXPECT_TRUE(waitUntil([&] { return first.parkedFlushes() == 1; }));
 		std::this_thread::sleep_for(std::chrono::milliseconds(90));
+		{
+			// The next hold's generation, raised before the flush could leave the first.
+			rocksdb_js::FlushCaptureHold second(gate);
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			EXPECT_EQ(second.parkedFlushes(), 1u);
+			EXPECT_FALSE(second.flushEscaped());
+			EXPECT_FALSE(passed.load());
+		}
 	}
-	// The next hold is raised before the woken flush runs again; it must not time
-	// out against the first hold's deadline and mark this one escaped.
-	rocksdb_js::FlushCaptureHold second(gate);
 	flush.join();
-	std::this_thread::sleep_for(std::chrono::milliseconds(30));
-	EXPECT_FALSE(second.flushEscaped());
+	EXPECT_TRUE(passed.load());
 }
 
 TEST(FlushCaptureGate, OnceAFlushEscapesNoOtherParksUnderThatHold) {

@@ -165,6 +165,9 @@ rocksdb::Status captureLiveFiles(
 				}
 				if (!changed && !hold.flushEscaped()) {
 					s = captureStores(descriptor, captured);
+					if (s.ok() && !hold.flushEscaped()) {
+						s = captureStopped(descriptor, abandon, deadline);
+					}
 					if (!s.ok() || !hold.flushEscaped()) {
 						return s;
 					}
@@ -195,14 +198,14 @@ rocksdb::Status captureLiveFiles(
 			// Stores are read after the listing so that none whose commits a copied WAL holds is left out.
 			if (s.ok() && !hold.flushEscaped()) {
 				s = db->GetLiveFilesStorageInfo(listOpts, files);
-				if (s.ok()) {
-					s = captureStores(descriptor, captured);
-				}
 			}
-			if (!s.ok()) {
-				return s;
+			if (s.ok() && !hold.flushEscaped()) {
+				s = captureStores(descriptor, captured);
 			}
-			if (!hold.flushEscaped()) {
+			if (s.ok() && !hold.flushEscaped()) {
+				s = captureStopped(descriptor, abandon, deadline);
+			}
+			if (!s.ok() || !hold.flushEscaped()) {
 				return s;
 			}
 		}
