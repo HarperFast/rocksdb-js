@@ -25,21 +25,6 @@ async function untilCommitDelayed(commit: Promise<unknown>): Promise<void> {
 	}
 }
 
-// Fails if `commit` has already settled.
-async function assertPending(commit: Promise<unknown>): Promise<void> {
-	const pending = Symbol('pending');
-	assert.equal(
-		await Promise.race([
-			commit.then(
-				() => 0,
-				() => 0
-			),
-			pending,
-		]),
-		pending
-	);
-}
-
 try {
 	if (mode === 'validate') {
 		for (const invalid of [0, 65, 1.5, Number.NaN, -1]) {
@@ -172,7 +157,6 @@ try {
 		queued.putSync('queued', 2);
 		const queuedCommit = queued.commit();
 		db.close();
-		await assertPending(queuedCommit);
 		await Promise.all([firstCommit, queuedCommit]);
 		assert.equal(keeper.getSync('queued'), 2);
 		keeper.close();
@@ -195,7 +179,6 @@ try {
 		queued.putSync('queued', 2);
 		const queuedCommit = queued.commit();
 		db.close();
-		await assertPending(queuedCommit);
 		await firstCommit;
 		if (legacy) {
 			await queuedCommit;

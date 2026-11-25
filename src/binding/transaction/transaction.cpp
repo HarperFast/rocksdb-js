@@ -678,7 +678,6 @@ static void executeLogWork(TransactionCommitState* state) {
 static void executeCommitWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
 	DBDescriptor* descriptor = state->operationDescriptor;
-	// Never let a commit that was skipped here resolve as success.
 	if (!txnHandle || !descriptor) {
 		if (state->status.ok()) {
 			state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");

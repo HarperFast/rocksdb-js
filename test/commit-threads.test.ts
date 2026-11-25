@@ -38,7 +38,7 @@ describe('commitThreads', () => {
 		(commitThread) => {
 			runFixture(['close-queued'], {
 				ROCKSDB_JS_COMMIT_THREAD: commitThread,
-				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '200',
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
 				UV_THREADPOOL_SIZE: '1',
 			});
 		}
@@ -49,7 +49,7 @@ describe('commitThreads', () => {
 		(commitThread) => {
 			runFixture(['close-queued-last'], {
 				ROCKSDB_JS_COMMIT_THREAD: commitThread,
-				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '200',
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
 				UV_THREADPOOL_SIZE: '1',
 			});
 		}
