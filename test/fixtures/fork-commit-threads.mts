@@ -178,22 +178,64 @@ try {
 		const queued = new Transaction(db.store);
 		queued.putSync('queued', 2);
 		const queuedCommit = queued.commit();
+		// A JS-thread stall past the delay lets the queued commit run before the close.
+		const raced = !isTransactionCommitExecuteDelayedForTesting();
 		db.close();
 		await firstCommit;
-		if (legacy) {
-			await queuedCommit;
-		} else {
-			await assert.rejects(queuedCommit, /Database closed during transaction commit operation/);
-		}
+		const committed = legacy
+			? (await queuedCommit, true)
+			: await queuedCommit.then(
+					() => {
+						assert.ok(raced, 'the queued commit committed although the close came first');
+						return true;
+					},
+					(error) => {
+						assert.match(String(error), /Database closed during transaction commit operation/);
+						return false;
+					}
+				);
 		assert.ok(
 			!registryStatus().some((entry) => entry.path === path),
 			'the last-handle close left the database open'
 		);
 		const reopened = RocksDatabase.open(path);
 		assert.equal(reopened.getSync('first'), 1);
-		assert.equal(reopened.getSync('queued'), legacy ? 2 : undefined);
+		assert.equal(reopened.getSync('queued'), committed ? 2 : undefined);
 		reopened.close();
-		console.log(JSON.stringify({ ok: true }));
+		console.log(JSON.stringify({ ok: true, raced }));
+	} else if (mode === 'close-queued-log-conflict') {
+		// As close-queued, but the queued commit has a log entry and conflicts. It cannot be retried
+		// through its closed handle, so it must be refused before writing the batch.
+		RocksDatabase.config({ commitThreads: 1 });
+		const db = RocksDatabase.open(path);
+		const keeper = RocksDatabase.open(path);
+		keeper.putSync('k', 0);
+		const queued = new Transaction(db.store);
+		queued.getSync('k');
+		queued.putSync('k', 'queued');
+		db.useLog('conflict').addEntry(Buffer.from('queued'), queued.id);
+		const first = new Transaction(keeper.store);
+		first.putSync('k', 'first');
+		const firstCommit = first.commit();
+		await untilCommitDelayed(firstCommit);
+		const queuedCommit = queued.commit();
+		// A JS-thread stall past the delay lets the queued commit log before the close; nothing to check.
+		const raced = !isTransactionCommitExecuteDelayedForTesting();
+		db.close();
+		await firstCommit;
+		const error = await queuedCommit.then(
+			() => assert.fail('the queued commit committed'),
+			(error: any) => error
+		);
+		assert.match(String(error), /Database closed during transaction commit operation/);
+		if (!raced) {
+			assert.equal(error.hasLog, false);
+			queued.abort();
+			assert.equal([...keeper.useLog('conflict').query({ start: 0 })].length, 0);
+		}
+		assert.equal(keeper.getSync('k'), 'first');
+		keeper.close();
+		console.log(JSON.stringify({ ok: true, raced }));
 	} else {
 		throw new Error(`unknown mode ${mode}`);
 	}

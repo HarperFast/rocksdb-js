@@ -44,6 +44,18 @@ describe('commitThreads', () => {
 		}
 	);
 
+	// Not mode 2: its log lane writes the batch before the handle closes, which strands it on main too.
+	it.each(['0', '1'])(
+		'refuses a queued logged commit whose handle closed before it could conflict (ROCKSDB_JS_COMMIT_THREAD=%s)',
+		(commitThread) => {
+			runFixture(['close-queued-log-conflict'], {
+				ROCKSDB_JS_COMMIT_THREAD: commitThread,
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
+				UV_THREADPOOL_SIZE: '1',
+			});
+		}
+	);
+
 	it.each(['0', '1'])(
 		'settles a queued commit whose handle was the last one open (ROCKSDB_JS_COMMIT_THREAD=%s)',
 		(commitThread) => {

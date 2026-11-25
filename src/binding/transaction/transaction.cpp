@@ -623,11 +623,17 @@ static void executeLogWork(TransactionCommitState* state) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with txnHandle cancelled\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	} else if (!txnHandle->dbHandle) {
+		// Defensive: close() resets dbHandle only after draining this commit's registration.
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with nullptr dbHandle\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	} else if (!state->operationDescriptor || state->operationDescriptor->isClosing()) {
 		// The commit's descriptor operation keeps this alive; `dbHandle->descriptor` is owner-thread-only.
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with database closing\n", txnHandle.get());
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	} else if (txnHandle->logEntryBatch && txnHandle->dbHandle->isCancelled()) {
+		// A conflict after the log write could not be retried through the closed handle, stranding the
+		// batch; refuse before writing it.
+		DEBUG_LOG("%p Transaction::Commit ERROR: Called with log entries and handle closed\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	} else if (rocksdb::Status admission = state->claim.admit(txnHandle->touchedColumnFamilies, *state->operationDescriptor);
 		!admission.ok()) {
