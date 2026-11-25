@@ -1,5 +1,6 @@
 // commitThreads is a process-wide setting applied at open, so each case runs in a fresh process.
 import { registryStatus, RocksDatabase, shutdown, Transaction } from '../../src/index.ts';
+import { isTransactionCommitExecuteDelayedForTesting } from '../../src/load-binding.ts';
 import assert from 'node:assert/strict';
 import { stat } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
@@ -8,6 +9,14 @@ const [path, mode, threadsArg] = process.argv.slice(2);
 
 function commitThreadsStat(db: RocksDatabase): number {
 	return db.getStat('commitPipeline.commitThreads') as number;
+}
+
+// Waits until a commit holds the only commit thread in ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, past its
+// log stage.
+async function untilCommitDelayed(): Promise<void> {
+	while (!isTransactionCommitExecuteDelayedForTesting()) {
+		await new Promise((resolve) => setImmediate(resolve));
+	}
 }
 
 try {
@@ -137,9 +146,11 @@ try {
 		const first = new Transaction(keeper.store);
 		first.putSync('first', 1);
 		const firstCommit = first.commit();
+		await untilCommitDelayed();
 		const queued = new Transaction(db.store);
 		queued.putSync('queued', 2);
 		const queuedCommit = queued.commit();
+		assert.ok(isTransactionCommitExecuteDelayedForTesting(), 'the first commit finished early');
 		db.close();
 		await Promise.all([firstCommit, queuedCommit]);
 		assert.equal(keeper.getSync('queued'), 2);
@@ -158,9 +169,11 @@ try {
 			// The after-commit notification can find the database closed; the write is checked below.
 			if (!/Database (not open|is closing)/.test(String(error))) throw error;
 		});
+		await untilCommitDelayed();
 		const queued = new Transaction(db.store);
 		queued.putSync('queued', 2);
 		const queuedCommit = queued.commit();
+		assert.ok(isTransactionCommitExecuteDelayedForTesting(), 'the first commit finished early');
 		db.close();
 		await firstCommit;
 		if (legacy) {
