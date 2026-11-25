@@ -33,7 +33,7 @@ Why each rule holds, and where it is enforced:
   No savepoints are used: `RollbackToSavePoint` rebuilds the batch index under live iterators.
 - **Matching** is by caller `DBHandle` (it also selects the shared key/value buffers `Next` writes
   into), bound presence, and column-family state: a `weak_ptr` to the `ColumnFamilyDescriptor`
-  (compared by control block under the constructor's `OperationGuard`) and its `clearEpoch`. A drop
+  (compared by control block under the constructor's admission) and its `clearEpoch`. A drop
   and same-name recreate behind one reopened `DBHandle`, or a `clear()` (which deletes the family's
   files outright, unseen by an iterator that pinned them), must not serve old rows. Weak, because a
   strong pin can destroy a column-family handle after its database (invariant 24's crash).

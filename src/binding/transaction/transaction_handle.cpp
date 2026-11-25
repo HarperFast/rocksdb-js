@@ -145,6 +145,18 @@ std::shared_ptr<TransactionHandle> getOwnedTransaction(
 	return nullptr;
 }
 
+TransactionOperation::TransactionOperation(TransactionHandle& handle) :
+	handle(handle),
+	admittedCall(handle.enterSync()) {
+	if (this->admittedCall) {
+		const std::shared_ptr<DBHandle>& dbHandle = handle.dbHandle;
+		// Compares control blocks, which `owningDescriptor` keeps alive, without touching a count.
+		this->handleDetached = dbHandle &&
+			(!dbHandle->descriptor || handle.owningDescriptor.owner_before(dbHandle->descriptor) ||
+				dbHandle->descriptor.owner_before(handle.owningDescriptor));
+	}
+}
+
 /**
  * Adds a log entry to the specified transaction log store's batch.
  *
@@ -596,7 +608,14 @@ void TransactionHandle::closeImpl(bool waitForWinner) noexcept {
 		// a mutex with registerAsyncWork(), so this always drains to zero — there is no
 		// timed-out case left to handle here; an earlier version of this close() leaked
 		// the transaction on a 5s drain timeout as a stopgap for exactly this window.
+		const bool draining = this->activeAsyncWorkCount.load(std::memory_order_relaxed) > 0;
+		if (draining) {
+			txnCloseDrainWaiting().fetch_add(1, std::memory_order_acq_rel);
+		}
 		this->waitForAsyncWorkCompletion();
+		if (draining) {
+			txnCloseDrainWaiting().fetch_sub(1, std::memory_order_acq_rel);
+		}
 
 		// Test seam: widen the PATH A vs PATH B race window.
 		// This window is real in production (PATH B fires after waitForAsyncWorkCompletion
@@ -849,6 +868,7 @@ bool TransactionHandle::getCount(
 	std::shared_ptr<DBHandle> dbHandleOverride
 ) {
 	std::shared_ptr<DBIteratorHandle> itHandle = this->createIterator(itOptions, std::move(dbHandleOverride));
+	pauseTransactionReadForTesting();
 	return itHandle->countRemaining(count);
 }
 
@@ -877,6 +897,7 @@ rocksdb::Status TransactionHandle::getSync(
 	}
 
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	pauseTransactionReadForTesting();
 	auto column = dbHandle->getColumnFamilyHandle();
 
 	// TODO: should this be GetForUpdate?
@@ -1201,12 +1222,12 @@ rocksdb::Status TransactionHandle::putSync(
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
-	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
+	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	if (!this->disableSnapshot && !this->snapshotSet && dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
 		this->txn->SetSnapshot();
 	}
 
-	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	bool addedTouch = false;
 	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
 	if (!touched.ok()) {
@@ -1263,12 +1284,12 @@ rocksdb::Status TransactionHandle::removeSync(
 		return rocksdb::Status::Aborted("Transaction is not in pending state");
 	}
 
-	if (!this->disableSnapshot && !this->snapshotSet && this->dbHandle->descriptor->mode == DBMode::Pessimistic) {
+	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
+	if (!this->disableSnapshot && !this->snapshotSet && dbHandle->descriptor->mode == DBMode::Pessimistic) {
 		this->snapshotSet = true;
 		this->txn->SetSnapshot();
 	}
 
-	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	bool addedTouch = false;
 	rocksdb::Status touched = this->noteTouchedColumnFamily(dbHandle->columnDescriptor, addedTouch);
 	if (!touched.ok()) {

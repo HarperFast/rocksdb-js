@@ -391,6 +391,94 @@ describe.skipIf(!distBuilt || Boolean(process.versions.deno || process.versions.
 			}
 		);
 
+		it.each(['EPIPE', 'ENOTCONN'])(
+			'keeps an earlier exit code when the %s handler reports a close failure',
+			async (code) => {
+				const dbPath = tempDBPath();
+				seed(dbPath, { a: 'one' });
+				const preload = [
+					`import { RocksDatabase } from ${JSON.stringify(distIndexURL)};`,
+					`let armed = false;`,
+					`const close = RocksDatabase.prototype.close;`,
+					`RocksDatabase.prototype.close = function () { if (armed) throw new Error('injected close failure'); close.call(this); };`,
+					`process.exitCode = 3;`,
+					`process.stdout.write = function () { const e = new Error('write ${code}'); e.code = '${code}'; armed = true; try { this.emit('error', e); } finally { armed = false; } return true; };`,
+				].join('\n');
+				const result = await cli([dbPath, 'get', 'a'], {
+					nodeArgs: ['--import', `data:text/javascript,${encodeURIComponent(preload)}`],
+				});
+				expect(result.stderr).toContain('injected close failure');
+				expect(result.code).toBe(3);
+			}
+		);
+
+		describe('close failure isolation', () => {
+			const closeProbe = [
+				`import { RocksDatabase } from ${JSON.stringify(distIndexURL)};`,
+				`const close = RocksDatabase.prototype.close;`,
+			];
+			const withPreload = (lines: string[]) => [
+				'--import',
+				`data:text/javascript,${encodeURIComponent(lines.join('\n'))}`,
+			];
+
+			it('closes the remaining handles when the first close throws', async () => {
+				const dbPath = tempDBPath();
+				seed(dbPath, { a: 'one' }, 'foo');
+				const nodeArgs = withPreload([
+					...closeProbe,
+					`let failed = false;`,
+					`RocksDatabase.prototype.close = function () {`,
+					`\tif (this.name === 'default') { failed = true; throw new Error('injected first close failure'); }`,
+					`\tclose.call(this); if (failed) process.stderr.write('closed later handle ' + this.name + '\\n');`,
+					`};`,
+				]);
+				const result = await cli([dbPath, '--column', 'foo', 'get', 'a'], { nodeArgs });
+				expect(result.stderr).toContain('injected first close failure');
+				expect(result.stderr).toContain('closed later handle foo');
+				expect(result.code).toBe(1);
+			});
+
+			it('refuses to restore when closing the database for it fails', async () => {
+				const dbPath = tempDBPath();
+				const backupDir = tempDBPath();
+				seed(dbPath, { a: 'one' });
+				expect((await cli([dbPath, 'backups', backupDir, 'backup'])).code).toBe(0);
+				seed(dbPath, { a: 'changed' });
+				const nodeArgs = withPreload([
+					...closeProbe,
+					`RocksDatabase.prototype.close = function () { close.call(this); throw new Error('injected close failure'); };`,
+				]);
+				const result = await cli([dbPath, 'backups', backupDir, 'restore', '1', '--yes'], {
+					nodeArgs,
+				});
+				expect(result.stderr).toContain('injected close failure');
+				expect(result.code).toBe(1);
+				expect((await cli([dbPath, 'get', 'a'])).stdout).toBe('changed\n');
+			});
+
+			it('closes the databases when the REPL close throws', async () => {
+				const dbPath = tempDBPath();
+				seed(dbPath, { a: 'one' });
+				const nodeArgs = withPreload([
+					...closeProbe,
+					`import repl from 'node:repl';`,
+					`process.stdin.isTTY = true;`,
+					`repl.start = () => ({`,
+					`\tcontext: {},`,
+					`\ton(event) { if (event === 'exit') throw new Error('injected repl failure'); },`,
+					`\tclose() { throw new Error('injected repl close failure'); },`,
+					`});`,
+					`RocksDatabase.prototype.close = function () { close.call(this); process.stderr.write('closed database\\n'); };`,
+				]);
+				const result = await cli([dbPath], { nodeArgs, input: 'get a\nrepl\n' });
+				expect(result.stderr).toContain('injected repl failure');
+				expect(result.stderr).toContain('injected repl close failure');
+				expect(result.stderr).toContain('closed database');
+				expect(result.code).toBe(1);
+			});
+		});
+
 		describe('close failure after the command finishes', () => {
 			const preload = [
 				`import { RocksDatabase } from ${JSON.stringify(distIndexURL)};`,

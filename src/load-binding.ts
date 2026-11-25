@@ -1258,9 +1258,19 @@ export const setTransactionStagingDelayForTesting: (countdown: number, delayMs: 
 export const isTransactionStagingDelayedForTesting: () => boolean =
 	binding.isTransactionStagingDelayedForTesting;
 
+export const setTransactionReadDelayForTesting: (delayMs: number) => void =
+	binding.setTransactionReadDelayForTesting;
+
+export const isTransactionReadDelayedForTesting: () => boolean =
+	binding.isTransactionReadDelayedForTesting;
+
 /** Reports whether a transaction is parked at the native commit seam. */
 export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
 	binding.isTransactionCommitExecuteDelayedForTesting;
+
+/** Reports whether a transaction close() is waiting in its async-work drain. */
+export const isTransactionCloseDrainingForTesting: () => boolean =
+	binding.isTransactionCloseDrainingForTesting;
 
 /** Reports whether a transaction is parked in close() at the test seam. */
 export const isTransactionCloseDelayedForTesting: () => boolean =
