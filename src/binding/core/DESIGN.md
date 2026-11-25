@@ -28,6 +28,10 @@ A slot may hold a version only while every write of its key invalidates the slot
   `verificationTable: true` handle, so `vtPopulateIfSettled()` and the async get's
   `AsyncGetState::vtPublish` refuse to publish through any other handle. The explicit
   `populateVersion()` primitive is not gated; its caller owns that contract.
+- **An abandoned transaction's reads bypass the table.** Its staged writes stay readable, but its
+  intents are gone and its writer counts no longer hold an opt-in off, so a read could publish a
+  version that never commits, or answer FRESH over its own staged write
+  (`TransactionHandle::readsBypassVerificationTable()`).
 - **The table exists before an opted-in handle can write.** Writers never create it:
   `TransactionHandle::lockVTSlot()` and `Database::PutSync` record no write intent when it is
   absent, and a read that created it later could publish the committed version that an earlier

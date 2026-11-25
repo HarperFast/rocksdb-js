@@ -1137,7 +1137,7 @@ describe('Verification Table', () => {
 			}
 		});
 
-		it('releases the count when a transaction abandons its writes, and only once', async () => {
+		it('releases the count when a transaction abandons its writes, and not again when it aborts', async () => {
 			const conflict = expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' });
 			const path = generateDBPath();
 			const keepAlive = new RocksDatabase(path).open();
@@ -1153,6 +1153,7 @@ describe('Verification Table', () => {
 				plain.close();
 
 				first.abandonWrites();
+				first.abandonWrites();
 				expect(() => first.commitSync()).toThrow(
 					expect.objectContaining({ code: 'ERR_WRITES_ABANDONED' })
 				);
@@ -1166,12 +1167,45 @@ describe('Verification Table', () => {
 					expect.objectContaining({ code: 'ERR_WRITES_ABANDONED' })
 				);
 				expect(cached.getSync(key, { expectedVersion: 1.5e12 })).toBe(FRESH_VERSION_FLAG);
+
+				// The staged write stays readable through the transaction but must not reach the table.
+				for (const expectedVersion of [1.5e12, 1.7e12]) {
+					const staged = cached.getSync(key, { transaction: second, expectedVersion });
+					expect(Buffer.from(staged).readDoubleBE(0)).toBe(1.7e12);
+				}
+				expect(cached.verifyVersion(key, 1.7e12)).toBe(false);
+				expect(cached.getSync(key, { expectedVersion: 1.5e12 })).toBe(FRESH_VERSION_FLAG);
 			} finally {
 				first.abort();
 				second.abort();
 				cached.close();
 				plain.close();
 				keepAlive.close();
+			}
+		});
+
+		it('keeps a transaction’s own abandoned writes out of the table', async () => {
+			const path = generateDBPath();
+			const db = new RocksDatabase(path, cachedOptions).open();
+			const txn = new Transaction(db.store);
+			try {
+				const key = Buffer.from('abandoned-own');
+				await db.put(key, makeValue(1.5e12));
+				seed(db, key, 1.5e12);
+				db.putSync(key, makeValue(1.6e12), { transaction: txn });
+				txn.abandonWrites();
+				expect(db.verifyVersion(key, 1.5e12)).toBe(false);
+
+				for (const expectedVersion of [1.5e12, 1.6e12]) {
+					const staged = txn.getBinarySync(key, { expectedVersion }) as Buffer;
+					expect(Buffer.from(staged).readDoubleBE(0)).toBe(1.6e12);
+				}
+				expect(db.verifyVersion(key, 1.6e12)).toBe(false);
+				const committed = db.getSync(key, { expectedVersion: 1.6e12 });
+				expect(Buffer.from(committed).readDoubleBE(0)).toBe(1.5e12);
+			} finally {
+				txn.abort();
+				db.close();
 			}
 		});
 

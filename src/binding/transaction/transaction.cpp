@@ -237,9 +237,6 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
  * else will ever release those intents, and other writers' coordinated-retry
  * commits park on them. Reads keep working, including read-your-own-writes.
  *
- * Its non-verifying writer counts go too, so a verificationTable opt-in need not
- * wait for the close (core/DESIGN.md, participation).
- *
  * VT intents only: RocksDB's own transaction locks (pessimistic mode) are held
  * until the transaction is aborted.
  */
@@ -255,11 +252,12 @@ napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
 	}
 
-	(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
-	// Unadmitted, a teardown close() owns the release and runs it itself.
 	TransactionOperation operation(**txnHandle);
 	if (operation.admitted()) {
 		(*txnHandle)->abandonStagedWrites();
+	} else {
+		// A teardown close() owns the release.
+		(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
 	}
 	NAPI_RETURN_UNDEFINED();
 }
@@ -1659,7 +1657,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	// Observe the slot after the snapshot is established; reused for the
 	// fast-path check and the post-read conditional CAS.
 	uint64_t vtObserved = 0;
-	if (hasExpectedVersion || wantsPopulate) {
+	if ((hasExpectedVersion || wantsPopulate) && !(*txnHandle)->readsBypassVerificationTable()) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
 		if (vtSlot) vtObserved = vtSlot.load();
 	}

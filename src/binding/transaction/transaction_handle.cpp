@@ -744,6 +744,9 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 
+	if (this->readsBypassVerificationTable()) {
+		vtSlot = {};
+	}
 	this->ensureSnapshot();
 	// Observed after the snapshot is established, as in getSync; the post-read CAS publishes only if
 	// no write cycle changed the slot since.
@@ -1110,6 +1113,7 @@ void ColumnFamilySet::removeLast(ColumnFamilyDescriptor* column) {
 }
 
 void TransactionHandle::abandonStagedWrites() {
+	// First, so a failure below still refuses commit.
 	this->writesAbandoned.store(true, std::memory_order_relaxed);
 	this->nonVerifyingWriters.release();
 	if (!this->lockedVTSlots.empty()) {
@@ -1120,7 +1124,6 @@ void TransactionHandle::abandonStagedWrites() {
 rocksdb::Status TransactionHandle::abandonForDroppedColumnFamily(
 	const std::shared_ptr<ColumnFamilyDescriptor>& column
 ) noexcept {
-	this->writesAbandoned.store(true, std::memory_order_relaxed);
 	try {
 		this->abandonStagedWrites();
 		return rocksdb::Status::ColumnFamilyDropped("Column family \"" + column->name + "\" was dropped");

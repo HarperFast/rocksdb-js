@@ -416,14 +416,19 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	void releaseIntent();
 
 	/**
-	 * Bars every later write and commit, then releases what only a commit
-	 * could use: the non-verifying writer counts (core/DESIGN.md,
-	 * participation) and the VT write intents. The caller must exclude
-	 * close() and resetTransaction() on this handle: an admitted
-	 * TransactionOperation, a descriptor operation `finishClose()` drains
-	 * before its sweep, or the commit's registered async work.
+	 * The caller must exclude close() and resetTransaction() on this handle:
+	 * an admitted TransactionOperation, a descriptor operation `finishClose()`
+	 * drains before its sweep, or the commit's registered async work.
 	 */
 	void abandonStagedWrites();
+
+	/**
+	 * Abandoned staged writes stay readable but no intent covers them, so this
+	 * transaction's reads must neither answer FRESH nor publish a version.
+	 */
+	bool readsBypassVerificationTable() const {
+		return this->writesAbandoned.load(std::memory_order_relaxed);
+	}
 
 	void addLogEntry(std::unique_ptr<TransactionLogEntry> entry);
 
