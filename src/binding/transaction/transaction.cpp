@@ -1832,28 +1832,31 @@ napi_value Transaction::PutSync(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 	}
-	rocksdb::Status writeStatus;
-	{
+	// Built once admission has ended: building the error can run JavaScript.
+	const char* refusal = nullptr;
+	rocksdb::Status writeStatus = [&] {
 		TransactionOperation operation(**txnHandle);
 		if (!operation.admitted()) {
-			writeStatus = rocksdb::Status::Aborted("Transaction is closed");
-		} else if (const char* refusal = operation.refusal("Transaction is closed")) {
-			::napi_throw_error(env, nullptr, refusal);
-			return nullptr;
-		} else {
-			rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-			rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
-
-			DEBUG_LOG("%p Transaction::PutSync key:", txnHandle->get());
-			DEBUG_LOG_KEY_LN(keySlice);
-
-			DEBUG_LOG("%p Transaction::PutSync value:", txnHandle->get());
-			DEBUG_LOG_KEY_LN(valueSlice);
-
-			writeStatus = (*txnHandle)->putSync(keySlice, valueSlice);
+			return rocksdb::Status::Aborted("Transaction is closed");
 		}
+		if ((refusal = operation.refusal("Transaction is closed"))) {
+			return rocksdb::Status::OK();
+		}
+		rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
+		rocksdb::Slice valueSlice(value + valueStart, valueEnd - valueStart);
+
+		DEBUG_LOG("%p Transaction::PutSync key:", txnHandle->get());
+		DEBUG_LOG_KEY_LN(keySlice);
+
+		DEBUG_LOG("%p Transaction::PutSync value:", txnHandle->get());
+		DEBUG_LOG_KEY_LN(valueSlice);
+
+		return (*txnHandle)->putSync(keySlice, valueSlice);
+	}();
+	if (refusal) {
+		::napi_throw_error(env, nullptr, refusal);
+		return nullptr;
 	}
-	// Built once admission has ended: building the error can run JavaScript.
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(writeStatus, "Transaction put failed");
 
 	NAPI_RETURN_UNDEFINED();
@@ -1870,18 +1873,21 @@ napi_value Transaction::RemoveSync(napi_env env, napi_callback_info info) {
 	if ((*txnHandle)->writesAbandoned.load(std::memory_order_relaxed)) {
 		NAPI_THROW_JS_ERROR("ERR_WRITES_ABANDONED", "Transaction writes were abandoned; the transaction is read-only");
 	}
-	rocksdb::Status writeStatus;
-	{
+	const char* refusal = nullptr;
+	rocksdb::Status writeStatus = [&] {
 		TransactionOperation operation(**txnHandle);
 		if (!operation.admitted()) {
-			writeStatus = rocksdb::Status::Aborted("Transaction is closed");
-		} else if (const char* refusal = operation.refusal("Transaction is closed")) {
-			::napi_throw_error(env, nullptr, refusal);
-			return nullptr;
-		} else {
-			rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
-			writeStatus = (*txnHandle)->removeSync(keySlice);
+			return rocksdb::Status::Aborted("Transaction is closed");
 		}
+		if ((refusal = operation.refusal("Transaction is closed"))) {
+			return rocksdb::Status::OK();
+		}
+		rocksdb::Slice keySlice(key + keyStart, keyEnd - keyStart);
+		return (*txnHandle)->removeSync(keySlice);
+	}();
+	if (refusal) {
+		::napi_throw_error(env, nullptr, refusal);
+		return nullptr;
 	}
 	ROCKSDB_STATUS_THROWS_ERROR_LIKE(writeStatus, "Transaction remove failed");
 
