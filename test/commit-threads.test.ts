@@ -32,11 +32,22 @@ describe('commitThreads', () => {
 		runFixture(['validate']);
 	});
 
-	// Not ROCKSDB_JS_COMMIT_THREAD=2: its log lane can check the handle before the handle closes.
+	// Not ROCKSDB_JS_COMMIT_THREAD=2: its log stage can run before the handle closes.
 	it.each(['0', '1'])(
 		'commits a queued commit whose handle closed while another handle is open (ROCKSDB_JS_COMMIT_THREAD=%s)',
 		(commitThread) => {
 			runFixture(['close-queued'], {
+				ROCKSDB_JS_COMMIT_THREAD: commitThread,
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '200',
+				UV_THREADPOOL_SIZE: '1',
+			});
+		}
+	);
+
+	it.each(['0', '1'])(
+		'settles a queued commit whose handle was the last one open (ROCKSDB_JS_COMMIT_THREAD=%s)',
+		(commitThread) => {
+			runFixture(['close-queued-last'], {
 				ROCKSDB_JS_COMMIT_THREAD: commitThread,
 				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '200',
 				UV_THREADPOOL_SIZE: '1',

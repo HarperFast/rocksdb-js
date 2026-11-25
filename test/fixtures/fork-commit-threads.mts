@@ -1,5 +1,5 @@
 // commitThreads is a process-wide setting applied at open, so each case runs in a fresh process.
-import { RocksDatabase, shutdown, Transaction } from '../../src/index.ts';
+import { registryStatus, RocksDatabase, shutdown, Transaction } from '../../src/index.ts';
 import assert from 'node:assert/strict';
 import { stat } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
@@ -144,6 +144,38 @@ try {
 		await Promise.all([firstCommit, queuedCommit]);
 		assert.equal(keeper.getSync('queued'), 2);
 		keeper.close();
+		console.log(JSON.stringify({ ok: true }));
+	} else if (mode === 'close-queued-last') {
+		// As close-queued, but the closing handle is the last one. A lane commit is refused: the close
+		// runs while it is queued. A legacy commit pins the descriptor, which defers the close until
+		// that commit completes, so it commits.
+		const legacy = process.env.ROCKSDB_JS_COMMIT_THREAD === '0';
+		RocksDatabase.config({ commitThreads: 1 });
+		const db = RocksDatabase.open(path);
+		const first = new Transaction(db.store);
+		first.putSync('first', 1);
+		const firstCommit = first.commit().catch((error) => {
+			// The after-commit notification can find the database closed; the write is checked below.
+			if (!/Database (not open|is closing)/.test(String(error))) throw error;
+		});
+		const queued = new Transaction(db.store);
+		queued.putSync('queued', 2);
+		const queuedCommit = queued.commit();
+		db.close();
+		await firstCommit;
+		if (legacy) {
+			await queuedCommit;
+		} else {
+			await assert.rejects(queuedCommit, /Database closed during transaction commit operation/);
+		}
+		assert.ok(
+			!registryStatus().some((entry) => entry.path === path),
+			'the last-handle close left the database open'
+		);
+		const reopened = RocksDatabase.open(path);
+		assert.equal(reopened.getSync('first'), 1);
+		assert.equal(reopened.getSync('queued'), legacy ? 2 : undefined);
+		reopened.close();
 		console.log(JSON.stringify({ ok: true }));
 	} else {
 		throw new Error(`unknown mode ${mode}`);

@@ -800,7 +800,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// history forever (harper#1695) — converges because the re-run reads and validates
 			// against current state instead. The caller must re-run the transaction body so the
 			// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
-			// The caller re-runs the body through this handle, so a closed one ends the commit.
+			// The caller re-runs the body through this handle, so one still closed ends the commit.
 			if (txnHandle->dbHandle && !txnHandle->dbHandle->isCancelled()) {
 				txnHandle->resetTransaction(descriptor);
 			} else {
