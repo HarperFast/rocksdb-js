@@ -1,4 +1,5 @@
 import { getRegistryStatus, RocksDatabase } from '../../src/index.ts';
+import { forceAsyncExceptionForTesting } from '../../src/load-binding.ts';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
@@ -59,6 +60,8 @@ if (!isMainThread) {
 			Atomics.store(signal, MAIN_CLOSED, 1);
 			Atomics.notify(signal, MAIN_CLOSED);
 		};
+		// A throw inside the completion, with the pin held, must still reach the purge retry.
+		forceAsyncExceptionForTesting(6, 1);
 		await db.withLock(
 			'key',
 			shape === 'sync'
@@ -67,6 +70,7 @@ if (!isMainThread) {
 						releaseToWorker();
 					}
 		);
+		forceAsyncExceptionForTesting(0, 0);
 		const outcome = await closed;
 		const leaked = entryOf(path);
 		Atomics.store(signal, MAIN_CHECKED, 1);
