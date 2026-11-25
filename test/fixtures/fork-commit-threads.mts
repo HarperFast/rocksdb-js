@@ -178,7 +178,8 @@ try {
 		const queued = new Transaction(db.store);
 		queued.putSync('queued', 2);
 		const queuedCommit = queued.commit();
-		// A JS-thread stall past the delay lets the queued commit run before the close.
+		// Sampled before the close, which waits out both commits here. A JS-thread stall past the delay
+		// lets the queued commit run before the close.
 		const raced = !isTransactionCommitExecuteDelayedForTesting();
 		db.close();
 		await firstCommit;
@@ -219,15 +220,21 @@ try {
 		const firstCommit = first.commit();
 		await untilCommitDelayed(firstCommit);
 		const queuedCommit = queued.commit();
-		// A JS-thread stall past the delay lets the queued commit log before the close; nothing to check.
-		const raced = !isTransactionCommitExecuteDelayedForTesting();
 		db.close();
+		// This close does not wait for commits, so a delay still running proves the queued commit had
+		// not started when its handle closed. Without that proof, it may have conflicted while open.
+		const raced = !isTransactionCommitExecuteDelayedForTesting();
 		await firstCommit;
 		const error = await queuedCommit.then(
 			() => assert.fail('the queued commit committed'),
 			(error: any) => error
 		);
-		assert.match(String(error), /Database closed during transaction commit operation/);
+		assert.match(
+			String(error),
+			raced
+				? /Database closed during transaction commit operation|busy/i
+				: /Database closed during transaction commit operation/
+		);
 		if (!raced) {
 			assert.equal(error.hasLog, false);
 			queued.abort();

@@ -150,7 +150,7 @@ TransactionOperation::TransactionOperation(TransactionHandle& handle) :
 	admittedCall(handle.enterSync()) {
 	if (this->admittedCall) {
 		const std::shared_ptr<DBHandle>& dbHandle = handle.dbHandle;
-		this->handleDetached = dbHandle && !handle.isOwningDescriptor(dbHandle->descriptor);
+		this->handleDetached = dbHandle && !handle.isOwningDescriptor(dbHandle->ownerDescriptor());
 	}
 }
 

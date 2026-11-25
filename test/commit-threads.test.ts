@@ -44,7 +44,7 @@ describe('commitThreads', () => {
 		}
 	);
 
-	// Not mode 2: its log lane writes the batch before the handle closes, which strands it on main too.
+	// Not mode 2: its log lane can write the batch before the handle closes.
 	it.each(['0', '1'])(
 		'refuses a queued logged commit whose handle closed before it could conflict (ROCKSDB_JS_COMMIT_THREAD=%s)',
 		(commitThread) => {
