@@ -285,8 +285,8 @@ napi_value Database::GetMany(napi_env env, napi_callback_info info) {
 		if (!txnHandle) {
 			return nullptr;
 		}
-		PendingAsyncState<AsyncTransactionMultiGetState> read(env, nullptr);
-		if (!txnHandle->prepareMultiGet(env, keys, resolve, reject, read)) {
+		auto read = txnHandle->prepareMultiGet(env, keys, resolve, reject);
+		if (!read.state) {
 			return nullptr;
 		}
 		return txnHandle->multiGet(env, std::move(read), *dbHandle);

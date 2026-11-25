@@ -1464,8 +1464,6 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	// The key may be in the handle's shared default key buffer, which JavaScript run by prepareGet()
 	// can overwrite, so it is copied first. get() rechecks the handle under its own registration.
 	std::string key;
-	bool wantsPopulate;
-	VtSlotRef vtSlot;
 	{
 		ADMIT_TRANSACTION_OPERATION("Transaction is closed");
 		// UNWRAP_DB_HANDLE_AND_OPEN() cannot be used here: it unwraps `jsThis`, which for this
@@ -1483,17 +1481,13 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		key.assign(keySlice.data(), keySlice.size());
-		wantsPopulate = readWantsPopulate(optionalFlags, (*txnHandle)->dbHandle);
-		if (hasExpectedVersion || wantsPopulate) {
-			vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
-		}
 	}
 
-	PendingAsyncState<AsyncTransactionGetState> read(env, nullptr);
-	if (!(*txnHandle)->prepareGet(env, std::move(key), resolve, reject, read)) {
+	auto read = (*txnHandle)->prepareGet(env, std::move(key), resolve, reject);
+	if (!read.state) {
 		return nullptr;
 	}
-	return (*txnHandle)->get(env, std::move(read), nullptr, vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
+	return (*txnHandle)->get(env, std::move(read), nullptr, optionalFlags, hasExpectedVersion, expectedVersion);
 }
 
 /**
@@ -1553,8 +1547,8 @@ napi_value Transaction::GetMany(napi_env env, napi_callback_info info) {
 	if (!readMultiGetKeys(env, argv[0], argv[1], argv[2], keys)) {
 		return nullptr;
 	}
-	PendingAsyncState<AsyncTransactionMultiGetState> read(env, nullptr);
-	if (!(*txnHandle)->prepareMultiGet(env, keys, argv[3], argv[4], read)) {
+	auto read = (*txnHandle)->prepareMultiGet(env, keys, argv[3], argv[4]);
+	if (!read.state) {
 		return nullptr;
 	}
 	ADMIT_TRANSACTION_OPERATION("Transaction is closed");

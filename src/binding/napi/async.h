@@ -454,7 +454,6 @@ struct PendingAsyncState {
 
 	PendingAsyncState(napi_env env, State* state) : env(env), state(state) {}
 
-	// Leaves `other` empty, so exactly one owner frees the state.
 	PendingAsyncState(PendingAsyncState&& other) noexcept : env(other.env), state(other.state) {
 		other.state = nullptr;
 	}

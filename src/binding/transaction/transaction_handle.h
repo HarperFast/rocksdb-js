@@ -499,29 +499,27 @@ public:
 	 * Creates the state and async work of a `get()` of `key`, which the caller has already copied out
 	 * of any shared buffer. Call it before the read is admitted: creating async work runs
 	 * `async_hooks` init hooks. It reads no transaction or handle state, which that JavaScript may
-	 * change; `get()` does, under its registration. False, with a JavaScript exception pending, on
+	 * change; `get()` does, under its registration. Empty, with a JavaScript exception pending, on
 	 * failure.
 	 */
-	[[nodiscard]] bool prepareGet(
+	PendingAsyncState<AsyncTransactionGetState> prepareGet(
 		napi_env env,
 		std::string key,
 		napi_value resolve,
-		napi_value reject,
-		PendingAsyncState<AsyncTransactionGetState>& read
+		napi_value reject
 	);
 
 	/**
-	 * With no `dbHandleOverride`, refuses a closed or detached own handle; `vtSlot` must then come
-	 * from that handle.
+	 * With no `dbHandleOverride`, refuses a closed or detached own handle. `flags` are the caller's
+	 * optional read flags.
 	 */
 	napi_value get(
 		napi_env env,
 		PendingAsyncState<AsyncTransactionGetState>&& read,
-		std::shared_ptr<DBHandle> dbHandleOverride = nullptr,
-		VtSlotRef vtSlot = {},
-		bool hasExpectedVersion = false,
-		uint64_t expectedVersion = 0,
-		bool wantsPopulate = false
+		std::shared_ptr<DBHandle> dbHandleOverride,
+		int32_t flags,
+		bool hasExpectedVersion,
+		uint64_t expectedVersion
 	);
 
 	/**
@@ -562,12 +560,11 @@ public:
 	 * Copies `keys` and creates the async work of a `multiGet()`, before the read is admitted; see
 	 * `prepareGet()`.
 	 */
-	[[nodiscard]] bool prepareMultiGet(
+	PendingAsyncState<AsyncTransactionMultiGetState> prepareMultiGet(
 		napi_env env,
 		const std::vector<rocksdb::Slice>& keys,
 		napi_value resolve,
-		napi_value reject,
-		PendingAsyncState<AsyncTransactionMultiGetState>& read
+		napi_value reject
 	);
 
 	/**

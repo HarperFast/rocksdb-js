@@ -132,7 +132,6 @@ if (mode === 'reentrant') {
 		assert.ok(!existsSync(logDir), 'a pending transaction kept the log store open');
 	}
 
-	// Building a coded error reads Object.create; a patched one runs while the error is built.
 	const whileBuildingError = (hook: () => void, call: () => unknown) => {
 		const create = Object.create;
 		let pending = true;
@@ -153,7 +152,6 @@ if (mode === 'reentrant') {
 			assert.equal(pending, false, 'no error was built');
 		}
 	};
-	// Creating async work runs async_hooks init hooks for its resource type.
 	const whileCreatingWork = async (type: string, hook: () => void, call: () => unknown) => {
 		let pending = true;
 		const asyncHook = createHook({
@@ -306,6 +304,22 @@ if (mode === 'reentrant') {
 			assert.ok(values?.toString().includes('value-a'), String(values));
 			assert.ok(values?.toString().includes('value-b'), String(values));
 			txn.abort();
+		}
+		// A read refused after its hook closed the owner's handle must not have pinned a snapshot.
+		{
+			const txn = new Transaction(owner.store);
+			assert.equal(
+				await whileCreatingWork(
+					'transaction.get',
+					() => owner.close(),
+					() => nativeGet((txn as any)._context)
+				),
+				'Database not open'
+			);
+			keeper.putSync('after', 'value');
+			assert.equal(keeper.getSync('after', { transaction: txn }), 'value');
+			txn.abort();
+			owner.open();
 		}
 	}
 	keeper.close();

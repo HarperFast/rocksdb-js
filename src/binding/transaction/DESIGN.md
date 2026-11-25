@@ -87,8 +87,9 @@ owns its keys (`get` copies one out of the handle's shared default key buffer wh
 `getMany` copies with `MultiGetBatch::copyKeys()`), so JavaScript that reuses or detaches that buffer
 cannot change which records the read returns. `prepareGet`/`prepareMultiGet` then create the work
 without reading transaction or handle state. `getMany` then admits and calls `multiGet()`; `get` calls
-`get()` unadmitted, which rechecks its own handle (`ownHandleDetached()`) under its registration.
-Both register on the transaction and queue. An init hook therefore runs before the read
+`get()` unadmitted, which rechecks its own handle (`ownHandleDetached()`) under its registration and
+derives the verification-table slot from the handle it reads, since a reopen can move it to another
+column family. Both check before `ensureSnapshot()`, so a refused read pins no snapshot. An init hook therefore runs before the read
 establishes its snapshot and looks at staged writes, like JavaScript run before the call. `get()`/
 `multiGet()` take the prepared state after their registration, so a failed setup releases the snapshot
 and column descriptor it pinned while the registration still holds off `close()`. The `Database::*`
