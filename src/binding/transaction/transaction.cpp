@@ -426,8 +426,6 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 	ColumnFamilyCommitClaim claim;
 	// Set and read by async commits only.
 	std::weak_ptr<DBDescriptor> descriptor;
-	// The transaction's handle when a conflict reset it, for the owner-thread completion.
-	std::weak_ptr<DBHandle> dbHandle;
 	std::shared_ptr<DBDescriptor> libuvDescriptor;
 	DBDescriptor* operationDescriptor = nullptr;
 	bool descriptorOperationActive = false;
@@ -803,7 +801,6 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
 			// The caller re-runs the body through this handle, so one still closed ends the commit.
 			if (txnHandle->dbHandle && !txnHandle->dbHandle->isCancelled()) {
-				state->dbHandle = txnHandle->dbHandle;
 				txnHandle->resetTransaction(descriptor);
 			} else {
 				state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
@@ -840,24 +837,6 @@ static void createCommitError(napi_env env, const TransactionCommitState& state,
 }
 
 /**
- * A retry re-runs the caller's body through the handle, so a conflict after the transaction or its
- * handle closed, or the handle was reopened on another database, is refused. Uses the handle the
- * reset captured: a foreign close() can reset the transaction's once the commit has left its async
- * work.
- */
-static void refuseRetryThroughForeignHandle(TransactionCommitState* state) {
-	if (!(state->status.IsBusy() || state->status.IsTryAgain()) || !state->handle) {
-		return;
-	}
-	const std::shared_ptr<DBHandle> dbHandle = state->dbHandle.lock();
-	if (!dbHandle || dbHandle->isCancelled() || state->handle->isCancelled() ||
-		!state->handle->isOwningDescriptor(dbHandle->ownerDescriptor()) || dbHandle->ownerDescriptor()->isClosing()) {
-		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-		state->errorCode = nullptr;
-	}
-}
-
-/**
  * Runs no JavaScript, so commitSync() can call it while still holding its descriptor operation; the
  * caller builds the error for a failed commit afterwards with createCommitError().
  */
@@ -888,7 +867,6 @@ static bool settleCommit(TransactionCommitState* state) {
  * tsfn callback. Does NOT free the state.
  */
 static void completeCommitWork(napi_env env, TransactionCommitState* state) {
-	refuseRetryThroughForeignHandle(state);
 	if (
 		state->status.IsBusy() &&
 		state->handle &&
@@ -1226,6 +1204,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 
 	const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
+	// A handle reopened on another database is closed as far as this transaction is concerned.
 	if (dbHandle && (*txnHandle)->isOwningDescriptor(dbHandle->ownerDescriptor())) {
 		descriptor = dbHandle->ownerDescriptor();
 	}

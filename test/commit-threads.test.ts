@@ -55,17 +55,6 @@ describe('commitThreads', () => {
 		}
 	);
 
-	it.each(['0', '1'])(
-		'refuses to retry a queued commit whose handle reopened on another database (ROCKSDB_JS_COMMIT_THREAD=%s)',
-		(commitThread) => {
-			runFixture(['close-queued-reopen-conflict'], {
-				ROCKSDB_JS_COMMIT_THREAD: commitThread,
-				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
-				UV_THREADPOOL_SIZE: '1',
-			});
-		}
-	);
-
 	describe.each(['1', '2'])('ROCKSDB_JS_COMMIT_THREAD=%s', (commitThread) => {
 		it('runs one commit at a time with one thread', () => {
 			const result = runFixture(['concurrent', '1'], {
