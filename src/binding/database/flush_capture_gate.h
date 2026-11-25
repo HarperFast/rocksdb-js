@@ -31,8 +31,12 @@ public:
 		if (!this->held || this->escaped) {
 			return;
 		}
+		// A later hold must not inherit this wait's deadline.
+		const uint64_t generation = this->generation;
 		++this->parked;
-		if (!this->condition.wait_for(lock, this->maxPark, [this] { return !this->held || this->escaped; })) {
+		if (!this->condition.wait_for(lock, this->maxPark, [this, generation] {
+				return !this->held || this->escaped || this->generation != generation;
+			})) {
 			this->escaped = true;
 			this->condition.notify_all();
 		}
@@ -50,6 +54,7 @@ private:
 	bool held = false;
 	bool escaped = false;
 	uint32_t parked = 0;
+	uint64_t generation = 0;
 };
 
 class FlushCaptureHold final {
@@ -58,6 +63,7 @@ public:
 		std::lock_guard<std::mutex> lock(gate.mutex);
 		gate.held = true;
 		gate.escaped = false;
+		++gate.generation;
 	}
 
 	~FlushCaptureHold() {

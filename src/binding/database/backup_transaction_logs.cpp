@@ -157,13 +157,13 @@ rocksdb::Status captureLiveFiles(
 				FlushCaptureHold hold(*gate);
 				bool changed = false;
 				s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
-				if (s.ok()) {
+				if (s.ok() && !hold.flushEscaped()) {
 					s = versionChangedSinceListing(db, *files, changed);
 				}
 				if (!s.ok()) {
 					return s;
 				}
-				if (!changed) {
+				if (!changed && !hold.flushEscaped()) {
 					s = captureStores(descriptor, captured);
 					if (!s.ok() || !hold.flushEscaped()) {
 						return s;
@@ -193,13 +193,16 @@ rocksdb::Status captureLiveFiles(
 			FlushCaptureHold hold(*gate);
 			rocksdb::Status s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
 			// Stores are read after the listing so that none whose commits a copied WAL holds is left out.
-			if (s.ok()) {
+			if (s.ok() && !hold.flushEscaped()) {
 				s = db->GetLiveFilesStorageInfo(listOpts, files);
+				if (s.ok()) {
+					s = captureStores(descriptor, captured);
+				}
 			}
-			if (s.ok()) {
-				s = captureStores(descriptor, captured);
+			if (!s.ok()) {
+				return s;
 			}
-			if (!s.ok() || !hold.flushEscaped()) {
+			if (!hold.flushEscaped()) {
 				return s;
 			}
 		}
