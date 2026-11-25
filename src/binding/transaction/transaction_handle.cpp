@@ -862,7 +862,7 @@ napi_value TransactionHandle::get(
 	return returnStatus;
 }
 
-bool TransactionHandle::getCount(
+CountScan TransactionHandle::getCount(
 	DBIteratorOptions& itOptions,
 	uint64_t& count,
 	std::shared_ptr<DBHandle> dbHandleOverride

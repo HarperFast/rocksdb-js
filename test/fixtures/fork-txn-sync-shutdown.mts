@@ -1,5 +1,6 @@
 import { registryStatus, RocksDatabase, shutdown, Transaction } from '../../src/index.ts';
 import {
+	getTransactionDrainWaits,
 	isTransactionReadDelayedForTesting,
 	isTransactionStagingDelayedForTesting,
 	setTransactionReadDelayForTesting,
@@ -51,12 +52,21 @@ if (isMainThread) {
 			assert(Date.now() < deadline, `${operation} did not reach its pause`);
 			await delay(1);
 		}
+		const drainWaits = getTransactionDrainWaits();
 		const started = Date.now();
 		shutdown();
 		const elapsed = Date.now() - started;
 		assert.equal(registryStatus().length, 0);
 		assert(!isPaused(), 'shutdown did not wait for the call');
 		assert(elapsed >= PAUSE_MS / 2, `shutdown returned after ${elapsed}ms, during the call`);
+		// A db-context call is drained before the transaction sweep; a txn-context one is the busy
+		// transaction that sweep waits on, which must wake it once rather than be polled.
+		const waits = getTransactionDrainWaits() - drainWaits;
+		if (context === 'txn') {
+			assert(waits >= 1 && waits <= 3, `transaction drain blocked ${waits} times`);
+		} else {
+			assert.equal(waits, 0);
+		}
 		// Range setup and the count scan recheck closing after the pause.
 		const expected =
 			operation === 'getRange'

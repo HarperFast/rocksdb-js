@@ -292,20 +292,54 @@ struct AsyncWorkHandle {
 
 	void exitSync() {
 		if (this->activeAsyncWorkCount.fetch_sub(1) == 1 && this->cancelled.load()) {
-			// Under the mutex, so a drain between its predicate check and its wait cannot miss this.
-			std::lock_guard<std::mutex> lock(this->waitMutex);
-			this->asyncWorkComplete.notify_all();
+			{
+				// Under the mutex, so a drain between its predicate check and its wait cannot miss this.
+				std::lock_guard<std::mutex> lock(this->waitMutex);
+				this->asyncWorkComplete.notify_all();
+			}
+			signalCancelledIdle();
 		}
 	}
 
 	void unregisterAsyncWork() {
-		std::lock_guard<std::mutex> lock(this->waitMutex);
-		auto activeAsyncWorkCount = --this->activeAsyncWorkCount;
-		if (activeAsyncWorkCount > 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount);
-		} else if (activeAsyncWorkCount == 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this);
-			this->asyncWorkComplete.notify_all();
+		bool cancelledIdle = false;
+		{
+			std::lock_guard<std::mutex> lock(this->waitMutex);
+			auto activeAsyncWorkCount = --this->activeAsyncWorkCount;
+			if (activeAsyncWorkCount > 0) {
+				DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount);
+			} else if (activeAsyncWorkCount == 0) {
+				DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this);
+				this->asyncWorkComplete.notify_all();
+				cancelledIdle = this->cancelled.load();
+			}
+		}
+		if (cancelledIdle) {
+			signalCancelledIdle();
+		}
+	}
+
+	/**
+	 * Lets one thread wait until any cancelled handle's admitted work drains to zero, without polling
+	 * each handle. Register before checking the handles, then wait on `cancelledIdleGeneration` as it
+	 * read before that check: a handle that drains after the check sees the registration and bumps
+	 * the generation (all seq_cst). Unregistered, a drain does not touch either shared atomic, so the
+	 * cost stays on the cancelled path only.
+	 */
+	struct CancelledIdleWaiter final {
+		CancelledIdleWaiter() { cancelledIdleWaiters.fetch_add(1); }
+		~CancelledIdleWaiter() { cancelledIdleWaiters.fetch_sub(1); }
+		CancelledIdleWaiter(const CancelledIdleWaiter&) = delete;
+		CancelledIdleWaiter& operator=(const CancelledIdleWaiter&) = delete;
+	};
+
+	inline static std::atomic<uint32_t> cancelledIdleWaiters{ 0 };
+	inline static std::atomic<uint32_t> cancelledIdleGeneration{ 0 };
+
+	static void signalCancelledIdle() {
+		if (cancelledIdleWaiters.load() != 0) {
+			cancelledIdleGeneration.fetch_add(1);
+			cancelledIdleGeneration.notify_all();
 		}
 	}
 

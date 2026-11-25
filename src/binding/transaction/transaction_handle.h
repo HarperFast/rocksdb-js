@@ -510,10 +510,9 @@ public:
 	 * @param dbHandleOverride - Database handle override to use instead of the
 	 * transaction's database handle when called via the `NativeDatabase` with
 	 * the `transaction` property set.
-	 * @returns False when the descriptor began closing mid-scan; see
-	 * `DBIteratorHandle::countRemaining()`.
+	 * @returns How the scan ended; see `DBIteratorHandle::countRemaining()`.
 	 */
-	[[nodiscard]] bool getCount(
+	[[nodiscard]] CountScan getCount(
 		DBIteratorOptions& itOptions,
 		uint64_t& count,
 		std::shared_ptr<DBHandle> dbHandleOverride = nullptr

@@ -633,7 +633,9 @@ void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
 		cancelling.clear();
 		txnsLock.lock();
 	}
+	const AsyncWorkHandle::CancelledIdleWaiter idleWaiter;
 	while (!this->transactions.empty()) {
+		const uint32_t idleGeneration = AsyncWorkHandle::cancelledIdleGeneration.load();
 		// Idle ones first, and none while all are busy: a pessimistic write blocked on a row lock waits
 		// for its holder's close, and closing a busy one waits for its call anyway.
 		auto it = std::find_if(this->transactions.begin(), this->transactions.end(), [](const auto& entry) {
@@ -641,7 +643,9 @@ void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
 		});
 		if (it == this->transactions.end()) {
 			txnsLock.unlock();
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			transactionDrainWaits().fetch_add(1, std::memory_order_relaxed);
+			// Every one was cancelled above, so whichever goes idle first bumps the generation.
+			AsyncWorkHandle::cancelledIdleGeneration.wait(idleGeneration);
 			txnsLock.lock();
 			continue;
 		}

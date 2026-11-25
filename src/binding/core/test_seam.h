@@ -269,6 +269,12 @@ inline std::atomic<uint64_t>& memoryMapBufferCreateFailures() {
 	return failures;
 }
 
+// Times a descriptor close's transaction drain blocked with every transaction busy. Never reset.
+inline std::atomic<uint64_t>& transactionDrainWaits() {
+	static std::atomic<uint64_t> waits{ 0 };
+	return waits;
+}
+
 // Number of transaction-log abort-marker syncs to fail after the marker is written (a count). Read
 // on the commit and teardown threads that write markers, so snapshotted like the fault flags above.
 inline std::atomic<int>& abortMarkFailureFlag() {

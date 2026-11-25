@@ -1,7 +1,7 @@
 // Synchronous Database calls from several workers on one database (`--layout shared`) or on a
 // database each (`--layout separate`). Prints one JSON line; nsPerOp is wall time / total ops.
 //
-//   node benchmark/shared-db-sync.mts --op get|put|remove|count --workers 4 --layout shared
+//   node benchmark/shared-db-sync.mts --op get|txn-get|put|remove|count --workers 4 --layout shared
 //
 // `--dist` selects another build (for example a base checkout) to compare interleaved rounds.
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -84,6 +84,11 @@ if (isMainThread) {
 		switch (op) {
 			case 'get':
 				for (let i = 0; i < n; i++) sink += db.getSync(keys[i % 100]) ? 1 : 0;
+				break;
+			case 'txn-get':
+				db.transactionSync((txn: any) => {
+					for (let i = 0; i < n; i++) sink += txn.getSync(keys[i % 100]) ? 1 : 0;
+				});
 				break;
 			case 'put':
 				for (let i = 0; i < n; i++) db.putSync(ownKeys[i % 100], value);

@@ -1517,8 +1517,9 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 
 	uint64_t count = 0;
 	try {
-		if (!(*txnHandle)->getCount(itOptions, count)) {
-			::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+		const CountScan scan = (*txnHandle)->getCount(itOptions, count);
+		if (scan != CountScan::Counted) {
+			::napi_throw_error(env, nullptr, countScanRefusal(scan, /*transactional=*/true));
 			NAPI_RETURN_UNDEFINED();
 		}
 	} catch (const std::exception& e) {

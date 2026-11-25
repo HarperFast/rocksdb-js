@@ -203,11 +203,11 @@ void DBIteratorHandle::init(DBIteratorOptions& options) {
 	}
 }
 
-bool DBIteratorHandle::countRemaining(uint64_t& count) {
+CountScan DBIteratorHandle::countRemaining(uint64_t& count) {
 	std::lock_guard<std::mutex> lock(this->iteratorMutex);
-	// Closed before the scan began, by its transaction's close() or a foreign sweep: not exhausted.
+	// By its transaction's end or a foreign sweep: not exhausted.
 	if (!this->iterator) {
-		return false;
+		return CountScan::IteratorClosed;
 	}
 	const DBDescriptor* descriptor = this->dbHandle->descriptor.get();
 	// Test-only: stretch the scan so a fixture can land a foreign destroy()
@@ -216,7 +216,7 @@ bool DBIteratorHandle::countRemaining(uint64_t& count) {
 	count = 0;
 	while (this->valid()) {
 		if (descriptor->isClosing()) {
-			return false;
+			return CountScan::DatabaseClosing;
 		}
 		if (rowDelayMs > 0) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(rowDelayMs));
@@ -224,7 +224,7 @@ bool DBIteratorHandle::countRemaining(uint64_t& count) {
 		++count;
 		this->advance();
 	}
-	return true;
+	return CountScan::Counted;
 }
 
 void DBIteratorHandle::seek() {

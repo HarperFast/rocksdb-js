@@ -8,6 +8,8 @@ Regression: the async case in `test/error-object-failure.test.ts` (rejection thr
 
 `AsyncWorkHandle` (`async.h`) admits work two ways onto one counter that `waitForAsyncWorkCompletion()` drains: `registerAsyncWork()` under `waitMutex`, and the lock-free `enterSync()`/`exitSync()` for synchronous transaction calls on their owning thread. AGENTS.md invariant 17 states the contract; `src/binding/transaction/DESIGN.md`, "Synchronous admission", explains when the lock-free path is safe.
 
+`DBDescriptor::closeClosables()` cancels every transaction and then waits for whichever busy one drains first, so it cannot wait on one handle's condition variable. It registers an `AsyncWorkHandle::CancelledIdleWaiter` and waits on the process-wide `cancelledIdleGeneration`, which a cancelled handle's last `exitSync()` or `unregisterAsyncWork()` bumps only while a waiter is registered. Registration precedes the drain's scan and the bump follows the count's decrement (all seq_cst), so a handle that drains after the scan saw it busy always wakes the drain. The bump lives on the cancelled branch, so `exitSync()`'s uncancelled path is unchanged. Covered by `getTransactionDrainWaits()` in `test/fixtures/fork-txn-sync-shutdown.mts`: one wait per busy call instead of one per millisecond.
+
 # C++ exceptions in async work
 
 N-API and libuv call the binding through C, so a C++ exception that leaves an async entry point, an execute callback or a complete callback terminates the process. `napi/async.h` contains them at those three boundaries:

@@ -1763,8 +1763,9 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		try {
-			if (!txnHandle->getCount(itOptions, count, *dbHandle)) {
-				::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+			const CountScan scan = txnHandle->getCount(itOptions, count, *dbHandle);
+			if (scan != CountScan::Counted) {
+				::napi_throw_error(env, nullptr, countScanRefusal(scan, /*transactional=*/true));
 				NAPI_RETURN_UNDEFINED();
 			}
 		} catch (const std::exception& e) {
@@ -1774,8 +1775,9 @@ napi_value Database::GetCount(napi_env env, napi_callback_info info) {
 	} else {
 		try {
 			std::unique_ptr<DBIteratorHandle> itHandle = std::make_unique<DBIteratorHandle>(*dbHandle, itOptions);
-			if (!itHandle->countRemaining(count)) {
-				::napi_throw_error(env, nullptr, "Get count failed: Database is closing");
+			const CountScan scan = itHandle->countRemaining(count);
+			if (scan != CountScan::Counted) {
+				::napi_throw_error(env, nullptr, countScanRefusal(scan, /*transactional=*/false));
 				NAPI_RETURN_UNDEFINED();
 			}
 		} catch (const std::exception& e) {
