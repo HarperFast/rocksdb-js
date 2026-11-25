@@ -224,9 +224,10 @@ try {
 		const restored = await streamBackup(db, newTarget(), undefined, false);
 		const elapsed = performance.now() - started;
 		const upTo = total;
+		const flushesDuring = flushes - flushesBefore;
 		writing = false;
 		await writer;
-		if (flushes === flushesBefore) {
+		if (flushesDuring === 0) {
 			throw new Error('No flush ran during the backup; this case proves nothing');
 		}
 		if (elapsed > 10_000) {

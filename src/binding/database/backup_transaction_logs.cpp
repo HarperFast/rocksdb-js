@@ -216,7 +216,10 @@ rocksdb::Status captureLiveFiles(
 		if (s.ok() && !hold.flushEscaped()) {
 			if (const int delayMs = backupCaptureListDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
 				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+				s = captureStopped(descriptor, abandon, deadline);
 			}
+		}
+		if (s.ok() && !hold.flushEscaped()) {
 			s = db->GetLiveFilesStorageInfo(listOpts, files);
 		}
 		if (s.ok() && !hold.flushEscaped()) {
