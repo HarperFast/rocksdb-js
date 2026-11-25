@@ -140,6 +140,12 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	const napi_env ownerEnv;
 
 	/**
+	 * The handle's `disableWAL` at construction. A retry resets the transaction on a commit
+	 * thread, where reading the handle's would race a reopen.
+	 */
+	const bool disableWAL;
+
+	/**
 	 * Whether to disable snapshots.
 	 */
 	bool disableSnapshot;

@@ -40,6 +40,7 @@ TransactionHandle::TransactionHandle(napi_env env, std::shared_ptr<DBHandle> dbH
 	owningDescriptor(dbHandle->descriptor),
 	registryLink(dbHandle->descriptor->transactionRegistryLink),
 	ownerEnv(env),
+	disableWAL(dbHandle->disableWAL),
 	disableSnapshot(disableSnapshot),
 	coordinatedRetry(false),
 	txn(nullptr),
@@ -73,9 +74,8 @@ void TransactionHandle::resetTransaction(DBDescriptor* descriptor) {
 		this->agedIntents = this->abortMarkers && settings.getTransactionLogWriteIntents();
 	}
 
-	auto dbHandle = this->dbHandle;
 	rocksdb::WriteOptions writeOptions;
-	writeOptions.disableWAL = dbHandle->disableWAL;
+	writeOptions.disableWAL = this->disableWAL;
 
 	if (descriptor->mode == DBMode::Pessimistic) {
 		auto* tdb = static_cast<rocksdb::TransactionDB*>(descriptor->db.get());
@@ -628,7 +628,6 @@ void TransactionHandle::closeImpl(bool waitForWinner) noexcept {
 			txnCloseDelayActive().store(false, std::memory_order_release);
 		}
 
-		// Owner thread only: no other thread may read `DBHandle::descriptor`.
 		if (closeLatch.enabled.load(std::memory_order_relaxed) && this->dbHandle &&
 			std::this_thread::get_id() == this->dbHandle->ownerThreadId && this->dbHandle->descriptor &&
 			!this->dbHandle->descriptor->isClosing()) {

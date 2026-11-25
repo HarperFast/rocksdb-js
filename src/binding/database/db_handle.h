@@ -35,9 +35,9 @@ struct DBDescriptor;
 struct DBHandle final : Closable, AsyncWorkHandle, public std::enable_shared_from_this<DBHandle> {
 	/**
 	 * The RocksDB database descriptor. Assigned and reset only on `ownerThreadId`; a foreign
-	 * `close()` leaves it set. Another thread may read it only under `closeMutex` or from work
+	 * `close()` leaves it set. Another thread reads it only inside `close()`, or from work
 	 * registered with this handle's async-work drain, which `close()` waits out before the reset.
-	 * A commit registers with its transaction instead, so it reads the descriptor it pinned.
+	 * A commit registers with its transaction instead, so it uses the descriptor its operation pins.
 	 */
 	std::shared_ptr<DBDescriptor> descriptor;
 

@@ -128,8 +128,9 @@ try {
 		db.close();
 		console.log(JSON.stringify({ ok: true, statMs }));
 	} else if (mode === 'close-queued') {
-		// One commit thread, held by ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, keeps the second commit queued
-		// while its handle closes; another handle keeps the database open.
+		// The first commit holds the only thread (commitThreads: 1, or UV_THREADPOOL_SIZE=1 for the
+		// legacy path) in ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, so the second is still queued when its
+		// handle closes; another handle keeps the database open.
 		RocksDatabase.config({ commitThreads: 1 });
 		const db = RocksDatabase.open(path);
 		const keeper = RocksDatabase.open(path);
