@@ -401,7 +401,8 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - `ROCKSDB_JS_BACKUP_CAPTURE_LIST_DELAY_MS` - Test-only: delay before a `transactionLogs` backup's
   live-file listing taken while new flushes are held, so a flush parked behind it escapes the gate
   and the capture must fall back to listing with flushes running
-  (`test/fixtures/fork-backup-replay-position.mts`). Snapshotted in `initializeTestSeams()`
+  (`test/fixtures/fork-backup-replay-position.mts`, which proves the fallback ran through the read-only
+  `isBackupCaptureFallbackObservedForTesting()` probe). Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_CLOSE_FAILURE_AFTER_CANCEL` - Test-only: a one-shot close failure (a **flag**) injected
   right after `finishClose()` cancels background work, so the `shutdown()` retry must finish without
   flushing again. Snapshotted in `initializeTestSeams()`

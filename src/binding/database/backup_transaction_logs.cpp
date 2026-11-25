@@ -238,6 +238,7 @@ rocksdb::Status captureLiveFiles(
 	// with flushes running and hold them only to check the listing.
 	captured.clear();
 	files->clear();
+	backupCaptureFallbackObserved().store(true, std::memory_order_release);
 	return captureListedThenVerified(descriptor, db, *gate, listOpts, files, captured, abandon, deadline);
 }
 

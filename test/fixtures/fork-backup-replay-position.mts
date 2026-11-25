@@ -1,5 +1,8 @@
 import { RocksDatabase, backups } from '../../src/index.ts';
-import { isFlushCompletedDelayedForTesting } from '../../src/load-binding.ts';
+import {
+	isBackupCaptureFallbackObservedForTesting,
+	isFlushCompletedDelayedForTesting,
+} from '../../src/load-binding.ts';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import * as tar from 'tar';
@@ -206,29 +209,23 @@ try {
 		// that keeps arriving escapes every listing taken under the hold.
 		const padding = 'p'.repeat(1024);
 		let writing = true;
-		let flushes = 0;
 		const writer = (async () => {
 			while (writing) {
 				await commitOne(db, total, padding);
 				total++;
-				if (total % 20 === 0) {
-					await db.flush();
-					flushes++;
-				}
+				if (total % 20 === 0) await db.flush();
 			}
 		})();
 		while (total < 200) await delay(10);
 		const before = total;
-		const flushesBefore = flushes;
 		const started = performance.now();
 		const restored = await streamBackup(db, newTarget(), undefined, false);
 		const elapsed = performance.now() - started;
 		const upTo = total;
-		const flushesDuring = flushes - flushesBefore;
 		writing = false;
 		await writer;
-		if (flushesDuring === 0) {
-			throw new Error('No flush ran during the backup; this case proves nothing');
+		if (!isBackupCaptureFallbackObservedForTesting()) {
+			throw new Error('No flush escaped the held listing; this case proves nothing');
 		}
 		if (elapsed > 10_000) {
 			throw new Error(`The capture kept holding flushes for ${Math.round(elapsed)}ms`);

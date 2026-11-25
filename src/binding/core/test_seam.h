@@ -194,6 +194,13 @@ inline std::atomic<int>& backupCaptureListDelayMsFlag() {
 	return delayMs;
 }
 
+// Set once a capture whose held listing a flush escaped falls back to listing
+// with flushes running.
+inline std::atomic<bool>& backupCaptureFallbackObserved() {
+	static std::atomic<bool> observed{ false };
+	return observed;
+}
+
 // A count because different flush jobs can be delayed concurrently.
 inline std::atomic<int>& flushCompletedDelayActive() {
 	static std::atomic<int> active{ 0 };
