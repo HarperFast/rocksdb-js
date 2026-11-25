@@ -32,6 +32,14 @@ describe('commitThreads', () => {
 		runFixture(['validate']);
 	});
 
+	it('commits a queued legacy commit whose handle closed while another handle is open', () => {
+		runFixture(['close-queued'], {
+			ROCKSDB_JS_COMMIT_THREAD: '0',
+			ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '200',
+			UV_THREADPOOL_SIZE: '1',
+		});
+	});
+
 	describe.each(['1', '2'])('ROCKSDB_JS_COMMIT_THREAD=%s', (commitThread) => {
 		it('runs one commit at a time with one thread', () => {
 			const result = runFixture(['concurrent', '1'], {
@@ -63,6 +71,13 @@ describe('commitThreads', () => {
 				expect(result.statMs).toBeLessThan(150);
 			}
 		);
+
+		it('commits a queued commit whose handle closed while another handle is open', () => {
+			runFixture(['close-queued'], {
+				ROCKSDB_JS_COMMIT_THREAD: commitThread,
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '200',
+			});
+		});
 
 		it('resolves commits in dispatch order with one thread', () => {
 			const result = runFixture(['order', '1'], { ROCKSDB_JS_COMMIT_THREAD: commitThread });

@@ -628,7 +628,9 @@ void TransactionHandle::closeImpl(bool waitForWinner) noexcept {
 			txnCloseDelayActive().store(false, std::memory_order_release);
 		}
 
-		if (closeLatch.enabled.load(std::memory_order_relaxed) && this->dbHandle && this->dbHandle->descriptor &&
+		// Owner thread only: no other thread may read `DBHandle::descriptor`.
+		if (closeLatch.enabled.load(std::memory_order_relaxed) && this->dbHandle &&
+			std::this_thread::get_id() == this->dbHandle->ownerThreadId && this->dbHandle->descriptor &&
 			!this->dbHandle->descriptor->isClosing()) {
 			void* unclaimed = nullptr;
 			latched = closeLatch.handle.compare_exchange_strong(unclaimed, this, std::memory_order_acq_rel);

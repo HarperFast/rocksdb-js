@@ -567,11 +567,7 @@ static void rejectRetryNowSetupFailure(
 	state->callReject(error);
 }
 static rocksdb::Status admitCommit(TransactionCommitState* state, const std::shared_ptr<TransactionHandle>& txnHandle) {
-	DBDescriptor* descriptor = state->operationDescriptor;
-	if (!descriptor) {
-		return rocksdb::Status::Aborted("Database closed during transaction commit operation");
-	}
-	return state->claim.admit(txnHandle->touchedColumnFamilies, *descriptor);
+	return state->claim.admit(txnHandle->touchedColumnFamilies, *state->operationDescriptor);
 }
 
 /** An attempt behind an older transaction's write intent (transaction/DESIGN.md, "Write-intent refusal"). */
@@ -633,8 +629,10 @@ static void executeLogWork(TransactionCommitState* state) {
 	} else if (!txnHandle->dbHandle) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with nullptr dbHandle\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-	} else if (!txnHandle->dbHandle->opened()) {
-		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
+	} else if (!state->operationDescriptor || state->operationDescriptor->isClosing()) {
+		// Not `dbHandle->opened()`: this runs on a commit or libuv thread, and only the handle's owner
+		// thread may read `DBHandle::descriptor`. The operation keeps this descriptor alive.
+		DEBUG_LOG("%p Transaction::Commit ERROR: Called with database closing\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	} else if (rocksdb::Status admission = admitCommit(state, txnHandle); !admission.ok()) {
 		DEBUG_LOG("%p Transaction::Commit refused at admission for transaction %llu: %s\n",

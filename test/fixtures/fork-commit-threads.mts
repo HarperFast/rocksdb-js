@@ -127,6 +127,23 @@ try {
 		await Promise.all(commits);
 		db.close();
 		console.log(JSON.stringify({ ok: true, statMs }));
+	} else if (mode === 'close-queued') {
+		// One commit thread, held by ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, keeps the second commit queued
+		// while its handle closes; another handle keeps the database open.
+		RocksDatabase.config({ commitThreads: 1 });
+		const db = RocksDatabase.open(path);
+		const keeper = RocksDatabase.open(path);
+		const first = new Transaction(keeper.store);
+		first.putSync('first', 1);
+		const firstCommit = first.commit();
+		const queued = new Transaction(db.store);
+		queued.putSync('queued', 2);
+		const queuedCommit = queued.commit();
+		db.close();
+		await Promise.all([firstCommit, queuedCommit]);
+		assert.equal(keeper.getSync('queued'), 2);
+		keeper.close();
+		console.log(JSON.stringify({ ok: true }));
 	} else {
 		throw new Error(`unknown mode ${mode}`);
 	}
