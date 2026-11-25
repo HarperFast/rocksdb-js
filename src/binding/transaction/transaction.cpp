@@ -1204,7 +1204,6 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 
 	const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
-	// A handle reopened on another database is closed as far as this transaction is concerned.
 	if (dbHandle && (*txnHandle)->isOwningDescriptor(dbHandle->ownerDescriptor())) {
 		descriptor = dbHandle->ownerDescriptor();
 	}
