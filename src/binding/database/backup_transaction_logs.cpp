@@ -136,20 +136,6 @@ rocksdb::Status captureLiveFiles(
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 
-	// While deletions are disabled RocksDB schedules no purge, so once a listing
-	// has waited out the pending ones, a listing under the hold has none to wait
-	// for. Purges run on the HIGH pool a parked flush occupies.
-	rocksdb::Status disabled = db->DisableFileDeletions();
-	if (!disabled.ok()) {
-		return disabled;
-	}
-	struct DeletionsReenabled {
-		rocksdb::DB* db;
-		~DeletionsReenabled() {
-			this->db->EnableFileDeletions().PermitUncheckedError();
-		}
-	} deletionsReenabled{ db };
-
 	constexpr uint64_t noFlush = std::numeric_limits<uint64_t>::max();
 	if (db->GetDBOptions().allow_2pc) {
 		// TransactionDB enables two-phase commit, and RocksDB then flushes inside
@@ -174,34 +160,53 @@ rocksdb::Status captureLiveFiles(
 					return s;
 				}
 				if (!changed) {
-					return captureStores(descriptor, captured);
+					s = captureStores(descriptor, captured);
+					if (!s.ok() || !hold.flushEscaped()) {
+						return s;
+					}
 				}
 			}
+			captured.clear();
 			files->clear();
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 	}
 
-	// Also performs the flush `opts` asks for; the list that counts is taken under the hold.
-	rocksdb::LiveFilesStorageInfoOptions drainOpts = opts;
-	drainOpts.include_checksum_info = false;
-	rocksdb::Status s = db->GetLiveFilesStorageInfo(drainOpts, files);
-	files->clear();
-	if (!s.ok()) {
-		return s;
+	if (opts.wal_size_for_flush != noFlush) {
+		// Only for RocksDB's flush of every column family; the list is taken under the hold.
+		rocksdb::LiveFilesStorageInfoOptions flushOpts = opts;
+		flushOpts.include_checksum_info = false;
+		rocksdb::Status s = db->GetLiveFilesStorageInfo(flushOpts, files);
+		files->clear();
+		if (!s.ok()) {
+			return s;
+		}
 	}
 	rocksdb::LiveFilesStorageInfoOptions listOpts = opts;
 	listOpts.wal_size_for_flush = noFlush;
-	FlushCaptureHold hold(*gate);
-	s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
-	// Stores are read after the listing so that none whose commits a copied WAL holds is left out.
-	if (s.ok()) {
-		s = db->GetLiveFilesStorageInfo(listOpts, files);
+	for (;;) {
+		{
+			FlushCaptureHold hold(*gate);
+			rocksdb::Status s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
+			// Stores are read after the listing so that none whose commits a copied WAL holds is left out.
+			if (s.ok()) {
+				s = db->GetLiveFilesStorageInfo(listOpts, files);
+			}
+			if (s.ok()) {
+				s = captureStores(descriptor, captured);
+			}
+			if (!s.ok() || !hold.flushEscaped()) {
+				return s;
+			}
+		}
+		captured.clear();
+		files->clear();
+		rocksdb::Status s = captureStopped(descriptor, abandon, deadline);
+		if (!s.ok()) {
+			return s;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
-	if (s.ok()) {
-		s = captureStores(descriptor, captured);
-	}
-	return s;
 }
 
 } // namespace

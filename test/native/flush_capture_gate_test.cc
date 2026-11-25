@@ -50,3 +50,13 @@ TEST(FlushCaptureGate, ParksFlushesUntilTheHoldIsReleased) {
 	rocksdb_js::FlushCaptureHold hold(gate);
 	EXPECT_EQ(hold.parkedFlushes(), 0u);
 }
+
+TEST(FlushCaptureGate, AFlushParkedTooLongProceedsAndMarksTheHold) {
+	rocksdb_js::FlushCaptureGate gate(std::chrono::milliseconds(20));
+	rocksdb_js::FlushCaptureHold hold(gate);
+	EXPECT_FALSE(hold.flushEscaped());
+	std::thread flush([&] { gate.enterFlushBegin(); });
+	flush.join();
+	EXPECT_TRUE(hold.flushEscaped());
+	EXPECT_EQ(hold.parkedFlushes(), 0u);
+}

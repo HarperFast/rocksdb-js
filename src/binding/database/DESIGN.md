@@ -141,12 +141,14 @@ capture (`captureLiveFilesWithTransactionLogs`, used by the stream path and, thr
   flush has changed nothing and the capturer can still take the DB mutex.
 - **Waits until every running flush is parked** (`rocksdb.num-running-flushes` equals the parked
   count). That count spans `OnFlushCompleted`, so every unparked flush has recorded its position.
-- **Reads `txn.state` and lists the files** with no flush, then releases the gate.
+- **Lists the files** with no flush, **then reads `txn.state`**, then releases the gate.
 
-A listing waits out pending purges, which also run on the HIGH pool (one thread here), so one taken
-while a flush is parked on that thread would never return. The capture therefore disables file
-deletions, under which RocksDB schedules no purge, and lists once before taking the hold; the
-listing under the hold then has nothing to wait for.
+A listing waits out pending purges, which also run on the HIGH pool (one thread here), and iterator
+cleanup schedules one even while file deletions are disabled; behind a parked flush that purge never
+runs. So a flush parks for at most a second, then proceeds and marks the hold escaped
+(`FlushCaptureHold::flushEscaped`), and the capture retries. Listing outside the hold instead would
+retry whenever a flush installs between the listing and the hold, which under back-to-back flushes
+is most attempts.
 
 A pessimistic database is a `TransactionDB`, which enables `allow_2pc`, and RocksDB then flushes
 inside every listing whatever `wal_size_for_flush` says; listed with flushes parked, that flush
