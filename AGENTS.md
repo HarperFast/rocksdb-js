@@ -1166,11 +1166,14 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     secondary+BlobDB as unsupported (facebook/rocksdb#13296) while this codebase enables blob
     files unconditionally — the pinned build fd-holds blob files like SSTs (verified empirically),
     so `secondary_blob_test.cc` is the regression net that must stay green on every RocksDB
-    upgrade. It also pins one known upstream failure of that pairing: once the primary drops a
-    blob file the secondary never saw, numbered above one still in use, the point-in-time replay
-    counts every later version as incomplete, so catch-up returns OK without advancing and a
-    fresh secondary open is just as stale (#1147). `DroppedNewerBlobFileStallsCatchUp` asserts
-    that stale result, so flip it when an upgrade fixes the bug. The missing-file open race classifier (`core/open_status.cpp`,
+    upgrade. It also pins one known upstream failure of that pairing (#1147): once the primary
+    drops a blob file the secondary never saw, numbered above one still in use, the point-in-time
+    replay counts every later version as incomplete. Catch-up then returns OK but installs no
+    flushed data; WAL tailing continues, so the view has holes (newer unflushed writes, older
+    flushed ones missing) and retained memtables grow. A fresh secondary open is just as stale
+    until the primary writes a new MANIFEST (reopen) or rewrites every blob file.
+    `DroppedNewerBlobFileStallsCatchUp` asserts the stale result, so flip it when an upgrade fixes
+    the bug. The missing-file open race classifier (`core/open_status.cpp`,
     `ERR_CONCURRENT_COMPACTION`) matches `.sst`, `.blob`, AND `.log` at a filename-token boundary —
     a live writer reclaims all three (compaction inputs, blob GC, flushed WAL segments) and each
     was observed as the file the read-only open tripped on. (A secondary open rarely needs it: its

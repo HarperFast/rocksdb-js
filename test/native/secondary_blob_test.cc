@@ -129,7 +129,7 @@ TEST(SecondarySpike, BlobEnabledDatabase) {
 	rocksdb::CompactRangeOptions compactOptions;
 	compactOptions.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
 	ASSERT_TRUE(primary->CompactRange(compactOptions, nullptr, nullptr).ok());
-	expectBlobFilesDeleted(primary.get(), primaryPath, originalBlobs);
+	ASSERT_NO_FATAL_FAILURE(expectBlobFilesDeleted(primary.get(), primaryPath, originalBlobs));
 
 	s = secondary->Get({}, "large", &value);
 	EXPECT_TRUE(s.ok() && value == large) << s.ToString();
@@ -201,7 +201,7 @@ TEST(SecondarySpike, CatchUpInstalledBlobSurvivesPrimaryGC) {
 	rocksdb::CompactRangeOptions compactOptions;
 	compactOptions.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
 	ASSERT_TRUE(primary->CompactRange(compactOptions, nullptr, nullptr).ok());
-	expectBlobFilesDeleted(primary.get(), primaryPath, originalBlobs);
+	ASSERT_NO_FATAL_FAILURE(expectBlobFilesDeleted(primary.get(), primaryPath, originalBlobs));
 
 #ifdef __linux__
 	// Supporting evidence only: the count includes this process's own primary
@@ -261,7 +261,7 @@ TEST(SecondarySpike, NeverReadBlobSurvivesPrimaryGC) {
 	rocksdb::CompactRangeOptions compactOptions;
 	compactOptions.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
 	ASSERT_TRUE(primary->CompactRange(compactOptions, nullptr, nullptr).ok());
-	expectBlobFilesDeleted(primary.get(), primaryPath, originalBlobs);
+	ASSERT_NO_FATAL_FAILURE(expectBlobFilesDeleted(primary.get(), primaryPath, originalBlobs));
 
 	// First-ever read of the old blob on the un-caught-up secondary.
 	std::string value;
@@ -313,78 +313,105 @@ TEST(SecondarySpike, SameWorkspaceSecondPairInstance) {
 	std::filesystem::remove_all(root);
 }
 
-// Pins an upstream RocksDB bug found through #1147: a secondary stops advancing
-// after the primary drops a blob file the secondary never saw, if that file is
-// numbered above a blob file still in use. The point-in-time replay marks the dropped
-// file missing, and VersionBuilder keeps only the highest missing blob number,
-// which never goes back down. Every later Version then counts as incomplete
-// while any live SST links an older blob file, so TryCatchUpWithPrimary()
-// returns OK without installing anything, and a fresh OpenAsSecondary() is as
-// stale. The options are the binding's defaults for blob files and GC. When a
-// RocksDB upgrade fixes this, the stale expectations below fail: flip them.
-TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
-	auto root = spikeRoot();
-	std::filesystem::remove_all(root);
-	std::filesystem::create_directories(root);
-	std::string primaryPath = (root / "primary").string();
+namespace {
 
+// Drives a secondary into an upstream RocksDB stall found through #1147. The
+// primary drops a blob file the secondary never saw, numbered above a blob file
+// still in use. The point-in-time replay marks the dropped file missing, and
+// VersionBuilder keeps only the highest missing blob number, which never goes
+// back down. Every later Version then counts as incomplete while any live SST
+// links an older blob file, so TryCatchUpWithPrimary() returns OK without
+// installing anything. The options are the binding's blob defaults.
+struct StalledSecondary {
+	std::filesystem::path root;
+	std::string primaryPath;
 	rocksdb::Options options;
-	options.create_if_missing = true;
-	options.enable_blob_files = true;
-	options.min_blob_size = 2048;
-	options.enable_blob_garbage_collection = true;
+	rocksdb::Options secondaryOptions;
 	std::unique_ptr<rocksdb::DB> primary;
-	ASSERT_TRUE(rocksdb::DB::Open(options, primaryPath, &primary).ok());
-
-	ASSERT_TRUE(primary->Put({}, "a", std::string(4096, 'a')).ok());
-	ASSERT_TRUE(primary->Flush({}).ok());
-	ASSERT_TRUE(primary->CompactRange({}, nullptr, nullptr).ok());
-	const auto olderBlobs = blobFilesIn(primaryPath);
-	ASSERT_EQ(olderBlobs.size(), 1u);
-
-	rocksdb::Options secondaryOptions = options;
-	secondaryOptions.create_if_missing = false;
-	secondaryOptions.max_open_files = -1;
 	std::unique_ptr<rocksdb::DB> secondary;
-	ASSERT_TRUE(rocksdb::DB::OpenAsSecondary(secondaryOptions, primaryPath, (root / "secondary").string(), &secondary).ok());
+	const std::string z2 = std::string(4096, '2');
 
-	const std::string z2(4096, '2');
-	ASSERT_TRUE(primary->Put({}, "z", std::string(4096, '1')).ok());
-	ASSERT_TRUE(primary->Flush({}).ok());
-	auto newerBlobs = blobFilesIn(primaryPath);
-	for (const auto& name : olderBlobs) {
-		newerBlobs.erase(name);
+	void setUp() {
+		root = spikeRoot();
+		std::filesystem::remove_all(root);
+		std::filesystem::create_directories(root);
+		primaryPath = (root / "primary").string();
+		options.create_if_missing = true;
+		options.enable_blob_files = true;
+		options.min_blob_size = 2048;
+		options.enable_blob_garbage_collection = true;
+		ASSERT_TRUE(rocksdb::DB::Open(options, primaryPath, &primary).ok());
+
+		ASSERT_TRUE(primary->Put({}, "a", std::string(4096, 'a')).ok());
+		ASSERT_TRUE(primary->Flush({}).ok());
+		ASSERT_TRUE(primary->CompactRange({}, nullptr, nullptr).ok());
+		const auto olderBlobs = blobFilesIn(primaryPath);
+		ASSERT_EQ(olderBlobs.size(), 1u);
+
+		secondaryOptions = options;
+		secondaryOptions.create_if_missing = false;
+		secondaryOptions.max_open_files = -1;
+		ASSERT_TRUE(rocksdb::DB::OpenAsSecondary(secondaryOptions, primaryPath, (root / "secondary").string(), &secondary).ok());
+
+		ASSERT_TRUE(primary->Put({}, "z", std::string(4096, '1')).ok());
+		ASSERT_TRUE(primary->Flush({}).ok());
+		auto newerBlobs = blobFilesIn(primaryPath);
+		for (const auto& name : olderBlobs) {
+			newerBlobs.erase(name);
+		}
+		ASSERT_EQ(newerBlobs.size(), 1u);
+		ASSERT_TRUE(primary->Put({}, "z", z2).ok());
+		ASSERT_TRUE(primary->Flush({}).ok());
+		rocksdb::CompactRangeOptions compactOptions;
+		compactOptions.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForce;
+		rocksdb::Slice begin("y");
+		rocksdb::Slice end("zz");
+		ASSERT_TRUE(primary->CompactRange(compactOptions, &begin, &end).ok());
+		ASSERT_NO_FATAL_FAILURE(expectBlobFilesDeleted(primary.get(), primaryPath, newerBlobs));
+		for (const auto& name : olderBlobs) {
+			ASSERT_TRUE(std::filesystem::exists(std::filesystem::path(primaryPath) / name)) << name;
+		}
 	}
-	ASSERT_EQ(newerBlobs.size(), 1u);
-	ASSERT_TRUE(primary->Put({}, "z", z2).ok());
-	ASSERT_TRUE(primary->Flush({}).ok());
-	rocksdb::CompactRangeOptions compactOptions;
-	compactOptions.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForce;
-	rocksdb::Slice begin("y");
-	rocksdb::Slice end("zz");
-	ASSERT_TRUE(primary->CompactRange(compactOptions, &begin, &end).ok());
-	expectBlobFilesDeleted(primary.get(), primaryPath, newerBlobs);
-	for (const auto& name : olderBlobs) {
-		ASSERT_TRUE(std::filesystem::exists(std::filesystem::path(primaryPath) / name)) << name;
+
+	~StalledSecondary() {
+		secondary.reset();
+		primary.reset();
+		std::filesystem::remove_all(root);
 	}
+};
 
-	ASSERT_TRUE(primary->Put({}, "later", "v").ok());
-	ASSERT_TRUE(primary->Flush({}).ok());
+} // namespace
 
+// Pins the stall's current symptoms, so they fail when a RocksDB upgrade fixes
+// it: flip them then. The follower keeps tailing the WAL, so a newer unflushed
+// write is visible while an older flushed one is missing, and reopening it
+// discards what it tailed.
+TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
+	StalledSecondary st;
+	ASSERT_NO_FATAL_FAILURE(st.setUp());
 	std::string value;
-	ASSERT_TRUE(secondary->TryCatchUpWithPrimary().ok());
-	EXPECT_TRUE(secondary->Get({}, "z", &value).IsNotFound()) << "fixed upstream? expect z == z2";
-	EXPECT_TRUE(secondary->Get({}, "later", &value).IsNotFound()) << "fixed upstream? expect later == v";
 
+	ASSERT_TRUE(st.primary->Put({}, "flushed", "v").ok());
+	ASSERT_TRUE(st.primary->Flush({}).ok());
+	ASSERT_TRUE(st.primary->Put({}, "tailed", "v").ok());
+	ASSERT_TRUE(st.secondary->TryCatchUpWithPrimary().ok());
+	EXPECT_TRUE(st.secondary->Get({}, "z", &value).IsNotFound()) << "fixed upstream? expect z == z2";
+	EXPECT_TRUE(st.secondary->Get({}, "flushed", &value).IsNotFound()) << "fixed upstream? expect flushed == v";
+	EXPECT_TRUE(st.secondary->Get({}, "tailed", &value).ok() && value == "v");
+
+	ASSERT_TRUE(st.primary->Flush({}).ok());
+	ASSERT_TRUE(st.secondary->TryCatchUpWithPrimary().ok());
+	EXPECT_TRUE(st.secondary->Get({}, "tailed", &value).ok() && value == "v");
 	std::unique_ptr<rocksdb::DB> fresh;
-	ASSERT_TRUE(rocksdb::DB::OpenAsSecondary(secondaryOptions, primaryPath, (root / "fresh").string(), &fresh).ok());
+	ASSERT_TRUE(rocksdb::DB::OpenAsSecondary(st.secondaryOptions, st.primaryPath, (st.root / "fresh").string(), &fresh).ok());
 	EXPECT_TRUE(fresh->Get({}, "z", &value).IsNotFound()) << "fixed upstream? expect z == z2";
+	EXPECT_TRUE(fresh->Get({}, "tailed", &value).IsNotFound()) << "fixed upstream? expect tailed == v";
 	fresh.reset();
 
 	// A read-only open does not replay point in time.
 	std::unique_ptr<rocksdb::DB> readOnly;
-	ASSERT_TRUE(rocksdb::DB::OpenForReadOnly(options, primaryPath, &readOnly).ok());
-	EXPECT_TRUE(readOnly->Get({}, "z", &value).ok() && value == z2);
+	ASSERT_TRUE(rocksdb::DB::OpenForReadOnly(st.options, st.primaryPath, &readOnly).ok());
+	EXPECT_TRUE(readOnly->Get({}, "z", &value).ok() && value == st.z2);
 	readOnly.reset();
 
 	// The README workaround: the binding's bottommost compact() options.
@@ -392,12 +419,29 @@ TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
 	relocateAll.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
 	relocateAll.blob_garbage_collection_policy = rocksdb::BlobGarbageCollectionPolicy::kForce;
 	relocateAll.blob_garbage_collection_age_cutoff = 1.0;
-	ASSERT_TRUE(primary->CompactRange(relocateAll, nullptr, nullptr).ok());
-	ASSERT_TRUE(secondary->TryCatchUpWithPrimary().ok());
-	EXPECT_TRUE(secondary->Get({}, "z", &value).ok() && value == z2);
-	EXPECT_TRUE(secondary->Get({}, "later", &value).ok() && value == "v");
+	ASSERT_TRUE(st.primary->CompactRange(relocateAll, nullptr, nullptr).ok());
+	ASSERT_TRUE(st.secondary->TryCatchUpWithPrimary().ok());
+	EXPECT_TRUE(st.secondary->Get({}, "z", &value).ok() && value == st.z2);
+	EXPECT_TRUE(st.secondary->Get({}, "flushed", &value).ok() && value == "v");
+	EXPECT_TRUE(st.secondary->Get({}, "tailed", &value).ok() && value == "v");
+}
 
-	secondary.reset();
-	primary.reset();
-	std::filesystem::remove_all(root);
+// The other README workaround: a reopened primary writes a new MANIFEST that no
+// longer records the dropped blob file, and the follower rebuilds its replay
+// when it switches to it.
+TEST(SecondarySpike, PrimaryReopenClearsStalledCatchUp) {
+	StalledSecondary st;
+	ASSERT_NO_FATAL_FAILURE(st.setUp());
+	std::string value;
+	ASSERT_TRUE(st.secondary->TryCatchUpWithPrimary().ok());
+	ASSERT_TRUE(st.secondary->Get({}, "z", &value).IsNotFound());
+
+	st.primary.reset();
+	ASSERT_TRUE(rocksdb::DB::Open(st.options, st.primaryPath, &st.primary).ok());
+	ASSERT_TRUE(st.secondary->TryCatchUpWithPrimary().ok());
+	EXPECT_TRUE(st.secondary->Get({}, "z", &value).ok() && value == st.z2);
+	std::unique_ptr<rocksdb::DB> fresh;
+	ASSERT_TRUE(rocksdb::DB::OpenAsSecondary(st.secondaryOptions, st.primaryPath, (st.root / "fresh").string(), &fresh).ok());
+	EXPECT_TRUE(fresh->Get({}, "z", &value).ok() && value == st.z2);
+	fresh.reset();
 }
