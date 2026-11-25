@@ -7,10 +7,12 @@
 // RocksDB upgrade — a regression here breaks secondary mode for every real
 // database.
 #include <gtest/gtest.h>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <set>
 #include <string>
+#include <vector>
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/convenience.h"
@@ -28,10 +30,11 @@ rocksdb::Options blobOptions() {
 	options.min_blob_size = 2048;
 	options.enable_blob_garbage_collection = true;
 	// Every compaction relocates every blob, so the tests' explicit compactions
-	// rewrite blob files and delete the originals. The force threshold keeps
-	// its default: at 0.0 every version marks its oldest blob file for forced
-	// GC, the primary recompacts its own output in an endless loop, and each
-	// catch-up races that churn into the stall pinned by
+	// rewrite blob files and delete the originals. Leave
+	// blob_garbage_collection_force_threshold at RocksDB's default (1.0, off):
+	// at 0.0 every version marks its oldest blob file for forced GC, the
+	// primary recompacts its own output in an endless loop, and each catch-up
+	// races that churn into the stall pinned by
 	// DroppedNewerBlobFileStallsCatchUp (#1147).
 	options.blob_garbage_collection_age_cutoff = 1.0;
 	return options;
@@ -53,10 +56,22 @@ void expectBlobFilesDeleted(rocksdb::DB* primary, const std::string& dir, const 
 	ASSERT_FALSE(names.empty());
 	rocksdb::WaitForCompactOptions waitOptions;
 	waitOptions.wait_for_purge = true;
-	ASSERT_TRUE(primary->WaitForCompact(waitOptions).ok());
+	waitOptions.timeout = std::chrono::seconds(30);
+	rocksdb::Status s = primary->WaitForCompact(waitOptions);
+	ASSERT_TRUE(s.ok()) << s.ToString();
+	std::vector<rocksdb::LiveFileStorageInfo> live;
+	ASSERT_TRUE(primary->GetLiveFilesStorageInfo({}, &live).ok());
+	for (const auto& file : live) {
+		EXPECT_EQ(names.count(file.relative_filename), 0u) << file.relative_filename << " is still live";
+	}
+#ifndef _WIN32
+	// Windows can keep a deleted name visible while the secondary holds it open.
 	for (const auto& name : names) {
 		EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(dir) / name)) << name << " survived blob GC";
 	}
+#else
+	(void)dir;
+#endif
 }
 
 } // namespace
@@ -321,7 +336,6 @@ TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
 	std::unique_ptr<rocksdb::DB> primary;
 	ASSERT_TRUE(rocksdb::DB::Open(options, primaryPath, &primary).ok());
 
-	// The older blob file stays live in the bottommost level.
 	ASSERT_TRUE(primary->Put({}, "a", std::string(4096, 'a')).ok());
 	ASSERT_TRUE(primary->Flush({}).ok());
 	ASSERT_TRUE(primary->CompactRange({}, nullptr, nullptr).ok());
@@ -334,8 +348,6 @@ TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
 	std::unique_ptr<rocksdb::DB> secondary;
 	ASSERT_TRUE(rocksdb::DB::OpenAsSecondary(secondaryOptions, primaryPath, (root / "secondary").string(), &secondary).ok());
 
-	// A newer blob file the secondary never sees: written, overwritten, and
-	// dropped by a compaction that leaves "a" alone.
 	const std::string z2(4096, '2');
 	ASSERT_TRUE(primary->Put({}, "z", std::string(4096, '1')).ok());
 	ASSERT_TRUE(primary->Flush({}).ok());
@@ -356,7 +368,6 @@ TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
 		ASSERT_TRUE(std::filesystem::exists(std::filesystem::path(primaryPath) / name)) << name;
 	}
 
-	// Writes after the drop, to unrelated keys, stay invisible too.
 	ASSERT_TRUE(primary->Put({}, "later", "v").ok());
 	ASSERT_TRUE(primary->Flush({}).ok());
 
@@ -370,14 +381,13 @@ TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
 	EXPECT_TRUE(fresh->Get({}, "z", &value).IsNotFound()) << "fixed upstream? expect z == z2";
 	fresh.reset();
 
-	// The data is intact: a plain read-only open does not replay point in time.
+	// A read-only open does not replay point in time.
 	std::unique_ptr<rocksdb::DB> readOnly;
 	ASSERT_TRUE(rocksdb::DB::OpenForReadOnly(options, primaryPath, &readOnly).ok());
 	EXPECT_TRUE(readOnly->Get({}, "z", &value).ok() && value == z2);
 	readOnly.reset();
 
-	// A full compaction that relocates every blob leaves only newer blob files
-	// linked, which ends the stall (the documented workaround).
+	// The README workaround: the binding's bottommost compact() options.
 	rocksdb::CompactRangeOptions relocateAll;
 	relocateAll.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
 	relocateAll.blob_garbage_collection_policy = rocksdb::BlobGarbageCollectionPolicy::kForce;
