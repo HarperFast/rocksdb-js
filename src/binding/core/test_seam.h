@@ -86,6 +86,11 @@ inline std::atomic<bool>& txnCloseDelayActive() {
 	return active;
 }
 
+inline std::atomic<int>& txnCloseDrainWaiting() {
+	static std::atomic<int> waiting{ 0 };
+	return waiting;
+}
+
 // A child-process-only latch: the first transaction close to reach it after its drain
 // parks until a foreign close records how it was protected. No timer can release it.
 struct TransactionCloseDrainLatch {
