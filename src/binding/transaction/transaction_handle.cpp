@@ -150,10 +150,7 @@ TransactionOperation::TransactionOperation(TransactionHandle& handle) :
 	admittedCall(handle.enterSync()) {
 	if (this->admittedCall) {
 		const std::shared_ptr<DBHandle>& dbHandle = handle.dbHandle;
-		// Compares control blocks, which `owningDescriptor` keeps alive, without touching a count.
-		this->handleDetached = dbHandle &&
-			(!dbHandle->descriptor || handle.owningDescriptor.owner_before(dbHandle->descriptor) ||
-				dbHandle->descriptor.owner_before(handle.owningDescriptor));
+		this->handleDetached = dbHandle && !handle.isOwningDescriptor(dbHandle->descriptor);
 	}
 }
 

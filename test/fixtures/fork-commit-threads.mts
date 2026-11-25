@@ -11,12 +11,33 @@ function commitThreadsStat(db: RocksDatabase): number {
 	return db.getStat('commitPipeline.commitThreads') as number;
 }
 
-// Waits until a commit holds the only commit thread in ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, past its
+// Waits until `commit` holds the only commit thread in ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, past its
 // log stage.
-async function untilCommitDelayed(): Promise<void> {
+async function untilCommitDelayed(commit: Promise<unknown>): Promise<void> {
+	let settled = false;
+	void commit.then(
+		() => (settled = true),
+		() => (settled = true)
+	);
 	while (!isTransactionCommitExecuteDelayedForTesting()) {
+		assert.ok(!settled, 'the first commit settled before reaching its execute delay');
 		await new Promise((resolve) => setImmediate(resolve));
 	}
+}
+
+// Fails if `commit` has already settled.
+async function assertPending(commit: Promise<unknown>): Promise<void> {
+	const pending = Symbol('pending');
+	assert.equal(
+		await Promise.race([
+			commit.then(
+				() => 0,
+				() => 0
+			),
+			pending,
+		]),
+		pending
+	);
 }
 
 try {
@@ -146,12 +167,12 @@ try {
 		const first = new Transaction(keeper.store);
 		first.putSync('first', 1);
 		const firstCommit = first.commit();
-		await untilCommitDelayed();
+		await untilCommitDelayed(firstCommit);
 		const queued = new Transaction(db.store);
 		queued.putSync('queued', 2);
 		const queuedCommit = queued.commit();
-		assert.ok(isTransactionCommitExecuteDelayedForTesting(), 'the first commit finished early');
 		db.close();
+		await assertPending(queuedCommit);
 		await Promise.all([firstCommit, queuedCommit]);
 		assert.equal(keeper.getSync('queued'), 2);
 		keeper.close();
@@ -169,12 +190,12 @@ try {
 			// The after-commit notification can find the database closed; the write is checked below.
 			if (!/Database (not open|is closing)/.test(String(error))) throw error;
 		});
-		await untilCommitDelayed();
+		await untilCommitDelayed(firstCommit);
 		const queued = new Transaction(db.store);
 		queued.putSync('queued', 2);
 		const queuedCommit = queued.commit();
-		assert.ok(isTransactionCommitExecuteDelayedForTesting(), 'the first commit finished early');
 		db.close();
+		await assertPending(queuedCommit);
 		await firstCommit;
 		if (legacy) {
 			await queuedCommit;

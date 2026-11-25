@@ -126,6 +126,15 @@ struct TransactionHandle final : Closable, AsyncWorkHandle, std::enable_shared_f
 	const std::weak_ptr<DBDescriptor> owningDescriptor;
 
 	/**
+	 * Whether `descriptor` is `owningDescriptor`. Compares control blocks, which `owningDescriptor`
+	 * keeps alive, without touching a count.
+	 */
+	bool isOwningDescriptor(const std::shared_ptr<DBDescriptor>& descriptor) const {
+		return descriptor && !this->owningDescriptor.owner_before(descriptor) &&
+			!descriptor.owner_before(this->owningDescriptor);
+	}
+
+	/**
 	 * How close() leaves the registry: unlike `owningDescriptor`, it never pins
 	 * the descriptor.
 	 */

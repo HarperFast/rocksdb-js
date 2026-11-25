@@ -1205,7 +1205,8 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 
 	const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
-	if (dbHandle) {
+	// A handle reopened on another database is closed as far as this transaction is concerned.
+	if (dbHandle && (*txnHandle)->isOwningDescriptor(dbHandle->ownerDescriptor())) {
 		descriptor = dbHandle->ownerDescriptor();
 	}
 	if (descriptor) {
@@ -1396,7 +1397,10 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	bool committed;
 	{
 		// Held through the commit; released, with the descriptor pin, before any JavaScript runs.
-		OperationGuard operationGuard((*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->ownerDescriptor() : nullptr);
+		const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
+		OperationGuard operationGuard(
+			dbHandle && (*txnHandle)->isOwningDescriptor(dbHandle->ownerDescriptor()) ? dbHandle->ownerDescriptor() : nullptr
+		);
 		DBDescriptor* descriptor = operationGuard.descriptor.get();
 		const bool holdsOperation = descriptor && !descriptor->isClosing();
 		if (!holdsOperation) {
