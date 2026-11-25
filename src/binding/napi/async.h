@@ -311,7 +311,8 @@ struct AsyncWorkHandle {
 			} else if (activeAsyncWorkCount == 0) {
 				DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this);
 				this->asyncWorkComplete.notify_all();
-				cancelledIdle = this->cancelled.load();
+				// Every writer of `cancelled` holds `waitMutex`; the decrement above orders the signal.
+				cancelledIdle = this->cancelled.load(std::memory_order_relaxed);
 			}
 		}
 		if (cancelledIdle) {
@@ -321,10 +322,9 @@ struct AsyncWorkHandle {
 
 	/**
 	 * Lets one thread wait until any cancelled handle's admitted work drains to zero, without polling
-	 * each handle. Register before checking the handles, then wait on `cancelledIdleGeneration` as it
+	 * each handle. Register before checking the handles, then wait on `cancelledIdleGeneration` as
 	 * read before that check: a handle that drains after the check sees the registration and bumps
-	 * the generation (all seq_cst). Unregistered, a drain does not touch either shared atomic, so the
-	 * cost stays on the cancelled path only.
+	 * the generation (all seq_cst).
 	 */
 	struct CancelledIdleWaiter final {
 		CancelledIdleWaiter() { cancelledIdleWaiters.fetch_add(1); }

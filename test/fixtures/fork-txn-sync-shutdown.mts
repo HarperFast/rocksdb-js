@@ -60,7 +60,7 @@ if (isMainThread) {
 		assert(!isPaused(), 'shutdown did not wait for the call');
 		assert(elapsed >= PAUSE_MS / 2, `shutdown returned after ${elapsed}ms, during the call`);
 		// A db-context call is drained before the transaction sweep; a txn-context one is the busy
-		// transaction that sweep waits on, which must wake it once rather than be polled.
+		// transaction that sweep waits on, and its return wakes the sweep once.
 		const waits = getTransactionDrainWaits() - drainWaits;
 		if (context === 'txn') {
 			assert(waits >= 1 && waits <= 3, `transaction drain blocked ${waits} times`);

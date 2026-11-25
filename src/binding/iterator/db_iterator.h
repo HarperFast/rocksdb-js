@@ -70,9 +70,8 @@ struct DBIteratorOptions final {
  */
 enum class CountScan {
 	Counted,
-	// The descriptor began closing mid-scan.
 	DatabaseClosing,
-	// The iterator was closed before the scan began.
+	// Closed before the scan began.
 	IteratorClosed
 };
 
@@ -81,9 +80,15 @@ enum class CountScan {
  * otherwise only the database's close sweep closes it.
  */
 inline const char* countScanRefusal(CountScan result, bool transactional) {
-	return result == CountScan::IteratorClosed && transactional
-		? "Get count failed: Transaction is closed"
-		: "Get count failed: Database is closing";
+	switch (result) {
+		case CountScan::Counted:
+			return nullptr;
+		case CountScan::DatabaseClosing:
+			return "Get count failed: Database is closing";
+		case CountScan::IteratorClosed:
+			return transactional ? "Get count failed: Transaction is closed" : "Get count failed: Database is closing";
+	}
+	return nullptr;
 }
 
 /**

@@ -510,7 +510,7 @@ public:
 	 * @param dbHandleOverride - Database handle override to use instead of the
 	 * transaction's database handle when called via the `NativeDatabase` with
 	 * the `transaction` property set.
-	 * @returns How the scan ended; see `DBIteratorHandle::countRemaining()`.
+	 * @returns See `DBIteratorHandle::countRemaining()`.
 	 */
 	[[nodiscard]] CountScan getCount(
 		DBIteratorOptions& itOptions,

@@ -1,4 +1,5 @@
 import { RocksDatabase, registryStatus, steadyClockNow, Transaction } from '../../src/index.ts';
+import { getTransactionDrainWaits } from '../../src/load-binding.ts';
 import { createWorkerBootstrapScript } from '../lib/worker-bootstrap.ts';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
@@ -46,6 +47,7 @@ function nextMessage(): Promise<any> {
 const ready = await nextMessage();
 if (!ready.ready) throw new Error(`Worker failed to initialize: ${JSON.stringify(ready)}`);
 
+const drainWaits = getTransactionDrainWaits();
 const txn = new Transaction(db.store);
 txn.putSync('staged', 'value');
 const issuedAt = steadyClockNow();
@@ -105,6 +107,12 @@ if (mode !== 'closing') {
 		destroyAfterGet >= 950,
 		`destroy finished ${destroyAfterGet}ms after the get was issued`
 	);
+}
+// The parked get is async work, so the destroy's transaction sweep is woken by its release.
+const waits = getTransactionDrainWaits() - drainWaits;
+assert.ok(waits <= 3, `transaction drain blocked ${waits} times`);
+if (mode === 'closing') {
+	assert.ok(waits >= 1, 'the transaction sweep never waited on the parked get');
 }
 assert.equal(
 	registryStatus().some((entry) => entry.path === path),
