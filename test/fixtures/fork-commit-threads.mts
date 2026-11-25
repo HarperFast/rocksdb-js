@@ -194,6 +194,30 @@ try {
 		assert.equal(reopened.getSync('queued'), legacy ? 2 : undefined);
 		reopened.close();
 		console.log(JSON.stringify({ ok: true }));
+	} else if (mode === 'close-queued-reopen-conflict') {
+		// As close-queued, but the handle is reopened on another database while the commit is queued,
+		// and the commit conflicts: a retry would re-run the body through that handle.
+		RocksDatabase.config({ commitThreads: 1 });
+		const db = RocksDatabase.open(path);
+		const keeper = RocksDatabase.open(path);
+		const first = new Transaction(keeper.store);
+		first.putSync('first', 1);
+		const firstCommit = first.commit();
+		await untilCommitDelayed(firstCommit);
+		const queued = new Transaction(db.store);
+		queued.putSync('conflict', 'queued');
+		keeper.putSync('conflict', 'keeper');
+		const queuedCommit = queued.commit();
+		db.close();
+		db.store.path = `${path}-other`;
+		db.open();
+		await firstCommit;
+		await assert.rejects(queuedCommit, /Database closed during transaction commit operation/);
+		queued.abort();
+		assert.equal(keeper.getSync('conflict'), 'keeper');
+		db.close();
+		keeper.close();
+		console.log(JSON.stringify({ ok: true }));
 	} else {
 		throw new Error(`unknown mode ${mode}`);
 	}

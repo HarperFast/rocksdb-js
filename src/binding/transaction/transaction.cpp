@@ -840,6 +840,18 @@ static void createCommitError(napi_env env, const TransactionCommitState& state,
  * Runs no JavaScript, so commitSync() can call it while still holding its descriptor operation; the
  * caller builds the error for a failed commit afterwards with createCommitError().
  */
+/**
+ * On the owner thread: a retry re-runs the caller's body through the handle, so a conflict after the
+ * handle was reopened on another database is refused like one after a close.
+ */
+static void refuseRetryThroughForeignHandle(TransactionCommitState* state) {
+	if ((state->status.IsBusy() || state->status.IsTryAgain()) && state->handle && state->handle->dbHandle &&
+		!state->handle->isOwningDescriptor(state->handle->dbHandle->ownerDescriptor())) {
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+		state->errorCode = nullptr;
+	}
+}
+
 static bool settleCommit(TransactionCommitState* state) {
 	if (state->status.ok()) {
 		if (state->handle) {
@@ -867,6 +879,7 @@ static bool settleCommit(TransactionCommitState* state) {
  * tsfn callback. Does NOT free the state.
  */
 static void completeCommitWork(napi_env env, TransactionCommitState* state) {
+	refuseRetryThroughForeignHandle(state);
 	if (
 		state->status.IsBusy() &&
 		state->handle &&
@@ -1410,6 +1423,7 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 			executeLogWork(&state);
 			executeCommitWork(&state);
 		}
+		refuseRetryThroughForeignHandle(&state);
 		// Never parks: the holder of a coordinated-retry conflict may need this event loop.
 		committed = settleCommit(&state);
 	}
