@@ -1414,7 +1414,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     staged writes, so a caller that catches either refusal rather than letting it propagate must not
     read a value back through that transaction and carry it forward. That is deliberate — reads stay
     valid so a caller can inspect state before aborting — but unlike `abandonWrites()` the state is
-    now reachable as a side effect of a failed write, so it is the caller-visible half worth knowing. Every explicit log-stage claim release passes the live
+    now reachable as a side effect of a failed write, so it is the caller-visible half worth knowing.
+    The same transition also releases the transaction's `nonVerifyingWriters` counts, and its reads,
+    while still served, bypass the verification table (`src/binding/core/DESIGN.md`, participation
+    and "Who may publish"). Every explicit log-stage claim release passes the live
     descriptor — including synchronous log-write failure — so the last release retries reclamation
     immediately rather than waiting for an unrelated drop/open/close.
 

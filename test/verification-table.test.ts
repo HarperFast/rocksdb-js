@@ -1459,23 +1459,32 @@ describe('Verification Table', () => {
 				expectFreshWithoutRead(db, key);
 			}));
 
-		it.each(['transaction', 'database'] as const)(
-			'a populateVersion read through an abandoned transaction (%s context) does not seed the VT',
-			(context) =>
+		it.each([
+			['transaction', 'populateVersion'],
+			['database', 'populateVersion'],
+			['transaction', 'expectedVersion'],
+			['database', 'expectedVersion'],
+		] as const)(
+			'a %s-context read through an abandoned transaction with %s neither answers FRESH nor seeds the VT',
+			(context, option) =>
 				dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
-					const key = Buffer.from(`async-populate-abandoned-${context}`);
+					const key = Buffer.from(`async-abandoned-${context}-${option}`);
 					const value = valueWithHeader(version);
 					await db.put(key, value);
 					await db.flush();
 
 					const txn = new Transaction(db.store);
+					const options = (
+						option === 'populateVersion' ? { populateVersion: true } : { expectedVersion: version }
+					) as any;
 					try {
 						txn.abandonWrites();
 						const read = await readCold(() =>
 							context === 'transaction'
-								? txn.getBinary(key, { populateVersion: true } as any)
-								: db.getBinary(key, { transaction: txn, populateVersion: true } as any)
+								? txn.getBinary(key, options)
+								: db.getBinary(key, { ...options, transaction: txn })
 						);
+						expect(read).not.toBe(FRESH_VERSION_FLAG);
 						expect(read.equals(value)).toBe(true);
 						expect(db.verifyVersion(key, version)).toBe(false);
 					} finally {
