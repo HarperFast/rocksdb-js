@@ -18,9 +18,13 @@ if (isMainThread) {
 	);
 	try {
 		let replied = false;
-		const result = once(worker, 'message').finally(() => (replied = true));
+		const result = once(worker, 'message');
+		result.then(
+			() => (replied = true),
+			() => (replied = true)
+		);
+		worker.once('exit', () => (replied = true));
 		const deadline = Date.now() + 5000;
-		// A worker that fails before beforecommit replies instead, and the assertion below shows why.
 		while (Atomics.load(gate, 0) !== 1 && !replied) {
 			assert(Date.now() < deadline, 'the worker never reached beforecommit');
 			await delay(1);
