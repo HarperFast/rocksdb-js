@@ -321,6 +321,22 @@ if (mode === 'reentrant') {
 			txn.abort();
 			owner.open();
 		}
+		{
+			// Reopened onto the descriptor the keeper holds open: the transaction's handle again.
+			const txn = new Transaction(owner.store);
+			assert.equal(
+				await whileCreatingWork(
+					'transaction.get',
+					() => {
+						owner.close();
+						owner.open();
+					},
+					() => nativeGet((txn as any)._context)
+				),
+				'ok'
+			);
+			txn.abort();
+		}
 	}
 	keeper.close();
 
@@ -333,14 +349,22 @@ if (mode === 'reentrant') {
 		assert.equal(registryStatus().length, 0);
 	}
 	if (emitsNapiInit) {
-		owner.open();
-		const txn = new Transaction(owner.store);
-		assert.equal(
-			await whileCreatingWork('transaction.getMany', shutdown, () =>
-				nativeGetMany((txn as any)._context)
-			),
-			'Transaction is closed'
-		);
+		for (const [type, teardown, read] of [
+			['transaction.get', shutdown, nativeGet],
+			['transaction.getMany', shutdown, nativeGetMany],
+			// The last handle: its close tears the database down.
+			['transaction.get', () => owner.close(), nativeGet],
+			['transaction.get', () => (owner.close(), owner.open()), nativeGet],
+		] as const) {
+			owner.open();
+			const txn = new Transaction(owner.store);
+			assert.equal(
+				await whileCreatingWork(type, teardown, () => read((txn as any)._context)),
+				'Transaction is closed',
+				type
+			);
+		}
+		owner.close();
 	}
 	assert.equal(registryStatus().length, 0);
 	console.log('SUCCESS');

@@ -50,10 +50,13 @@ lets abort and orphan cleanup cancel and drain the read.
 
 # Synchronous admission
 
-A call that reaches a transaction through its own `NativeTransaction` wrapper (`getSync`, the setup of
-`get`, `getMany`, `getManySync`, `getCount`, `putSync`, `removeSync`, `useLog`, `setTimestamp`,
-`abandonWrites`, and a transaction-context `getRange`) holds a `TransactionOperation` whenever it
-reads `dbHandle` or `txn`, and releases it only around steps that run JavaScript (below). A foreign `destroy()`/`shutdown()` resets those in
+A call that reaches a transaction through its own `NativeTransaction` wrapper (`getSync`, `getMany`,
+`getManySync`, `getCount`, `putSync`, `removeSync`, `useLog`, `setTimestamp`, `abandonWrites`, and a
+transaction-context `getRange`) holds a `TransactionOperation` whenever it reads `dbHandle` or `txn`,
+and releases it only around steps that run JavaScript (below). The setup of an async `get` holds one
+only to copy its key: after creating its work it reads the handle and `txn` under the transaction's
+async-work registration in `TransactionHandle::get()`, which `close()` drains the same way. An
+admission held across `prepareGet()` would put the work creation back under it. A foreign `destroy()`/`shutdown()` resets those in
 `TransactionHandle::close()`, from `finishClose()`'s closables sweep on its own thread.
 
 `TransactionOperation` registers with the transaction's own async-work drain through the lock-free
