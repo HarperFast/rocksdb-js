@@ -83,22 +83,26 @@ Errors without a code (`napi_throw_error(env, nullptr, ...)`) run none. So `putS
 `setTimestamp` decide their error while admitted and build it after. `useLog` admits once to read the
 transaction's handle, releases, validates with `instanceof`, admits again to recheck that handle and
 bind the store, and constructs the JavaScript `TransactionLog` after. An async `get`/`getMany` first
-owns its keys (`get` copies one out of the handle's shared default key buffer under its own short
-admission, as `useLog` does; `getMany` copies with `MultiGetBatch::copyKeys()`), so JavaScript that
-reuses or detaches that buffer cannot change which records the read returns. `prepareGet`/
-`prepareMultiGet` then create the work, and the call admits again before `get()`/`multiGet()`
-register on the transaction and queue it, so an init hook runs before the read establishes its
-snapshot and looks at staged writes, like JavaScript run before the call. Those take the prepared state after their registration, so a
-failed setup releases the snapshot and column descriptor it pinned while the registration still holds
-off `close()`. The `Database::*` by-id reads prepare the same way. In builds with fatal asserts,
-`enterSync()` counts admissions per thread and `assertJavaScriptMayRun()`, called by both error
-builders and before each prepared work creation, fails while one is held.
+owns its keys (`get` copies one out of the handle's shared default key buffer while admitted;
+`getMany` copies with `MultiGetBatch::copyKeys()`), so JavaScript that reuses or detaches that buffer
+cannot change which records the read returns. `prepareGet`/`prepareMultiGet` then create the work
+without reading transaction or handle state. `getMany` then admits and calls `multiGet()`; `get` calls
+`get()` unadmitted, which rechecks its own handle (`ownHandleDetached()`) under its registration.
+Both register on the transaction and queue. An init hook therefore runs before the read
+establishes its snapshot and looks at staged writes, like JavaScript run before the call. `get()`/
+`multiGet()` take the prepared state after their registration, so a failed setup releases the snapshot
+and column descriptor it pinned while the registration still holds off `close()`. The `Database::*`
+by-id reads prepare the same way. In builds with fatal asserts, `enterSync()` counts admissions per
+thread and `assertJavaScriptMayRun()`, called by both error builders and before each prepared work
+creation, fails while one is held. It does not see async-work registrations or handle guards.
 
-Not covered: `commit()` creates its completion's threadsafe function (and, in legacy mode, its async
-work) while it holds the transaction's registration and a descriptor operation, and a `Database::*`
-call holds its handle's `HandleOperationGuard` across its own error building and work creation;
-re-entrant teardown there is refused on the same thread only for destroy/shutdown (#1170). After
-admission, a handle the owner has closed or reopened no longer belongs to this transaction's
+Still exposed: `commit()` creates its completion's threadsafe function (and, in legacy mode, its async
+work) while it holds the transaction's registration and a descriptor operation (#1172), and a
+`Database::*` call, by-id transaction reads included, holds its handle's `HandleOperationGuard` across
+its own error building and work creation, so a same-thread `destroy()`/`shutdown()` there still waits
+on itself (#1143).
+
+After admission, a handle the owner has closed or reopened no longer belongs to this transaction's
 descriptor, so calls that use it refuse with "Database not open". `setTimestamp` and
 `abandonWrites` use only the transaction and are not refused for that.
 

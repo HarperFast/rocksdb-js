@@ -1452,15 +1452,22 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 	napi_value resolve = argv[1];
 	napi_value reject = argv[2];
 	UNWRAP_TRANSACTION_HANDLE("Get");
+	// argv[3]: txnId (ignored — the transaction is self)
+	// argv[4]: optional expectedVersion for VT check and populate
+	bool hasExpectedVersion = false;
+	uint64_t expectedVersion = 0;
+	if (argc >= 5) {
+		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
+	}
+	const int32_t optionalFlags = parseOptionalFlags(env, argv[5]);
+
 	// The key may be in the handle's shared default key buffer, which JavaScript run by prepareGet()
-	// can overwrite, so it is copied first, under its own admission (as in UseLog).
+	// can overwrite, so it is copied first. get() rechecks the handle under its own registration.
 	std::string key;
+	bool wantsPopulate;
+	VtSlotRef vtSlot;
 	{
-		TransactionOperation operation(**txnHandle);
-		if (const char* refusal = operation.refusal("Transaction is closed")) {
-			::napi_throw_error(env, nullptr, refusal);
-			return nullptr;
-		}
+		ADMIT_TRANSACTION_OPERATION("Transaction is closed");
 		// UNWRAP_DB_HANDLE_AND_OPEN() cannot be used here: it unwraps `jsThis`, which for this
 		// method is the Transaction.
 		if (!(*txnHandle)->dbHandle) {
@@ -1476,38 +1483,16 @@ napi_value Transaction::Get(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 		key.assign(keySlice.data(), keySlice.size());
+		wantsPopulate = readWantsPopulate(optionalFlags, (*txnHandle)->dbHandle);
+		if (hasExpectedVersion || wantsPopulate) {
+			vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
+		}
 	}
 
 	PendingAsyncState<AsyncTransactionGetState> read(env, nullptr);
 	if (!(*txnHandle)->prepareGet(env, std::move(key), resolve, reject, read)) {
 		return nullptr;
 	}
-
-	// Rechecked: JavaScript run by prepareGet() may have ended the transaction or closed its handle.
-	ADMIT_TRANSACTION_OPERATION("Transaction is closed");
-	if (!(*txnHandle)->dbHandle) {
-		::napi_throw_error(env, nullptr, "Transaction is closed");
-		return nullptr;
-	}
-	if (!(*txnHandle)->dbHandle->opened()) {
-		::napi_throw_error(env, nullptr, "Database not open");
-		return nullptr;
-	}
-
-	// argv[3]: txnId (ignored — the transaction is self)
-	// argv[4]: optional expectedVersion for VT check and populate
-	bool hasExpectedVersion = false;
-	uint64_t expectedVersion = 0;
-	if (argc >= 5) {
-		hasExpectedVersion = parseExpectedVersion(env, argv[4], expectedVersion);
-	}
-	const bool wantsPopulate = readWantsPopulate(parseOptionalFlags(env, argv[5]), (*txnHandle)->dbHandle);
-
-	VtSlotRef vtSlot;
-	if (hasExpectedVersion || wantsPopulate) {
-		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), read.state->key);
-	}
-
 	return (*txnHandle)->get(env, std::move(read), nullptr, vtSlot, hasExpectedVersion, expectedVersion, wantsPopulate);
 }
 
@@ -1952,24 +1937,24 @@ napi_value Transaction::SetTimestamp(napi_env env, napi_callback_info info) {
 
 		const bool isIdempotent = type == napi_number && timestampMs == (*txnHandle)->startTimestamp;
 		auto* txn = (*txnHandle)->txn;
-		if (errorCode) {
-			// invalid: reported below
-		} else if ((*txnHandle)->committedPosition.logSequenceNumber > 0) {
-			if (!isIdempotent) {
-				errorCode = "ERR_TIMESTAMP_FROZEN";
-				errorMessage = "Cannot set timestamp: transaction log batch is already durable";
+		if (!errorCode) {
+			if ((*txnHandle)->committedPosition.logSequenceNumber > 0) {
+				if (!isIdempotent) {
+					errorCode = "ERR_TIMESTAMP_FROZEN";
+					errorMessage = "Cannot set timestamp: transaction log batch is already durable";
+				}
+			} else if ((*txnHandle)->logEntryBatch ||
+				(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
+				if (!isIdempotent) {
+					errorCode = "ERR_TIMESTAMP_FROZEN";
+					errorMessage = "Cannot set timestamp: transaction already has staged writes or log entries";
+				}
+			} else if (type == napi_undefined) {
+				// use current timestamp
+				(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
+			} else {
+				(*txnHandle)->startTimestamp = timestampMs;
 			}
-		} else if ((*txnHandle)->logEntryBatch ||
-			(txn && txn->GetNumPuts() + txn->GetNumDeletes() + txn->GetNumMerges() > 0)) {
-			if (!isIdempotent) {
-				errorCode = "ERR_TIMESTAMP_FROZEN";
-				errorMessage = "Cannot set timestamp: transaction already has staged writes or log entries";
-			}
-		} else if (type == napi_undefined) {
-			// use current timestamp
-			(*txnHandle)->startTimestamp = rocksdb_js::getMonotonicTimestamp();
-		} else {
-			(*txnHandle)->startTimestamp = timestampMs;
 		}
 	}
 	if (errorCode) {

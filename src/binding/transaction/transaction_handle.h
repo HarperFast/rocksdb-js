@@ -498,7 +498,9 @@ public:
 	/**
 	 * Creates the state and async work of a `get()` of `key`, which the caller has already copied out
 	 * of any shared buffer. Call it before the read is admitted: creating async work runs
-	 * `async_hooks` init hooks. False, with a JavaScript exception pending, on failure.
+	 * `async_hooks` init hooks. It reads no transaction or handle state, which that JavaScript may
+	 * change; `get()` does, under its registration. False, with a JavaScript exception pending, on
+	 * failure.
 	 */
 	[[nodiscard]] bool prepareGet(
 		napi_env env,
@@ -509,7 +511,8 @@ public:
 	);
 
 	/**
-	 * Admits and queues a read set up by `prepareGet()`.
+	 * With no `dbHandleOverride`, refuses a closed or detached own handle; `vtSlot` must then come
+	 * from that handle.
 	 */
 	napi_value get(
 		napi_env env,
@@ -588,6 +591,18 @@ public:
 	 * (lost updates).
 	 */
 	void ensureSnapshot();
+
+	/**
+	 * Whether `dbHandle` was closed, or reopened onto another descriptor, since this transaction was
+	 * created. Only while the call is admitted.
+	 */
+	bool ownHandleDetached() const {
+		const std::shared_ptr<DBHandle>& handle = this->dbHandle;
+		// Compares control blocks, which `owningDescriptor` keeps alive, without touching a count.
+		return handle &&
+			(!handle->descriptor || this->owningDescriptor.owner_before(handle->descriptor) ||
+				handle->descriptor.owner_before(this->owningDescriptor));
+	}
 
 	/**
 	 * Returns the snapshot a read currently observes, or nullptr when reads see

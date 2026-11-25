@@ -20,7 +20,6 @@
 namespace rocksdb_js {
 
 #if defined(DEBUG) || defined(ROCKSDB_JS_FATAL_ASSERTS)
-// Synchronous admissions (`AsyncWorkHandle::enterSync()`) this thread holds.
 inline thread_local int32_t heldSyncAdmissions = 0;
 #endif
 
@@ -455,6 +454,7 @@ struct PendingAsyncState {
 
 	PendingAsyncState(napi_env env, State* state) : env(env), state(state) {}
 
+	// Leaves `other` empty, so exactly one owner frees the state.
 	PendingAsyncState(PendingAsyncState&& other) noexcept : env(other.env), state(other.state) {
 		other.state = nullptr;
 	}

@@ -149,11 +149,7 @@ TransactionOperation::TransactionOperation(TransactionHandle& handle) :
 	handle(handle),
 	admittedCall(handle.enterSync()) {
 	if (this->admittedCall) {
-		const std::shared_ptr<DBHandle>& dbHandle = handle.dbHandle;
-		// Compares control blocks, which `owningDescriptor` keeps alive, without touching a count.
-		this->handleDetached = dbHandle &&
-			(!dbHandle->descriptor || handle.owningDescriptor.owner_before(dbHandle->descriptor) ||
-				dbHandle->descriptor.owner_before(handle.owningDescriptor));
+		this->handleDetached = handle.ownHandleDetached();
 	}
 }
 
@@ -721,6 +717,11 @@ bool TransactionHandle::prepareGet(
 	napi_value reject,
 	PendingAsyncState<AsyncTransactionGetState>& read
 ) {
+	// Racy, so only spares a closed transaction the allocations and init hook; get() decides.
+	if (this->isCancelled()) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return false;
+	}
 	rocksdb::ReadOptions readOptions;
 	read.state = new AsyncTransactionGetState(env, this->shared_from_this(), readOptions, std::move(key));
 	// Holds no registration until get() transfers one.
@@ -818,6 +819,18 @@ napi_value TransactionHandle::get(
 	const uint64_t observedSlot = vtSlot ? vtSlot.load() : 0;
 
 	napi_value returnStatus;
+	if (!dbHandleOverride) {
+		// The caller's checks of its own handle ran before prepareGet(), whose JavaScript may have
+		// closed or reopened it.
+		if (!this->dbHandle) {
+			::napi_throw_error(env, nullptr, "Transaction is closed");
+			return nullptr;
+		}
+		if (this->ownHandleDetached() || !this->dbHandle->opened()) {
+			::napi_throw_error(env, nullptr, "Database not open");
+			return nullptr;
+		}
+	}
 	std::shared_ptr<DBHandle> dbHandle = dbHandleOverride ? dbHandleOverride : this->dbHandle;
 	// Cross-column-family reads enter through another DBHandle. Register against
 	// that handle while copying its descriptor so a concurrent close cannot reset
@@ -940,6 +953,11 @@ bool TransactionHandle::prepareMultiGet(
 	napi_value reject,
 	PendingAsyncState<AsyncTransactionMultiGetState>& read
 ) {
+	// Racy, so only spares a closed transaction the allocations and init hook; get() decides.
+	if (this->isCancelled()) {
+		::napi_throw_error(env, nullptr, "Transaction is closed");
+		return false;
+	}
 	rocksdb::ReadOptions readOptions;
 	read.state = new AsyncTransactionMultiGetState(env, this->shared_from_this(), readOptions);
 	// Holds no registration until multiGet() transfers one.

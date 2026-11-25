@@ -238,64 +238,75 @@ if (mode === 'reentrant') {
 		/dropped/
 	);
 	dropped.close();
-	for (const [type, read] of [
-		['transaction.get', (txn: Transaction) => nativeGet((txn as any)._context)],
-		['transaction.getMany', (txn: Transaction) => nativeGetMany((txn as any)._context)],
-		['transaction.getMany', (txn: Transaction) => nativeGetMany(owner.store.db, txn.id)],
-	] as const) {
-		const txn = new Transaction(owner.store);
-		assert.equal(
-			await whileCreatingWork(
-				type,
-				() => txn.abort(),
-				() => read(txn)
-			),
-			'Transaction is closed',
-			type
-		);
-	}
-	// The read owns its keys before creating its work: a hook that reuses the shared key buffers
-	// must not change which records it returns.
-	owner.putSync('a', 'value-a');
-	owner.putSync('b', 'value-b');
-	{
-		const txn = new Transaction(owner.store);
-		const keyLength = owner.store.encodeKey('a').end;
-		let value: Buffer | undefined;
-		assert.equal(
-			await whileCreatingWork(
+	// Bun emits async_hooks events for process.nextTick only, not for N-API async work.
+	const emitsNapiInit = !process.versions.bun && !('deno' in process.versions);
+	if (emitsNapiInit) {
+		for (const [type, read] of [
+			['transaction.get', (txn: Transaction) => nativeGet((txn as any)._context)],
+			['transaction.getMany', (txn: Transaction) => nativeGetMany((txn as any)._context)],
+			[
 				'transaction.get',
-				() => owner.getSync('b'),
-				async () => {
-					value = (await new Promise((resolve, reject) =>
-						(txn as any)._context.get(keyLength, resolve, reject)
-					)) as Buffer;
-				}
-			),
-			'ok'
-		);
-		assert.ok(value?.toString().includes('value-a'), String(value));
-		txn.abort();
-	}
-	{
-		const txn = new Transaction(owner.store);
-		const keys = Buffer.from('ab');
-		let values: Buffer | undefined;
-		assert.equal(
-			await whileCreatingWork(
-				'transaction.getMany',
-				() => keys.fill('z'),
-				async () => {
-					values = (await new Promise((resolve, reject) =>
-						(txn as any)._context.getMany(keys, new Int32Array([1, 2]), 2, resolve, reject)
-					)) as Buffer;
-				}
-			),
-			'ok'
-		);
-		assert.ok(values?.toString().includes('value-a'), String(values));
-		assert.ok(values?.toString().includes('value-b'), String(values));
-		txn.abort();
+				(txn: Transaction) =>
+					new Promise((resolve, reject) =>
+						(owner.store.db as any).get(Buffer.from('key'), resolve, reject, txn.id)
+					),
+			],
+			['transaction.getMany', (txn: Transaction) => nativeGetMany(owner.store.db, txn.id)],
+		] as const) {
+			const txn = new Transaction(owner.store);
+			assert.equal(
+				await whileCreatingWork(
+					type,
+					() => txn.abort(),
+					() => read(txn)
+				),
+				'Transaction is closed',
+				type
+			);
+		}
+		// The read owns its keys before creating its work: a hook that reuses the shared key buffers
+		// must not change which records it returns.
+		owner.putSync('a', 'value-a');
+		owner.putSync('b', 'value-b');
+		{
+			const txn = new Transaction(owner.store);
+			const keyLength = owner.store.encodeKey('a').end;
+			let value: Buffer | undefined;
+			assert.equal(
+				await whileCreatingWork(
+					'transaction.get',
+					() => owner.getSync('b'),
+					async () => {
+						value = (await new Promise((resolve, reject) =>
+							(txn as any)._context.get(keyLength, resolve, reject)
+						)) as Buffer;
+					}
+				),
+				'ok'
+			);
+			assert.ok(value?.toString().includes('value-a'), String(value));
+			txn.abort();
+		}
+		{
+			const txn = new Transaction(owner.store);
+			const keys = Buffer.from('ab');
+			let values: Buffer | undefined;
+			assert.equal(
+				await whileCreatingWork(
+					'transaction.getMany',
+					() => keys.fill('z'),
+					async () => {
+						values = (await new Promise((resolve, reject) =>
+							(txn as any)._context.getMany(keys, new Int32Array([1, 2]), 2, resolve, reject)
+						)) as Buffer;
+					}
+				),
+				'ok'
+			);
+			assert.ok(values?.toString().includes('value-a'), String(values));
+			assert.ok(values?.toString().includes('value-b'), String(values));
+			txn.abort();
+		}
 	}
 	keeper.close();
 
@@ -308,8 +319,8 @@ if (mode === 'reentrant') {
 		);
 		assert.equal(registryStatus().length, 0);
 	}
-	owner.open();
-	{
+	if (emitsNapiInit) {
+		owner.open();
 		const txn = new Transaction(owner.store);
 		assert.equal(
 			await whileCreatingWork('transaction.getMany', shutdown, () =>

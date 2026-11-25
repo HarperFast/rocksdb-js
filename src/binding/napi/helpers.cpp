@@ -283,7 +283,6 @@ static void takeFailedCallException(napi_env env, napi_status status, napi_value
 	} while (0)
 
 void createRocksDBError(napi_env env, rocksdb::Status status, const char* msg, napi_value& error) {
-	// Calls Object.create and sets properties: patched globals run JavaScript here.
 	assertJavaScriptMayRun();
 	ROCKSDB_STATUS_FORMAT_ERROR(status, msg);
 
