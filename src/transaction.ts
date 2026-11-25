@@ -259,6 +259,14 @@ export class Transaction extends DBI {
 	#handleCommitError(err: unknown): Error {
 		if (err instanceof Error && 'code' in err) {
 			if (err.code === 'ERR_ALREADY_ABORTED') {
+				// A foreign close can abort the transaction after beforecommit passed. db.transaction()
+				// and transactionSync() swallow an already-aborted error as a user abort, which would drop
+				// the write without an error.
+				if (!this.store.db.opened) {
+					return new Error(this.store.db.closing ? 'Database is closing' : 'Database not open', {
+						cause: err,
+					});
+				}
 				return new TransactionAlreadyAbortedError(err.message);
 			}
 			if (err.code === 'ERR_BUSY') {

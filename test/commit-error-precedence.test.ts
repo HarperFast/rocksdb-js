@@ -1,10 +1,12 @@
 import { RocksDatabase } from '../src/index.ts';
 import { Transaction } from '../src/transaction.ts';
-import { dbRunner } from './lib/util.ts';
+import { dbRunner, generateDBPath, runFixture } from './lib/util.ts';
+import { rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-// The closing-database cases need a foreign shutdown(): fork-commit-sync-closing.mts (commitSync)
-// and fork-commit-admission-shutdown.mts (commit) pin those.
+// A closing database (shutdown() mid-commit) is pinned by fork-commit-sync-closing.mts (commitSync)
+// and fork-commit-admission-shutdown.mts (commit).
 
 const methods = ['commit', 'commitSync'] as const;
 
@@ -99,4 +101,19 @@ describe('Transaction commit error precedence', () => {
 			).toThrow('Database not open');
 			expectNothingCommitted(dbPath);
 		}));
+
+	it.each(['transaction', 'transactionSync'])(
+		'db.%s() reports a foreign shutdown() that aborted the transaction after beforecommit',
+		{ timeout: 20_000 },
+		async (method) => {
+			const path = generateDBPath();
+			try {
+				await runFixture(join(__dirname, 'fixtures', 'fork-commit-foreign-abort.mts'), path, {
+					args: [method],
+				});
+			} finally {
+				rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+			}
+		}
+	);
 });
