@@ -63,7 +63,7 @@ if (isMainThread) {
 		// transaction that sweep waits on, and its return wakes the sweep once.
 		const waits = getTransactionDrainWaits() - drainWaits;
 		if (context === 'txn') {
-			assert(waits >= 1 && waits <= 3, `transaction drain blocked ${waits} times`);
+			assert(waits >= 1 && waits <= 3, `transaction drain entered its wait ${waits} times`);
 		} else {
 			assert.equal(waits, 0);
 		}

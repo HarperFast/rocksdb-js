@@ -108,12 +108,10 @@ if (mode !== 'closing') {
 		`destroy finished ${destroyAfterGet}ms after the get was issued`
 	);
 }
-// The parked get is async work, so the destroy's transaction sweep is woken by its release.
+// A sweep that reaches the parked get is woken by its release. No lower bound: a destroy slower
+// than the get's delay finds the transaction idle.
 const waits = getTransactionDrainWaits() - drainWaits;
-assert.ok(waits <= 3, `transaction drain blocked ${waits} times`);
-if (mode === 'closing') {
-	assert.ok(waits >= 1, 'the transaction sweep never waited on the parked get');
-}
+assert.ok(waits <= 3, `transaction drain entered its wait ${waits} times`);
 assert.equal(
 	registryStatus().some((entry) => entry.path === path),
 	false,
