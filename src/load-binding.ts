@@ -1271,6 +1271,10 @@ export const isTransactionReadDelayedForTesting: () => boolean =
 export const isTransactionCommitExecuteDelayedForTesting: () => boolean =
 	binding.isTransactionCommitExecuteDelayedForTesting;
 
+/** Reports whether a transaction close() is waiting in its async-work drain. */
+export const isTransactionCloseDrainingForTesting: () => boolean =
+	binding.isTransactionCloseDrainingForTesting;
+
 /** Reports whether a transaction is parked in close() at the test seam. */
 export const isTransactionCloseDelayedForTesting: () => boolean =
 	binding.isTransactionCloseDelayedForTesting;
