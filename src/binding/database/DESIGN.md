@@ -143,6 +143,11 @@ capture (`captureLiveFilesWithTransactionLogs`, used by the stream path and, thr
   count). That count spans `OnFlushCompleted`, so every unparked flush has recorded its position.
 - **Reads `txn.state` and lists the files** with no flush, then releases the gate.
 
+A listing waits out pending purges, which also run on the HIGH pool (one thread here), so one taken
+while a flush is parked on that thread would never return. The capture therefore disables file
+deletions, under which RocksDB schedules no purge, and lists once before taking the hold; the
+listing under the hold then has nothing to wait for.
+
 A pessimistic database is a `TransactionDB`, which enables `allow_2pc`, and RocksDB then flushes
 inside every listing whatever `wal_size_for_flush` says; listed with flushes parked, that flush
 would wait on the capture itself. So for `allow_2pc` the capture lists first, then parks and waits

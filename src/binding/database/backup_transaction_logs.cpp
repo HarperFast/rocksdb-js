@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 #include <thread>
 #include <fstream>
 #include <set>
@@ -103,8 +104,10 @@ rocksdb::Status versionChangedSinceListing(
 	if (!s.ok()) {
 		return s;
 	}
-	const std::string manifestName = "/" + listed->relative_filename;
-	changed = manifestSize != listed->size || std::find(names.begin(), names.end(), manifestName) == names.end();
+	const bool sameManifest = std::any_of(names.begin(), names.end(), [listed](const std::string& name) {
+		return std::string_view(name).substr(name.starts_with('/') ? 1 : 0) == listed->relative_filename;
+	});
+	changed = !sameManifest || manifestSize != listed->size;
 	return rocksdb::Status::OK();
 }
 
@@ -122,13 +125,30 @@ rocksdb::Status captureLiveFiles(
 	}
 	const Deadline deadline = std::chrono::steady_clock::now() + std::chrono::minutes(1);
 	std::unique_lock<std::mutex> serialized(gate->captureMutex, std::defer_lock);
-	while (!serialized.try_lock()) {
+	for (;;) {
 		rocksdb::Status s = captureStopped(descriptor, abandon, deadline);
 		if (!s.ok()) {
 			return s;
 		}
+		if (serialized.try_lock()) {
+			break;
+		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
+
+	// While deletions are disabled RocksDB schedules no purge, so once a listing
+	// has waited out the pending ones, a listing under the hold has none to wait
+	// for. Purges run on the HIGH pool a parked flush occupies.
+	rocksdb::Status disabled = db->DisableFileDeletions();
+	if (!disabled.ok()) {
+		return disabled;
+	}
+	struct DeletionsReenabled {
+		rocksdb::DB* db;
+		~DeletionsReenabled() {
+			this->db->EnableFileDeletions().PermitUncheckedError();
+		}
+	} deletionsReenabled{ db };
 
 	constexpr uint64_t noFlush = std::numeric_limits<uint64_t>::max();
 	if (db->GetDBOptions().allow_2pc) {
@@ -143,39 +163,38 @@ rocksdb::Status captureLiveFiles(
 			if (!s.ok()) {
 				return s;
 			}
-			FlushCaptureHold hold(*gate);
-			bool changed = false;
-			s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
-			if (s.ok()) {
-				s = versionChangedSinceListing(db, *files, changed);
-			}
-			if (!s.ok()) {
-				return s;
-			}
-			if (!changed) {
-				return captureStores(descriptor, captured);
+			{
+				FlushCaptureHold hold(*gate);
+				bool changed = false;
+				s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
+				if (s.ok()) {
+					s = versionChangedSinceListing(db, *files, changed);
+				}
+				if (!s.ok()) {
+					return s;
+				}
+				if (!changed) {
+					return captureStores(descriptor, captured);
+				}
 			}
 			files->clear();
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 	}
 
-	if (opts.wal_size_for_flush != noFlush) {
-		// Only for RocksDB's flush of every column family; the list is taken below.
-		rocksdb::LiveFilesStorageInfoOptions flushOpts = opts;
-		flushOpts.include_checksum_info = false;
-		rocksdb::Status s = db->GetLiveFilesStorageInfo(flushOpts, files);
-		files->clear();
-		if (!s.ok()) {
-			return s;
-		}
+	// Also performs the flush `opts` asks for; the list that counts is taken under the hold.
+	rocksdb::LiveFilesStorageInfoOptions drainOpts = opts;
+	drainOpts.include_checksum_info = false;
+	rocksdb::Status s = db->GetLiveFilesStorageInfo(drainOpts, files);
+	files->clear();
+	if (!s.ok()) {
+		return s;
 	}
 	rocksdb::LiveFilesStorageInfoOptions listOpts = opts;
 	listOpts.wal_size_for_flush = noFlush;
 	FlushCaptureHold hold(*gate);
-	rocksdb::Status s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
-	// Listing before reading the stores leaves out none registered before the
-	// listing, whose commits a copied WAL could hold.
+	s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
+	// Stores are read after the listing so that none whose commits a copied WAL holds is left out.
 	if (s.ok()) {
 		s = db->GetLiveFilesStorageInfo(listOpts, files);
 	}
