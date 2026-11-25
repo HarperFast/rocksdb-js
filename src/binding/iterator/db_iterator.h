@@ -66,7 +66,7 @@ struct DBIteratorOptions final {
 };
 
 /**
- * How `DBIteratorHandle::countRemaining()` ended. A refused scan never reports its partial count.
+ * A refused scan never reports its partial count.
  */
 enum class CountScan {
 	Counted,
