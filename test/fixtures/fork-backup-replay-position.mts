@@ -78,20 +78,20 @@ async function directoryBackup(db: RocksDatabase, target: string): Promise<strin
 	return restoreDir;
 }
 
-/** `onStreaming` runs while the first chunk is held, after the table files were listed. */
+/** `afterFilesListed` holds the first chunk, so it runs before the transaction logs are copied. */
 async function streamBackup(
 	db: RocksDatabase,
 	target: string,
-	onStreaming?: () => Promise<void>,
+	afterFilesListed?: () => Promise<void>,
 	flushBeforeBackup?: boolean
 ): Promise<string> {
 	let firstChunk = true;
 	const chunks: Buffer[] = [];
 	const stream = new WritableStream<Uint8Array>({
 		async write(chunk) {
-			if (firstChunk && onStreaming) {
+			if (firstChunk && afterFilesListed) {
 				firstChunk = false;
-				await onStreaming();
+				await afterFilesListed();
 			}
 			chunks.push(Buffer.from(chunk));
 		},
@@ -166,8 +166,6 @@ try {
 	} else if (mode === 'streamAhead') {
 		await commit(db, total, (total += BATCH));
 		const restored = await streamBackup(db, newTarget(), async () => {
-			// The table files are listed; a later flush advances the live txn.state
-			// before the backup copies the logs.
 			await commit(db, total, (total += BATCH));
 			await db.flush();
 			const deadline = performance.now() + 10_000;
@@ -177,7 +175,6 @@ try {
 				await delay(10);
 			}
 		});
-		// Its log copy holds the later transactions, so the restore must replay them.
 		verifyRestored(restored, total);
 	} else if (mode === 'underLoad' || mode === 'underLoadPessimistic') {
 		// Small memtables and a 1 KiB value per transaction keep flushes running
