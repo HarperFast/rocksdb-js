@@ -218,8 +218,8 @@ export interface BackupOptions {
 	 * recorded for exactly the flushes those files hold. The log files are copied
 	 * afterwards and may include later entries, which the replay applies. To
 	 * capture both together the backup briefly holds new flushes back and waits
-	 * for running ones to finish; if they do not finish within a minute, the
-	 * backup rejects with a `Busy` error and can be retried.
+	 * for running ones to finish; if it cannot capture both together within a
+	 * minute, the backup rejects with a `Busy` error and can be retried.
 	 */
 	transactionLogs?: boolean;
 }

@@ -123,7 +123,8 @@ try {
 	// disableWAL makes flushBeforeBackup the default, which is Harper's configuration.
 	const db = RocksDatabase.open(path, {
 		disableWAL: true,
-		...(mode === 'underLoad' ? { writeBufferSize: 64 * 1024 } : {}),
+		...(mode.startsWith('underLoad') ? { writeBufferSize: 64 * 1024 } : {}),
+		...(mode === 'underLoadPessimistic' ? { pessimistic: true } : {}),
 	});
 	let total = 0;
 
@@ -174,7 +175,7 @@ try {
 		});
 		// Its log copy holds the later transactions, so the restore must replay them.
 		verifyRestored(restored, total);
-	} else if (mode === 'underLoad') {
+	} else if (mode === 'underLoad' || mode === 'underLoadPessimistic') {
 		// Small memtables and a 1 KiB value per transaction keep flushes running
 		// back to back; every backup must still converge and never skip a write.
 		const padding = 'p'.repeat(1024);

@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <limits>
 #include <thread>
-#include <unordered_set>
 #include <fstream>
 #include <set>
 
@@ -24,7 +23,7 @@ rocksdb::Status captureStopped(DBDescriptor* descriptor, const std::function<boo
 	}
 	if (std::chrono::steady_clock::now() >= deadline) {
 		return rocksdb::Status::Busy(
-			"Backup could not capture a consistent transaction log position: flushes kept running for a minute"
+			"Backup could not capture a consistent transaction log position within a minute"
 		);
 	}
 	return rocksdb::Status::OK();
@@ -46,6 +45,10 @@ rocksdb::Status waitForParkedFlushes(
 	Deadline deadline
 ) {
 	for (;;) {
+		rocksdb::Status s = captureStopped(descriptor, abandon, deadline);
+		if (!s.ok()) {
+			return s;
+		}
 		const uint32_t parked = hold.parkedFlushes();
 		uint64_t running = 0;
 		if (!db->GetIntProperty(rocksdb::DB::Properties::kNumRunningFlushes, &running)) {
@@ -53,10 +56,6 @@ rocksdb::Status waitForParkedFlushes(
 		}
 		if (running <= parked) {
 			return rocksdb::Status::OK();
-		}
-		rocksdb::Status s = captureStopped(descriptor, abandon, deadline);
-		if (!s.ok()) {
-			return s;
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
@@ -77,22 +76,36 @@ rocksdb::Status captureStores(DBDescriptor* descriptor, std::vector<CapturedTran
 	return rocksdb::Status::OK();
 }
 
-/** True when a table file is live that the listing does not hold, as after a later flush. */
-bool liveFilesOutgrewListing(rocksdb::DB* db, const std::vector<rocksdb::LiveFileStorageInfo>& files) {
-	std::unordered_set<uint64_t> listed;
+/**
+ * True when the version has changed since `files` was listed. Every install
+ * (flush, compaction, column-family drop) appends to the MANIFEST, and the
+ * listing records its number and length with the version it listed, so this
+ * also catches a flush whose files a compaction has already removed.
+ */
+rocksdb::Status versionChangedSinceListing(
+	rocksdb::DB* db,
+	const std::vector<rocksdb::LiveFileStorageInfo>& files,
+	bool& changed
+) {
+	const rocksdb::LiveFileStorageInfo* listed = nullptr;
 	for (const auto& file : files) {
-		if (file.file_type == rocksdb::kTableFile) {
-			listed.insert(file.file_number);
+		if (file.file_type == rocksdb::kDescriptorFile) {
+			listed = &file;
 		}
 	}
-	std::vector<rocksdb::LiveFileMetaData> live;
-	db->GetLiveFilesMetaData(&live);
-	for (const auto& file : live) {
-		if (!listed.contains(file.file_number)) {
-			return true;
-		}
+	if (!listed) {
+		return rocksdb::Status::Corruption("Backup file listing has no MANIFEST");
 	}
-	return false;
+	std::vector<std::string> names;
+	uint64_t manifestSize = 0;
+	// Unlike GetLiveFilesStorageInfo, this never flushes, even for two-phase commit.
+	rocksdb::Status s = db->GetLiveFiles(names, &manifestSize, /*flush_memtable=*/false);
+	if (!s.ok()) {
+		return s;
+	}
+	const std::string manifestName = "/" + listed->relative_filename;
+	changed = manifestSize != listed->size || std::find(names.begin(), names.end(), manifestName) == names.end();
+	return rocksdb::Status::OK();
 }
 
 rocksdb::Status captureLiveFiles(
@@ -121,32 +134,37 @@ rocksdb::Status captureLiveFiles(
 	if (db->GetDBOptions().allow_2pc) {
 		// TransactionDB enables two-phase commit, and RocksDB then flushes inside
 		// every listing; one taken while flushes are parked would wait on itself.
-		// So list first, then accept the listing only if no flush installed since.
+		// So list first, then accept the listing only if the version has not changed.
 		for (;;) {
-			rocksdb::Status s = db->GetLiveFilesStorageInfo(opts, files);
+			rocksdb::Status s = captureStopped(descriptor, abandon, deadline);
+			if (s.ok()) {
+				s = db->GetLiveFilesStorageInfo(opts, files);
+			}
 			if (!s.ok()) {
 				return s;
 			}
 			FlushCaptureHold hold(*gate);
+			bool changed = false;
 			s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
 			if (s.ok()) {
-				s = captureStores(descriptor, captured);
+				s = versionChangedSinceListing(db, *files, changed);
 			}
-			if (!s.ok() || !liveFilesOutgrewListing(db, *files)) {
-				return s;
-			}
-			captured.clear();
-			files->clear();
-			s = captureStopped(descriptor, abandon, deadline);
 			if (!s.ok()) {
 				return s;
 			}
+			if (!changed) {
+				return captureStores(descriptor, captured);
+			}
+			files->clear();
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 	}
 
 	if (opts.wal_size_for_flush != noFlush) {
 		// Only for RocksDB's flush of every column family; the list is taken below.
-		rocksdb::Status s = db->GetLiveFilesStorageInfo(opts, files);
+		rocksdb::LiveFilesStorageInfoOptions flushOpts = opts;
+		flushOpts.include_checksum_info = false;
+		rocksdb::Status s = db->GetLiveFilesStorageInfo(flushOpts, files);
 		files->clear();
 		if (!s.ok()) {
 			return s;
@@ -156,11 +174,13 @@ rocksdb::Status captureLiveFiles(
 	listOpts.wal_size_for_flush = noFlush;
 	FlushCaptureHold hold(*gate);
 	rocksdb::Status s = waitForParkedFlushes(descriptor, db, hold, abandon, deadline);
-	if (s.ok()) {
-		s = captureStores(descriptor, captured);
-	}
+	// Listing before reading the stores leaves out none registered before the
+	// listing, whose commits a copied WAL could hold.
 	if (s.ok()) {
 		s = db->GetLiveFilesStorageInfo(listOpts, files);
+	}
+	if (s.ok()) {
+		s = captureStores(descriptor, captured);
 	}
 	return s;
 }
@@ -181,10 +201,9 @@ rocksdb::Status captureLiveFilesWithTransactionLogs(
 	// BackupEngine calls this through its checkpoint code, which an exception must not unwind.
 	try {
 		s = captureLiveFiles(descriptor, db, opts, files, captured, abandon);
-	} catch (const std::exception& e) {
-		s = rocksdb::Status::IOError("Failed to capture backup files", e.what());
 	} catch (...) {
-		s = rocksdb::Status::IOError("Failed to capture backup files", "unknown error");
+		// No message: building one can throw again, into RocksDB.
+		s = rocksdb::Status::IOError();
 	}
 	if (!s.ok()) {
 		captured.clear();

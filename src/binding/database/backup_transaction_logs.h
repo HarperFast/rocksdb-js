@@ -31,20 +31,16 @@ struct NamedTransactionLogBackupEntry final {
 
 struct CapturedTransactionLogStore final {
 	std::shared_ptr<TransactionLogStore> store;
-	/** Held from the capture until the store's segments are copied. */
 	std::shared_ptr<void> retentionPin;
 	std::optional<TransactionLogBackupEntry> flushedState;
 };
 
 /**
- * `DB::GetLiveFilesStorageInfo` for a backup that also copies transaction logs:
- * lists the live files and captures each store's `txn.state` at one point, so
- * the position a restore replays from is the one recorded for exactly the
- * flushes the listed files hold. It flushes first when `opts` asks to, parks
- * new flushes at `OnFlushBegin` (`FlushCaptureGate`), waits for the running
- * ones to finish recording their positions, then reads the positions and lists
- * the files. Fails with `Busy` if running flushes do not finish within a
- * minute, and with `Aborted` once the database or the backup is closing.
+ * `DB::GetLiveFilesStorageInfo` for a backup that also copies transaction logs.
+ * Each captured store's `txn.state` is the position recorded for exactly the
+ * flushes the listed files hold (see "Backup replay position" in
+ * database/DESIGN.md). Fails with `Busy` when no consistent capture is possible
+ * within a minute, and with `Aborted` once the database or the backup closes.
  */
 rocksdb::Status captureLiveFilesWithTransactionLogs(
 	DBDescriptor* descriptor,

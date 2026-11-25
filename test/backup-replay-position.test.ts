@@ -64,6 +64,12 @@ describe('Backup replay position', () => {
 	);
 
 	it(
+		'concurrent backups of a pessimistic database under continuous flushes converge',
+		() => runFixture('underLoadPessimistic'),
+		30_000
+	);
+
+	it(
 		'a pessimistic database, whose listings always flush, captures without waiting on itself',
 		() => runFixture('pessimistic'),
 		30_000

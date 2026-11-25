@@ -3146,8 +3146,8 @@ backup either has its complete snapshot or none. Each log's replay position (`tx
 together with the table files the backup copies, so a restore replays from the position recorded for
 exactly the flushes those files hold; the log files are copied afterwards and may include later
 entries, which the replay applies. To capture both together, the backup briefly holds new flushes
-back and waits for running ones to finish, and rejects with a `Busy` error (safe to retry) if they
-do not finish within a minute.
+back and waits for running ones to finish, and rejects with a `Busy` error (safe to retry) if it
+cannot capture both together within a minute.
 
 `checkDiskSpace` (on by default) rejects with an I/O error — its message reports the available and
 required bytes — before any files are copied, so a full destination fails fast instead of partway

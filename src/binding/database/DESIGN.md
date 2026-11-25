@@ -146,8 +146,10 @@ capture (`captureLiveFilesWithTransactionLogs`, used by the stream path and, thr
 A pessimistic database is a `TransactionDB`, which enables `allow_2pc`, and RocksDB then flushes
 inside every listing whatever `wal_size_for_flush` says; listed with flushes parked, that flush
 would wait on the capture itself. So for `allow_2pc` the capture lists first, then parks and waits
-as above, reads `txn.state`, and keeps the listing only if every live table file is in it (no flush
-installed since). A compaction in that window also retries it, up to the same one-minute bound.
+as above, and keeps the listing only if the MANIFEST still has the number and length the listing
+recorded (`versionChangedSinceListing`, via `DB::GetLiveFiles` without a flush), then reads
+`txn.state`. Comparing live files instead missed a flush whose files a compaction had already
+removed. A compaction in that window also forces a retry, up to the same one-minute bound.
 
 The capture belongs to the backup, never the descriptor, because backups to different directories
 run concurrently. The position is still the store's conservative one: the commit ring
