@@ -269,7 +269,7 @@ inline std::atomic<uint64_t>& memoryMapBufferCreateFailures() {
 	return failures;
 }
 
-// Times a descriptor close's transaction drain blocked with every transaction busy. Never reset.
+// Times a descriptor close's transaction drain entered its wait with every transaction busy. Never reset.
 inline std::atomic<uint64_t>& transactionDrainWaits() {
 	static std::atomic<uint64_t> waits{ 0 };
 	return waits;

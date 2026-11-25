@@ -1188,7 +1188,7 @@ export const getTransactionLogMapCount: () => number = binding.getTransactionLog
 export const getTransactionLogMapBufferCreateFailures: () => number =
 	binding.getTransactionLogMapBufferCreateFailures;
 
-/** Process-wide count of times a database close blocked waiting for a busy transaction (test probe). */
+/** Process-wide count of times a database close entered its wait for a busy transaction (test probe). */
 export const getTransactionDrainWaits: () => number = binding.getTransactionDrainWaits;
 
 /**

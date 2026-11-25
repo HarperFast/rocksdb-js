@@ -75,10 +75,6 @@ enum class CountScan {
 	IteratorClosed
 };
 
-/**
- * The error a refused count reports. On a transaction, a closed iterator means the transaction ended;
- * otherwise only the database's close sweep closes it.
- */
 inline const char* countScanRefusal(CountScan result, bool transactional) {
 	switch (result) {
 		case CountScan::Counted:

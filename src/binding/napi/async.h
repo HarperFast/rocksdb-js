@@ -324,7 +324,8 @@ struct AsyncWorkHandle {
 	 * Lets one thread wait until any cancelled handle's admitted work drains to zero, without polling
 	 * each handle. Register before checking the handles, then wait on `cancelledIdleGeneration` as
 	 * read before that check: a handle that drains after the check sees the registration and bumps
-	 * the generation. The registration, snapshot, scan, decrement and bump are seq_cst.
+	 * the generation. The registration, snapshot, scan, decrement and bump are seq_cst; the
+	 * `cancelled` read between them may be relaxed where `waitMutex` is held.
 	 */
 	struct CancelledIdleWaiter final {
 		CancelledIdleWaiter() { cancelledIdleWaiters.fetch_add(1); }
