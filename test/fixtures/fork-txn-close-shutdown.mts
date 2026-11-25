@@ -43,12 +43,7 @@ if (mode === 'abort') {
 } else if (mode === 'commit-sync') {
 	const txn = new Transaction(db.store);
 	txn.putSync('k', 'committed');
-	try {
-		txn.commitSync();
-	} catch (error) {
-		// The after-commit notification finds the database shut down; the write is checked below.
-		if (!/Database (not open|is closing)/.test(String(error))) throw error;
-	}
+	txn.commitSync();
 } else {
 	(() => {
 		const txn = new Transaction(db.store);

@@ -10,16 +10,17 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 
 if (isMainThread) {
-	const [path, cache, phase] = process.argv.slice(2);
+	const [path, cache, phase, family] = process.argv.slice(2);
 	assert(path);
 	assert(phase === 'before' || phase === 'after');
+	assert(family === undefined || family === 'dropped');
 	const afterRegistration = phase === 'after';
 	const db = RocksDatabase.open(path);
 	const worker = new Worker(
 		createWorkerBootstrapScript('./test/fixtures/fork-commit-admission-shutdown.mts'),
 		{
 			eval: true,
-			workerData: { path, cache },
+			workerData: { path, cache, dropped: family === 'dropped' },
 		}
 	);
 	try {
@@ -68,6 +69,12 @@ if (isMainThread) {
 		await db.transaction((txn) => txn.putSync('warm', true));
 	}
 	const txn = new Transaction(db.store);
+	// The closing database outranks a dropped column family the transaction wrote to.
+	if (workerData.dropped) {
+		const doomed = RocksDatabase.open(workerData.path, { name: 'doomed' });
+		doomed.putSync('k', 'v', { transaction: txn });
+		RocksDatabase.open(workerData.path, { name: 'doomed' }).dropSync();
+	}
 	parentPort!.postMessage('ready');
 	await once(parentPort!, 'message');
 	try {

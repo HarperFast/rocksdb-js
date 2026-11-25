@@ -35,13 +35,7 @@ if (!ready.ready) fail(`worker failed to initialize: ${JSON.stringify(ready)}`);
 const txn = new Transaction(db.store);
 txn.putSync('k', 'committed');
 const commitStarted = Date.now();
-try {
-	txn.commitSync();
-} catch (error) {
-	// The after-commit notification can find the database already shut down; the commit itself
-	// is checked below by reopening.
-	if (!/Database (not open|is closing)/.test(String(error))) throw error;
-}
+txn.commitSync();
 
 const result = await nextMessage();
 if (!result.shutdown) fail(`shutdown failed: ${JSON.stringify(result)}`);

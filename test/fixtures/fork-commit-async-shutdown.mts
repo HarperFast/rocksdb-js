@@ -57,13 +57,7 @@ if (droppedCompletion) {
 		fail(`${closer}() did not wait for the fallback close inside commit()`);
 	}
 } else {
-	try {
-		await txn.commit();
-	} catch (error) {
-		// The after-commit notification can find the database already shut down; the commit itself
-		// is checked below by reopening.
-		if (!/Database (not open|is closing)/.test(String(error))) throw error;
-	}
+	await txn.commit();
 }
 
 const result = await nextMessage();

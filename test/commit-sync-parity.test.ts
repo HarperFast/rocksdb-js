@@ -76,15 +76,25 @@ describe('commitSync() shares the async commit sequence', () => {
 	);
 
 	it.each([
-		['refuses a transaction a foreign shutdown() closed', {}],
+		['refuses a transaction a foreign shutdown() closed', {}, []],
 		[
 			'refuses a descriptor a failed foreign shutdown() left closing',
 			{ ROCKSDB_JS_CLOSE_FAILURE: '1' },
+			[],
 		],
-	])('%s', { timeout: 20_000 }, async (_title, env) => {
+		['reports a foreign shutdown() over a dropped column family', {}, ['dropped']],
+		[
+			'reports a closing descriptor over a dropped column family',
+			{ ROCKSDB_JS_CLOSE_FAILURE: '1' },
+			['dropped'],
+		],
+	])('%s', { timeout: 20_000 }, async (_title, env, args) => {
 		const path = generateDBPath();
 		try {
-			await runFixture(join(__dirname, 'fixtures', 'fork-commit-sync-closing.mts'), path, { env });
+			await runFixture(join(__dirname, 'fixtures', 'fork-commit-sync-closing.mts'), path, {
+				args,
+				env,
+			});
 		} finally {
 			rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 		}
