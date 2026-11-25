@@ -2306,7 +2306,8 @@ would make the slot disagree with what the next write invalidates.
 The freshness check works as follows:
 
 1. Pass `{ expectedVersion }` to `get()` / `getSync()`. If the slot currently records that version,
-   the read is skipped and the `FRESH_VERSION_FLAG` sentinel is returned.
+   the read is skipped and the `FRESH_VERSION_FLAG` sentinel is returned. A read through a
+   transaction whose writes were abandoned never answers FRESH and never seeds a slot.
 2. On a cold read, pass `{ populateVersion: true }` (or call `db.populateVersion()` afterward) to
    seed the slot with the version extracted from the value, so subsequent freshness checks hit.
 
