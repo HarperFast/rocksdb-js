@@ -644,6 +644,8 @@ Reopening the secondary does not help: it is just as stale, and it loses what it
 the WAL. Two things on the primary clear it, after which the next catch-up advances:
 
 - Closing and reopening the primary database, which writes a new MANIFEST without the dropped file.
+  Every handle on that path in the process must close first (all column families and
+  `worker_threads`), or the underlying database stays open and nothing changes.
 - `db.compact({ bottommost: true })`, which rewrites every blob file. It covers only the handle's own
   column family, so run it on the primary handle of each column family that stalled.
 

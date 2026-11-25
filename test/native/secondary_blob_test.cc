@@ -376,7 +376,8 @@ struct StalledSecondary {
 	~StalledSecondary() {
 		secondary.reset();
 		primary.reset();
-		std::filesystem::remove_all(root);
+		std::error_code ec;
+		std::filesystem::remove_all(root, ec);
 	}
 };
 
@@ -414,7 +415,7 @@ TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
 	EXPECT_TRUE(readOnly->Get({}, "z", &value).ok() && value == st.z2);
 	readOnly.reset();
 
-	// The README workaround: the binding's bottommost compact() options.
+	// The binding's compact({ bottommost: true }) options.
 	rocksdb::CompactRangeOptions relocateAll;
 	relocateAll.bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForceOptimized;
 	relocateAll.blob_garbage_collection_policy = rocksdb::BlobGarbageCollectionPolicy::kForce;
@@ -426,15 +427,14 @@ TEST(SecondarySpike, DroppedNewerBlobFileStallsCatchUp) {
 	EXPECT_TRUE(st.secondary->Get({}, "tailed", &value).ok() && value == "v");
 }
 
-// The other README workaround: a reopened primary writes a new MANIFEST that no
-// longer records the dropped blob file, and the follower rebuilds its replay
-// when it switches to it.
+// A reopened primary writes a new MANIFEST that no longer records the dropped
+// blob file, and the follower rebuilds its replay when it switches to it.
 TEST(SecondarySpike, PrimaryReopenClearsStalledCatchUp) {
 	StalledSecondary st;
 	ASSERT_NO_FATAL_FAILURE(st.setUp());
 	std::string value;
 	ASSERT_TRUE(st.secondary->TryCatchUpWithPrimary().ok());
-	ASSERT_TRUE(st.secondary->Get({}, "z", &value).IsNotFound());
+	ASSERT_TRUE(st.secondary->Get({}, "z", &value).IsNotFound()) << "fixed upstream? drop this precondition";
 
 	st.primary.reset();
 	ASSERT_TRUE(rocksdb::DB::Open(st.options, st.primaryPath, &st.primary).ok());

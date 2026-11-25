@@ -1172,8 +1172,9 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     flushed data; WAL tailing continues, so the view has holes (newer unflushed writes, older
     flushed ones missing) and retained memtables grow. A fresh secondary open is just as stale
     until the primary writes a new MANIFEST (reopen) or rewrites every blob file.
-    `DroppedNewerBlobFileStallsCatchUp` asserts the stale result, so flip it when an upgrade fixes
-    the bug. The missing-file open race classifier (`core/open_status.cpp`,
+    `DroppedNewerBlobFileStallsCatchUp` asserts the stale result (and
+    `PrimaryReopenClearsStalledCatchUp` asserts the stall as its precondition), so flip both when an
+    upgrade fixes the bug. The missing-file open race classifier (`core/open_status.cpp`,
     `ERR_CONCURRENT_COMPACTION`) matches `.sst`, `.blob`, AND `.log` at a filename-token boundary —
     a live writer reclaims all three (compaction inputs, blob GC, flushed WAL segments) and each
     was observed as the file the read-only open tripped on. (A secondary open rarely needs it: its
