@@ -744,7 +744,7 @@ napi_value TransactionHandle::get(
 		return nullptr;
 	}
 
-	if (this->readsBypassVerificationTable()) {
+	if (vtSlot && this->readsBypassVerificationTable()) {
 		vtSlot = {};
 	}
 	this->ensureSnapshot();

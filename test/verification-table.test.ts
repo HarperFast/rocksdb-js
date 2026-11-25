@@ -1168,7 +1168,6 @@ describe('Verification Table', () => {
 				);
 				expect(cached.getSync(key, { expectedVersion: 1.5e12 })).toBe(FRESH_VERSION_FLAG);
 
-				// The staged write stays readable through the transaction but must not reach the table.
 				for (const expectedVersion of [1.5e12, 1.7e12]) {
 					const staged = cached.getSync(key, { transaction: second, expectedVersion });
 					expect(Buffer.from(staged).readDoubleBE(0)).toBe(1.7e12);
@@ -1459,6 +1458,31 @@ describe('Verification Table', () => {
 				}
 				expectFreshWithoutRead(db, key);
 			}));
+
+		it.each(['transaction', 'database'] as const)(
+			'a populateVersion read through an abandoned transaction (%s context) does not seed the VT',
+			(context) =>
+				dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+					const key = Buffer.from(`async-populate-abandoned-${context}`);
+					const value = valueWithHeader(version);
+					await db.put(key, value);
+					await db.flush();
+
+					const txn = new Transaction(db.store);
+					try {
+						txn.abandonWrites();
+						const read = await readCold(() =>
+							context === 'transaction'
+								? txn.getBinary(key, { populateVersion: true } as any)
+								: db.getBinary(key, { transaction: txn, populateVersion: true } as any)
+						);
+						expect(read.equals(value)).toBe(true);
+						expect(db.verifyVersion(key, version)).toBe(false);
+					} finally {
+						txn.abort();
+					}
+				})
+		);
 
 		it("a transactional populateVersion read on another column family seeds that family's slot", () =>
 			dbRunner(
