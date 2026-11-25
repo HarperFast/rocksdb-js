@@ -510,8 +510,7 @@ public:
 	);
 
 	/**
-	 * With no `dbHandleOverride`, refuses a closed or detached own handle. `flags` are the caller's
-	 * optional read flags.
+	 * With no `dbHandleOverride`, refuses a closed or detached own handle.
 	 */
 	napi_value get(
 		napi_env env,

@@ -717,7 +717,6 @@ PendingAsyncState<AsyncTransactionGetState> TransactionHandle::prepareGet(
 	napi_value reject
 ) {
 	PendingAsyncState<AsyncTransactionGetState> read(env, nullptr);
-	// Exception pending; `read` frees what was set up.
 	const auto failed = [env] { return PendingAsyncState<AsyncTransactionGetState>(env, nullptr); };
 	// Racy, so only spares a closed transaction the allocations and init hook; get() decides.
 	if (this->cancelled.load(std::memory_order_relaxed)) {
@@ -962,7 +961,6 @@ PendingAsyncState<AsyncTransactionMultiGetState> TransactionHandle::prepareMulti
 	napi_value reject
 ) {
 	PendingAsyncState<AsyncTransactionMultiGetState> read(env, nullptr);
-	// Exception pending; `read` frees what was set up.
 	const auto failed = [env] { return PendingAsyncState<AsyncTransactionMultiGetState>(env, nullptr); };
 	// Racy, so only spares a closed transaction the allocations and init hook; multiGet() decides.
 	if (this->cancelled.load(std::memory_order_relaxed)) {

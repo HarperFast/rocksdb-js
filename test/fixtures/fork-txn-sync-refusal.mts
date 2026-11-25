@@ -324,7 +324,6 @@ if (mode === 'reentrant') {
 	}
 	keeper.close();
 
-	// Teardown re-entered from the same JavaScript: shutdown() closes the transaction under the call.
 	{
 		const txn = staged();
 		assert.equal(
