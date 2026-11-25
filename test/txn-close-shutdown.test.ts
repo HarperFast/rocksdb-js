@@ -70,7 +70,7 @@ describe.skipIf(!!process.versions.deno)('Transaction close() vs. foreign shutdo
 			expectFixturePasses('fork-abort-get-quarantine.mts', [], {
 				READ: read,
 				ROCKSDB_JS_CLOSE_FLUSH_FAILURE: '1',
-				ROCKSDB_JS_TXN_GET_DELAY_MS: '1500',
+				ROCKSDB_JS_TXN_GET_DELAY_MS: '2400',
 			})
 	);
 });

@@ -850,7 +850,6 @@ napi_value TransactionHandle::get(
 				runAsyncComplete(env, state, [env, state] { resolveGetResult(env, "Transaction get failed", state); });
 			}
 
-			// After `delete`: a cancelled read's registration is released only there.
 			std::shared_ptr<TransactionHandle> deferredAbort = state->handle->abortDeferred ? state->handle : nullptr;
 			delete state;
 			if (deferredAbort) {

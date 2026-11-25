@@ -14,9 +14,10 @@ and sets `abortDeferred`, and the last in-flight read's completion closes the tr
 owning thread (`closeDeferredAbort()`) unless the sweep got there first. Leaving it to the sweep
 alone was not enough: a quarantined descriptor (failed close-time flush) is closing, but
 `finishClose()` threw before its sweep, so the transaction kept its snapshot, write intents and log
-position until a retry (HarperFast/rocksdb-js#1148). The completion, not the read's libuv execute,
-runs the close because a read cancelled before its execute ran reaches only its completion. The
-guard pins
+position until a retry (HarperFast/rocksdb-js#1148). `closeDeferredAbort()` takes "no read in
+flight" from `activeAsyncWorkCount`, which a refused `enterSync()` on the owning thread raises
+transiently ([synchronous admission](#synchronous-admission)). So it must run on that thread: from
+the read's libuv execute, a refused `txn.getSync()` could make it skip the only close. The guard pins
 `TransactionHandle::owningDescriptor`, a weak reference fixed at construction:
 `dbHandle->descriptor` is gone once the owner has closed its handle, and another env can still
 hold the database open. Locking it can make a concurrent last-handle close skip its purge, so
@@ -30,9 +31,8 @@ waiting ([close ownership](#close-ownership)). An already-cancelled handle has a
 teardown `close()`, or an earlier deferred abort's read completion. Abort then only sets the atomic
 `writesAbandoned`, so the transaction refuses later writes and commits before that `close()` runs;
 it leaves `state` to the `close()`, which writes it concurrently. Every transaction async read's
-completion calls `closeDeferredAbort()` after deleting its state, since a read cancelled before its
-execute ran releases its registration only there; today those are `get` and `multiGet`, the only
-work that can be in flight on a `Pending` transaction.
+completion must call `closeDeferredAbort()`; today those are `get` and `multiGet`, the only work
+that can be in flight on a `Pending` transaction.
 
 Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASan build with
 `max_free_fill_size` faults on an abort that does not drain first) and
@@ -136,7 +136,7 @@ See [lifecycle cost accounting](../../../docs/performance/transaction-state.md) 
 
 `finishClose()` destroys the database right after its closables sweep, so the sweep must not return
 while any `TransactionHandle::close()` is still using `txn`. `close()` makes that hold for every caller
-(commit completions, abort, the GC finalizer's orphan close, the env reaper, the sweep itself), with no
+(commit completions, abort, a deferred abort's read completion, the GC finalizer's orphan close, the env reaper, the sweep itself), with no
 descriptor operation: the first call wins `closed` and leaves `DBDescriptor::transactions` and
 `closables` only after `txn` is deleted, and a later call waits on `closeProgress` until the winner
 finishes. Registration is what makes the sweep find an unfinished close; the sweep's own `close()`,

@@ -65,14 +65,17 @@ assert.ok(elapsed < staggerMs, `abort() waited ${elapsed}ms for the in-flight re
 assert.throws(() => (txn as any)._context.commitSync(), { code: 'ERR_WRITES_ABANDONED' });
 
 const firstOutcome = await first;
-// Only meaningful while the second read's parked execute cannot have finished.
-if (steadyClockNow() - secondIssuedAt < getDelayMs - 100) {
-	assert.equal(
-		registryStatus().find((entry) => entry.path === path)?.transactions,
-		1,
-		'the transaction closed while its second read was still in flight'
-	);
-}
+// A close on the first completion would drain the second read on this thread before it settles.
+const firstSettled = steadyClockNow() - secondIssuedAt;
+assert.ok(
+	firstSettled < getDelayMs - 100,
+	`the first read settled ${firstSettled}ms after the second was issued`
+);
+assert.equal(
+	registryStatus().find((entry) => entry.path === path)?.transactions,
+	1,
+	'the transaction closed while its second read was still in flight'
+);
 const secondOutcome = await second;
 const after = registryStatus().find((entry) => entry.path === path);
 assert.equal(

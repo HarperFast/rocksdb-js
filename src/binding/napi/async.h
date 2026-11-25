@@ -279,7 +279,8 @@ struct AsyncWorkHandle {
 	 * `cancelled` is read, and cancellation is published before the drain reads the count (both
 	 * seq_cst), so either the drain waits for this call or the call sees the cancellation. Only for
 	 * the owning thread of a handle whose wrapper is live: a refused call's transient count can make
-	 * `cancelIfIdle()` or an orphan close see work in flight, and neither can run alongside it then.
+	 * `cancelIfIdle()`, an orphan close or `closeDeferredAbort()` see work in flight, and none of them
+	 * can run alongside it then.
 	 */
 	[[nodiscard]] bool enterSync() {
 		this->activeAsyncWorkCount.fetch_add(1);
