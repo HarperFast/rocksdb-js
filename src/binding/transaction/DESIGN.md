@@ -9,8 +9,15 @@ commit, `Rollback()` reports an invalid state, which abort used to throw as "Tra
 failed" after the transaction was already gone.
 
 That drain can wait on a disk read, so with work in flight Abort holds a descriptor `OperationGuard`
-until `close()` returns, and leaves the close to a teardown that is already under way (a closing or
-destroyed descriptor) rather than wait for its sweep. The guard pins
+until `close()` returns. On a closing or destroyed descriptor it does not wait: it closes admission
+and sets `abortDeferred`, and the last in-flight read's completion closes the transaction on the
+owning thread (`closeDeferredAbort()`) unless the sweep got there first. Leaving it to the sweep
+alone was not enough: a quarantined descriptor (failed close-time flush) is closing, but
+`finishClose()` threw before its sweep, so the transaction kept its snapshot, write intents and log
+position until a retry (HarperFast/rocksdb-js#1148). `closeDeferredAbort()` takes "no read in
+flight" from `activeAsyncWorkCount`, which a refused `enterSync()` on the owning thread raises
+transiently ([synchronous admission](#synchronous-admission)). So it must run on that thread: from
+the read's libuv execute, a refused `txn.getSync()` could make it skip the only close. The guard pins
 `TransactionHandle::owningDescriptor`, a weak reference fixed at construction:
 `dbHandle->descriptor` is gone once the owner has closed its handle, and another env can still
 hold the database open. Locking it can make a concurrent last-handle close skip its purge, so
@@ -20,14 +27,18 @@ Abort retries `DBRegistry::PurgeIfUnreferenced` after releasing it, as backup an
 handle's own mutex it either closes admission or reports work in flight, so no get from any env
 can slip in between. Only the in-flight case touches the descriptor (Harper ends every read-only
 transaction with an abort). The idle case needs no guard: `close()` itself keeps a foreign sweep
-waiting ([close ownership](#close-ownership)). An already-cancelled handle means a teardown `close()`
-owns the transaction. Abort then only sets the atomic `writesAbandoned`, so the transaction refuses
-later writes and commits before that `close()` runs; it leaves `state` to the `close()`, which writes
-it concurrently.
+waiting ([close ownership](#close-ownership)). An already-cancelled handle has a close coming: a
+teardown `close()`, or an earlier deferred abort's read completion. Abort then only sets the atomic
+`writesAbandoned`, so the transaction refuses later writes and commits before that `close()` runs;
+it leaves `state` to the `close()`, which writes it concurrently. Every transaction async read's
+completion must call `closeDeferredAbort()`; today those are `get` and `multiGet`, the only work
+that can be in flight on a `Pending` transaction.
 
 Covered by `test/transactions.test.ts` (aborts with async gets in flight; an ASan build with
 `max_free_fill_size` faults on an abort that does not drain first) and
-`test/fixtures/fork-abort-get-destroy.mts` (abort and a foreign destroy, in each order).
+`test/fixtures/fork-abort-get-destroy.mts` (abort and a foreign destroy, in each order) and
+`fork-abort-get-quarantine.mts` (abort with `get`/`getMany` reads in flight on a quarantined
+database).
 
 Other owning-thread mutations still run while an admitted get may be inside `txn->Get()`:
 commit (`Clear()` after the write),
@@ -125,7 +136,7 @@ See [lifecycle cost accounting](../../../docs/performance/transaction-state.md) 
 
 `finishClose()` destroys the database right after its closables sweep, so the sweep must not return
 while any `TransactionHandle::close()` is still using `txn`. `close()` makes that hold for every caller
-(commit completions, abort, the GC finalizer's orphan close, the env reaper, the sweep itself), with no
+(commit completions, abort, a deferred abort's read completion, the GC finalizer's orphan close, the env reaper, the sweep itself), with no
 descriptor operation: the first call wins `closed` and leaves `DBDescriptor::transactions` and
 `closables` only after `txn` is deleted, and a later call waits on `closeProgress` until the winner
 finishes. Registration is what makes the sweep find an unfinished close; the sweep's own `close()`,

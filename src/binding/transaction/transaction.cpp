@@ -185,9 +185,8 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	bool hadLogWrites = (*txnHandle)->committedPosition.logSequenceNumber > 0;
 
 	// close() drains admitted async work before it deletes `txn`, and that drain
-	// can wait on a disk read. When a teardown is already closing this
-	// transaction (an already-cancelled handle, or a closing descriptor with
-	// work in flight), abort leaves the close to it rather than wait. See
+	// can wait on a disk read. On an already-cancelled handle, or a closing
+	// descriptor with work in flight, abort does not close or wait. See
 	// src/binding/transaction/DESIGN.md.
 	const AsyncWorkHandle::IdleCancel idle = (*txnHandle)->cancelIfIdle();
 	const bool drainAsyncWork = idle == AsyncWorkHandle::IdleCancel::Busy;
@@ -197,12 +196,18 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 	}
 	{
 		OperationGuard operationGuard(descriptor);
-		const bool teardownOwnsClose = idle == AsyncWorkHandle::IdleCancel::AlreadyCancelled ||
+		const bool closeElsewhere = idle == AsyncWorkHandle::IdleCancel::AlreadyCancelled ||
 			(drainAsyncWork && (!descriptor || descriptor->isClosing()));
 
-		if (teardownOwnsClose) {
+		if (closeElsewhere) {
 			// Terminal to later writes and commits now; `state` is that close()'s to set.
 			(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
+			if (drainAsyncWork) {
+				// A quarantined descriptor never reaches its sweep, so the last read's completion
+				// closes it unless a sweep gets there first.
+				(*txnHandle)->abortDeferred = true;
+				(*txnHandle)->cancelAllAsyncWork();
+			}
 		} else {
 			DEBUG_LOG("Transaction::Abort closing txnHandle=%p txnId=%llu\n", (*txnHandle).get(), (unsigned long long)(*txnHandle)->id);
 			(*txnHandle)->close();
