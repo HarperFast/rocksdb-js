@@ -198,6 +198,7 @@ private:
 };
 
 struct DBEventListenerState;
+class FlushCaptureGate;
 
 /**
  * How a transaction leaves the registry it was added to without holding a
@@ -972,6 +973,8 @@ public:
 	 * cannot rely on them: see "Close does not wait for compaction" in this directory's DESIGN.md.
 	 */
 	void recordFlushedLogPosition(rocksdb::SequenceNumber sequence);
+
+	FlushCaptureGate* flushCaptureGate() const;
 
 	/** `DB::SyncWAL` on the calling thread: WAL-backed writes only, no memtable flush. */
 	rocksdb::Status syncWal();

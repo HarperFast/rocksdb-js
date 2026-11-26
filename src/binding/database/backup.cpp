@@ -13,9 +13,11 @@
 #include "rocksdb/env.h"
 #include "rocksdb/status.h"
 #include "rocksdb/utilities/backup_engine.h"
+#include "rocksdb/utilities/stackable_db.h"
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -192,6 +194,41 @@ static napi_value queueBackupWork(
 static constexpr const char* BACKUP_LOCK_FILENAME = ".backup.lock";
 
 /**
+ * The database as BackupEngine sees it when the backup copies transaction
+ * logs: the engine lists its files through this wrapper, so the logs' replay
+ * positions are captured with that exact list (see
+ * `captureLiveFilesWithTransactionLogs`). Borrows the descriptor's DB without
+ * owning it, and keeps the capture on this backup, not the shared descriptor,
+ * since backups to different directories run concurrently.
+ */
+class TransactionLogCaptureDB final : public rocksdb::StackableDB {
+public:
+	TransactionLogCaptureDB(DBDescriptor* descriptor, std::function<bool()> abandon) :
+		// Aliasing an empty owner: StackableDB then never deletes the DB.
+		rocksdb::StackableDB(std::shared_ptr<rocksdb::DB>(std::shared_ptr<rocksdb::DB>(), descriptor->db.get())),
+		descriptor(descriptor),
+		abandon(std::move(abandon)) {}
+
+	rocksdb::Status GetLiveFilesStorageInfo(
+		const rocksdb::LiveFilesStorageInfoOptions& opts,
+		std::vector<rocksdb::LiveFileStorageInfo>* files
+	) override {
+		rocksdb::Status s = captureLiveFilesWithTransactionLogs(
+			this->descriptor, this->db_, opts, files, this->captured, this->abandon
+		);
+		this->capturedFiles = s.ok();
+		return s;
+	}
+
+	std::vector<CapturedTransactionLogStore> captured;
+	bool capturedFiles = false;
+
+private:
+	DBDescriptor* descriptor;
+	std::function<bool()> abandon;
+};
+
+/**
  * Worker-thread body of `Database::Backup`. Creates the backup directory
  * (including missing parents — the lock file lives at the directory root and
  * RocksDB itself only creates the leaf), then holds the single-writer
@@ -294,13 +331,23 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 	rocksdb::BackupEngine* rawEngine = nullptr;
 	rocksdb::Status status = rocksdb::BackupEngine::Open(state->engineOptions, rocksdb::Env::Default(), &rawEngine);
 	std::unique_ptr<rocksdb::BackupEngine> engine(rawEngine);
+	auto cancelled = [state]() { return state->handle && state->handle->isCancelled(); };
+	std::optional<TransactionLogCaptureDB> captureDb;
+	if (state->backupTransactionLogs) {
+		captureDb.emplace(state->descriptor.get(), cancelled);
+	}
 	if (status.ok()) {
 		status = engine->CreateNewBackupWithMetadata(
 			state->createOptions,
-			state->descriptor->db.get(),
+			captureDb ? static_cast<rocksdb::DB*>(&*captureDb) : state->descriptor->db.get(),
 			state->appMetadata,
 			&state->backupId
 		);
+		if (status.ok() && captureDb && !captureDb->capturedFiles) {
+			// The engine listed its files some other way; its logs cannot be paired.
+			engine->DeleteBackup(state->backupId).PermitUncheckedError();
+			status = rocksdb::Status::NotSupported("Backup engine did not list live files through the capture");
+		}
 
 		// After a successful RocksDB backup, snapshot the transaction logs into
 		// transaction_logs/<backupId>/ (all-or-nothing; not incremental). The
@@ -315,8 +362,9 @@ static rocksdb::Status runCreateBackup(AsyncBackupState* state) {
 			try {
 				std::filesystem::path logsDir =
 					std::filesystem::path(backupDir) / "transaction_logs" / std::to_string(state->backupId);
-				status = backupTransactionLogsToDir(state->descriptor.get(), logsDir, state->engineOptions.sync,
-					[state]() { return state->handle && state->handle->isCancelled(); });
+				status = backupTransactionLogsToDir(
+					state->descriptor.get(), logsDir, state->engineOptions.sync, cancelled, &captureDb->captured
+				);
 			} catch (...) {
 				engine->DeleteBackup(state->backupId).PermitUncheckedError();
 				throw;

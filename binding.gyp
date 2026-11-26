@@ -272,6 +272,7 @@
 				'test/native/encoding_test.cc',
 				'test/native/file_lock_test.cc',
 				'test/native/finalize_hint_test.cc',
+				'test/native/flush_capture_gate_test.cc',
 				'test/native/json_test.cc',
 				'test/native/open_status_test.cc',
 				'test/native/secondary_blob_test.cc',

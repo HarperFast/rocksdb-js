@@ -225,6 +225,13 @@ napi_value IsTransactionCloseAwaitedByShutdownForTesting(napi_env env, napi_call
 	return result;
 }
 
+napi_value IsBackupCaptureFallbackObservedForTesting(napi_env env, napi_callback_info info) {
+	NAPI_METHOD();
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_get_boolean(env, backupCaptureFallbackObserved().load(std::memory_order_acquire), &result));
+	return result;
+}
+
 napi_value IsFlushCompletedDelayedForTesting(napi_env env, napi_callback_info info) {
 	NAPI_METHOD();
 	napi_value result;
@@ -773,6 +780,9 @@ NAPI_MODULE_INIT() {
 	NAPI_STATUS_THROWS(::napi_create_function(env, "isTransactionCloseAwaitedByShutdownForTesting", NAPI_AUTO_LENGTH, IsTransactionCloseAwaitedByShutdownForTesting, nullptr, &isTransactionCloseAwaitedByShutdownFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isTransactionCloseAwaitedByShutdownForTesting", isTransactionCloseAwaitedByShutdownFn));
 
+	napi_value isBackupCaptureFallbackObservedFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "isBackupCaptureFallbackObservedForTesting", NAPI_AUTO_LENGTH, IsBackupCaptureFallbackObservedForTesting, nullptr, &isBackupCaptureFallbackObservedFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isBackupCaptureFallbackObservedForTesting", isBackupCaptureFallbackObservedFn));
 	napi_value isFlushCompletedDelayedFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "isFlushCompletedDelayedForTesting", NAPI_AUTO_LENGTH, IsFlushCompletedDelayedForTesting, nullptr, &isFlushCompletedDelayedFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "isFlushCompletedDelayedForTesting", isFlushCompletedDelayedFn));

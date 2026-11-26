@@ -187,6 +187,20 @@ inline std::atomic<int>& flushCompletedDelayMsFlag() {
 	return delayMs;
 }
 
+// Delays a backup's live-file listing taken while new flushes are held, so a
+// flush parked behind it escapes the gate.
+inline std::atomic<int>& backupCaptureListDelayMsFlag() {
+	static std::atomic<int> delayMs{ 0 };
+	return delayMs;
+}
+
+// Set once a capture whose held listing a flush escaped falls back to listing
+// with flushes running.
+inline std::atomic<bool>& backupCaptureFallbackObserved() {
+	static std::atomic<bool> observed{ false };
+	return observed;
+}
+
 // A count because different flush jobs can be delayed concurrently.
 inline std::atomic<int>& flushCompletedDelayActive() {
 	static std::atomic<int> active{ 0 };
@@ -386,6 +400,9 @@ inline void initializeTestSeams() {
 		);
 		flushCompletedDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_FLUSH_COMPLETED_DELAY_MS"), std::memory_order_relaxed
+		);
+		backupCaptureListDelayMsFlag().store(
+			testDelayMs("ROCKSDB_JS_BACKUP_CAPTURE_LIST_DELAY_MS"), std::memory_order_relaxed
 		);
 		openAttachDelayMsFlag().store(
 			testDelayMs("ROCKSDB_JS_OPEN_ATTACH_DELAY_MS"), std::memory_order_relaxed

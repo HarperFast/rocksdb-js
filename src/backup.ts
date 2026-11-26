@@ -213,10 +213,18 @@ export interface BackupOptions {
 	 * a partial snapshot: a backup id either has its complete log snapshot or
 	 * none at all.
 	 *
-	 * The log snapshot is captured just after the RocksDB engine snapshot, so it
-	 * may include entries committed between the two — the restored logs can run
-	 * slightly ahead of the restored key-value data, never behind it. That bias
-	 * is safe for redo-style logs that are replayed against the restored data.
+	 * Each log's replay position (`txn.state`) is captured together with the
+	 * table files the backup copies, so a restore replays from the position
+	 * recorded for exactly the flushes those files hold. The log files are copied
+	 * afterwards and may include later entries, which the replay applies. To
+	 * capture both together the backup briefly holds new flushes back and waits
+	 * for running ones to finish; if it cannot capture both together within a
+	 * minute, the backup rejects with a `Busy` error and can be retried.
+	 *
+	 * This pairing holds only for a backup taken from the handle that writes the
+	 * database. A read-only or secondary handle keeps the table files it opened
+	 * with, while the log's `txn.state` is shared with any writer still flushing
+	 * into it, so back up from the writer when one is running.
 	 */
 	transactionLogs?: boolean;
 }

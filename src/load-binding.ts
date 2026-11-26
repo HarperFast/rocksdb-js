@@ -1283,6 +1283,10 @@ export const isTransactionCloseDelayedForTesting: () => boolean =
 export const isTransactionCloseAwaitedByShutdownForTesting: () => boolean =
 	binding.isTransactionCloseAwaitedByShutdownForTesting;
 
+/** Reports whether a backup capture has fallen back to listing with flushes running. */
+export const isBackupCaptureFallbackObservedForTesting: () => boolean =
+	binding.isBackupCaptureFallbackObservedForTesting;
+
 /** Reports whether a flush callback is delayed after its descriptor lookup. */
 export const isFlushCompletedDelayedForTesting: () => boolean =
 	binding.isFlushCompletedDelayedForTesting;

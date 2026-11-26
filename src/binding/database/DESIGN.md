@@ -127,6 +127,49 @@ covered (RocksDB has no public blob-file reader). Three facts hold it together:
 The check describes the backup only at the moment it runs: `verify` takes no lock (invariant 7).
 A caller that verifies and then restores holds the shared `.backup.lock` across both calls.
 
+# Backup replay position
+
+A backup that copies transaction logs must give each store the `txn.state` recorded for exactly
+the flushes in its table files. A later position skips writes the files lack; an earlier one
+replays writes they hold, which resurrects a record a caller deleted without logging it.
+`txn.state` is written by `OnFlushCompleted` after the flush has installed its files, so the
+capture (`captureLiveFilesWithTransactionLogs`, used by the stream path and, through
+`TransactionLogCaptureDB`, by BackupEngine) does three things in order:
+
+- **Parks new flushes at `OnFlushBegin`** (`FlushCaptureGate`). RocksDB calls it with the DB mutex
+  released and, for an atomic flush, for every column family before any job installs, so a parked
+  flush has changed nothing and the capturer can still take the DB mutex.
+- **Waits until every running flush is parked** (`rocksdb.num-running-flushes` equals the parked
+  count). That count spans `OnFlushCompleted`, so every unparked flush has recorded its position.
+- **Lists the files** with no flush, **then reads `txn.state`**, then releases the gate.
+
+A listing waits out pending purges, which also run on the HIGH pool (one thread here), and iterator
+cleanup schedules one even while file deletions are disabled; behind a parked flush that purge never
+runs. So under one hold a flush parks for at most a second, then proceeds and marks the hold
+escaped (`FlushCaptureHold::flushEscaped`). A flush still parked when the next hold is raised stays
+parked, and counted, under it with a fresh second. After an escape the capture does not list under
+the hold again: each such attempt would park the only flush thread for another second, starving
+writers of flushes for the whole retry budget. It falls back to listing with flushes running and
+verifying the listing under a short hold (`captureListedThenVerified`, below). Listing under the
+hold is still the first attempt because the verified listing retries whenever a flush installs
+between the listing and the hold, which under back-to-back flushes is most attempts.
+
+A pessimistic database is a `TransactionDB`, which enables `allow_2pc`, and RocksDB then flushes
+inside every listing whatever `wal_size_for_flush` says; listed with flushes parked, that flush
+would wait on the capture itself. So for `allow_2pc` the capture always takes that verified path: it
+lists first, then parks and waits as above, and keeps the listing only if the MANIFEST still has the number and length the listing
+recorded (`versionChangedSinceListing`, via `DB::GetLiveFiles` without a flush), then reads
+`txn.state`. Comparing live files instead missed a flush whose files a compaction had already
+removed. A compaction in that window also forces a retry, up to the same one-minute bound.
+
+Only the descriptor's own flushes are gated. A read-only or secondary descriptor flushes nothing
+while the store's `txn.state` follows whichever writer shares it, in this process or another, so a
+backup taken there while a writer runs is documented as unsupported rather than enforced.
+
+The capture belongs to the backup, never the descriptor, because backups to different directories
+run concurrently. The position is still the store's conservative one: the commit ring
+is sampled, so under continuous commits it can lag the flushed data, live as in a backup.
+
 # Pending-wake threadsafe functions stay ref'd
 
 A lock waiter (`withLock()`, or `tryLock(key, onUnlocked)` on a held key) and a coordinated-retry

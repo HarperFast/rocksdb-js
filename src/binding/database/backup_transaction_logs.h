@@ -1,6 +1,7 @@
 #ifndef __DATABASE_BACKUP_TRANSACTION_LOGS_H__
 #define __DATABASE_BACKUP_TRANSACTION_LOGS_H__
 
+#include "rocksdb/db.h"
 #include "rocksdb/status.h"
 #include "transaction_log/transaction_log_store.h" // TransactionLogBackupEntry
 #include <filesystem>
@@ -8,6 +9,7 @@
 #include <set>
 #include <string>
 #include <functional>
+#include <optional>
 #include <vector>
 
 namespace rocksdb_js {
@@ -27,6 +29,28 @@ struct NamedTransactionLogBackupEntry final {
 	std::shared_ptr<void> retentionPin;
 };
 
+struct CapturedTransactionLogStore final {
+	std::shared_ptr<TransactionLogStore> store;
+	std::shared_ptr<void> retentionPin;
+	std::optional<TransactionLogBackupEntry> flushedState;
+};
+
+/**
+ * `DB::GetLiveFilesStorageInfo` for a backup that also copies transaction logs.
+ * Each captured store's `txn.state` is the position recorded for exactly the
+ * flushes the listed files hold (see "Backup replay position" in
+ * database/DESIGN.md). Fails with `Busy` when no consistent capture is possible
+ * within a minute, and with `Aborted` once the database or the backup closes.
+ */
+rocksdb::Status captureLiveFilesWithTransactionLogs(
+	DBDescriptor* descriptor,
+	rocksdb::DB* db,
+	const rocksdb::LiveFilesStorageInfoOptions& opts,
+	std::vector<rocksdb::LiveFileStorageInfo>* files,
+	std::vector<CapturedTransactionLogStore>& captured,
+	const std::function<bool()>& abandon
+);
+
 /**
  * Collects the backup entries for every transaction log store owned by the
  * database at `descriptor` (via the process-global store registry). Each
@@ -35,12 +59,17 @@ struct NamedTransactionLogBackupEntry final {
  * Malformed headers are warned about and omitted because they have no readable
  * entries; every other open/read failure rejects the incomplete snapshot.
  * Each store's retention purges are held off until its entries are released.
+ *
+ * With `captured`, only the captured stores still registered are collected,
+ * each with its captured `txn.state`: a store created after the capture holds
+ * nothing the captured table files need, and no pin protected its segments.
  */
 rocksdb::Status collectTransactionLogBackupEntries(
 	DBDescriptor* descriptor,
 	std::vector<NamedTransactionLogBackupEntry>& entries,
 	const std::function<bool()>& abandon = nullptr,
-	bool waitForUnresolved = true
+	bool waitForUnresolved = true,
+	const std::vector<CapturedTransactionLogStore>* captured = nullptr
 );
 
 /**
@@ -97,7 +126,8 @@ rocksdb::Status backupTransactionLogsToDir(
 	DBDescriptor* descriptor,
 	const std::filesystem::path& destBaseDir,
 	bool sync,
-	const std::function<bool()>& abandon = nullptr
+	const std::function<bool()>& abandon = nullptr,
+	const std::vector<CapturedTransactionLogStore>* captured = nullptr
 );
 
 } // namespace rocksdb_js

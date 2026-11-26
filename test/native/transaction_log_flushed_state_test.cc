@@ -437,3 +437,28 @@ TEST(TransactionLogFlushedState, FailedSegmentSyncStopsFlushedStateFromAdvancing
 	store->close();
 	std::filesystem::remove_all(storePath.parent_path());
 }
+
+TEST(TransactionLogFlushedState, BackupCaptureDistinguishesAbsentFromUnreadableState) {
+	auto storePath = uniqueFlushedStatePath();
+	auto statePath = storePath / "txn.state";
+	auto store = std::make_shared<rocksdb_js::TransactionLogStore>(
+		"foo", storePath, 0, std::chrono::milliseconds(0), 0
+	);
+	std::filesystem::create_directories(storePath);
+
+	EXPECT_FALSE(store->captureFlushedStateForBackup().has_value());
+
+	// Omitting or misreading a state file that exists would make a restore replay what its
+	// table files hold.
+	for (size_t size : { 0, 4, 9 }) {
+		std::ofstream(statePath, std::ios::binary | std::ios::trunc) << std::string(size, '\x01');
+		EXPECT_THROW(store->captureFlushedStateForBackup(), std::runtime_error) << size << " bytes";
+	}
+	std::ofstream(statePath, std::ios::binary | std::ios::trunc) << std::string(8, '\x01');
+	auto captured = store->captureFlushedStateForBackup();
+	ASSERT_TRUE(captured.has_value());
+	EXPECT_EQ(captured->inlineContents, std::string(8, '\x01'));
+
+	store->close();
+	std::filesystem::remove_all(storePath.parent_path());
+}
