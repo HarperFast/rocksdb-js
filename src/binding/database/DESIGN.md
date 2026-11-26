@@ -312,11 +312,28 @@ registers before returning is drained too. Four facts make that equivalent to on
   the stack. Closing or reopening would replace the borrowed descriptor, and destroying would wait
   for the call forever. A call that settles synchronously through a `resolve`/`reject` it was handed
   ends its admission first (`HandleOperationGuard::release()`), except on an admission failure;
-  the JS layer passes promise settlers there, which run no JavaScript synchronously. A `destroy()`
-  or `shutdown()` through another handle from such a getter still waits on this thread, as it did
-  with the shared count.
+  the JS layer passes promise settlers there, which run no JavaScript synchronously.
+- **Re-entrant teardown.** A `destroy()` through another handle or a `shutdown()` from such a getter
+  would claim the descriptor and wait for the call below it. `DBRegistry::DestroyDB` and
+  `RefuseShutdownOnThisThread()` refuse first, before any wait (another thread's teardown can be
+  waiting for this call) and before any side effect, when a closable on a descriptor they would
+  claim reports `hasOperationOnThisThread()`. Only the owner thread changes a handle's count, so a
+  match is a call on this stack and another env's handle never matches. The exit shutdown cannot
+  refuse, because `process.exit()` never returns to that call: it marks those entries
+  `abandonedAtExit`, closes the rest, and reports them. Later shutdowns, purges and destroys,
+  including a worker's cleanup hook after the main thread exits, leave an abandoned entry alone
+  instead of waiting. Only the last env's `Teardown()` releases it, when no env is left to resume
+  the call. A foreign closer that was already waiting for the call when the process exited still
+  waits.
+  A `Transaction::*` call needs no such check: it reads its options before its
+  `TransactionOperation` and runs no JavaScript while admitted, apart from building an error and
+  creating async work (an `async_hooks` `init` hook): HarperFast/rocksdb-js#1185 moves that out
+  for get/getMany, and #1172 tracks commit (HarperFast/rocksdb-js#1140;
+  src/binding/transaction/DESIGN.md, "Synchronous admission").
 
-Iterators, transactions, backups, checkpoints, commits and column-family reclamation
-still use the descriptor's `operationsInFlight` (`OperationGuard`).
+Iterators, the transaction constructor, backups, checkpoints, commits and column-family
+reclamation still use the descriptor's `operationsInFlight` (`OperationGuard`), as does
+`Transaction::Abort` while it drains the transaction's async work; other transaction calls register
+on the transaction itself.
 `test/fixtures/fork-sync-operation-destroy.mts` holds calls on two handles open in getters while a
 third worker destroys the database, and covers the refusals and the callback case.

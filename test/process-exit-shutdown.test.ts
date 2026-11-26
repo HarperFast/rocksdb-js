@@ -129,6 +129,45 @@ describe('Main-thread exit shutdown (#1004)', () => {
 		}
 	});
 
+	it.each(['exit-inside-call', 'exit-inside-call-worker'])(
+		'%s: leaves only the databases a call in progress uses open on process.exit() inside it',
+		(mode) => {
+			if (mode.endsWith('worker') && process.versions.deno) return;
+			const path = generateDBPath();
+			try {
+				const exited = run(mode, path);
+				expect(exited.signal, exited.stderr).toBeNull();
+				expect(exited.status, exited.stderr).toBe(1);
+				expect(exited.stderr).toContain(
+					'Cannot shut down during a database operation on this thread, so'
+				);
+				const verify = (suffix: string) => {
+					const verified = run('verify', `${path}${suffix}`);
+					expect(verified.status, verified.stderr).toBe(0);
+					return JSON.parse(verified.stdout.trim().split(/\r?\n/).at(-1)!);
+				};
+				expect(verify('-late')).toEqual({ ...nothing, late: 'value' });
+				// Left open without a flush. A Bun release that runs the main env's cleanup hook at
+				// process.exit() (1.4.0) releases and flushes it there instead.
+				const abandoned = verify('');
+				if (!process.versions.bun) {
+					expect(abandoned).toEqual(nothing);
+				}
+			} finally {
+				if (!process.env.KEEP_FILES) {
+					for (const suffix of ['', '-late']) {
+						rmSync(`${path}${suffix}`, {
+							force: true,
+							recursive: true,
+							maxRetries: 3,
+							retryDelay: 500,
+						});
+					}
+				}
+			}
+		}
+	);
+
 	// Relies on Node stopping the worker after the exit listeners. Bun runs no worker cleanup on
 	// process.exit(), and a worker still inside a native close at that point crashed Bun 1.4.0.
 	it.skipIf(process.versions.deno || process.versions.bun)(

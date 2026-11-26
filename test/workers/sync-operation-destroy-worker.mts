@@ -1,4 +1,4 @@
-import { RocksDatabase } from '../../src/index.ts';
+import { RocksDatabase, shutdown } from '../../src/index.ts';
 import { parentPort, workerData } from 'node:worker_threads';
 
 // The parent blocks inside native calls and cannot receive messages, so
@@ -37,10 +37,11 @@ port.on('message', (message: string) => {
 		}
 		signal(HOLDER, 2);
 		port.postMessage({ held: true, error: holdError ? String(holdError) : undefined });
-	} else if (message === 'destroy') {
+	} else if (message === 'destroy' || message === 'shutdown') {
 		signal(DESTROY, 1);
 		try {
-			db.destroy();
+			if (message === 'destroy') db.destroy();
+			else shutdown();
 			port.postMessage({ destroyed: true });
 		} catch (error) {
 			port.postMessage({ error: error instanceof Error ? error.message : String(error) });

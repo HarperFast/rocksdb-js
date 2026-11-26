@@ -1547,7 +1547,10 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
     set, so an earlier `exit` listener that throws cannot skip it (a JS flag keeps it to one run).
     Its waits are as unbounded as the last-env hook's: `finishClose()` drains in-flight operations
     without a timeout (invariant 6), and returning early instead would leave RocksDB threads running
-    into static destruction. The `shutdownOnExit`
+    into static destruction. The one exception is a drain the exiting stack itself holds
+    (`process.exit()` from JavaScript inside a synchronous call): that descriptor is marked
+    `abandonedAtExit` and left open, and later shutdowns, purges and destroys skip it
+    (`src/binding/database/DESIGN.md`, "Re-entrant teardown"). The `shutdownOnExit`
     config option skips the listener, restoring the old behaviour for callers that simulate a crash
     with `process.exit()`; it does not stop a cleanup hook that does run (a natural exit, or
     `process.exit()` under a Bun release that runs the main env's hook) from flushing. Covered by `test/process-exit-shutdown.test.ts`.

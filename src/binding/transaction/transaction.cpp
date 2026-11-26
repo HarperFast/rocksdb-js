@@ -1496,7 +1496,14 @@ napi_value Transaction::GetCount(napi_env env, napi_callback_info info) {
 	NAPI_METHOD_ARGV(1);
 	UNWRAP_TRANSACTION_HANDLE("GetCount");
 	DBIteratorOptions itOptions;
-	itOptions.initFromNapiObject(env, argv[0]);
+	try {
+		if (itOptions.initFromNapiObject(env, argv[0]) != napi_ok) {
+			return nullptr;
+		}
+	} catch (const std::exception& e) {
+		::napi_throw_error(env, nullptr, e.what());
+		return nullptr;
+	}
 	itOptions.values = false;
 
 	// After the option getters: JavaScript run while admitted that aborts or closes this transaction

@@ -407,6 +407,14 @@ describe('Destroy', () => {
 		['destroy', "waits for the main handle's synchronous call before a foreign destroy"],
 		['destroy-holder-last', "waits for another handle's synchronous call before a foreign destroy"],
 		['reentrant', 'refuses close() and destroy() from inside a synchronous call'],
+		['reentrant-other', 'refuses destroy() of another handle from inside a synchronous call'],
+		['reentrant-shutdown', 'refuses shutdown() from inside a synchronous call'],
+		[
+			'reentrant-foreign-closing',
+			'refuses at once when a worker destroy already waits for the synchronous call',
+		],
+		['reentrant-txn', "runs destroy() from a transaction getCount()'s options getter"],
+		['foreign-shutdown', "waits for the main handle's synchronous call before a worker shutdown"],
 		['callback-close', 'lets a synchronous resolve callback close the database'],
 	])(
 		'%s: %s',

@@ -698,6 +698,22 @@ void DBDescriptor::waitForHandleOperations() {
 	}
 }
 
+bool DBDescriptor::hasOperationOnThisThread(std::vector<std::shared_ptr<Closable>>& pinned) {
+	std::lock_guard<std::mutex> closablesLock(this->txnsMutex);
+	// Reserved first, so nothing locked below is released here by a failed push.
+	pinned.reserve(pinned.size() + this->closables.size());
+	for (auto& [key, weakClosable] : this->closables) {
+		if (auto closable = weakClosable.lock()) {
+			const bool found = closable->hasOperationOnThisThread();
+			pinned.push_back(std::move(closable));
+			if (found) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 void DBDescriptor::closeRemainingClosables() {
 	std::unique_lock<std::mutex> txnsLock(this->txnsMutex);
 	this->closeClosables(txnsLock);

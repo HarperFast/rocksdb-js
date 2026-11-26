@@ -557,6 +557,11 @@ export class RocksDatabase extends DBI<DBITransactional> {
 		this.store.db.catchUpWithPrimarySync();
 	}
 
+	/**
+	 * Closes every handle to this database's path and deletes it. Throws without
+	 * changing anything when called from JavaScript that a synchronous call on
+	 * the same database runs on this thread, which it would wait for forever.
+	 */
 	destroy(): void {
 		this.store.db.destroy(this.store.readOnly);
 	}
