@@ -213,12 +213,8 @@ napi_value Transaction::Abort(napi_env env, napi_callback_info info) {
 			(*txnHandle)->close();
 		}
 	}
-	if (descriptor) {
-		// The pin can make a concurrent last-handle close skip its purge.
-		DBKey key = descriptorKey(*descriptor);
-		descriptor.reset();
-		DBRegistry::PurgeIfUnreferenced(key);
-	}
+	// The pin can make a concurrent last-handle close skip its purge.
+	releaseDescriptorPin(descriptor);
 
 	if (hadLogWrites) {
 		if ((*txnHandle)->cancellation == TransactionHandle::Cancellation::Resolved) {
@@ -483,16 +479,7 @@ struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<Transaction
 };
 
 static void purgeAfterCommit(std::shared_ptr<DBDescriptor> descriptor) noexcept {
-	if (!descriptor) {
-		return;
-	}
-	try {
-		DBKey key = descriptorKey(*descriptor);
-		descriptor.reset();
-		DBRegistry::PurgeIfUnreferenced(key);
-	} catch (...) {
-		// Commit completion cannot report a deferred close failure.
-	}
+	releaseDescriptorPin(descriptor);
 }
 
 /** Owns commit setup until work is successfully handed to a native executor. */

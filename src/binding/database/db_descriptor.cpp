@@ -539,6 +539,7 @@ DBDescriptor::DBDescriptor(
 	mode(options.mode),
 	readOnly(options.readOnly),
 	secondaryPath(options.secondaryPath),
+	registryKey(std::make_shared<const DBKey>(DBKey{ identityPath, options.readOnly, options.secondaryPath })),
 	cfOptions(cfOptions),
 	db(db),
 	attachedWriteBufferManager(attachedWriteBufferManager),
@@ -2456,41 +2457,38 @@ void DBDescriptor::dispatchNextLockCallback(const std::string& key, const std::s
  * skipped its purge.
  */
 struct LockCompletionPurge final {
-	std::optional<DBKey> key;
+	std::shared_ptr<const DBKey> key;
 
 	~LockCompletionPurge() {
-		if (!this->key) {
-			return;
-		}
-		try {
-			DBRegistry::PurgeIfUnreferenced(*this->key);
-		} catch (...) {
-		}
+		retryPurgeAfterPinRelease(this->key);
 	}
 };
 
 static void completeLockCallback(const LockCallbackCompletionData& callbackData, LockCompletionPurge& purge) noexcept {
+	std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock();
+	if (!descriptor) {
+		return;
+	}
+	// A throw must still reach the retry below: a close may have skipped its purge for this pin.
 	try {
-		{
-			std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock();
-			if (!descriptor) {
-				return;
-			}
-			descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
-			if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
-				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
-			}
+		descriptor->onLockCallbackComplete(callbackData.key, callbackData.lockHandle);
+		if (const int delayMs = lockCompleteDelayMsFlag().load(std::memory_order_relaxed); delayMs > 0) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
 		}
-		// Every other owner retries the purge when it lets go, so only a count of
-		// 1 (the registry alone) after this release is ours to retry. Checking
-		// before the release would miss a close that skipped because of this pin.
-		if (callbackData.descriptor.use_count() != 1) {
-			return;
-		}
-		if (std::shared_ptr<DBDescriptor> descriptor = callbackData.descriptor.lock()) {
-			purge.key = descriptorKey(*descriptor);
+		if (consumeAsyncExceptionForTesting(AsyncExceptionStage::LockComplete)) {
+			throw std::bad_alloc();
 		}
 	} catch (...) {
+	}
+	descriptor.reset();
+	// Skips databasesMutex when another owner remains, relying on each such owner retrying on
+	// release (unproven for OperationGuard, #1161). Counting before the release would miss a
+	// close that skipped because of this pin.
+	if (callbackData.descriptor.use_count() != 1) {
+		return;
+	}
+	if (std::shared_ptr<DBDescriptor> last = callbackData.descriptor.lock()) {
+		purge.key = releaseDescriptorPinKeepingKey(last);
 	}
 }
 

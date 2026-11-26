@@ -1300,8 +1300,10 @@ export const isTransactionCommitAdmissionDelayedForTesting: () => boolean =
  * `1` while constructing the async state, `2` in the worker's execute, `3` in the completion, `4` in
  * the registry purge's close-claim allocation, `5` as a registered async commit is dispatched.
  */
-export const forceAsyncExceptionForTesting: (stage: 0 | 1 | 2 | 3 | 4 | 5, count: number) => void =
-	binding.forceAsyncExceptionForTesting;
+export const forceAsyncExceptionForTesting: (
+	stage: 0 | 1 | 2 | 3 | 4 | 5 | 6,
+	count: number
+) => void = binding.forceAsyncExceptionForTesting;
 
 /** Delays one selected watchdog join in the concurrent-shutdown regression test. */
 export const setWriteBufferManagerJoinDelayForTesting: (

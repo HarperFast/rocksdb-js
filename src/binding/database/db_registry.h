@@ -264,25 +264,29 @@ public:
 	static size_t Size();
 };
 
-/**
- * Drops an async operation's descriptor pin, then retries the registry purge that pin may have
- * made a racing close skip (HarperFast/rocksdb-js#672). The callers are destructors and completions,
- * so when copying the key throws, the pin is dropped without the retry and the database stays open
- * until shutdown.
- */
-inline void releaseDescriptorPin(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
+inline std::shared_ptr<const DBKey> releaseDescriptorPinKeepingKey(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
 	if (!descriptor) {
+		return nullptr;
+	}
+	std::shared_ptr<const DBKey> key = descriptor->registryKey;
+	descriptor.reset();
+	return key;
+}
+
+/** Noexcept: no C++ exception may cross the N-API boundary or leave a destructor. */
+inline void retryPurgeAfterPinRelease(const std::shared_ptr<const DBKey>& key) noexcept {
+	if (!key) {
 		return;
 	}
-	std::optional<DBKey> key;
 	try {
-		key.emplace(descriptorKey(*descriptor));
+		DBRegistry::PurgeIfUnreferenced(*key);
 	} catch (...) {
 	}
-	descriptor.reset();
-	if (key) {
-		DBRegistry::PurgeIfUnreferenced(*key);
-	}
+}
+
+/** Always retries (#672); see src/binding/napi/DESIGN.md for why there is no `use_count()` gate. */
+inline void releaseDescriptorPin(std::shared_ptr<DBDescriptor>& descriptor) noexcept {
+	retryPurgeAfterPinRelease(releaseDescriptorPinKeepingKey(descriptor));
 }
 
 } // namespace rocksdb_js
