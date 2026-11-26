@@ -634,6 +634,21 @@ overlapping catch-ups on a backlogged follower can exhaust the default four-thre
 unrelated `fs`/`dns`/`crypto` work in the process. Await one before starting the next rather than
 firing one per timer tick.
 
+**Known issue ([#1189](https://github.com/HarperFast/rocksdb-js/issues/1189)):** a RocksDB bug can
+stop a secondary from picking up flushed data. Values of 2KB or more live in blob files. If the primary deletes a blob file the secondary never saw while an older
+blob file is still in use, every later catch-up succeeds but brings in nothing the primary has
+flushed since. The secondary keeps replaying the primary's WAL, so it can show newer unflushed
+writes while older flushed ones are missing, and it keeps those replayed memtables in memory (the
+`rocksdb.num-immutable-mem-table` stat from `db.getStats()` can grow with each primary flush).
+Reopening the secondary does not help: it is just as stale, and it loses what it had replayed from
+the WAL. Two things on the primary clear it, after which the next catch-up advances:
+
+- Closing and reopening the primary database, which writes a new MANIFEST without the dropped file.
+  Every handle on that path in the process must close first (all column families and
+  `worker_threads`), or the underlying database stays open and nothing changes.
+- `db.compact({ bottommost: true })`, which rewrites every blob file. It covers only the handle's own
+  column family, so run it on the primary handle of each column family that stalled.
+
 ```typescript
 const primary = RocksDatabase.open('/path/to/database');
 const follower = RocksDatabase.open('/path/to/database', {
