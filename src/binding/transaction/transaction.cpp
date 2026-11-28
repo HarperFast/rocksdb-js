@@ -253,11 +253,12 @@ napi_value Transaction::AbandonWrites(napi_env env, napi_callback_info info) {
 		NAPI_THROW_JS_ERROR("ERR_ALREADY_COMMITTED", "Transaction has already been committed");
 	}
 
-	(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
-	// Unadmitted, a teardown close() owns the release; it runs releaseIntent() itself.
 	TransactionOperation operation(**txnHandle);
 	if (operation.admitted()) {
-		(*txnHandle)->releaseIntent();
+		(*txnHandle)->abandonStagedWrites();
+	} else {
+		// A teardown close() owns the release.
+		(*txnHandle)->writesAbandoned.store(true, std::memory_order_relaxed);
 	}
 	NAPI_RETURN_UNDEFINED();
 }
@@ -697,10 +698,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 				txnHandle->releaseIntent();
 			}
 			if (state->status.IsColumnFamilyDropped()) {
-				txnHandle->writesAbandoned.store(true, std::memory_order_relaxed);
-				if (!txnHandle->lockedVTSlots.empty()) {
-					txnHandle->releaseIntent();
-				}
+				txnHandle->abandonStagedWrites();
 			}
 		}
 		if (state->status.ok()) {
@@ -1658,7 +1656,7 @@ napi_value Transaction::GetSync(napi_env env, napi_callback_info info) {
 	// Observe the slot after the snapshot is established; reused for the
 	// fast-path check and the post-read conditional CAS.
 	uint64_t vtObserved = 0;
-	if (hasExpectedVersion || wantsPopulate) {
+	if ((hasExpectedVersion || wantsPopulate) && !(*txnHandle)->readsBypassVerificationTable()) {
 		vtSlot = vtSlotFor((*txnHandle)->dbHandle, DBSettings::getInstance().getVerificationTableRaw(), keySlice);
 		if (vtSlot) vtObserved = vtSlot.load();
 	}

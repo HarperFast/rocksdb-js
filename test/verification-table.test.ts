@@ -1137,6 +1137,140 @@ describe('Verification Table', () => {
 			}
 		});
 
+		it('releases the count when a transaction abandons its writes, and not again when it aborts', async () => {
+			const conflict = expect.objectContaining({ code: 'ERR_VERIFICATION_TABLE_CONFLICT' });
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			const first = new Transaction(keepAlive.store);
+			const second = new Transaction(keepAlive.store);
+			try {
+				const key = Buffer.from('abandoned');
+				await plain.put(key, makeValue(1.5e12));
+				plain.putSync(key, makeValue(1.6e12), { transaction: first });
+				plain.putSync(key, makeValue(1.7e12), { transaction: second });
+				plain.close();
+
+				first.abandonWrites();
+				first.abandonWrites();
+				expect(() => first.commitSync()).toThrow(
+					expect.objectContaining({ code: 'ERR_WRITES_ABANDONED' })
+				);
+				first.abort();
+				expect(() => cached.open()).toThrow(conflict);
+
+				second.abandonWrites();
+				cached.open();
+				seed(cached, key, 1.5e12);
+				expect(() => second.commitSync()).toThrow(
+					expect.objectContaining({ code: 'ERR_WRITES_ABANDONED' })
+				);
+				expect(cached.getSync(key, { expectedVersion: 1.5e12 })).toBe(FRESH_VERSION_FLAG);
+
+				for (const expectedVersion of [1.5e12, 1.7e12]) {
+					const staged = cached.getSync(key, { transaction: second, expectedVersion });
+					expect(Buffer.from(staged).readDoubleBE(0)).toBe(1.7e12);
+				}
+				expect(cached.verifyVersion(key, 1.7e12)).toBe(false);
+				expect(cached.getSync(key, { expectedVersion: 1.5e12 })).toBe(FRESH_VERSION_FLAG);
+			} finally {
+				first.abort();
+				second.abort();
+				cached.close();
+				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it('keeps a transaction’s own abandoned writes out of the table', async () => {
+			const path = generateDBPath();
+			const db = new RocksDatabase(path, cachedOptions).open();
+			const txn = new Transaction(db.store);
+			try {
+				const key = Buffer.from('abandoned-own');
+				await db.put(key, makeValue(1.5e12));
+				seed(db, key, 1.5e12);
+				db.putSync(key, makeValue(1.6e12), { transaction: txn });
+				txn.abandonWrites();
+				expect(db.verifyVersion(key, 1.5e12)).toBe(false);
+
+				for (const expectedVersion of [1.5e12, 1.6e12]) {
+					const staged = txn.getBinarySync(key, { expectedVersion }) as Buffer;
+					expect(Buffer.from(staged).readDoubleBE(0)).toBe(1.6e12);
+				}
+				expect(db.verifyVersion(key, 1.6e12)).toBe(false);
+				const committed = db.getSync(key, { expectedVersion: 1.6e12 });
+				expect(Buffer.from(committed).readDoubleBE(0)).toBe(1.5e12);
+			} finally {
+				txn.abort();
+				db.close();
+			}
+		});
+
+		it('releases the count when a write to a dropped column family abandons the transaction', async () => {
+			const path = generateDBPath();
+			const keepAlive = new RocksDatabase(path).open();
+			const plain = new RocksDatabase(path, plainOptions).open();
+			const doomed = new RocksDatabase(path, { name: 'doomed', encoding: false }).open();
+			const stale = new RocksDatabase(path, { name: 'doomed', encoding: false }).open();
+			const cached = new RocksDatabase(path, cachedOptions);
+			const txn = new Transaction(keepAlive.store);
+			try {
+				plain.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: txn });
+				plain.close();
+				doomed.dropSync();
+				expect(() =>
+					stale.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: txn })
+				).toThrow(expect.objectContaining({ code: 'ERR_COLUMN_FAMILY_DROPPED' }));
+				cached.open();
+				expect(() => txn.commitSync()).toThrow(
+					expect.objectContaining({ code: 'ERR_WRITES_ABANDONED' })
+				);
+			} finally {
+				txn.abort();
+				cached.close();
+				stale.close();
+				doomed.close();
+				plain.close();
+				keepAlive.close();
+			}
+		});
+
+		it.each(['commit', 'commitSync'] as const)(
+			'releases the count when %s() is refused because a column family it wrote was dropped',
+			async (method) => {
+				const path = generateDBPath();
+				const keepAlive = new RocksDatabase(path).open();
+				const plain = new RocksDatabase(path, plainOptions).open();
+				const doomed = new RocksDatabase(path, { name: 'doomed', encoding: false }).open();
+				const stale = new RocksDatabase(path, { name: 'doomed', encoding: false }).open();
+				const cached = new RocksDatabase(path, cachedOptions);
+				const txn = new Transaction(keepAlive.store);
+				try {
+					plain.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: txn });
+					stale.putSync(Buffer.from('k'), makeValue(1.5e12), { transaction: txn });
+					plain.close();
+					doomed.dropSync();
+					const dropped = expect.objectContaining({ code: 'ERR_COLUMN_FAMILY_DROPPED' });
+					if (method === 'commit') {
+						await expect(txn.commit()).rejects.toEqual(dropped);
+					} else {
+						expect(() => txn.commitSync()).toThrow(dropped);
+					}
+					cached.open();
+					expect(cached.isOpen()).toBe(true);
+				} finally {
+					txn.abort();
+					cached.close();
+					stale.close();
+					doomed.close();
+					plain.close();
+					keepAlive.close();
+				}
+			}
+		);
+
 		it.skipIf(typeof globalThis.gc !== 'function')(
 			'allows opting in once a dropped transaction that staged through a closed handle is collected',
 			async () => {
@@ -1324,6 +1458,40 @@ describe('Verification Table', () => {
 				}
 				expectFreshWithoutRead(db, key);
 			}));
+
+		it.each([
+			['transaction', 'populateVersion'],
+			['database', 'populateVersion'],
+			['transaction', 'expectedVersion'],
+			['database', 'expectedVersion'],
+		] as const)(
+			'a %s-context read through an abandoned transaction with %s neither answers FRESH nor seeds the VT',
+			(context, option) =>
+				dbRunner({ dbOptions: [coldOptions] }, async ({ db }) => {
+					const key = Buffer.from(`async-abandoned-${context}-${option}`);
+					const value = valueWithHeader(version);
+					await db.put(key, value);
+					await db.flush();
+
+					const txn = new Transaction(db.store);
+					const options = (
+						option === 'populateVersion' ? { populateVersion: true } : { expectedVersion: version }
+					) as any;
+					try {
+						txn.abandonWrites();
+						const read = await readCold(() =>
+							context === 'transaction'
+								? txn.getBinary(key, options)
+								: db.getBinary(key, { ...options, transaction: txn })
+						);
+						expect(read).not.toBe(FRESH_VERSION_FLAG);
+						expect(read.equals(value)).toBe(true);
+						expect(db.verifyVersion(key, version)).toBe(false);
+					} finally {
+						txn.abort();
+					}
+				})
+		);
 
 		it("a transactional populateVersion read on another column family seeds that family's slot", () =>
 			dbRunner(

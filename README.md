@@ -1546,7 +1546,8 @@ read-your-own-writes — keep working until the transaction is aborted. Idempote
 `abort()`.
 
 Scope is VT intents only: RocksDB's own transaction locks (pessimistic mode) are still held until
-the transaction is aborted.
+the transaction is aborted. The transaction also stops blocking a `verificationTable: true` open of
+the column families it wrote to (see `verificationTable`).
 
 This is for a transaction kept open only for its outstanding read iterators after its writes were
 already committed elsewhere (e.g. replayed onto another transaction) — it lets the intents release
@@ -2324,7 +2325,8 @@ would make the slot disagree with what the next write invalidates.
 The freshness check works as follows:
 
 1. Pass `{ expectedVersion }` to `get()` / `getSync()`. If the slot currently records that version,
-   the read is skipped and the `FRESH_VERSION_FLAG` sentinel is returned.
+   the read is skipped and the `FRESH_VERSION_FLAG` sentinel is returned. A read through a
+   transaction whose writes were abandoned never answers FRESH and never seeds a slot.
 2. On a cold read, pass `{ populateVersion: true }` (or call `db.populateVersion()` afterward) to
    seed the slot with the version extracted from the value, so subsequent freshness checks hit.
 
@@ -2365,7 +2367,9 @@ it participates, that explicit `false` throws `ERR_VERIFICATION_TABLE_CONFLICT`.
 `verificationTable: true` throws `ERR_VERIFICATION_TABLE_CONFLICT` while a non-participating handle
 is open on that column family: one opened before any opt-in, or with an explicit `false`. After
 such a handle closes, the same error is thrown while a transaction that wrote to that column family
-through such a handle has not yet committed or aborted; retry the open once it finishes.
+through such a handle has not yet committed or aborted; retry the open once it finishes. A
+transaction whose writes were abandoned — by `txn.abandonWrites()`, or by a write or commit refused
+with `ERR_COLUMN_FAMILY_DROPPED` — can no longer commit, so it stops blocking the open at that point.
 Transactions and operations on other column families do not block it.
 
 ### `db.verifyVersion(key: Key, version: number): boolean`

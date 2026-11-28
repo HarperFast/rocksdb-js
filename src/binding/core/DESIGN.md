@@ -22,12 +22,17 @@ encoding of 0 is unpublishable and never matches.
 
 ## Who may publish
 
-A slot may hold a version only while every write of its key invalidates the slot. Two rules keep it:
+A slot may hold a version only while every write of its key invalidates the slot. Three rules keep
+it:
 
 - **Only an opted-in handle publishes from a read.** Writes lock a slot only through a
   `verificationTable: true` handle, so `vtPopulateIfSettled()` and the async get's
   `AsyncGetState::vtPublish` refuse to publish through any other handle. The explicit
   `populateVersion()` primitive is not gated; its caller owns that contract.
+- **An abandoned transaction's reads bypass the table.** Its staged writes stay readable, but its
+  intents are gone and its writer counts no longer hold an opt-in off, so a read could publish a
+  version that never commits, or answer FRESH over its own staged write
+  (`TransactionHandle::readsBypassVerificationTable()`).
 - **The table exists before an opted-in handle can write.** Writers never create it:
   `TransactionHandle::lockVTSlot()` and `Database::PutSync` record no write intent when it is
   absent, and a read that created it later could publish the committed version that an earlier
@@ -92,13 +97,18 @@ agree across every handle on a column family once any of them participates.
   straight back): `resetTransaction()`, or the `close()` that wins the `closed` gate, after its
   async-work drain; a later `close()` waits for that one (`closeProgress`), and a GC orphan close
   runs the same body. A commit still running therefore keeps the count, and so does a transaction
-  that is closing on another thread. Staging through a handle is sequenced before that handle's
-  `close()` on its owner thread, so `OpenDB` reads the handle count first and the writer count
-  second. The count (`NonVerifyingWriterCount`) is its own allocation and doubles as its reference
-  count: holding the `ColumnFamilyDescriptor` instead would let a transaction outliving its database
-  destroy the column-family handle after it. Activity on other
-  column families never blocks the switch. Once a non-participating handle has detached
-  (`nonVerifyingHandleDetached`), the switch also settles every slot, since that handle could seed a
-  slot (`populateVersion()`) that its own writes left stale.
+  that is closing on another thread. The one earlier release is `abandonStagedWrites()`:
+  `abandonWrites()`, a write refused for a dropped family, or a commit refused at admission for one
+  sets `writesAbandoned`, which bars every later write and commit, so the staged writes can never
+  land. It runs only where `close()` and `resetTransaction()` are excluded (an admitted call, or
+  the commit's registered async work); an abort that defers to a teardown close leaves the release
+  to it. A commit that fails for any other reason stays committable and keeps the count. Staging
+  through a handle is sequenced before that handle's `close()` on its owner thread, so `OpenDB`
+  reads the handle count first and the writer count second. The count (`NonVerifyingWriterCount`)
+  is its own allocation and doubles as its reference count: holding the `ColumnFamilyDescriptor`
+  instead would let a transaction outliving its database destroy the column-family handle after it.
+  Activity on other column families never blocks the switch. Once a non-participating handle has
+  detached (`nonVerifyingHandleDetached`), the switch also settles every slot, since that handle
+  could seed a slot (`populateVersion()`) that its own writes left stale.
 
 `test/verification-table.test.ts` (`participation is per column family`) covers both.

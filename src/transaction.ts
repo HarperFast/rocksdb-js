@@ -152,7 +152,8 @@ export class Transaction extends DBI {
 	 * transaction kept open only for its outstanding read iterators after the
 	 * writes were replayed onto another transaction: otherwise other writers'
 	 * coordinated-retry commits park on those intents until it is aborted.
-	 * Reads keep working, including read-your-own-writes.
+	 * Reads keep working, including read-your-own-writes. It also stops
+	 * blocking a `verificationTable: true` open of the families it wrote to.
 	 */
 	abandonWrites(): void {
 		this.#txn.abandonWrites();

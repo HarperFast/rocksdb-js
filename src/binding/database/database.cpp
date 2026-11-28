@@ -2227,7 +2227,7 @@ napi_value Database::GetSync(napi_env env, napi_callback_info info) {
 	// both the fast-path check and the post-read conditional CAS, so the
 	// populate only succeeds if nothing changed the slot across the read.
 	uint64_t vtObserved = 0;
-	if (hasExpectedVersion || wantsPopulate) {
+	if ((hasExpectedVersion || wantsPopulate) && !(txnHandle && txnHandle->readsBypassVerificationTable())) {
 		vtSlot = vtSlotFor(*dbHandle, DBSettings::getInstance().getVerificationTable(), keySlice);
 		if (vtSlot) vtObserved = vtSlot.load();
 	}
