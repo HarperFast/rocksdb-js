@@ -243,6 +243,13 @@ read-only opens because both modes share the physical path lifecycle. Calling `c
 `destroy()` from JavaScript that runs inside one of the same database's own synchronous calls (an
 options getter, for example) throws instead.
 
+A transaction commit dispatched before its handle closes still commits while another handle keeps
+the database open. One with transaction-log entries that has not yet started its log write is
+refused instead, because a conflict after that write could not be retried through the closed
+handle. When the last handle closes, the default commit mode refuses a commit whose log stage has
+not started when the close begins, while the legacy mode (`ROCKSDB_JS_COMMIT_THREAD=0`) commits one without
+log entries after `close()` returns.
+
 ```typescript
 const db = RocksDatabase.open('foo');
 db.close();

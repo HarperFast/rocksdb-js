@@ -116,7 +116,7 @@ bool DBIteratorHandle::closeIfOpen() {
 	bool countUnderflow = false;
 	{
 		std::lock_guard<std::mutex> lock(this->iteratorMutex);
-		DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p dbDescriptor=%p\n", this, this->dbHandle.get(), this->dbHandle->descriptor.get());
+		DEBUG_LOG("%p DBIteratorHandle::close dbHandle=%p\n", this, this->dbHandle.get());
 		if (!this->iterator) return false;
 		this->iterator->Reset();
 		this->iterator.reset();

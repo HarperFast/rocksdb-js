@@ -27,10 +27,49 @@ function runFixture(args: string[], env: Record<string, string> = {}): Record<st
 	}
 }
 
+// The legacy cases hold its one libuv thread with UV_THREADPOOL_SIZE=1. Bun runs N-API async work on
+// its own pool, which ignores that, so the second commit starts before the close there.
+const queuedModes = process.versions.bun ? ['1'] : ['0', '1'];
+
 describe('commitThreads', () => {
 	it('validates the setting and starts threads only for overlapping commits', () => {
 		runFixture(['validate']);
 	});
+
+	// Not ROCKSDB_JS_COMMIT_THREAD=2: its log stage can run before the handle closes.
+	it.each(queuedModes)(
+		'commits a queued commit whose handle closed while another handle is open (ROCKSDB_JS_COMMIT_THREAD=%s)',
+		(commitThread) => {
+			runFixture(['close-queued'], {
+				ROCKSDB_JS_COMMIT_THREAD: commitThread,
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
+				UV_THREADPOOL_SIZE: '1',
+			});
+		}
+	);
+
+	// Not mode 2: its log lane can write the batch before the handle closes.
+	it.each(queuedModes)(
+		'refuses a queued logged commit whose handle closed before it could conflict (ROCKSDB_JS_COMMIT_THREAD=%s)',
+		(commitThread) => {
+			runFixture(['close-queued-log-conflict'], {
+				ROCKSDB_JS_COMMIT_THREAD: commitThread,
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
+				UV_THREADPOOL_SIZE: '1',
+			});
+		}
+	);
+
+	it.each(queuedModes)(
+		'settles a queued commit whose handle was the last one open (ROCKSDB_JS_COMMIT_THREAD=%s)',
+		(commitThread) => {
+			runFixture(['close-queued-last'], {
+				ROCKSDB_JS_COMMIT_THREAD: commitThread,
+				ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS: '500',
+				UV_THREADPOOL_SIZE: '1',
+			});
+		}
+	);
 
 	describe.each(['1', '2'])('ROCKSDB_JS_COMMIT_THREAD=%s', (commitThread) => {
 		it('runs one commit at a time with one thread', () => {

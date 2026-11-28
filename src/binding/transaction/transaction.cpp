@@ -558,14 +558,6 @@ static void rejectRetryNowSetupFailure(
 	}
 	state->callReject(error);
 }
-static rocksdb::Status admitCommit(TransactionCommitState* state, const std::shared_ptr<TransactionHandle>& txnHandle) {
-	DBDescriptor* descriptor = state->operationDescriptor;
-	if (!descriptor) {
-		return rocksdb::Status::Aborted("Database closed during transaction commit operation");
-	}
-	return state->claim.admit(txnHandle->touchedColumnFamilies, *descriptor);
-}
-
 /** An attempt behind an older transaction's write intent (transaction/DESIGN.md, "Write-intent refusal"). */
 static const rocksdb::Status& intentRefusal() {
 	static const rocksdb::Status status =
@@ -623,12 +615,20 @@ static void executeLogWork(TransactionCommitState* state) {
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with txnHandle cancelled\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
 	} else if (!txnHandle->dbHandle) {
+		// Defensive: close() resets dbHandle only after draining this commit's registration.
 		DEBUG_LOG("%p Transaction::Commit ERROR: Called with nullptr dbHandle\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-	} else if (!txnHandle->dbHandle->opened()) {
-		DEBUG_LOG("%p Transaction::Commit ERROR: Called with dbHandle not opened\n", txnHandle.get());
+	} else if (!state->operationDescriptor || state->operationDescriptor->isClosing()) {
+		// The commit's descriptor operation keeps this alive; `dbHandle->descriptor` is owner-thread-only.
+		DEBUG_LOG("%p Transaction::Commit ERROR: Called with database closing\n", txnHandle.get());
 		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
-	} else if (rocksdb::Status admission = admitCommit(state, txnHandle); !admission.ok()) {
+	} else if (txnHandle->logEntryBatch && txnHandle->dbHandle->isCancelled()) {
+		// A conflict after the log write could not be retried through the closed handle, stranding the
+		// batch; refuse before writing it.
+		DEBUG_LOG("%p Transaction::Commit ERROR: Called with log entries and handle closed\n", txnHandle.get());
+		state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
+	} else if (rocksdb::Status admission = state->claim.admit(txnHandle->touchedColumnFamilies, *state->operationDescriptor);
+		!admission.ok()) {
 		DEBUG_LOG("%p Transaction::Commit refused at admission for transaction %llu: %s\n",
 			txnHandle.get(), (unsigned long long)txnHandle->id, admission.ToString().c_str());
 		state->status = admission;
@@ -676,10 +676,6 @@ static void executeLogWork(TransactionCommitState* state) {
 static void executeCommitWork(TransactionCommitState* state) {
 	auto txnHandle = state->handle;
 	DBDescriptor* descriptor = state->operationDescriptor;
-	// The log stage already failed the commit on any invalid-handle condition,
-	// but the handle can also be torn out between the stages (e.g. a timed-out
-	// DBHandle::close() resetting the descriptor mid-pipeline). Never let a
-	// commit that was skipped here resolve as success.
 	if (!txnHandle || !descriptor) {
 		if (state->status.ok()) {
 			state->status = rocksdb::Status::Aborted("Database closed during transaction commit operation");
@@ -801,6 +797,7 @@ static void executeCommitWork(TransactionCommitState* state) {
 			// history forever (harper#1695) — converges because the re-run reads and validates
 			// against current state instead. The caller must re-run the transaction body so the
 			// reads are re-taken on the new snapshot (db.transaction()'s retry loop does this).
+			// The caller re-runs the body through this handle, so one still closed ends the commit.
 			if (txnHandle->dbHandle && !txnHandle->dbHandle->isCancelled()) {
 				txnHandle->resetTransaction(descriptor);
 			} else {
@@ -1205,7 +1202,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 	}
 
 	const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
-	if (dbHandle) {
+	if (dbHandle && (*txnHandle)->isOwningDescriptor(dbHandle->ownerDescriptor())) {
 		descriptor = dbHandle->ownerDescriptor();
 	}
 	if (descriptor) {
@@ -1396,7 +1393,10 @@ napi_value Transaction::CommitSync(napi_env env, napi_callback_info info) {
 	bool committed;
 	{
 		// Held through the commit; released, with the descriptor pin, before any JavaScript runs.
-		OperationGuard operationGuard((*txnHandle)->dbHandle ? (*txnHandle)->dbHandle->ownerDescriptor() : nullptr);
+		const std::shared_ptr<DBHandle>& dbHandle = (*txnHandle)->dbHandle;
+		OperationGuard operationGuard(
+			dbHandle && (*txnHandle)->isOwningDescriptor(dbHandle->ownerDescriptor()) ? dbHandle->ownerDescriptor() : nullptr
+		);
 		DBDescriptor* descriptor = operationGuard.descriptor.get();
 		const bool holdsOperation = descriptor && !descriptor->isClosing();
 		if (!holdsOperation) {

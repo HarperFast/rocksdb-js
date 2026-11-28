@@ -1,5 +1,6 @@
 // commitThreads is a process-wide setting applied at open, so each case runs in a fresh process.
-import { RocksDatabase, shutdown, Transaction } from '../../src/index.ts';
+import { registryStatus, RocksDatabase, shutdown, Transaction } from '../../src/index.ts';
+import { isTransactionCommitExecuteDelayedForTesting } from '../../src/load-binding.ts';
 import assert from 'node:assert/strict';
 import { stat } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
@@ -8,6 +9,20 @@ const [path, mode, threadsArg] = process.argv.slice(2);
 
 function commitThreadsStat(db: RocksDatabase): number {
 	return db.getStat('commitPipeline.commitThreads') as number;
+}
+
+// Waits until `commit` holds the only commit thread in ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, past its
+// log stage.
+async function untilCommitDelayed(commit: Promise<unknown>): Promise<void> {
+	let settled = false;
+	void commit.then(
+		() => (settled = true),
+		() => (settled = true)
+	);
+	while (!isTransactionCommitExecuteDelayedForTesting()) {
+		assert.ok(!settled, 'the first commit settled before reaching its execute delay');
+		await new Promise((resolve) => setImmediate(resolve));
+	}
 }
 
 try {
@@ -127,6 +142,107 @@ try {
 		await Promise.all(commits);
 		db.close();
 		console.log(JSON.stringify({ ok: true, statMs }));
+	} else if (mode === 'close-queued') {
+		// The first commit holds the only thread (commitThreads: 1, or UV_THREADPOOL_SIZE=1 for the
+		// legacy path) in ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS, so the second is still queued when its
+		// handle closes; another handle keeps the database open.
+		RocksDatabase.config({ commitThreads: 1 });
+		const db = RocksDatabase.open(path);
+		const keeper = RocksDatabase.open(path);
+		const first = new Transaction(keeper.store);
+		first.putSync('first', 1);
+		const firstCommit = first.commit();
+		await untilCommitDelayed(firstCommit);
+		const queued = new Transaction(db.store);
+		queued.putSync('queued', 2);
+		const queuedCommit = queued.commit();
+		db.close();
+		await Promise.all([firstCommit, queuedCommit]);
+		assert.equal(keeper.getSync('queued'), 2);
+		keeper.close();
+		console.log(JSON.stringify({ ok: true }));
+	} else if (mode === 'close-queued-last') {
+		// As close-queued, but the closing handle is the last one. A lane commit is refused: the close
+		// runs while it is queued. A legacy commit pins the descriptor, which defers the close until
+		// that commit completes, so it commits.
+		const legacy = process.env.ROCKSDB_JS_COMMIT_THREAD === '0';
+		RocksDatabase.config({ commitThreads: 1 });
+		const db = RocksDatabase.open(path);
+		const first = new Transaction(db.store);
+		first.putSync('first', 1);
+		const firstCommit = first.commit().catch((error) => {
+			// The after-commit notification can find the database closed; the write is checked below.
+			if (!/Database (not open|is closing)/.test(String(error))) throw error;
+		});
+		await untilCommitDelayed(firstCommit);
+		const queued = new Transaction(db.store);
+		queued.putSync('queued', 2);
+		const queuedCommit = queued.commit();
+		// Sampled before the close, which waits out both commits here. A JS-thread stall past the delay
+		// lets the queued commit run before the close.
+		const raced = !isTransactionCommitExecuteDelayedForTesting();
+		db.close();
+		await firstCommit;
+		const committed = legacy
+			? (await queuedCommit, true)
+			: await queuedCommit.then(
+					() => {
+						assert.ok(raced, 'the queued commit committed although the close came first');
+						return true;
+					},
+					(error) => {
+						assert.match(String(error), /Database closed during transaction commit operation/);
+						return false;
+					}
+				);
+		assert.ok(
+			!registryStatus().some((entry) => entry.path === path),
+			'the last-handle close left the database open'
+		);
+		const reopened = RocksDatabase.open(path);
+		assert.equal(reopened.getSync('first'), 1);
+		assert.equal(reopened.getSync('queued'), committed ? 2 : undefined);
+		reopened.close();
+		console.log(JSON.stringify({ ok: true, raced }));
+	} else if (mode === 'close-queued-log-conflict') {
+		// As close-queued, but the queued commit has a log entry and conflicts. It cannot be retried
+		// through its closed handle, so it must be refused before writing the batch.
+		RocksDatabase.config({ commitThreads: 1 });
+		const db = RocksDatabase.open(path);
+		const keeper = RocksDatabase.open(path);
+		keeper.putSync('k', 0);
+		const queued = new Transaction(db.store);
+		queued.getSync('k');
+		queued.putSync('k', 'queued');
+		db.useLog('conflict').addEntry(Buffer.from('queued'), queued.id);
+		const first = new Transaction(keeper.store);
+		first.putSync('k', 'first');
+		const firstCommit = first.commit();
+		await untilCommitDelayed(firstCommit);
+		const queuedCommit = queued.commit();
+		db.close();
+		// This close does not wait for commits, so a delay still running proves the queued commit had
+		// not started when its handle closed. Without that proof, it may have conflicted while open.
+		const raced = !isTransactionCommitExecuteDelayedForTesting();
+		await firstCommit;
+		const error = await queuedCommit.then(
+			() => assert.fail('the queued commit committed'),
+			(error: any) => error
+		);
+		assert.match(
+			String(error),
+			raced
+				? /Database closed during transaction commit operation|busy/i
+				: /Database closed during transaction commit operation/
+		);
+		if (!raced) {
+			assert.equal(error.hasLog, false);
+			queued.abort();
+			assert.equal([...keeper.useLog('conflict').query({ start: 0 })].length, 0);
+		}
+		assert.equal(keeper.getSync('k'), 'first');
+		keeper.close();
+		console.log(JSON.stringify({ ok: true, raced }));
 	} else {
 		throw new Error(`unknown mode ${mode}`);
 	}

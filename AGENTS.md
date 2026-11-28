@@ -280,7 +280,7 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
 - `ROCKSDB_JS_COMMIT_DELAY_MS` - Test-only: delay on the commit thread before
   each completion callback (widens teardown race windows)
 - `ROCKSDB_JS_TXN_CLOSE_DRAIN_LATCH` - Child-process test only: park the first transaction close
-  that starts on an open database, after its drain and before it deletes the RocksDB transaction,
+  that starts on an open database on its database handle's owner thread, after its drain and before it deletes the RocksDB transaction,
   until a foreign shutdown either finds an operation in flight at its drain or reaches the close
   through its closables sweep (`isTransactionCloseAwaitedByShutdownForTesting()`). A sweep that
   returns with the close still parked, or still unfinished, is reported instead of destroying the

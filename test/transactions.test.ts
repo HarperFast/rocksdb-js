@@ -1004,3 +1004,30 @@ describe('Optimistic and Pessimistic Instances', () => {
 			}
 		));
 });
+
+describe('Commit after the handle reopened on another database', () => {
+	for (const sync of [false, true]) {
+		it(`refuses ${sync ? 'a synchronous' : 'an asynchronous'} commit`, () => {
+			const otherPath = generateDBPath();
+			return dbRunner(
+				{ dbOptions: [{}, {}, { path: otherPath }] },
+				async ({ db, dbPath }, { db: keeper }, { db: other }) => {
+					const txn = new Transaction(db.store);
+					txn.putSync('k', 'v');
+					db.close();
+					db.store.path = otherPath;
+					db.open();
+					const message = /Database closed during transaction commit operation/;
+					if (sync) {
+						expect(() => txn.commitSync()).toThrow(message);
+					} else {
+						await expect(txn.commit()).rejects.toThrow(message);
+					}
+					expect(keeper.getSync('k')).toBeUndefined();
+					expect(other.getSync('k')).toBeUndefined();
+					expect(dbPath).not.toBe(otherPath);
+				}
+			);
+		});
+	}
+});
