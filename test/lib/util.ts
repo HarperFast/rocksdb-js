@@ -186,10 +186,16 @@ const nodeExecutable =
 export function runFixture(
 	fixture: string,
 	dbPath: string,
-	{ env, killsItself = false }: { env?: NodeJS.ProcessEnv; killsItself?: boolean } = {}
+	{
+		args = [],
+		env,
+		killsItself = false,
+	}: { args?: string[]; env?: NodeJS.ProcessEnv; killsItself?: boolean } = {}
 ): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(nodeExecutable, [fixture, dbPath], { env: { ...process.env, ...env } });
+		const child = spawn(nodeExecutable, [fixture, dbPath, ...args], {
+			env: { ...process.env, ...env },
+		});
 		let output = '';
 		child.stdout.on('data', (chunk) => (output += chunk));
 		child.stderr.on('data', (chunk) => (output += chunk));

@@ -13,10 +13,7 @@ db.putSync('existing', 'value');
 
 const txn = new Transaction(db.store);
 txn.putSync('k', 'committed');
-const settled = txn.commit().catch((error) => {
-	// The after-commit notification can find the database closed; the write is checked below.
-	if (!/Database (not open|is closing)/.test(String(error))) throw error;
-});
+const settled = txn.commit();
 // Shut down once the commit has executed, while its completion is still queued behind this turn.
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 const deadline = Date.now() + 10_000;

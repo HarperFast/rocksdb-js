@@ -12,12 +12,13 @@ import { isMainThread, parentPort, Worker, workerData } from 'node:worker_thread
 // ROCKSDB_JS_CLOSE_FAILURE stops shutdown() before it closes the transaction, leaving only the
 // descriptor closing.
 if (isMainThread) {
-	const [path] = process.argv.slice(2);
+	const [path, family] = process.argv.slice(2);
 	assert(path);
+	assert(family === undefined || family === 'dropped');
 	const closeFails = process.env.ROCKSDB_JS_CLOSE_FAILURE === '1';
 	const worker = new Worker(
 		createWorkerBootstrapScript('./test/fixtures/fork-commit-sync-closing.mts'),
-		{ eval: true, workerData: { path } }
+		{ eval: true, workerData: { path, dropped: family === 'dropped' } }
 	);
 	try {
 		assert.deepEqual(await once(worker, 'message'), ['ready']);
@@ -58,6 +59,11 @@ if (isMainThread) {
 } else {
 	const db = RocksDatabase.open(workerData.path);
 	const txn = new Transaction(db.store);
+	if (workerData.dropped) {
+		const doomed = RocksDatabase.open(workerData.path, { name: 'doomed' });
+		doomed.putSync('k', 'v', { transaction: txn });
+		RocksDatabase.open(workerData.path, { name: 'doomed' }).dropSync();
+	}
 	parentPort!.postMessage('ready');
 	await once(parentPort!, 'message');
 	try {
