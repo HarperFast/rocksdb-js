@@ -225,7 +225,8 @@ serialize on the descriptor for dispatch and accounting. A dying env's tsfn is
 released under the same completion mutex from the module env-cleanup hook
 (`DBRegistry::ReleaseCommitCompletionsByEnv`) — the same env-teardown discipline
 as `EventEmitter::notify` above. Registry removal holds `commitMutex` through
-completion release (registry → completion is the only nested lock order): removing
+completion release (registry → completion is the only nested lock order, plus the leaf env-liveness
+mutex a completion takes when it creates its TSFN): removing
 an entry before releasing its TSFN lets concurrent env cleanup miss that entry and
 return before the TSFN is safe. A retained completion object does not pin the Node
 env; its terminal closed flag prevents a delayed registration or dispatch from
@@ -290,6 +291,12 @@ larger cleanup; legacy mode stays as the documented operational escape hatch.
   the enqueuing thread, and a **count** of commit completions to drop as if their env were gone.
   Together they drive the commit thread's env-gone fallback inline on the JS thread
   (`test/fixtures/fork-commit-async-shutdown.mts`). Snapshotted in `initializeTestSeams()`
+- `ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE` / `ROCKSDB_JS_COMMIT_DISPATCH_CALL_FAILURE_SKIP` -
+  Test-only: a **count** of completion tsfn calls to fail with `napi_generic_failure` while the env
+  is alive, after a **count** of calls that succeed, driving the retired-completion delivery path
+  (`test/fixtures/fork-commit-dispatch-call-failure.mts`). Not combinable with
+  `ROCKSDB_JS_COMMIT_DISPATCH_FAILURE`, whose drop skips the accounting that releases a retired
+  completion. Snapshotted in `initializeTestSeams()`
 - `ROCKSDB_JS_COMMIT_EXECUTE_DELAY_MS` / `ROCKSDB_JS_TXN_GET_DELAY_MS` - Test-only delays
   immediately before a native transaction commit (while its async work and descriptor operation
   remain registered, widening close-vs-execute race windows) and before a transaction's

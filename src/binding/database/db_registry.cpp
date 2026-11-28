@@ -1547,6 +1547,7 @@ void DBRegistry::RemoveListenersByEnv(napi_env env) {
  * takes the descriptor registry mutex, then the completion mutex).
  */
 void DBRegistry::ReleaseCommitCompletionsByEnv(napi_env env) {
+	DBDescriptor::CommitCompletion::markEnvGone(env);
 	ForEachDescriptor([env](DBDescriptor& descriptor) { descriptor.releaseCommitCompletionsByEnv(env); });
 }
 

@@ -421,7 +421,7 @@ struct ColumnFamilyCommitClaim final {
  */
 static void purgeAfterCommit(std::shared_ptr<DBDescriptor> descriptor) noexcept;
 
-struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>> {
+struct TransactionCommitState final : BaseAsyncState<std::shared_ptr<TransactionHandle>>, DBDescriptor::CommitCompletion::Item {
 	bool hasLog;
 	std::shared_ptr<DBDescriptor::CommitCompletion> completion;
 	ColumnFamilyCommitClaim claim;
@@ -1040,12 +1040,13 @@ static void completeCommitWork(napi_env env, TransactionCommitState* state) {
 }
 
 /**
- * TSFN callback: completes a commit dispatched to the commit thread on the
+ * TSFN callback, and the tsfn finalizer's delivery of a retired completion's
+ * commits: completes a commit dispatched to the commit thread on the
  * originating JS thread, accounts the completion (unref-ing the tsfn when the
  * env goes idle), and frees the state.
  */
 static void commitCompletionCallJs(napi_env env, napi_value jsCallback, void* context, void* data) {
-	TransactionCommitState* state = reinterpret_cast<TransactionCommitState*>(data);
+	TransactionCommitState* state = static_cast<TransactionCommitState*>(static_cast<DBDescriptor::CommitCompletion::Item*>(data));
 	std::shared_ptr<DBDescriptor> descriptor = state->descriptor.lock();
 
 	// env is nullptr when the env is tearing down; nothing left to resolve and
@@ -1256,7 +1257,7 @@ napi_value Transaction::Commit(napi_env env, napi_callback_info info) {
 				if (unsigned delay = commitDelayMs()) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(delay));
 				}
-				if (!state->completion->dispatch(state)) {
+				if (state->completion->dispatch(state) == DBDescriptor::CommitCompletion::Dispatch::EnvGone) {
 					// Env torn down (e.g. worker terminate) — the completion has
 					// nowhere to run. Close the txn handle (cross-thread safe) so
 					// the shared descriptor doesn't retain the transaction, then

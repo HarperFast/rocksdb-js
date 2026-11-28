@@ -618,35 +618,66 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 	 * does NOT close this window (env teardown does not honor the tsfn-level
 	 * acquire count).
 	 */
-	struct CommitCompletion {
+	struct CommitCompletion : std::enable_shared_from_this<CommitCompletion> {
+		/** The tsfn's data; links a commit into `undelivered`. */
+		struct Item {
+			Item* nextUndelivered = nullptr;
+		};
+
+		enum class Dispatch {
+			Delivered,
+			// The tsfn finalizer delivers it.
+			Undelivered,
+			// The caller drops the item.
+			EnvGone
+		};
+
+		enum class Registration {
+			Registered,
+			Closed,
+			Retired
+		};
+
 		// Guards this environment's TSFN, pending count, and closed flag.
 		// N-API calls and env-cleanup release take the same lock: shared_ptr
 		// pins this object, not the Node env/TSFN, and TSFN acquire counts do
 		// not prevent env teardown. Other environments have their own lock.
 		std::mutex completionStateMutex;
 		napi_threadsafe_function tsfn = nullptr;
+		napi_threadsafe_function_call_js callJs = nullptr;
 		// In-flight commits for this env; drives ref/unref so the event loop is
 		// kept alive until completions run, but can still exit when idle.
 		uint32_t pending = 0;
 		// Terminal even while a DBHandle or in-flight commit retains this object:
 		// a cached registration must never recreate a released env's TSFN.
 		bool closed = false;
+		// A tsfn call failed while the env was alive (database/DESIGN.md,
+		// "Commit threads").
+		bool retired = false;
+		// Cleared by the env's cleanup hook; the finalizer must not call into
+		// JS after it.
+		std::shared_ptr<std::atomic<bool>> envAlive;
+		Item* undelivered = nullptr;
+		uint32_t undeliveredCount = 0;
 
 		/**
 		 * JS thread. Ensures a completion tsfn exists (created with `callJs`)
 		 * and accounts a newly dispatched commit, ref-ing the tsfn as the env
 		 * goes from idle to busy. Call on the env's own JS thread before
-		 * enqueuing the commit. Sets `closed` without registering when this
+		 * enqueuing the commit. Reports `Closed` without registering when this
 		 * completion has been released — the caller must then reject the commit.
 		 */
-		napi_status registerCommit(napi_env env, napi_threadsafe_function_call_js callJs, bool& closed);
+		napi_status registerCommit(
+			napi_env env,
+			napi_threadsafe_function_call_js callJs,
+			Registration& registration
+		);
 
 		/**
-		 * Commit thread. Delivers a completed commit's `state` to its originating
-		 * env. Returns false if the tsfn is gone (env torn down or released),
-		 * or the N-API call fails — the caller then drops the state.
+		 * Commit thread. Delivers a completed commit's `item` to its
+		 * originating env, directly or through the tsfn finalizer.
 		 */
-		bool dispatch(void* state);
+		Dispatch dispatch(Item* item);
 
 		/**
 		 * JS thread (completion callback). Accounts a finished commit, unref-ing
@@ -661,12 +692,30 @@ struct DBDescriptor final : public std::enable_shared_from_this<DBDescriptor> {
 		 * still delivered before finalization (napi_tsfn_release, not abort).
 		 */
 		void release();
+
+		bool isClosed();
+
+		/**
+		 * Module env-cleanup hook. Process-wide, so it reaches completions that
+		 * no descriptor still tracks.
+		 */
+		static void markEnvGone(napi_env env);
+
+	private:
+		static void finalize(napi_env env, void* data, void* hint);
+		void releaseTsfnLocked();
+		void releaseRetiredIfDrainedLocked();
 	};
-	// Registry -> completion is the only nested lock order. Keep entries
+	// Registry -> completion is the only nested lock order between these;
+	// registerCommit() also takes the process-wide env-liveness mutex under a
+	// completion's, and that one is a leaf. Keep entries
 	// reachable until release finishes: otherwise env cleanup could miss a
 	// detached entry and let Node free its TSFN before the releasing thread.
 	std::mutex commitMutex;
 	std::unordered_map<napi_env, std::shared_ptr<CommitCompletion>> commitCompletions;
+	// Replaced retired completions, until each is closed: env cleanup and
+	// close must still release them.
+	std::vector<std::pair<napi_env, std::shared_ptr<CommitCompletion>>> retiredCommitCompletions;
 	// Set (under commitMutex) by finishClose()'s release pass. Blocks any
 	// later registry lookup from re-creating a tsfn that would never be
 	// released (which would pin that env's event loop forever); a commit

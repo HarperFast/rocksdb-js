@@ -21,9 +21,11 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <new>
 #include <optional>
 #include <sstream>
 #include <system_error>
@@ -788,6 +790,10 @@ void DBDescriptor::finishClose(bool destroying) {
 				completion->release();
 			}
 			this->commitCompletions.clear();
+			for (auto& [env, completion] : this->retiredCommitCompletions) {
+				completion->release();
+			}
+			this->retiredCommitCompletions.clear();
 		}
 		this->closeWorkersStopped = true;
 	}
@@ -970,42 +976,94 @@ void DBDescriptor::finishClose(bool destroying) {
 	}
 }
 
+namespace {
+struct CommitEnvLiveness {
+	std::mutex mutex;
+	std::unordered_map<napi_env, std::shared_ptr<std::atomic<bool>>> alive;
+};
+
+// Never freed: a worker can still be registering a commit while Bun runs
+// static destructors (see DBRegistry::instance).
+CommitEnvLiveness& commitEnvLiveness() {
+	static CommitEnvLiveness* liveness = new CommitEnvLiveness();
+	return *liveness;
+}
+
+std::shared_ptr<std::atomic<bool>> commitEnvAliveFlag(napi_env env) {
+	CommitEnvLiveness& liveness = commitEnvLiveness();
+	std::lock_guard<std::mutex> lock(liveness.mutex);
+	auto& flag = liveness.alive[env];
+	if (!flag) {
+		flag = std::make_shared<std::atomic<bool>>(true);
+	}
+	return flag;
+}
+}
+
 napi_status DBDescriptor::registerCommitCompletion(
 	napi_env env,
 	napi_threadsafe_function_call_js callJs,
 	bool& closed,
 	std::shared_ptr<CommitCompletion>& completion
 ) {
-	if (!completion) {
-		std::lock_guard<std::mutex> lock(this->commitMutex);
-		closed = this->commitCompletionsClosed;
-		if (closed) {
-			return napi_ok;
+	std::shared_ptr<CommitCompletion> retired;
+	for (;;) {
+		if (!completion) {
+			std::lock_guard<std::mutex> lock(this->commitMutex);
+			closed = this->commitCompletionsClosed;
+			if (closed) {
+				return napi_ok;
+			}
+			auto& entry = this->commitCompletions[env];
+			if (!entry) {
+				entry = std::make_shared<CommitCompletion>();
+			} else if (entry == retired) {
+				std::erase_if(this->retiredCommitCompletions, [](const auto& item) {
+					return item.second->isClosed();
+				});
+				this->retiredCommitCompletions.emplace_back(env, std::move(entry));
+				entry = std::make_shared<CommitCompletion>();
+			}
+			completion = entry;
 		}
-		auto& entry = this->commitCompletions[env];
-		if (!entry) {
-			entry = std::make_shared<CommitCompletion>();
+		CommitCompletion::Registration registration;
+		napi_status status = completion->registerCommit(env, callJs, registration);
+		if (registration != CommitCompletion::Registration::Retired) {
+			closed = registration == CommitCompletion::Registration::Closed;
+			return status;
 		}
-		completion = entry;
+		retired = std::move(completion);
 	}
-	return completion->registerCommit(env, callJs, closed);
 }
 
 napi_status DBDescriptor::CommitCompletion::registerCommit(
 	napi_env env,
 	napi_threadsafe_function_call_js callJs,
-	bool& closed
+	Registration& registration
 ) {
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
-	closed = this->closed;
-	if (closed) {
+	if (this->retired) {
+		registration = Registration::Retired;
 		return napi_ok;
 	}
+	if (this->closed) {
+		registration = Registration::Closed;
+		return napi_ok;
+	}
+	registration = Registration::Registered;
 	if (this->tsfn == nullptr) {
 		napi_value resourceName;
 		napi_status status = ::napi_create_string_utf8(env, "rocksdb.commit", NAPI_AUTO_LENGTH, &resourceName);
 		if (status != napi_ok) {
 			return status;
+		}
+		if (!this->envAlive) {
+			this->envAlive = commitEnvAliveFlag(env);
+		}
+		// Keeps this object alive until the finalizer has delivered `undelivered`.
+		auto* self = new (std::nothrow) std::shared_ptr<CommitCompletion>(this->shared_from_this());
+		if (self == nullptr) {
+			return napi_generic_failure;
 		}
 		// Created ref'd: this first pending commit must keep the event loop
 		// alive until its completion runs.
@@ -1016,15 +1074,17 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 			resourceName,
 			0,         // unlimited queue
 			1,         // initial thread count: the commit lane
-			nullptr,   // finalize data
-			nullptr,   // finalize cb
+			self,      // finalize data
+			CommitCompletion::finalize,
 			nullptr,   // context
 			callJs,
 			&this->tsfn
 		);
 		if (status != napi_ok) {
+			delete self;
 			return status;
 		}
+		this->callJs = callJs;
 	} else if (this->pending == 0) {
 		// Waking from idle: keep the event loop alive until completion.
 		napi_status status = ::napi_ref_threadsafe_function(env, this->tsfn);
@@ -1036,21 +1096,47 @@ napi_status DBDescriptor::CommitCompletion::registerCommit(
 	return napi_ok;
 }
 
-bool DBDescriptor::CommitCompletion::dispatch(void* state) {
+DBDescriptor::CommitCompletion::Dispatch DBDescriptor::CommitCompletion::dispatch(Item* item) {
 	if (testConsumeCommitDispatchFailure()) {
-		return false;
+		return Dispatch::EnvGone;
 	}
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
 	if (this->closed || this->tsfn == nullptr) {
-		// Env was torn down / released; the caller drops the state.
-		return false;
+		return Dispatch::EnvGone;
 	}
-	return ::napi_call_threadsafe_function(this->tsfn, state, napi_tsfn_nonblocking) == napi_ok;
+	if (!this->retired) {
+		const napi_status status = testConsumeCommitDispatchCallFailure()
+			? napi_generic_failure
+			: ::napi_call_threadsafe_function(this->tsfn, item, napi_tsfn_nonblocking);
+		if (status == napi_ok) {
+			return Dispatch::Delivered;
+		}
+		if (status == napi_closing || status == napi_invalid_arg) {
+			// Only env teardown closes the tsfn under us, and the failed call
+			// consumed our thread reference: release() must not release it again.
+			this->closed = true;
+			this->tsfn = nullptr;
+			return Dispatch::EnvGone;
+		}
+		DEBUG_LOG("%p CommitCompletion::dispatch tsfn call failed (status=%d), retiring\n", this, status);
+		this->retired = true;
+	}
+	item->nextUndelivered = this->undelivered;
+	this->undelivered = item;
+	++this->undeliveredCount;
+	this->releaseRetiredIfDrainedLocked();
+	return Dispatch::Undelivered;
 }
 
 void DBDescriptor::CommitCompletion::finish(napi_env env) {
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
-	if (!this->closed && --this->pending == 0 && this->tsfn != nullptr) {
+	if (this->closed) {
+		return;
+	}
+	--this->pending;
+	if (this->retired) {
+		this->releaseRetiredIfDrainedLocked();
+	} else if (this->pending == 0 && this->tsfn != nullptr) {
 		// Idle: allow the event loop to exit.
 		::napi_unref_threadsafe_function(env, this->tsfn);
 	}
@@ -1058,12 +1144,98 @@ void DBDescriptor::CommitCompletion::finish(napi_env env) {
 
 void DBDescriptor::CommitCompletion::release() {
 	std::lock_guard<std::mutex> lock(this->completionStateMutex);
+	this->releaseTsfnLocked();
+}
+
+void DBDescriptor::CommitCompletion::markEnvGone(napi_env env) {
+	CommitEnvLiveness& liveness = commitEnvLiveness();
+	std::lock_guard<std::mutex> lock(liveness.mutex);
+	auto it = liveness.alive.find(env);
+	if (it != liveness.alive.end()) {
+		it->second->store(false);
+		// A later env at the same address gets its own flag.
+		liveness.alive.erase(it);
+	}
+}
+
+bool DBDescriptor::CommitCompletion::isClosed() {
+	std::lock_guard<std::mutex> lock(this->completionStateMutex);
+	return this->closed;
+}
+
+void DBDescriptor::CommitCompletion::releaseTsfnLocked() {
 	this->closed = true;
 	if (this->tsfn != nullptr) {
 		// Queued completions are still delivered before the tsfn finalizes
-		// (release, not abort); finish() then observes closed.
+		// (release, not abort); finish() then observes closed. Node and Bun
+		// only schedule the finalizer here, so it cannot re-enter this lock.
 		::napi_release_threadsafe_function(this->tsfn, napi_tsfn_release);
 		this->tsfn = nullptr;
+	}
+}
+
+void DBDescriptor::CommitCompletion::releaseRetiredIfDrainedLocked() {
+	// Releasing before every pending commit has finished or parked would let
+	// one dispatch after the finalizer ran.
+	if (this->pending == this->undeliveredCount) {
+		this->releaseTsfnLocked();
+	}
+}
+
+void DBDescriptor::CommitCompletion::finalize(napi_env env, void* data, void* /*hint*/) {
+	std::unique_ptr<std::shared_ptr<CommitCompletion>> self(static_cast<std::shared_ptr<CommitCompletion>*>(data));
+	CommitCompletion& completion = **self;
+	Item* item = nullptr;
+	bool deliver;
+	{
+		std::lock_guard<std::mutex> lock(completion.completionStateMutex);
+		// Env teardown can finalize a tsfn we never released: nothing may call
+		// or release it now.
+		completion.closed = true;
+		completion.tsfn = nullptr;
+		// Settle in dispatch order.
+		for (Item* pushed = completion.undelivered; pushed != nullptr;) {
+			Item* next = pushed->nextUndelivered;
+			pushed->nextUndelivered = item;
+			item = pushed;
+			pushed = next;
+		}
+		completion.undelivered = nullptr;
+		completion.undeliveredCount = 0;
+		deliver = completion.envAlive->load();
+	}
+	while (item != nullptr) {
+		Item* next = item->nextUndelivered;
+		// Each as its own tsfn callback would be: its own handle scope, and no
+		// exception left to fail the N-API calls settling the next.
+		napi_handle_scope scope = nullptr;
+		if (deliver && ::napi_open_handle_scope(env, &scope) != napi_ok) {
+			scope = nullptr;
+		}
+		if (!deliver) {
+			commitFinalizerSkippedDeliveries().fetch_add(1, std::memory_order_relaxed);
+		}
+		try {
+			completion.callJs(deliver ? env : nullptr, nullptr, nullptr, item);
+		} catch (...) {
+			// Constant text, so reporting cannot throw again.
+			::fputs("rocksdb-js: settling a commit after its completion could not be dispatched threw; its commit() will not settle\n", stderr);
+			try {
+				completion.callJs(nullptr, nullptr, nullptr, item);
+			} catch (...) {
+			}
+		}
+		bool exceptionPending = false;
+		if (deliver && ::napi_is_exception_pending(env, &exceptionPending) == napi_ok && exceptionPending) {
+			napi_value error;
+			if (::napi_get_and_clear_last_exception(env, &error) == napi_ok) {
+				::napi_fatal_exception(env, error);
+			}
+		}
+		if (scope != nullptr) {
+			::napi_close_handle_scope(env, scope);
+		}
+		item = next;
 	}
 }
 
@@ -1074,6 +1246,13 @@ void DBDescriptor::releaseCommitCompletionsByEnv(napi_env env) {
 		it->second->release();
 		this->commitCompletions.erase(it);
 	}
+	std::erase_if(this->retiredCommitCompletions, [env](const auto& item) {
+		if (item.first != env) {
+			return false;
+		}
+		item.second->release();
+		return true;
+	});
 }
 
 uint64_t ParkTimeoutRegistry::schedule(
