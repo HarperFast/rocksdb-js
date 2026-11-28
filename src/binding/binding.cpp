@@ -499,6 +499,12 @@ napi_value GetTransactionLogMapCount(napi_env env, napi_callback_info info) {
 	return result;
 }
 
+napi_value GetTransactionDrainWaits(napi_env env, napi_callback_info info) {
+	napi_value result;
+	NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(transactionDrainWaits().load(std::memory_order_relaxed)), &result));
+	return result;
+}
+
 napi_value GetTransactionLogMapBufferCreateFailures(napi_env env, napi_callback_info info) {
 	napi_value result;
 	NAPI_STATUS_THROWS(::napi_create_int64(env, static_cast<int64_t>(memoryMapBufferCreateFailures().load(std::memory_order_relaxed)), &result));
@@ -823,6 +829,10 @@ NAPI_MODULE_INIT() {
 	napi_value getTransactionLogMapBufferCreateFailuresFn;
 	NAPI_STATUS_THROWS(::napi_create_function(env, "getTransactionLogMapBufferCreateFailures", NAPI_AUTO_LENGTH, GetTransactionLogMapBufferCreateFailures, nullptr, &getTransactionLogMapBufferCreateFailuresFn));
 	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "getTransactionLogMapBufferCreateFailures", getTransactionLogMapBufferCreateFailuresFn));
+
+	napi_value getTransactionDrainWaitsFn;
+	NAPI_STATUS_THROWS(::napi_create_function(env, "getTransactionDrainWaits", NAPI_AUTO_LENGTH, GetTransactionDrainWaits, nullptr, &getTransactionDrainWaitsFn));
+	NAPI_STATUS_THROWS(::napi_set_named_property(env, exports, "getTransactionDrainWaits", getTransactionDrainWaitsFn));
 
 	// supportsSharedTransactionLogMaps function (test/diagnostics)
 	napi_value supportsSharedTransactionLogMapsFn;

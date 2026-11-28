@@ -1,3 +1,4 @@
+#include "core/assert.h"
 #include "core/background_error.h"
 #include "core/file_lock.h"
 #include "core/open_status.h"
@@ -634,25 +635,47 @@ void DBDescriptor::closeClosables(std::unique_lock<std::mutex>& txnsLock) {
 		cancelling.clear();
 		txnsLock.lock();
 	}
-	while (!this->transactions.empty()) {
-		// Idle ones first, and none while all are busy: a pessimistic write blocked on a row lock waits
-		// for its holder's close, and closing a busy one waits for its call anyway.
-		auto it = std::find_if(this->transactions.begin(), this->transactions.end(), [](const auto& entry) {
-			return entry.second->activeAsyncWorkCount.load() == 0;
-		});
-		if (it == this->transactions.end()) {
+	if (!this->transactions.empty()) {
+		const AsyncWorkHandle::CancelledIdleWaiter idleWaiter;
+		while (!this->transactions.empty()) {
+			const uint32_t idleGeneration = AsyncWorkHandle::cancelledIdleGeneration.load();
+			// Idle ones first, and none while all are busy: a pessimistic write blocked on a row lock waits
+			// for its holder's close, and closing a busy one waits for its call anyway.
+			auto it = std::find_if(this->transactions.begin(), this->transactions.end(), [](const auto& entry) {
+				return entry.second->activeAsyncWorkCount.load() == 0;
+			});
+			if (it == this->transactions.end()) {
+				// Only a cancelled handle bumps the generation, so an uncancelled busy one would never wake
+				// this wait. None can be registered after the cancel above; cancel one that is, outside
+				// txnsMutex (its waitMutex orders before it), and rescan.
+				std::shared_ptr<TransactionHandle> uncancelled;
+				for (auto& [_id, txnHandle] : this->transactions) {
+					if (!txnHandle->isCancelled()) {
+						uncancelled = txnHandle;
+						break;
+					}
+				}
+				txnsLock.unlock();
+				if (uncancelled) {
+					uncancelled->cancelAllAsyncWork();
+					uncancelled.reset();
+					ROCKSDB_JS_ASSERT(false, "Transaction registered uncancelled during the close drain");
+					txnsLock.lock();
+					continue;
+				}
+				transactionDrainWaits().fetch_add(1, std::memory_order_relaxed);
+				AsyncWorkHandle::cancelledIdleGeneration.wait(idleGeneration);
+				txnsLock.lock();
+				continue;
+			}
+			std::shared_ptr<TransactionHandle> txnHandle = std::move(it->second);
+			this->transactions.erase(it);
+			this->closables.erase(txnHandle.get());
 			txnsLock.unlock();
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			txnHandle->close();
+			txnHandle.reset();
 			txnsLock.lock();
-			continue;
 		}
-		std::shared_ptr<TransactionHandle> txnHandle = std::move(it->second);
-		this->transactions.erase(it);
-		this->closables.erase(txnHandle.get());
-		txnsLock.unlock();
-		txnHandle->close();
-		txnHandle.reset();
-		txnsLock.lock();
 	}
 
 	// Close all handles that still exist and reset their descriptor references

@@ -1191,6 +1191,9 @@ export const getTransactionLogMapCount: () => number = binding.getTransactionLog
 export const getTransactionLogMapBufferCreateFailures: () => number =
 	binding.getTransactionLogMapBufferCreateFailures;
 
+/** Process-wide count of times a database close entered its wait for a busy transaction (test probe). */
+export const getTransactionDrainWaits: () => number = binding.getTransactionDrainWaits;
+
 /**
  * Whether this runtime can back transaction-log memory maps with a SharedArrayBuffer: the shared
  * buffer API is exported and the addon could be pinned. An individual mapping can still fall back to

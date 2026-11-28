@@ -293,20 +293,55 @@ struct AsyncWorkHandle {
 
 	void exitSync() {
 		if (this->activeAsyncWorkCount.fetch_sub(1) == 1 && this->cancelled.load()) {
-			// Under the mutex, so a drain between its predicate check and its wait cannot miss this.
-			std::lock_guard<std::mutex> lock(this->waitMutex);
-			this->asyncWorkComplete.notify_all();
+			{
+				// Under the mutex, so a drain between its predicate check and its wait cannot miss this.
+				std::lock_guard<std::mutex> lock(this->waitMutex);
+				this->asyncWorkComplete.notify_all();
+			}
+			signalCancelledIdle();
 		}
 	}
 
 	void unregisterAsyncWork() {
-		std::lock_guard<std::mutex> lock(this->waitMutex);
-		auto activeAsyncWorkCount = --this->activeAsyncWorkCount;
-		if (activeAsyncWorkCount > 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount);
-		} else if (activeAsyncWorkCount == 0) {
-			DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this);
-			this->asyncWorkComplete.notify_all();
+		bool cancelledIdle = false;
+		{
+			std::lock_guard<std::mutex> lock(this->waitMutex);
+			auto activeAsyncWorkCount = --this->activeAsyncWorkCount;
+			if (activeAsyncWorkCount > 0) {
+				DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork Still have %u active async work tasks\n", this, activeAsyncWorkCount);
+			} else if (activeAsyncWorkCount == 0) {
+				DEBUG_LOG("%p AsyncWorkHandle::unregisterAsyncWork All async work has completed, notifying\n", this);
+				this->asyncWorkComplete.notify_all();
+				// Every writer of `cancelled` holds `waitMutex`; the decrement above orders the signal.
+				cancelledIdle = this->cancelled.load(std::memory_order_relaxed);
+			}
+		}
+		if (cancelledIdle) {
+			signalCancelledIdle();
+		}
+	}
+
+	/**
+	 * Lets one thread wait until any cancelled handle's admitted work drains to zero, without polling
+	 * each handle. Register before checking the handles, then wait on `cancelledIdleGeneration` as
+	 * read before that check: a handle that drains after the check sees the registration and bumps
+	 * the generation. The registration, snapshot, scan, decrement and bump are seq_cst; the
+	 * `cancelled` read between them may be relaxed where `waitMutex` is held.
+	 */
+	struct CancelledIdleWaiter final {
+		CancelledIdleWaiter() { cancelledIdleWaiters.fetch_add(1); }
+		~CancelledIdleWaiter() { cancelledIdleWaiters.fetch_sub(1); }
+		CancelledIdleWaiter(const CancelledIdleWaiter&) = delete;
+		CancelledIdleWaiter& operator=(const CancelledIdleWaiter&) = delete;
+	};
+
+	inline static std::atomic<uint32_t> cancelledIdleWaiters{ 0 };
+	inline static std::atomic<uint32_t> cancelledIdleGeneration{ 0 };
+
+	static void signalCancelledIdle() {
+		if (cancelledIdleWaiters.load() != 0) {
+			cancelledIdleGeneration.fetch_add(1);
+			cancelledIdleGeneration.notify_all();
 		}
 	}
 

@@ -66,6 +66,28 @@ struct DBIteratorOptions final {
 };
 
 /**
+ * A refused scan never reports its partial count.
+ */
+enum class CountScan {
+	Counted,
+	DatabaseClosing,
+	// Closed before the scan began.
+	IteratorClosed
+};
+
+inline const char* countScanRefusal(CountScan result, bool transactional) {
+	switch (result) {
+		case CountScan::Counted:
+			return nullptr;
+		case CountScan::DatabaseClosing:
+			return "Get count failed: Database is closing";
+		case CountScan::IteratorClosed:
+			return transactional ? "Get count failed: Transaction is closed" : "Get count failed: Database is closing";
+	}
+	return nullptr;
+}
+
+/**
  * The `NativeIterator` JavaScript class implementation.
  */
 struct DBIterator final {

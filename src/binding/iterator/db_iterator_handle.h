@@ -60,12 +60,11 @@ struct DBIteratorHandle final : Closable, public std::enable_shared_from_this<DB
 	/**
 	 * Counts the entries from the current position to the end of the range.
 	 *
-	 * Returns false when the descriptor began closing mid-scan. The scan is
-	 * unbounded and its caller holds an operation guard, which `finishClose()`
-	 * drains with an untimed wait, so it must abort rather than block teardown
-	 * for the length of the range. The partial count is never reported.
+	 * The scan is unbounded and its caller holds an operation guard, which
+	 * `finishClose()` drains with an untimed wait, so it aborts with
+	 * `DatabaseClosing` rather than block teardown for the length of the range.
 	 */
-	[[nodiscard]] bool countRemaining(uint64_t& count);
+	[[nodiscard]] CountScan countRemaining(uint64_t& count);
 
 	/**
 	 * Whether the iterator is positioned on a key inside the requested range.
